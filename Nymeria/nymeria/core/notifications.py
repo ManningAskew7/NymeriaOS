@@ -1,0 +1,352 @@
+"""Notification system for Nymeria.
+
+Provides in-app notification storage and retrieval for urgent
+messages from autonomous agent executions.
+"""
+
+import json
+import logging
+import threading
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+# Thread-safe locks for notification operations (keyed by user_id)
+_notification_locks: Dict[str, threading.RLock] = {}
+_locks_lock = threading.Lock()
+
+
+class Notification(BaseModel):
+    """A single notification entry.
+
+    Attributes:
+        id: Unique notification identifier
+        user_id: User who should see this notification
+        summary: Short notification text (shown in notification center)
+        thread_id: Optional thread to navigate to when clicked
+        task_id: Optional task ID that generated this notification
+        created_at: When the notification was created
+        read: Whether the notification has been read
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    user_id: str
+    summary: str = Field(..., max_length=200)
+    thread_id: Optional[str] = None
+    task_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    read: bool = False
+
+
+class NotificationStore:
+    """
+    JSON-based notification storage.
+
+    Stores notifications in data/notifications/{user_id}.json
+    with automatic retention of unread notifications.
+    """
+
+    MAX_NOTIFICATIONS = 50  # Keep last N notifications per user
+
+    def __init__(self, data_dir: Path):
+        """
+        Initialize the notification store.
+
+        Args:
+            data_dir: Base data directory (notifications stored in data_dir/notifications/)
+        """
+        self.notifications_dir = data_dir / "notifications"
+        self.notifications_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"NotificationStore initialized with directory: {self.notifications_dir}")
+
+    def _get_lock(self, user_id: str) -> threading.RLock:
+        """Get or create a lock for a specific user."""
+        global _notification_locks
+        with _locks_lock:
+            if user_id not in _notification_locks:
+                _notification_locks[user_id] = threading.RLock()
+            return _notification_locks[user_id]
+
+    def _get_notifications_path(self, user_id: str) -> Path:
+        """Get the path to a user's notifications file."""
+        safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
+        if not safe_user_id:
+            safe_user_id = "default"
+        return self.notifications_dir / f"{safe_user_id}.json"
+
+    def create(
+        self,
+        user_id: str,
+        summary: str,
+        thread_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Notification:
+        """
+        Create a new notification.
+
+        Args:
+            user_id: User to notify
+            summary: Short notification text
+            thread_id: Optional thread to navigate to
+            task_id: Optional originating task ID
+
+        Returns:
+            The created Notification
+        """
+        notification = Notification(
+            user_id=user_id,
+            summary=summary[:200],  # Truncate if too long
+            thread_id=thread_id,
+            task_id=task_id,
+        )
+
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+            notifications.append(notification)
+
+            # Keep only the last MAX_NOTIFICATIONS
+            if len(notifications) > self.MAX_NOTIFICATIONS:
+                # Keep unread ones and most recent read ones
+                unread = [n for n in notifications if not n.read]
+                read = [n for n in notifications if n.read]
+                # Sort read by created_at descending
+                read.sort(key=lambda n: n.created_at, reverse=True)
+                # Keep all unread + fill remaining with most recent read
+                remaining_slots = self.MAX_NOTIFICATIONS - len(unread)
+                notifications = unread + read[:max(0, remaining_slots)]
+
+            self._save_notifications(user_id, notifications)
+
+        logger.info(f"Notification created for {user_id}: {summary[:50]}...")
+        return notification
+
+    def get_unread(self, user_id: str) -> List[Notification]:
+        """
+        Get all unread notifications for a user.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            List of unread Notification objects, newest first
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+
+        unread = [n for n in notifications if not n.read]
+        # Sort by created_at descending (newest first)
+        unread.sort(key=lambda n: n.created_at, reverse=True)
+        return unread
+
+    def get_all(self, user_id: str, limit: int = 50) -> List[Notification]:
+        """
+        Get all notifications for a user.
+
+        Args:
+            user_id: User identifier
+            limit: Maximum number to return
+
+        Returns:
+            List of Notification objects, newest first
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+
+        # Sort by created_at descending (newest first)
+        notifications.sort(key=lambda n: n.created_at, reverse=True)
+        return notifications[:limit]
+
+    def mark_read(self, notification_id: str, user_id: str = "default") -> bool:
+        """
+        Mark a notification as read.
+
+        Args:
+            notification_id: ID of notification to mark
+            user_id: User identifier (for finding the right file)
+
+        Returns:
+            True if notification was found and marked, False otherwise
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+
+            found = False
+            for n in notifications:
+                if n.id == notification_id:
+                    n.read = True
+                    found = True
+                    break
+
+            if found:
+                self._save_notifications(user_id, notifications)
+                logger.debug(f"Notification {notification_id} marked as read")
+
+            return found
+
+    def mark_all_read(self, user_id: str) -> int:
+        """
+        Mark all notifications as read for a user.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Number of notifications marked as read
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+
+            count = 0
+            for n in notifications:
+                if not n.read:
+                    n.read = True
+                    count += 1
+
+            if count > 0:
+                self._save_notifications(user_id, notifications)
+                logger.debug(f"Marked {count} notifications as read for {user_id}")
+
+            return count
+
+    def get_unread_count(self, user_id: str) -> int:
+        """
+        Get the count of unread notifications.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Number of unread notifications
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+
+        return sum(1 for n in notifications if not n.read)
+
+    def delete(self, notification_id: str, user_id: str = "default") -> bool:
+        """
+        Delete a notification.
+
+        Args:
+            notification_id: ID of notification to delete
+            user_id: User identifier
+
+        Returns:
+            True if notification was found and deleted, False otherwise
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+            original_len = len(notifications)
+            notifications = [n for n in notifications if n.id != notification_id]
+
+            if len(notifications) < original_len:
+                self._save_notifications(user_id, notifications)
+                logger.debug(f"Notification {notification_id} deleted")
+                return True
+
+            return False
+
+    def _load_notifications(self, user_id: str) -> List[Notification]:
+        """Load notifications from disk."""
+        notifications_path = self._get_notifications_path(user_id)
+
+        if not notifications_path.exists():
+            return []
+
+        try:
+            with open(notifications_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return [Notification.model_validate(item) for item in data]
+        except Exception as e:
+            logger.error(f"Failed to load notifications for {user_id}: {e}")
+            return []
+
+    def _save_notifications(self, user_id: str, notifications: List[Notification]) -> bool:
+        """Save notifications to disk."""
+        notifications_path = self._get_notifications_path(user_id)
+
+        try:
+            notifications_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write atomically
+            temp_path = notifications_path.with_suffix(".tmp")
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    [n.model_dump(mode="json") for n in notifications],
+                    f,
+                    indent=2,
+                    default=str,
+                )
+
+            temp_path.replace(notifications_path)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save notifications for {user_id}: {e}")
+            return False
+
+    def clear(self, user_id: str) -> bool:
+        """Clear all notifications for a user."""
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications_path = self._get_notifications_path(user_id)
+            if notifications_path.exists():
+                try:
+                    notifications_path.unlink()
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to clear notifications for {user_id}: {e}")
+                    return False
+        return True
+
+
+# Global notification store instance (initialized lazily)
+_notification_store: Optional[NotificationStore] = None
+
+
+def get_notification_store() -> NotificationStore:
+    """Get or create the global notification store."""
+    global _notification_store
+    if _notification_store is None:
+        from ..config import get_settings
+
+        settings = get_settings()
+        _notification_store = NotificationStore(settings.data_dir)
+    return _notification_store
+
+
+def create_notification(
+    user_id: str,
+    summary: str,
+    thread_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> Notification:
+    """
+    Convenience function to create a notification.
+
+    Args:
+        user_id: User to notify
+        summary: Short notification text
+        thread_id: Optional thread to navigate to
+        task_id: Optional originating task ID
+
+    Returns:
+        The created Notification
+    """
+    return get_notification_store().create(
+        user_id=user_id,
+        summary=summary,
+        thread_id=thread_id,
+        task_id=task_id,
+    )

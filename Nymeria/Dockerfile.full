@@ -1,0 +1,138 @@
+# Nymeria Full Dockerfile - Kali Linux Workstation
+# A complete development and security research environment
+#
+# Includes:
+# - Kali Linux base with security tools
+# - Python 3.11 + all Nymeria dependencies
+# - Node.js + Claude Code CLI
+# - Chromium + Playwright (BrowserAgent)
+# - Git, build tools, development environment
+#
+# Build: docker build -f Dockerfile.full -t nymeria-full .
+# Size: ~2-3GB
+
+FROM kalilinux/kali-rolling
+
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Python (use default Kali Python 3)
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    # Node.js (for Claude Code)
+    nodejs \
+    npm \
+    # Build tools
+    build-essential \
+    gcc \
+    g++ \
+    make \
+    # Git and utilities
+    git \
+    curl \
+    wget \
+    vim \
+    nano \
+    htop \
+    tmux \
+    jq \
+    unzip \
+    # Networking tools
+    net-tools \
+    iputils-ping \
+    dnsutils \
+    netcat-openbsd \
+    # Browser dependencies for Playwright
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2t64 \
+    libpango-1.0-0 \
+    libcairo2 \
+    # Kali security tools (commonly used)
+    nmap \
+    nikto \
+    gobuster \
+    dirb \
+    sqlmap \
+    whatweb \
+    wpscan \
+    hydra \
+    john \
+    hashcat \
+    wordlists \
+    seclists \
+    # Clean up
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r nymeria && useradd -r -g nymeria -m -s /bin/bash nymeria
+
+# Set up Python symlinks
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+
+# Create directories
+WORKDIR /app
+RUN mkdir -p /data /workspace \
+    && chown -R nymeria:nymeria /app /data /workspace
+
+# Install Python dependencies as root first (for system packages)
+COPY requirements.txt requirements-docker.txt* ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt \
+    && if [ -f requirements-docker.txt ]; then \
+        pip3 install --no-cache-dir --break-system-packages -r requirements-docker.txt; \
+    fi
+
+# Install Playwright and browsers (as root for system-wide access)
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pip3 install --no-cache-dir --break-system-packages playwright \
+    && mkdir -p /ms-playwright \
+    && playwright install chromium \
+    && playwright install-deps chromium \
+    && chmod -R 755 /ms-playwright
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code || echo "Claude Code CLI installation skipped (may require auth)"
+
+# Copy application code
+COPY --chown=nymeria:nymeria . .
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV NYMERIA_DATA_DIR=/data
+ENV NYMERIA_WORKSPACE_DIR=/workspace
+ENV PATH="/usr/local/bin:$PATH"
+
+# NOTE: Running as root for full elevated privileges
+# This is appropriate for security research environments (Kali)
+# The nymeria user exists but we intentionally stay as root for:
+# - Full access to security tools (nmap, etc.)
+# - Unrestricted bash_execute commands
+# - Ability to modify system files when needed
+
+# Expose ports
+# 8000 - REST API
+# 8001 - MCP Server (HTTP mode)
+EXPOSE 8000 8001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Default command - run API server
+CMD ["python", "run.py", "api"]

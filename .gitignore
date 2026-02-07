@@ -1,0 +1,51 @@
+# === Secrets & Environment ===
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# === Databases & User Data ===
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+Nymeria/data/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# === Node / Frontend ===
+node_modules/
+.svelte-kit/
+
+# === Rust / Tauri ===
+target/
+gen/schemas
+
+# === IDE & OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Claude Code ===
+.claude/
+
+# === Project-specific exclusions ===
+Plans-fixes.txt
+nul
+LangGraph/
+default/
+backups/
+*.backup
+*.log

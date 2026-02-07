@@ -1,0 +1,256 @@
+# Nymeria Configuration
+
+All configuration is done via environment variables. Copy `.env.minimal` to `.env` for a quick start, or `.env.example` for all options.
+
+**Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
+
+## Environment Variables
+
+### LLM Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider: `openrouter`, `anthropic`, `openai` |
+| `LLM_MODEL` | Yes | `claude-sonnet-4-20250514` | Model identifier for the provider |
+| `LLM_TEMPERATURE` | No | `1.0` | Sampling temperature (0.0 - 2.0) |
+
+### Advanced LLM Settings (Optional)
+
+These settings give power users fine-grained control over LLM behavior. All are optional and only sent to the API if explicitly set.
+
+| Variable | Default | Range | Description |
+|----------|---------|-------|-------------|
+| `LLM_MAX_TOKENS` | (model limit) | 1 - 32000 | Maximum output tokens |
+| `LLM_TOP_P` | (provider default) | 0.0 - 1.0 | Nucleus sampling threshold |
+| `LLM_TOP_K` | (provider default) | 1 - 100 | Top-k sampling (limits vocabulary per step) |
+| `LLM_FREQUENCY_PENALTY` | (provider default) | -2.0 - 2.0 | Reduce repetition of token sequences |
+| `LLM_PRESENCE_PENALTY` | (provider default) | -2.0 - 2.0 | Encourage new topics |
+| `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking) |
+
+**Note:** Not all providers support all parameters. Unsupported parameters are silently ignored.
+
+### API Keys
+
+Set the API key for your chosen provider:
+
+| Variable | Provider | Required |
+|----------|----------|----------|
+| `ANTHROPIC_API_KEY` | Anthropic | If using `anthropic` provider |
+| `OPENAI_API_KEY` | OpenAI | If using `openai` provider |
+| `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
+| `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
+
+### Database
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_BACKEND` | `sqlite` | Backend type: `sqlite`, `postgres`, or `memory` |
+| `SQLITE_PATH` | `data/nymeria.db` | SQLite database file location |
+| `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
+
+### API Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NYMERIA_API_KEY` | (required) | Bearer token for API authentication. Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `API_HOST` | `0.0.0.0` | Server bind address |
+| `API_PORT` | `8000` | Server port |
+
+### Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `AUDIT_LOG_ENABLED` | `true` | Log all tool executions to audit log |
+
+### Scheduler (Autonomous Operation)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
+| `MAX_SELF_INVOKES_PER_HOUR` | `50` | Rate limit per user to prevent runaway loops |
+
+### Context Management
+
+Nymeria automatically manages conversation context to prevent overflow. The default `auto_compact` mode summarizes conversations when approaching the model's context limit.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXT_MANAGEMENT` | `auto_compact` | Strategy: `auto_compact`, `sliding_window`, or `none` |
+| `COMPACT_THRESHOLD` | `0.8` | Trigger compaction at this % of context window (0.5-0.95) |
+| `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
+| `COMPACT_MODEL` | (main model) | Optional cheaper model for summarization |
+| `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
+
+**Context Management Modes:**
+
+- **`auto_compact`** (default): When token usage reaches the threshold, Nymeria:
+  1. Asks the agent to summarize the conversation (it already has full context)
+  2. Agent saves important facts to persistent memory via `memory_save`
+  3. Clears the conversation and injects the summary
+  4. Agent continues working without interruption
+
+- **`sliding_window`**: Legacy mode that simply removes old messages, keeping the last N cycles
+
+- **`none`**: No automatic context management (manual `/compact` still available)
+
+### Watchdog & TODO System
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WATCHDOG_ENABLED` | `true` | Enable watchdog to monitor TODO staleness |
+| `WATCHDOG_INTERVAL_MINUTES` | `30` | Minutes between watchdog checks (5-120) |
+| `TODO_STALENESS_HOURS` | `4` | Hours without update before TODO is stale (1-24) |
+| `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before auto-archive (1-30) |
+
+---
+
+## Data Directories
+
+Nymeria uses the following directories under the project root:
+
+| Directory | Purpose |
+|-----------|---------|
+| `data/nymeria.db` | SQLite conversation database |
+| `data/tasks.db` | SQLite scheduled tasks database (durable scheduler) |
+| `data/todos/` | TODO list storage (`{user_id}.json`) |
+| `data/logs/` | Audit logs (`audit_YYYYMMDD.jsonl`) |
+| `data/users/` | User profile storage (`{user_id}/profile.json`) |
+| `data/backups/` | Self-modification backups |
+| `data/custom_tools/` | Custom tool definitions (`{tool_id}.json`) |
+| `data/notifications/` | User notification storage |
+
+These directories and files are created automatically on first run.
+
+---
+
+## System Prompt (soul.md)
+
+Located at `nymeria/config/soul.md`. This file defines Nymeria's:
+- Personality and tone
+- Capabilities and limitations
+- Guidelines for tool usage
+- Autonomous behavior rules
+
+Edit this file to customize how Nymeria responds. Changes take effect on agent restart.
+
+---
+
+## Example .env
+
+```bash
+# LLM Configuration
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-sonnet-4-20250514
+LLM_TEMPERATURE=1.0
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Advanced LLM Settings (all optional)
+# LLM_MAX_TOKENS=4096
+# LLM_TOP_P=0.95
+# LLM_TOP_K=40
+# LLM_FREQUENCY_PENALTY=0.0
+# LLM_PRESENCE_PENALTY=0.0
+# LLM_REASONING_EFFORT=medium  # For reasoning models
+
+# Web search (optional but recommended)
+PERPLEXITY_API_KEY=pplx-...
+
+# Database (SQLite is default - no additional config needed)
+DATABASE_BACKEND=sqlite
+# SQLITE_PATH=data/nymeria.db  # Uncomment to customize path
+
+# API Server
+NYMERIA_API_KEY=my-secret-key
+API_HOST=0.0.0.0
+API_PORT=8000
+
+# Logging
+LOG_LEVEL=INFO
+AUDIT_LOG_ENABLED=true
+
+# Scheduler (optional - defaults shown)
+# TICKER_POLL_INTERVAL=5
+# MAX_SELF_INVOKES_PER_HOUR=50
+
+# Context Management (optional - defaults shown)
+# CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none
+# COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit
+# COMPACT_MODEL=                   # Use cheaper model for summarization
+# SLIDING_WINDOW_CYCLES=5          # For legacy sliding_window mode
+```
+
+---
+
+## Provider-Specific Configuration
+
+### Anthropic (Recommended)
+
+```bash
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Available models:
+- `claude-opus-4-20250514` (most capable)
+- `claude-sonnet-4-20250514` (balanced)
+- `claude-haiku-3-5-20241022` (fastest)
+
+### OpenAI
+
+```bash
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o
+OPENAI_API_KEY=sk-...
+```
+
+### OpenRouter
+
+```bash
+LLM_PROVIDER=openrouter
+LLM_MODEL=anthropic/claude-sonnet-4
+OPENROUTER_API_KEY=sk-or-...
+```
+
+OpenRouter provides access to many models from different providers through a unified API.
+
+**Tested Compatible Models:**
+- `anthropic/claude-sonnet-4.5` - Recommended
+- `minimax/minimax-m2.1` - Fast responses
+- `deepseek/deepseek-v3.2` - Good performance
+- `google/gemini-3-pro-preview` - Functional
+- `z-ai/glm-4.7` - Basic compatibility
+
+Most OpenRouter models work with Nymeria's agent harness, including tool calling.
+
+---
+
+## Database Backends
+
+### SQLite (Default)
+
+No additional configuration needed. Database created at `data/nymeria.db`.
+
+```bash
+DATABASE_BACKEND=sqlite
+# Optional: customize path
+# SQLITE_PATH=/path/to/nymeria.db
+```
+
+### PostgreSQL
+
+For production deployments with multiple instances:
+
+```bash
+DATABASE_BACKEND=postgres
+POSTGRES_URI=postgresql://user:password@localhost:5432/nymeria
+```
+
+### Memory (Testing)
+
+State is lost on restart. Use for testing only:
+
+```bash
+DATABASE_BACKEND=memory
+```
