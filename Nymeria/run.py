@@ -1,0 +1,490 @@
+#!/usr/bin/env python
+"""
+Nymeria - Entry point script.
+
+Usage:
+    python run.py cli          # Start CLI interface
+    python run.py api          # Start REST API server
+    python run.py api --port 8080  # Start API on custom port
+    python run.py worker           # Start worker (ticker only, for Docker)
+    python run.py mcp              # Start MCP server (stdio mode)
+    python run.py mcp --http       # Start MCP server (HTTP mode)
+    python run.py mcp --port 8001  # MCP HTTP mode on custom port
+    python run.py service install  # Install as Windows service
+    python run.py service start    # Start the Windows service
+    python run.py service stop     # Stop the Windows service
+    python run.py service status   # Check service status
+    python run.py service run      # Run gateway in foreground (debug)
+"""
+
+import argparse
+import logging
+import signal
+import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+# Add project to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+
+def validate_config(skip_api_key: bool = False) -> None:
+    """
+    Validate configuration before starting any command.
+
+    Args:
+        skip_api_key: If True, skip NYMERIA_API_KEY check (for service status checks)
+
+    Exits with code 1 if critical errors are found.
+    """
+    from nymeria.config import get_settings
+
+    settings = get_settings()
+    errors, warnings = settings.validate()
+
+    # Filter out API key error if skip_api_key is True
+    if skip_api_key:
+        errors = [e for e in errors if "NYMERIA_API_KEY" not in e]
+
+    # Print warnings (non-fatal)
+    if warnings:
+        print("\n[Configuration Warnings]")
+        print("-" * 50)
+        for warning in warnings:
+            print(f"  ⚠ {warning}")
+        print()
+
+    # Print errors and exit if any critical issues
+    if errors:
+        print("\n[Configuration Error]")
+        print("-" * 50)
+        print("Nymeria cannot start due to missing configuration:\n")
+        for error in errors:
+            print(f"  ✗ {error}\n")
+        print("-" * 50)
+        print("\nQuick Setup:")
+        print("  1. Copy .env.minimal to .env (or use .env.example for all options)")
+        print("  2. Generate API key: python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        print("  3. Add your LLM provider API key")
+        print("  4. Run again: python run.py api")
+        print("\nSee docs/QUICKSTART.md for detailed instructions.")
+        sys.exit(1)
+
+
+def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
+    """
+    Configure logging for the application.
+
+    Args:
+        level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        file_mode: If True, log to file with rotation (for service mode)
+    """
+    from nymeria.config import get_settings
+
+    settings = get_settings()
+
+    handlers = []
+
+    if file_mode:
+        # File logging with rotation for service mode
+        log_dir = settings.logs_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        log_file = log_dir / settings.service_log_file
+
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=settings.service_log_max_bytes,
+            backupCount=settings.service_log_backup_count,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        handlers.append(file_handler)
+    else:
+        # Console logging for interactive mode
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    logging.basicConfig(
+        level=getattr(logging, level.upper()),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=handlers,
+        force=True,  # Override any existing configuration
+    )
+
+    # Reduce noise from httpx/httpcore
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def run_cli(args: argparse.Namespace) -> None:
+    """Run the CLI interface."""
+    # Suppress verbose logging for cleaner CLI experience
+    logging.getLogger("nymeria").setLevel(logging.WARNING)
+
+    from nymeria import NymeriaAgent
+    from nymeria.tools import ALL_TOOLS
+    from nymeria.triggers.cli import run_cli as start_cli
+
+    # Create agent with all tools
+    agent = NymeriaAgent(tools=ALL_TOOLS)
+
+    # Start CLI
+    start_cli(agent=agent, thread_id=args.thread)
+
+
+def run_api(args: argparse.Namespace) -> None:
+    """Run the REST API server."""
+    from nymeria import NymeriaAgent
+    from nymeria.tools import ALL_TOOLS
+    from nymeria.triggers.api import run_api as start_api
+    from nymeria.config import get_settings
+
+    settings = get_settings()
+    host = args.host or settings.api_host
+    port = args.port or settings.api_port
+
+    print(f"Starting Nymeria API server on {host}:{port}...")
+    print(f"  - Docs: http://{host}:{port}/docs")
+    print(f"  - ReDoc: http://{host}:{port}/redoc")
+
+    # Initialize Redis event bus if configured (needed to receive worker events via SSE)
+    disable_ticker = settings.redis_enabled and bool(settings.redis_url)
+    if disable_ticker:
+        from nymeria.core.event_bus import create_event_bus, set_event_bus
+        event_bus = create_event_bus(settings)
+        set_event_bus(event_bus)
+        print(f"  - Redis event bus: {settings.redis_url}")
+
+    # Create agent with all tools
+    # When Redis is enabled (Docker), a separate worker container runs the ticker.
+    # Disable ticker in the API to prevent duplicate task execution.
+    agent = NymeriaAgent(tools=ALL_TOOLS, enable_ticker=not disable_ticker)
+
+    # Start API server
+    start_api(host=host, port=port, agent=agent)
+
+
+def run_service(args: argparse.Namespace) -> None:
+    """Handle service subcommand."""
+    from nymeria.config import get_settings
+    from nymeria.gateway.service import (
+        get_service_status,
+        install_service,
+        start_service,
+        stop_service,
+        uninstall_service,
+    )
+
+    settings = get_settings()
+    action = args.action
+
+    if action == "install":
+        print(f"Installing Nymeria as Windows service: {settings.service_name}")
+        auto_start = settings.service_auto_start
+        if install_service(auto_start=auto_start):
+            print(f"Service '{settings.service_name}' installed successfully")
+            if auto_start:
+                print("  Auto-start: Enabled (will start on system boot)")
+            print("  Use 'python run.py service start' to start the service")
+        else:
+            print("Failed to install service. Run as Administrator.")
+            sys.exit(1)
+
+    elif action == "uninstall":
+        print(f"Uninstalling Windows service: {settings.service_name}")
+        if uninstall_service():
+            print(f"Service '{settings.service_name}' uninstalled successfully")
+        else:
+            print("Failed to uninstall service. Run as Administrator.")
+            sys.exit(1)
+
+    elif action == "start":
+        print(f"Starting service: {settings.service_name}")
+        if start_service():
+            print(f"Service '{settings.service_name}' started")
+        else:
+            print("Failed to start service. Check if installed and run as Administrator.")
+            sys.exit(1)
+
+    elif action == "stop":
+        print(f"Stopping service: {settings.service_name}")
+        if stop_service():
+            print(f"Service '{settings.service_name}' stopped")
+        else:
+            print("Failed to stop service. Check if running and run as Administrator.")
+            sys.exit(1)
+
+    elif action == "status":
+        status = get_service_status()
+        if status is None:
+            print("Error checking service status")
+            sys.exit(1)
+        elif status == "not_installed":
+            print(f"Service '{settings.service_name}' is not installed")
+        else:
+            print(f"Service '{settings.service_name}' is {status}")
+
+    elif action == "run":
+        # Run gateway in foreground (debug mode)
+        run_gateway_foreground(args)
+
+    else:
+        print(f"Unknown action: {action}")
+        sys.exit(1)
+
+
+def run_worker(args: argparse.Namespace) -> None:
+    """
+    Run the worker (ticker only, no API server).
+
+    This is designed for Docker deployments where the API and worker
+    run in separate containers, sharing state via PostgreSQL and Redis.
+    """
+    from nymeria import NymeriaAgent
+    from nymeria.tools import ALL_TOOLS
+    from nymeria.config import get_settings
+    from nymeria.core.event_bus import create_event_bus, set_event_bus
+
+    settings = get_settings()
+
+    print("Starting Nymeria Worker (ticker mode)...")
+    print(f"  - Ticker poll interval: {settings.ticker_poll_interval}s")
+    print(f"  - Watchdog enabled: {settings.watchdog_enabled}")
+    print(f"  - Redis enabled: {settings.redis_enabled}")
+    print(f"  - Data directory: {settings.data_dir}")
+
+    # Initialize Redis event bus if configured
+    if settings.redis_enabled and settings.redis_url:
+        event_bus = create_event_bus(settings)
+        set_event_bus(event_bus)
+        print(f"  - Redis event bus: {settings.redis_url}")
+
+    # Create agent with all tools (this starts the ticker)
+    agent = NymeriaAgent(tools=ALL_TOOLS)
+
+    # Handle shutdown signals
+    def signal_handler(signum, frame):
+        print("\nShutdown signal received...")
+        # Agent cleanup happens automatically
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    print("\nWorker running. Press Ctrl+C to stop.")
+
+    # Keep the process alive
+    try:
+        while True:
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nWorker stopped.")
+
+
+def run_mcp(args: argparse.Namespace) -> None:
+    """Run the MCP server."""
+    from nymeria.mcp_server import run_stdio, run_http
+
+    if args.http:
+        host = args.host or "127.0.0.1"
+        port = args.port or 8001
+        print(f"Starting Nymeria MCP server (HTTP mode) on {host}:{port}...")
+        run_http(host=host, port=port)
+    else:
+        # STDIO mode - minimal output to avoid corrupting JSON-RPC
+        run_stdio()
+
+
+def run_gateway_foreground(args: argparse.Namespace) -> None:
+    """
+    Run the gateway server in foreground mode for debugging.
+
+    This is similar to what the Windows service does, but runs in the
+    current console with proper signal handling for Ctrl+C.
+    """
+    from nymeria.config import get_settings
+
+    settings = get_settings()
+
+    # Use file logging in foreground mode too (matches service behavior)
+    setup_logging(settings.log_level, file_mode=True)
+
+    # Also print to console in foreground mode
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(console_handler)
+
+    print(f"Starting Nymeria Gateway in foreground mode...")
+    print(f"  REST API: http://{settings.api_host}:{settings.api_port}")
+    print(f"  Log file: {settings.logs_dir / settings.service_log_file}")
+    print("  Press Ctrl+C to stop")
+    print()
+
+    from nymeria.gateway.server import GatewayServer
+
+    gateway = GatewayServer(settings=settings)
+
+    # Handle Ctrl+C gracefully
+    def signal_handler(signum, frame):
+        print("\nShutdown signal received...")
+        gateway.stop()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Start the gateway
+    gateway.start()
+
+    # Wait for shutdown
+    gateway.wait_for_stop()
+
+    print("Gateway stopped")
+
+
+def main() -> None:
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Nymeria - Personal AI Assistant",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python run.py cli                # Start CLI interface
+    python run.py cli -t mythread    # Start CLI with specific thread ID
+    python run.py api                # Start API server (default port 8000)
+    python run.py api -p 8080        # Start API on port 8080
+    python run.py mcp                # Start MCP server (STDIO mode)
+    python run.py mcp --http         # Start MCP server (HTTP mode)
+    python run.py mcp --http -p 8001 # MCP HTTP mode on custom port
+    python run.py service install    # Install as Windows service
+    python run.py service start      # Start the Windows service
+    python run.py service stop       # Stop the Windows service
+    python run.py service status     # Check service status
+    python run.py service run        # Run gateway in foreground (debug)
+        """,
+    )
+    parser.add_argument(
+        "--log-level",
+        "-l",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Logging level",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # CLI subcommand
+    cli_parser = subparsers.add_parser("cli", help="Start CLI interface")
+    cli_parser.add_argument(
+        "--thread",
+        "-t",
+        default=None,
+        help="Thread ID for conversation persistence",
+    )
+
+    # API subcommand
+    api_parser = subparsers.add_parser("api", help="Start REST API server")
+    api_parser.add_argument(
+        "--host",
+        "-H",
+        default=None,
+        help="Host to bind to (default from settings)",
+    )
+    api_parser.add_argument(
+        "--port",
+        "-p",
+        type=int,
+        default=None,
+        help="Port to listen on (default from settings)",
+    )
+
+    # Worker subcommand
+    subparsers.add_parser(
+        "worker",
+        help="Start worker (ticker only, for Docker deployments)"
+    )
+
+    # MCP subcommand
+    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server for agent-to-agent communication")
+    mcp_parser.add_argument(
+        "--http",
+        action="store_true",
+        help="Use HTTP transport instead of STDIO",
+    )
+    mcp_parser.add_argument(
+        "--host",
+        "-H",
+        default=None,
+        help="Host to bind to for HTTP mode (default: 127.0.0.1)",
+    )
+    mcp_parser.add_argument(
+        "--port",
+        "-p",
+        type=int,
+        default=None,
+        help="Port for HTTP mode (default: 8001)",
+    )
+
+    # Service subcommand
+    service_parser = subparsers.add_parser(
+        "service",
+        help="Windows service management",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Actions:
+    install    Install Nymeria as a Windows service
+    uninstall  Remove the Windows service
+    start      Start the Windows service
+    stop       Stop the Windows service
+    status     Check service status
+    run        Run gateway in foreground (for debugging)
+        """,
+    )
+    service_parser.add_argument(
+        "action",
+        choices=["install", "uninstall", "start", "stop", "status", "run"],
+        help="Service action to perform",
+    )
+
+    args = parser.parse_args()
+
+    # Setup logging (except for service commands which handle their own logging)
+    if args.command != "service":
+        setup_logging(args.log_level)
+
+    # Validate configuration before running commands that need it
+    # Skip validation for service status checks and help
+    if args.command in ("cli", "api", "mcp", "worker"):
+        validate_config()
+    elif args.command == "service" and args.action in ("install", "run"):
+        validate_config()
+    elif args.command == "service" and args.action == "status":
+        # Status check doesn't need full validation
+        validate_config(skip_api_key=True)
+
+    # Run appropriate command
+    if args.command == "cli":
+        run_cli(args)
+    elif args.command == "api":
+        run_api(args)
+    elif args.command == "worker":
+        run_worker(args)
+    elif args.command == "mcp":
+        run_mcp(args)
+    elif args.command == "service":
+        run_service(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

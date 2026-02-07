@@ -1,0 +1,3165 @@
+"""FastAPI REST API trigger with SSE streaming for Nymeria."""
+
+import json
+import logging
+import os
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..core.user_profile import ToolPreferences
+
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from ..config import Settings, get_settings
+from ..core.agent import NymeriaAgent
+from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, log_activity
+from ..core.event_bus import get_event_bus, AutonomousEvent
+from ..core.notifications import NotificationStore, Notification
+from ..core._deprecated.task_db import TaskDatabase, TaskStatus
+from ..core.todo_manager import TodoManager, TodoItem, TodoStatus, TodoPriority
+from ..tools import ALL_TOOLS, get_all_tools_with_agents
+from ..tools.visibility import get_and_clear_mute_flag
+from ..tools.definitions.schema import (
+    CustomToolDefinition,
+    HTTPToolConfig,
+    MCPToolConfig,
+    ToolParameter,
+)
+from ..core.custom_tools import (
+    get_custom_tool_loader,
+    load_custom_tools,
+    reload_custom_tools,
+)
+
+logger = logging.getLogger(__name__)
+
+# Global agent instance (initialized on startup)
+_agent: Optional[NymeriaAgent] = None
+
+
+def get_agent() -> NymeriaAgent:
+    """Get the global agent instance."""
+    if _agent is None:
+        raise RuntimeError("Agent not initialized. Call create_api_app() first.")
+    return _agent
+
+
+# ============================================================================
+# Request/Response Models
+# ============================================================================
+
+
+class FileData(BaseModel):
+    """Generic file attachment data for multimodal messages."""
+
+    file_type: str = Field(..., description="File type: 'image' or 'document'")
+    data_url: str = Field(..., description="Base64 data URL (data:mime/type;base64,...)")
+    mime_type: str = Field(..., description="MIME type (image/jpeg, application/pdf, etc.)")
+
+
+class ImageData(BaseModel):
+    """Image attachment data for multimodal messages (legacy, use FileData)."""
+
+    data_url: str = Field(..., description="Base64 data URL (data:image/...;base64,...)")
+    mime_type: str = Field(..., description="MIME type (image/jpeg, image/png, etc.)")
+
+
+class ChatRequest(BaseModel):
+    """Request model for chat endpoint."""
+
+    message: str = Field(..., min_length=1, description="User message")
+    thread_id: Optional[str] = Field(
+        default=None, description="Conversation thread ID (generated if not provided)"
+    )
+    user_id: str = Field(
+        default="default",
+        description="User ID for profile and memory access (defaults to 'default')"
+    )
+    attachments: Optional[List[FileData]] = Field(
+        default=None, description="Optional list of file attachments for multimodal models"
+    )
+    images: Optional[List[ImageData]] = Field(
+        default=None, description="Deprecated: use attachments instead"
+    )
+
+
+class ChatResponse(BaseModel):
+    """Response model for non-streaming chat."""
+
+    response: str = Field(..., description="Agent response")
+    thread_id: str = Field(..., description="Conversation thread ID")
+
+
+class HealthResponse(BaseModel):
+    """Response model for health check."""
+
+    status: str = "ok"
+    version: str = "1.0.0"
+
+
+class ThreadHistoryResponse(BaseModel):
+    """Response model for conversation history."""
+
+    thread_id: str
+    messages: list
+
+
+class ServerSettingsResponse(BaseModel):
+    """Response model for server settings."""
+
+    llm_provider: str
+    llm_model: str
+    llm_temperature: float
+    llm_max_tokens: Optional[int] = None
+    llm_top_p: Optional[float] = None
+    llm_top_k: Optional[int] = None
+    llm_frequency_penalty: Optional[float] = None
+    llm_presence_penalty: Optional[float] = None
+    llm_reasoning_effort: Optional[str] = None
+    llm_extended_thinking: bool = False
+    # Context management settings
+    context_management: str
+    compact_threshold: float
+    compact_keep_messages: int
+    compact_model: Optional[str] = None
+    sliding_window_cycles: int
+    max_self_invokes_per_hour: int
+    log_level: str
+    watchdog_enabled: bool
+    watchdog_interval_minutes: int
+    todo_staleness_hours: int
+
+
+class ServerSettingsUpdate(BaseModel):
+    """Request model for updating server settings."""
+
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
+    llm_top_p: Optional[float] = None
+    llm_top_k: Optional[int] = None
+    llm_frequency_penalty: Optional[float] = None
+    llm_presence_penalty: Optional[float] = None
+    llm_reasoning_effort: Optional[str] = None
+    llm_extended_thinking: Optional[bool] = None
+    # Context management settings
+    context_management: Optional[str] = None
+    compact_threshold: Optional[float] = None
+    compact_keep_messages: Optional[int] = None
+    compact_model: Optional[str] = None
+    sliding_window_cycles: Optional[int] = None
+    max_self_invokes_per_hour: Optional[int] = None
+    log_level: Optional[str] = None
+    watchdog_enabled: Optional[bool] = None
+    watchdog_interval_minutes: Optional[int] = None
+    todo_staleness_hours: Optional[int] = None
+
+
+# Dashboard Response Models
+
+class TodoItemResponse(BaseModel):
+    """Response model for a single TODO item."""
+
+    id: str
+    task: str
+    status: str
+    priority: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    deadline: Optional[datetime] = None
+    notes: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    # Scheduling fields
+    scheduled_for: Optional[datetime] = None
+    thread_id: Optional[str] = None
+    last_execution: Optional[datetime] = None
+    # User management & recurrence fields
+    created_by: str = "agent"
+    recurrence: Optional[str] = None
+
+
+class TodoCreateRequest(BaseModel):
+    """Request model for creating a new TODO."""
+
+    task: str = Field(..., min_length=1, max_length=500, description="Task description")
+    priority: Optional[str] = Field(default=None, description="Priority: low, medium, high")
+    deadline: Optional[datetime] = Field(default=None, description="Due date")
+    notes: Optional[str] = Field(default=None, max_length=1000, description="Additional notes")
+    scheduled_for: Optional[str] = Field(default=None, description="When to execute: relative ('2h', '30m') or ISO datetime")
+    recurrence: Optional[str] = Field(default=None, description="Recurrence: hourly, daily, weekly, monthly")
+    thread_id: Optional[str] = Field(default=None, description="Thread ID for scheduled execution output")
+
+
+class TodoUpdateRequest(BaseModel):
+    """Request model for updating a TODO."""
+
+    task: Optional[str] = Field(default=None, max_length=500, description="Task description")
+    priority: Optional[str] = Field(default=None, description="Priority: low, medium, high")
+    status: Optional[str] = Field(default=None, description="Status: pending, in_progress, blocked, done")
+    deadline: Optional[datetime] = Field(default=None, description="Due date")
+    notes: Optional[str] = Field(default=None, max_length=1000, description="Additional notes")
+    blocked_reason: Optional[str] = Field(default=None, max_length=500, description="Reason if blocked")
+    scheduled_for: Optional[str] = Field(default=None, description="When to execute: relative ('2h', '30m') or ISO datetime")
+    recurrence: Optional[str] = Field(default=None, description="Recurrence: hourly, daily, weekly, monthly")
+    thread_id: Optional[str] = Field(default=None, description="Thread ID for scheduled execution output")
+    clear_schedule: bool = Field(default=False, description="Clear the schedule")
+    clear_recurrence: bool = Field(default=False, description="Clear the recurrence")
+    clear_deadline: bool = Field(default=False, description="Clear the deadline")
+
+
+class TodoListResponse(BaseModel):
+    """Response model for TODO list."""
+
+    user_id: str
+    items: List[TodoItemResponse]
+    total: int
+
+
+class ScheduledTaskResponse(BaseModel):
+    """Response model for a scheduled task."""
+
+    id: str
+    prompt: str
+    execute_at: datetime
+    status: str
+    created_at: datetime
+    thread_id: str
+
+
+class ScheduledTasksResponse(BaseModel):
+    """Response model for scheduled tasks list."""
+
+    tasks: List[ScheduledTaskResponse]
+    total: int
+
+
+class ActivityEntryResponse(BaseModel):
+    """Response model for an activity entry."""
+
+    id: str
+    timestamp: datetime
+    type: str
+    message: str
+    thread_id: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class ActivityLogResponse(BaseModel):
+    """Response model for activity log."""
+
+    entries: List[ActivityEntryResponse]
+    total: int
+
+
+class NotificationResponse(BaseModel):
+    """Response model for a single notification."""
+
+    id: str
+    summary: str
+    thread_id: Optional[str] = None
+    task_id: Optional[str] = None
+    created_at: datetime
+    read: bool
+
+
+class NotificationsListResponse(BaseModel):
+    """Response model for notifications list."""
+
+    notifications: List[NotificationResponse]
+    unread_count: int
+
+
+# Custom Tool Models
+
+
+class ToolParameterModel(BaseModel):
+    """API model for tool parameters."""
+
+    type: str = "string"
+    description: str = ""
+    required: bool = False
+    default: Optional[str] = None
+    enum: Optional[List[str]] = None
+
+
+class HTTPToolConfigModel(BaseModel):
+    """API model for HTTP tool configuration."""
+
+    method: str = "GET"
+    url: str
+    headers: Dict[str, str] = {}
+    body_template: Optional[str] = None
+    query_params: Dict[str, str] = {}
+    timeout_seconds: int = 30
+    response_path: Optional[str] = None
+    response_format: str = "auto"
+
+
+class MCPToolConfigModel(BaseModel):
+    """API model for MCP tool configuration."""
+
+    server_command: str
+    server_args: List[str] = []
+    tool_name: str
+    env_vars: Dict[str, str] = {}
+    working_directory: Optional[str] = None
+    idle_timeout_seconds: int = 300
+    startup_timeout_seconds: int = 30
+
+
+class CustomToolResponse(BaseModel):
+    """Response model for a custom tool."""
+
+    id: str
+    name: str
+    description: str
+    parameters: Dict[str, ToolParameterModel]
+    implementation_type: str
+    http_config: Optional[HTTPToolConfigModel] = None
+    mcp_config: Optional[MCPToolConfigModel] = None
+    enabled: bool
+    tags: List[str] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class CustomToolCreateRequest(BaseModel):
+    """Request model for creating a custom tool."""
+
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+    name: str = Field(..., min_length=1, max_length=64)
+    description: str = Field(..., min_length=1, max_length=1000)
+    parameters: Dict[str, ToolParameterModel] = {}
+    implementation_type: str = Field(..., pattern=r"^(http|mcp)$")
+    http_config: Optional[HTTPToolConfigModel] = None
+    mcp_config: Optional[MCPToolConfigModel] = None
+    enabled: bool = True
+    tags: List[str] = []
+
+
+class CustomToolUpdateRequest(BaseModel):
+    """Request model for updating a custom tool."""
+
+    name: Optional[str] = Field(default=None, max_length=64)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    parameters: Optional[Dict[str, ToolParameterModel]] = None
+    http_config: Optional[HTTPToolConfigModel] = None
+    mcp_config: Optional[MCPToolConfigModel] = None
+    enabled: Optional[bool] = None
+    tags: Optional[List[str]] = None
+
+
+class CustomToolTestRequest(BaseModel):
+    """Request model for testing a custom tool."""
+
+    params: Dict[str, Any] = {}
+
+
+class CustomToolListResponse(BaseModel):
+    """Response model for custom tools list."""
+
+    tools: List[CustomToolResponse]
+    total: int
+
+
+# Unified Tool Models
+
+
+class UnifiedToolResponse(BaseModel):
+    """Response model for a unified tool (built-in or custom)."""
+
+    id: str
+    name: str
+    description: str  # Effective description (custom if set, else default)
+    default_description: str  # Original tool description
+    custom_description: Optional[str] = None  # User's custom description override
+    category: str
+    security_level: str
+    enabled: bool
+    enabled_reason: str
+    tool_type: Literal["builtin", "custom"]
+    implementation_type: Optional[str] = None  # "http" or "mcp" for custom tools
+    config_schema: Optional[Dict[str, Any]] = None
+    user_config: Dict[str, Any] = {}
+    parameters: Optional[Dict[str, Any]] = None  # Custom tool parameters
+    http_config: Optional[Dict[str, Any]] = None  # Custom HTTP tool config
+    mcp_config: Optional[Dict[str, Any]] = None  # Custom MCP tool config
+    tags: List[str] = []
+    editable: bool = False
+    configurable: bool = False  # True if tool has config_schema
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class UnifiedToolListResponse(BaseModel):
+    """Response model for unified tools list."""
+
+    tools: List[UnifiedToolResponse]
+    total: int
+    builtin_count: int
+    custom_count: int
+
+
+class UnifiedToolEnableRequest(BaseModel):
+    """Request model for enabling/disabling a tool."""
+
+    enabled: bool
+
+
+class UnifiedToolDescriptionRequest(BaseModel):
+    """Request model for setting a custom tool description."""
+
+    description: Optional[str] = None  # None to clear and revert to default
+
+
+class UnifiedToolConfigRequest(BaseModel):
+    """Request model for setting tool configuration."""
+
+    config: Dict[str, Any]
+
+
+# Sub-Agent Models
+
+
+class SubAgentResponse(BaseModel):
+    """Response model for a sub-agent."""
+
+    name: str
+    description: str
+    system_prompt: str
+    tools: List[str] = []
+    allowed_tools: List[str] = []
+    context_turns: int = 5
+    required_env_vars: List[str] = []
+    enabled: bool = True
+    # Optional per-agent LLM configuration
+    llm_provider: Optional[Literal["anthropic", "openai", "openrouter"]] = None
+    llm_model: Optional[str] = None
+    llm_temperature: Optional[float] = None
+
+
+class SubAgentCreateRequest(BaseModel):
+    """Request model for creating a sub-agent."""
+
+    name: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_]*$")
+    description: str = Field(..., min_length=1, max_length=500)
+    system_prompt: str = Field(..., min_length=1, max_length=10000)
+    allowed_tools: List[str] = []
+    context_turns: int = Field(default=5, ge=1, le=20)
+    required_env_vars: List[str] = []
+    # Optional per-agent LLM configuration (falls back to global settings if not specified)
+    llm_provider: Optional[Literal["anthropic", "openai", "openrouter"]] = None
+    llm_model: Optional[str] = None
+    llm_temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+
+
+class SubAgentUpdateRequest(BaseModel):
+    """Request model for updating a sub-agent."""
+
+    description: Optional[str] = Field(default=None, max_length=500)
+    system_prompt: Optional[str] = Field(default=None, max_length=10000)
+    allowed_tools: Optional[List[str]] = None
+    context_turns: Optional[int] = Field(default=None, ge=1, le=20)
+    required_env_vars: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+    # Optional per-agent LLM configuration
+    llm_provider: Optional[Literal["anthropic", "openai", "openrouter"]] = None
+    llm_model: Optional[str] = None
+    llm_temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+
+
+class SubAgentTestRequest(BaseModel):
+    """Request model for testing a sub-agent."""
+
+    instruction: str = Field(..., min_length=1, max_length=2000)
+
+
+class SubAgentListResponse(BaseModel):
+    """Response model for sub-agents list."""
+
+    agents: List[SubAgentResponse]
+    total: int
+
+
+# ============================================================================
+# Authentication
+# ============================================================================
+
+
+async def verify_api_key(
+    authorization: Optional[str] = Header(None),
+    settings: Settings = Depends(get_settings),
+) -> bool:
+    """
+    Verify API key from Authorization header.
+
+    Expected format: "Bearer <api_key>"
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=401, detail="Invalid Authorization header format. Use: Bearer <api_key>"
+        )
+
+    api_key = parts[1]
+    if api_key != settings.nymeria_api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    return True
+
+
+# ============================================================================
+# API Application
+# ============================================================================
+
+
+def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
+    """
+    Create the FastAPI application.
+
+    Args:
+        agent: Optional agent instance (creates default if not provided)
+
+    Returns:
+        Configured FastAPI application
+    """
+    global _agent
+
+    settings = get_settings()
+
+    # Initialize agent
+    # When Redis is enabled (Docker), a separate worker container runs the ticker.
+    # Disable ticker in the API container to prevent duplicate task execution.
+    # Initialize Redis event bus if configured (needed to receive worker events via SSE)
+    disable_ticker = settings.redis_enabled and bool(settings.redis_url)
+    if disable_ticker:
+        from ..core.event_bus import create_event_bus, set_event_bus
+        event_bus = create_event_bus(settings)
+        set_event_bus(event_bus)
+
+    if agent is not None:
+        _agent = agent
+    else:
+        _agent = NymeriaAgent(
+            tools=get_all_tools_with_agents(),
+            enable_ticker=not disable_ticker,
+        )
+
+    # Create FastAPI app
+    app = FastAPI(
+        title="Nymeria API",
+        description="Personal AI Assistant REST API with SSE streaming",
+        version="1.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+
+    # Add CORS middleware with configurable origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Add webhook router for messaging platform integrations
+    from .webhook import create_webhook_router
+    webhook_router = create_webhook_router(get_agent, get_settings)
+    app.include_router(webhook_router)
+
+    # ========================================================================
+    # Endpoints
+    # ========================================================================
+
+    @app.get("/health", response_model=HealthResponse, tags=["System"])
+    async def health_check():
+        """Health check endpoint."""
+        return HealthResponse()
+
+    @app.post("/chat", tags=["Chat"])
+    async def chat_streaming(
+        http_request: Request,
+        request: ChatRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Send a message and receive streaming response via SSE.
+
+        The response is streamed as Server-Sent Events (SSE) with the following event types:
+        - `thinking`: Agent reasoning/planning
+        - `tool_call`: Tool being invoked
+        - `tool_result`: Tool execution result
+        - `response`: Final response text
+        - `error`: Error message
+        - `done`: Stream complete
+
+        Each event has `type` and `content`/`data` fields.
+        """
+        agent = get_agent()
+        thread_id = request.thread_id or str(uuid.uuid4())[:8]
+        user_id = request.user_id
+
+        # Handle slash commands (e.g., /compact)
+        msg_stripped = request.message.strip().lower()
+        logger.info(f"[CHAT] Received message: '{request.message}' stripped: '{msg_stripped}' is_compact: {msg_stripped == '/compact'}")
+        if msg_stripped == "/compact":
+            async def compact_command_response():
+                # Perform compaction (this may take a few seconds)
+                result = await agent.compact_now(thread_id, user_id)
+                # Send response based on result
+                if result.get("success"):
+                    messages_removed = result.get('messages_removed', 0)
+                    # Emit compacted event so frontend clears chat UI
+                    yield f"data: {json.dumps({'type': 'compacted', 'messages_removed': messages_removed, 'auto_resumed': False, 'thread_id': thread_id})}\n\n"
+                    msg = f"✓ Conversation compacted. {messages_removed} messages summarized."
+                else:
+                    msg = f"Could not compact: {result.get('reason', 'unknown error')}"
+                yield f"data: {json.dumps({'type': 'response', 'content': msg})}\n\n"
+                # Include context_stats and model in done event
+                context_stats = agent.get_context_stats(thread_id)
+                yield f"data: {json.dumps({'type': 'done', 'thread_id': thread_id, 'context_stats': context_stats, 'model': agent.settings.llm_model})}\n\n"
+            return StreamingResponse(
+                compact_command_response(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+
+        async def event_generator():
+            """Generate SSE events from agent stream."""
+            response_content = []
+            try:
+                # Convert attachments to dict format for agent
+                attachments = None
+                if request.attachments:
+                    attachments = [
+                        {
+                            "file_type": att.file_type,
+                            "data_url": att.data_url,
+                            "mime_type": att.mime_type
+                        }
+                        for att in request.attachments
+                    ]
+
+                # Legacy images support - convert to attachments format
+                images = None
+                if request.images:
+                    images = [{"data_url": img.data_url, "mime_type": img.mime_type} for img in request.images]
+
+                async for chunk in agent.astream(
+                    request.message,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    attachments=attachments,
+                    images=images,
+                ):
+                    # Check if client disconnected (user clicked stop)
+                    if await http_request.is_disconnected():
+                        logger.info(f"Client disconnected for thread {thread_id}")
+                        break
+
+                    event_data = json.dumps({**chunk, "thread_id": thread_id})
+                    yield f"data: {event_data}\n\n"
+
+                    # Collect response content for activity log if muted
+                    if chunk.get("type") == "response":
+                        response_content.append(chunk.get("content", ""))
+
+                # Only send done event if not disconnected
+                if not await http_request.is_disconnected():
+                    # Check if mute_response was called during this turn
+                    mute_info = get_and_clear_mute_flag(thread_id)
+                    is_muted = mute_info and mute_info.get("muted", False)
+                    logger.info(f"[API DONE] thread={thread_id}, mute_info={mute_info}, is_muted={is_muted}")
+
+                    # If muted, mark in persistent store and log to activity
+                    if is_muted:
+                        # Persist muted turn so UI hides it on history reload too
+                        await agent.amark_last_turn_muted(thread_id)
+                        logger.info(f"Marked turn as muted for thread {thread_id} (interactive)")
+
+                        full_response = "".join(response_content)
+                        log_activity(
+                            ActivityType.TASK_COMPLETED,
+                            full_response[:200] if full_response else "Response muted",
+                            user_id=user_id,
+                            thread_id=thread_id,
+                            metadata={"muted": True, "reason": mute_info.get("reason", "")},
+                        )
+
+                    # Get context stats and model info for UI
+                    try:
+                        context_stats = agent.get_context_stats(thread_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to get context stats: {e}")
+                        context_stats = None
+
+                    # Send done event with mute status + context stats
+                    done_data = {
+                        'type': 'done',
+                        'thread_id': thread_id,
+                        'muted': is_muted,
+                        'context_stats': context_stats,
+                        'model': agent.settings.llm_model,
+                    }
+                    if is_muted:
+                        done_data['mute_reason'] = mute_info.get("reason", "")
+                    yield f"data: {json.dumps(done_data)}\n\n"
+
+            except Exception as e:
+                logger.error(f"Stream error: {e}", exc_info=True)
+                error_data = json.dumps({
+                    "type": "error",
+                    "content": str(e),
+                    "thread_id": thread_id,
+                })
+                yield f"data: {error_data}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+            },
+        )
+
+    @app.post("/chat/sync", response_model=ChatResponse, tags=["Chat"])
+    async def chat_sync(
+        request: ChatRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Send a message and receive a non-streaming response.
+
+        Simpler alternative to the streaming endpoint for clients that
+        don't support SSE.
+        """
+        agent = get_agent()
+        thread_id = request.thread_id or str(uuid.uuid4())[:8]
+        user_id = request.user_id
+
+        response = agent.chat(
+            request.message,
+            thread_id=thread_id,
+            user_id=user_id,
+        )
+        return ChatResponse(response=response, thread_id=thread_id)
+
+    @app.get("/threads/{thread_id}/history", response_model=ThreadHistoryResponse, tags=["Threads"])
+    async def get_thread_history(
+        thread_id: str,
+        include_internal: bool = Query(
+            False,
+            description="Include internal system messages (autonomous wake-ups, compaction prompts)"
+        ),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Get conversation history for a thread.
+
+        Returns all messages in the conversation including tool calls and results.
+        By default, internal system messages (autonomous wake-ups, compaction prompts)
+        are filtered out. Set include_internal=true for debugging to see all messages.
+        """
+        agent = get_agent()
+        history = agent.get_conversation_history(thread_id, include_internal=include_internal)
+        return ThreadHistoryResponse(thread_id=thread_id, messages=history)
+
+    @app.get("/threads/{thread_id}/context", tags=["Threads"])
+    async def get_thread_context_stats(
+        thread_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Get context window usage statistics for a thread.
+
+        Returns token usage, context limit, and compaction history.
+        """
+        agent = get_agent()
+        return agent.get_context_stats(thread_id)
+
+    @app.post("/threads/{thread_id}/compact", tags=["Threads"])
+    async def compact_thread(
+        thread_id: str,
+        user_id: str = "default",
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Manually trigger compaction for a thread.
+
+        Compresses conversation history into a summary while preserving recent messages.
+        """
+        agent = get_agent()
+        result = await agent.compact_now(thread_id, user_id)
+        return result
+
+    @app.get("/tools", tags=["Tools"])
+    async def list_tools(_: bool = Depends(verify_api_key)):
+        """List all available tools and their descriptions."""
+        agent = get_agent()
+        tools = agent.tool_registry.list_tools()
+        return {"tools": tools}
+
+    @app.get("/settings", response_model=ServerSettingsResponse, tags=["Settings"])
+    async def get_server_settings(
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Get current server settings."""
+        return ServerSettingsResponse(
+            llm_provider=settings.llm_provider,
+            llm_model=settings.llm_model,
+            llm_temperature=settings.llm_temperature,
+            llm_max_tokens=settings.llm_max_tokens,
+            llm_top_p=settings.llm_top_p,
+            llm_top_k=settings.llm_top_k,
+            llm_frequency_penalty=settings.llm_frequency_penalty,
+            llm_presence_penalty=settings.llm_presence_penalty,
+            llm_reasoning_effort=settings.llm_reasoning_effort,
+            llm_extended_thinking=settings.llm_extended_thinking,
+            context_management=settings.context_management,
+            compact_threshold=settings.compact_threshold,
+            compact_keep_messages=settings.compact_keep_messages,
+            compact_model=settings.compact_model,
+            sliding_window_cycles=settings.sliding_window_cycles,
+            max_self_invokes_per_hour=settings.max_self_invokes_per_hour,
+            log_level=settings.log_level,
+            watchdog_enabled=settings.watchdog_enabled,
+            watchdog_interval_minutes=settings.watchdog_interval_minutes,
+            todo_staleness_hours=settings.todo_staleness_hours,
+        )
+
+    @app.patch("/settings", tags=["Settings"])
+    async def update_server_settings(
+        updates: ServerSettingsUpdate,
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Update server settings with hot-reload.
+
+        Changes are applied immediately - no restart required.
+        LLM model/provider changes trigger graph rebuild automatically.
+        """
+        # Use .env.docker if it exists (Docker deployment), otherwise .env (local)
+        env_docker_path = settings.project_root / ".env.docker"
+        env_path = env_docker_path if env_docker_path.exists() else settings.project_root / ".env"
+
+        # Read existing .env content
+        existing_lines = []
+        if env_path.exists():
+            existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+
+        # Map of setting names to env var names
+        env_mapping = {
+            "llm_provider": "LLM_PROVIDER",
+            "llm_model": "LLM_MODEL",
+            "llm_temperature": "LLM_TEMPERATURE",
+            "llm_max_tokens": "LLM_MAX_TOKENS",
+            "llm_top_p": "LLM_TOP_P",
+            "llm_top_k": "LLM_TOP_K",
+            "llm_frequency_penalty": "LLM_FREQUENCY_PENALTY",
+            "llm_presence_penalty": "LLM_PRESENCE_PENALTY",
+            "llm_reasoning_effort": "LLM_REASONING_EFFORT",
+            "llm_extended_thinking": "LLM_EXTENDED_THINKING",
+            "context_management": "CONTEXT_MANAGEMENT",
+            "compact_threshold": "COMPACT_THRESHOLD",
+            "compact_keep_messages": "COMPACT_KEEP_MESSAGES",
+            "compact_model": "COMPACT_MODEL",
+            "sliding_window_cycles": "SLIDING_WINDOW_CYCLES",
+            "max_self_invokes_per_hour": "MAX_SELF_INVOKES_PER_HOUR",
+            "log_level": "LOG_LEVEL",
+            "watchdog_enabled": "WATCHDOG_ENABLED",
+            "watchdog_interval_minutes": "WATCHDOG_INTERVAL_MINUTES",
+            "todo_staleness_hours": "TODO_STALENESS_HOURS",
+        }
+
+        # Get updates as dict, excluding None values
+        updates_dict = {k: v for k, v in updates.model_dump().items() if v is not None}
+
+        if not updates_dict:
+            return {"message": "No updates provided", "restart_required": False}
+
+        # Update or add lines
+        updated_vars = set()
+        new_lines = []
+
+        for line in existing_lines:
+            # Check if this line sets a variable we're updating
+            updated = False
+            for setting_name, env_var in env_mapping.items():
+                if setting_name in updates_dict and line.startswith(f"{env_var}="):
+                    value = updates_dict[setting_name]
+                    if isinstance(value, bool):
+                        value = str(value).lower()
+                    new_lines.append(f"{env_var}={value}")
+                    updated_vars.add(setting_name)
+                    updated = True
+                    break
+
+            if not updated:
+                new_lines.append(line)
+
+        # Add any new variables that weren't in the file
+        for setting_name, value in updates_dict.items():
+            if setting_name not in updated_vars:
+                env_var = env_mapping.get(setting_name)
+                if env_var:
+                    if isinstance(value, bool):
+                        value = str(value).lower()
+                    new_lines.append(f"{env_var}={value}")
+
+        # Write back to .env
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+        # Hot-reload: update os.environ so Pydantic picks up new values
+        for setting_name, value in updates_dict.items():
+            env_var = env_mapping.get(setting_name)
+            if env_var:
+                if isinstance(value, bool):
+                    os.environ[env_var] = str(value).lower()
+                else:
+                    os.environ[env_var] = str(value)
+
+        # Clear cached settings and create fresh instance
+        get_settings.cache_clear()
+        new_settings = get_settings()
+
+        # Update agent's settings reference and rebuild graphs
+        agent = get_agent()
+        agent.settings = new_settings
+
+        # Check if LLM-related settings changed (need graph rebuild)
+        llm_fields = {"llm_provider", "llm_model", "llm_temperature",
+                       "llm_max_tokens", "llm_top_p", "llm_top_k",
+                       "llm_frequency_penalty", "llm_presence_penalty",
+                       "llm_reasoning_effort", "llm_extended_thinking"}
+        if llm_fields & set(updates_dict.keys()):
+            # Clear graph caches so they rebuild with new LLM config
+            with agent._graph_cache_lock:
+                agent._user_graphs.clear()
+                agent._async_user_graphs.clear()
+            # Rebuild default graphs
+            agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
+            agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
+            logger.info(f"Hot-reloaded LLM settings: {llm_fields & set(updates_dict.keys())}")
+
+        return {
+            "message": "Settings updated and applied",
+            "updated": list(updates_dict.keys()),
+            "restart_required": False,
+        }
+
+    # ========================================================================
+    # Dashboard Endpoints
+    # ========================================================================
+
+    @app.get("/todos", response_model=TodoListResponse, tags=["Dashboard"])
+    async def get_todos(
+        user_id: str = Query(default="default", description="User ID"),
+        filter_status: Optional[str] = Query(default=None, description="Filter by status"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Get TODO items for a user.
+
+        Returns all active TODOs by default. Use filter_status to filter by specific status.
+        """
+        todo_manager = TodoManager(settings.data_dir)
+        todo_list = todo_manager.get_todos(user_id)
+
+        # Filter items
+        if filter_status == "all":
+            items = todo_list.items
+        elif filter_status:
+            try:
+                status = TodoStatus(filter_status.lower())
+                items = [i for i in todo_list.items if i.status == status]
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status filter '{filter_status}'",
+                )
+        else:
+            # Default: active (non-done) items
+            items = todo_list.get_active_todos()
+
+        # Sort: in_progress first, then by priority, then by created_at
+        priority_order = {TodoPriority.HIGH: 0, TodoPriority.MEDIUM: 1, TodoPriority.LOW: 2, None: 3}
+        status_order = {TodoStatus.IN_PROGRESS: 0, TodoStatus.BLOCKED: 1, TodoStatus.PENDING: 2, TodoStatus.DONE: 3}
+
+        sorted_items = sorted(
+            items,
+            key=lambda i: (status_order.get(i.status, 4), priority_order.get(i.priority, 3), i.created_at),
+        )
+
+        return TodoListResponse(
+            user_id=user_id,
+            items=[
+                TodoItemResponse(
+                    id=item.id,
+                    task=item.task,
+                    status=item.status.value,
+                    priority=item.priority.value if item.priority else None,
+                    created_at=item.created_at,
+                    updated_at=item.updated_at,
+                    deadline=item.deadline,
+                    notes=item.notes,
+                    blocked_reason=item.blocked_reason,
+                    scheduled_for=item.scheduled_for,
+                    thread_id=item.thread_id,
+                    last_execution=item.last_execution,
+                    created_by=item.created_by,
+                    recurrence=item.recurrence,
+                )
+                for item in sorted_items
+            ],
+            total=len(sorted_items),
+        )
+
+    def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
+        """
+        Parse scheduled_for string to a timezone-aware UTC datetime.
+
+        Supports:
+        - Relative times: "30s", "30m", "2h", "1d", "1w"
+        - ISO datetime with Z suffix (e.g., "2024-01-01T12:00:00.000Z") - parsed as UTC
+        - ISO datetime without Z (e.g., "2024-01-01T12:00") - interpreted as LOCAL time
+        """
+        import re
+
+        if not scheduled_for:
+            return None
+
+        scheduled_for = scheduled_for.strip()
+        logger.info(f"[API] Parsing scheduled_for: '{scheduled_for}'")
+
+        # Try relative time parsing first: 30s, 5m, 1h, 1d, 1w
+        match = re.match(r'^(\d+)(s|m|h|d|w)$', scheduled_for.lower())
+        if match:
+            value = int(match.group(1))
+            unit = match.group(2)
+            multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+            seconds = value * multipliers[unit]
+            # Use timezone-aware UTC datetime to avoid timestamp() interpretation issues
+            result = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+            logger.info(f"[API] Parsed relative time '{scheduled_for}' -> {result} (UTC), timestamp={result.timestamp()}")
+            return result
+
+        # Handle ISO strings with Z suffix (UTC) - from frontend toISOString()
+        if scheduled_for.endswith('Z'):
+            utc_formats = [
+                "%Y-%m-%dT%H:%M:%S.%fZ",  # With milliseconds: 2024-01-01T12:00:00.000Z
+                "%Y-%m-%dT%H:%M:%SZ",      # Without milliseconds: 2024-01-01T12:00:00Z
+            ]
+            for fmt in utc_formats:
+                try:
+                    result = datetime.strptime(scheduled_for, fmt).replace(tzinfo=timezone.utc)
+                    logger.info(f"[API] Parsed UTC time '{scheduled_for}' -> {result} (UTC), timestamp={result.timestamp()}")
+                    return result
+                except ValueError:
+                    continue
+
+        # Try absolute formats - these are interpreted as LOCAL time, then converted to UTC
+        formats = [
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+        ]
+
+        for fmt in formats:
+            try:
+                # Parse as naive datetime (assumed local time from user's browser)
+                local_dt = datetime.strptime(scheduled_for, fmt)
+                # Convert to UTC by assuming it's in the system's local timezone
+                local_dt = local_dt.astimezone()  # Add local timezone info
+                result = local_dt.astimezone(timezone.utc)  # Convert to UTC
+                logger.info(f"[API] Parsed absolute time '{scheduled_for}' -> local={local_dt}, UTC={result}, timestamp={result.timestamp()}")
+                return result
+            except ValueError:
+                continue
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid scheduled_for format: '{scheduled_for}'. Use relative (e.g., '30m', '2h') or datetime (e.g., '2024-03-15 14:00')."
+        )
+
+    def _todo_to_response(item: TodoItem) -> TodoItemResponse:
+        """Convert a TodoItem to TodoItemResponse."""
+        return TodoItemResponse(
+            id=item.id,
+            task=item.task,
+            status=item.status.value,
+            priority=item.priority.value if item.priority else None,
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            deadline=item.deadline,
+            notes=item.notes,
+            blocked_reason=item.blocked_reason,
+            scheduled_for=item.scheduled_for,
+            thread_id=item.thread_id,
+            last_execution=item.last_execution,
+            created_by=item.created_by,
+            recurrence=item.recurrence,
+        )
+
+    @app.post("/todos", response_model=TodoItemResponse, tags=["Dashboard"])
+    async def create_todo(
+        request: TodoCreateRequest,
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Create a new TODO item.
+
+        The TODO is created by the user (created_by='user').
+        """
+        from ..core.todo_schedule_db import TodoScheduleDB
+
+        todo_manager = TodoManager(settings.data_dir)
+
+        # Parse priority
+        priority = None
+        if request.priority:
+            try:
+                priority = TodoPriority(request.priority.lower())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid priority: '{request.priority}'. Use: low, medium, high"
+                )
+
+        # Validate recurrence
+        valid_recurrences = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
+        if request.recurrence and request.recurrence.lower() not in valid_recurrences:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid recurrence: '{request.recurrence}'. Use: {', '.join(valid_recurrences)}"
+            )
+
+        # Parse scheduled_for
+        scheduled_for = _parse_scheduled_for(request.scheduled_for)
+
+        with todo_manager.atomic_update(user_id) as todo_list:
+            item = todo_list.add_item(
+                task=request.task,
+                priority=priority,
+                deadline=request.deadline,
+                notes=request.notes,
+                scheduled_for=scheduled_for,
+                thread_id=request.thread_id,
+                created_by="user",
+                recurrence=request.recurrence.lower() if request.recurrence else None,
+            )
+
+            if item is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot create TODO: maximum limit reached"
+                )
+
+            # Store item data for after context exits
+            created_item = item
+
+        # Sync schedule AFTER atomic_update saves the file
+        # (sync_schedule_to_db reads from disk, so file must be saved first)
+        if created_item.scheduled_for:
+            logger.info(f"[API] TODO {created_item.id} has scheduled_for={created_item.scheduled_for}, syncing to schedule DB")
+            schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
+            todo_manager.sync_schedule_to_db(user_id, created_item.id, schedule_db)
+            logger.info(f"[API] Schedule synced for TODO {created_item.id}")
+        else:
+            logger.info(f"[API] TODO {created_item.id} has no schedule, skipping sync")
+
+        return _todo_to_response(created_item)
+
+    @app.patch("/todos/{todo_id}", response_model=TodoItemResponse, tags=["Dashboard"])
+    async def update_todo(
+        todo_id: str,
+        request: TodoUpdateRequest,
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Update an existing TODO item.
+        """
+        from ..core.todo_schedule_db import TodoScheduleDB
+
+        todo_manager = TodoManager(settings.data_dir)
+
+        # Parse status
+        status = None
+        if request.status:
+            try:
+                status = TodoStatus(request.status.lower())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status: '{request.status}'. Use: pending, in_progress, blocked, done"
+                )
+
+        # Parse priority
+        priority = None
+        if request.priority:
+            try:
+                priority = TodoPriority(request.priority.lower())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid priority: '{request.priority}'. Use: low, medium, high"
+                )
+
+        # Validate recurrence
+        valid_recurrences = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
+        recurrence = None
+        if request.recurrence and not request.clear_recurrence:
+            if request.recurrence.lower() not in valid_recurrences:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid recurrence: '{request.recurrence}'. Use: {', '.join(valid_recurrences)}"
+                )
+            recurrence = request.recurrence.lower()
+
+        # Parse scheduled_for
+        scheduled_for = None
+        if request.scheduled_for and not request.clear_schedule:
+            scheduled_for = _parse_scheduled_for(request.scheduled_for)
+
+        with todo_manager.atomic_update(user_id) as todo_list:
+            item = todo_list.get_item(todo_id)
+            if not item:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found"
+                )
+
+            success = todo_list.update_item(
+                todo_id=todo_id,
+                task=request.task,
+                status=status,
+                priority=priority,
+                deadline=request.deadline,
+                notes=request.notes,
+                blocked_reason=request.blocked_reason,
+                scheduled_for=scheduled_for,
+                clear_schedule=request.clear_schedule,
+                thread_id=request.thread_id,
+                recurrence=recurrence,
+                clear_recurrence=request.clear_recurrence,
+                clear_deadline=request.clear_deadline,
+            )
+
+            if not success:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found"
+                )
+
+            # Re-fetch the updated item (still in memory)
+            updated_item = todo_list.get_item(todo_id)
+
+        # Sync schedule AFTER atomic_update saves the file
+        # (sync_schedule_to_db reads from disk, so file must be saved first)
+        schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
+        todo_manager.sync_schedule_to_db(user_id, updated_item.id, schedule_db)
+        logger.info(f"[API] Schedule synced for TODO {updated_item.id}")
+
+        return _todo_to_response(updated_item)
+
+    @app.delete("/todos/{todo_id}", tags=["Dashboard"])
+    async def delete_todo(
+        todo_id: str,
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Delete a TODO item.
+        """
+        from ..core.todo_schedule_db import TodoScheduleDB
+
+        todo_manager = TodoManager(settings.data_dir)
+
+        with todo_manager.atomic_update(user_id) as todo_list:
+            deleted = todo_list.delete_item(todo_id)
+            if not deleted:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found"
+                )
+
+            # Remove from schedule if it was scheduled
+            schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
+            schedule_db.remove_scheduled(todo_id)
+
+            return {"status": "ok", "deleted_id": todo_id}
+
+    @app.post("/todos/{todo_id}/complete", response_model=TodoItemResponse, tags=["Dashboard"])
+    async def complete_todo(
+        todo_id: str,
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Mark a TODO item as done.
+        """
+        from ..core.todo_schedule_db import TodoScheduleDB
+
+        todo_manager = TodoManager(settings.data_dir)
+
+        with todo_manager.atomic_update(user_id) as todo_list:
+            item = todo_list.get_item(todo_id)
+            if not item:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found"
+                )
+
+            success = todo_list.complete_item(todo_id)
+            if not success:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found"
+                )
+
+            # Re-fetch the updated item
+            item = todo_list.get_item(todo_id)
+
+            # Remove from schedule
+            schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
+            schedule_db.remove_scheduled(todo_id)
+
+            return _todo_to_response(item)
+
+    @app.get("/tasks", response_model=ScheduledTasksResponse, tags=["Dashboard"])
+    async def get_scheduled_tasks(
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Get scheduled tasks for a user.
+
+        Returns pending and processing tasks.
+        """
+        task_db = TaskDatabase(settings.data_dir / "tasks.db")
+
+        tasks = []
+
+        # Get pending task
+        pending = task_db.get_pending_for_user(user_id)
+        if pending:
+            tasks.append(pending)
+
+        # Get processing task
+        processing = task_db.get_processing_for_user(user_id)
+        if processing:
+            tasks.append(processing)
+
+        return ScheduledTasksResponse(
+            tasks=[
+                ScheduledTaskResponse(
+                    id=task.id,
+                    prompt=task.prompt,
+                    execute_at=datetime.fromtimestamp(task.execute_at, tz=timezone.utc),
+                    status=task.status.value,
+                    created_at=datetime.fromtimestamp(task.created_at, tz=timezone.utc),
+                    thread_id=task.thread_id,
+                )
+                for task in tasks
+            ],
+            total=len(tasks),
+        )
+
+    @app.get("/activity", response_model=ActivityLogResponse, tags=["Dashboard"])
+    async def get_activity(
+        user_id: str = Query(default="default", description="User ID"),
+        limit: int = Query(default=50, le=100, description="Max entries to return"),
+        activity_type: Optional[str] = Query(default=None, description="Filter by type"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Get activity log for a user.
+
+        Returns recent activity entries, newest first.
+        """
+        activity_log = ActivityLog(settings.data_dir)
+
+        # Parse activity type filter
+        type_filter = None
+        if activity_type:
+            try:
+                type_filter = ActivityType(activity_type)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid activity type '{activity_type}'",
+                )
+
+        entries = activity_log.get_entries(user_id, limit=limit, activity_type=type_filter)
+
+        return ActivityLogResponse(
+            entries=[
+                ActivityEntryResponse(
+                    id=entry.id,
+                    timestamp=entry.timestamp,
+                    type=entry.type.value,
+                    message=entry.message,
+                    thread_id=entry.thread_id,
+                    metadata=entry.metadata,
+                )
+                for entry in entries
+            ],
+            total=len(entries),
+        )
+
+    @app.get("/notifications", response_model=NotificationsListResponse, tags=["Dashboard"])
+    async def get_notifications(
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Get notifications for a user.
+
+        Returns all notifications with unread count.
+        """
+        store = NotificationStore(settings.data_dir)
+        notifications = store.get_all(user_id, limit=50)
+        unread_count = store.get_unread_count(user_id)
+
+        return NotificationsListResponse(
+            notifications=[
+                NotificationResponse(
+                    id=n.id,
+                    summary=n.summary,
+                    thread_id=n.thread_id,
+                    task_id=n.task_id,
+                    created_at=n.created_at,
+                    read=n.read,
+                )
+                for n in notifications
+            ],
+            unread_count=unread_count,
+        )
+
+    @app.post("/notifications/{notification_id}/read", tags=["Dashboard"])
+    async def mark_notification_read(
+        notification_id: str,
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Mark a notification as read.
+        """
+        store = NotificationStore(settings.data_dir)
+        success = store.mark_read(notification_id, user_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Notification '{notification_id}' not found",
+            )
+
+        return {"status": "ok", "notification_id": notification_id}
+
+    @app.post("/notifications/read-all", tags=["Dashboard"])
+    async def mark_all_notifications_read(
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        Mark all notifications as read for a user.
+        """
+        store = NotificationStore(settings.data_dir)
+        count = store.mark_all_read(user_id)
+
+        return {"status": "ok", "marked_read": count}
+
+    @app.get("/autonomous/stream", tags=["Autonomous"])
+    async def stream_autonomous_events(
+        request: Request,
+        user_id: str = Query(default="default", description="User ID to filter events"),
+        api_key: Optional[str] = Query(default=None, description="API key (for SSE which doesn't support headers)"),
+        settings: Settings = Depends(get_settings),
+    ):
+        # Verify API key from query param (SSE doesn't support custom headers)
+        if api_key != settings.nymeria_api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        """
+        Stream autonomous task events via Server-Sent Events.
+
+        Emits events when Nymeria executes scheduled tasks autonomously.
+        Events include: task_started, thinking, tool_call, tool_result, response, task_completed
+
+        Connect to this endpoint to receive real-time updates about autonomous activity.
+        """
+        import asyncio
+        from queue import Empty
+
+        subscriber_id = str(uuid.uuid4())
+        event_bus = get_event_bus()
+        queue = event_bus.subscribe(subscriber_id)
+        logger.info(f"[AUTONOMOUS SSE] Client connected for user={user_id}, subscriber={subscriber_id[:8]}...")
+
+        async def event_generator():
+            """Generate SSE events from the event bus."""
+            try:
+                while True:
+                    # Check if client disconnected
+                    if await request.is_disconnected():
+                        logger.info(f"[AUTONOMOUS SSE] Client disconnected: {subscriber_id[:8]}...")
+                        break
+
+                    try:
+                        # Non-blocking check for events
+                        event: AutonomousEvent = queue.get_nowait()
+
+                        # Filter by user_id if specified
+                        if user_id != "default" and event.user_id != user_id:
+                            continue
+
+                        # Format as SSE event
+                        event_data = {
+                            "type": event.event_type,
+                            "thread_id": event.thread_id,
+                            "task_id": event.task_id,
+                            "timestamp": event.timestamp.isoformat(),
+                            **event.data,
+                        }
+                        yield f"data: {json.dumps(event_data)}\n\n"
+
+                    except Empty:
+                        # No events, send heartbeat to keep connection alive
+                        yield f": heartbeat\n\n"
+                        await asyncio.sleep(1)
+
+            finally:
+                event_bus.unsubscribe(subscriber_id)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # ========================================================================
+    # Custom Tools Endpoints
+    # ========================================================================
+
+    def _tool_definition_to_response(defn: CustomToolDefinition) -> CustomToolResponse:
+        """Convert a CustomToolDefinition to API response format."""
+        return CustomToolResponse(
+            id=defn.id,
+            name=defn.name,
+            description=defn.description,
+            parameters={
+                k: ToolParameterModel(
+                    type=v.type,
+                    description=v.description,
+                    required=v.required,
+                    default=str(v.default) if v.default is not None else None,
+                    enum=v.enum,
+                )
+                for k, v in defn.parameters.items()
+            },
+            implementation_type=defn.implementation_type,
+            http_config=HTTPToolConfigModel(
+                method=defn.http_config.method,
+                url=defn.http_config.url,
+                headers=defn.http_config.headers,
+                body_template=defn.http_config.body_template,
+                query_params=defn.http_config.query_params,
+                timeout_seconds=defn.http_config.timeout_seconds,
+                response_path=defn.http_config.response_path,
+                response_format=defn.http_config.response_format,
+            ) if defn.http_config else None,
+            mcp_config=MCPToolConfigModel(
+                server_command=defn.mcp_config.server_command,
+                server_args=defn.mcp_config.server_args,
+                tool_name=defn.mcp_config.tool_name,
+                env_vars=defn.mcp_config.env_vars,
+                working_directory=defn.mcp_config.working_directory,
+                idle_timeout_seconds=defn.mcp_config.idle_timeout_seconds,
+                startup_timeout_seconds=defn.mcp_config.startup_timeout_seconds,
+            ) if defn.mcp_config else None,
+            enabled=defn.enabled,
+            tags=defn.tags,
+            created_at=defn.created_at,
+            updated_at=defn.updated_at,
+        )
+
+    @app.get("/tools/custom", response_model=CustomToolListResponse, tags=["Custom Tools"])
+    async def list_custom_tools(
+        _: bool = Depends(verify_api_key),
+    ):
+        """List all custom tools."""
+        loader = get_custom_tool_loader()
+        definitions = loader.get_all_definitions()
+
+        return CustomToolListResponse(
+            tools=[_tool_definition_to_response(d) for d in definitions],
+            total=len(definitions),
+        )
+
+    @app.post("/tools/custom", response_model=CustomToolResponse, tags=["Custom Tools"])
+    async def create_custom_tool(
+        request: CustomToolCreateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Create a new custom tool."""
+        loader = get_custom_tool_loader()
+
+        # Check if tool ID already exists
+        existing = loader.get_definition(request.id)
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tool with ID '{request.id}' already exists",
+            )
+
+        # Build the definition
+        try:
+            http_config = None
+            mcp_config = None
+
+            if request.implementation_type == "http":
+                if not request.http_config:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="http_config is required for HTTP tools",
+                    )
+                http_config = HTTPToolConfig(
+                    method=request.http_config.method,
+                    url=request.http_config.url,
+                    headers=request.http_config.headers,
+                    body_template=request.http_config.body_template,
+                    query_params=request.http_config.query_params,
+                    timeout_seconds=request.http_config.timeout_seconds,
+                    response_path=request.http_config.response_path,
+                    response_format=request.http_config.response_format,
+                )
+            elif request.implementation_type == "mcp":
+                if not request.mcp_config:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="mcp_config is required for MCP tools",
+                    )
+                mcp_config = MCPToolConfig(
+                    server_command=request.mcp_config.server_command,
+                    server_args=request.mcp_config.server_args,
+                    tool_name=request.mcp_config.tool_name,
+                    env_vars=request.mcp_config.env_vars,
+                    working_directory=request.mcp_config.working_directory,
+                    idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
+                    startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
+                )
+
+            definition = CustomToolDefinition(
+                id=request.id,
+                name=request.name,
+                description=request.description,
+                parameters={
+                    k: ToolParameter(
+                        type=v.type,
+                        description=v.description,
+                        required=v.required,
+                        default=v.default,
+                        enum=v.enum,
+                    )
+                    for k, v in request.parameters.items()
+                },
+                implementation_type=request.implementation_type,
+                http_config=http_config,
+                mcp_config=mcp_config,
+                enabled=request.enabled,
+                tags=request.tags,
+            )
+
+            loader.save_definition(definition)
+
+            # Reload tools to make the new tool available
+            agent = get_agent()
+            agent.reload_tools()
+
+            return _tool_definition_to_response(definition)
+
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.get("/tools/custom/{tool_id}", response_model=CustomToolResponse, tags=["Custom Tools"])
+    async def get_custom_tool(
+        tool_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get a custom tool by ID."""
+        loader = get_custom_tool_loader()
+        definition = loader.get_definition(tool_id)
+
+        if not definition:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        return _tool_definition_to_response(definition)
+
+    @app.put("/tools/custom/{tool_id}", response_model=CustomToolResponse, tags=["Custom Tools"])
+    async def update_custom_tool(
+        tool_id: str,
+        request: CustomToolUpdateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Update an existing custom tool."""
+        loader = get_custom_tool_loader()
+        definition = loader.get_definition(tool_id)
+
+        if not definition:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        # Update fields
+        if request.name is not None:
+            definition.name = request.name
+        if request.description is not None:
+            definition.description = request.description
+        if request.parameters is not None:
+            definition.parameters = {
+                k: ToolParameter(
+                    type=v.type,
+                    description=v.description,
+                    required=v.required,
+                    default=v.default,
+                    enum=v.enum,
+                )
+                for k, v in request.parameters.items()
+            }
+        if request.enabled is not None:
+            definition.enabled = request.enabled
+        if request.tags is not None:
+            definition.tags = request.tags
+
+        # Update config based on type
+        if request.http_config is not None and definition.implementation_type == "http":
+            definition.http_config = HTTPToolConfig(
+                method=request.http_config.method,
+                url=request.http_config.url,
+                headers=request.http_config.headers,
+                body_template=request.http_config.body_template,
+                query_params=request.http_config.query_params,
+                timeout_seconds=request.http_config.timeout_seconds,
+                response_path=request.http_config.response_path,
+                response_format=request.http_config.response_format,
+            )
+        if request.mcp_config is not None and definition.implementation_type == "mcp":
+            definition.mcp_config = MCPToolConfig(
+                server_command=request.mcp_config.server_command,
+                server_args=request.mcp_config.server_args,
+                tool_name=request.mcp_config.tool_name,
+                env_vars=request.mcp_config.env_vars,
+                working_directory=request.mcp_config.working_directory,
+                idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
+                startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
+            )
+
+        loader.save_definition(definition)
+
+        # Reload tools
+        agent = get_agent()
+        agent.reload_tools()
+
+        return _tool_definition_to_response(definition)
+
+    @app.delete("/tools/custom/{tool_id}", tags=["Custom Tools"])
+    async def delete_custom_tool(
+        tool_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Delete a custom tool."""
+        loader = get_custom_tool_loader()
+
+        if not loader.delete_definition(tool_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        # Reload tools
+        agent = get_agent()
+        agent.reload_tools()
+
+        return {"status": "ok", "deleted_id": tool_id}
+
+    @app.post("/tools/custom/{tool_id}/test", tags=["Custom Tools"])
+    async def test_custom_tool(
+        tool_id: str,
+        request: CustomToolTestRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Test a custom tool with sample parameters."""
+        loader = get_custom_tool_loader()
+        definition = loader.get_definition(tool_id)
+
+        if not definition:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        # Execute the tool
+        try:
+            if definition.implementation_type == "http":
+                from ..core.custom_tools import execute_http_tool
+                result = await execute_http_tool(definition.http_config, request.params)
+            elif definition.implementation_type == "mcp":
+                result = await loader.mcp_manager.call_tool(definition.mcp_config, request.params)
+            else:
+                result = f"[Error]: Unknown implementation type: {definition.implementation_type}"
+
+            return {
+                "status": "ok",
+                "tool_id": tool_id,
+                "result": result,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "tool_id": tool_id,
+                "error": str(e),
+            }
+
+    @app.get("/tools/custom/export", tags=["Custom Tools"])
+    async def export_custom_tools(
+        _: bool = Depends(verify_api_key),
+    ):
+        """Export all custom tools as JSON."""
+        loader = get_custom_tool_loader()
+        definitions = loader.get_all_definitions()
+
+        return {
+            "tools": [d.model_dump() for d in definitions],
+            "total": len(definitions),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.post("/tools/custom/import", tags=["Custom Tools"])
+    async def import_custom_tools(
+        request: Request,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Import custom tools from JSON."""
+        loader = get_custom_tool_loader()
+        body = await request.json()
+
+        tools_data = body.get("tools", [])
+        imported = 0
+        errors = []
+
+        for tool_data in tools_data:
+            try:
+                definition = CustomToolDefinition(**tool_data)
+                loader.save_definition(definition)
+                imported += 1
+            except Exception as e:
+                errors.append(f"{tool_data.get('id', 'unknown')}: {str(e)}")
+
+        # Reload tools
+        if imported > 0:
+            agent = get_agent()
+            agent.reload_tools()
+
+        return {
+            "status": "ok",
+            "imported": imported,
+            "errors": errors,
+        }
+
+    # ========================================================================
+    # Sub-Agent Endpoints
+    # ========================================================================
+
+    def _agent_config_to_response(name: str, config: dict) -> SubAgentResponse:
+        """Convert an agent config dict to API response format."""
+        return SubAgentResponse(
+            name=name,
+            description=config.get("description", ""),
+            system_prompt=config.get("system_prompt", ""),
+            tools=[t.name if hasattr(t, "name") else str(t) for t in config.get("tools", [])],
+            allowed_tools=config.get("allowed_tools", []),
+            context_turns=config.get("context_turns", 5),
+            required_env_vars=config.get("required_env_vars", []),
+            enabled=config.get("enabled", True),
+            llm_provider=config.get("llm_provider"),
+            llm_model=config.get("llm_model"),
+            llm_temperature=config.get("llm_temperature"),
+        )
+
+    @app.get("/agents", response_model=SubAgentListResponse, tags=["Sub-Agents"])
+    async def list_sub_agents(
+        _: bool = Depends(verify_api_key),
+    ):
+        """List all sub-agents."""
+        from ..agents import AVAILABLE_AGENTS
+
+        agents = [
+            _agent_config_to_response(name, config)
+            for name, config in AVAILABLE_AGENTS.items()
+        ]
+
+        return SubAgentListResponse(agents=agents, total=len(agents))
+
+    @app.post("/agents", response_model=SubAgentResponse, tags=["Sub-Agents"])
+    async def create_sub_agent(
+        request: SubAgentCreateRequest,
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Create a new sub-agent."""
+        from ..agents import AVAILABLE_AGENTS, reload_agents
+
+        # Check if agent already exists
+        if request.name in AVAILABLE_AGENTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Agent '{request.name}' already exists",
+            )
+
+        # Create the agent module file
+        agents_dir = settings.project_root / "nymeria" / "agents"
+        agent_file = agents_dir / f"{request.name.lower()}.py"
+
+        # Build allowed tools list
+        allowed_tools_str = ", ".join(f'"{t}"' for t in request.allowed_tools)
+
+        # Build required env vars list
+        env_vars_str = ", ".join(f'"{v}"' for v in request.required_env_vars)
+
+        # Build optional LLM config fields
+        llm_config_lines = []
+        if request.llm_provider:
+            llm_config_lines.append(f'        "llm_provider": "{request.llm_provider}",')
+        if request.llm_model:
+            llm_config_lines.append(f'        "llm_model": "{request.llm_model}",')
+        if request.llm_temperature is not None:
+            llm_config_lines.append(f'        "llm_temperature": {request.llm_temperature},')
+        llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
+
+        # Generate the agent module code
+        agent_code = f'''"""Sub-agent: {request.name}
+
+{request.description}
+
+Auto-generated via API.
+"""
+
+from . import register_agent
+
+register_agent(
+    "{request.name}",
+    {{
+        "name": "{request.name}",
+        "description": """{request.description}""",
+        "system_prompt": """{request.system_prompt}""",
+        "tools": [],
+        "allowed_tools": [{allowed_tools_str}],
+        "context_turns": {request.context_turns},
+        "required_env_vars": [{env_vars_str}],{llm_config_str}
+    }},
+)
+'''
+
+        # Write the file
+        agent_file.write_text(agent_code, encoding="utf-8")
+
+        # Reload agents
+        reload_agents()
+
+        # Return the created agent
+        config = AVAILABLE_AGENTS.get(request.name)
+        if not config:
+            raise HTTPException(
+                status_code=500,
+                detail="Agent created but failed to load",
+            )
+
+        return _agent_config_to_response(request.name, config)
+
+    @app.get("/agents/{agent_name}", response_model=SubAgentResponse, tags=["Sub-Agents"])
+    async def get_sub_agent(
+        agent_name: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get a sub-agent by name."""
+        from ..agents import AVAILABLE_AGENTS
+
+        config = AVAILABLE_AGENTS.get(agent_name)
+        if not config:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent '{agent_name}' not found",
+            )
+
+        return _agent_config_to_response(agent_name, config)
+
+    @app.put("/agents/{agent_name}", response_model=SubAgentResponse, tags=["Sub-Agents"])
+    async def update_sub_agent(
+        agent_name: str,
+        request: SubAgentUpdateRequest,
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Update an existing sub-agent."""
+        from ..agents import AVAILABLE_AGENTS, reload_agents
+
+        if agent_name not in AVAILABLE_AGENTS:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent '{agent_name}' not found",
+            )
+
+        # Get current config
+        current = AVAILABLE_AGENTS[agent_name]
+
+        # Update fields
+        description = request.description if request.description is not None else current.get("description", "")
+        system_prompt = request.system_prompt if request.system_prompt is not None else current.get("system_prompt", "")
+        allowed_tools = request.allowed_tools if request.allowed_tools is not None else current.get("allowed_tools", [])
+        context_turns = request.context_turns if request.context_turns is not None else current.get("context_turns", 5)
+        env_vars = request.required_env_vars if request.required_env_vars is not None else current.get("required_env_vars", [])
+
+        # Handle LLM config - use request value if provided, otherwise keep current
+        llm_provider = request.llm_provider if request.llm_provider is not None else current.get("llm_provider")
+        llm_model = request.llm_model if request.llm_model is not None else current.get("llm_model")
+        llm_temperature = request.llm_temperature if request.llm_temperature is not None else current.get("llm_temperature")
+
+        # Regenerate the agent module file
+        agents_dir = settings.project_root / "nymeria" / "agents"
+        agent_file = agents_dir / f"{agent_name.lower()}.py"
+
+        allowed_tools_str = ", ".join(f'"{t}"' for t in allowed_tools)
+        env_vars_str = ", ".join(f'"{v}"' for v in env_vars)
+
+        # Build optional LLM config fields
+        llm_config_lines = []
+        if llm_provider:
+            llm_config_lines.append(f'        "llm_provider": "{llm_provider}",')
+        if llm_model:
+            llm_config_lines.append(f'        "llm_model": "{llm_model}",')
+        if llm_temperature is not None:
+            llm_config_lines.append(f'        "llm_temperature": {llm_temperature},')
+        llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
+
+        agent_code = f'''"""Sub-agent: {agent_name}
+
+{description}
+
+Auto-generated via API.
+"""
+
+from . import register_agent
+
+register_agent(
+    "{agent_name}",
+    {{
+        "name": "{agent_name}",
+        "description": """{description}""",
+        "system_prompt": """{system_prompt}""",
+        "tools": [],
+        "allowed_tools": [{allowed_tools_str}],
+        "context_turns": {context_turns},
+        "required_env_vars": [{env_vars_str}],{llm_config_str}
+    }},
+)
+'''
+
+        agent_file.write_text(agent_code, encoding="utf-8")
+
+        # Reload agents
+        reload_agents()
+
+        config = AVAILABLE_AGENTS.get(agent_name)
+        if not config:
+            raise HTTPException(
+                status_code=500,
+                detail="Agent updated but failed to reload",
+            )
+
+        return _agent_config_to_response(agent_name, config)
+
+    @app.delete("/agents/{agent_name}", tags=["Sub-Agents"])
+    async def delete_sub_agent(
+        agent_name: str,
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Delete a sub-agent."""
+        from ..agents import AVAILABLE_AGENTS, unregister_agent, reload_agents
+
+        if agent_name not in AVAILABLE_AGENTS:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent '{agent_name}' not found",
+            )
+
+        # Delete the agent file
+        agents_dir = settings.project_root / "nymeria" / "agents"
+        agent_file = agents_dir / f"{agent_name.lower()}.py"
+
+        if agent_file.exists():
+            agent_file.unlink()
+
+        # Unregister and reload
+        unregister_agent(agent_name)
+        reload_agents()
+
+        return {"status": "ok", "deleted_name": agent_name}
+
+    @app.post("/agents/{agent_name}/test", tags=["Sub-Agents"])
+    async def test_sub_agent(
+        agent_name: str,
+        request: SubAgentTestRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Test a sub-agent with an instruction."""
+        from ..core.subagent_executor import SubAgentExecutor
+
+        executor = SubAgentExecutor()
+
+        try:
+            result = executor.invoke(agent_name, request.instruction, user_id="test")
+            return {
+                "status": "ok",
+                "agent_name": agent_name,
+                "result": result,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "agent_name": agent_name,
+                "error": str(e),
+            }
+
+    @app.get("/agents/export", tags=["Sub-Agents"])
+    async def export_sub_agents(
+        _: bool = Depends(verify_api_key),
+    ):
+        """Export all sub-agents as JSON."""
+        from ..agents import AVAILABLE_AGENTS
+
+        agents = []
+        for name, config in AVAILABLE_AGENTS.items():
+            agent_data = {
+                "name": name,
+                "description": config.get("description", ""),
+                "system_prompt": config.get("system_prompt", ""),
+                "allowed_tools": config.get("allowed_tools", []),
+                "context_turns": config.get("context_turns", 5),
+                "required_env_vars": config.get("required_env_vars", []),
+            }
+            # Include LLM config if set
+            if config.get("llm_provider"):
+                agent_data["llm_provider"] = config["llm_provider"]
+            if config.get("llm_model"):
+                agent_data["llm_model"] = config["llm_model"]
+            if config.get("llm_temperature") is not None:
+                agent_data["llm_temperature"] = config["llm_temperature"]
+            agents.append(agent_data)
+
+        return {
+            "agents": agents,
+            "total": len(agents),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.post("/agents/import", tags=["Sub-Agents"])
+    async def import_sub_agents(
+        request: Request,
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Import sub-agents from JSON."""
+        from ..agents import reload_agents
+
+        body = await request.json()
+        agents_data = body.get("agents", [])
+        imported = 0
+        errors = []
+
+        agents_dir = settings.project_root / "nymeria" / "agents"
+
+        for agent_data in agents_data:
+            try:
+                name = agent_data.get("name")
+                if not name:
+                    errors.append("Missing agent name")
+                    continue
+
+                description = agent_data.get("description", "")
+                system_prompt = agent_data.get("system_prompt", "")
+                allowed_tools = agent_data.get("allowed_tools", [])
+                context_turns = agent_data.get("context_turns", 5)
+                env_vars = agent_data.get("required_env_vars", [])
+                llm_provider = agent_data.get("llm_provider")
+                llm_model = agent_data.get("llm_model")
+                llm_temperature = agent_data.get("llm_temperature")
+
+                agent_file = agents_dir / f"{name.lower()}.py"
+                allowed_tools_str = ", ".join(f'"{t}"' for t in allowed_tools)
+                env_vars_str = ", ".join(f'"{v}"' for v in env_vars)
+
+                # Build optional LLM config fields
+                llm_config_lines = []
+                if llm_provider:
+                    llm_config_lines.append(f'        "llm_provider": "{llm_provider}",')
+                if llm_model:
+                    llm_config_lines.append(f'        "llm_model": "{llm_model}",')
+                if llm_temperature is not None:
+                    llm_config_lines.append(f'        "llm_temperature": {llm_temperature},')
+                llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
+
+                agent_code = f'''"""Sub-agent: {name}
+
+{description}
+
+Imported via API.
+"""
+
+from . import register_agent
+
+register_agent(
+    "{name}",
+    {{
+        "name": "{name}",
+        "description": """{description}""",
+        "system_prompt": """{system_prompt}""",
+        "tools": [],
+        "allowed_tools": [{allowed_tools_str}],
+        "context_turns": {context_turns},
+        "required_env_vars": [{env_vars_str}],{llm_config_str}
+    }},
+)
+'''
+                agent_file.write_text(agent_code, encoding="utf-8")
+                imported += 1
+
+            except Exception as e:
+                errors.append(f"{agent_data.get('name', 'unknown')}: {str(e)}")
+
+        # Reload all agents
+        if imported > 0:
+            reload_agents()
+
+        return {
+            "status": "ok",
+            "imported": imported,
+            "errors": errors,
+        }
+
+    # ==========================================================================
+    # RAG (Retrieval Augmented Generation) Endpoints
+    # ==========================================================================
+
+    class RagSettingsUpdate(BaseModel):
+        """Request model for updating RAG settings."""
+        enabled: Optional[bool] = Field(default=None, description="Enable/disable RAG")
+        max_chunks: Optional[int] = Field(default=None, ge=1, le=10, description="Max chunks per message")
+        include_conversations: Optional[bool] = Field(default=None, description="Include conversation history")
+        include_memories: Optional[bool] = Field(default=None, description="Include saved memories")
+        include_todos: Optional[bool] = Field(default=None, description="Include TODO completions")
+        auto_flush: Optional[bool] = Field(default=None, description="Auto-flush on context trim")
+
+    @app.get("/users/{user_id}/rag/settings", tags=["RAG"])
+    async def get_rag_settings(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get user's RAG configuration."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        rag_prefs = profile.get_rag_preferences()
+
+        return {
+            "enabled": profile.opt_in.rag_enabled,
+            "max_chunks": rag_prefs.get("max_chunks", 5),
+            "include_conversations": rag_prefs.get("include_conversations", True),
+            "include_memories": rag_prefs.get("include_memories", True),
+            "include_todos": rag_prefs.get("include_todos", True),
+            "auto_flush": rag_prefs.get("auto_flush", True),
+        }
+
+    @app.put("/users/{user_id}/rag/settings", tags=["RAG"])
+    async def update_rag_settings(
+        user_id: str,
+        settings_update: RagSettingsUpdate,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Update user's RAG configuration."""
+        agent = get_agent()
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            if settings_update.enabled is not None:
+                profile.opt_in.rag_enabled = settings_update.enabled
+
+            if settings_update.max_chunks is not None:
+                profile.set_rag_preference("max_chunks", settings_update.max_chunks)
+
+            if settings_update.include_conversations is not None:
+                profile.set_rag_preference("include_conversations", settings_update.include_conversations)
+
+            if settings_update.include_memories is not None:
+                profile.set_rag_preference("include_memories", settings_update.include_memories)
+
+            if settings_update.include_todos is not None:
+                profile.set_rag_preference("include_todos", settings_update.include_todos)
+
+            if settings_update.auto_flush is not None:
+                profile.set_rag_preference("auto_flush", settings_update.auto_flush)
+
+            rag_prefs = profile.get_rag_preferences()
+            return {
+                "status": "ok",
+                "enabled": profile.opt_in.rag_enabled,
+                "max_chunks": rag_prefs.get("max_chunks", 5),
+                "include_conversations": rag_prefs.get("include_conversations", True),
+                "include_memories": rag_prefs.get("include_memories", True),
+                "include_todos": rag_prefs.get("include_todos", True),
+                "auto_flush": rag_prefs.get("auto_flush", True),
+            }
+
+    @app.get("/users/{user_id}/rag/stats", tags=["RAG"])
+    async def get_rag_stats(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get indexing statistics for a user."""
+        from ..core.memory_index import MemoryIndex
+
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+
+        if not profile.opt_in.rag_enabled:
+            return {
+                "enabled": False,
+                "message": "RAG is not enabled for this user",
+            }
+
+        try:
+            # Sanitize user_id for path
+            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+            db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+
+            if not db_path.exists():
+                return {
+                    "enabled": True,
+                    "total_chunks": 0,
+                    "by_type": {},
+                    "last_indexed": None,
+                    "vector_count": 0,
+                }
+
+            memory_index = MemoryIndex(db_path)
+            stats = memory_index.get_stats(user_id)
+            stats["enabled"] = True
+            return stats
+
+        except Exception as e:
+            logger.error(f"Failed to get RAG stats for user {user_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/users/{user_id}/rag/reindex", tags=["RAG"])
+    async def reindex_user(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Rebuild user's entire RAG index from conversation history.
+
+        This clears existing index and re-indexes all conversations.
+        """
+        from ..core.memory_index import MemoryIndex
+
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+
+        if not profile.opt_in.rag_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="RAG is not enabled for this user. Enable it first.",
+            )
+
+        try:
+            # Sanitize user_id for path
+            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+            db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+            memory_index = MemoryIndex(db_path)
+
+            # Clear existing index
+            cleared = memory_index.clear_index(user_id)
+
+            # Re-index memories
+            indexed_memories = 0
+            for memory in profile.memories:
+                memory_index.add_chunk(
+                    content=f"{memory.key}: {memory.value}",
+                    metadata={"key": memory.key},
+                    chunk_type="memory",
+                    user_id=user_id,
+                )
+                indexed_memories += 1
+
+            # Note: We could also re-index conversation history from checkpointer,
+            # but that would require iterating through all threads which is expensive.
+            # For now, we just rebuild memories and let new conversations be indexed.
+
+            return {
+                "status": "ok",
+                "cleared_chunks": cleared,
+                "indexed_memories": indexed_memories,
+                "message": "Index rebuilt. New conversations will be indexed automatically.",
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to reindex for user {user_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.delete("/users/{user_id}/rag/index", tags=["RAG"])
+    async def clear_index(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Clear user's RAG index."""
+        from ..core.memory_index import MemoryIndex
+
+        agent = get_agent()
+
+        try:
+            # Sanitize user_id for path
+            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+            db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+
+            if not db_path.exists():
+                return {
+                    "status": "ok",
+                    "cleared_chunks": 0,
+                    "message": "No index found for this user.",
+                }
+
+            memory_index = MemoryIndex(db_path)
+            cleared = memory_index.clear_index(user_id)
+
+            return {
+                "status": "ok",
+                "cleared_chunks": cleared,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to clear index for user {user_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ========================================================================
+    # User Tool Preferences Endpoints
+    # ========================================================================
+
+    class ToolEnableRequest(BaseModel):
+        """Request model for enabling/disabling a tool."""
+        enabled: bool = Field(..., description="Whether to enable the tool")
+
+    class CategoryEnableRequest(BaseModel):
+        """Request model for enabling/disabling a tool category."""
+        enabled: bool = Field(..., description="Whether to enable the category")
+
+    class ToolConfigRequest(BaseModel):
+        """Request model for updating tool configuration."""
+        config: Dict[str, Any] = Field(..., description="Tool configuration")
+
+    class ToolPreferencesResponse(BaseModel):
+        """Response model for tool preferences."""
+        enabled_overrides: Dict[str, bool] = {}
+        disabled_categories: List[str] = []
+        tool_configs: Dict[str, Dict[str, Any]] = {}
+
+    @app.get("/users/{user_id}/tools", tags=["User Tools"])
+    async def list_user_tools(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        List all tools with their enabled state for a specific user.
+
+        Returns tools grouped by category with user-specific status.
+        """
+        agent = get_agent()
+        tools = agent.tool_registry.get_tools_with_user_status(
+            user_id, agent.profile_manager
+        )
+
+        # Group by category
+        by_category: Dict[str, List[dict]] = {}
+        for tool in tools:
+            category = tool.get("category", "unknown")
+            if category not in by_category:
+                by_category[category] = []
+            by_category[category].append(tool)
+
+        return {
+            "user_id": user_id,
+            "tools": tools,
+            "by_category": by_category,
+            "total": len(tools),
+        }
+
+    @app.get("/users/{user_id}/tools/preferences", response_model=ToolPreferencesResponse, tags=["User Tools"])
+    async def get_tool_preferences(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get user's tool preferences."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+
+        return ToolPreferencesResponse(
+            enabled_overrides=profile.tool_preferences.enabled_overrides,
+            disabled_categories=profile.tool_preferences.disabled_categories,
+            tool_configs=profile.tool_preferences.tool_configs,
+        )
+
+    @app.put("/users/{user_id}/tools/{tool_name}/enable", tags=["User Tools"])
+    async def set_tool_enabled(
+        user_id: str,
+        tool_name: str,
+        request: ToolEnableRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Enable or disable a specific tool for a user."""
+        agent = get_agent()
+
+        # Check if tool exists
+        tool = agent.tool_registry.get_tool(tool_name)
+        if not tool:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_name}' not found"
+            )
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.tool_preferences.set_tool_enabled(tool_name, request.enabled)
+            profile.updated_at = datetime.utcnow()
+
+        return {
+            "status": "ok",
+            "tool_name": tool_name,
+            "enabled": request.enabled,
+        }
+
+    @app.delete("/users/{user_id}/tools/{tool_name}/enable", tags=["User Tools"])
+    async def clear_tool_override(
+        user_id: str,
+        tool_name: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Clear tool-specific override, returning to default behavior."""
+        agent = get_agent()
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            cleared = profile.tool_preferences.clear_tool_override(tool_name)
+            if cleared:
+                profile.updated_at = datetime.utcnow()
+
+        return {
+            "status": "ok",
+            "tool_name": tool_name,
+            "cleared": cleared,
+        }
+
+    @app.put("/users/{user_id}/tools/categories/{category}/enable", tags=["User Tools"])
+    async def set_category_enabled(
+        user_id: str,
+        category: str,
+        request: CategoryEnableRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Enable or disable an entire tool category.
+
+        Categories: core, memory, self_modify, todo, subagent, visibility
+        """
+        from ..tools.metadata import get_all_categories
+
+        valid_categories = get_all_categories()
+        if category not in valid_categories:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid category '{category}'. Valid categories: {', '.join(valid_categories)}"
+            )
+
+        agent = get_agent()
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.tool_preferences.set_category_enabled(category, request.enabled)
+            profile.updated_at = datetime.utcnow()
+
+        return {
+            "status": "ok",
+            "category": category,
+            "enabled": request.enabled,
+        }
+
+    @app.put("/users/{user_id}/tools/{tool_name}/config", tags=["User Tools"])
+    async def set_tool_config(
+        user_id: str,
+        tool_name: str,
+        request: ToolConfigRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Set configuration for a specific tool.
+
+        Configuration options depend on the tool. For example, bash_execute
+        supports timeout_seconds.
+        """
+        from ..tools.metadata import get_tool_metadata
+
+        agent = get_agent()
+
+        # Verify tool exists
+        tool = agent.tool_registry.get_tool(tool_name)
+        if not tool:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_name}' not found"
+            )
+
+        # Validate against schema if available
+        metadata = get_tool_metadata(tool_name)
+        if metadata and metadata.config_schema:
+            # Basic validation (in production, use jsonschema library)
+            schema_props = metadata.config_schema.get("properties", {})
+            for key in request.config:
+                if key not in schema_props:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Unknown config key '{key}' for tool '{tool_name}'"
+                    )
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.tool_preferences.set_tool_config(tool_name, request.config)
+            profile.updated_at = datetime.utcnow()
+
+        return {
+            "status": "ok",
+            "tool_name": tool_name,
+            "config": request.config,
+        }
+
+    @app.post("/users/{user_id}/tools/reset", tags=["User Tools"])
+    async def reset_tool_preferences(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Reset all tool preferences to defaults."""
+        agent = get_agent()
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.tool_preferences.reset_to_defaults()
+            profile.updated_at = datetime.utcnow()
+
+        return {
+            "status": "ok",
+            "message": "Tool preferences reset to defaults",
+        }
+
+    @app.get("/tools/categories", tags=["Tools"])
+    async def list_tool_categories(
+        _: bool = Depends(verify_api_key),
+    ):
+        """List all tool categories with their tools."""
+        from ..tools.metadata import get_category_tools_summary
+
+        return {
+            "categories": get_category_tools_summary(),
+        }
+
+    # ========================================================================
+    # Unified Tools Endpoints
+    # ========================================================================
+
+    def _builtin_to_unified(
+        tool_info: Dict[str, Any],
+        user_id: str,
+        tool_preferences: Optional["ToolPreferences"] = None,
+    ) -> UnifiedToolResponse:
+        """Convert built-in tool info to unified response format."""
+        default_desc = tool_info.get("description", "")
+        custom_desc = None
+
+        # Check for custom description override
+        if tool_preferences:
+            custom_desc = tool_preferences.get_custom_description(tool_info["name"])
+
+        # Effective description is custom if set, otherwise default
+        effective_desc = custom_desc if custom_desc else default_desc
+
+        # Check if tool is configurable (has config_schema)
+        config_schema = tool_info.get("config_schema")
+        configurable = config_schema is not None and len(config_schema) > 0
+
+        return UnifiedToolResponse(
+            id=tool_info["name"],
+            name=tool_info["name"],
+            description=effective_desc,
+            default_description=default_desc,
+            custom_description=custom_desc,
+            category=tool_info.get("category", "core"),
+            security_level=tool_info.get("security_level", "safe"),
+            enabled=tool_info.get("enabled", True),
+            enabled_reason=tool_info.get("enabled_reason", "default"),
+            tool_type="builtin",
+            implementation_type=None,
+            config_schema=config_schema,
+            user_config=tool_info.get("user_config", {}),
+            parameters=None,
+            http_config=None,
+            mcp_config=None,
+            tags=[],
+            editable=False,
+            configurable=configurable,
+            created_at=None,
+            updated_at=None,
+        )
+
+    def _custom_to_unified(
+        defn: CustomToolDefinition,
+        enabled: bool,
+        enabled_reason: str,
+        user_config: Dict[str, Any],
+        tool_preferences: Optional["ToolPreferences"] = None,
+    ) -> UnifiedToolResponse:
+        """Convert custom tool definition to unified response format."""
+        # Determine implementation type
+        impl_type = None
+        http_config = None
+        mcp_config = None
+
+        if defn.http:
+            impl_type = "http"
+            http_config = {
+                "url": defn.http.url,
+                "method": defn.http.method,
+                "headers": defn.http.headers,
+                "body_template": defn.http.body_template,
+                "timeout": defn.http.timeout,
+                "retries": defn.http.retries,
+            }
+        elif defn.mcp:
+            impl_type = "mcp"
+            mcp_config = {
+                "server": defn.mcp.server,
+                "tool": defn.mcp.tool,
+            }
+
+        # Convert parameters to dict
+        params = None
+        if defn.parameters:
+            params = {p.name: p.model_dump() for p in defn.parameters}
+
+        # Get description (custom tools can also have description overrides)
+        default_desc = defn.description
+        custom_desc = None
+        if tool_preferences:
+            custom_desc = tool_preferences.get_custom_description(defn.id)
+        effective_desc = custom_desc if custom_desc else default_desc
+
+        return UnifiedToolResponse(
+            id=defn.id,
+            name=defn.name,
+            description=effective_desc,
+            default_description=default_desc,
+            custom_description=custom_desc,
+            category="custom",
+            security_level="moderate",
+            enabled=enabled,
+            enabled_reason=enabled_reason,
+            tool_type="custom",
+            implementation_type=impl_type,
+            config_schema=None,
+            user_config=user_config,
+            parameters=params,
+            http_config=http_config,
+            mcp_config=mcp_config,
+            tags=defn.tags or [],
+            editable=True,
+            configurable=False,  # Custom tools don't have config schemas (they are fully editable)
+            created_at=defn.created_at,
+            updated_at=defn.updated_at,
+        )
+
+    @app.get("/users/{user_id}/tools/unified", response_model=UnifiedToolListResponse, tags=["Unified Tools"])
+    async def list_unified_tools(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        List all tools (built-in and custom) in a unified format.
+
+        Returns tools with consistent structure regardless of type,
+        including enable status per user.
+        """
+        agent = get_agent()
+        loader = get_custom_tool_loader()
+
+        # Get profile for user preferences
+        profile = agent.profile_manager.get_profile(user_id)
+        tool_prefs = profile.tool_preferences
+
+        unified_tools = []
+
+        # Get built-in tools with user status (using agent's registry, not global)
+        builtin_tools = agent.tool_registry.get_tools_with_user_status(user_id, agent.profile_manager)
+        for tool_info in builtin_tools:
+            unified_tools.append(_builtin_to_unified(tool_info, user_id, tool_prefs))
+
+        # Get custom tools
+        custom_definitions = loader.get_all_definitions()
+        for defn in custom_definitions:
+            # Determine enabled status
+            if defn.id in tool_prefs.enabled_overrides:
+                enabled = tool_prefs.enabled_overrides[defn.id]
+                enabled_reason = "user_override"
+            else:
+                enabled = True  # Custom tools enabled by default
+                enabled_reason = "default"
+
+            user_config = tool_prefs.get_tool_config(defn.id)
+            unified_tools.append(_custom_to_unified(defn, enabled, enabled_reason, user_config, tool_prefs))
+
+        # Sort: built-in first, then custom, alphabetically within each
+        unified_tools.sort(key=lambda t: (0 if t.tool_type == "builtin" else 1, t.name))
+
+        builtin_count = sum(1 for t in unified_tools if t.tool_type == "builtin")
+        custom_count = sum(1 for t in unified_tools if t.tool_type == "custom")
+
+        return UnifiedToolListResponse(
+            tools=unified_tools,
+            total=len(unified_tools),
+            builtin_count=builtin_count,
+            custom_count=custom_count,
+        )
+
+    @app.put("/users/{user_id}/tools/unified/{tool_id}/enable", tags=["Unified Tools"])
+    async def set_unified_tool_enabled(
+        user_id: str,
+        tool_id: str,
+        request: UnifiedToolEnableRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Enable or disable any tool (built-in or custom) for a user.
+
+        Works for both built-in and custom tools.
+        """
+        from ..tools.metadata import get_tool_metadata
+
+        agent = get_agent()
+        loader = get_custom_tool_loader()
+
+        # Check if tool exists (built-in or custom)
+        builtin_meta = get_tool_metadata(tool_id)
+        custom_defn = loader.get_definition(tool_id)
+
+        if not builtin_meta and not custom_defn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.tool_preferences.enabled_overrides[tool_id] = request.enabled
+            profile.updated_at = datetime.utcnow()
+
+        return {
+            "status": "ok",
+            "tool_id": tool_id,
+            "enabled": request.enabled,
+            "tool_type": "builtin" if builtin_meta else "custom",
+        }
+
+    @app.put("/users/{user_id}/tools/unified/{tool_id}/description", tags=["Unified Tools"])
+    async def set_unified_tool_description(
+        user_id: str,
+        tool_id: str,
+        request: UnifiedToolDescriptionRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Set a custom description for a tool.
+
+        Works for both built-in and custom tools.
+        Pass null/None to clear the custom description and revert to default.
+        """
+        from ..tools.metadata import get_tool_metadata
+
+        agent = get_agent()
+        loader = get_custom_tool_loader()
+
+        # Check if tool exists (built-in or custom)
+        builtin_meta = get_tool_metadata(tool_id)
+        custom_defn = loader.get_definition(tool_id)
+
+        if not builtin_meta and not custom_defn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            if request.description is None:
+                # Clear custom description
+                cleared = profile.tool_preferences.clear_custom_description(tool_id)
+                return {
+                    "status": "ok",
+                    "tool_id": tool_id,
+                    "action": "cleared" if cleared else "no_change",
+                    "description": None,
+                }
+            else:
+                # Set custom description
+                profile.tool_preferences.set_custom_description(tool_id, request.description)
+                return {
+                    "status": "ok",
+                    "tool_id": tool_id,
+                    "action": "set",
+                    "description": request.description,
+                }
+
+    @app.put("/users/{user_id}/tools/unified/{tool_id}/config", tags=["Unified Tools"])
+    async def set_unified_tool_config(
+        user_id: str,
+        tool_id: str,
+        request: UnifiedToolConfigRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Set configuration for a tool.
+
+        Works for both built-in and custom tools.
+        The config is merged with existing config (pass empty dict to clear).
+        """
+        from ..tools.metadata import get_tool_metadata
+
+        agent = get_agent()
+        loader = get_custom_tool_loader()
+
+        # Check if tool exists (built-in or custom)
+        builtin_meta = get_tool_metadata(tool_id)
+        custom_defn = loader.get_definition(tool_id)
+
+        if not builtin_meta and not custom_defn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            if not request.config:
+                # Clear config
+                profile.tool_preferences.tool_configs.pop(tool_id, None)
+                return {
+                    "status": "ok",
+                    "tool_id": tool_id,
+                    "action": "cleared",
+                    "config": {},
+                }
+            else:
+                # Set/merge config
+                profile.tool_preferences.set_tool_config(tool_id, request.config)
+                return {
+                    "status": "ok",
+                    "tool_id": tool_id,
+                    "action": "set",
+                    "config": request.config,
+                }
+
+    @app.post("/tools/unified", response_model=UnifiedToolResponse, tags=["Unified Tools"])
+    async def create_unified_tool(
+        request: CustomToolCreateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Create a new custom tool via the unified API.
+
+        Same as POST /tools/custom but returns unified response format.
+        """
+        loader = get_custom_tool_loader()
+
+        # Check if tool already exists
+        if loader.get_definition(request.id):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tool '{request.id}' already exists",
+            )
+
+        # Build parameters list
+        params = None
+        if request.parameters:
+            from ..tools.definitions.schema import ToolParameter
+            params = [ToolParameter(**p) for p in request.parameters]
+
+        # Build HTTP config
+        http_config = None
+        if request.http:
+            http_config = HTTPToolConfig(**request.http)
+
+        # Build MCP config
+        mcp_config = None
+        if request.mcp:
+            from ..tools.definitions.schema import MCPToolConfig
+            mcp_config = MCPToolConfig(**request.mcp)
+
+        definition = CustomToolDefinition(
+            id=request.id,
+            name=request.name,
+            description=request.description,
+            parameters=params,
+            http=http_config,
+            mcp=mcp_config,
+            tags=request.tags,
+        )
+
+        loader.save_definition(definition)
+
+        # Reload custom tools
+        reload_custom_tools()
+
+        return _custom_to_unified(definition, True, "default", {})
+
+    @app.put("/tools/unified/{tool_id}", response_model=UnifiedToolResponse, tags=["Unified Tools"])
+    async def update_unified_tool(
+        tool_id: str,
+        request: CustomToolUpdateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Update a custom tool via the unified API.
+
+        Only custom tools can be updated. Built-in tools return 400.
+        """
+        from ..tools.metadata import get_tool_metadata
+
+        loader = get_custom_tool_loader()
+
+        # Check if it's a built-in tool
+        if get_tool_metadata(tool_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot edit built-in tools. Use enable/disable or configure instead.",
+            )
+
+        definition = loader.get_definition(tool_id)
+        if not definition:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        # Update fields
+        if request.name is not None:
+            definition.name = request.name
+        if request.description is not None:
+            definition.description = request.description
+        if request.parameters is not None:
+            from ..tools.definitions.schema import ToolParameter
+            definition.parameters = [ToolParameter(**p) for p in request.parameters]
+        if request.http is not None:
+            definition.http = HTTPToolConfig(**request.http)
+        if request.mcp is not None:
+            from ..tools.definitions.schema import MCPToolConfig
+            definition.mcp = MCPToolConfig(**request.mcp)
+        if request.tags is not None:
+            definition.tags = request.tags
+
+        loader.save_definition(definition)
+        reload_custom_tools()
+
+        return _custom_to_unified(definition, True, "default", {})
+
+    @app.delete("/tools/unified/{tool_id}", tags=["Unified Tools"])
+    async def delete_unified_tool(
+        tool_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Delete a custom tool via the unified API.
+
+        Only custom tools can be deleted. Built-in tools return 400.
+        """
+        from ..tools.metadata import get_tool_metadata
+
+        loader = get_custom_tool_loader()
+
+        # Check if it's a built-in tool
+        if get_tool_metadata(tool_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete built-in tools",
+            )
+
+        if not loader.get_definition(tool_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool '{tool_id}' not found",
+            )
+
+        loader.delete_definition(tool_id)
+        reload_custom_tools()
+
+        return {
+            "status": "ok",
+            "deleted": tool_id,
+        }
+
+    return app
+
+
+def run_api(host: str = "0.0.0.0", port: int = 8000, agent: Optional[NymeriaAgent] = None) -> None:
+    """
+    Run the API server.
+
+    Args:
+        host: Host to bind to
+        port: Port to listen on
+        agent: Optional agent instance
+    """
+    import uvicorn
+
+    app = create_api_app(agent)
+    uvicorn.run(app, host=host, port=port)

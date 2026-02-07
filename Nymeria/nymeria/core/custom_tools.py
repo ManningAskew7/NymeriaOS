@@ -1,0 +1,510 @@
+"""Custom tool loader and executor.
+
+Loads custom tool definitions from JSON files and converts them to
+LangChain @tool functions. Supports HTTP and MCP tool implementations.
+
+HTTP tools make REST API calls with parameter interpolation.
+MCP tools communicate with Model Context Protocol servers via JSON-RPC.
+
+Based on MCP best practices 2025-2026:
+- Environment variable interpolation for secrets
+- Structured error handling
+- Request timeout and retry logic
+"""
+
+import json
+import logging
+import os
+import re
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+import httpx
+from langchain_core.tools import BaseTool, StructuredTool
+
+from ..config import get_settings
+from ..tools.definitions.schema import CustomToolDefinition, HTTPToolConfig
+
+logger = logging.getLogger(__name__)
+
+# Regex for environment variable interpolation: ${env:VAR_NAME}
+ENV_VAR_PATTERN = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)\}")
+
+# Regex for parameter interpolation: ${param_name}
+PARAM_PATTERN = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+class CustomToolLoader:
+    """Loads and manages custom tool definitions.
+
+    Watches a directory for JSON tool definition files and converts
+    them to LangChain tools that can be registered with the agent.
+    """
+
+    def __init__(self, tools_dir: Optional[Path] = None):
+        """Initialize the custom tool loader.
+
+        Args:
+            tools_dir: Directory containing tool definition JSON files.
+                       Defaults to data/custom_tools/ in project root.
+        """
+        settings = get_settings()
+        self.tools_dir = tools_dir or settings.custom_tools_dir
+        self.tools_dir.mkdir(parents=True, exist_ok=True)
+
+        # Cache of loaded tool definitions
+        self._definitions: Dict[str, CustomToolDefinition] = {}
+
+        # Cache of created LangChain tools
+        self._tools: Dict[str, BaseTool] = {}
+
+        # MCP manager instance (lazy loaded)
+        self._mcp_manager: Optional["MCPServerManager"] = None
+
+    @property
+    def mcp_manager(self) -> "MCPServerManager":
+        """Get or create the MCP server manager."""
+        if self._mcp_manager is None:
+            from .mcp_manager import MCPServerManager
+            self._mcp_manager = MCPServerManager()
+        return self._mcp_manager
+
+    def load_all(self) -> List[BaseTool]:
+        """Load all custom tools from the tools directory.
+
+        Returns:
+            List of LangChain tools created from definitions.
+        """
+        self._definitions.clear()
+        self._tools.clear()
+
+        tools = []
+        for json_file in self.tools_dir.glob("*.json"):
+            try:
+                tool = self._load_tool_file(json_file)
+                if tool:
+                    tools.append(tool)
+            except Exception as e:
+                logger.error(f"Failed to load tool from {json_file}: {e}")
+
+        logger.info(f"Loaded {len(tools)} custom tool(s) from {self.tools_dir}")
+        return tools
+
+    def _load_tool_file(self, file_path: Path) -> Optional[BaseTool]:
+        """Load a single tool definition file.
+
+        Args:
+            file_path: Path to the JSON definition file.
+
+        Returns:
+            LangChain tool or None if loading failed.
+        """
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+            definition = CustomToolDefinition(**data)
+
+            if not definition.enabled:
+                logger.debug(f"Skipping disabled tool: {definition.id}")
+                return None
+
+            self._definitions[definition.id] = definition
+
+            # Create the appropriate tool based on implementation type
+            if definition.implementation_type == "http":
+                tool = self._create_http_tool(definition)
+            elif definition.implementation_type == "mcp":
+                tool = self._create_mcp_tool(definition)
+            else:
+                logger.error(f"Unknown implementation type: {definition.implementation_type}")
+                return None
+
+            self._tools[definition.id] = tool
+            return tool
+
+        except Exception as e:
+            logger.error(f"Error loading tool from {file_path}: {e}", exc_info=True)
+            return None
+
+    def _create_http_tool(self, definition: CustomToolDefinition) -> BaseTool:
+        """Create a LangChain tool from an HTTP tool definition.
+
+        Args:
+            definition: The custom tool definition.
+
+        Returns:
+            A LangChain StructuredTool.
+        """
+        config = definition.http_config
+        assert config is not None
+
+        async def execute_http(**kwargs: Any) -> str:
+            """Execute the HTTP tool with given parameters."""
+            return await execute_http_tool(config, kwargs)
+
+        # Build the args schema from parameters
+        args_schema = definition.to_json_schema()
+
+        return StructuredTool.from_function(
+            func=lambda **kwargs: _sync_execute_http(config, kwargs),
+            coroutine=execute_http,
+            name=definition.id,
+            description=definition.description,
+            args_schema=_create_pydantic_schema(definition.id, definition.parameters),
+        )
+
+    def _create_mcp_tool(self, definition: CustomToolDefinition) -> BaseTool:
+        """Create a LangChain tool from an MCP tool definition.
+
+        Args:
+            definition: The custom tool definition.
+
+        Returns:
+            A LangChain StructuredTool.
+        """
+        config = definition.mcp_config
+        assert config is not None
+
+        # Capture mcp_manager reference for the closure
+        mcp_manager = self.mcp_manager
+
+        async def execute_mcp(**kwargs: Any) -> str:
+            """Execute the MCP tool with given parameters."""
+            return await mcp_manager.call_tool(config, kwargs)
+
+        return StructuredTool.from_function(
+            func=lambda **kwargs: mcp_manager.call_tool_sync(config, kwargs),
+            coroutine=execute_mcp,
+            name=definition.id,
+            description=definition.description,
+            args_schema=_create_pydantic_schema(definition.id, definition.parameters),
+        )
+
+    def get_definition(self, tool_id: str) -> Optional[CustomToolDefinition]:
+        """Get a tool definition by ID.
+
+        Args:
+            tool_id: The tool identifier.
+
+        Returns:
+            The tool definition or None.
+        """
+        return self._definitions.get(tool_id)
+
+    def get_all_definitions(self) -> List[CustomToolDefinition]:
+        """Get all loaded tool definitions.
+
+        Returns:
+            List of all tool definitions.
+        """
+        return list(self._definitions.values())
+
+    def save_definition(self, definition: CustomToolDefinition) -> Path:
+        """Save a tool definition to a JSON file.
+
+        Args:
+            definition: The tool definition to save.
+
+        Returns:
+            Path to the saved file.
+        """
+        # Update timestamp
+        definition.updated_at = definition.updated_at.__class__.utcnow()
+
+        file_path = self.tools_dir / f"{definition.id}.json"
+        file_path.write_text(
+            definition.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
+        # Reload to update cache
+        self._load_tool_file(file_path)
+
+        logger.info(f"Saved tool definition: {definition.id}")
+        return file_path
+
+    def delete_definition(self, tool_id: str) -> bool:
+        """Delete a tool definition.
+
+        Args:
+            tool_id: The tool identifier.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        file_path = self.tools_dir / f"{tool_id}.json"
+
+        if not file_path.exists():
+            return False
+
+        file_path.unlink()
+
+        # Remove from caches
+        self._definitions.pop(tool_id, None)
+        self._tools.pop(tool_id, None)
+
+        logger.info(f"Deleted tool definition: {tool_id}")
+        return True
+
+    def shutdown(self) -> None:
+        """Shutdown the loader and cleanup resources."""
+        if self._mcp_manager:
+            self._mcp_manager.shutdown_all()
+
+
+def interpolate_env_vars(value: str) -> str:
+    """Replace ${env:VAR_NAME} placeholders with environment variable values.
+
+    Args:
+        value: String containing environment variable placeholders.
+
+    Returns:
+        String with placeholders replaced by actual values.
+
+    Raises:
+        ValueError: If an environment variable is not set.
+    """
+    def replace_env(match: re.Match) -> str:
+        var_name = match.group(1)
+        var_value = os.environ.get(var_name)
+        if var_value is None:
+            raise ValueError(f"Environment variable not set: {var_name}")
+        return var_value
+
+    return ENV_VAR_PATTERN.sub(replace_env, value)
+
+
+def interpolate_params(template: str, params: Dict[str, Any]) -> str:
+    """Replace ${param_name} placeholders with parameter values.
+
+    Args:
+        template: String containing parameter placeholders.
+        params: Dictionary of parameter values.
+
+    Returns:
+        String with placeholders replaced by parameter values.
+    """
+    def replace_param(match: re.Match) -> str:
+        param_name = match.group(1)
+        value = params.get(param_name)
+        if value is None:
+            return match.group(0)  # Keep original if not found
+        # JSON encode non-string values for body templates
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    return PARAM_PATTERN.sub(replace_param, template)
+
+
+async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> str:
+    """Execute an HTTP tool with the given parameters.
+
+    Args:
+        config: HTTP tool configuration.
+        params: Parameter values for interpolation.
+
+    Returns:
+        Response content as a string.
+    """
+    try:
+        # Interpolate URL
+        url = interpolate_params(config.url, params)
+        url = interpolate_env_vars(url)
+
+        # Interpolate headers
+        headers = {}
+        for key, value in config.headers.items():
+            headers[key] = interpolate_env_vars(interpolate_params(value, params))
+
+        # Interpolate query params
+        query_params = {}
+        for key, value in config.query_params.items():
+            query_params[key] = interpolate_params(value, params)
+
+        # Interpolate body
+        body = None
+        if config.body_template:
+            body_str = interpolate_params(config.body_template, params)
+            body_str = interpolate_env_vars(body_str)
+            try:
+                body = json.loads(body_str)
+            except json.JSONDecodeError:
+                body = body_str
+
+        # Make the request
+        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+            response = await client.request(
+                method=config.method,
+                url=url,
+                headers=headers,
+                params=query_params if query_params else None,
+                json=body if isinstance(body, dict) else None,
+                content=body if isinstance(body, str) else None,
+            )
+
+        # Parse response
+        if response.status_code >= 400:
+            return f"[Error]: HTTP {response.status_code} - {response.text[:500]}"
+
+        # Determine response format
+        content_type = response.headers.get("content-type", "")
+        if config.response_format == "json" or (
+            config.response_format == "auto" and "application/json" in content_type
+        ):
+            try:
+                data = response.json()
+                # Extract specific path if configured
+                if config.response_path:
+                    data = _extract_json_path(data, config.response_path)
+                return json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data)
+            except json.JSONDecodeError:
+                return response.text
+        else:
+            return response.text
+
+    except httpx.TimeoutException:
+        return f"[Error]: Request timed out after {config.timeout_seconds} seconds"
+    except ValueError as e:
+        return f"[Error]: Configuration error - {e}"
+    except Exception as e:
+        logger.error(f"HTTP tool execution failed: {e}", exc_info=True)
+        return f"[Error]: Request failed - {str(e)}"
+
+
+def _sync_execute_http(config: HTTPToolConfig, params: Dict[str, Any]) -> str:
+    """Synchronous wrapper for HTTP tool execution."""
+    import asyncio
+    return asyncio.get_event_loop().run_until_complete(execute_http_tool(config, params))
+
+
+def _extract_json_path(data: Any, path: str) -> Any:
+    """Extract a value from JSON data using a simple path syntax.
+
+    Supports:
+    - $.field - Get a field from root
+    - $.field.nested - Get nested field
+    - $.field[0] - Get array element
+    - $.field[*] - Get all array elements
+
+    Args:
+        data: JSON data (dict or list).
+        path: JSONPath-like expression.
+
+    Returns:
+        Extracted value.
+    """
+    if not path.startswith("$."):
+        return data
+
+    parts = path[2:].split(".")
+    current = data
+
+    for part in parts:
+        if not part:
+            continue
+
+        # Handle array access
+        array_match = re.match(r"([^\[]+)\[(\d+|\*)\]", part)
+        if array_match:
+            field = array_match.group(1)
+            index = array_match.group(2)
+
+            if field:
+                if isinstance(current, dict):
+                    current = current.get(field, current)
+                else:
+                    return data
+
+            if isinstance(current, list):
+                if index == "*":
+                    pass  # Keep the full list
+                else:
+                    idx = int(index)
+                    current = current[idx] if idx < len(current) else None
+        else:
+            # Regular field access
+            if isinstance(current, dict):
+                current = current.get(part, current)
+            else:
+                return data
+
+    return current
+
+
+def _create_pydantic_schema(tool_id: str, parameters: Dict[str, Any]) -> type:
+    """Create a Pydantic model for tool parameters.
+
+    Args:
+        tool_id: Tool identifier for the model name.
+        parameters: Parameter definitions.
+
+    Returns:
+        A Pydantic model class.
+    """
+    from pydantic import BaseModel, Field, create_model
+
+    fields = {}
+    for name, param in parameters.items():
+        # Map JSON Schema types to Python types
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": float,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+        python_type = type_map.get(param.type, str)
+
+        # Create field with optional default
+        if param.required:
+            fields[name] = (python_type, Field(description=param.description))
+        else:
+            default = param.default
+            fields[name] = (Optional[python_type], Field(default=default, description=param.description))
+
+    # Create a dynamic Pydantic model
+    model_name = f"{tool_id.title().replace('-', '').replace('_', '')}Args"
+    return create_model(model_name, **fields)
+
+
+# Global loader instance
+_loader: Optional[CustomToolLoader] = None
+
+
+def get_custom_tool_loader() -> CustomToolLoader:
+    """Get or create the global custom tool loader."""
+    global _loader
+    if _loader is None:
+        _loader = CustomToolLoader()
+    return _loader
+
+
+def load_custom_tools() -> List[BaseTool]:
+    """Load all custom tools.
+
+    Returns:
+        List of LangChain tools.
+    """
+    return get_custom_tool_loader().load_all()
+
+
+def reload_custom_tools() -> int:
+    """Reload all custom tools.
+
+    Returns:
+        Number of tools loaded.
+    """
+    tools = get_custom_tool_loader().load_all()
+    return len(tools)
+
+
+def shutdown_custom_tools() -> None:
+    """Shutdown custom tools and cleanup resources."""
+    global _loader
+    if _loader:
+        _loader.shutdown()
+        _loader = None
