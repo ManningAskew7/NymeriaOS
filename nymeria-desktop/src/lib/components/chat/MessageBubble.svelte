@@ -16,7 +16,7 @@
   import sql from 'highlight.js/lib/languages/sql';
 
   import type { Message, FileAttachment } from '$lib/types';
-  import { Icon } from '$lib/components/common';
+  import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import StreamingText from './StreamingText.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
@@ -337,7 +337,7 @@
       <!-- Final content at bottom (after all steps) -->
       {#if isStreaming && !message.content && !hasSteps && !hasToolCalls && !hasIntermediateContent}
         <!-- Only show streaming indicator if nothing else is visible -->
-        <StreamingText text="" {isStreaming} />
+        <ThinkingIndicator />
       {:else if showStreamingContent}
         <!-- Show streaming content only if it's not raw JSON -->
         <StreamingText text={message.content} {isStreaming} />
