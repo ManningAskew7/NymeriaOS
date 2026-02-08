@@ -84,15 +84,23 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     if config.presence_penalty is not None:
         kwargs["presence_penalty"] = config.presence_penalty
 
-    # OpenRouter passes extra params via model_kwargs
+    # Build OpenRouter reasoning config for extra_body.
+    # extra_body passes params directly to the provider without LangChain
+    # intercepting them (model_kwargs triggers a warning about 'reasoning'
+    # being a first-class field, and direct reasoning= switches to Responses API).
+    reasoning_config = {}
+    if config.extended_thinking:
+        reasoning_config["enabled"] = True
+        if config.reasoning_effort is not None:
+            reasoning_config["effort"] = config.reasoning_effort
+    else:
+        reasoning_config["effort"] = "none"
+    kwargs["extra_body"] = {"reasoning": reasoning_config}
+
+    # Other provider-specific params that aren't first-class ChatOpenAI fields
     model_kwargs = {}
     if config.top_k is not None:
         model_kwargs["top_k"] = config.top_k
-    if config.reasoning_effort is not None:
-        model_kwargs["reasoning_effort"] = config.reasoning_effort
-    if config.extended_thinking:
-        model_kwargs["reasoning"] = {"enabled": True}
-
     if model_kwargs:
         kwargs["model_kwargs"] = model_kwargs
 

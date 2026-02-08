@@ -320,6 +320,14 @@
           <p class="hint">0 = deterministic, 2 = creative</p>
         </div>
 
+        <div class="field">
+          <label class="toggle-label" for="llm-extended-thinking">
+            <input type="checkbox" id="llm-extended-thinking" bind:checked={llmExtendedThinking} />
+            Extended Thinking
+          </label>
+          <p class="hint">Enable reasoning/thinking tokens (Claude, OpenRouter)</p>
+        </div>
+
         <!-- Advanced Settings Collapsible -->
         <div class="advanced-section">
           <button
@@ -420,13 +428,6 @@
                 <p class="hint">For reasoning models (o1, Claude with thinking)</p>
               </div>
 
-              <div class="field">
-                <label class="toggle-label" for="llm-extended-thinking">
-                  <input type="checkbox" id="llm-extended-thinking" bind:checked={llmExtendedThinking} />
-                  Extended Thinking
-                </label>
-                <p class="hint">Enable reasoning/thinking tokens (Claude, OpenRouter)</p>
-              </div>
             </div>
           {/if}
         </div>
