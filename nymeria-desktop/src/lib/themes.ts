@@ -185,6 +185,36 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
 };
 
 /**
+ * Convert a hex color to rgba string.
+ */
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Extract RGB components from a hex color string.
+ */
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+  };
+}
+
+/**
+ * Determine if a theme is light-toned by checking its base background luminance.
+ */
+function isLightTheme(bgBase: string): boolean {
+  const { r, g, b } = hexToRgb(bgBase);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.5;
+}
+
+/**
  * Apply a theme by updating CSS custom properties on the document root.
  * Changes take effect immediately without requiring a page reload.
  */
@@ -198,6 +228,7 @@ export function applyTheme(themeName: ThemeName): void {
 
   const colors = theme.colors;
   const root = document.documentElement;
+  const light = isLightTheme(colors.bgBase);
 
   // Backgrounds
   root.style.setProperty('--bg-base', colors.bgBase);
@@ -232,8 +263,18 @@ export function applyTheme(themeName: ThemeName): void {
   root.style.setProperty('--border-default', colors.borderDefault);
   root.style.setProperty('--border-focus', colors.accentPrimary);
 
-  // Update scrollbar and selection colors for theme coherence
-  // (these are handled in CSS with var() so they update automatically)
+  // Glassmorphism — computed dynamically per theme
+  root.style.setProperty('--glass-bg', hexToRgba(colors.bgElevated, light ? 0.8 : 0.7));
+  root.style.setProperty('--glass-bg-strong', hexToRgba(colors.bgElevated, light ? 0.92 : 0.85));
+  root.style.setProperty('--glass-border', light ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)');
+  root.style.setProperty('--glass-shadow', light
+    ? '0 8px 32px rgba(0, 0, 0, 0.1)'
+    : '0 8px 32px rgba(0, 0, 0, 0.3)');
+
+  // Accent glow — derived from theme accent
+  const accent = hexToRgb(colors.accentPrimary);
+  root.style.setProperty('--accent-glow-sm', `0 0 12px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
+  root.style.setProperty('--accent-glow-md', `0 0 20px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.2)`);
 }
 
 /**

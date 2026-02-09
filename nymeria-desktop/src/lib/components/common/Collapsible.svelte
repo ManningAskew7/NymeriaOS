@@ -64,7 +64,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
-    transition: transform var(--transition-fast);
+    transition: transform var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .open .chevron {

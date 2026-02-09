@@ -93,7 +93,7 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--spacing-md);
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--glass-border);
   }
 
   .logo {
@@ -110,8 +110,8 @@
   }
 
   .sidebar-footer {
-    padding: var(--spacing-md);
-    border-top: 1px solid var(--border-subtle);
+    padding: calc(var(--spacing-md) + 5px) var(--spacing-md) var(--spacing-md);
+    border-top: 1px solid var(--glass-border);
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
@@ -135,6 +135,7 @@
   .footer-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+    transform: translateX(2px);
   }
 
   .footer-btn.has-unread {
@@ -154,5 +155,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    animation: glowPulse 2s ease-in-out infinite;
   }
 </style>

@@ -1044,31 +1044,52 @@ class NymeriaAgent:
 
             total_input = 0
             total_output = 0
-            for msg in messages:
-                if not isinstance(msg, AIMessage):
-                    continue
-                # Try LangChain standardized usage_metadata
+            last_input = 0
+            last_output = 0
+
+            def _extract_tokens(msg):
+                """Extract (input_tokens, output_tokens) from an AIMessage."""
                 if hasattr(msg, "usage_metadata") and msg.usage_metadata:
                     um = msg.usage_metadata
-                    total_input += getattr(um, "input_tokens", 0) or (um.get("input_tokens", 0) if isinstance(um, dict) else 0)
-                    total_output += getattr(um, "output_tokens", 0) or (um.get("output_tokens", 0) if isinstance(um, dict) else 0)
-                    continue
-                # Fallback: response_metadata
+                    inp = getattr(um, "input_tokens", 0) or (um.get("input_tokens", 0) if isinstance(um, dict) else 0)
+                    out = getattr(um, "output_tokens", 0) or (um.get("output_tokens", 0) if isinstance(um, dict) else 0)
+                    return inp, out
                 if hasattr(msg, "response_metadata") and msg.response_metadata:
                     meta = msg.response_metadata
                     usage = meta.get("usage", {})
                     if usage.get("input_tokens") or usage.get("output_tokens"):
-                        total_input += usage.get("input_tokens", 0)
-                        total_output += usage.get("output_tokens", 0)
-                        continue
+                        return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
                     token_usage = meta.get("token_usage", {})
                     if token_usage.get("prompt_tokens") or token_usage.get("completion_tokens"):
-                        total_input += token_usage.get("prompt_tokens", 0)
-                        total_output += token_usage.get("completion_tokens", 0)
+                        return token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0)
+                return 0, 0
+
+            # Accumulate cumulative totals from all AI messages
+            for msg in messages:
+                if not isinstance(msg, AIMessage):
+                    continue
+                inp, out = _extract_tokens(msg)
+                total_input += inp
+                total_output += out
+
+            # Find the last AI message's tokens for context fullness
+            for msg in reversed(messages):
+                if not isinstance(msg, AIMessage):
+                    continue
+                inp, out = _extract_tokens(msg)
+                if inp or out:
+                    last_input = inp
+                    last_output = out
+                    break
 
             if total_input or total_output:
-                self._token_tracker.record_usage(thread_id, total_input, total_output)
-                logger.debug(f"Rehydrated token usage for thread {thread_id}: {total_input}+{total_output}")
+                # Record with last-call values (sets both last_* and adds to cumulative)
+                self._token_tracker.record_usage(thread_id, last_input, last_output)
+                # Patch cumulative totals to reflect full history
+                usage = self._token_tracker.get_usage(thread_id)
+                usage.total_input_tokens = total_input
+                usage.total_output_tokens = total_output
+                logger.debug(f"Rehydrated token usage for thread {thread_id}: cumulative={total_input}+{total_output}, last_call={last_input}+{last_output}")
         except Exception as e:
             logger.debug(f"Could not rehydrate token usage for thread {thread_id}: {e}")
 
@@ -1085,19 +1106,21 @@ class NymeriaAgent:
         usage = self._token_tracker.get_usage(thread_id)
 
         # If tracker has no data for this thread, try rehydrating from checkpoint
-        if usage.total_tokens == 0:
+        if usage.context_tokens == 0 and usage.total_tokens == 0:
             self._rehydrate_token_usage(thread_id)
             usage = self._token_tracker.get_usage(thread_id)
 
         model_limit = get_context_limit(self.settings.llm_model)
+        context_used = usage.context_tokens  # Last call's prompt_tokens = actual window usage
 
         return {
             "thread_id": thread_id,
-            "total_tokens": usage.total_tokens,
-            "input_tokens": usage.total_input_tokens,
-            "output_tokens": usage.total_output_tokens,
+            "total_tokens": context_used,
+            "input_tokens": usage.last_input_tokens,
+            "output_tokens": usage.last_output_tokens,
+            "cumulative_tokens": usage.total_tokens,
             "context_limit": model_limit,
-            "usage_percentage": round(usage.total_tokens / model_limit * 100, 1) if model_limit else 0,
+            "usage_percentage": round(context_used / model_limit * 100, 1) if model_limit else 0,
             "compaction_count": usage.compaction_count,
             "last_compaction": usage.last_compaction_at.isoformat() if usage.last_compaction_at else None,
             "context_management": self.settings.context_management,
@@ -2004,7 +2027,8 @@ class NymeriaAgent:
                         self._token_tracker.record_usage(thread_id, input_tok, output_tok)
                         logger.debug(
                             f"Thread {thread_id}: Recorded {input_tok}+{output_tok} tokens "
-                            f"(total: {self._token_tracker.get_usage(thread_id).total_tokens})"
+                            f"(context: {self._token_tracker.get_usage(thread_id).context_tokens}, "
+                            f"cumulative: {self._token_tracker.get_usage(thread_id).total_tokens})"
                         )
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage: {e}")

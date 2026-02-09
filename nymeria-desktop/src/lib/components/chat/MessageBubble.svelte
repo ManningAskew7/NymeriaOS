@@ -392,11 +392,14 @@
   .user .bubble-content {
     background: var(--bubble-user);
     border-bottom-right-radius: var(--radius-sm);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   }
 
   .assistant .bubble-content {
-    background: var(--bubble-ai);
-    border: 1px solid var(--border-subtle);
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--glass-border);
     border-bottom-left-radius: var(--radius-sm);
   }
 
@@ -588,11 +591,11 @@
   @keyframes slideUp {
     from {
       opacity: 0;
-      transform: translateY(10px);
+      transform: translateY(10px) scale(0.98);
     }
     to {
       opacity: 1;
-      transform: translateY(0);
+      transform: translateY(0) scale(1);
     }
   }
 

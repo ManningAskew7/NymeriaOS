@@ -80,6 +80,13 @@
 
   .btn-primary:hover:not(:disabled) {
     background: var(--accent-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--accent-glow-sm);
+  }
+
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: none;
   }
 
   .btn-secondary {
@@ -101,6 +108,7 @@
   .btn-ghost:hover:not(:disabled) {
     background: var(--bg-hover);
     color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
   }
 
   .btn-danger {

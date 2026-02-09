@@ -14,15 +14,22 @@ class ThreadTokenUsage:
     """Token usage statistics for a conversation thread."""
 
     thread_id: str
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
+    total_input_tokens: int = 0      # Cumulative (for cost reporting)
+    total_output_tokens: int = 0     # Cumulative (for cost reporting)
+    last_input_tokens: int = 0       # Latest call's prompt_tokens (= actual context window usage)
+    last_output_tokens: int = 0      # Latest call's completion_tokens
     last_compaction_at: Optional[datetime] = None
     compaction_count: int = 0
 
     @property
     def total_tokens(self) -> int:
-        """Total tokens (input + output) used in this thread."""
+        """Cumulative total — used for cost reporting."""
         return self.total_input_tokens + self.total_output_tokens
+
+    @property
+    def context_tokens(self) -> int:
+        """Actual context window usage — last call's input tokens."""
+        return self.last_input_tokens
 
 
 class TokenTracker:
@@ -47,8 +54,11 @@ class TokenTracker:
         """
         if thread_id not in self._usage:
             self._usage[thread_id] = ThreadTokenUsage(thread_id=thread_id)
-        self._usage[thread_id].total_input_tokens += input_tokens
-        self._usage[thread_id].total_output_tokens += output_tokens
+        usage = self._usage[thread_id]
+        usage.total_input_tokens += input_tokens
+        usage.total_output_tokens += output_tokens
+        usage.last_input_tokens = input_tokens    # Overwrite — tracks latest call only
+        usage.last_output_tokens = output_tokens
 
     def get_usage(self, thread_id: str) -> ThreadTokenUsage:
         """
@@ -75,7 +85,7 @@ class TokenTracker:
             True if token usage exceeds threshold, False otherwise
         """
         usage = self.get_usage(thread_id)
-        return usage.total_tokens >= (model_limit * threshold)
+        return usage.context_tokens >= (model_limit * threshold)
 
     def reset_after_compact(self, thread_id: str, remaining_tokens: int) -> None:
         """
@@ -90,6 +100,8 @@ class TokenTracker:
 
         self._usage[thread_id].total_input_tokens = remaining_tokens
         self._usage[thread_id].total_output_tokens = 0
+        self._usage[thread_id].last_input_tokens = remaining_tokens
+        self._usage[thread_id].last_output_tokens = 0
         self._usage[thread_id].last_compaction_at = datetime.now()
         self._usage[thread_id].compaction_count += 1
 

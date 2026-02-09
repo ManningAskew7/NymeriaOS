@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Collapsible } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
-  import { ActivityFeed } from '$lib/components/dashboard';
+  import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
 </script>
 
@@ -23,15 +23,17 @@
         <TodoFeed />
       </Collapsible>
 
-      <!-- Activity Section -->
-      <Collapsible title="Activity" defaultOpen={false}>
-        {#snippet header()}
+      <!-- Activity Section — always visible -->
+      <div class="section-divider"></div>
+      <div class="activity-section">
+        <div class="activity-header">
           <span class="section-title">Activity</span>
-        {/snippet}
+        </div>
         <ActivityFeed />
-      </Collapsible>
+      </div>
     </div>
   </div>
+  <ConnectionStatus />
 </div>
 
 <style>
@@ -43,7 +45,7 @@
 
   .panel-header {
     padding: var(--spacing-md);
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--glass-border);
   }
 
   .panel-header h2 {
@@ -63,6 +65,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
+    height: 100%;
   }
 
   .section-title {
@@ -83,5 +86,26 @@
     background: var(--accent-primary);
     color: var(--bg-base);
     border-radius: var(--radius-full);
+  }
+
+  .section-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--glass-border), transparent);
+    margin: var(--spacing-xs) 0;
+  }
+
+  .activity-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .activity-header {
+    display: flex;
+    align-items: center;
+    padding: var(--spacing-sm) var(--spacing-md);
+    color: var(--text-primary);
   }
 </style>

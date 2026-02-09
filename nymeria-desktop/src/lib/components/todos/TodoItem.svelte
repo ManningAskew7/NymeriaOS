@@ -259,14 +259,24 @@
     gap: var(--spacing-sm);
     padding: var(--spacing-sm);
     border-radius: var(--radius-md);
-    transition: background var(--transition-fast);
+    transition: background var(--transition-fast), transform var(--transition-fast);
     width: 100%;
     text-align: left;
     background: transparent;
     border: none;
     cursor: default;
     font-family: inherit;
+    animation: staggerFadeIn 0.3s ease-out backwards;
   }
+
+  .todo-item:nth-child(1) { animation-delay: 0.03s; }
+  .todo-item:nth-child(2) { animation-delay: 0.06s; }
+  .todo-item:nth-child(3) { animation-delay: 0.09s; }
+  .todo-item:nth-child(4) { animation-delay: 0.12s; }
+  .todo-item:nth-child(5) { animation-delay: 0.15s; }
+  .todo-item:nth-child(6) { animation-delay: 0.18s; }
+  .todo-item:nth-child(7) { animation-delay: 0.21s; }
+  .todo-item:nth-child(8) { animation-delay: 0.24s; }
 
   .todo-item.expandable {
     cursor: pointer;
@@ -321,6 +331,7 @@
     border-color: var(--success);
     background: var(--success);
     color: white;
+    animation: checkBounce 0.3s ease-out;
   }
 
   .complete-btn:disabled {

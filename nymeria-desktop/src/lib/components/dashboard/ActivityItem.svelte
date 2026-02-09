@@ -80,11 +80,24 @@
     gap: var(--spacing-sm);
     padding: var(--spacing-xs) var(--spacing-sm);
     border-radius: var(--radius-sm);
-    transition: background var(--transition-fast);
+    transition: background var(--transition-fast), transform var(--transition-fast);
+    animation: staggerFadeIn 0.3s ease-out backwards;
   }
+
+  .activity-item:nth-child(1) { animation-delay: 0.03s; }
+  .activity-item:nth-child(2) { animation-delay: 0.06s; }
+  .activity-item:nth-child(3) { animation-delay: 0.09s; }
+  .activity-item:nth-child(4) { animation-delay: 0.12s; }
+  .activity-item:nth-child(5) { animation-delay: 0.15s; }
+  .activity-item:nth-child(6) { animation-delay: 0.18s; }
+  .activity-item:nth-child(7) { animation-delay: 0.21s; }
+  .activity-item:nth-child(8) { animation-delay: 0.24s; }
+  .activity-item:nth-child(9) { animation-delay: 0.27s; }
+  .activity-item:nth-child(10) { animation-delay: 0.3s; }
 
   .activity-item:hover {
     background: var(--bg-hover);
+    transform: translateX(2px);
   }
 
   .activity-icon {

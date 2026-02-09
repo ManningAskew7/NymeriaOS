@@ -52,8 +52,10 @@
     padding: 2px var(--spacing-md, 16px);
     font-size: 0.7rem;
     color: var(--text-muted);
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg-elevated);
+    border-top: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     user-select: none;
     flex-shrink: 0;
   }

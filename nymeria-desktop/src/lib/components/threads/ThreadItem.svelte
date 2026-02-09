@@ -123,9 +123,26 @@
     padding: var(--spacing-sm) var(--spacing-md);
     text-align: left;
     border-radius: var(--radius-md);
-    transition: background var(--transition-fast);
+    transition: background var(--transition-fast), transform var(--transition-fast);
     position: relative;
     cursor: pointer;
+  }
+
+  .thread-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    background: var(--accent-primary);
+    border-radius: 0 2px 2px 0;
+    transform: translateY(-50%);
+    transition: height var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .thread-item.active::before {
+    height: 60%;
   }
 
   .thread-item:hover {
