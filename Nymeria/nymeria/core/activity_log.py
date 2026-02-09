@@ -130,6 +130,7 @@ class ActivityLog:
         user_id: str = "default",
         limit: int = 50,
         activity_type: Optional[ActivityType] = None,
+        thread_id: Optional[str] = None,
     ) -> List[ActivityEntry]:
         """
         Get activity entries for a user.
@@ -138,6 +139,7 @@ class ActivityLog:
             user_id: User identifier
             limit: Maximum number of entries to return
             activity_type: Optional filter by type
+            thread_id: Optional filter by thread ID
 
         Returns:
             List of ActivityEntry objects, newest first
@@ -149,6 +151,10 @@ class ActivityLog:
         # Filter by type if specified
         if activity_type:
             entries = [e for e in entries if e.type == activity_type]
+
+        # Filter by thread_id if specified
+        if thread_id:
+            entries = [e for e in entries if e.thread_id == thread_id]
 
         # Return newest first, limited
         return list(reversed(entries[-limit:]))

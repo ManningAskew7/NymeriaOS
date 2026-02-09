@@ -221,9 +221,10 @@ class NymeriaAgent:
         # Lock for graph cache dict mutations
         self._graph_cache_lock = threading.Lock()
 
-        # Cache for user-specific graphs (user_id -> (memory_hash, graph))
-        self._user_graphs: Dict[str, tuple] = {}
-        self._async_user_graphs: Dict[str, tuple] = {}  # For async operations
+        # Cache for user+thread-specific graphs ((user_id, thread_id) -> (memory_hash, graph))
+        self._user_graphs: Dict[tuple, tuple] = {}
+        self._async_user_graphs: Dict[tuple, tuple] = {}  # For async operations
+        self._GRAPH_CACHE_MAX = 50  # LRU eviction threshold
 
         # Build default checkpointer config (shared across all graphs)
         self._checkpointer_config = self._build_checkpointer_config()
@@ -259,6 +260,9 @@ class NymeriaAgent:
 
             # Migrate old scheduled tasks to TODOs (one-time migration)
             self._migrate_old_scheduled_tasks()
+
+            # Migrate unscoped TODOs to "legacy" thread_id (idempotent)
+            self._migrate_unscoped_todos()
         else:
             logger.info("Ticker disabled (separate worker handles scheduling)")
 
@@ -378,21 +382,25 @@ class NymeriaAgent:
 
         return "\n".join(lines)
 
-    def _build_active_todos_section(self, user_id: str) -> str:
+    def _build_active_todos_section(self, user_id: str, thread_id: str = "") -> str:
         """
         Build the active TODOs section for the system prompt.
 
-        Active TODOs (pending, in_progress, blocked) are injected into context
-        to drive autonomous operation.
+        When thread_id is provided, only TODOs for that thread are shown.
+        Otherwise falls back to all active TODOs.
 
         Args:
             user_id: User identifier
+            thread_id: Thread to scope TODOs to
 
         Returns:
             Formatted TODOs section to append to system prompt
         """
         todo_list = self.todo_manager.get_todos(user_id)
-        active = todo_list.get_active_todos()
+        if thread_id:
+            active = todo_list.get_active_todos_for_thread(thread_id)
+        else:
+            active = todo_list.get_active_todos()
 
         if not active:
             return ""
@@ -446,16 +454,19 @@ class NymeriaAgent:
 
         return "\n".join(lines)
 
-    def _get_memory_hash(self, user_id: str) -> str:
-        """Get a hash of the user's memories, TODOs, and tool preferences to detect changes."""
+    def _get_memory_hash(self, user_id: str, thread_id: str = "") -> str:
+        """Get a hash of the user's memories, thread-scoped TODOs, and tool preferences to detect changes."""
         profile = self.profile_manager.get_profile(user_id)
         # Simple hash based on memory keys and values
         memory_str = "|".join(f"{m.key}:{m.value}" for m in profile.memories)
         personality_str = "|".join(f"{k}:{v}" for k, v in profile.personality_overrides.items())
 
-        # Include TODOs in the hash
+        # Include thread-scoped TODOs in the hash
         todo_list = self.todo_manager.get_todos(user_id)
-        active_todos = todo_list.get_active_todos()
+        if thread_id:
+            active_todos = todo_list.get_active_todos_for_thread(thread_id)
+        else:
+            active_todos = todo_list.get_active_todos()
         todo_str = "|".join(f"{t.id}:{t.status.value}:{t.task[:50]}" for t in active_todos)
 
         # Include tool preferences in the hash (so graph is rebuilt when tools change)
@@ -467,7 +478,9 @@ class NymeriaAgent:
 
         return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str)}"
 
-    def _build_full_system_prompt(self, user_id: str, is_autonomous: bool = False) -> str:
+    def _build_full_system_prompt(
+        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+    ) -> str:
         """
         Build the complete system prompt including user memories and active TODOs.
 
@@ -478,13 +491,14 @@ class NymeriaAgent:
         Args:
             user_id: User identifier
             is_autonomous: If True, append autonomous mode rules; otherwise interactive rules
+            thread_id: Thread to scope TODOs to
 
         Returns:
-            Full system prompt with base content + user memories + active TODOs
+            Full system prompt with base content + user memories + thread-scoped TODOs
             + mode-specific rules
         """
         memories_section = self._build_user_memories_section(user_id)
-        todos_section = self._build_active_todos_section(user_id)
+        todos_section = self._build_active_todos_section(user_id, thread_id)
         prompt = self._base_system_prompt + memories_section + todos_section
 
         # Add mode-specific behavioral rules
@@ -724,7 +738,7 @@ class NymeriaAgent:
             Summary text, or None if generation failed
         """
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-        graph = self._get_async_graph_for_user(user_id)
+        graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
 
         # Inject the compact prompt (marked as internal so it's filtered from user history)
         compact_prompt = self._compactor.get_compact_prompt()
@@ -870,7 +884,7 @@ class NymeriaAgent:
             return {"success": False, "reason": "Failed to clear messages"}
 
         # Inject resume prompt and let agent continue (marked as internal)
-        graph = self._get_async_graph_for_user(user_id)
+        graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
         resume_prompt = self._compactor.format_auto_resume(summary)
         input_state = {"messages": [_create_human_message(
             resume_prompt,
@@ -1192,30 +1206,37 @@ class NymeriaAgent:
             tools=tools,
         )
 
-    def _get_graph_for_user(self, user_id: str, is_autonomous: bool = False):
+    def _get_graph_for_user(
+        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+    ):
         """
-        Get the appropriate graph for a user, rebuilding if memories or tool preferences changed.
+        Get the appropriate graph for a user+thread, rebuilding if memories or TODOs changed.
 
         Args:
             user_id: User identifier
             is_autonomous: If True, include autonomous execution instructions
+            thread_id: Thread for scoping TODOs in the system prompt
 
         Returns:
             LangGraph compiled graph
         """
-        memory_hash = self._get_memory_hash(user_id)
+        memory_hash = self._get_memory_hash(user_id, thread_id)
 
         # For autonomous mode, we always build fresh to include the autonomous prompt
         # We don't cache autonomous graphs since they're only used during self_invoke
         if is_autonomous:
-            logger.debug(f"Building autonomous graph for user {user_id}")
-            full_prompt = self._build_full_system_prompt(user_id, is_autonomous=True)
+            logger.debug(f"Building autonomous graph for user {user_id}, thread {thread_id}")
+            full_prompt = self._build_full_system_prompt(
+                user_id, is_autonomous=True, thread_id=thread_id
+            )
             return self._build_graph_with_prompt(full_prompt, user_id=user_id)
+
+        cache_key = (user_id, thread_id)
 
         # Check if we have a cached graph with current memories/tool preferences
         with self._graph_cache_lock:
-            if user_id in self._user_graphs:
-                cached_hash, cached_graph = self._user_graphs[user_id]
+            if cache_key in self._user_graphs:
+                cached_hash, cached_graph = self._user_graphs[cache_key]
                 if cached_hash == memory_hash:
                     return cached_graph
 
@@ -1223,7 +1244,10 @@ class NymeriaAgent:
         profile = self.profile_manager.get_profile(user_id)
         todo_list = self.todo_manager.get_todos(user_id)
         has_memories = profile.memories or profile.personality_overrides
-        has_todos = bool(todo_list.get_active_todos())
+        has_todos = bool(
+            todo_list.get_active_todos_for_thread(thread_id) if thread_id
+            else todo_list.get_active_todos()
+        )
         has_tool_prefs = (
             profile.tool_preferences.enabled_overrides or
             profile.tool_preferences.disabled_categories
@@ -1234,31 +1258,37 @@ class NymeriaAgent:
             return self._default_graph
 
         # Build new graph with user's context and tool preferences
-        logger.debug(f"Building new graph for user {user_id} (context or tools changed)")
-        full_prompt = self._build_full_system_prompt(user_id)
+        logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
+        full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
         graph = self._build_graph_with_prompt(full_prompt, user_id=user_id)
 
-        # Cache it
+        # Cache it with LRU eviction
         with self._graph_cache_lock:
-            self._user_graphs[user_id] = (memory_hash, graph)
+            if len(self._user_graphs) >= self._GRAPH_CACHE_MAX:
+                # Evict oldest entry
+                oldest_key = next(iter(self._user_graphs))
+                del self._user_graphs[oldest_key]
+            self._user_graphs[cache_key] = (memory_hash, graph)
         return graph
 
-    def _get_async_graph_for_user(self, user_id: str):
+    def _get_async_graph_for_user(self, user_id: str, thread_id: str = ""):
         """
-        Get the appropriate async graph for a user, rebuilding if memories or tool preferences changed.
+        Get the appropriate async graph for a user+thread, rebuilding if memories or TODOs changed.
 
         Args:
             user_id: User identifier
+            thread_id: Thread for scoping TODOs in the system prompt
 
         Returns:
             LangGraph compiled graph for async operations
         """
-        memory_hash = self._get_memory_hash(user_id)
+        memory_hash = self._get_memory_hash(user_id, thread_id)
+        cache_key = (user_id, thread_id)
 
         # Check if we have a cached async graph with current memories/tool preferences
         with self._graph_cache_lock:
-            if user_id in self._async_user_graphs:
-                cached_hash, cached_graph = self._async_user_graphs[user_id]
+            if cache_key in self._async_user_graphs:
+                cached_hash, cached_graph = self._async_user_graphs[cache_key]
                 if cached_hash == memory_hash:
                     return cached_graph
 
@@ -1266,7 +1296,10 @@ class NymeriaAgent:
         profile = self.profile_manager.get_profile(user_id)
         todo_list = self.todo_manager.get_todos(user_id)
         has_memories = profile.memories or profile.personality_overrides
-        has_todos = bool(todo_list.get_active_todos())
+        has_todos = bool(
+            todo_list.get_active_todos_for_thread(thread_id) if thread_id
+            else todo_list.get_active_todos()
+        )
         has_tool_prefs = (
             profile.tool_preferences.enabled_overrides or
             profile.tool_preferences.disabled_categories
@@ -1277,13 +1310,16 @@ class NymeriaAgent:
             return self._default_async_graph
 
         # Build new async graph with user's context and tool preferences
-        logger.debug(f"Building new async graph for user {user_id} (context or tools changed)")
-        full_prompt = self._build_full_system_prompt(user_id)
+        logger.debug(f"Building new async graph for user {user_id}, thread {thread_id} (context or tools changed)")
+        full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
         graph = self._build_async_graph_with_prompt(full_prompt, user_id=user_id)
 
-        # Cache it
+        # Cache it with LRU eviction
         with self._graph_cache_lock:
-            self._async_user_graphs[user_id] = (memory_hash, graph)
+            if len(self._async_user_graphs) >= self._GRAPH_CACHE_MAX:
+                oldest_key = next(iter(self._async_user_graphs))
+                del self._async_user_graphs[oldest_key]
+            self._async_user_graphs[cache_key] = (memory_hash, graph)
         return graph
 
     def register_tool(self, tool: BaseTool) -> "NymeriaAgent":
@@ -1484,7 +1520,9 @@ class NymeriaAgent:
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             # For autonomous execution, include the autonomous mode instructions
-            graph = self._get_graph_for_user(user_id, is_autonomous=_is_self_invoke)
+            graph = self._get_graph_for_user(
+                user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+            )
 
             # Inject time context into the message (includes trigger type for autonomous wake-ups)
             time_context = self._get_time_context(is_autonomous=_is_self_invoke)
@@ -1595,7 +1633,9 @@ class NymeriaAgent:
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             # For autonomous execution, include the autonomous mode instructions
-            graph = self._get_graph_for_user(user_id, is_autonomous=_is_self_invoke)
+            graph = self._get_graph_for_user(
+                user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+            )
 
             # Inject time context into the message (includes trigger type for autonomous wake-ups)
             time_context = self._get_time_context(is_autonomous=_is_self_invoke)
@@ -1816,7 +1856,7 @@ class NymeriaAgent:
             self.scheduler.cancel(user_id)
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
-            graph = self._get_async_graph_for_user(user_id)
+            graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
 
             # DEBUG: Log what messages are currently in the checkpoint before processing
             try:
@@ -2532,3 +2572,8 @@ class NymeriaAgent:
             self.todo_manager,
             self._schedule_db,
         )
+
+    def _migrate_unscoped_todos(self) -> None:
+        """Migrate TODOs that lack a thread_id to 'legacy'. Idempotent."""
+        for user_id in self.todo_manager.get_all_users_with_todos():
+            self.todo_manager.migrate_unscoped_todos(user_id)

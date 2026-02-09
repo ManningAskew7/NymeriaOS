@@ -154,6 +154,11 @@ class Settings(BaseSettings):
         le=60,
         description="Seconds between ticker polls for due tasks"
     )
+    max_concurrent_autonomous: int = Field(
+        default=5,
+        ge=0,
+        description="Max concurrent autonomous tasks (0 = unlimited)"
+    )
     max_self_invokes_per_hour: int = Field(
         default=50,
         ge=1,

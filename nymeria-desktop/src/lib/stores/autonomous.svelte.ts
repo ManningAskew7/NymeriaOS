@@ -10,6 +10,7 @@ import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
+import { api } from '$lib/services/api.svelte';
 
 interface AutonomousEvent {
   type: string;
@@ -31,6 +32,10 @@ function createAutonomousStore() {
   let reconnectAttempts = $state(0);
   let activeTaskId = $state<string | null>(null); // Track which autonomous task we're streaming
   let activeMessageId = $state<string | null>(null); // Track the message we created for this task
+
+  // Multi-thread task tracking
+  let activeTasksByThread = $state<Map<string, string>>(new Map()); // thread_id -> task_id
+  let activeMessagesByThread = $state<Map<string, string>>(new Map()); // thread_id -> message_id
 
   const MAX_RECONNECT_ATTEMPTS = 10;
   const RECONNECT_DELAY_MS = 3000;
@@ -128,12 +133,23 @@ function createAutonomousStore() {
     }, delay);
   }
 
+  async function refreshThreadTaskCounts() {
+    try {
+      const counts = await api.getThreadTaskCounts();
+      threadsStore.setThreadTaskCounts(counts);
+    } catch (e) {
+      console.warn('[Autonomous] Failed to refresh thread task counts:', e);
+    }
+  }
+
   function handleEvent(event: AutonomousEvent) {
     console.log('[Autonomous] Event:', event.type, event);
 
     const currentThreadId = threadsStore.currentThreadId;
     const isCurrentThread = event.thread_id === currentThreadId;
-    const isOurTask = activeTaskId === event.task_id;
+    // Check both the legacy single-task tracking and per-thread tracking
+    const isOurTask = activeTaskId === event.task_id ||
+      activeTasksByThread.get(event.thread_id) === event.task_id;
 
     switch (event.type) {
       case 'task_started':
@@ -141,12 +157,21 @@ function createAutonomousStore() {
         todosStore.fetch();
         activityStore.fetch();
 
+        // Track this task per-thread
+        activeTasksByThread = new Map(activeTasksByThread).set(
+          event.thread_id, event.task_id as string
+        );
+        threadsStore.setThreadActive(event.thread_id, true);
+
         // If on the same thread and not already streaming (user typing),
         // show that autonomous activity is starting
         if (isCurrentThread && !chatStore.isStreaming) {
           activeTaskId = event.task_id;
           // Add a placeholder message for the autonomous task and track its ID
           activeMessageId = chatStore.addAssistantMessage();
+          activeMessagesByThread = new Map(activeMessagesByThread).set(
+            event.thread_id, activeMessageId!
+          );
           chatStore.setStreaming(true);
           chatStore.setIntermediateContent('Autonomous task started...');
         }
@@ -207,6 +232,18 @@ function createAutonomousStore() {
         // Always refresh these
         todosStore.fetch();
         activityStore.fetch();
+        refreshThreadTaskCounts();
+
+        // Clear per-thread tracking
+        {
+          const nextTasks = new Map(activeTasksByThread);
+          nextTasks.delete(event.thread_id);
+          activeTasksByThread = nextTasks;
+          const nextMsgs = new Map(activeMessagesByThread);
+          nextMsgs.delete(event.thread_id);
+          activeMessagesByThread = nextMsgs;
+        }
+        threadsStore.setThreadActive(event.thread_id, false);
 
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           chatStore.setStreaming(false);
@@ -256,7 +293,6 @@ function createAutonomousStore() {
         // we could show a notification or indicator
         if (!isCurrentThread && event.visibility === 'full') {
           console.log('[Autonomous] Task completed on different thread:', event.thread_id);
-          // Could trigger a notification or thread badge update here
         }
         break;
 

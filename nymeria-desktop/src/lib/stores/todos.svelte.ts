@@ -99,12 +99,17 @@ function createTodosStore() {
   // Computed: count of completed todos
   const completedCount = $derived(todos.filter((t) => t.status === 'done').length);
 
-  async function fetch(filterStatus?: string): Promise<void> {
+  let currentThreadFilter = $state<string | undefined>(undefined);
+
+  async function fetch(filterStatus?: string, threadId?: string): Promise<void> {
     loading = true;
     error = null;
+    if (threadId !== undefined) {
+      currentThreadFilter = threadId;
+    }
 
     try {
-      const response = await api.getTodos(filterStatus);
+      const response = await api.getTodos(filterStatus, currentThreadFilter);
       todos = response.items;
       lastFetch = new Date();
     } catch (e) {

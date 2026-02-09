@@ -5,12 +5,14 @@
   interface Props {
     thread: Thread;
     isActive: boolean;
+    taskCount?: number;
+    hasActiveTask?: boolean;
     onSelect: () => void;
     onDelete: () => void;
     onRename: (newTitle: string) => void;
   }
 
-  let { thread, isActive, onSelect, onDelete, onRename }: Props = $props();
+  let { thread, isActive, taskCount, hasActiveTask, onSelect, onDelete, onRename }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -101,6 +103,17 @@
       {/if}
     {/if}
   </div>
+
+  {#if !showActions && !isEditing}
+    <div class="thread-badges">
+      {#if hasActiveTask}
+        <span class="active-indicator"><span class="badge-spinner"></span></span>
+      {/if}
+      {#if taskCount && taskCount > 0}
+        <span class="task-badge">{taskCount}</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if showActions && !isEditing}
     <div class="action-buttons">
@@ -235,5 +248,50 @@
 
   .edit-input:focus {
     box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+  }
+
+  .thread-badges {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    margin-left: auto;
+    padding-right: var(--spacing-xs);
+  }
+
+  .task-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--accent-primary);
+    color: var(--bg-base);
+    border-radius: var(--radius-full);
+  }
+
+  .active-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+  }
+
+  .badge-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: badgeSpin 0.8s linear infinite;
+  }
+
+  @keyframes badgeSpin {
+    to { transform: rotate(360deg); }
   }
 </style>

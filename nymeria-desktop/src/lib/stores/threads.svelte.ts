@@ -58,6 +58,8 @@ function generateTitleFromMessage(message: string, maxLength: number = 40): stri
 function createThreadsStore() {
   let threads = $state<Thread[]>(loadThreads());
   let currentThreadId = $state<string | null>(null);
+  let threadTaskCounts = $state<Record<string, number>>({});
+  let activeThreadTasks = $state<Set<string>>(new Set());
 
   return {
     get threads() {
@@ -196,6 +198,29 @@ function createThreadsStore() {
 
     clearCurrent() {
       currentThreadId = null;
+    },
+
+    // Thread task badge support
+    setThreadTaskCounts(counts: Record<string, number>) {
+      threadTaskCounts = counts;
+    },
+
+    getThreadTaskCount(threadId: string): number {
+      return threadTaskCounts[threadId] ?? 0;
+    },
+
+    setThreadActive(threadId: string, active: boolean) {
+      const next = new Set(activeThreadTasks);
+      if (active) {
+        next.add(threadId);
+      } else {
+        next.delete(threadId);
+      }
+      activeThreadTasks = next;
+    },
+
+    isThreadActive(threadId: string): boolean {
+      return activeThreadTasks.has(threadId);
     }
   };
 }
