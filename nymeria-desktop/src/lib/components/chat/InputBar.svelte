@@ -293,14 +293,17 @@
 <style>
   .input-container {
     position: relative;
-    background: var(--bg-elevated-2);
+    background: var(--glass-bg-strong);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     border-radius: var(--radius-lg);
-    border: 1px solid var(--border-subtle);
-    transition: border-color var(--transition-fast);
+    border: 1px solid var(--glass-border);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
 
   .input-container:focus-within {
     border-color: var(--accent-primary);
+    box-shadow: var(--accent-glow-sm);
   }
 
   .input-container.drag-over {

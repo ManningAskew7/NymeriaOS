@@ -70,6 +70,18 @@
   --transition-fast: 150ms ease;
   --transition-normal: 250ms ease;
   --transition-slow: 350ms ease;
+
+  /* Glassmorphism (defaults — overridden per-theme in themes.ts) */
+  --glass-bg: rgba(26, 29, 33, 0.7);
+  --glass-bg-strong: rgba(26, 29, 33, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-blur: blur(12px);
+  --glass-blur-strong: blur(20px);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+
+  /* Accent glow variants */
+  --accent-glow-sm: 0 0 12px rgba(34, 211, 238, 0.15);
+  --accent-glow-md: 0 0 20px rgba(34, 211, 238, 0.2);
 }
 
 /* Reset and base styles */
@@ -98,8 +110,12 @@ body {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar:hover {
   width: 8px;
-  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -109,6 +125,7 @@ body {
 ::-webkit-scrollbar-thumb {
   background: var(--border-default);
   border-radius: var(--radius-full);
+  transition: background 0.2s;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -324,4 +341,39 @@ pre code {
 
 .animate-slideUp {
   animation: slideUp var(--transition-normal);
+}
+
+@keyframes staggerFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes glowPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px var(--accent-primary), 0 0 8px rgba(34, 211, 238, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 0 1px var(--accent-primary), 0 0 16px rgba(34, 211, 238, 0.25);
+  }
+}
+
+@keyframes checkBounce {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+/* Accessibility: respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -104,15 +104,18 @@
 
 <style>
   .tool-call-card {
-    background: var(--bubble-tool);
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     border-radius: var(--radius-md);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--glass-border);
     overflow: hidden;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
 
   .tool-call-card.running {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 1px var(--accent-primary);
+    animation: glowPulse 2s ease-in-out infinite;
   }
 
   .tool-header {

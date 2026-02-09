@@ -40,8 +40,8 @@
     width: var(--sidebar-width);
     min-width: var(--sidebar-width);
     height: 100%;
-    background: var(--bg-elevated);
-    border-right: 1px solid var(--border-subtle);
+    background: var(--glass-bg-strong);
+    border-right: 1px solid var(--glass-border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -60,8 +60,8 @@
     width: var(--right-panel-width);
     min-width: var(--right-panel-width);
     height: 100%;
-    background: var(--bg-elevated);
-    border-left: 1px solid var(--border-subtle);
+    background: var(--glass-bg-strong);
+    border-left: 1px solid var(--glass-border);
     display: flex;
     flex-direction: column;
     overflow: hidden;

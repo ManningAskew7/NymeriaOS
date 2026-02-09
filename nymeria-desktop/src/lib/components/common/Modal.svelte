@@ -46,7 +46,9 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -55,10 +57,12 @@
   }
 
   .modal {
-    background: var(--bg-elevated);
+    background: var(--glass-bg-strong);
+    backdrop-filter: var(--glass-blur-strong);
+    -webkit-backdrop-filter: var(--glass-blur-strong);
     border-radius: var(--radius-lg);
-    border: 1px solid var(--border-subtle);
-    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
     min-width: 400px;
     max-width: 90vw;
     max-height: 90vh;
