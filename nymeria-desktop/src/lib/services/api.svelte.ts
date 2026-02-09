@@ -505,10 +505,23 @@ export class NymeriaAPI {
 
   // Dashboard API Methods
 
-  async getTodos(filterStatus?: string): Promise<TodoListResponse> {
+  async getThreadTaskCounts(): Promise<Record<string, number>> {
+    const response = await fetch(`${this.getBaseUrl()}/todos/thread-counts`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async getTodos(filterStatus?: string, threadId?: string): Promise<TodoListResponse> {
     const params = new URLSearchParams();
     if (filterStatus) {
       params.set('filter_status', filterStatus);
+    }
+    if (threadId) {
+      params.set('thread_id', threadId);
     }
 
     const url = `${this.getBaseUrl()}/todos${params.toString() ? `?${params}` : ''}`;
@@ -677,9 +690,12 @@ export class NymeriaAPI {
     };
   }
 
-  async getActivity(limit: number = 50): Promise<ActivityLogResponse> {
+  async getActivity(limit: number = 50, threadId?: string): Promise<ActivityLogResponse> {
     const params = new URLSearchParams();
     params.set('limit', limit.toString());
+    if (threadId) {
+      params.set('thread_id', threadId);
+    }
 
     const response = await fetch(`${this.getBaseUrl()}/activity?${params}`, {
       headers: this.getHeaders()

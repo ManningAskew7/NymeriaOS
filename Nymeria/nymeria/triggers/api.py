@@ -970,10 +970,22 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # Dashboard Endpoints
     # ========================================================================
 
+    @app.get("/todos/thread-counts", tags=["Dashboard"])
+    async def get_thread_task_counts(
+        user_id: str = Query(default="default", description="User ID"),
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Get active task count per thread for badge display."""
+        todo_manager = TodoManager(settings.data_dir)
+        todo_list = todo_manager.get_todos(user_id)
+        return todo_list.get_thread_task_counts()
+
     @app.get("/todos", response_model=TodoListResponse, tags=["Dashboard"])
     async def get_todos(
         user_id: str = Query(default="default", description="User ID"),
         filter_status: Optional[str] = Query(default=None, description="Filter by status"),
+        thread_id: Optional[str] = Query(default=None, description="Filter by thread ID"),
         _: bool = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
@@ -981,6 +993,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Get TODO items for a user.
 
         Returns all active TODOs by default. Use filter_status to filter by specific status.
+        Optionally filter by thread_id.
         """
         todo_manager = TodoManager(settings.data_dir)
         todo_list = todo_manager.get_todos(user_id)
@@ -1000,6 +1013,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         else:
             # Default: active (non-done) items
             items = todo_list.get_active_todos()
+
+        # Filter by thread_id if provided
+        if thread_id:
+            items = [i for i in items if i.thread_id == thread_id]
 
         # Sort: in_progress first, then by priority, then by created_at
         priority_order = {TodoPriority.HIGH: 0, TodoPriority.MEDIUM: 1, TodoPriority.LOW: 2, None: 3}
@@ -1159,6 +1176,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Parse scheduled_for
         scheduled_for = _parse_scheduled_for(request.scheduled_for)
 
+        # Default thread_id from request, fallback to user-scoped default
+        todo_thread_id = request.thread_id or f"default-{user_id}"
+
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
                 task=request.task,
@@ -1166,7 +1186,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 deadline=request.deadline,
                 notes=request.notes,
                 scheduled_for=scheduled_for,
-                thread_id=request.thread_id,
+                thread_id=todo_thread_id,
                 created_by="user",
                 recurrence=request.recurrence.lower() if request.recurrence else None,
             )
@@ -1397,6 +1417,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str = Query(default="default", description="User ID"),
         limit: int = Query(default=50, le=100, description="Max entries to return"),
         activity_type: Optional[str] = Query(default=None, description="Filter by type"),
+        thread_id: Optional[str] = Query(default=None, description="Filter by thread ID"),
         _: bool = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
@@ -1404,6 +1425,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Get activity log for a user.
 
         Returns recent activity entries, newest first.
+        Optionally filter by thread_id.
         """
         activity_log = ActivityLog(settings.data_dir)
 
@@ -1418,7 +1440,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     detail=f"Invalid activity type '{activity_type}'",
                 )
 
-        entries = activity_log.get_entries(user_id, limit=limit, activity_type=type_filter)
+        entries = activity_log.get_entries(
+            user_id, limit=limit, activity_type=type_filter, thread_id=thread_id
+        )
 
         return ActivityLogResponse(
             entries=[

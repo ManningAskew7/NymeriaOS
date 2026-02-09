@@ -10,8 +10,9 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Optional, Set
+from typing import TYPE_CHECKING, Dict, Optional, Set
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -126,9 +127,10 @@ class Ticker:
         self.poll_interval = poll_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._processing: Set[str] = set()  # Currently executing TODO IDs
+        self._active_futures: Dict[str, Future] = {}  # todo_id -> running Future
         self._lock = threading.Lock()
         self._retry_counts: dict = {}  # Track retries per TODO
+        self._executor: Optional[ThreadPoolExecutor] = None
 
     def start(self) -> None:
         """Start the ticker thread."""
@@ -137,6 +139,13 @@ class Ticker:
             return
 
         self._running = True
+
+        # Initialize thread pool for parallel autonomous execution
+        max_workers = self.agent.settings.max_concurrent_autonomous or None  # 0 = None = unlimited
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="NymeriaTicker"
+        )
+
         self._thread = threading.Thread(
             target=self._poll_loop,
             name="NymeriaTicker",
@@ -144,7 +153,11 @@ class Ticker:
         )
         self._thread.start()
         current_time = time.time()
-        logger.info(f"Ticker started with {self.poll_interval}s poll interval. Current timestamp: {current_time} ({datetime.fromtimestamp(current_time)})")
+        logger.info(
+            f"Ticker started with {self.poll_interval}s poll interval, "
+            f"max_workers={max_workers}. Current timestamp: {current_time} "
+            f"({datetime.fromtimestamp(current_time)})"
+        )
 
         # Register cleanup on exit
         atexit.register(self.stop)
@@ -155,6 +168,9 @@ class Ticker:
             return
 
         self._running = False
+        if self._executor:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._executor = None
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         logger.info("Ticker stopped")
@@ -191,18 +207,26 @@ class Ticker:
             if int(now) % 30 < self.poll_interval:
                 logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - No due TODOs")
 
-        for entry in due_entries:
-            # Skip if already processing
-            with self._lock:
-                if entry.todo_id in self._processing:
-                    continue
-                self._processing.add(entry.todo_id)
+        # Clean up completed futures
+        with self._lock:
+            done_ids = [tid for tid, f in self._active_futures.items() if f.done()]
+            for tid in done_ids:
+                f = self._active_futures.pop(tid)
+                exc = f.exception()
+                if exc:
+                    logger.error(f"Task {tid} failed in thread pool: {exc}")
 
-            try:
-                self._execute_scheduled_todo(entry)
-            finally:
+        for entry in due_entries:
+            # Skip if already running in the pool
+            with self._lock:
+                if entry.todo_id in self._active_futures:
+                    continue
+
+            # Submit to thread pool for parallel execution
+            if self._executor:
+                future = self._executor.submit(self._execute_scheduled_todo, entry)
                 with self._lock:
-                    self._processing.discard(entry.todo_id)
+                    self._active_futures[entry.todo_id] = future
 
     def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Optional[datetime]:
         """

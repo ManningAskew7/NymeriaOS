@@ -6,8 +6,19 @@
   import { onMount } from 'svelte';
   import type { TodoItem as TodoItemType } from '$lib/types';
 
+  interface Props {
+    threadId?: string;
+  }
+
+  let { threadId }: Props = $props();
+
   onMount(() => {
-    todosStore.fetch();
+    todosStore.fetch(undefined, threadId);
+  });
+
+  // Re-fetch when threadId changes
+  $effect(() => {
+    todosStore.fetch(undefined, threadId);
   });
 
   let organized = $derived(todosStore.organizedTodos);
@@ -54,8 +65,13 @@
     </div>
   {:else if todosStore.todos.length === 0}
     <div class="empty-state">
-      <p>No tasks yet</p>
-      <p class="hint">Click "Add Task" to create one or let Nymeria add tasks as she works</p>
+      {#if threadId}
+        <p>No tasks in this thread</p>
+        <p class="hint">Tasks created in this conversation will appear here</p>
+      {:else}
+        <p>No tasks yet</p>
+        <p class="hint">Click "Add Task" to create one or let Nymeria add tasks as she works</p>
+      {/if}
     </div>
   {:else}
     <!-- In Progress Section (highlighted at top) -->

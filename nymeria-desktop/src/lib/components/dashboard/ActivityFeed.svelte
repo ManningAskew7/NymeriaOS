@@ -3,9 +3,20 @@
   import ActivityItem from './ActivityItem.svelte';
   import { onMount } from 'svelte';
 
+  interface Props {
+    threadId?: string;
+  }
+
+  let { threadId }: Props = $props();
+
   onMount(() => {
     activityStore.startPolling();
     return () => activityStore.stopPolling();
+  });
+
+  // Re-fetch when threadId changes
+  $effect(() => {
+    activityStore.fetch(50, threadId);
   });
 </script>
 
@@ -20,8 +31,13 @@
     </div>
   {:else if activityStore.entries.length === 0}
     <div class="empty-state">
-      <p>No recent activity</p>
-      <p class="hint">Activity will appear here as Nymeria works</p>
+      {#if threadId}
+        <p>No activity in this thread</p>
+        <p class="hint">Autonomous task activity for this thread will appear here</p>
+      {:else}
+        <p>No recent activity</p>
+        <p class="hint">Activity will appear here as Nymeria works</p>
+      {/if}
     </div>
   {:else}
     <div class="activity-list">

@@ -10,12 +10,17 @@ function createActivityStore() {
   let lastFetch = $state<Date | null>(null);
   let pollIntervalId: ReturnType<typeof setInterval> | null = null;
 
-  async function fetch(limit: number = 50): Promise<void> {
+  let currentThreadFilter = $state<string | undefined>(undefined);
+
+  async function fetch(limit: number = 50, threadId?: string): Promise<void> {
     loading = true;
     error = null;
+    if (threadId !== undefined) {
+      currentThreadFilter = threadId;
+    }
 
     try {
-      const response = await api.getActivity(limit);
+      const response = await api.getActivity(limit, currentThreadFilter);
       entries = response.entries;
       lastFetch = new Date();
     } catch (e) {

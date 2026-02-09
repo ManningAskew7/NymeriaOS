@@ -65,6 +65,8 @@
             <ThreadItem
               {thread}
               isActive={thread.id === threadsStore.currentThreadId}
+              taskCount={threadsStore.getThreadTaskCount(thread.id)}
+              hasActiveTask={threadsStore.isThreadActive(thread.id)}
               onSelect={() => handleSelectThread(thread.id)}
               onDelete={() => handleDeleteThread(thread.id)}
               onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}

@@ -3,11 +3,33 @@
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
+
+  let activeTab = $state<'thread' | 'global'>('thread');
+  let currentThreadId = $derived(threadsStore.currentThreadId);
 </script>
 
 <div class="right-panel-content">
   <div class="panel-header">
     <h2>Dashboard</h2>
+    <div class="tab-buttons">
+      <button
+        class="tab-btn"
+        class:active={activeTab === 'thread'}
+        onclick={() => (activeTab = 'thread')}
+        type="button"
+      >
+        This Thread
+      </button>
+      <button
+        class="tab-btn"
+        class:active={activeTab === 'global'}
+        onclick={() => (activeTab = 'global')}
+        type="button"
+      >
+        Global
+      </button>
+    </div>
   </div>
 
   <div class="panel-body">
@@ -20,7 +42,11 @@
             <span class="section-count">{todosStore.todos.length}</span>
           {/if}
         {/snippet}
-        <TodoFeed />
+        {#if activeTab === 'thread' && currentThreadId}
+          <TodoFeed threadId={currentThreadId} />
+        {:else}
+          <TodoFeed />
+        {/if}
       </Collapsible>
 
       <!-- Activity Section — always visible -->
@@ -29,7 +55,11 @@
         <div class="activity-header">
           <span class="section-title">Activity</span>
         </div>
-        <ActivityFeed />
+        {#if activeTab === 'thread' && currentThreadId}
+          <ActivityFeed threadId={currentThreadId} />
+        {:else}
+          <ActivityFeed />
+        {/if}
       </div>
     </div>
   </div>
@@ -53,6 +83,37 @@
     font-size: var(--font-size-lg);
     font-weight: 600;
     color: var(--text-primary);
+  }
+
+  .tab-buttons {
+    display: flex;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-sm);
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .tab-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  .tab-btn.active {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+    box-shadow: var(--accent-glow-sm);
   }
 
   .panel-body {

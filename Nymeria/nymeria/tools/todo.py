@@ -9,6 +9,7 @@ When a TODO has a scheduled time, Nymeria wakes up to work on it.
 """
 
 import logging
+import uuid as _uuid
 from datetime import datetime
 from typing import Annotated, List, Optional, Union
 
@@ -107,6 +108,8 @@ def todo_add(
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
+    if not thread_id:
+        thread_id = f"todo-{str(_uuid.uuid4())[:8]}"
     manager = _get_todo_manager()
     schedule_db = _get_schedule_db()
 
@@ -157,7 +160,7 @@ def todo_add(
             priority=todo_priority,
             deadline=todo_deadline,
             scheduled_for=todo_scheduled,
-            thread_id=thread_id if todo_scheduled else None,
+            thread_id=thread_id,
             recurrence=todo_recurrence,
             permanent=permanent,
         )
@@ -272,7 +275,7 @@ def _todo_add_batch(
                 priority=todo_priority,
                 deadline=todo_deadline,
                 scheduled_for=todo_scheduled,
-                thread_id=thread_id if todo_scheduled else None,
+                thread_id=thread_id,
                 recurrence=todo_recurrence,
                 permanent=todo_permanent,
             )
@@ -403,7 +406,7 @@ def todo_update(
             priority=todo_priority,
             scheduled_for=todo_scheduled,
             clear_schedule=clear_schedule,
-            thread_id=thread_id if todo_scheduled else None,
+            thread_id=thread_id if todo_scheduled else None,  # Only update thread on reschedule
             recurrence=todo_recurrence,
             clear_recurrence=clear_recurrence,
         )

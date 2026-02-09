@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,16 @@ class TodoItem(BaseModel):
 
     # Scheduling fields - when set, Nymeria wakes up to work on this TODO
     scheduled_for: Optional[datetime] = Field(default=None, description="When to wake up and work on this TODO")
-    thread_id: Optional[str] = Field(default=None, description="Thread context for scheduled execution")
+    thread_id: str = Field(..., description="Thread this TODO belongs to")
     last_execution: Optional[datetime] = Field(default=None, description="Last scheduled execution time")
+
+    @model_validator(mode='before')
+    @classmethod
+    def _migrate_thread_id(cls, data: dict) -> dict:
+        """Backfill thread_id='legacy' for old TODOs that lack one."""
+        if isinstance(data, dict) and not data.get('thread_id'):
+            data['thread_id'] = 'legacy'
+        return data
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
@@ -104,7 +112,7 @@ class TodoList(BaseModel):
         priority: Optional[TodoPriority] = None,
         deadline: Optional[datetime] = None,
         scheduled_for: Optional[datetime] = None,
-        thread_id: Optional[str] = None,
+        thread_id: str = "legacy",
         created_by: str = "agent",
         recurrence: Optional[str] = None,
         notes: Optional[str] = None,
@@ -227,7 +235,7 @@ class TodoList(BaseModel):
 
         if clear_schedule:
             item.scheduled_for = None
-            item.thread_id = None
+            # thread_id is preserved (scoping stays even when schedule is cleared)
         else:
             if scheduled_for is not None:
                 item.scheduled_for = scheduled_for
@@ -295,6 +303,18 @@ class TodoList(BaseModel):
     def get_active_todos(self) -> List[TodoItem]:
         """Get all active (non-done) TODO items."""
         return [item for item in self.items if item.is_active()]
+
+    def get_active_todos_for_thread(self, thread_id: str) -> List[TodoItem]:
+        """Get active TODO items scoped to a specific thread."""
+        return [t for t in self.items if t.thread_id == thread_id and t.is_active()]
+
+    def get_thread_task_counts(self) -> Dict[str, int]:
+        """Get active task count per thread_id for badge display."""
+        counts: Dict[str, int] = {}
+        for item in self.items:
+            if item.is_active():
+                counts[item.thread_id] = counts.get(item.thread_id, 0) + 1
+        return counts
 
     def get_stale_todos(self, staleness_hours: int) -> List[TodoItem]:
         """Get TODO items that haven't been updated in staleness_hours."""
@@ -532,6 +552,27 @@ class TodoManager:
                 schedule_db.remove_scheduled(todo_id)
                 return True
         return False
+
+    def migrate_unscoped_todos(self, user_id: str, default_thread_id: str = "legacy") -> int:
+        """
+        Migrate TODOs that have no thread_id to the given default.
+
+        This is idempotent — the model_validator already backfills 'legacy',
+        but calling this ensures the file on disk is updated too.
+
+        Returns:
+            Number of items migrated.
+        """
+        migrated = 0
+        with self.atomic_update(user_id) as todo_list:
+            for item in todo_list.items:
+                if not item.thread_id or item.thread_id == "legacy":
+                    if item.thread_id != default_thread_id:
+                        item.thread_id = default_thread_id
+                        migrated += 1
+        if migrated:
+            logger.info(f"Migrated {migrated} unscoped TODO(s) for user {user_id} -> thread '{default_thread_id}'")
+        return migrated
 
     def get_todo_by_id(self, user_id: str, todo_id: str) -> Optional[TodoItem]:
         """
