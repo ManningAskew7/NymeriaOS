@@ -35,7 +35,7 @@
     height: 6px;
     background: var(--accent-primary);
     border-radius: 50%;
-    animation: pulse 1.4s ease-in-out infinite;
+    animation: thinkingPulse 1.4s ease-in-out infinite;
   }
 
   .dot:nth-child(2) {
@@ -46,7 +46,7 @@
     animation-delay: 0.4s;
   }
 
-  @keyframes pulse {
+  @keyframes thinkingPulse {
     0%,
     100% {
       opacity: 0.4;

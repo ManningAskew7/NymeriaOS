@@ -405,8 +405,6 @@ function createChatStore() {
             ...lastMessage,
             steps: updatedSteps,
             toolCalls: legacyToolCalls,
-            // Clear content when first tool call arrives (it becomes thinking in steps)
-            content: ''
           }
         ];
       }
@@ -450,7 +448,45 @@ function createChatStore() {
     },
 
     /**
+     * Add a response step to the last assistant message.
+     * Response steps preserve order with thinking and tool calls for proper interleaving.
+     * If the last step is already a response step, append to it (streaming chunks).
+     */
+    addResponseStep(content: string) {
+      if (messages.length === 0) return;
+
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+
+      if (lastMessage.role === 'assistant') {
+        const steps = lastMessage.steps || [];
+        const lastStep = steps[steps.length - 1];
+
+        let updatedSteps: MessageStep[];
+        if (lastStep && lastStep.type === 'response') {
+          // Append to existing response step (streaming chunks)
+          updatedSteps = [
+            ...steps.slice(0, -1),
+            { ...lastStep, content: (lastStep.content || '') + content }
+          ];
+        } else {
+          // Create new response step
+          updatedSteps = [...steps, { type: 'response' as const, content }];
+        }
+
+        messages = [
+          ...messages.slice(0, lastIndex),
+          {
+            ...lastMessage,
+            steps: updatedSteps
+          }
+        ];
+      }
+    },
+
+    /**
      * Set the final response content (after all steps).
+     * Legacy method - kept for backwards compatibility.
      */
     setResponseContent(content: string) {
       if (messages.length === 0) return;
@@ -470,9 +506,10 @@ function createChatStore() {
     },
 
     /**
-     * Reclassify the last thinking steps as response content.
-     * Used when content streamed as "thinking" is actually the final response
-     * (no tool calls followed).
+     * Reclassify trailing thinking steps as response steps (in-place).
+     * Thinking steps after the last tool call become type: 'response' so they
+     * render as normal text instead of italic thinking text.
+     * Also computes message.content from all response steps for history/search.
      */
     reclassifyThinkingAsResponse() {
       if (messages.length === 0) return;
@@ -481,13 +518,9 @@ function createChatStore() {
       const lastMessage = messages[lastIndex];
 
       if (lastMessage.role === 'assistant' && lastMessage.steps) {
-        // Find consecutive thinking steps at the end (no tool calls after them)
         const steps = lastMessage.steps;
-        let thinkingContent = '';
-        const newSteps: MessageStep[] = [];
 
-        // Collect thinking content that should become response
-        // If there are tool calls, only thinking AFTER the last tool call becomes response
+        // Find last tool call index
         let lastToolCallIndex = -1;
         for (let i = steps.length - 1; i >= 0; i--) {
           if (steps[i].type === 'tool_call') {
@@ -496,23 +529,29 @@ function createChatStore() {
           }
         }
 
-        for (let i = 0; i < steps.length; i++) {
-          const step = steps[i];
+        // Reclassify thinking steps after last tool call as response steps
+        let changed = false;
+        const newSteps = steps.map((step, i) => {
           if (i > lastToolCallIndex && step.type === 'thinking') {
-            // This thinking content comes after all tool calls, make it response
-            thinkingContent += step.content || '';
-          } else {
-            newSteps.push(step);
+            changed = true;
+            return { ...step, type: 'response' as const };
           }
-        }
+          return step;
+        });
 
-        if (thinkingContent) {
+        // Compute message.content from all response steps (for history/search)
+        const responseContent = newSteps
+          .filter((s) => s.type === 'response')
+          .map((s) => s.content || '')
+          .join('');
+
+        if (changed || responseContent) {
           messages = [
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
               steps: newSteps,
-              content: lastMessage.content + thinkingContent,
+              content: responseContent,
               intermediateContent: this._computeIntermediateContent(newSteps)
             }
           ];

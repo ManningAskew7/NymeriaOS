@@ -1666,11 +1666,11 @@ class NymeriaAgent:
 
                         for msg in messages:
                             if isinstance(msg, AIMessage):
-                                # FIRST: Emit thinking content BEFORE tool calls
-                                # This ensures preamble text like "Found it - I'll remove it now"
+                                # FIRST: Emit preamble content BEFORE tool calls
+                                # This ensures text like "Found it - I'll remove it now"
                                 # appears before the tool call in the UI
                                 if msg.content and msg.tool_calls:
-                                    yield {"type": "thinking", "content": msg.content}
+                                    yield {"type": "response", "content": msg.content}
 
                                 # SECOND: Process and emit tool calls
                                 if msg.tool_calls:
@@ -1994,19 +1994,32 @@ class NymeriaAgent:
                                 "result": result,
                             }
 
-                    # Handle chat model streaming - emit as thinking immediately
-                    # The frontend will reclassify trailing thinking as response on 'done'
+                    # Handle chat model streaming - classify content by type
                     elif event_type == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
-                        logger.info(f"[STREAM DEBUG] on_chat_model_stream: chunk={type(chunk).__name__ if chunk else None}, has_content={hasattr(chunk, 'content') if chunk else False}, content={repr(chunk.content)[:100] if chunk and hasattr(chunk, 'content') else 'N/A'}")
                         if chunk and hasattr(chunk, "content") and chunk.content:
                             content = chunk.content
-                            # Track content for RAG indexing
-                            final_response_parts.append(content)
-                            # Stream content immediately as "thinking"
-                            # Frontend will reclassify as "response" on 'done' if no tool calls followed
-                            logger.info(f"[STREAM] Yielding thinking content: {content[:50]}...")
-                            yield {"type": "thinking", "content": content}
+
+                            if isinstance(content, list):
+                                # Extended thinking (Anthropic native): content is typed blocks
+                                for block in content:
+                                    if not isinstance(block, dict):
+                                        continue
+                                    block_type = block.get("type")
+                                    if block_type == "thinking":
+                                        text = block.get("thinking", "")
+                                        if text:
+                                            yield {"type": "thinking", "content": text}
+                                    elif block_type == "text":
+                                        text = block.get("text", "")
+                                        if text:
+                                            final_response_parts.append(text)
+                                            yield {"type": "response", "content": text}
+                                    # Skip redacted_thinking and other block types
+                            elif isinstance(content, str):
+                                # String content: normal response text (OpenRouter, preamble, etc.)
+                                final_response_parts.append(content)
+                                yield {"type": "response", "content": content}
 
                 # Index conversation turn in RAG (if enabled)
                 if final_response_parts:
