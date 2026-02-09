@@ -138,9 +138,9 @@
       }
 
       case 'response': {
-        // Set the final response content (after all steps)
+        // Add response as a step (preserves order with thinking and tool calls)
         const data = event.data as { content: string; isComplete: boolean };
-        chatStore.setResponseContent(data.content);
+        chatStore.addResponseStep(data.content || '');
         break;
       }
 

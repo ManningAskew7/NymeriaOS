@@ -235,6 +235,14 @@
   // Check if content looks like raw JSON (hide it during streaming, will be parsed at end)
   let isRawJson = $derived(message.content?.trimStart().startsWith('{'));
   let showStreamingContent = $derived(isStreaming && message.content && !isRawJson);
+  // Check if steps contain response steps (content is rendered there, not in bottom section)
+  let hasResponseSteps = $derived(message.steps?.some(s => s.type === 'response') || false);
+  // Check if the last step is NOT a response step (show dots during tool calls and thinking,
+  // but not while response text is actively streaming with its own cursor indicator)
+  let lastStepIsNotResponse = $derived(
+    message.steps && message.steps.length > 0 &&
+    message.steps[message.steps.length - 1].type !== 'response'
+  );
 
   // Helper to check if a step is the last thinking step (for smooth streaming)
   function isLastStreamingThinkingStep(index: number): boolean {
@@ -242,6 +250,13 @@
     const steps = message.steps;
     // It's streaming if it's the last step and is a thinking step
     return index === steps.length - 1 && steps[index].type === 'thinking';
+  }
+
+  // Helper to check if a step is the last response step (for smooth streaming)
+  function isLastStreamingResponseStep(index: number): boolean {
+    if (!isStreaming || !message.steps) return false;
+    const steps = message.steps;
+    return index === steps.length - 1 && steps[index].type === 'response';
   }
 </script>
 
@@ -313,6 +328,16 @@
                 status: step.status || 'pending'
               }} />
             </div>
+          {:else if step.type === 'response' && step.content}
+            <div class="message-content">
+              {#if isLastStreamingResponseStep(i)}
+                <StreamingText text={step.content} {isStreaming} />
+              {:else}
+                <div class="markdown-content">
+                  {@html renderMarkdown(step.content)}
+                </div>
+              {/if}
+            </div>
           {/if}
         {/each}
       {:else}
@@ -338,17 +363,18 @@
       {#if isStreaming && !message.content && !hasSteps && !hasToolCalls && !hasIntermediateContent}
         <!-- Only show streaming indicator if nothing else is visible -->
         <ThinkingIndicator />
-      {:else if showStreamingContent}
-        <!-- Show streaming content only if it's not raw JSON -->
+      {:else if showStreamingContent && !hasResponseSteps}
+        <!-- Show streaming content only if it's not raw JSON and not already in response steps -->
         <StreamingText text={message.content} {isStreaming} />
-      {:else if isStreaming && (hasSteps || hasToolCalls)}
-        <!-- Tools are running, show subtle indicator -->
+      {:else if isStreaming && lastStepIsNotResponse}
+        <!-- Show activity indicator while streaming (tool calls, thinking) but not during response text -->
         <div class="generating-indicator">
           <span class="dot"></span>
           <span class="dot"></span>
           <span class="dot"></span>
         </div>
-      {:else if message.content}
+      {:else if message.content && !hasResponseSteps}
+        <!-- Legacy fallback: render message.content only if not already in response steps -->
         <div class="message-content">
           <div class="markdown-content">
             {@html renderMarkdown(message.content)}
@@ -554,7 +580,7 @@
     height: 6px;
     background: var(--text-muted);
     border-radius: 50%;
-    animation: bounce 1.4s infinite ease-in-out both;
+    animation: dotBounce 1.4s infinite ease-in-out both;
   }
 
   .generating-indicator .dot:nth-child(1) {
@@ -565,7 +591,7 @@
     animation-delay: -0.16s;
   }
 
-  @keyframes bounce {
+  @keyframes dotBounce {
     0%, 80%, 100% {
       transform: scale(0.6);
       opacity: 0.4;

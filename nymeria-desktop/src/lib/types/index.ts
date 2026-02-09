@@ -22,7 +22,7 @@ export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error';
 // Step in a message - either thinking content or a tool call
 // Steps are ordered by arrival time to preserve interleaving
 export interface MessageStep {
-  type: 'thinking' | 'tool_call';
+  type: 'thinking' | 'tool_call' | 'response';
   // For thinking:
   content?: string;
   // For tool_call:
