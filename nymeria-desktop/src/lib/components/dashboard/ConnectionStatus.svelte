@@ -1,27 +1,59 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { healthStore } from '$lib/stores/health.svelte';
+  import { api } from '$lib/services/api.svelte';
+  import { Icon } from '$lib/components/common';
 
   onMount(() => {
     healthStore.startPolling();
     return () => healthStore.stopPolling();
   });
 
+  let restarting = $state(false);
+
   const statusText = $derived(
-    healthStore.checking && !healthStore.connected
-      ? 'Checking...'
-      : healthStore.connected
-        ? 'API Connected'
-        : 'API Disconnected'
+    restarting
+      ? 'Restarting...'
+      : healthStore.checking && !healthStore.connected
+        ? 'Checking...'
+        : healthStore.connected
+          ? 'API Connected'
+          : 'API Disconnected'
   );
 
   const dotClass = $derived(
-    healthStore.checking && !healthStore.connected
+    restarting
       ? 'checking'
-      : healthStore.connected
-        ? 'connected'
-        : 'disconnected'
+      : healthStore.checking && !healthStore.connected
+        ? 'checking'
+        : healthStore.connected
+          ? 'connected'
+          : 'disconnected'
   );
+
+  async function handleRestart() {
+    if (restarting) return;
+    restarting = true;
+
+    await api.restartServer();
+
+    // Poll /health until the new instance is ready (up to 30s)
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      const ok = await api.healthCheck();
+      if (ok) {
+        clearInterval(poll);
+        restarting = false;
+        healthStore.check();
+      } else if (attempts > 60) {
+        // Give up after ~30s
+        clearInterval(poll);
+        restarting = false;
+        healthStore.check();
+      }
+    }, 500);
+  }
 </script>
 
 <div class="connection-status">
@@ -29,9 +61,21 @@
     <span class="dot {dotClass}"></span>
     <span class="status-text">{statusText}</span>
   </div>
-  {#if healthStore.connected && healthStore.latencyMs !== null}
-    <span class="latency-badge">{healthStore.latencyMs}ms</span>
-  {/if}
+  <div class="status-actions">
+    {#if healthStore.connected && healthStore.latencyMs !== null && !restarting}
+      <span class="latency-badge">{healthStore.latencyMs}ms</span>
+    {/if}
+    {#if healthStore.connected && !restarting}
+      <button
+        class="restart-btn"
+        onclick={handleRestart}
+        title="Restart API server"
+        type="button"
+      >
+        <Icon name="refresh" size={12} />
+      </button>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -80,6 +124,12 @@
     color: var(--text-secondary);
   }
 
+  .status-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+
   .latency-badge {
     font-size: 10px;
     font-weight: 600;
@@ -88,6 +138,27 @@
     padding: 2px 6px;
     border-radius: var(--radius-full);
     border: 1px solid var(--border-subtle);
+  }
+
+  .restart-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .restart-btn:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.08);
   }
 
   @keyframes pulse {

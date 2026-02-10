@@ -77,6 +77,19 @@ export class NymeriaAPI {
     }
   }
 
+  async restartServer(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.getBaseUrl()}/restart`, {
+        method: 'POST',
+        headers: this.getHeaders()
+      });
+      return response.ok;
+    } catch {
+      // Connection may drop before response — that's expected during restart
+      return true;
+    }
+  }
+
   async *chatStream(
     message: string,
     threadId?: string,

@@ -587,6 +587,39 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """Health check endpoint."""
         return HealthResponse()
 
+    @app.post("/restart", tags=["System"])
+    async def restart_server(_: bool = Depends(verify_api_key)):
+        """Restart the API server process.
+
+        Spawns a new server process after a short delay, then exits the
+        current one.  The frontend should poll /health until the new
+        instance is ready.
+        """
+        import asyncio
+        import subprocess
+        import sys
+
+        async def _do_restart():
+            await asyncio.sleep(0.5)            # Give the HTTP response time to flush
+            # Stop the ticker cleanly if running
+            agent = get_agent()
+            if agent and agent._ticker:
+                agent._ticker.stop()
+            # Spawn a replacement process, then exit
+            subprocess.Popen(
+                [sys.executable] + sys.argv,
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    if sys.platform == "win32" else 0
+                ),
+                start_new_session=(sys.platform != "win32"),
+            )
+            import os
+            os._exit(0)
+
+        asyncio.create_task(_do_restart())
+        return {"message": "Server restarting..."}
+
     @app.post("/chat", tags=["Chat"])
     async def chat_streaming(
         http_request: Request,
