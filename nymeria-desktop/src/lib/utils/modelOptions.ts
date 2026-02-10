@@ -5,18 +5,30 @@
 
 import type { LLMProvider } from '$lib/types';
 
-export const modelOptions: Record<LLMProvider, string[]> = {
+export interface ModelOption {
+  value: string;
+  label: string;
+}
+
+export const modelOptions: Record<LLMProvider, ModelOption[]> = {
   anthropic: [
-    'claude-sonnet-4-20250514',
-    'claude-opus-4-20250514',
-    'claude-3-5-sonnet-20241022',
-    'claude-3-5-haiku-20241022'
+    { value: 'claude-opus-4-20250514', label: 'claude-opus-4 (best)' },
+    { value: 'claude-sonnet-4-20250514', label: 'claude-sonnet-4 (reliable)' },
+    { value: 'claude-3-5-haiku-20241022', label: 'claude-3.5-haiku (fast-cheap)' }
   ],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+  openai: [
+    { value: 'gpt-5.2', label: 'gpt-5.2 (untested)' },
+    { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex (untested)' }
+  ],
   openrouter: [
-    'anthropic/claude-sonnet-4.5',
-    'anthropic/claude-3.5-sonnet',
-    'openai/gpt-4o',
-    'google/gemini-pro-1.5'
+    { value: 'qwen/qwen3-coder-next', label: 'qwen/qwen3-coder-next (cheap-capable)' },
+    { value: 'anthropic/claude-opus-4.6', label: 'anthropic/claude-opus-4.6 (best)' },
+    { value: 'anthropic/claude-sonnet-4.5', label: 'anthropic/claude-sonnet-4.5 (reliable)' },
+    { value: 'moonshotai/kimi-k2.5', label: 'moonshotai/kimi-k2.5 (budget-excellent)' },
+    { value: 'deepseek/deepseek-v3.2', label: 'deepseek/deepseek-v3.2 (smart-slow-cheap)' },
+    { value: 'z-ai/glm-4.7', label: 'z-ai/glm-4.7 (value-experimental)' },
+    { value: 'z-ai/glm-4.7-flash', label: 'z-ai/glm-4.7-flash (cheap-fast-experimental)' },
+    { value: 'openai/gpt-5.2', label: 'openai/gpt-5.2 (untested)' },
+    { value: 'openai/gpt-5.2-codex', label: 'openai/gpt-5.2-codex (untested)' }
   ]
 };

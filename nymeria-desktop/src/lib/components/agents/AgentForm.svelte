@@ -24,7 +24,7 @@
   let llmProvider = $state<LLMProvider>(agent?.llmProvider || 'anthropic');
   let llmModel = $state(agent?.llmModel || 'claude-sonnet-4-20250514');
   let llmTemperature = $state(agent?.llmTemperature ?? 0.0);
-  let useCustomModel = $state(agent?.llmModel ? !modelOptions[agent.llmProvider || 'anthropic'].includes(agent.llmModel) : false);
+  let useCustomModel = $state(agent?.llmModel ? !modelOptions[agent.llmProvider || 'anthropic'].some(m => m.value === agent.llmModel) : false);
   let customModelInput = $state(useCustomModel ? (agent?.llmModel || '') : '');
 
   // Validation
@@ -168,7 +168,7 @@
         <div class="field">
           <label for="llm-provider">Provider</label>
           <select id="llm-provider" bind:value={llmProvider} onchange={() => {
-            llmModel = modelOptions[llmProvider][0];
+            llmModel = modelOptions[llmProvider][0].value;
             useCustomModel = false;
             customModelInput = '';
           }}>
@@ -190,7 +190,7 @@
           {:else}
             <select id="llm-model" bind:value={llmModel}>
               {#each modelOptions[llmProvider] as model}
-                <option value={model}>{model}</option>
+                <option value={model.value}>{model.label}</option>
               {/each}
             </select>
           {/if}

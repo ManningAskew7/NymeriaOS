@@ -18,6 +18,7 @@
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmModel = $state('claude-sonnet-4-20250514');
   let llmTemperature = $state(1);
+  let showModelHelp = $state(false);
   // Advanced LLM settings
   let llmMaxTokens = $state<number | null>(null);
   let llmTopP = $state<number | null>(null);
@@ -295,16 +296,53 @@
           <label for="llm-model">Model</label>
           <select id="llm-model" bind:value={llmModel}>
             {#each modelOptions[llmProvider] as model}
-              <option value={model}>{model}</option>
+              <option value={model.value}>{model.label}</option>
             {/each}
           </select>
-          <input
-            type="text"
-            bind:value={llmModel}
-            placeholder="Or enter custom model ID"
-            class="model-custom"
-          />
-          <p class="hint">Model identifier for the selected provider</p>
+          <div class="model-custom-row">
+            <input
+              type="text"
+              bind:value={llmModel}
+              placeholder={llmProvider === 'openrouter' ? 'e.g. meta-llama/llama-4-scout' : 'Custom model ID'}
+              class="model-custom"
+            />
+            <button
+              type="button"
+              class="info-btn"
+              title="How to use a custom model"
+              onclick={() => showModelHelp = !showModelHelp}
+            >
+              <Icon name="info" size={14} />
+            </button>
+          </div>
+          <p class="hint">
+            {#if llmProvider === 'openrouter'}
+              Use the dropdown or paste a model ID from <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>
+            {:else if llmProvider === 'openai'}
+              Use the dropdown or enter an OpenAI model name
+            {:else}
+              Use the dropdown or enter an Anthropic model name
+            {/if}
+          </p>
+          {#if showModelHelp}
+            <div class="model-help-box">
+              <strong>Using a custom model</strong>
+              {#if llmProvider === 'openrouter'}
+                <ol>
+                  <li>Go to <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a></li>
+                  <li>Find the model you want and open its page</li>
+                  <li>Copy the model ID (e.g. <code>meta-llama/llama-4-scout</code>)</li>
+                  <li>Paste it into the text field above</li>
+                </ol>
+                <p>The model ID is shown at the top of every model page on OpenRouter, in the format <code>provider/model-name</code>.</p>
+              {:else}
+                <ol>
+                  <li>Find the model name in your provider's documentation</li>
+                  <li>Enter the exact model identifier in the text field above</li>
+                </ol>
+              {/if}
+            </div>
+          {/if}
         </div>
 
         <div class="field">
@@ -677,9 +715,87 @@
     cursor: pointer;
   }
 
-  .model-custom {
+  .model-custom-row {
+    display: flex;
+    gap: var(--spacing-xs);
     margin-top: var(--spacing-xs);
+    align-items: center;
+  }
+
+  .model-custom {
+    flex: 1;
     font-size: var(--font-size-sm);
+  }
+
+  .info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .info-btn:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+  }
+
+  .model-help-box {
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .model-help-box strong {
+    display: block;
+    margin-bottom: var(--spacing-xs);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .model-help-box ol {
+    margin: 0;
+    padding-left: var(--spacing-lg);
+  }
+
+  .model-help-box li {
+    margin-bottom: 2px;
+  }
+
+  .model-help-box p {
+    margin: var(--spacing-xs) 0 0;
+  }
+
+  .model-help-box code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    background: var(--bg-elevated);
+    padding: 1px 4px;
+    border-radius: var(--radius-sm);
+  }
+
+  .model-help-box a,
+  .hint a {
+    color: var(--accent-secondary);
+    text-decoration: none;
+  }
+
+  .model-help-box a:hover,
+  .hint a:hover {
+    text-decoration: underline;
   }
 
   .hint {
