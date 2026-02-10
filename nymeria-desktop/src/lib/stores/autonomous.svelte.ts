@@ -180,14 +180,14 @@ function createAutonomousStore() {
       case 'thinking':
         // Only update if this is our autonomous task on the current thread
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
-          chatStore.setIntermediateContent(event.content as string || 'Thinking...');
+          chatStore.addThinkingStep(event.content as string || 'Thinking...');
         }
         break;
 
       case 'tool_call':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
-          chatStore.addToolCall(
+          chatStore.addToolCallStep(
             toolId,
             event.name as string,
             (event.args as Record<string, unknown>) || {}
@@ -202,12 +202,10 @@ function createAutonomousStore() {
       case 'tool_result':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           const toolId = event.id as string;
-          const toolName = event.name as string;
-          chatStore.updateToolCallResultByName(
-            toolName,
+          chatStore.updateToolCallStepResult(
+            toolId,
             event.result as string || '',
-            'success',
-            toolId
+            'success'
           );
         }
         // Refresh relevant stores based on tool
@@ -224,7 +222,7 @@ function createAutonomousStore() {
 
       case 'response':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
-          chatStore.appendToLastMessage(event.content as string || '');
+          chatStore.addResponseStep(event.content as string || '');
         }
         break;
 
@@ -266,14 +264,15 @@ function createAutonomousStore() {
             chatStore.removeMessage(activeMessageId);
           } else {
             // Visibility is "full", keep the message in chat
-            // Only set content from task_completed if nothing was streamed yet.
-            // Streamed response events already populated content via appendToLastMessage;
-            // setting it again from task_completed would duplicate text when the same
-            // content also appeared in intermediateContent via thinking events.
+            // Reclassify trailing thinking as response (same as regular chat done handler)
+            chatStore.reclassifyThinkingAsResponse();
+
+            // Only set content from task_completed if nothing was streamed via steps.
             const parsedContent = event.content as string;
             const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-            if (parsedContent && lastMsg?.role === 'assistant' && !lastMsg.content) {
-              chatStore.setLastMessageContent(parsedContent);
+            const hasResponseSteps = lastMsg?.steps?.some(s => s.type === 'response');
+            if (parsedContent && lastMsg?.role === 'assistant' && !hasResponseSteps) {
+              chatStore.addResponseStep(parsedContent);
             }
             chatStore.setLastMessageComplete();
           }
