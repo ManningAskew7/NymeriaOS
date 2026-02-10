@@ -1987,6 +1987,12 @@ class NymeriaAgent:
             # Track if we've seen any tool calls - determines if final content is thinking or response
             seen_any_tools = False
 
+            # Track whether response text was streamed in the current LLM call.
+            # Some providers don't stream preamble text as separate chunks when the
+            # response also contains tool calls — the text only appears on the final
+            # assembled AIMessage.  We catch this in on_chat_model_end.
+            streamed_text_in_current_llm_call = False
+
             # Track final response for RAG indexing
             final_response_parts: List[str] = []
 
@@ -2000,8 +2006,12 @@ class NymeriaAgent:
                 ):
                     event_type = event.get("event")
 
+                    # Reset preamble tracking when a new LLM call starts
+                    if event_type == "on_chat_model_start":
+                        streamed_text_in_current_llm_call = False
+
                     # Handle tool start - this has complete args!
-                    if event_type == "on_tool_start":
+                    elif event_type == "on_tool_start":
                         run_id = event.get("run_id")
                         if run_id and run_id not in emitted_tool_starts:
                             seen_any_tools = True
@@ -2053,13 +2063,35 @@ class NymeriaAgent:
                                     elif block_type == "text":
                                         text = block.get("text", "")
                                         if text:
+                                            streamed_text_in_current_llm_call = True
                                             final_response_parts.append(text)
                                             yield {"type": "response", "content": text}
                                     # Skip redacted_thinking and other block types
                             elif isinstance(content, str):
                                 # String content: normal response text (OpenRouter, preamble, etc.)
+                                streamed_text_in_current_llm_call = True
                                 final_response_parts.append(content)
                                 yield {"type": "response", "content": content}
+
+                    # Handle chat model end — catch preamble text that wasn't
+                    # streamed in chunks.  Some providers bundle the preamble
+                    # into the final AIMessage instead of streaming it, so it
+                    # only appears here (matches sync stream()'s explicit
+                    # "if msg.content and msg.tool_calls" check).
+                    elif event_type == "on_chat_model_end":
+                        if not streamed_text_in_current_llm_call:
+                            output = event.get("data", {}).get("output")
+                            if output and hasattr(output, "content") and hasattr(output, "tool_calls"):
+                                if output.content and output.tool_calls:
+                                    preamble = output.content
+                                    if isinstance(preamble, str) and preamble.strip():
+                                        yield {"type": "response", "content": preamble}
+                                    elif isinstance(preamble, list):
+                                        for block in preamble:
+                                            if isinstance(block, dict) and block.get("type") == "text":
+                                                text = block.get("text", "")
+                                                if text:
+                                                    yield {"type": "response", "content": text}
 
                 # Index conversation turn in RAG (if enabled)
                 if final_response_parts:

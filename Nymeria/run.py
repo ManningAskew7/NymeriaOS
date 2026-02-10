@@ -271,8 +271,13 @@ def run_worker(args: argparse.Namespace) -> None:
 
     # Handle shutdown signals
     def signal_handler(signum, frame):
-        print("\nShutdown signal received...")
-        # Agent cleanup happens automatically
+        print("\nShutdown signal received, stopping ticker...")
+        if agent._ticker:
+            agent._ticker.stop()
+        # Force exit — ThreadPoolExecutor threads are non-daemon and
+        # would otherwise keep the process alive indefinitely.
+        import os
+        os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -285,6 +290,8 @@ def run_worker(args: argparse.Namespace) -> None:
             import time
             time.sleep(1)
     except KeyboardInterrupt:
+        if agent._ticker:
+            agent._ticker.stop()
         print("\nWorker stopped.")
 
 

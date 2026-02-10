@@ -104,9 +104,7 @@ function createTodosStore() {
   async function fetch(filterStatus?: string, threadId?: string): Promise<void> {
     loading = true;
     error = null;
-    if (threadId !== undefined) {
-      currentThreadFilter = threadId;
-    }
+    currentThreadFilter = threadId;
 
     try {
       const response = await api.getTodos(filterStatus, currentThreadFilter);

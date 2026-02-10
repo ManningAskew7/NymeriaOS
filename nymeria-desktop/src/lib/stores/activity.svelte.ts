@@ -15,9 +15,7 @@ function createActivityStore() {
   async function fetch(limit: number = 50, threadId?: string): Promise<void> {
     loading = true;
     error = null;
-    if (threadId !== undefined) {
-      currentThreadFilter = threadId;
-    }
+    currentThreadFilter = threadId;
 
     try {
       const response = await api.getActivity(limit, currentThreadFilter);
