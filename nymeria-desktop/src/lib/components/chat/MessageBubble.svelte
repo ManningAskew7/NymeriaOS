@@ -18,7 +18,7 @@
   import type { Message, FileAttachment } from '$lib/types';
   import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
-  import StreamingText from './StreamingText.svelte';
+  // StreamingText removed — markdown is now always rendered, with an inline cursor for streaming
   import ToolCallCard from './ToolCallCard.svelte';
   import ImageModal from './ImageModal.svelte';
 
@@ -244,20 +244,12 @@
     message.steps[message.steps.length - 1].type !== 'response'
   );
 
-  // Helper to check if a step is the last thinking step (for smooth streaming)
-  function isLastStreamingThinkingStep(index: number): boolean {
-    if (!isStreaming || !message.steps) return false;
-    const steps = message.steps;
-    // It's streaming if it's the last step and is a thinking step
-    return index === steps.length - 1 && steps[index].type === 'thinking';
-  }
-
-  // Helper to check if a step is the last response step (for smooth streaming)
-  function isLastStreamingResponseStep(index: number): boolean {
-    if (!isStreaming || !message.steps) return false;
-    const steps = message.steps;
-    return index === steps.length - 1 && steps[index].type === 'response';
-  }
+  // Check if a step is the last step and actively streaming (show cursor after it)
+  let streamingLastStepIndex = $derived(
+    isStreaming && message.steps && message.steps.length > 0
+      ? message.steps.length - 1
+      : -1
+  );
 </script>
 
 {#if !isHiddenMessage}
@@ -308,14 +300,11 @@
         {#each message.steps || [] as step, i (i)}
           {#if step.type === 'thinking' && step.content}
             <div class="intermediate-content">
-              {#if isLastStreamingThinkingStep(i)}
-                <!-- Smooth streaming: render as plain text while streaming -->
-                <StreamingText text={step.content} {isStreaming} />
-              {:else}
-                <!-- Completed thinking: render with markdown -->
-                <div class="markdown-content">
-                  {@html renderMarkdown(step.content)}
-                </div>
+              <div class="markdown-content">
+                {@html renderMarkdown(step.content)}
+              </div>
+              {#if i === streamingLastStepIndex}
+                <span class="streaming-cursor"></span>
               {/if}
             </div>
           {:else if step.type === 'tool_call'}
@@ -330,12 +319,11 @@
             </div>
           {:else if step.type === 'response' && step.content}
             <div class="message-content">
-              {#if isLastStreamingResponseStep(i)}
-                <StreamingText text={step.content} {isStreaming} />
-              {:else}
-                <div class="markdown-content">
-                  {@html renderMarkdown(step.content)}
-                </div>
+              <div class="markdown-content">
+                {@html renderMarkdown(step.content)}
+              </div>
+              {#if i === streamingLastStepIndex}
+                <span class="streaming-cursor"></span>
               {/if}
             </div>
           {/if}
@@ -365,7 +353,12 @@
         <ThinkingIndicator />
       {:else if showStreamingContent && !hasResponseSteps}
         <!-- Show streaming content only if it's not raw JSON and not already in response steps -->
-        <StreamingText text={message.content} {isStreaming} />
+        <div class="message-content">
+          <div class="markdown-content">
+            {@html renderMarkdown(message.content)}
+          </div>
+          <span class="streaming-cursor"></span>
+        </div>
       {:else if isStreaming && lastStepIsNotResponse}
         <!-- Show activity indicator while streaming (tool calls, thinking) but not during response text -->
         <div class="generating-indicator">
@@ -567,6 +560,21 @@
 
   .message-content {
     margin-top: var(--spacing-sm);
+  }
+
+  .streaming-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    background: var(--accent-primary);
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    animation: cursorBlink 0.8s ease-in-out infinite;
+  }
+
+  @keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
   }
 
   .generating-indicator {
