@@ -159,7 +159,7 @@ class SubAgentExecutor:
             ),
             checkpointer=CheckpointerConfig(backend="memory"),
             system_prompt=agent_config["system_prompt"],
-            max_iterations=15,
+            max_iterations=30,
             verbose=self.settings.log_level == "DEBUG",
         )
 
@@ -181,7 +181,10 @@ class SubAgentExecutor:
             thread_id = f"subagent-{agent_name}-{uuid.uuid4().hex[:8]}"
             result = graph.invoke(
                 {"messages": messages},
-                config={"configurable": {"thread_id": thread_id}},
+                config={
+                    "recursion_limit": 70,
+                    "configurable": {"thread_id": thread_id},
+                },
             )
 
             # Extract response

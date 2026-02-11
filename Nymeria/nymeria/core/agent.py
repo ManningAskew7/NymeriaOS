@@ -647,6 +647,19 @@ class NymeriaAgent:
     # Auto-Compact Methods
     # =========================================================================
 
+    @staticmethod
+    def _check_iteration_limit_hit(messages: List) -> bool:
+        """Check if the agent was stopped by the iteration limit.
+
+        When the ReAct router's should_continue returns "end" due to hitting
+        max_iterations, the last message in state will be an AIMessage with
+        unfulfilled tool_calls (the agent wanted to continue but was cut off).
+        """
+        if not messages:
+            return False
+        last_msg = messages[-1]
+        return isinstance(last_msg, AIMessage) and bool(last_msg.tool_calls)
+
     def _extract_tokens_from_response(self, messages: List) -> tuple:
         """
         Extract token usage from the latest AIMessage's metadata.
@@ -1163,7 +1176,7 @@ class NymeriaAgent:
             ),
             checkpointer=self._checkpointer_config,
             system_prompt=system_prompt,
-            max_iterations=25,
+            max_iterations=70,
             verbose=self.settings.log_level == "DEBUG",
         )
         # Use per-user tool filtering
@@ -1196,7 +1209,7 @@ class NymeriaAgent:
             ),
             checkpointer=self._async_checkpointer_config,
             system_prompt=system_prompt,
-            max_iterations=25,
+            max_iterations=70,
             verbose=self.settings.log_level == "DEBUG",
         )
         # Use per-user tool filtering
@@ -1529,7 +1542,10 @@ class NymeriaAgent:
             message_with_context = f"{time_context}\n\n{message}"
 
             # Pass user_id through config for tools to access
-            config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+            config = {
+                "recursion_limit": 150,
+                "configurable": {"thread_id": thread_id, "user_id": user_id},
+            }
 
             # Create message - mark autonomous wake-ups as internal so they're filtered from user history
             if _is_self_invoke:
@@ -1565,6 +1581,14 @@ class NymeriaAgent:
                 input_tok, output_tok = self._extract_tokens_from_response(messages)
                 if input_tok or output_tok:
                     self._token_tracker.record_usage(thread_id, input_tok, output_tok)
+
+                # Detect if the agent was stopped by the iteration limit
+                if self._check_iteration_limit_hit(messages):
+                    logger.warning(f"Thread {thread_id}: Agent hit iteration limit (70 steps)")
+                    response += (
+                        "\n\n---\n**Note:** I was stopped because I reached the maximum number of steps (70). "
+                        "My task may be incomplete — you can ask me to continue where I left off."
+                    )
 
                 # Context management: sliding window only in sync chat
                 # (auto-compact requires async for LLM summarization)
@@ -1650,7 +1674,10 @@ class NymeriaAgent:
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message (stream)")
 
             # Pass user_id through config for tools to access
-            config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+            config = {
+                "recursion_limit": 150,
+                "configurable": {"thread_id": thread_id, "user_id": user_id},
+            }
 
             # Create message - mark autonomous wake-ups as internal so they're filtered from user history
             if _is_self_invoke:
@@ -1776,6 +1803,16 @@ class NymeriaAgent:
                     input_tok, output_tok = self._extract_tokens_from_response(result_messages)
                     if input_tok or output_tok:
                         self._token_tracker.record_usage(thread_id, input_tok, output_tok)
+
+                    # Detect if the agent was stopped by the iteration limit
+                    if self._check_iteration_limit_hit(result_messages):
+                        logger.warning(f"Thread {thread_id}: Agent hit iteration limit (70 steps) in stream()")
+                        yield {
+                            "type": "iteration_limit",
+                            "content": "I reached the maximum number of steps (70) and had to stop. "
+                                       "My task may be incomplete — you can ask me to continue where I left off.",
+                            "max_iterations": 70,
+                        }
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage in stream: {e}")
 
@@ -1894,7 +1931,10 @@ class NymeriaAgent:
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message")
 
             # Pass user_id through config for tools to access
-            config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+            config = {
+                "recursion_limit": 150,
+                "configurable": {"thread_id": thread_id, "user_id": user_id},
+            }
 
             # Merge legacy images into attachments for unified handling
             all_attachments = list(attachments or [])
@@ -2115,6 +2155,16 @@ class NymeriaAgent:
                             f"(context: {self._token_tracker.get_usage(thread_id).context_tokens}, "
                             f"cumulative: {self._token_tracker.get_usage(thread_id).total_tokens})"
                         )
+
+                    # Detect if the agent was stopped by the iteration limit
+                    if self._check_iteration_limit_hit(result_messages):
+                        logger.warning(f"Thread {thread_id}: Agent hit iteration limit (70 steps) in astream()")
+                        yield {
+                            "type": "iteration_limit",
+                            "content": "I reached the maximum number of steps (70) and had to stop. "
+                                       "My task may be incomplete — you can ask me to continue where I left off.",
+                            "max_iterations": 70,
+                        }
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage: {e}")
 

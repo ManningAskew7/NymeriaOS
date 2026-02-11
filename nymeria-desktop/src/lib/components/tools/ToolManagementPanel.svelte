@@ -897,7 +897,7 @@
                     value={configInputs[key] as string || schemaObj.default || ''}
                     onchange={(e) => updateConfigValue(key, (e.target as HTMLSelectElement).value)}
                   >
-                    {#each schemaObj.enum as option}
+                    {#each (schemaObj.enum as string[]) as option}
                       <option value={option}>{option}</option>
                     {/each}
                   </select>

@@ -100,11 +100,13 @@ def create_should_continue(max_iterations: int = 10) -> Callable[[AgentState], s
     """
     Factory for the routing function with iteration limit.
 
-    The iteration count is derived from the message history (counting tool calls)
-    rather than using a closure, making it thread-safe and stateless.
+    The iteration count is derived from the message history (counting tool calls
+    since the last HumanMessage) rather than using a closure, making it
+    thread-safe and stateless. Only the current turn's tool calls count toward
+    the limit, so previous turns don't block future ones.
 
     Args:
-        max_iterations: Maximum ReAct loops before forcing end
+        max_iterations: Maximum ReAct loops per turn before forcing end
 
     Returns:
         Routing function for conditional edges
@@ -122,14 +124,25 @@ def create_should_continue(max_iterations: int = 10) -> Callable[[AgentState], s
 
         # Check if LLM wants to call tools
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            # Count tool calls in this conversation by counting AIMessages with tool_calls
+            # Count tool calls only in the CURRENT TURN (since the last HumanMessage).
+            # This prevents previous turns' tool calls from blocking future turns.
+            current_turn_messages = []
+            for msg in reversed(messages):
+                if isinstance(msg, HumanMessage):
+                    break
+                current_turn_messages.append(msg)
+
             tool_call_count = sum(
-                1 for msg in messages
+                1 for msg in current_turn_messages
                 if isinstance(msg, AIMessage) and msg.tool_calls
             )
 
             if tool_call_count > max_iterations:
                 # Force stop to prevent infinite loops
+                logger.warning(
+                    f"Iteration limit reached ({tool_call_count}/{max_iterations}). "
+                    f"Forcing agent to stop. The agent wanted to call more tools but was cut off."
+                )
                 return "end"
 
             return "tools"

@@ -1,13 +1,12 @@
 <script lang="ts">
   import { chatStore } from '$lib/stores/chat.svelte';
   import MessageBubble from './MessageBubble.svelte';
-  import { ThinkingIndicator } from '$lib/components/common';
 
   let containerRef = $state<HTMLDivElement | null>(null);
 
-  // Auto-scroll when new messages arrive
+  // Auto-scroll when new messages arrive or during streaming
   $effect(() => {
-    if (chatStore.messages.length > 0 || chatStore.currentThinking) {
+    if (chatStore.messages.length > 0 || chatStore.isStreaming) {
       scrollToBottom();
     }
   });
@@ -50,11 +49,6 @@
         <MessageBubble {message} />
       {/each}
 
-      {#if chatStore.currentThinking}
-        <div class="thinking-wrapper">
-          <ThinkingIndicator message={chatStore.currentThinking} />
-        </div>
-      {/if}
     </div>
   {/if}
 </div>
@@ -99,15 +93,6 @@
     display: flex;
     flex-direction: column;
     min-height: 100%;
-  }
-
-  .thinking-wrapper {
-    align-self: flex-start;
-    background: var(--bubble-ai);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-lg);
-    margin-bottom: var(--spacing-md);
-    animation: slideUp var(--transition-normal);
   }
 
   @keyframes slideUp {

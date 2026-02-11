@@ -1,4 +1,4 @@
-import type { Thread } from '$lib/types';
+import type { Thread, ThreadPlatform } from '$lib/types';
 
 const STORAGE_KEY = 'nymeria-threads';
 
@@ -12,7 +12,8 @@ function loadThreads(): Thread[] {
       return threads.map((t: Thread) => ({
         ...t,
         createdAt: new Date(t.createdAt),
-        updatedAt: new Date(t.updatedAt)
+        updatedAt: new Date(t.updatedAt),
+        platform: t.platform || detectPlatform(t.id),
       }));
     }
   } catch (e) {
@@ -30,6 +31,13 @@ function saveThreads(threads: Thread[]): void {
   } catch (e) {
     console.error('Failed to save threads:', e);
   }
+}
+
+function detectPlatform(threadId: string): ThreadPlatform {
+  if (threadId.startsWith('discord_')) return 'discord';
+  if (threadId.startsWith('telegram_')) return 'telegram';
+  if (threadId.startsWith('slack_')) return 'slack';
+  return 'desktop';
 }
 
 function generateId(): string {
@@ -160,7 +168,8 @@ function createThreadsStore() {
           title,
           createdAt: new Date(),
           updatedAt: new Date(),
-          messageCount: 0
+          messageCount: 0,
+          platform: detectPlatform(id),
         };
         threads = [thread, ...threads];
         saveThreads(threads);

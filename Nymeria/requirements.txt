@@ -36,6 +36,9 @@ rich>=13.9.0
 # MCP Server support (for agent-to-agent communication)
 mcp>=1.2.0
 
+# Discord bot (two-way communication)
+discord.py>=2.3.0
+
 # Optional: PostgreSQL support (for multi-user deployments)
 # Uncomment if you want to use PostgreSQL instead of SQLite:
 # langgraph-checkpoint-postgres>=0.2.0

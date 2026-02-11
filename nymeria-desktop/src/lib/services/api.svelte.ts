@@ -21,6 +21,7 @@ import type {
   NotificationsResponse,
   FileAttachment,
   CustomTool,
+  HTTPToolConfig,
   CustomToolListResponse,
   CustomToolCreateRequest,
   CustomToolUpdateRequest,
@@ -345,6 +346,17 @@ export class NymeriaAPI {
           return {
             type: 'context_attached',
             data: { summary: (data.summary as string) || '' },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'iteration_limit':
+          return {
+            type: 'iteration_limit',
+            data: {
+              message: (data.content as string) || 'Agent reached the maximum number of steps.',
+              maxIterations: (data.max_iterations as number) || 70,
+            },
             timestamp: new Date(),
             threadId
           };
@@ -817,14 +829,14 @@ export class NymeriaAPI {
       implementationType: item.implementation_type as CustomTool['implementationType'],
       httpConfig: item.http_config
         ? {
-            method: (item.http_config as Record<string, unknown>).method as CustomTool['httpConfig']['method'],
+            method: (item.http_config as Record<string, unknown>).method as HTTPToolConfig['method'],
             url: (item.http_config as Record<string, unknown>).url as string,
             headers: ((item.http_config as Record<string, unknown>).headers || {}) as Record<string, string>,
             bodyTemplate: (item.http_config as Record<string, unknown>).body_template as string | undefined,
             queryParams: ((item.http_config as Record<string, unknown>).query_params || {}) as Record<string, string>,
             timeoutSeconds: ((item.http_config as Record<string, unknown>).timeout_seconds || 30) as number,
             responsePath: (item.http_config as Record<string, unknown>).response_path as string | undefined,
-            responseFormat: ((item.http_config as Record<string, unknown>).response_format || 'auto') as CustomTool['httpConfig']['responseFormat']
+            responseFormat: ((item.http_config as Record<string, unknown>).response_format || 'auto') as HTTPToolConfig['responseFormat']
           }
         : undefined,
       mcpConfig: item.mcp_config
@@ -988,6 +1000,7 @@ export class NymeriaAPI {
   }
 
   async testCustomTool(toolId: string, params: Record<string, unknown>): Promise<CustomToolTestResponse> {
+    const startTime = performance.now();
     const response = await fetch(`${this.getBaseUrl()}/tools/custom/${toolId}/test`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -999,11 +1012,14 @@ export class NymeriaAPI {
     }
 
     const data = await response.json();
+    const executionTimeMs = Math.round(performance.now() - startTime);
     return {
       status: data.status,
       toolId: data.tool_id,
       result: data.result,
-      error: data.error
+      error: data.error,
+      success: data.status === 'ok',
+      executionTimeMs
     };
   }
 
@@ -1163,6 +1179,7 @@ export class NymeriaAPI {
   }
 
   async testSubAgent(agentName: string, instruction: string): Promise<SubAgentTestResponse> {
+    const startTime = performance.now();
     const response = await fetch(`${this.getBaseUrl()}/agents/${agentName}/test`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -1174,11 +1191,16 @@ export class NymeriaAPI {
     }
 
     const data = await response.json();
+    const executionTimeMs = Math.round(performance.now() - startTime);
     return {
       status: data.status,
       agentName: data.agent_name,
       result: data.result,
-      error: data.error
+      error: data.error,
+      success: data.status === 'ok',
+      executionTimeMs,
+      response: data.result,
+      toolsUsed: data.tools_used
     };
   }
 

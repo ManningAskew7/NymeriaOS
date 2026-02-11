@@ -827,6 +827,43 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent = get_agent()
         return agent.get_context_stats(thread_id)
 
+    @app.get("/threads/{thread_id}/metadata", tags=["Threads"])
+    async def get_thread_metadata(
+        thread_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Get platform metadata for a thread.
+
+        Parses the thread ID to detect platform origin (desktop, discord,
+        telegram, slack) and returns relevant metadata.
+        """
+        if thread_id.startswith("discord_dm_"):
+            return {
+                "platform": "discord",
+                "type": "dm",
+                "channel_id": thread_id[len("discord_dm_"):],
+            }
+        if thread_id.startswith("discord_"):
+            parts = thread_id.split("_")
+            return {
+                "platform": "discord",
+                "type": "guild",
+                "guild_id": parts[1] if len(parts) >= 2 else None,
+                "channel_id": parts[2] if len(parts) >= 3 else None,
+            }
+        if thread_id.startswith("telegram_"):
+            return {
+                "platform": "telegram",
+                "channel_id": thread_id[len("telegram_"):],
+            }
+        if thread_id.startswith("slack_"):
+            return {
+                "platform": "slack",
+                "channel_id": thread_id[len("slack_"):],
+            }
+        return {"platform": "desktop"}
+
     @app.post("/threads/{thread_id}/compact", tags=["Threads"])
     async def compact_thread(
         thread_id: str,
