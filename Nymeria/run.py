@@ -7,6 +7,7 @@ Usage:
     python run.py api          # Start REST API server
     python run.py api --port 8080  # Start API on custom port
     python run.py worker           # Start worker (ticker only, for Docker)
+    python run.py discord-bot     # Start Discord bot (gateway mode)
     python run.py mcp              # Start MCP server (stdio mode)
     python run.py mcp --http       # Start MCP server (HTTP mode)
     python run.py mcp --port 8001  # MCP HTTP mode on custom port
@@ -295,6 +296,68 @@ def run_worker(args: argparse.Namespace) -> None:
         print("\nWorker stopped.")
 
 
+def run_discord_bot(args: argparse.Namespace) -> None:
+    """
+    Run the Discord bot (gateway mode via WebSocket).
+
+    Connects to Discord using the bot token and responds to messages
+    and slash commands. Autonomous task results are posted back to
+    originating Discord channels via the event bus.
+    """
+    from nymeria import NymeriaAgent
+    from nymeria.tools import ALL_TOOLS
+    from nymeria.config import get_settings
+    from nymeria.triggers.discord_bot import NymeriaDiscordBot
+
+    settings = get_settings()
+
+    if not settings.discord_bot_token:
+        print("\n[Error] DISCORD_BOT_TOKEN is not set.")
+        print("  1. Create a bot at https://discord.com/developers/applications")
+        print("  2. Copy the bot token and add it to your .env file:")
+        print("     DISCORD_BOT_TOKEN=your-token-here")
+        sys.exit(1)
+
+    api_url = getattr(args, "api_url", None)
+
+    print("Starting Nymeria Discord Bot...")
+    print(f"  - Mode: gateway (WebSocket)")
+    print(f"  - Respond mode: {settings.discord_respond_mode}")
+    print(f"  - Model: {settings.llm_model}")
+
+    # Initialize Redis event bus if configured
+    if settings.redis_enabled and settings.redis_url:
+        from nymeria.core.event_bus import create_event_bus, set_event_bus
+        event_bus = create_event_bus(settings)
+        set_event_bus(event_bus)
+        print(f"  - Redis event bus: {settings.redis_url}")
+
+    if api_url:
+        print(f"  - API URL: {api_url} (SSE events enabled)")
+
+    # Create agent without ticker (ticker runs in worker/api, not bot)
+    agent = NymeriaAgent(tools=ALL_TOOLS, enable_ticker=False)
+
+    # Create and run bot
+    bot = NymeriaDiscordBot(
+        agent=agent,
+        respond_mode=settings.discord_respond_mode,
+        api_url=api_url,
+    )
+
+    # Handle shutdown signals
+    def signal_handler(signum, frame):
+        print("\nShutdown signal received, stopping Discord bot...")
+        import os
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    print("\nConnecting to Discord...")
+    bot.run(settings.discord_bot_token, log_handler=None)
+
+
 def run_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server."""
     from nymeria.mcp_server import run_stdio, run_http
@@ -368,6 +431,7 @@ Examples:
     python run.py cli -t mythread    # Start CLI with specific thread ID
     python run.py api                # Start API server (default port 8000)
     python run.py api -p 8080        # Start API on port 8080
+    python run.py discord-bot       # Start Discord bot (gateway mode)
     python run.py mcp                # Start MCP server (STDIO mode)
     python run.py mcp --http         # Start MCP server (HTTP mode)
     python run.py mcp --http -p 8001 # MCP HTTP mode on custom port
@@ -417,6 +481,19 @@ Examples:
     subparsers.add_parser(
         "worker",
         help="Start worker (ticker only, for Docker deployments)"
+    )
+
+    # Discord bot subcommand
+    discord_parser = subparsers.add_parser(
+        "discord-bot",
+        help="Start Discord bot (gateway mode)"
+    )
+    discord_parser.add_argument(
+        "--api-url",
+        default=None,
+        help="URL of running Nymeria API (e.g. http://localhost:8000). "
+             "Enables autonomous task results to appear in Discord channels "
+             "when running the bot and API as separate local processes.",
     )
 
     # MCP subcommand
@@ -469,7 +546,7 @@ Actions:
 
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
-    if args.command in ("cli", "api", "mcp", "worker"):
+    if args.command in ("cli", "api", "mcp", "worker", "discord-bot"):
         validate_config()
     elif args.command == "service" and args.action in ("install", "run"):
         validate_config()
@@ -484,6 +561,8 @@ Actions:
         run_api(args)
     elif args.command == "worker":
         run_worker(args)
+    elif args.command == "discord-bot":
+        run_discord_bot(args)
     elif args.command == "mcp":
         run_mcp(args)
     elif args.command == "service":

@@ -73,6 +73,14 @@ class Settings(BaseSettings):
         default=None,
         description="Discord bot token for two-way communication"
     )
+    discord_mode: Literal["gateway", "webhook"] = Field(
+        default="gateway",
+        description="Discord connection mode: gateway (WebSocket) or webhook"
+    )
+    discord_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Guild behavior: mention (only @Nymeria) or all (every message)"
+    )
 
     # Messaging Platform Credentials - Slack
     slack_webhook_url: Optional[str] = Field(
@@ -371,6 +379,13 @@ class Settings(BaseSettings):
             errors.append(
                 "DATABASE_BACKEND is 'postgres' but POSTGRES_URI is not set.\n"
                 "  Either set POSTGRES_URI or change DATABASE_BACKEND to 'sqlite'."
+            )
+
+        # Discord bot warning
+        if self.discord_bot_token and not provider_key:
+            warnings.append(
+                "DISCORD_BOT_TOKEN is set but no LLM API key configured.\n"
+                "  The Discord bot will not be able to process messages."
             )
 
         # Warnings for optional features

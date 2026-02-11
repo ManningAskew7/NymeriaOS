@@ -84,8 +84,8 @@ Guidelines:
 - Get straight to the answer without unnecessary preamble"""))
 
     # Execution settings
-    max_iterations: int = 10  # Max ReAct loops before forcing stop
-    recursion_limit: int = 50  # LangGraph recursion limit
+    max_iterations: int = 70  # Max ReAct loops before forcing stop
+    recursion_limit: int = 150  # LangGraph recursion limit (must exceed 2x max_iterations)
 
     # Debug settings
     verbose: bool = field(default_factory=lambda: os.getenv("AGENT_VERBOSE", "false").lower() == "true")

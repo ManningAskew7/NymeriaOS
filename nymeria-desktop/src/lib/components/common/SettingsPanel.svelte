@@ -361,9 +361,9 @@
         <div class="field">
           <label class="toggle-label" for="llm-extended-thinking">
             <input type="checkbox" id="llm-extended-thinking" bind:checked={llmExtendedThinking} />
-            Extended Thinking
+            Enable Reasoning
           </label>
-          <p class="hint">Enable reasoning/thinking tokens (Claude, OpenRouter)</p>
+          <p class="hint">Enable/disable thinking tokens for compatible models</p>
         </div>
 
         <!-- Advanced Settings Collapsible -->

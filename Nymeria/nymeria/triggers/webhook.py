@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import httpx
 from fastapi import APIRouter, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -93,6 +94,25 @@ class PlatformAdapter(ABC):
         """
         pass
 
+    async def send_response(
+        self,
+        channel_id: str,
+        message: OutgoingMessage,
+        settings: Any,
+    ) -> bool:
+        """
+        Send a response message back to the platform.
+
+        Args:
+            channel_id: Platform-specific channel/chat ID.
+            message: The outgoing message.
+            settings: Application settings (for tokens).
+
+        Returns:
+            True if the message was sent successfully.
+        """
+        return False  # Default: no outbound sending
+
     def validate_signature(
         self,
         payload: bytes,
@@ -154,6 +174,27 @@ class TelegramAdapter(PlatformAdapter):
             response["reply_to_message_id"] = message.reply_to_id
         return response
 
+    async def send_response(
+        self, channel_id: str, message: OutgoingMessage, settings: Any
+    ) -> bool:
+        """Send message to Telegram via Bot API."""
+        token = getattr(settings, "telegram_bot_token", None)
+        if not token:
+            logger.warning("Cannot send Telegram response: no bot token configured")
+            return False
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload: Dict[str, Any] = {"chat_id": channel_id, "text": message.text}
+        if message.reply_to_id:
+            payload["reply_to_message_id"] = message.reply_to_id
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                return True
+            logger.error(f"Telegram sendMessage failed: {resp.status_code} {resp.text}")
+            return False
+
 
 class DiscordAdapter(PlatformAdapter):
     """Adapter for Discord webhooks/interactions."""
@@ -189,6 +230,31 @@ class DiscordAdapter(PlatformAdapter):
         return {
             "content": message.text,
         }
+
+    async def send_response(
+        self, channel_id: str, message: OutgoingMessage, settings: Any
+    ) -> bool:
+        """Send message to Discord channel via Bot API."""
+        token = getattr(settings, "discord_bot_token", None)
+        if not token:
+            logger.warning("Cannot send Discord response: no bot token configured")
+            return False
+
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        headers = {"Authorization": f"Bot {token}"}
+        # Discord has a 2000 char limit per message
+        text = message.text
+        chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            for chunk in chunks:
+                resp = await client.post(
+                    url, json={"content": chunk}, headers=headers
+                )
+                if resp.status_code not in (200, 201):
+                    logger.error(f"Discord send failed: {resp.status_code} {resp.text}")
+                    return False
+        return True
 
     def validate_signature(
         self,
@@ -242,6 +308,29 @@ class SlackAdapter(PlatformAdapter):
         if message.reply_to_id:
             response["thread_ts"] = message.reply_to_id
         return response
+
+    async def send_response(
+        self, channel_id: str, message: OutgoingMessage, settings: Any
+    ) -> bool:
+        """Send message to Slack channel via Bot API."""
+        token = getattr(settings, "slack_bot_token", None)
+        if not token:
+            logger.warning("Cannot send Slack response: no bot token configured")
+            return False
+
+        url = "https://slack.com/api/chat.postMessage"
+        headers = {"Authorization": f"Bearer {token}"}
+        payload: Dict[str, Any] = {"channel": channel_id, "text": message.text}
+        if message.reply_to_id:
+            payload["thread_ts"] = message.reply_to_id
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            data = resp.json()
+            if data.get("ok"):
+                return True
+            logger.error(f"Slack send failed: {data.get('error', 'unknown')}")
+            return False
 
     def validate_signature(
         self,
@@ -399,6 +488,23 @@ def create_webhook_router(get_agent_fn, get_settings_fn) -> APIRouter:
         thread_id = f"{platform}_{incoming.channel_id}"
         user_id = f"{platform}_{incoming.sender_id}"
 
+        # Publish webhook_message event so the desktop app can show activity
+        try:
+            from ..core.event_bus import publish_autonomous_event
+            publish_autonomous_event(
+                event_type="webhook_message",
+                thread_id=thread_id,
+                user_id=user_id,
+                task_id="",
+                data={
+                    "platform": platform,
+                    "sender": incoming.sender_name,
+                    "preview": incoming.message_text[:100],
+                },
+            )
+        except Exception:
+            pass  # Non-critical — don't block message processing
+
         try:
             # Get agent and process message
             agent = get_agent_fn()
@@ -414,6 +520,18 @@ def create_webhook_router(get_agent_fn, get_settings_fn) -> APIRouter:
                 reply_to_id=incoming.message_id,
             )
             formatted_response = adapter.format_response(outgoing)
+
+            # Send response back to the platform (closes the response loop)
+            sent = await adapter.send_response(
+                incoming.channel_id, outgoing, settings
+            )
+            if sent:
+                logger.info(f"Response sent to {platform} channel {incoming.channel_id}")
+            else:
+                logger.warning(
+                    f"Could not send response to {platform} — "
+                    f"check bot token configuration"
+                )
 
             return WebhookResponse(
                 success=True,

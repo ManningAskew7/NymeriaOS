@@ -330,7 +330,7 @@ class SelfModifyAgent:
             ),
             checkpointer=CheckpointerConfig(backend="memory"),
             system_prompt=self.system_prompt,
-            max_iterations=15,  # Allow multiple steps for complex modifications
+            max_iterations=30,  # Allow multiple steps for complex modifications
             verbose=self.settings.log_level == "DEBUG",
         )
 
@@ -492,7 +492,10 @@ NOTE: If the agent uses existing tools from nymeria/tools/, import them directly
             try:
                 result = graph.invoke(
                     {"messages": [HumanMessage(content=task)]},
-                    config={"configurable": {"thread_id": thread_id}},
+                    config={
+                        "recursion_limit": 70,
+                        "configurable": {"thread_id": thread_id},
+                    },
                 )
             finally:
                 # Restore context

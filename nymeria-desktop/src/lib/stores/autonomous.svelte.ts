@@ -295,6 +295,18 @@ function createAutonomousStore() {
         }
         break;
 
+      case 'webhook_message':
+        // A message was received on a platform thread (Discord, Telegram, etc.)
+        // Show activity indicator on that thread in the sidebar
+        if (event.thread_id) {
+          threadsStore.setThreadActive(event.thread_id, true);
+          // Auto-clear after a short delay
+          setTimeout(() => {
+            threadsStore.setThreadActive(event.thread_id, false);
+          }, 3000);
+        }
+        break;
+
       default:
         console.log('[Autonomous] Unknown event type:', event.type);
     }

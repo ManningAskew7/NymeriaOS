@@ -226,6 +226,16 @@
         }
         break;
       }
+
+      case 'iteration_limit': {
+        // Agent was stopped because it hit the maximum number of steps
+        const data = event.data as { message: string; maxIterations: number };
+        chatStore.addResponseStep(
+          `\n\n---\n**Iteration limit reached (${data.maxIterations} steps).** ` +
+          `My task may be incomplete — you can ask me to continue where I left off.`
+        );
+        break;
+      }
     }
   }
 </script>

@@ -57,6 +57,8 @@ export interface ToolCall {
 }
 
 // Thread types
+export type ThreadPlatform = 'desktop' | 'discord' | 'telegram' | 'slack';
+
 export interface Thread {
   id: string;
   title: string;
@@ -64,6 +66,13 @@ export interface Thread {
   updatedAt: Date;
   messageCount: number;
   preview?: string;
+  platform?: ThreadPlatform;
+  platformMeta?: {
+    guildName?: string;
+    channelName?: string;
+    guildId?: string;
+    channelId?: string;
+  };
 }
 
 export interface ThreadHistory {
@@ -216,7 +225,8 @@ export type SSEEventType =
   | 'compacting'
   | 'compact_result'
   | 'compacted'
-  | 'context_attached';
+  | 'context_attached'
+  | 'iteration_limit';
 
 export interface SSEEvent {
   type: SSEEventType;
@@ -452,6 +462,8 @@ export interface CustomToolTestResponse {
   toolId: string;
   result?: string;
   error?: string;
+  success: boolean;
+  executionTimeMs: number;
 }
 
 // Sub-Agent Types
@@ -511,6 +523,10 @@ export interface SubAgentTestResponse {
   agentName: string;
   result?: string;
   error?: string;
+  success: boolean;
+  executionTimeMs: number;
+  response?: string;
+  toolsUsed?: string[];
 }
 
 // Built-in Tool Types
