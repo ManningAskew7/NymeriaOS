@@ -1,49 +1,10 @@
 <script lang="ts">
-  import { marked } from 'marked';
-  // Import highlight.js core and only common languages to reduce bundle size
-  import hljs from 'highlight.js/lib/core';
-  import javascript from 'highlight.js/lib/languages/javascript';
-  import typescript from 'highlight.js/lib/languages/typescript';
-  import python from 'highlight.js/lib/languages/python';
-  import json from 'highlight.js/lib/languages/json';
-  import bash from 'highlight.js/lib/languages/bash';
-  import css from 'highlight.js/lib/languages/css';
-  import xml from 'highlight.js/lib/languages/xml';
-  import markdown from 'highlight.js/lib/languages/markdown';
-  import rust from 'highlight.js/lib/languages/rust';
-  import go from 'highlight.js/lib/languages/go';
-  import yaml from 'highlight.js/lib/languages/yaml';
-  import sql from 'highlight.js/lib/languages/sql';
-
   import type { Message, FileAttachment } from '$lib/types';
   import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
-  // StreamingText removed — markdown is now always rendered, with an inline cursor for streaming
+  import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
   import ToolCallCard from './ToolCallCard.svelte';
   import ImageModal from './ImageModal.svelte';
-
-  // Register languages
-  hljs.registerLanguage('javascript', javascript);
-  hljs.registerLanguage('js', javascript);
-  hljs.registerLanguage('typescript', typescript);
-  hljs.registerLanguage('ts', typescript);
-  hljs.registerLanguage('python', python);
-  hljs.registerLanguage('py', python);
-  hljs.registerLanguage('json', json);
-  hljs.registerLanguage('bash', bash);
-  hljs.registerLanguage('sh', bash);
-  hljs.registerLanguage('shell', bash);
-  hljs.registerLanguage('css', css);
-  hljs.registerLanguage('html', xml);
-  hljs.registerLanguage('xml', xml);
-  hljs.registerLanguage('markdown', markdown);
-  hljs.registerLanguage('md', markdown);
-  hljs.registerLanguage('rust', rust);
-  hljs.registerLanguage('rs', rust);
-  hljs.registerLanguage('go', go);
-  hljs.registerLanguage('yaml', yaml);
-  hljs.registerLanguage('yml', yaml);
-  hljs.registerLanguage('sql', sql);
 
   interface Props {
     message: Message;
@@ -170,39 +131,6 @@
     message.contextSummary || parsedUserContent.contextSummary
   );
 
-  // Configure marked with highlight.js
-  marked.setOptions({
-    breaks: true,
-    gfm: true
-  });
-
-  // Custom renderer for code blocks with syntax highlighting
-  const renderer = new marked.Renderer();
-  const originalCode = renderer.code.bind(renderer);
-  renderer.code = function (code: string, infostring: string | undefined, escaped: boolean): string {
-    if (typeof code === 'object') {
-      // Handle marked v12+ object format
-      const { text, lang } = code as { text: string; lang?: string };
-      const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
-      const highlighted = hljs.highlight(text, { language }).value;
-      return `<pre><code class="hljs language-${language}">${highlighted}</code></pre>`;
-    }
-    // Handle legacy string format
-    const language = infostring && hljs.getLanguage(infostring) ? infostring : 'plaintext';
-    const highlighted = hljs.highlight(code, { language }).value;
-    return `<pre><code class="hljs language-${language}">${highlighted}</code></pre>`;
-  };
-
-  marked.use({ renderer });
-
-  function renderMarkdown(content: string): string {
-    try {
-      return marked.parse(content) as string;
-    } catch {
-      return content;
-    }
-  }
-
   let isUser = $derived(message.role === 'user');
   let isStreaming = $derived(message.status === 'streaming');
   let hasSteps = $derived(message.steps && message.steps.length > 0);
@@ -301,11 +229,8 @@
           {#if step.type === 'thinking' && step.content}
             <div class="intermediate-content">
               <div class="markdown-content">
-                {@html renderMarkdown(step.content)}
+                {@html i === streamingLastStepIndex ? renderMarkdownStreaming(step.content) : renderMarkdown(step.content)}
               </div>
-              {#if i === streamingLastStepIndex}
-                <span class="streaming-cursor"></span>
-              {/if}
             </div>
           {:else if step.type === 'tool_call'}
             <div class="tool-calls">
@@ -320,11 +245,8 @@
           {:else if step.type === 'response' && step.content}
             <div class="message-content">
               <div class="markdown-content">
-                {@html renderMarkdown(step.content)}
+                {@html i === streamingLastStepIndex ? renderMarkdownStreaming(step.content) : renderMarkdown(step.content)}
               </div>
-              {#if i === streamingLastStepIndex}
-                <span class="streaming-cursor"></span>
-              {/if}
             </div>
           {/if}
         {/each}
@@ -355,9 +277,8 @@
         <!-- Show streaming content only if it's not raw JSON and not already in response steps -->
         <div class="message-content">
           <div class="markdown-content">
-            {@html renderMarkdown(message.content)}
+            {@html renderMarkdownStreaming(message.content)}
           </div>
-          <span class="streaming-cursor"></span>
         </div>
       {:else if isStreaming && lastStepIsNotResponse}
         <!-- Show activity indicator while streaming (tool calls, thinking) but not during response text -->
@@ -537,6 +458,68 @@
     color: var(--text-secondary);
   }
 
+  /* Tables */
+  .markdown-content :global(table) {
+    border-collapse: collapse;
+    width: 100%;
+    margin: var(--spacing-sm) 0;
+    font-size: var(--font-size-sm);
+  }
+
+  .markdown-content :global(th) {
+    font-weight: 600;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-bottom: 2px solid var(--border-subtle);
+    text-align: left;
+    color: var(--text-primary);
+  }
+
+  .markdown-content :global(td) {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .markdown-content :global(tr:last-child td) {
+    border-bottom: none;
+  }
+
+  /* Headings */
+  .markdown-content :global(h1),
+  .markdown-content :global(h2),
+  .markdown-content :global(h3),
+  .markdown-content :global(h4) {
+    margin: var(--spacing-md) 0 var(--spacing-sm) 0;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .markdown-content :global(h1:first-child),
+  .markdown-content :global(h2:first-child),
+  .markdown-content :global(h3:first-child),
+  .markdown-content :global(h4:first-child) {
+    margin-top: 0;
+  }
+
+  .markdown-content :global(h1) {
+    font-size: 1.5em;
+  }
+
+  .markdown-content :global(h2) {
+    font-size: 1.3em;
+  }
+
+  .markdown-content :global(h3) {
+    font-size: 1.1em;
+  }
+
+  /* Horizontal rules */
+  .markdown-content :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border-subtle);
+    margin: var(--spacing-md) 0;
+    opacity: 0.6;
+  }
+
   .intermediate-content {
     margin-bottom: var(--spacing-sm);
     color: var(--text-secondary);
@@ -562,7 +545,8 @@
     margin-top: var(--spacing-sm);
   }
 
-  .streaming-cursor {
+  /* Injected via {@html} so must be :global to bypass scoping */
+  .markdown-content :global(.streaming-cursor) {
     display: inline-block;
     width: 2px;
     height: 1.1em;
