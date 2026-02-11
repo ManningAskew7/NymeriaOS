@@ -11,14 +11,17 @@
     }
   });
 
+  let scrollRafPending = false;
+
   function scrollToBottom() {
-    if (containerRef) {
-      // Use setTimeout to ensure DOM has updated
-      setTimeout(() => {
+    if (containerRef && !scrollRafPending) {
+      scrollRafPending = true;
+      requestAnimationFrame(() => {
+        scrollRafPending = false;
         if (containerRef) {
           containerRef.scrollTop = containerRef.scrollHeight;
         }
-      }, 0);
+      });
     }
   }
 </script>

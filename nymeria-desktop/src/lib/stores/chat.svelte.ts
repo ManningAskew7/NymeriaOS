@@ -22,6 +22,8 @@ function parseNymeriaResponse(content: string): ParsedResponse {
   return { content: content || '' };
 }
 
+const FLUSH_INTERVAL = 48; // ~20 updates/sec
+
 function createChatStore() {
   let messages = $state<Message[]>([]);
   let isStreaming = $state(false);
@@ -33,6 +35,12 @@ function createChatStore() {
   let contextStats = $state<ContextStats | null>(null);
   let activeModel = $state<string | null>(null);
   let isQueued = $state(false);
+
+  // Throttle state for streaming buffers
+  let _responseBuffer = '';
+  let _thinkingBuffer = '';
+  let _lastFlushTime = 0;
+  let _flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   return {
     get messages() {
@@ -133,6 +141,7 @@ function createChatStore() {
     },
 
     setLastMessageComplete() {
+      this._forceFlush();
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;
@@ -153,6 +162,7 @@ function createChatStore() {
     },
 
     setLastMessageError(error: string) {
+      this._forceFlush();
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;
@@ -294,6 +304,7 @@ function createChatStore() {
     },
 
     setStreaming(streaming: boolean) {
+      if (!streaming) this._forceFlush();
       isStreaming = streaming;
     },
 
@@ -321,9 +332,32 @@ function createChatStore() {
     /**
      * Add a thinking step to the last assistant message.
      * Thinking steps preserve order with tool calls for proper interleaving.
+     * Uses leading-edge throttle: first chunk flushes immediately, subsequent
+     * chunks buffer for FLUSH_INTERVAL ms to reduce array reconstructions.
      */
     addThinkingStep(content: string) {
       if (messages.length === 0) return;
+
+      _thinkingBuffer += content;
+
+      const now = performance.now();
+      if (now - _lastFlushTime >= FLUSH_INTERVAL) {
+        this._flushThinking();
+      } else if (!_flushTimer) {
+        _flushTimer = setTimeout(() => {
+          _flushTimer = null;
+          this._flushThinking();
+        }, FLUSH_INTERVAL - (now - _lastFlushTime));
+      }
+    },
+
+    /** Flush buffered thinking content into the message steps. */
+    _flushThinking() {
+      if (!_thinkingBuffer || messages.length === 0) return;
+
+      const buffered = _thinkingBuffer;
+      _thinkingBuffer = '';
+      _lastFlushTime = performance.now();
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
@@ -332,31 +366,27 @@ function createChatStore() {
         const steps = lastMessage.steps || [];
         const lastStep = steps[steps.length - 1];
 
-        // If the last step is also a thinking step, append to it (streaming chunks)
         if (lastStep && lastStep.type === 'thinking') {
           const updatedSteps = [
             ...steps.slice(0, -1),
-            { ...lastStep, content: (lastStep.content || '') + content }
+            { ...lastStep, content: (lastStep.content || '') + buffered }
           ];
           messages = [
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
               steps: updatedSteps,
-              // Update legacy field
               intermediateContent: this._computeIntermediateContent(updatedSteps)
             }
           ];
         } else {
-          // Create new thinking step
-          const newStep: MessageStep = { type: 'thinking', content };
+          const newStep: MessageStep = { type: 'thinking', content: buffered };
           const updatedSteps = [...steps, newStep];
           messages = [
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
               steps: updatedSteps,
-              // Update legacy field
               intermediateContent: this._computeIntermediateContent(updatedSteps)
             }
           ];
@@ -369,6 +399,7 @@ function createChatStore() {
      * Tool call steps are ordered with thinking for proper interleaving.
      */
     addToolCallStep(id: string, name: string, args: Record<string, unknown>) {
+      this._forceFlush();
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;
@@ -450,10 +481,32 @@ function createChatStore() {
     /**
      * Add a response step to the last assistant message.
      * Response steps preserve order with thinking and tool calls for proper interleaving.
-     * If the last step is already a response step, append to it (streaming chunks).
+     * Uses leading-edge throttle: first chunk flushes immediately, subsequent
+     * chunks buffer for FLUSH_INTERVAL ms to reduce array reconstructions + re-parses.
      */
     addResponseStep(content: string) {
       if (messages.length === 0) return;
+
+      _responseBuffer += content;
+
+      const now = performance.now();
+      if (now - _lastFlushTime >= FLUSH_INTERVAL) {
+        this._flushResponse();
+      } else if (!_flushTimer) {
+        _flushTimer = setTimeout(() => {
+          _flushTimer = null;
+          this._flushResponse();
+        }, FLUSH_INTERVAL - (now - _lastFlushTime));
+      }
+    },
+
+    /** Flush buffered response content into the message steps. */
+    _flushResponse() {
+      if (!_responseBuffer || messages.length === 0) return;
+
+      const buffered = _responseBuffer;
+      _responseBuffer = '';
+      _lastFlushTime = performance.now();
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
@@ -464,14 +517,12 @@ function createChatStore() {
 
         let updatedSteps: MessageStep[];
         if (lastStep && lastStep.type === 'response') {
-          // Append to existing response step (streaming chunks)
           updatedSteps = [
             ...steps.slice(0, -1),
-            { ...lastStep, content: (lastStep.content || '') + content }
+            { ...lastStep, content: (lastStep.content || '') + buffered }
           ];
         } else {
-          // Create new response step
-          updatedSteps = [...steps, { type: 'response' as const, content }];
+          updatedSteps = [...steps, { type: 'response' as const, content: buffered }];
         }
 
         messages = [
@@ -482,6 +533,16 @@ function createChatStore() {
           }
         ];
       }
+    },
+
+    /** Force-flush all pending buffers immediately. Called on state transitions. */
+    _forceFlush() {
+      if (_flushTimer) {
+        clearTimeout(_flushTimer);
+        _flushTimer = null;
+      }
+      if (_thinkingBuffer) this._flushThinking();
+      if (_responseBuffer) this._flushResponse();
     },
 
     /**
@@ -585,6 +646,7 @@ function createChatStore() {
     },
 
     clearMessages() {
+      this._forceFlush();
       messages = [];
       activeToolCalls = new Map();
       isStreaming = false;
@@ -603,6 +665,8 @@ function createChatStore() {
      */
     stopGenerating() {
       if (!isStreaming) return;
+
+      this._forceFlush();
 
       // Abort the stream
       abortCurrentStream();
