@@ -146,12 +146,6 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
     # rag_settings removed - configure via UI settings
 
     # Self-modification tools - SENSITIVE
-    "self_modify": ToolMetadata(
-        name="self_modify",
-        category=ToolCategory.SELF_MODIFY,
-        security_level=SecurityLevel.SENSITIVE,
-        description="Modify Nymeria's own code (dangerous)",
-    ),
     "self_modify_rollback": ToolMetadata(
         name="self_modify_rollback",
         category=ToolCategory.SELF_MODIFY,
@@ -195,11 +189,11 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         security_level=SecurityLevel.SAFE,
         description="Clear sub-agent conversation context",
     ),
-    "reload_agents": ToolMetadata(
-        name="reload_agents",
+    "reload_all": ToolMetadata(
+        name="reload_all",
         category=ToolCategory.SUBAGENT,
         security_level=SecurityLevel.MODERATE,
-        description="Reload sub-agent definitions",
+        description="Reload all tools, agents, and trigger sources",
     ),
 
     # Visibility tools

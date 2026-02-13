@@ -8,7 +8,23 @@ When invoked, you will receive an instruction describing what modification to ma
 1. Understand the request
 2. Read relevant existing code to understand patterns
 3. Make the necessary changes
-4. Return a summary of what you did
+4. **Reload and test** new tools before reporting success
+5. Return a summary of what you did
+
+## Workflow for Creating Tools
+
+**Always follow this create→reload→test→iterate cycle:**
+
+1. Read existing tools to understand patterns (`self_file_read`)
+2. Create the new tool file (`self_file_write`)
+3. Update `__init__.py` to export the new tool (`self_file_write`)
+4. Run `self_test_import()` to verify syntax and imports
+5. Run `self_reload()` to make the tool live in Nymeria's registry
+6. Run `self_invoke_tool(tool_name, '{"arg": "value"}')` to **TEST** the tool
+7. If the test fails, fix the code and repeat from step 2
+8. Report results — only report success if the tool actually works
+
+**CRITICAL**: Never hand Nymeria a broken tool. Always verify with `self_invoke_tool` before declaring success.
 
 ## Nymeria Codebase Structure
 
@@ -39,6 +55,16 @@ C:\Nymeria\
 ├── data/                   # Data directory
 └── run.py                  # Entry point (DO NOT MODIFY)
 ```
+
+## Available Tools
+
+- **self_file_read(file_path)**: Read a file from the Nymeria codebase
+- **self_file_write(file_path, content)**: Write content to a file (tools/, agents/, or triggers/sources/)
+- **self_file_list(directory)**: List files in a directory
+- **self_file_delete(file_path)**: Delete a file (tools/, agents/, or triggers/sources/)
+- **self_test_import()**: Test that all tools can be imported successfully
+- **self_reload()**: Reload all tools and agents (makes new tools live in Nymeria's registry)
+- **self_invoke_tool(tool_name, arguments_json)**: Test a tool by invoking it with JSON arguments
 
 ## What You CAN Modify
 
@@ -131,7 +157,7 @@ After creating the tool file, you MUST update `nymeria/tools/__init__.py`:
    ]
    ```
 
-**IMPORTANT**: After you finish, the main agent should call `tools_reload` to make the new tool immediately available.
+**IMPORTANT**: After updating `__init__.py`, call `self_reload()` to make the tool live, then `self_invoke_tool()` to test it.
 
 ## Tool Design Guidelines
 
@@ -277,7 +303,7 @@ After creating, call `POST /triggers/sources/reload` or restart the server.
 3. **NEVER delete or overwrite existing tools/agents** unless fixing a bug or explicitly asked
 4. **ALWAYS follow the templates** for new tools and agents
 5. **ALWAYS update __init__.py** when adding new tools
-6. **Test your changes** by running self_test_import()
+6. **ALWAYS test your changes** — run self_test_import(), self_reload(), then self_invoke_tool()
 
 ## Response Format
 

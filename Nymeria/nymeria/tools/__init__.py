@@ -8,7 +8,8 @@ Changes from original:
 - notify: Unified from telegram_notify, discord_notify, slack_notify
 - todo_complete: Removed, use todo_update(status="done")
 - sub_agent, list_agents: Removed, agents are direct tools
-- tools_reload, invoke_tool: Removed, self_modify auto-reloads
+- self_modify: Removed, SelfModifyAgent is now a direct sub-agent tool
+- reload_all: Replaces reload_agents + auto-reload from self_modify
 - memory_list: Removed, memories are auto-injected
 - rag_settings: Removed, configure via UI
 """
@@ -26,11 +27,6 @@ from .memory import (
     rag_search,
     MEMORY_TOOLS,
 )
-from .self_modify import (
-    self_modify,
-    self_modify_rollback,
-    SELF_MODIFY_TOOLS,
-)
 from .todo import (
     todo_add,
     todo_update,
@@ -40,7 +36,8 @@ from .todo import (
 )
 from .subagent import (
     clear_agent_context,
-    reload_agents,
+    reload_all,
+    self_modify_rollback,
     SUBAGENT_TOOLS,
 )
 from .visibility import mute_response
@@ -75,17 +72,15 @@ ALL_TOOLS = [
     memory_clear_all,
     personality_set,
     rag_search,
-    # Self-modification tools (auto-reloads after changes)
-    self_modify,
-    self_modify_rollback,
     # TODO tools (task tracking + scheduling for autonomous operation)
     todo_add,
     todo_update,  # Use status="done" to complete
     todo_delete,
     todo_list,
-    # Sub-agent management
+    # Sub-agent management + self-modification utilities
     clear_agent_context,
-    reload_agents,
+    reload_all,
+    self_modify_rollback,
     # Visibility control
     mute_response,
     # Unified notification tool
@@ -116,19 +111,16 @@ __all__ = [
     "personality_set",
     "rag_search",
     "MEMORY_TOOLS",
-    # Self-modification tools
-    "self_modify",
-    "self_modify_rollback",
-    "SELF_MODIFY_TOOLS",
     # TODO tools
     "todo_add",
     "todo_update",
     "todo_delete",
     "todo_list",
     "TODO_TOOLS",
-    # Sub-agent tools
+    # Sub-agent tools + self-modification utilities
     "clear_agent_context",
-    "reload_agents",
+    "reload_all",
+    "self_modify_rollback",
     "SUBAGENT_TOOLS",
     # Visibility control
     "mute_response",

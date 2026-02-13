@@ -1,7 +1,8 @@
 """Sub-agent management tools.
 
 Sub-agents are invoked directly as tools (e.g., BrowserAgent(task="Go to google.com")).
-This module provides utilities for managing agent context and reloading definitions.
+This module provides utilities for managing agent context, reloading definitions,
+and rolling back self-modifications.
 """
 
 import logging
@@ -43,70 +44,75 @@ def clear_agent_context(agent_name: str) -> str:
 
 
 @tool
-def reload_agents() -> str:
+def reload_all() -> str:
     """
-    Reload all sub-agents from the agents directory.
+    Reload all tools, agents, and trigger sources.
 
-    Use this after creating or modifying a sub-agent with self_modify
-    to make it available for use. After reloading, agents will appear
-    as directly callable tools in the tool list.
+    Use this after making manual changes to tool or agent files, or after
+    SelfModifyAgent has created/modified code. This reloads all Python modules,
+    refreshes agent registrations, and rebuilds graphs.
 
-    NOTE: Due to how LangGraph works, newly created agent tools are NOT
-    available in the same conversation turn. They will work on the next
-    user message.
+    NOTE: Due to how LangGraph works, newly created tools are NOT available
+    in the same conversation turn. They will work on the next user message.
 
     Returns:
-        Number of agents loaded and their names
+        Number of tools and trigger sources loaded
     """
-    logger.info("reload_agents called")
+    logger.info("reload_all called")
 
-    from ..agents import reload_agents as do_reload, refresh_agent_tools, AVAILABLE_AGENTS
     from ..core.agent import get_current_agent
 
     try:
-        # Reload agent definitions
-        count = do_reload()
+        agent = get_current_agent()
+        if agent is None:
+            return "[Error]: No active agent found. Cannot reload."
 
-        # Refresh agent tools cache (regenerates tools from updated configs)
-        agent_tool_names = refresh_agent_tools()
-        logger.info(f"Refreshed agent tools: {agent_tool_names}")
+        # reload_tools() handles everything: tool modules, agents, agent tools, graphs
+        tool_names = agent.reload_tools()
 
-        # Trigger graph rebuild in NymeriaAgent if available
-        current_agent = get_current_agent()
-        if current_agent:
-            # Re-register agent tools with the tool registry
-            from ..agents import get_agent_tools
-            agent_tools = get_agent_tools()
-            for tool in agent_tools:
-                current_agent.tool_registry.register(tool)
+        # Also reload trigger sources
+        source_count = 0
+        try:
+            from ..triggers.sources import reload_sources
+            source_count = reload_sources()
+        except Exception as e:
+            logger.warning(f"Trigger source reload failed: {e}")
 
-            # Clear cached graphs to pick up new tools
-            current_agent._user_graphs.clear()
-            current_agent._async_user_graphs.clear()
-            current_agent._default_graph = current_agent._build_graph_with_prompt(
-                current_agent._base_system_prompt
-            )
-            current_agent._default_async_graph = current_agent._build_async_graph_with_prompt(
-                current_agent._base_system_prompt
-            )
-            logger.info("Rebuilt agent graphs with new tools")
-
-        if count > 0:
-            names = ", ".join(AVAILABLE_AGENTS.keys())
-            return (
-                f"[Success]: Loaded {count} agent(s): {names}\n"
-                f"These agents are now available as tools and will work on the next message."
-            )
-        else:
-            return "[Info]: No agents found in nymeria/agents/"
+        return (
+            f"[Success]: Reloaded {len(tool_names)} tools, {source_count} trigger source(s).\n"
+            f"New tools will be available on the next message."
+        )
     except Exception as e:
-        logger.error(f"reload_agents failed: {e}", exc_info=True)
-        return f"[Error]: Failed to reload agents: {str(e)}"
+        logger.error(f"reload_all failed: {e}", exc_info=True)
+        return f"[Error]: Failed to reload: {str(e)}"
+
+
+@tool
+def self_modify_rollback(file_path: str) -> str:
+    """
+    Rollback a file to its previous version if a self-modification broke something.
+
+    Every file written by SelfModifyAgent is automatically backed up. This tool
+    restores the most recent backup for the given file.
+
+    Args:
+        file_path: File to rollback (e.g., "nymeria/tools/my_tool.py")
+    """
+    logger.info(f"self_modify_rollback called: file_path={file_path}")
+
+    from ..core.self_agent import SelfModifyAgent
+
+    try:
+        agent = SelfModifyAgent()
+        return agent.rollback_last(file_path)
+    except Exception as e:
+        logger.error(f"self_modify_rollback failed: {e}", exc_info=True)
+        return f"[Error]: Rollback failed: {str(e)}"
 
 
 # Export tools
-# sub_agent and list_agents removed - agents are now direct tools (e.g., BrowserAgent)
 SUBAGENT_TOOLS = [
     clear_agent_context,
-    reload_agents,
+    reload_all,
+    self_modify_rollback,
 ]
