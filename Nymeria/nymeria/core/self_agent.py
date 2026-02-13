@@ -75,6 +75,7 @@ def self_file_write(file_path: str, content: str) -> str:
     project_root = settings.project_root
     tools_dir = project_root / "nymeria" / "tools"
     agents_dir = project_root / "nymeria" / "agents"
+    trigger_sources_dir = project_root / "nymeria" / "triggers" / "sources"
 
     # Resolve path
     path = Path(file_path)
@@ -82,23 +83,18 @@ def self_file_write(file_path: str, content: str) -> str:
         path = project_root / file_path
     path = path.resolve()
 
-    # Security check: must be within tools or agents directory
-    in_tools = False
-    in_agents = False
-    try:
-        path.relative_to(tools_dir)
-        in_tools = True
-    except ValueError:
-        pass
+    # Security check: must be within tools, agents, or trigger sources directory
+    in_allowed = False
+    for allowed_dir in (tools_dir, agents_dir, trigger_sources_dir):
+        try:
+            path.relative_to(allowed_dir)
+            in_allowed = True
+            break
+        except ValueError:
+            pass
 
-    try:
-        path.relative_to(agents_dir)
-        in_agents = True
-    except ValueError:
-        pass
-
-    if not in_tools and not in_agents:
-        return f"[Error]: Access denied. Can only write to files in {tools_dir} or {agents_dir}"
+    if not in_allowed:
+        return f"[Error]: Access denied. Can only write to files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
 
     # Validate Python syntax
     validator = CodeValidator(project_root)
@@ -200,6 +196,7 @@ def self_file_delete(file_path: str) -> str:
     project_root = settings.project_root
     tools_dir = project_root / "nymeria" / "tools"
     agents_dir = project_root / "nymeria" / "agents"
+    trigger_sources_dir = project_root / "nymeria" / "triggers" / "sources"
 
     # Resolve path
     path = Path(file_path)
@@ -207,23 +204,18 @@ def self_file_delete(file_path: str) -> str:
         path = project_root / file_path
     path = path.resolve()
 
-    # Security check: must be within tools or agents directory
-    in_tools = False
-    in_agents = False
-    try:
-        path.relative_to(tools_dir)
-        in_tools = True
-    except ValueError:
-        pass
+    # Security check: must be within tools, agents, or trigger sources directory
+    in_allowed = False
+    for allowed_dir in (tools_dir, agents_dir, trigger_sources_dir):
+        try:
+            path.relative_to(allowed_dir)
+            in_allowed = True
+            break
+        except ValueError:
+            pass
 
-    try:
-        path.relative_to(agents_dir)
-        in_agents = True
-    except ValueError:
-        pass
-
-    if not in_tools and not in_agents:
-        return f"[Error]: Access denied. Can only delete files in {tools_dir} or {agents_dir}"
+    if not in_allowed:
+        return f"[Error]: Access denied. Can only delete files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
 
     # Don't allow deleting __init__.py
     if path.name == "__init__.py":
@@ -264,7 +256,7 @@ class SelfModifyAgent:
     is needed (adding tools, fixing bugs, etc.).
     """
 
-    ALLOWED_CATEGORIES = {"add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent"}
+    ALLOWED_CATEGORIES = {"add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent", "add_trigger_source", "remove_trigger_source"}
 
     def __init__(self):
         """Initialize the self-modification agent."""
@@ -339,7 +331,7 @@ class SelfModifyAgent:
     def execute(
         self,
         instruction: str,
-        category: Literal["add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent"],
+        category: Literal["add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent", "add_trigger_source", "remove_trigger_source"],
     ) -> str:
         """
         Execute a self-modification task.
@@ -465,6 +457,36 @@ NOTE: If the agent uses existing tools from nymeria/tools/, import them directly
 3. Delete the tools file: nymeria/agents/{{agent_name}}_tools.py
 4. Run self_test_import() to verify everything still works
 5. Report what was removed
+"""
+        elif category == "add_trigger_source":
+            task = f"""## Task: Create Trigger Source Plugin
+
+{instruction}
+
+## Instructions
+1. Read nymeria/triggers/sources/__init__.py to understand the registry system
+2. Read nymeria/triggers/sources/base.py for the BaseTriggerSource contract
+3. Read nymeria/triggers/sources/webhook_source.py as an example
+4. Create: nymeria/triggers/sources/{{source_name}}_source.py with:
+   - A class extending BaseTriggerSource
+   - name, description, and config_schema class attributes
+   - A check(config, state) method that returns list of event dicts
+   - check() must be LIGHTWEIGHT -- no LLM calls!
+   - Use state dict to persist cursors/timestamps between polls
+   - Call register_source() at module level
+5. Run self_test_import() to verify
+6. Report what source was created and how to use it
+"""
+        elif category == "remove_trigger_source":
+            task = f"""## Task: Remove Trigger Source Plugin
+
+{instruction}
+
+## Instructions
+1. List files in nymeria/triggers/sources/ to find the source
+2. Delete the source file
+3. Run self_test_import() to verify
+4. Report what was removed
 """
         else:
             return f"[Error]: Unknown category '{category}'. Allowed: {self.ALLOWED_CATEGORIES}"

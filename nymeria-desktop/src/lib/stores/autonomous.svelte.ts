@@ -157,6 +157,11 @@ function createAutonomousStore() {
         todosStore.fetch();
         activityStore.fetch();
 
+        // If this is a trigger task, ensure its thread exists in the sidebar
+        if (event.trigger_name) {
+          threadsStore.ensureThread(event.thread_id, event.trigger_name as string);
+        }
+
         // Track this task per-thread
         activeTasksByThread = new Map(activeTasksByThread).set(
           event.thread_id, event.task_id as string

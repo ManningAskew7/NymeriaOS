@@ -578,6 +578,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     webhook_router = create_webhook_router(get_agent, get_settings)
     app.include_router(webhook_router)
 
+    # Add trigger system router (event-driven automation)
+    from .trigger_api import create_trigger_router
+    trigger_router = create_trigger_router(get_agent, verify_api_key)
+    app.include_router(trigger_router)
+
     # ========================================================================
     # Endpoints
     # ========================================================================

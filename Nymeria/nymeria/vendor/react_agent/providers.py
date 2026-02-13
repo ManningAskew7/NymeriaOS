@@ -5,11 +5,14 @@ Makes it easy to swap between different LLM providers without changing agent cod
 Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 """
 
+import logging
 from typing import List, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
 from .config import LLMConfig
+
+logger = logging.getLogger(__name__)
 
 
 def create_llm(config: LLMConfig) -> BaseChatModel:
@@ -77,6 +80,22 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
 
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
+    else:
+        # User selected "Default (model limit)" -- look up the model's actual
+        # max output tokens from OpenRouter so we don't rely on the upstream
+        # provider's default (which can be very low for some models).
+        try:
+            from nymeria.config.model_capabilities import get_max_output_tokens
+            model_limit = get_max_output_tokens(config.model)
+            if model_limit:
+                kwargs["max_tokens"] = model_limit
+                logger.info(
+                    f"[LLM] max_tokens not set, using model limit: "
+                    f"{model_limit} for {config.model}"
+                )
+        except Exception as e:
+            logger.debug(f"Could not look up model output limit: {e}")
+
     if config.top_p is not None:
         kwargs["top_p"] = config.top_p
     if config.frequency_penalty is not None:

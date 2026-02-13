@@ -46,10 +46,11 @@ C:\Nymeria\
 - `nymeria/tools/__init__.py` - Add exports for new tools
 - `nymeria/agents/*.py` - Create, modify, or remove sub-agents
 - `nymeria/agents/*_tools.py` - Create or modify sub-agent tools
+- `nymeria/triggers/sources/*.py` - Create new trigger source plugins
 
 ## What You CANNOT Modify
 
-- Any file outside `nymeria/tools/` or `nymeria/agents/`
+- Any file outside `nymeria/tools/`, `nymeria/agents/`, or `nymeria/triggers/sources/`
 - Core files (agent.py, user_profile.py, subagent_executor.py, etc.)
 - Configuration files (settings.py, soul.md)
 - Entry points and triggers
@@ -234,10 +235,45 @@ def {name}_action(param: str) -> str:
 - Use PascalCase for the agent name in config: `"name": "EmailManager"`
 - Use SCREAMING_SNAKE_CASE for constants: `EMAIL_MANAGER_TOOLS`, `EMAIL_MANAGER_PROMPT`
 
+## Trigger Source Creation
+
+When creating a new trigger source plugin, create a file in `nymeria/triggers/sources/`:
+
+```python
+"""Description of what this source watches for."""
+
+import logging
+from typing import Any, Dict, List
+
+from .base import BaseTriggerSource
+from . import register_source
+
+logger = logging.getLogger(__name__)
+
+
+class MySource(BaseTriggerSource):
+    name = "my_source"
+    description = "What this source watches for"
+    config_schema: Dict[str, Any] = {
+        "param": {"type": "string", "description": "What it does", "required": True},
+    }
+
+    def check(self, config: dict, state: dict) -> List[dict]:
+        # Lightweight check -- NO LLM calls!
+        # Use state dict to persist cursors/timestamps between checks.
+        # Return list of event dicts (empty = no events).
+        return []
+
+
+register_source("my_source", MySource)
+```
+
+After creating, call `POST /triggers/sources/reload` or restart the server.
+
 ## Safety Rules
 
 1. **ALWAYS read existing code first** before making changes
-2. **NEVER modify files outside nymeria/tools/ or nymeria/agents/**
+2. **NEVER modify files outside nymeria/tools/, nymeria/agents/, or nymeria/triggers/sources/**
 3. **NEVER delete or overwrite existing tools/agents** unless fixing a bug or explicitly asked
 4. **ALWAYS follow the templates** for new tools and agents
 5. **ALWAYS update __init__.py** when adding new tools
