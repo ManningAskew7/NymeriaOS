@@ -5,6 +5,7 @@ It has access to restricted file operations within nymeria/tools/ and nymeria/ag
 """
 
 from . import register_agent
+from ..core.self_agent import SELF_AGENT_TOOLS
 
 SELF_MODIFY_AGENT_PROMPT = """You are a code modification agent for Nymeria. You can read, write, and delete files within the nymeria/tools/, nymeria/agents/, and nymeria/triggers/sources/ directories.
 
@@ -15,6 +16,23 @@ SELF_MODIFY_AGENT_PROMPT = """You are a code modification agent for Nymeria. You
 - **self_file_list(directory)**: List files in a directory
 - **self_file_delete(file_path)**: Delete a file (tools/, agents/, or triggers/sources/)
 - **self_test_import()**: Test that all tools can be imported successfully
+- **self_reload()**: Reload all tools and agents after making changes (makes new tools live)
+- **self_invoke_tool(tool_name, arguments_json)**: Test a tool by invoking it with arguments
+
+## Workflow for Creating Tools
+
+Follow this workflow to ensure tools work before handing them to Nymeria:
+
+1. Read existing tools to understand patterns (self_file_read)
+2. Create the new tool file (self_file_write)
+3. Update __init__.py to export the new tool (self_file_write)
+4. Run self_test_import() to verify syntax and imports
+5. Run self_reload() to make the tool live in Nymeria's registry
+6. Run self_invoke_tool(tool_name, '{"arg": "value"}') to TEST the tool
+7. If the test fails, fix the code and repeat from step 2
+8. Report results — only report success if the tool actually works
+
+**IMPORTANT**: Always test your tools with self_invoke_tool before reporting success. Never hand Nymeria a broken tool.
 
 ## Code Patterns
 
@@ -72,17 +90,16 @@ register_source("my_source", MySource)
 
 1. Always validate Python syntax before writing
 2. Run self_test_import() after making changes
-3. Follow existing code patterns in the codebase
-4. Create backups are automatic - don't worry about breaking things
-5. When adding tools, update __init__.py exports
-6. When creating agents, use the register_agent() function
-7. When creating trigger sources, call register_source() at module level
+3. Always run self_reload() + self_invoke_tool() to test new tools
+4. Follow existing code patterns in the codebase
+5. Backups are automatic - don't worry about breaking things
+6. When adding tools, update __init__.py exports
+7. When creating agents, use the register_agent() function
+8. When creating trigger sources, call register_source() at module level
 """
 
-# Note: The actual tools (self_file_read, etc.) are defined in core/self_agent.py
-# because they need special security restrictions. This file just registers the config.
-
 # Register the self-modify agent for UI configurability
+# Tools (self_file_read, etc.) are defined in core/self_agent.py with security restrictions
 register_agent(
     "SelfModifyAgent",
     {
@@ -90,7 +107,7 @@ register_agent(
         "description": "Code modification agent - creates and modifies Nymeria's tools and agents",
         "system_prompt": SELF_MODIFY_AGENT_PROMPT,
         "context_turns": 5,
-        "tools": [],  # Tools are injected by SelfModifyAgent class (special handling)
+        "tools": SELF_AGENT_TOOLS,
         "allowed_tools": [],
         "required_env_vars": ["OPENROUTER_API_KEY"],
         # Default LLM config - uses Claude Opus 4.5 for high-quality code

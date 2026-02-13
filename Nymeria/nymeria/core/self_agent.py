@@ -1,5 +1,6 @@
 """Self-modification agent for Nymeria."""
 
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -238,6 +239,75 @@ def self_file_delete(file_path: str) -> str:
         return f"[Error]: Failed to delete file: {e}"
 
 
+@tool
+def self_reload() -> str:
+    """
+    Reload all tools and agents after making changes.
+
+    Call this after using self_file_write to create or modify tool/agent files
+    and updating __init__.py. This makes newly created tools live in Nymeria's
+    registry so they can be tested with self_invoke_tool.
+
+    Returns:
+        Updated tool list or error message
+    """
+    from .agent import get_current_agent
+
+    try:
+        agent = get_current_agent()
+        if agent is None:
+            return "[Error]: No active agent found. Tools cannot be reloaded."
+
+        tool_names = agent.reload_tools()
+        return f"[Success]: Reloaded. {len(tool_names)} tools available: {', '.join(tool_names)}"
+    except Exception as e:
+        logger.error(f"self_reload failed: {e}", exc_info=True)
+        return f"[Error]: Reload failed: {str(e)}"
+
+
+@tool
+def self_invoke_tool(tool_name: str, arguments_json: str) -> str:
+    """
+    Test a tool by invoking it with the given arguments.
+
+    Use this after self_reload() to verify a newly created tool works correctly.
+    If the tool fails, fix the code and repeat the create→reload→test cycle.
+
+    Args:
+        tool_name: Name of the tool to test (e.g., "my_new_tool")
+        arguments_json: JSON string of arguments to pass (e.g., '{"param": "value"}')
+
+    Returns:
+        The tool's output or an error message
+    """
+    from .agent import get_current_agent
+
+    try:
+        agent = get_current_agent()
+        if agent is None:
+            return "[Error]: No active agent found. Cannot invoke tool."
+
+        # Find tool in registry
+        tool_obj = agent.tool_registry.get_tool(tool_name)
+        if not tool_obj:
+            available = [t["name"] for t in agent.tool_registry.list_tools()]
+            return f"[Error]: Tool '{tool_name}' not found. Available tools: {', '.join(available[:20])}"
+
+        # Parse arguments
+        try:
+            args = json.loads(arguments_json)
+        except json.JSONDecodeError as e:
+            return f"[Error]: Invalid JSON arguments: {e}"
+
+        # Invoke the tool
+        result = tool_obj.invoke(args)
+        return f"[Test result]: {result}"
+
+    except Exception as e:
+        logger.error(f"self_invoke_tool failed: {e}", exc_info=True)
+        return f"[Error]: Tool invocation failed: {str(e)}"
+
+
 # Tools available to the self-modification agent
 SELF_AGENT_TOOLS: List[BaseTool] = [
     self_file_read,
@@ -245,6 +315,8 @@ SELF_AGENT_TOOLS: List[BaseTool] = [
     self_file_list,
     self_file_delete,
     self_test_import,
+    self_reload,
+    self_invoke_tool,
 ]
 
 
