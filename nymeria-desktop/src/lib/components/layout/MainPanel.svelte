@@ -2,12 +2,35 @@
   import ChatContainer from '$lib/components/chat/ChatContainer.svelte';
   import InputBar from '$lib/components/chat/InputBar.svelte';
   import ContextStatusBar from '$lib/components/chat/ContextStatusBar.svelte';
+  import { ThreadHeader, ThreadSettingsPanel } from '$lib/components/threads';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { activityStore } from '$lib/stores/activity.svelte';
+  import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { api } from '$lib/services/api.svelte';
-  import type { SSEEvent, FileAttachment, ContextStats } from '$lib/types';
+  import { untrack } from 'svelte';
+  import type { SSEEvent, FileAttachment, ContextStats, ThreadConfig } from '$lib/types';
+
+  let showThreadSettings = $state(false);
+
+  // Load thread config when thread changes
+  $effect(() => {
+    const tid = threadsStore.currentThreadId;
+    if (tid) {
+      untrack(() => threadConfigStore.loadConfig(tid));
+    }
+  });
+
+  const currentThreadConfig = $derived(
+    threadsStore.currentThreadId
+      ? threadConfigStore.getConfig(threadsStore.currentThreadId) ?? null
+      : null
+  );
+
+  function handleConfigSaved(config: ThreadConfig) {
+    // Config is already in the store via updateConfig/deleteConfig
+  }
 
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
@@ -241,6 +264,14 @@
 </script>
 
 <div class="main-panel-content">
+  {#if threadsStore.currentThread}
+    <ThreadHeader
+      thread={threadsStore.currentThread}
+      threadConfig={currentThreadConfig}
+      onOpenSettings={() => (showThreadSettings = true)}
+    />
+  {/if}
+
   <div class="chat-area">
     <ChatContainer />
   </div>
@@ -259,6 +290,15 @@
     />
   </div>
 </div>
+
+{#if showThreadSettings && threadsStore.currentThread}
+  <ThreadSettingsPanel
+    thread={threadsStore.currentThread}
+    threadConfig={currentThreadConfig}
+    onClose={() => (showThreadSettings = false)}
+    onSaved={handleConfigSaved}
+  />
+{/if}
 
 <style>
   .main-panel-content {

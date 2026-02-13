@@ -1650,6 +1650,69 @@ export class NymeriaAPI {
 
     return response.json();
   }
+
+  // =========================================================================
+  // Thread Configuration
+  // =========================================================================
+
+  async getThreadConfig(threadId: string): Promise<import('$lib/types').ThreadConfig> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/config`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return {
+      threadId: data.thread_id,
+      instructions: data.instructions ?? null,
+      disabledTools: data.disabled_tools ?? [],
+      llmConfig: data.llm_config ?? null,
+      createdAt: data.created_at ?? null,
+      updatedAt: data.updated_at ?? null,
+      hasCustomizations: data.has_customizations ?? false,
+    };
+  }
+
+  async updateThreadConfig(
+    threadId: string,
+    updates: import('$lib/types').ThreadConfigUpdateRequest
+  ): Promise<import('$lib/types').ThreadConfig> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/config`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify(updates),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return {
+      threadId: data.thread_id,
+      instructions: data.instructions ?? null,
+      disabledTools: data.disabled_tools ?? [],
+      llmConfig: data.llm_config ?? null,
+      createdAt: data.created_at ?? null,
+      updatedAt: data.updated_at ?? null,
+      hasCustomizations: data.has_customizations ?? false,
+    };
+  }
+
+  async deleteThreadConfig(threadId: string): Promise<void> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/config`, {
+      method: 'DELETE',
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+  }
 }
 
 export const api = new NymeriaAPI();
