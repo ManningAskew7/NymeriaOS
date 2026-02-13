@@ -73,6 +73,36 @@ export interface Thread {
     guildId?: string;
     channelId?: string;
   };
+  hasCustomConfig?: boolean;
+}
+
+// Per-thread configuration types
+export interface ThreadLLMConfig {
+  provider?: LLMProvider | null;
+  model?: string | null;
+  temperature?: number | null;
+  max_tokens?: number | null;
+  extended_thinking?: boolean | null;
+  reasoning_effort?: string | null;
+}
+
+export interface ThreadConfig {
+  threadId: string;
+  instructions?: string | null;
+  disabledTools: string[];
+  llmConfig?: ThreadLLMConfig | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  hasCustomizations: boolean;
+}
+
+export interface ThreadConfigUpdateRequest {
+  instructions?: string | null;
+  disabled_tools?: string[] | null;
+  llm_config?: Partial<ThreadLLMConfig> | null;
+  clear_instructions?: boolean;
+  clear_disabled_tools?: boolean;
+  clear_llm_config?: boolean;
 }
 
 export interface ThreadHistory {

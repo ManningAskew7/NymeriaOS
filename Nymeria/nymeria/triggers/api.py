@@ -869,6 +869,103 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             }
         return {"platform": "desktop"}
 
+    # =========================================================================
+    # Thread Configuration
+    # =========================================================================
+
+    class ThreadLLMConfigRequest(BaseModel):
+        provider: Optional[str] = None
+        model: Optional[str] = None
+        temperature: Optional[float] = None
+        max_tokens: Optional[int] = None
+        extended_thinking: Optional[bool] = None
+        reasoning_effort: Optional[str] = None
+
+    class ThreadConfigUpdateRequest(BaseModel):
+        instructions: Optional[str] = Field(default=None, max_length=5000)
+        disabled_tools: Optional[List[str]] = None
+        llm_config: Optional[ThreadLLMConfigRequest] = None
+        clear_instructions: bool = False
+        clear_disabled_tools: bool = False
+        clear_llm_config: bool = False
+
+    @app.get("/threads/{thread_id}/config", tags=["Threads"])
+    async def get_thread_config(
+        thread_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get per-thread configuration (returns defaults if none saved)."""
+        agent = get_agent()
+        tc = agent.thread_config_manager.get_config(thread_id)
+        if tc:
+            return tc.model_dump(mode="json")
+        # Return empty default
+        return {
+            "thread_id": thread_id,
+            "instructions": None,
+            "disabled_tools": [],
+            "llm_config": None,
+            "created_at": None,
+            "updated_at": None,
+            "has_customizations": False,
+        }
+
+    @app.patch("/threads/{thread_id}/config", tags=["Threads"])
+    async def update_thread_config(
+        thread_id: str,
+        request: ThreadConfigUpdateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Update per-thread configuration (partial update)."""
+        from ..core.thread_config import ThreadConfig, ThreadLLMConfig
+
+        agent = get_agent()
+        tc = agent.thread_config_manager.get_config(thread_id)
+
+        if tc is None:
+            tc = ThreadConfig(thread_id=thread_id)
+
+        # Apply clears first
+        if request.clear_instructions:
+            tc.instructions = None
+        if request.clear_disabled_tools:
+            tc.disabled_tools = []
+        if request.clear_llm_config:
+            tc.llm_config = None
+
+        # Apply updates
+        if request.instructions is not None and not request.clear_instructions:
+            tc.instructions = request.instructions
+        if request.disabled_tools is not None and not request.clear_disabled_tools:
+            tc.disabled_tools = request.disabled_tools
+        if request.llm_config is not None and not request.clear_llm_config:
+            llm_data = request.llm_config.model_dump(exclude_none=True)
+            if tc.llm_config is None:
+                tc.llm_config = ThreadLLMConfig(**llm_data)
+            else:
+                for key, value in llm_data.items():
+                    setattr(tc.llm_config, key, value)
+
+        if not agent.thread_config_manager.save_config(tc):
+            raise HTTPException(status_code=500, detail="Failed to save thread config")
+
+        agent.invalidate_thread_config_cache(thread_id)
+
+        result = tc.model_dump(mode="json")
+        result["has_customizations"] = tc.has_customizations()
+        return result
+
+    @app.delete("/threads/{thread_id}/config", tags=["Threads"])
+    async def delete_thread_config(
+        thread_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Reset thread to global defaults (delete custom config)."""
+        agent = get_agent()
+        agent.thread_config_manager.delete_config(thread_id)
+        agent.invalidate_thread_config_cache(thread_id)
+        return {"status": "ok", "thread_id": thread_id}
+
     @app.post("/threads/{thread_id}/compact", tags=["Threads"])
     async def compact_thread(
         thread_id: str,

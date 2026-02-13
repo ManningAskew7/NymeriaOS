@@ -1,10 +1,14 @@
 <script lang="ts">
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { api } from '$lib/services/api.svelte';
   import ThreadItem from './ThreadItem.svelte';
+  import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
+  import type { Thread, ThreadConfig } from '$lib/types';
 
   let loadError = $state<string | null>(null);
+  let configureThread = $state<Thread | null>(null);
 
   async function handleSelectThread(threadId: string) {
     if (threadId === threadsStore.currentThreadId) return;
@@ -42,6 +46,16 @@
   function handleRenameThread(threadId: string, newTitle: string) {
     threadsStore.renameThread(threadId, newTitle);
   }
+
+  function handleConfigureThread(thread: Thread) {
+    // Load config if not cached
+    threadConfigStore.loadConfig(thread.id);
+    configureThread = thread;
+  }
+
+  function handleConfigSaved(config: ThreadConfig) {
+    // Config is already in the store
+  }
 </script>
 
 <div class="thread-list">
@@ -67,9 +81,11 @@
               isActive={thread.id === threadsStore.currentThreadId}
               taskCount={threadsStore.getThreadTaskCount(thread.id)}
               hasActiveTask={threadsStore.isThreadActive(thread.id)}
+              hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
               onSelect={() => handleSelectThread(thread.id)}
               onDelete={() => handleDeleteThread(thread.id)}
               onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+              onConfigure={() => handleConfigureThread(thread)}
             />
           {/each}
         </div>
@@ -77,6 +93,15 @@
     {/each}
   {/if}
 </div>
+
+{#if configureThread}
+  <ThreadSettingsPanel
+    thread={configureThread}
+    threadConfig={threadConfigStore.getConfig(configureThread.id) ?? null}
+    onClose={() => (configureThread = null)}
+    onSaved={handleConfigSaved}
+  />
+{/if}
 
 <style>
   .thread-list {

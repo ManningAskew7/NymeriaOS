@@ -7,16 +7,19 @@
     isActive: boolean;
     taskCount?: number;
     hasActiveTask?: boolean;
+    hasCustomConfig?: boolean;
     onSelect: () => void;
     onDelete: () => void;
     onRename: (newTitle: string) => void;
+    onConfigure?: () => void;
   }
 
-  let { thread, isActive, taskCount, hasActiveTask, onSelect, onDelete, onRename }: Props = $props();
+  let { thread, isActive, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
   let editTitle = $state('');
+  let contextMenu = $state<{ x: number; y: number } | null>(null);
 
   function handleDelete(e: MouseEvent) {
     e.stopPropagation();
@@ -69,6 +72,32 @@
       }
     }, 150);
   }
+
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    contextMenu = { x: e.clientX, y: e.clientY };
+  }
+
+  function dismissContextMenu() {
+    contextMenu = null;
+  }
+
+  function handleContextConfigure() {
+    contextMenu = null;
+    onConfigure?.();
+  }
+
+  function handleContextRename() {
+    contextMenu = null;
+    editTitle = thread.title;
+    isEditing = true;
+  }
+
+  function handleContextDelete() {
+    contextMenu = null;
+    onDelete();
+  }
 </script>
 
 <div
@@ -76,6 +105,7 @@
   class:active={isActive}
   class:editing={isEditing}
   onclick={handleClick}
+  oncontextmenu={handleContextMenu}
   onkeydown={(e) => e.key === 'Enter' && !isEditing && onSelect()}
   onmouseenter={() => (showActions = true)}
   onmouseleave={() => (showActions = false)}
@@ -132,6 +162,9 @@
 
   {#if !showActions && !isEditing}
     <div class="thread-badges">
+      {#if hasCustomConfig}
+        <span class="config-dot" title="Custom config"></span>
+      {/if}
       {#if hasActiveTask}
         <span class="active-indicator"><span class="badge-spinner"></span></span>
       {/if}
@@ -152,6 +185,28 @@
     </div>
   {/if}
 </div>
+
+{#if contextMenu}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="context-backdrop" onclick={dismissContextMenu}>
+  </div>
+  <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+    {#if onConfigure}
+      <button class="context-item" onclick={handleContextConfigure} type="button">
+        <Icon name="cog" size={14} />
+        <span>Configure</span>
+      </button>
+    {/if}
+    <button class="context-item" onclick={handleContextRename} type="button">
+      <Icon name="edit" size={14} />
+      <span>Rename</span>
+    </button>
+    <button class="context-item context-delete" onclick={handleContextDelete} type="button">
+      <Icon name="trash" size={14} />
+      <span>Delete</span>
+    </button>
+  </div>
+{/if}
 
 <style>
   .thread-item {
@@ -341,5 +396,51 @@
 
   @keyframes badgeSpin {
     to { transform: rotate(360deg); }
+  }
+
+  .config-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    flex-shrink: 0;
+  }
+
+  .context-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+  }
+
+  .context-menu {
+    position: fixed;
+    z-index: 1000;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 4px;
+    min-width: 140px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  .context-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    width: 100%;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-fast);
+  }
+
+  .context-item:hover {
+    background: var(--bg-hover);
+  }
+
+  .context-delete:hover {
+    color: var(--error);
   }
 </style>

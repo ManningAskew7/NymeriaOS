@@ -36,6 +36,7 @@ from .audit import AuditLogger
 from .prompts import INTERACTIVE_MODE_RULES, AUTONOMOUS_MODE_RULES, get_time_context
 from .migration import migrate_old_scheduled_tasks
 from .memory_index import MemoryIndex
+from .thread_config import ThreadConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,9 @@ class NymeriaAgent:
 
         # Initialize TODO manager
         self.todo_manager = TodoManager(self.settings.data_dir)
+
+        # Initialize per-thread config manager
+        self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
 
         # Memory indexes cache for RAG (user_id -> MemoryIndex)
         # Lazily initialized per-user to avoid loading all indexes on startup
@@ -476,7 +480,18 @@ class NymeriaAgent:
             f"cats:{sorted(tool_prefs.disabled_categories)}"
         )
 
-        return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str)}"
+        # Include thread config in the hash (so graph is rebuilt when config changes)
+        thread_config_str = ""
+        if thread_id:
+            tc = self.thread_config_manager.get_config(thread_id)
+            if tc:
+                thread_config_str = (
+                    f"|tc:{tc.instructions or ''}"
+                    f"|dt:{sorted(tc.disabled_tools)}"
+                    f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
+                )
+
+        return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str)}"
 
     def _build_full_system_prompt(
         self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
@@ -500,6 +515,12 @@ class NymeriaAgent:
         memories_section = self._build_user_memories_section(user_id)
         todos_section = self._build_active_todos_section(user_id, thread_id)
         prompt = self._base_system_prompt + memories_section + todos_section
+
+        # Inject per-thread instructions (before mode rules so they always come last)
+        if thread_id:
+            tc = self.thread_config_manager.get_config(thread_id)
+            if tc and tc.instructions:
+                prompt += f"\n\n---\n\n## Thread-Specific Instructions\n\n{tc.instructions}\n"
 
         # Add mode-specific behavioral rules
         if is_autonomous:
@@ -1153,27 +1174,54 @@ class NymeriaAgent:
             "context_management": self.settings.context_management,
         }
 
-    def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default"):
+    def _get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
+        """Build LLMConfig with per-thread overrides applied on top of global settings."""
+        tc = None
+        if thread_id:
+            tc_obj = self.thread_config_manager.get_config(thread_id)
+            if tc_obj:
+                tc = tc_obj.llm_config
+
+        provider = tc.provider if tc and tc.provider else self.settings.llm_provider
+        model = tc.model if tc and tc.model else self.settings.llm_model
+        temperature = tc.temperature if tc and tc.temperature is not None else self.settings.llm_temperature
+        max_tokens = tc.max_tokens if tc and tc.max_tokens is not None else self.settings.llm_max_tokens
+        extended_thinking = tc.extended_thinking if tc and tc.extended_thinking is not None else self.settings.llm_extended_thinking
+        reasoning_effort = tc.reasoning_effort if tc and tc.reasoning_effort else self.settings.llm_reasoning_effort
+
+        # Resolve API key based on effective provider
+        key_map = {
+            "openai": self.settings.openai_api_key,
+            "anthropic": self.settings.anthropic_api_key,
+            "openrouter": self.settings.openrouter_api_key,
+        }
+        api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
+
+        return LLMConfig(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=self.settings.llm_top_p,
+            top_k=self.settings.llm_top_k,
+            frequency_penalty=self.settings.llm_frequency_penalty,
+            presence_penalty=self.settings.llm_presence_penalty,
+            reasoning_effort=reasoning_effort,
+            extended_thinking=extended_thinking,
+        )
+
+    def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a LangGraph execution graph with a specific system prompt.
 
         Args:
             system_prompt: The system prompt to use
             user_id: User ID for per-user tool filtering
+            thread_id: Thread ID for per-thread config (tool filtering, LLM overrides)
         """
+        llm_config = self._get_llm_config_for_thread(thread_id)
         config = AgentConfig(
-            llm=LLMConfig(
-                provider=self.settings.llm_provider,
-                model=self.settings.llm_model,
-                api_key=self.settings.get_api_key_for_provider(),
-                temperature=self.settings.llm_temperature,
-                max_tokens=self.settings.llm_max_tokens,
-                top_p=self.settings.llm_top_p,
-                top_k=self.settings.llm_top_k,
-                frequency_penalty=self.settings.llm_frequency_penalty,
-                presence_penalty=self.settings.llm_presence_penalty,
-                reasoning_effort=self.settings.llm_reasoning_effort,
-                extended_thinking=self.settings.llm_extended_thinking,
-            ),
+            llm=llm_config,
             checkpointer=self._checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=70,
@@ -1181,32 +1229,30 @@ class NymeriaAgent:
         )
         # Use per-user tool filtering
         tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+        # Apply per-thread tool filtering (remove disabled tools)
+        if thread_id:
+            tc = self.thread_config_manager.get_config(thread_id)
+            if tc and tc.disabled_tools:
+                disabled = set(tc.disabled_tools)
+                tools = [t for t in tools if t.name not in disabled]
+
         return create_graph(
             config=config,
             tools=tools,
         )
 
-    def _build_async_graph_with_prompt(self, system_prompt: str, user_id: str = "default"):
+    def _build_async_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build an async-compatible LangGraph execution graph.
 
         Args:
             system_prompt: The system prompt to use
             user_id: User ID for per-user tool filtering
+            thread_id: Thread ID for per-thread config (tool filtering, LLM overrides)
         """
+        llm_config = self._get_llm_config_for_thread(thread_id)
         config = AgentConfig(
-            llm=LLMConfig(
-                provider=self.settings.llm_provider,
-                model=self.settings.llm_model,
-                api_key=self.settings.get_api_key_for_provider(),
-                temperature=self.settings.llm_temperature,
-                max_tokens=self.settings.llm_max_tokens,
-                top_p=self.settings.llm_top_p,
-                top_k=self.settings.llm_top_k,
-                frequency_penalty=self.settings.llm_frequency_penalty,
-                presence_penalty=self.settings.llm_presence_penalty,
-                reasoning_effort=self.settings.llm_reasoning_effort,
-                extended_thinking=self.settings.llm_extended_thinking,
-            ),
+            llm=llm_config,
             checkpointer=self._async_checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=70,
@@ -1214,6 +1260,14 @@ class NymeriaAgent:
         )
         # Use per-user tool filtering
         tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+        # Apply per-thread tool filtering (remove disabled tools)
+        if thread_id:
+            tc = self.thread_config_manager.get_config(thread_id)
+            if tc and tc.disabled_tools:
+                disabled = set(tc.disabled_tools)
+                tools = [t for t in tools if t.name not in disabled]
+
         return create_graph(
             config=config,
             tools=tools,
@@ -1242,7 +1296,7 @@ class NymeriaAgent:
             full_prompt = self._build_full_system_prompt(
                 user_id, is_autonomous=True, thread_id=thread_id
             )
-            return self._build_graph_with_prompt(full_prompt, user_id=user_id)
+            return self._build_graph_with_prompt(full_prompt, user_id=user_id, thread_id=thread_id)
 
         cache_key = (user_id, thread_id)
 
@@ -1265,15 +1319,18 @@ class NymeriaAgent:
             profile.tool_preferences.enabled_overrides or
             profile.tool_preferences.disabled_categories
         )
+        has_thread_config = bool(
+            thread_id and self.thread_config_manager.get_config(thread_id)
+        )
 
-        if not has_memories and not has_todos and not has_tool_prefs:
+        if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
             # Use default graph (no customization)
             return self._default_graph
 
         # Build new graph with user's context and tool preferences
         logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
         full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
-        graph = self._build_graph_with_prompt(full_prompt, user_id=user_id)
+        graph = self._build_graph_with_prompt(full_prompt, user_id=user_id, thread_id=thread_id)
 
         # Cache it with LRU eviction
         with self._graph_cache_lock:
@@ -1317,15 +1374,18 @@ class NymeriaAgent:
             profile.tool_preferences.enabled_overrides or
             profile.tool_preferences.disabled_categories
         )
+        has_thread_config = bool(
+            thread_id and self.thread_config_manager.get_config(thread_id)
+        )
 
-        if not has_memories and not has_todos and not has_tool_prefs:
+        if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
             # Use default async graph (no customization)
             return self._default_async_graph
 
         # Build new async graph with user's context and tool preferences
         logger.debug(f"Building new async graph for user {user_id}, thread {thread_id} (context or tools changed)")
         full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
-        graph = self._build_async_graph_with_prompt(full_prompt, user_id=user_id)
+        graph = self._build_async_graph_with_prompt(full_prompt, user_id=user_id, thread_id=thread_id)
 
         # Cache it with LRU eviction
         with self._graph_cache_lock:
@@ -1354,6 +1414,17 @@ class NymeriaAgent:
         self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
         self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
         return self
+
+    def invalidate_thread_config_cache(self, thread_id: str) -> None:
+        """Remove cached graphs for a specific thread after its config changes."""
+        with self._graph_cache_lock:
+            keys_to_remove = [k for k in self._user_graphs if k[1] == thread_id]
+            for k in keys_to_remove:
+                del self._user_graphs[k]
+            keys_to_remove = [k for k in self._async_user_graphs if k[1] == thread_id]
+            for k in keys_to_remove:
+                del self._async_user_graphs[k]
+        logger.debug(f"Invalidated graph cache for thread {thread_id}")
 
     def _load_custom_tools(self) -> int:
         """Load custom tools from the custom_tools directory.
