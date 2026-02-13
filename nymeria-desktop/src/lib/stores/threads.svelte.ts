@@ -37,6 +37,7 @@ function detectPlatform(threadId: string): ThreadPlatform {
   if (threadId.startsWith('discord_')) return 'discord';
   if (threadId.startsWith('telegram_')) return 'telegram';
   if (threadId.startsWith('slack_')) return 'slack';
+  if (threadId.startsWith('trigger-')) return 'trigger';
   return 'desktop';
 }
 
@@ -175,6 +176,31 @@ function createThreadsStore() {
         saveThreads(threads);
       }
       currentThreadId = id;
+    },
+
+    /**
+     * Ensure a thread exists in the sidebar without switching to it.
+     * Creates the thread if missing; updates its title if different.
+     */
+    ensureThread(id: string, title: string) {
+      const existing = threads.find((t) => t.id === id);
+      if (!existing) {
+        const thread: Thread = {
+          id,
+          title,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          messageCount: 0,
+          platform: detectPlatform(id),
+        };
+        threads = [thread, ...threads];
+        saveThreads(threads);
+      } else if (existing.title !== title) {
+        threads = threads.map((t) =>
+          t.id === id ? { ...t, title, updatedAt: new Date() } : t
+        );
+        saveThreads(threads);
+      }
     },
 
     /**

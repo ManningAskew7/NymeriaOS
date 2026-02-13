@@ -32,15 +32,15 @@ def _reload_tools_internal() -> tuple[bool, str]:
 @tool
 def self_modify(
     instruction: str,
-    category: Literal["add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent"],
+    category: Literal["add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent", "add_trigger_source", "remove_trigger_source"],
 ) -> str:
     """
-    Modify Nymeria's tools or agents. Only affects nymeria/tools/ and nymeria/agents/.
+    Modify Nymeria's tools, agents, or trigger sources. Affects nymeria/tools/, nymeria/agents/, and nymeria/triggers/sources/.
     Tools are automatically reloaded after successful modifications.
 
     Args:
         instruction: What to do (be specific)
-        category: "add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent"
+        category: "add_tool", "remove_tool", "fix_bug", "explain", "add_agent", "modify_agent", "remove_agent", "add_trigger_source", "remove_trigger_source"
     """
     logger.info(f"self_modify called: category={category}, instruction={instruction[:100]}...")
 
@@ -58,6 +58,15 @@ def self_modify(
                 result += f"\n\n[Auto-reload]: {reload_msg}. New tools available on next message."
             else:
                 result += f"\n\n[Warning]: Auto-reload failed: {reload_msg}. Use may need to restart."
+
+            # Also reload trigger sources if that's what was modified
+            if category in ("add_trigger_source", "remove_trigger_source"):
+                try:
+                    from ..triggers.sources import reload_sources
+                    count = reload_sources()
+                    result += f"\n[Trigger sources reloaded]: {count} source(s) available."
+                except Exception as e:
+                    result += f"\n[Warning]: Trigger source reload failed: {e}"
 
         return result
 

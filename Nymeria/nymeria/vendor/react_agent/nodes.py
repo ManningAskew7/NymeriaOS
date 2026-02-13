@@ -63,6 +63,17 @@ def create_agent_node(
         # Call the LLM
         response = llm_with_tools.invoke(messages_with_system)
 
+        # Check if response was truncated due to hitting max_tokens
+        if hasattr(response, 'response_metadata'):
+            finish_reason = response.response_metadata.get('finish_reason')
+            if finish_reason == 'length':
+                content_len = len(response.content) if isinstance(response.content, str) else 0
+                logger.warning(
+                    f"[LLM TRUNCATED] Response hit max_tokens limit "
+                    f"(finish_reason='length', content_length={content_len}). "
+                    f"The model's output was cut off mid-generation."
+                )
+
         return {"messages": [response]}
 
     return agent_node

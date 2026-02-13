@@ -51,6 +51,13 @@ from .outlook_email import EMAIL_TOOLS
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
 from .notify import notify, NOTIFY_TOOLS
+from .triggers import (
+    trigger_create,
+    trigger_list,
+    trigger_update,
+    trigger_delete,
+    TRIGGER_TOOLS,
+)
 
 # All available tools (20 core tools + sub-agents as direct tools)
 ALL_TOOLS = [
@@ -83,6 +90,11 @@ ALL_TOOLS = [
     mute_response,
     # Unified notification tool
     notify,
+    # Trigger tools (event-driven automation)
+    trigger_create,
+    trigger_list,
+    trigger_update,
+    trigger_delete,
     # NOTE: Outlook tools handled by OutlookAgent sub-agent
     # NOTE: Browser tools handled by BrowserAgent sub-agent
 ]
@@ -123,6 +135,12 @@ __all__ = [
     # Notification
     "notify",
     "NOTIFY_TOOLS",
+    # Trigger tools
+    "trigger_create",
+    "trigger_list",
+    "trigger_update",
+    "trigger_delete",
+    "TRIGGER_TOOLS",
     # Outlook tools (handled by OutlookAgent, exported for reference)
     "AUTH_TOOLS",
     "EMAIL_TOOLS",

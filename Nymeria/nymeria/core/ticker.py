@@ -25,6 +25,7 @@ from .notifications import create_notification
 from .response_handler import create_response
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
+from .trigger_manager import TriggerManager
 from ..tools.visibility import get_and_clear_mute_flag
 
 if TYPE_CHECKING:
@@ -132,6 +133,11 @@ class Ticker:
         self._retry_counts: dict = {}  # Track retries per TODO
         self._executor: Optional[ThreadPoolExecutor] = None
 
+        # Trigger system: poll-based sources checked at a slower interval
+        self.trigger_poll_interval = max(poll_interval * 6, 30)  # Default 30s
+        self._last_trigger_check: float = 0.0
+        self._trigger_manager: Optional[TriggerManager] = None
+
     def start(self) -> None:
         """Start the ticker thread."""
         if self._running:
@@ -175,6 +181,14 @@ class Ticker:
             self._thread.join(timeout=2.0)
         logger.info("Ticker stopped")
 
+    def _get_trigger_manager(self) -> TriggerManager:
+        """Lazy-init the trigger manager."""
+        if self._trigger_manager is None:
+            from ..config import get_settings
+            settings = get_settings()
+            self._trigger_manager = TriggerManager(settings.data_dir)
+        return self._trigger_manager
+
     def _poll_loop(self) -> None:
         """Main polling loop."""
         while self._running:
@@ -183,12 +197,39 @@ class Ticker:
             except Exception as e:
                 logger.error(f"Ticker poll error: {e}", exc_info=True)
 
+            # Check poll-based trigger sources at a slower interval
+            now = time.time()
+            if now - self._last_trigger_check >= self.trigger_poll_interval:
+                try:
+                    self._check_triggers()
+                except Exception as e:
+                    logger.error(f"Trigger poll error: {e}", exc_info=True)
+                self._last_trigger_check = now
+
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
             for _ in range(sleep_increments):
                 if not self._running:
                     break
                 time.sleep(0.1)
+
+    def _check_triggers(self) -> None:
+        """Check all poll-based trigger sources for events and fire actions.
+
+        When a single poll returns multiple events (e.g. 5 new emails),
+        they are batched into ONE action call instead of firing N separate
+        LLM calls.  The batch is passed as a list to ``fire_action_batch``.
+        """
+        manager = self._get_trigger_manager()
+        for user_id in manager.get_all_users_with_triggers():
+            fired = manager.check_triggers(user_id)
+            for trigger, events in fired:
+                if self._executor:
+                    self._executor.submit(
+                        manager.fire_action_batch, trigger, events, self.agent, user_id
+                    )
+                else:
+                    manager.fire_action_batch(trigger, events, self.agent, user_id)
 
     def _check_and_execute(self) -> None:
         """Check for due scheduled TODOs and execute them."""
