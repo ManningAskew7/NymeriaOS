@@ -1669,6 +1669,7 @@ export class NymeriaAPI {
       threadId: data.thread_id,
       instructions: data.instructions ?? null,
       disabledTools: data.disabled_tools ?? [],
+      enabledTools: data.enabled_tools ?? [],
       llmConfig: data.llm_config ?? null,
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
@@ -1696,11 +1697,21 @@ export class NymeriaAPI {
       threadId: data.thread_id,
       instructions: data.instructions ?? null,
       disabledTools: data.disabled_tools ?? [],
+      enabledTools: data.enabled_tools ?? [],
       llmConfig: data.llm_config ?? null,
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
       hasCustomizations: data.has_customizations ?? false,
     };
+  }
+
+  async getOptionalTools(): Promise<import('$lib/types').OptionalTool[]> {
+    const response = await fetch(`${this.getBaseUrl()}/tools/optional`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.tools ?? [];
   }
 
   async deleteThreadConfig(threadId: string): Promise<void> {

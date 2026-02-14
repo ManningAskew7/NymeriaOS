@@ -257,7 +257,11 @@ class TriggerManager:
         Returns list of ``(trigger, events)`` pairs where events is non-empty.
         Persists updated state and last_fired timestamps.
         """
-        from ..triggers.sources import get_source
+        from ..triggers.sources import get_source, AVAILABLE_SOURCES
+
+        logger.info(
+            f"[TRIGGER CHECK] user={user_id}, registered_sources={list(AVAILABLE_SOURCES.keys())}"
+        )
 
         results: List[Tuple[TriggerDefinition, List[dict]]] = []
 
@@ -384,6 +388,7 @@ class TriggerManager:
             prompt=batch_prompt,
             response=response,
             buffered_events=buffered_events,
+            event_count=len(events),
         )
 
         logger.info(f"[TRIGGER] Batched agent_prompt completed, response_len={len(response)}")
@@ -416,6 +421,7 @@ class TriggerManager:
             prompt=prompt,
             response=response,
             buffered_events=buffered_events,
+            event_count=1,
         )
 
         logger.info(f"[TRIGGER] agent_prompt completed, response_len={len(response)}")
@@ -499,8 +505,10 @@ class TriggerManager:
         prompt: str,
         response: str,
         buffered_events: List[dict],
+        event_count: int = 1,
     ) -> None:
         """Check mute flag and publish buffered events to the event bus."""
+        from .activity_log import ActivityType, log_activity
         from .event_bus import publish_autonomous_event
         from ..tools.visibility import get_and_clear_mute_flag
 
@@ -545,6 +553,20 @@ class TriggerManager:
                 "content": response,
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
+            },
+        )
+
+        # Persist to activity log
+        log_activity(
+            ActivityType.TRIGGER_COMPLETED,
+            f"{trigger.name}: processed {event_count} event(s)",
+            user_id=user_id,
+            thread_id=thread_id,
+            metadata={
+                "trigger_id": trigger.id,
+                "trigger_name": trigger.name,
+                "event_count": event_count,
+                "visibility": visibility,
             },
         )
 

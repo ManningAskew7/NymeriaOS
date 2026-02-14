@@ -8,9 +8,11 @@
 
   interface Props {
     threadId?: string;
+    threadTitleMap?: Record<string, string>;
+    onNavigateToThread?: (threadId: string) => void;
   }
 
-  let { threadId }: Props = $props();
+  let { threadId, threadTitleMap, onNavigateToThread }: Props = $props();
 
   onMount(() => {
     todosStore.fetch(undefined, threadId);
@@ -83,7 +85,13 @@
         </h3>
         <div class="group-items highlighted">
           {#each organized.inProgress as todo (todo.id)}
-            <TodoItem {todo} highlighted={true} onEdit={openEditForm} />
+            <TodoItem
+              {todo}
+              highlighted={true}
+              onEdit={openEditForm}
+              threadTitle={threadTitleMap && todo.threadId ? threadTitleMap[todo.threadId] : undefined}
+              onNavigateToThread={onNavigateToThread && todo.threadId ? () => onNavigateToThread!(todo.threadId!) : undefined}
+            />
           {/each}
         </div>
       </div>
@@ -98,7 +106,12 @@
         </h3>
         <div class="group-items">
           {#each organized.active as todo (todo.id)}
-            <TodoItem {todo} onEdit={openEditForm} />
+            <TodoItem
+              {todo}
+              onEdit={openEditForm}
+              threadTitle={threadTitleMap && todo.threadId ? threadTitleMap[todo.threadId] : undefined}
+              onNavigateToThread={onNavigateToThread && todo.threadId ? () => onNavigateToThread!(todo.threadId!) : undefined}
+            />
           {/each}
         </div>
       </div>
@@ -113,7 +126,12 @@
         </h3>
         <div class="group-items completed-items">
           {#each organized.completed as todo (todo.id)}
-            <TodoItem {todo} onEdit={openEditForm} />
+            <TodoItem
+              {todo}
+              onEdit={openEditForm}
+              threadTitle={threadTitleMap && todo.threadId ? threadTitleMap[todo.threadId] : undefined}
+              onNavigateToThread={onNavigateToThread && todo.threadId ? () => onNavigateToThread!(todo.threadId!) : undefined}
+            />
           {/each}
         </div>
       </div>

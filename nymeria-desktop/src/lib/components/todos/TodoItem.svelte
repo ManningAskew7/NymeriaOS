@@ -8,9 +8,11 @@
     todo: TodoItemType;
     highlighted?: boolean;
     onEdit?: (todo: TodoItemType) => void;
+    threadTitle?: string;
+    onNavigateToThread?: () => void;
   }
 
-  let { todo, highlighted = false, onEdit }: Props = $props();
+  let { todo, highlighted = false, onEdit, threadTitle, onNavigateToThread }: Props = $props();
   let completing = $state(false);
 
   // Collapsible state - default collapsed, expand to see details
@@ -199,6 +201,15 @@
         </span>
       {/if}
       <span class="todo-task">{todo.task}</span>
+      {#if threadTitle}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <span
+          class="thread-badge"
+          class:clickable={!!onNavigateToThread}
+          onclick={(e) => { if (onNavigateToThread) { e.stopPropagation(); onNavigateToThread(); } }}
+        >{threadTitle}</span>
+      {/if}
       <div class="badges">
         {#if recurrenceLabel}
           <span class="recurrence-badge" title="Recurring task">
@@ -491,5 +502,28 @@
   .todo-item.scheduled {
     border-left: 2px solid var(--accent-primary);
     padding-left: calc(var(--spacing-sm) - 2px);
+  }
+
+  .thread-badge {
+    display: inline-block;
+    max-width: 100px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+  }
+
+  .thread-badge.clickable {
+    cursor: pointer;
+  }
+
+  .thread-badge.clickable:hover {
+    background: rgba(var(--accent-primary-rgb), 0.2);
   }
 </style>

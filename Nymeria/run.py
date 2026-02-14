@@ -130,11 +130,11 @@ def run_cli(args: argparse.Namespace) -> None:
     logging.getLogger("nymeria").setLevel(logging.WARNING)
 
     from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
+    from nymeria.tools import get_all_tools_with_agents
     from nymeria.triggers.cli import run_cli as start_cli
 
-    # Create agent with all tools
-    agent = NymeriaAgent(tools=ALL_TOOLS)
+    # Create agent with all tools (core + sub-agent tools)
+    agent = NymeriaAgent(tools=get_all_tools_with_agents())
 
     # Start CLI
     start_cli(agent=agent, thread_id=args.thread)
@@ -143,7 +143,7 @@ def run_cli(args: argparse.Namespace) -> None:
 def run_api(args: argparse.Namespace) -> None:
     """Run the REST API server."""
     from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
+    from nymeria.tools import get_all_tools_with_agents
     from nymeria.triggers.api import run_api as start_api
     from nymeria.config import get_settings
 
@@ -163,10 +163,10 @@ def run_api(args: argparse.Namespace) -> None:
         set_event_bus(event_bus)
         print(f"  - Redis event bus: {settings.redis_url}")
 
-    # Create agent with all tools
+    # Create agent with all tools (core + sub-agent tools)
     # When Redis is enabled (Docker), a separate worker container runs the ticker.
     # Disable ticker in the API to prevent duplicate task execution.
-    agent = NymeriaAgent(tools=ALL_TOOLS, enable_ticker=not disable_ticker)
+    agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=not disable_ticker)
 
     # Start API server
     start_api(host=host, port=port, agent=agent)
@@ -249,7 +249,7 @@ def run_worker(args: argparse.Namespace) -> None:
     run in separate containers, sharing state via PostgreSQL and Redis.
     """
     from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
+    from nymeria.tools import get_all_tools_with_agents
     from nymeria.config import get_settings
     from nymeria.core.event_bus import create_event_bus, set_event_bus
 
@@ -268,7 +268,7 @@ def run_worker(args: argparse.Namespace) -> None:
         print(f"  - Redis event bus: {settings.redis_url}")
 
     # Create agent with all tools (this starts the ticker)
-    agent = NymeriaAgent(tools=ALL_TOOLS)
+    agent = NymeriaAgent(tools=get_all_tools_with_agents())
 
     # Handle shutdown signals
     def signal_handler(signum, frame):
@@ -305,7 +305,7 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     originating Discord channels via the event bus.
     """
     from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
+    from nymeria.tools import get_all_tools_with_agents
     from nymeria.config import get_settings
     from nymeria.triggers.discord_bot import NymeriaDiscordBot
 
@@ -336,7 +336,7 @@ def run_discord_bot(args: argparse.Namespace) -> None:
         print(f"  - API URL: {api_url} (SSE events enabled)")
 
     # Create agent without ticker (ticker runs in worker/api, not bot)
-    agent = NymeriaAgent(tools=ALL_TOOLS, enable_ticker=False)
+    agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=False)
 
     # Create and run bot
     bot = NymeriaDiscordBot(

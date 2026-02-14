@@ -1,15 +1,24 @@
 """Outlook email trigger source -- polls inbox via Microsoft Graph API.
 
 Monitors an Outlook mailbox folder for new emails and fires events
-for each new message. Uses receivedDateTime filtering + seen-ID dedup
-so it never modifies the user's mailbox (no category tags, no read marks).
+for each new message.  Uses three layers of deduplication:
+
+1. **Server-side category filter** (primary): Emails tagged with a
+   ``processed_category`` (default ``Nymeria-Read``) are excluded from
+   the Graph API query.  Each fetched email is immediately tagged before
+   the LLM ever sees it, so even crashes/restarts can't cause re-processing.
+2. **receivedDateTime filter** with staleness guard: Only emails newer than
+   ``last_check_time`` are fetched.  If this timestamp is more than
+   ``MAX_STALENESS`` old it is auto-reset to avoid backlog floods.
+3. **seen_ids dedup** (tertiary): A rolling window of recent message IDs
+   catches any edge-case duplicates.
 
 Events contain lightweight metadata (bodyPreview, not full body). The LLM
 can call outlook_get_email() for the full content when it decides to act.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
 from .base import BaseTriggerSource
@@ -19,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Max message IDs to keep for dedup (prevents unbounded growth)
 MAX_SEEN_IDS = 200
+
+# If last_check_time is older than this, reset it to avoid backlog floods
+MAX_STALENESS = timedelta(days=7)
 
 
 class OutlookEmailSource(BaseTriggerSource):
@@ -57,6 +69,15 @@ class OutlookEmailSource(BaseTriggerSource):
             "description": "Max emails per poll cycle (default: 5)",
             "required": False,
         },
+        "processed_category": {
+            "type": "string",
+            "description": (
+                "Outlook category to tag processed emails with. "
+                "Also used as a server-side filter to exclude already-processed "
+                "emails. Set to empty string to disable. (default: Nymeria-Read)"
+            ),
+            "required": False,
+        },
     }
 
     def check(self, config: dict, state: dict) -> List[dict]:
@@ -74,6 +95,7 @@ class OutlookEmailSource(BaseTriggerSource):
         unread_only = config.get("unread_only", True)
         from_filter = config.get("from_filter")
         max_emails = min(config.get("max_emails", 5), 50)
+        processed_category = config.get("processed_category", "Nymeria-Read")
 
         # Get auth token -- fail gracefully if not authenticated
         token = get_access_token(account_id)
@@ -98,6 +120,24 @@ class OutlookEmailSource(BaseTriggerSource):
             )
             return []
 
+        # --- Staleness guard ---
+        # If last_check_time is unreasonably old, reset to MAX_STALENESS ago
+        # to avoid paging through months/years of email backlog.  The category
+        # filter (below) ensures already-processed emails are still excluded.
+        try:
+            check_dt = datetime.fromisoformat(last_check.replace("Z", "+00:00"))
+            now_utc = datetime.now(timezone.utc)
+            if (now_utc - check_dt) > MAX_STALENESS:
+                reset_to = (now_utc - MAX_STALENESS).strftime("%Y-%m-%dT%H:%M:%SZ")
+                logger.warning(
+                    f"outlook_email source: last_check_time is stale ({last_check}), "
+                    f"resetting to {reset_to}"
+                )
+                last_check = reset_to
+                state["last_check_time"] = reset_to
+        except (ValueError, TypeError):
+            pass
+
         filters.append(f"receivedDateTime gt {last_check}")
 
         if unread_only:
@@ -107,6 +147,11 @@ class OutlookEmailSource(BaseTriggerSource):
             # OData filter on nested emailAddress
             safe_addr = from_filter.replace("'", "''")
             filters.append(f"from/emailAddress/address eq '{safe_addr}'")
+
+        # --- Server-side category exclusion (primary dedup) ---
+        if processed_category:
+            safe_cat = processed_category.replace("'", "''")
+            filters.append(f"not(categories/any(c:c eq '{safe_cat}'))")
 
         # Map common folder aliases
         folder_map = {
@@ -125,7 +170,8 @@ class OutlookEmailSource(BaseTriggerSource):
             "$top": max_emails,
             "$orderby": "receivedDateTime asc",
             "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,"
-                       "bodyPreview,conversationId,webLink,toRecipients,flag",
+                       "bodyPreview,conversationId,webLink,toRecipients,flag,"
+                       "categories",
         }
         if filters:
             params["$filter"] = " and ".join(filters)
@@ -158,6 +204,12 @@ class OutlookEmailSource(BaseTriggerSource):
 
         if not new_messages:
             return []
+
+        # --- Tag emails with processed category BEFORE building events ---
+        # This ensures emails are marked as processed even if downstream
+        # LLM processing fails or the backend crashes mid-batch.
+        if processed_category:
+            self._tag_emails(new_messages, processed_category, account_id)
 
         # Build events
         events = []
@@ -199,6 +251,42 @@ class OutlookEmailSource(BaseTriggerSource):
 
         logger.info(f"outlook_email source: {len(events)} new email(s)")
         return events
+
+    @staticmethod
+    def _tag_emails(
+        messages: List[dict],
+        category: str,
+        account_id: str | None,
+    ) -> None:
+        """Tag fetched emails with the processed category via Graph PATCH.
+
+        Merges with existing categories so we never overwrite user-set
+        categories.  Failures are logged but don't block event processing.
+        """
+        from nymeria.tools.outlook_email import graph_request
+
+        for msg in messages:
+            msg_id = msg.get("id")
+            if not msg_id:
+                continue
+
+            existing = msg.get("categories", [])
+            if category in existing:
+                continue  # already tagged (shouldn't happen due to filter)
+
+            merged = existing + [category]
+            ok, err = graph_request(
+                "PATCH",
+                f"/me/messages/{msg_id}",
+                account_id=account_id,
+                json_data={"categories": merged},
+            )
+            if not ok:
+                subject = msg.get("subject", "(unknown)")
+                logger.warning(
+                    f"outlook_email source: failed to tag email "
+                    f"'{subject}' ({msg_id[:20]}...): {err}"
+                )
 
     def validate_config(self, config: dict) -> Tuple[bool, str]:
         """Config validation with extra checks on top of base schema validation."""

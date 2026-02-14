@@ -1,12 +1,14 @@
 <script lang="ts">
-  import type { ActivityEntry, ActivityType } from '$lib/types';
+  import type { ActivityEntry } from '$lib/types';
   import { Icon } from '$lib/components/common';
 
   interface Props {
     entry: ActivityEntry;
+    threadTitle?: string;
+    onNavigate?: () => void;
   }
 
-  let { entry }: Props = $props();
+  let { entry, threadTitle, onNavigate }: Props = $props();
 
   // Get icon and color based on activity type
   let icon = $derived.by(() => {
@@ -27,6 +29,8 @@
         return 'check';
       case 'todo_deleted':
         return 'trash';
+      case 'trigger_completed':
+        return 'bolt';
       default:
         return 'info';
     }
@@ -43,6 +47,8 @@
         return 'var(--warning)';
       case 'self_invoke':
         return 'var(--accent-primary)';
+      case 'trigger_completed':
+        return 'var(--accent-secondary, var(--accent-primary))';
       default:
         return 'var(--text-muted)';
     }
@@ -63,14 +69,25 @@
   });
 </script>
 
-<div class="activity-item">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="activity-item"
+  class:clickable={!!onNavigate}
+  onclick={onNavigate}
+>
   <div class="activity-icon" style="color: {color}">
     <Icon name={icon} size={12} />
   </div>
 
   <div class="activity-content">
     <span class="activity-message">{entry.message}</span>
-    <span class="activity-time">{timeAgo}</span>
+    <div class="activity-meta">
+      {#if threadTitle}
+        <span class="thread-badge">{threadTitle}</span>
+      {/if}
+      <span class="activity-time">{timeAgo}</span>
+    </div>
   </div>
 </div>
 
@@ -100,6 +117,10 @@
     transform: translateX(2px);
   }
 
+  .activity-item.clickable {
+    cursor: pointer;
+  }
+
   .activity-icon {
     flex-shrink: 0;
     margin-top: 3px;
@@ -123,6 +144,26 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+  }
+
+  .activity-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+
+  .thread-badge {
+    display: inline-block;
+    max-width: 120px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .activity-time {

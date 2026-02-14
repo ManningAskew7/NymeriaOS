@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -32,6 +32,7 @@ class ActivityType(str, Enum):
     TODO_UPDATED = "todo_updated"
     TODO_COMPLETED = "todo_completed"
     TODO_DELETED = "todo_deleted"
+    TRIGGER_COMPLETED = "trigger_completed"
 
 
 class ActivityEntry(BaseModel):
@@ -54,7 +55,7 @@ class ActivityLog:
     retention of the last MAX_ENTRIES entries.
     """
 
-    MAX_ENTRIES = 100
+    MAX_ENTRIES_FALLBACK = 4000  # Hard safety cap
 
     def __init__(self, data_dir: Path):
         """
@@ -116,9 +117,15 @@ class ActivityLog:
             entries = self._load_entries(user_id)
             entries.append(entry)
 
-            # Keep only the last MAX_ENTRIES
-            if len(entries) > self.MAX_ENTRIES:
-                entries = entries[-self.MAX_ENTRIES :]
+            # Time-based retention: prune entries older than retention_hours
+            from ..config import get_settings
+            retention_hours = get_settings().activity_retention_hours
+            cutoff = datetime.utcnow() - timedelta(hours=retention_hours)
+            entries = [e for e in entries if e.timestamp >= cutoff]
+
+            # Hard safety cap to prevent unbounded growth
+            if len(entries) > self.MAX_ENTRIES_FALLBACK:
+                entries = entries[-self.MAX_ENTRIES_FALLBACK:]
 
             self._save_entries(user_id, entries)
 
