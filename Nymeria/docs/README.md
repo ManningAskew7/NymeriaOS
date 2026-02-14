@@ -12,7 +12,7 @@ Nymeria is a personal AI assistant framework built on LangGraph's ReAct architec
 - **Multi-User Support**: Isolated profiles per user with thread-safe operations
 - **Auto-Compact Context**: Automatically summarizes conversations when approaching context limits, preserving important facts in memory
 - **Rate Limiting**: Prevents runaway autonomous loops (configurable limit per hour)
-- **45+ Built-in Tools**: Shell execution, file operations, web search, memory, self-modification, TODO management, sub-agents, browser automation, Outlook email integration, RAG semantic search
+- **29 Default Tools** (25 core + 4 sub-agent wrappers) + 13 optional Outlook tools: Shell, file ops, web search, thinking, Claude Code, memory, RAG, TODOs, notifications, triggers, visibility, plus sub-agents (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
 
 ## Quick Start
 
@@ -71,26 +71,37 @@ C:\Nymeria\
 │   │   ├── scheduler.py    # Deprecated scheduler (rate limiter extracted)
 │   │   └── _deprecated/    # Legacy modules (pending removal)
 │   │       └── task_db.py  # Old task database (migrated to TODOs)
-│   ├── tools/              # Tool definitions (45+ tools)
+│   ├── tools/              # Tool definitions (25 core + 13 optional Outlook)
 │   │   ├── bash.py         # Shell command execution
 │   │   ├── filesystem.py   # File read/write/list
 │   │   ├── web.py          # Web search via Perplexity
+│   │   ├── think.py        # Internal reasoning tool
 │   │   ├── claude_code.py  # Claude Code integration
 │   │   ├── memory.py       # User memory + RAG search tools
-│   │   ├── self_modify.py  # Self-modification tools
 │   │   ├── todo.py         # TODO management with scheduling
-│   │   ├── subagent.py     # Sub-agent invocation (also direct tools)
+│   │   ├── subagent.py     # Agent management (reload_all, clear_agent_context, rollback)
+│   │   ├── notify.py       # Unified Telegram/Discord/Slack notifications
+│   │   ├── triggers.py     # Event-driven trigger CRUD
 │   │   ├── visibility.py   # Response visibility control (mute_response)
 │   │   ├── browser.py      # Native Playwright browser automation (8 tools)
 │   │   ├── outlook_auth.py # Microsoft OAuth authentication (3 tools)
 │   │   └── outlook_email.py # Outlook email via Graph API (10 tools)
 │   ├── agents/             # Sub-agent definitions
-│   │   ├── __init__.py     # Agent registry
+│   │   ├── __init__.py     # Agent registry (auto-loads from *.py)
 │   │   ├── tool_factory.py # Generates direct tool bindings for agents
-│   │   └── *.py            # Individual agent files (e.g., browser_agent.py)
-│   ├── triggers/           # CLI and API interfaces
+│   │   ├── browser_agent.py
+│   │   ├── outlook_agent.py
+│   │   ├── calendar_agent.py
+│   │   └── self_modify_agent.py
+│   ├── triggers/           # CLI, API, and event-driven interfaces
 │   │   ├── cli.py          # Interactive terminal
-│   │   └── api.py          # FastAPI REST server + /autonomous/stream SSE
+│   │   ├── api.py          # FastAPI REST server + /autonomous/stream SSE
+│   │   ├── webhook.py      # Incoming webhook handlers (Telegram/Discord/Slack)
+│   │   ├── discord_bot.py  # Discord gateway bot
+│   │   └── sources/        # Event-driven trigger source plugins
+│   │       ├── base.py     # Abstract TriggerSource
+│   │       ├── webhook_source.py
+│   │       └── outlook_email_source.py
 │   └── config/             # Settings and prompts
 │       ├── settings.py     # Pydantic settings
 │       ├── soul.md         # System prompt
@@ -112,17 +123,17 @@ C:\Nymeria\
 
 ## Tool Categories
 
-| Category | Tools | Purpose |
+| Category | Count | Purpose |
 |----------|-------|---------|
-| **Core** | 6 | Shell execution, file operations, web search, Claude Code |
-| **Memory** | 5 | User memories and personality preferences |
-| **RAG** | 2 | Semantic search across conversations and memories |
-| **Self-Modification** | 4 | Modify Nymeria's own tools at runtime |
-| **TODO** | 5 | Task management with scheduled autonomous execution |
-| **Sub-Agents** | 4 | Invoke specialized sub-agents (also available as direct tools) |
+| **Core System** | 7 | Shell execution, file operations, web search, thinking, Claude Code |
+| **Memory & RAG** | 5 | User memories, personality preferences, semantic search |
+| **TODO** | 4 | Task management with scheduled autonomous execution |
+| **Agent Management** | 3 | Agent context, reload, rollback |
+| **Notification** | 1 | Unified Telegram/Discord/Slack notifications |
 | **Visibility** | 1 | Control response display (mute_response) |
-| **Browser** | 8 | Native Playwright browser automation |
-| **Outlook** | 13 | Microsoft Graph email and OAuth authentication |
+| **Triggers** | 4 | Event-driven automation CRUD |
+| **Sub-Agent Wrappers** | 4 | BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent |
+| **Optional: Outlook** | 13 | Microsoft Graph email + OAuth (per-thread enabling) |
 | **Custom** | ∞ | User-defined HTTP or MCP tools |
 
 See [Tools Reference](./tools.md) for detailed documentation.

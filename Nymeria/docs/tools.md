@@ -1,18 +1,19 @@
 # Nymeria Tools Reference
 
-Nymeria includes 45+ built-in tools organized into multiple categories, plus support for **Custom Tools** that you can create and manage through the desktop UI or API.
+Nymeria has a three-tier tool system: 25 core tools always loaded, 4 sub-agent wrapper tools generated dynamically, and 13 optional Outlook tools available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 29 default tools.
 
-| Category | Tools | Purpose |
+| Category | Count | Purpose |
 |----------|-------|---------|
-| **Core Tools** | 6 | Shell execution, file operations, web search, Claude Code |
-| **Memory Tools** | 5 | User memories and personality preferences |
-| **RAG Tools** | 2 | Semantic search across conversations and memories |
-| **TODO Tools** | 5 | Task management for autonomous operation |
-| **Self-Modification Tools** | 4 | Modify Nymeria's own tools at runtime |
-| **Sub-Agent Tools** | 4 | Invoke specialized sub-agents (also available as direct tools) |
-| **Visibility Tools** | 1 | Control response display (mute_response) |
-| **Browser Tools** | 8 | Native Playwright browser automation |
-| **Outlook Tools** | 13 | Microsoft Graph email and authentication |
+| **Core System** | 7 | Shell execution, file operations, web search, thinking, Claude Code |
+| **Memory & RAG** | 5 | User memories, personality preferences, semantic search |
+| **TODO** | 4 | Task management with scheduled autonomous execution |
+| **Agent Management** | 3 | Agent context, reload, rollback |
+| **Notification** | 1 | Unified Telegram/Discord/Slack notifications |
+| **Visibility** | 1 | Control response display (mute_response) |
+| **Triggers** | 4 | Event-driven automation CRUD |
+| **Sub-Agent Wrappers** | 4 | BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent |
+| **Optional: Outlook** | 13 | Microsoft Graph email and authentication (per-thread) |
+| **Optional: Browser** | 8 | Native Playwright browser automation (via BrowserAgent) |
 | **Custom Tools** | ∞ | User-defined HTTP or MCP tools |
 
 ---
@@ -138,6 +139,23 @@ claude_code("Analyze the code structure", allow_edit=False)
 
 ---
 
+### think
+
+Internal reasoning tool for complex multi-step problems. Allows the LLM to think through a problem without taking any action.
+
+```python
+think(thought: str)
+```
+
+**Parameters:**
+- `thought`: The reasoning or analysis to work through
+
+**Returns:** Acknowledgement (the thinking itself is the value)
+
+**Use case:** Complex decisions, multi-step planning, evaluating trade-offs before acting.
+
+---
+
 ## Memory Tools
 
 Memories are **automatically injected** into Nymeria's system prompt. There's no need for a "recall" tool - Nymeria always knows stored memories without explicit retrieval.
@@ -188,18 +206,6 @@ memory_forget("previous_employer")
 
 ---
 
-### memory_list
-
-List all memories stored for the current user.
-
-```python
-memory_list()
-```
-
-**Returns:** All stored memories and personality preferences
-
----
-
 ### memory_clear_all
 
 Clear ALL memories for the current user. This is irreversible.
@@ -238,7 +244,7 @@ personality_set("humor", "include occasional dry humor")
 
 ---
 
-## RAG Tools
+## RAG Search
 
 RAG (Retrieval Augmented Generation) enables semantic search across past conversations, memories, and TODOs to provide relevant context in responses.
 
@@ -263,42 +269,7 @@ rag_search("user's programming language preferences")
 rag_search("previous conversations about deadlines")
 ```
 
-**Note:** RAG must be enabled for the user via `rag_settings(enabled=True)`.
-
----
-
-### rag_settings
-
-Configure RAG (Retrieval Augmented Generation) settings.
-
-```python
-rag_settings(enabled: Optional[bool] = None, max_chunks: Optional[int] = None,
-             include_conversations: Optional[bool] = None, include_memories: Optional[bool] = None,
-             include_todos: Optional[bool] = None, auto_flush: Optional[bool] = None)
-```
-
-**Parameters:**
-- `enabled`: Turn RAG on/off (main toggle)
-- `max_chunks`: Maximum context chunks to include per message (1-10)
-- `include_conversations`: Include past conversation snippets in search
-- `include_memories`: Include saved memories in search
-- `include_todos`: Include completed TODO outcomes in search
-- `auto_flush`: Automatically preserve context before window trims
-
-**Returns:** Current RAG settings after any changes
-
-**Examples:**
-```python
-rag_settings(enabled=True)  # Enable RAG
-rag_settings(max_chunks=3)  # Limit context chunks
-rag_settings(include_todos=False)  # Exclude TODOs from search
-```
-
-**RAG Features:**
-- **Semantic Search**: Uses vector embeddings for meaning-based retrieval
-- **Content Types**: Conversations, memories, and TODOs are indexed separately
-- **Auto-flush**: Important context is preserved before context window trims
-- **User Opt-in**: RAG is disabled by default and requires explicit enabling
+**Note:** RAG is configured via the desktop UI settings, not a separate tool.
 
 ---
 
@@ -369,23 +340,6 @@ todo_update("abc12345", blocked_reason="Waiting for API access")
 
 ---
 
-### todo_complete
-
-Mark a TODO item as completed.
-
-```python
-todo_complete(todo_id: str)
-```
-
-**Parameters:**
-- `todo_id`: The 8-character TODO ID
-
-**Returns:** Confirmation message
-
-**Note:** Completed items are automatically archived after 7 days.
-
----
-
 ### todo_delete
 
 Delete a TODO item permanently.
@@ -420,42 +374,11 @@ todo_list(filter_status: Optional[str] = None)
 
 ---
 
-## Self-Modification Tools
+## Agent Management Tools
 
-Nymeria can modify its own tools at runtime. All modifications are:
-- Restricted to `nymeria/tools/` directory only
-- Backed up before changes (auto-rollback available)
-- Validated for Python syntax before saving
+Tools for managing sub-agents and self-modification recovery.
 
-### self_modify
-
-Invoke Nymeria's self-modification sub-agent.
-
-```python
-self_modify(instruction: str, category: Literal["add_tool", "remove_tool", "fix_bug", "explain"])
-```
-
-**Parameters:**
-- `instruction`: Detailed description of what to do
-- `category`: Type of modification:
-  - `"add_tool"`: Create a new tool
-  - `"remove_tool"`: Remove an existing tool
-  - `"fix_bug"`: Fix an issue in an existing tool
-  - `"explain"`: Explain how something works (read-only)
-
-**Returns:** Result of modification or explanation
-
-**Examples:**
-```python
-self_modify("Create a tool that generates random numbers between min and max", "add_tool")
-self_modify("Remove the calculator tool", "remove_tool")
-self_modify("The file_read tool crashes when the file is empty, fix it", "fix_bug")
-self_modify("How does the memory_save tool work?", "explain")
-```
-
-**Important:** After creating or modifying tools, call `tools_reload()` to make them available.
-
----
+> **Note:** Self-modification is now handled by the **SelfModifyAgent** sub-agent (called directly as a tool). The old `self_modify` and `tools_reload` tools have been removed. Use `reload_all` to refresh tools and agents after changes.
 
 ### self_modify_rollback
 
@@ -474,41 +397,32 @@ self_modify_rollback(file_path: str)
 
 ---
 
-### tools_reload
+### reload_all
 
-Reload all tools to pick up newly created or modified tools.
+Reload all tools, agents, and custom tools. Replaces the old `tools_reload` and `reload_agents` tools.
 
 ```python
-tools_reload()
+reload_all()
 ```
 
-**Returns:** List of available tools after reload
+**Returns:** Summary of reloaded tools and agents
 
-**Important:** Call this after using `self_modify` to create or fix tools. This makes new tools immediately available without restarting Nymeria.
+**Use case:** After SelfModifyAgent creates or modifies tools, or after CRUD operations on agents.
 
 ---
 
-### invoke_tool
+### clear_agent_context
 
-Dynamically invoke a tool by name. Useful for testing newly created tools in the same conversation turn.
+Clear the conversation context for a sub-agent.
 
 ```python
-invoke_tool(tool_name: str, args: str)
+clear_agent_context(agent_name: str)
 ```
 
 **Parameters:**
-- `tool_name`: Name of the tool to invoke (e.g., "roll_dice")
-- `args`: JSON string of arguments to pass (e.g., '{"sides": 6}')
+- `agent_name`: Name of the sub-agent
 
-**Returns:** The result of the tool invocation, or an error message
-
-**Examples:**
-```python
-invoke_tool("roll_dice", '{"sides": 20}')
-invoke_tool("random_color", '{}')
-```
-
-**Use case:** After `self_modify` creates a tool and `tools_reload` is called, the new tool won't be in the current turn's graph. Use `invoke_tool` to call it anyway.
+**Returns:** Confirmation message
 
 ---
 
@@ -621,6 +535,91 @@ When `mute_response` is called during autonomous execution (scheduled TODO):
 2. Frontend removes the streaming message from chat
 3. Response appears only in the activity feed
 4. If `visibility: "full"`, the message stays in chat
+
+---
+
+## Notification Tool
+
+### notify
+
+Send notifications to messaging platforms (Telegram, Discord, Slack).
+
+```python
+notify(message: str, platform: Optional[str] = None)
+```
+
+**Parameters:**
+- `message`: Notification message to send
+- `platform`: Target platform - `"telegram"`, `"discord"`, or `"slack"` (optional, sends to all configured if omitted)
+
+**Returns:** Success/error message
+
+**Requires:** Platform-specific credentials in `.env` (e.g., `TELEGRAM_BOT_TOKEN`, `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`).
+
+---
+
+## Trigger Tools
+
+Event-driven automation — create triggers that fire agent prompts or actions in response to events.
+
+### trigger_create
+
+Create a new event-driven trigger.
+
+```python
+trigger_create(name: str, source_type: str, config: dict, action: str)
+```
+
+**Parameters:**
+- `name`: Trigger name
+- `source_type`: Event source type (e.g., `"webhook"`, `"outlook_email"`)
+- `config`: Source-specific configuration
+- `action`: What to do when triggered (agent prompt or action)
+
+**Returns:** Created trigger with ID
+
+---
+
+### trigger_list
+
+List all triggers for the current user.
+
+```python
+trigger_list()
+```
+
+**Returns:** List of triggers with status and configuration
+
+---
+
+### trigger_update
+
+Update an existing trigger.
+
+```python
+trigger_update(trigger_id: str, **kwargs)
+```
+
+**Parameters:**
+- `trigger_id`: Trigger ID to update
+- Additional keyword arguments for fields to change
+
+**Returns:** Updated trigger
+
+---
+
+### trigger_delete
+
+Delete a trigger.
+
+```python
+trigger_delete(trigger_id: str)
+```
+
+**Parameters:**
+- `trigger_id`: Trigger ID to delete
+
+**Returns:** Confirmation message
 
 ---
 
@@ -1099,86 +1098,25 @@ Custom tools are stored as JSON files in `data/custom_tools/`. Each tool is a se
 
 ## Sub-Agents
 
-Sub-agents are specialized assistants with their own system prompts and tool restrictions. They enable focused, domain-specific behavior.
-
-**Direct Tool Invocation:** Sub-agents are now available as directly callable tools in Nymeria's tool list. For example, if you create a `BrowserAgent`, it appears as a tool that can be called directly:
+Sub-agents are specialized assistants with their own system prompts and tool restrictions. They appear as **directly callable tools** in Nymeria's tool list — no wrapper needed.
 
 ```python
-# Direct invocation (preferred)
+# Direct invocation — each agent appears as a tool
 BrowserAgent(task="Go to google.com and search for cats")
-
-# Wrapper invocation (still supported)
-sub_agent("BrowserAgent", "Go to google.com and search for cats")
+OutlookAgent(task="Check inbox for new emails")
+SelfModifyAgent(task="Create a calculator tool")
+CalendarAgent(task="What meetings do I have today?")
 ```
 
-This makes sub-agents discoverable without calling `list_agents()` first.
+**Built-in agents** (registered in `nymeria/agents/`):
+| Agent | Purpose | Tools Used |
+|-------|---------|------------|
+| BrowserAgent | Web browsing via Playwright | Browser tools (8) |
+| OutlookAgent | Email operations via Microsoft Graph | Outlook tools (13) |
+| CalendarAgent | Calendar operations via Microsoft Graph | Calendar tools |
+| SelfModifyAgent | Safe codebase self-modification | Self-modification tools |
 
-### sub_agent
-
-Invoke a sub-agent to perform a specialized task.
-
-```python
-sub_agent(agent_name: str, instruction: str)
-```
-
-**Parameters:**
-- `agent_name`: Name of the sub-agent
-- `instruction`: What you want the sub-agent to do
-
-**Returns:** The sub-agent's response
-
-**Examples:**
-```python
-sub_agent("CodeReviewer", "Review this Python function for bugs")
-sub_agent("EmailDrafter", "Write a professional follow-up email")
-```
-
-**Note:** Consider using the direct tool invocation (e.g., `CodeReviewer(task="...")`) instead of this wrapper.
-
----
-
-### list_agents
-
-List all available sub-agents with detailed information.
-
-```python
-list_agents()
-```
-
-**Returns:** List of sub-agents with their names, descriptions, and configuration details
-
-**Note:** Sub-agents now appear directly in the tool list, so this function is primarily useful for getting detailed configuration information like required environment variables.
-
----
-
-### clear_agent_context
-
-Clear the conversation context for a sub-agent.
-
-```python
-clear_agent_context(agent_name: str)
-```
-
-**Parameters:**
-- `agent_name`: Name of the sub-agent
-
-**Returns:** Confirmation message
-
----
-
-### reload_agents
-
-Reload all sub-agents from the agents directory. Also regenerates the direct tool bindings for each agent.
-
-```python
-reload_agents()
-```
-
-**Returns:** Number of agents loaded and their names
-
-**Note:** After reloading, agents will appear as directly callable tools in the tool list. Due to how LangGraph works, newly created agent tools are available on the NEXT message turn, not the current one.
-
----
+**How it works:** `agents/tool_factory.py` generates a LangChain `@tool` for each registered agent. The tool wraps `SubAgentExecutor.invoke()` and accepts a single `task` string parameter. Agent tools are loaded defensively by `NymeriaAgent._ensure_agent_tools()` at startup.
 
 ### Managing Sub-Agents
 
