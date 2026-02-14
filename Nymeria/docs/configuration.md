@@ -26,6 +26,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_FREQUENCY_PENALTY` | (provider default) | -2.0 - 2.0 | Reduce repetition of token sequences |
 | `LLM_PRESENCE_PENALTY` | (provider default) | -2.0 - 2.0 | Encourage new topics |
 | `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking) |
+| `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models |
 
 **Note:** Not all providers support all parameters. Unsupported parameters are silently ignored.
 
@@ -55,6 +56,29 @@ Set the API key for your chosen provider:
 | `NYMERIA_API_KEY` | (required) | Bearer token for API authentication. Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins, or `*` for all |
+| `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
+
+### Redis (Docker Only)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_ENABLED` | `false` | Enable Redis event bus for cross-container communication |
+| `REDIS_URL` | - | Redis connection URL (e.g., `redis://localhost:6379`) |
+
+### Messaging Platforms
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | - | Telegram bot token from @BotFather |
+| `TELEGRAM_DEFAULT_CHAT_ID` | - | Default Telegram chat ID for notifications |
+| `DISCORD_WEBHOOK_URL` | - | Discord webhook URL for notifications |
+| `DISCORD_BOT_TOKEN` | - | Discord bot token for two-way communication |
+| `DISCORD_MODE` | `gateway` | Discord connection mode: `gateway` or `webhook` |
+| `DISCORD_RESPOND_MODE` | `mention` | Guild behavior: `mention` (only @Nymeria) or `all` |
+| `SLACK_WEBHOOK_URL` | - | Slack webhook URL for notifications |
+| `SLACK_BOT_TOKEN` | - | Slack bot token for two-way communication |
+| `WEBHOOK_SECRET` | - | Secret for validating incoming webhooks |
 
 ### Logging
 
@@ -102,6 +126,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | `WATCHDOG_INTERVAL_MINUTES` | `30` | Minutes between watchdog checks (5-120) |
 | `TODO_STALENESS_HOURS` | `4` | Hours without update before TODO is stale (1-24) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before auto-archive (1-30) |
+| `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
 
 ---
 
@@ -112,10 +137,11 @@ Nymeria uses the following directories under the project root:
 | Directory | Purpose |
 |-----------|---------|
 | `data/nymeria.db` | SQLite conversation database |
-| `data/tasks.db` | SQLite scheduled tasks database (durable scheduler) |
+| `data/schedules.db` | SQLite scheduled TODO index for polling |
+| `data/tasks.db` | Legacy scheduled tasks database (deprecated) |
 | `data/todos/` | TODO list storage (`{user_id}.json`) |
 | `data/logs/` | Audit logs (`audit_YYYYMMDD.jsonl`) |
-| `data/users/` | User profile storage (`{user_id}/profile.json`) |
+| `data/users/` | User profiles, memories, thread configs, activity logs, triggers |
 | `data/backups/` | Self-modification backups |
 | `data/custom_tools/` | Custom tool definitions (`{tool_id}.json`) |
 | `data/notifications/` | User notification storage |
@@ -178,6 +204,20 @@ AUDIT_LOG_ENABLED=true
 # COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit
 # COMPACT_MODEL=                   # Use cheaper model for summarization
 # SLIDING_WINDOW_CYCLES=5          # For legacy sliding_window mode
+
+# Activity Log (optional)
+# ACTIVITY_RETENTION_HOURS=12      # Hours to retain activity log entries
+
+# Messaging Platforms (optional - for notify tool)
+# TELEGRAM_BOT_TOKEN=
+# TELEGRAM_DEFAULT_CHAT_ID=
+# DISCORD_WEBHOOK_URL=
+# DISCORD_BOT_TOKEN=
+# DISCORD_MODE=gateway             # gateway or webhook
+# SLACK_WEBHOOK_URL=
+
+# CORS (optional - for remote frontends)
+# CORS_ORIGINS=*                   # Comma-separated origins, or * for all
 ```
 
 ---

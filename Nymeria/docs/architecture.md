@@ -31,7 +31,7 @@ Nymeria wraps LangGraph's ReAct (Reasoning + Acting) agent pattern with addition
 │  │                                                                │  │
 │  │   ┌─────────┐    ┌─────────┐    ┌─────────────────┐          │  │
 │  │   │   LLM   │───▶│ Router  │───▶│     Tools       │          │  │
-│  │   │ (Think) │    │         │    │  (15 available) │          │  │
+│  │   │ (Think) │    │         │    │  (29 available) │          │  │
 │  │   └─────────┘    └─────────┘    └────────┬────────┘          │  │
 │  │        ▲                                  │                   │  │
 │  │        └──────────────────────────────────┘                   │  │
@@ -75,14 +75,17 @@ Main orchestrator that:
 - Caches user-specific graphs (rebuilds when memories change)
 
 ```python
-agent = NymeriaAgent(tools=ALL_TOOLS)
+from nymeria.tools import get_all_tools_with_agents
+agent = NymeriaAgent(tools=get_all_tools_with_agents())
 response = agent.chat("Hello", thread_id="user123", user_id="default")
 ```
 
 **Key Features:**
-- Memory hash caching: Graphs are rebuilt only when user memories change
+- Memory hash caching: Graphs are rebuilt only when user memories or thread config change
 - Time context injection: Every message includes current time (Sydney timezone)
 - Quiet hours awareness: Tracks if 10 PM - 7 AM for autonomous behavior
+- Defensive agent tool loading: `_ensure_agent_tools()` guarantees sub-agent tools are always available
+- Per-thread configuration: Custom instructions, tool overrides, and LLM settings per thread
 
 ---
 
@@ -93,6 +96,9 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | Module | Purpose |
 |--------|---------|
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
+| `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides) |
+| `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
+| `activity_log.py` | Per-thread activity feed with time-based retention |
 | `prompts.py` | System prompt templates, mode-specific rules, time context generation |
 | `audit.py` | AuditLogger for tool execution logging |
 | `rate_limiter.py` | Sliding window rate limiting for autonomous operations |
@@ -142,9 +148,9 @@ with manager.atomic_update("user123") as profile:
 
 ---
 
-### 3. SelfModifyAgent (`nymeria/core/self_agent.py`)
+### 3. SelfModifyAgent (`nymeria/agents/self_modify_agent.py`)
 
-Sub-agent that safely modifies Nymeria's own codebase.
+Sub-agent that safely modifies Nymeria's own codebase. Now exposed as a directly callable tool (`SelfModifyAgent(task="...")`) via `tool_factory.py`.
 
 **Capabilities:**
 - `self_file_read()`: Read files in `nymeria/tools/`
@@ -158,15 +164,15 @@ Sub-agent that safely modifies Nymeria's own codebase.
 - Cannot modify core agent, settings, or configuration
 - Creates timestamped backups before every modification
 - Validates Python syntax before saving
-- Max 15 iterations to prevent infinite loops
+- Test-before-ship: runs import validation before reporting success
 
 **Workflow:**
 ```
 User: "Add a calculator tool"
     ↓
-LLM calls: self_modify("Create a calculator tool", "add_tool")
+LLM calls: SelfModifyAgent(task="Create a calculator tool")
     ↓
-SelfModifyAgent:
+SelfModifyAgent (runs as isolated sub-agent):
     1. Creates backup of files to be modified
     2. Reads existing tools to understand patterns
     3. Creates new tool file
@@ -174,7 +180,7 @@ SelfModifyAgent:
     5. Runs self_test_import() to validate
     6. Reports what was done
     ↓
-LLM calls: tools_reload()
+LLM calls: reload_all()
     ↓
 New tool immediately available
 ```
@@ -393,18 +399,36 @@ Safe file backup system for self-modification.
 
 ### 7. Tool System (`nymeria/tools/`)
 
-Tools are LangChain `@tool` decorated functions organized by category:
+Tools use the `@tool` decorator from `langchain_core.tools`. The system has three tiers:
 
-| Category | Count | Examples |
-|----------|-------|----------|
-| Core | 5 | bash_execute, file_read, file_write, file_list, web_search |
-| Memory | 5 | memory_save, memory_forget, memory_list, memory_clear_all, personality_set |
-| Self-Modification | 3 | self_modify, self_modify_rollback, tools_reload |
-| TODO | 5 | todo_add, todo_update, todo_complete, todo_delete, todo_list |
-| Sub-Agents | 4 | sub_agent, list_agents, clear_agent_context, reload_agents |
+| Tier | Count | Description |
+|------|-------|-------------|
+| **Core (`ALL_TOOLS`)** | 25 | Static tools always loaded |
+| **Sub-Agent Wrappers** | 4 | Dynamically generated via `tool_factory.py` |
+| **Optional (`OPTIONAL_TOOLS`)** | 13 | Per-thread enabling (Outlook email tools) |
+
+Use `get_all_tools_with_agents()` to get all 29 default tools (core + agent wrappers).
+
+**Core tools by category:**
+
+| Category | Count | Tools |
+|----------|-------|-------|
+| Core System | 7 | bash_execute, file_read, file_write, file_list, web_search, think, claude_code |
+| Memory & RAG | 5 | memory_save, memory_forget, memory_clear_all, personality_set, rag_search |
+| TODO | 4 | todo_add, todo_update, todo_delete, todo_list |
+| Agent Management | 3 | clear_agent_context, reload_all, self_modify_rollback |
+| Notification | 1 | notify (unified Telegram/Discord/Slack) |
 | Visibility | 1 | mute_response |
+| Triggers | 4 | trigger_create, trigger_list, trigger_update, trigger_delete |
 
-Tools are registered dynamically and can be hot-reloaded via `tools_reload()`.
+**Sub-agent wrapper tools** (generated by `agents/tool_factory.py`):
+- BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent
+- Each wraps `SubAgentExecutor.invoke()` and appears alongside core tools
+
+**Per-thread tool filtering pipeline:**
+1. Start with all 29 default tools
+2. Remove any in `ThreadConfig.disabled_tools`
+3. Add any from `OPTIONAL_TOOLS` listed in `ThreadConfig.enabled_tools`
 
 See [Tools Reference](./tools.md) for detailed documentation.
 
@@ -453,7 +477,7 @@ finally:
 
 ### 9. Triggers (`nymeria/triggers/`)
 
-Input interfaces that route messages to the agent:
+Input interfaces and event-driven adapters that route messages to the agent:
 
 **CLI** (`cli.py`):
 - Interactive terminal interface
@@ -463,7 +487,23 @@ Input interfaces that route messages to the agent:
 **API** (`api.py`):
 - FastAPI server with SSE streaming
 - Bearer token authentication
-- Endpoints: `/chat`, `/chat/sync`, `/threads/{id}/history`, `/tools`
+- Key endpoints: `/chat` (SSE), `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents`, `/triggers`
+- CRUD for threads, TODOs, custom tools, sub-agents, and triggers
+- Hot-reload settings via `PATCH /settings` (clears `@lru_cache`, rebuilds agent graphs)
+
+**Webhook** (`webhook.py`):
+- Incoming webhook endpoints for Telegram, Discord, and Slack
+- Message routing to agent with platform-specific formatting
+
+**Discord Bot** (`discord_bot.py`):
+- Gateway (WebSocket) or webhook mode
+- Configurable respond mode: `mention` (only @Nymeria) or `all`
+
+**Event-Driven Trigger Sources** (`triggers/sources/`):
+- `base.py` — Abstract `TriggerSource` base class
+- `webhook_source.py` — Generic incoming webhook trigger
+- `outlook_email_source.py` — Polls Outlook for new emails, fires agent prompts
+- Managed by `core/trigger_manager.py` which coordinates source lifecycle
 
 ---
 
@@ -575,13 +615,14 @@ NymeriaAgent caches compiled graphs per user. The cache key includes:
 - User ID
 - Hash of user memories
 - Hash of personality overrides
+- Hash of thread configuration (custom instructions, enabled/disabled tools, LLM overrides)
 
-When memories change, the graph is automatically rebuilt with updated system prompt.
+When memories or thread config change, the graph is automatically rebuilt with the updated system prompt and tool set.
 
 ```python
 # Internal cache structure
 self._user_graphs: Dict[str, Tuple[str, CompiledGraph]] = {}
-# user_id -> (memory_hash, graph)
+# user_id -> (combined_hash, graph)
 ```
 
 ---
