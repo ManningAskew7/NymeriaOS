@@ -221,9 +221,17 @@ class Ticker:
         LLM calls.  The batch is passed as a list to ``fire_action_batch``.
         """
         manager = self._get_trigger_manager()
-        for user_id in manager.get_all_users_with_triggers():
+        users = manager.get_all_users_with_triggers()
+        logger.info(f"[TRIGGER POLL] Checking triggers for {len(users)} user(s): {users}")
+
+        for user_id in users:
             fired = manager.check_triggers(user_id)
+            logger.info(f"[TRIGGER POLL] user={user_id}: {len(fired)} trigger(s) fired")
             for trigger, events in fired:
+                logger.info(
+                    f"[TRIGGER POLL] Firing trigger '{trigger.name}' ({trigger.id}) "
+                    f"with {len(events)} event(s)"
+                )
                 if self._executor:
                     self._executor.submit(
                         manager.fire_action_batch, trigger, events, self.agent, user_id

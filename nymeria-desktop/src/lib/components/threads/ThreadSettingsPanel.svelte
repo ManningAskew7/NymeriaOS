@@ -1,9 +1,10 @@
 <script lang="ts">
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, SubAgent } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, SubAgent, OptionalTool } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { agentsStore } from '$lib/stores/agents.svelte';
+  import { api } from '$lib/services/api.svelte';
 
   interface Props {
     thread: Thread;
@@ -20,6 +21,11 @@
   // Form state — initialized from threadConfig
   let instructions = $state(threadConfig?.instructions ?? '');
   let disabledTools = $state<Set<string>>(new Set(threadConfig?.disabledTools ?? []));
+  let enabledTools = $state<Set<string>>(new Set(threadConfig?.enabledTools ?? []));
+
+  // Optional tools (fetched from backend)
+  let optionalTools = $state<OptionalTool[]>([]);
+  let optionalToolsLoading = $state(false);
 
   // LLM form state
   let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
@@ -54,6 +60,14 @@
     }
     if (!agentsStore.loaded && !agentsStore.loading) {
       agentsStore.loadAgents();
+    }
+    if (optionalTools.length === 0 && !optionalToolsLoading) {
+      optionalToolsLoading = true;
+      api.getOptionalTools().then((tools) => {
+        optionalTools = tools;
+      }).finally(() => {
+        optionalToolsLoading = false;
+      });
     }
   });
 
@@ -91,6 +105,18 @@
     Array.from(disabledTools).filter((name) => agentNames.has(name)).length
   );
 
+  const enabledToolCount = $derived(enabledTools.size);
+
+  function toggleOptionalTool(toolName: string) {
+    const next = new Set(enabledTools);
+    if (next.has(toolName)) {
+      next.delete(toolName);
+    } else {
+      next.add(toolName);
+    }
+    enabledTools = next;
+  }
+
   function toggleTool(toolName: string) {
     const next = new Set(disabledTools);
     if (next.has(toolName)) {
@@ -114,10 +140,16 @@
       ? String(threadConfig.llmConfig.extended_thinking) : 'default';
     const origReasoning = threadConfig?.llmConfig?.reasoning_effort ?? '';
 
+    const origEnabled = new Set(threadConfig?.enabledTools ?? []);
+
     if (instructions !== origInstructions) return true;
     if (disabledTools.size !== origDisabled.size) return true;
     for (const t of disabledTools) {
       if (!origDisabled.has(t)) return true;
+    }
+    if (enabledTools.size !== origEnabled.size) return true;
+    for (const t of enabledTools) {
+      if (!origEnabled.has(t)) return true;
     }
     if (llmProvider !== origProvider) return true;
     if (llmModel !== origModel) return true;
@@ -148,6 +180,13 @@
         updates.disabled_tools = Array.from(disabledTools);
       } else {
         updates.clear_disabled_tools = true;
+      }
+
+      // Enabled optional tools
+      if (enabledTools.size > 0) {
+        updates.enabled_tools = Array.from(enabledTools);
+      } else {
+        updates.clear_enabled_tools = true;
       }
 
       // LLM config
@@ -187,6 +226,7 @@
       // Reset form
       instructions = '';
       disabledTools = new Set();
+      enabledTools = new Set();
       llmProvider = '';
       llmModel = '';
       llmTemperature = '';
@@ -197,6 +237,7 @@
         threadId: thread.id,
         instructions: null,
         disabledTools: [],
+        enabledTools: [],
         llmConfig: null,
         createdAt: null,
         updatedAt: null,
@@ -403,6 +444,44 @@
                   </button>
                 </div>
               {/each}
+            </div>
+          {/if}
+
+          {#if optionalTools.length > 0}
+            <div class="optional-tools-section">
+              <span class="field-label">
+                Optional Tools
+                {#if enabledToolCount > 0}
+                  <span class="tab-badge">{enabledToolCount}</span>
+                {/if}
+              </span>
+              <p class="field-hint">
+                These tools are not loaded by default. Enable them for this thread to give the agent direct access (e.g. Outlook email tools instead of going through OutlookAgent).
+              </p>
+              <div class="tools-list">
+                {#each optionalTools as tool (tool.name)}
+                  <div
+                    class="tool-row"
+                    class:optional-enabled={enabledTools.has(tool.name)}
+                  >
+                    <div class="tool-info">
+                      <span class="tool-name">{tool.name}</span>
+                      <span class="tool-desc">{tool.description}</span>
+                    </div>
+                    <button
+                      class="tool-toggle"
+                      class:off={!enabledTools.has(tool.name)}
+                      onclick={() => toggleOptionalTool(tool.name)}
+                      type="button"
+                      title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
+                    >
+                      <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                      </span>
+                    </button>
+                  </div>
+                {/each}
+              </div>
             </div>
           {/if}
         </div>
@@ -736,6 +815,22 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .optional-tools-section {
+    margin-top: var(--spacing-lg);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--border-default);
+  }
+
+  .optional-tools-section > .field-label {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+
+  .tool-row.optional-enabled {
+    background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
   }
 
   /* Toggle switch */

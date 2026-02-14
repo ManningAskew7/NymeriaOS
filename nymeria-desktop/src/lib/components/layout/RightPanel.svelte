@@ -4,9 +4,31 @@
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { chatStore } from '$lib/stores/chat.svelte';
+  import { api } from '$lib/services/api.svelte';
 
   let activeTab = $state<'thread' | 'global'>('thread');
   let currentThreadId = $derived(threadsStore.currentThreadId);
+
+  // Build thread title lookup for global view
+  let threadTitleMap = $derived(
+    Object.fromEntries(threadsStore.threads.map(t => [t.id, t.title]))
+  );
+
+  // Navigate to a thread (for clicking activity/todo items in global view)
+  function navigateToThread(threadId: string) {
+    if (threadId === threadsStore.currentThreadId) return;
+    threadsStore.selectThread(threadId);
+    chatStore.clearMessages();
+    Promise.all([
+      api.getThreadHistory(threadId),
+      api.getThreadContextStats(threadId),
+    ]).then(([history, stats]) => {
+      chatStore.setMessages(history.messages);
+      chatStore.setContextStats(stats);
+    });
+    activeTab = 'thread';
+  }
 </script>
 
 <div class="right-panel-content">
@@ -45,7 +67,7 @@
         {#if activeTab === 'thread' && currentThreadId}
           <TodoFeed threadId={currentThreadId} />
         {:else}
-          <TodoFeed />
+          <TodoFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
       </Collapsible>
 
@@ -58,7 +80,7 @@
         {#if activeTab === 'thread' && currentThreadId}
           <ActivityFeed threadId={currentThreadId} />
         {:else}
-          <ActivityFeed />
+          <ActivityFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
       </div>
     </div>

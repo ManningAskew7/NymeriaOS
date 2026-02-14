@@ -39,6 +39,7 @@ class ThreadConfig(BaseModel):
     thread_id: str
     instructions: Optional[str] = Field(default=None, max_length=5000)
     disabled_tools: List[str] = Field(default_factory=list)
+    enabled_tools: List[str] = Field(default_factory=list)
     llm_config: Optional[ThreadLLMConfig] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -48,6 +49,8 @@ class ThreadConfig(BaseModel):
         if self.instructions:
             return True
         if self.disabled_tools:
+            return True
+        if self.enabled_tools:
             return True
         if self.llm_config:
             d = self.llm_config.model_dump(exclude_none=True)

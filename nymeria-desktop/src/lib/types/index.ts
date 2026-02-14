@@ -90,6 +90,7 @@ export interface ThreadConfig {
   threadId: string;
   instructions?: string | null;
   disabledTools: string[];
+  enabledTools: string[];
   llmConfig?: ThreadLLMConfig | null;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -99,10 +100,17 @@ export interface ThreadConfig {
 export interface ThreadConfigUpdateRequest {
   instructions?: string | null;
   disabled_tools?: string[] | null;
+  enabled_tools?: string[] | null;
   llm_config?: Partial<ThreadLLMConfig> | null;
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
+  clear_enabled_tools?: boolean;
   clear_llm_config?: boolean;
+}
+
+export interface OptionalTool {
+  name: string;
+  description: string;
 }
 
 export interface ThreadHistory {
@@ -193,7 +201,8 @@ export type ActivityType =
   | 'todo_added'
   | 'todo_updated'
   | 'todo_completed'
-  | 'todo_deleted';
+  | 'todo_deleted'
+  | 'trigger_completed';
 
 export interface ActivityEntry {
   id: string;
@@ -364,6 +373,7 @@ export interface ServerSettings {
   watchdog_enabled: boolean;
   watchdog_interval_minutes: number;
   todo_staleness_hours: number;
+  activity_retention_hours: number;
 }
 
 export interface ServerSettingsUpdate {
@@ -387,6 +397,7 @@ export interface ServerSettingsUpdate {
   watchdog_enabled?: boolean;
   watchdog_interval_minutes?: number;
   todo_staleness_hours?: number;
+  activity_retention_hours?: number;
 }
 
 // Custom Tool Types

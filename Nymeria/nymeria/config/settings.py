@@ -233,6 +233,12 @@ class Settings(BaseSettings):
         le=30,
         description="Days after completion before TODOs are auto-archived"
     )
+    activity_retention_hours: int = Field(
+        default=12,
+        ge=1,
+        le=168,
+        description="Hours to retain activity log entries (1-168)"
+    )
 
     @property
     def tasks_db_path(self) -> Path:

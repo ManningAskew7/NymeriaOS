@@ -134,6 +134,7 @@ class ServerSettingsResponse(BaseModel):
     watchdog_enabled: bool
     watchdog_interval_minutes: int
     todo_staleness_hours: int
+    activity_retention_hours: int
 
 
 class ServerSettingsUpdate(BaseModel):
@@ -160,6 +161,7 @@ class ServerSettingsUpdate(BaseModel):
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None
     todo_staleness_hours: Optional[int] = None
+    activity_retention_hours: Optional[int] = None
 
 
 # Dashboard Response Models
@@ -884,9 +886,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     class ThreadConfigUpdateRequest(BaseModel):
         instructions: Optional[str] = Field(default=None, max_length=5000)
         disabled_tools: Optional[List[str]] = None
+        enabled_tools: Optional[List[str]] = None
         llm_config: Optional[ThreadLLMConfigRequest] = None
         clear_instructions: bool = False
         clear_disabled_tools: bool = False
+        clear_enabled_tools: bool = False
         clear_llm_config: bool = False
 
     @app.get("/threads/{thread_id}/config", tags=["Threads"])
@@ -904,6 +908,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "thread_id": thread_id,
             "instructions": None,
             "disabled_tools": [],
+            "enabled_tools": [],
             "llm_config": None,
             "created_at": None,
             "updated_at": None,
@@ -930,6 +935,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.instructions = None
         if request.clear_disabled_tools:
             tc.disabled_tools = []
+        if request.clear_enabled_tools:
+            tc.enabled_tools = []
         if request.clear_llm_config:
             tc.llm_config = None
 
@@ -938,6 +945,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.instructions = request.instructions
         if request.disabled_tools is not None and not request.clear_disabled_tools:
             tc.disabled_tools = request.disabled_tools
+        if request.enabled_tools is not None and not request.clear_enabled_tools:
+            tc.enabled_tools = request.enabled_tools
         if request.llm_config is not None and not request.clear_llm_config:
             llm_data = request.llm_config.model_dump(exclude_none=True)
             if tc.llm_config is None:
@@ -988,6 +997,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         tools = agent.tool_registry.list_tools()
         return {"tools": tools}
 
+    @app.get("/tools/optional", tags=["Tools"])
+    async def list_optional_tools(_: bool = Depends(verify_api_key)):
+        """List tools available for per-thread enabling (not loaded by default)."""
+        from ..tools import OPTIONAL_TOOLS
+
+        return {
+            "tools": [
+                {"name": name, "description": tool.description}
+                for name, tool in OPTIONAL_TOOLS.items()
+            ]
+        }
+
     @app.get("/settings", response_model=ServerSettingsResponse, tags=["Settings"])
     async def get_server_settings(
         _: bool = Depends(verify_api_key),
@@ -1015,6 +1036,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             watchdog_enabled=settings.watchdog_enabled,
             watchdog_interval_minutes=settings.watchdog_interval_minutes,
             todo_staleness_hours=settings.todo_staleness_hours,
+            activity_retention_hours=settings.activity_retention_hours,
         )
 
     @app.patch("/settings", tags=["Settings"])
@@ -1060,6 +1082,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "watchdog_enabled": "WATCHDOG_ENABLED",
             "watchdog_interval_minutes": "WATCHDOG_INTERVAL_MINUTES",
             "todo_staleness_hours": "TODO_STALENESS_HOURS",
+            "activity_retention_hours": "ACTIVITY_RETENTION_HOURS",
         }
 
         # Get updates as dict, excluding None values
@@ -2197,8 +2220,9 @@ register_agent(
         # Write the file
         agent_file.write_text(agent_code, encoding="utf-8")
 
-        # Reload agents
+        # Reload agents and sync tool registry so LLM can call the new agent
         reload_agents()
+        get_agent().sync_agent_tools()
 
         # Return the created agent
         config = AVAILABLE_AGENTS.get(request.name)
@@ -2258,24 +2282,28 @@ register_agent(
         llm_model = request.llm_model if request.llm_model is not None else current.get("llm_model")
         llm_temperature = request.llm_temperature if request.llm_temperature is not None else current.get("llm_temperature")
 
-        # Regenerate the agent module file
+        # Check if this is a built-in agent (has a hand-written file with real tool imports)
+        # vs an API-created agent (auto-generated file with "tools": [])
         agents_dir = settings.project_root / "nymeria" / "agents"
-        agent_file = agents_dir / f"{agent_name.lower()}.py"
+        # API-created files use agent_name.lower() (e.g., "outlookagent.py")
+        api_file = agents_dir / f"{agent_name.lower()}.py"
+        is_api_created = api_file.exists() and "Auto-generated via API" in api_file.read_text(encoding="utf-8")
 
-        allowed_tools_str = ", ".join(f'"{t}"' for t in allowed_tools)
-        env_vars_str = ", ".join(f'"{v}"' for v in env_vars)
+        if is_api_created:
+            # API-created agent: rewrite the file
+            allowed_tools_str = ", ".join(f'"{t}"' for t in allowed_tools)
+            env_vars_str = ", ".join(f'"{v}"' for v in env_vars)
 
-        # Build optional LLM config fields
-        llm_config_lines = []
-        if llm_provider:
-            llm_config_lines.append(f'        "llm_provider": "{llm_provider}",')
-        if llm_model:
-            llm_config_lines.append(f'        "llm_model": "{llm_model}",')
-        if llm_temperature is not None:
-            llm_config_lines.append(f'        "llm_temperature": {llm_temperature},')
-        llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
+            llm_config_lines = []
+            if llm_provider:
+                llm_config_lines.append(f'        "llm_provider": "{llm_provider}",')
+            if llm_model:
+                llm_config_lines.append(f'        "llm_model": "{llm_model}",')
+            if llm_temperature is not None:
+                llm_config_lines.append(f'        "llm_temperature": {llm_temperature},')
+            llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
 
-        agent_code = f'''"""Sub-agent: {agent_name}
+            agent_code = f'''"""Sub-agent: {agent_name}
 
 {description}
 
@@ -2297,11 +2325,25 @@ register_agent(
     }},
 )
 '''
+            api_file.write_text(agent_code, encoding="utf-8")
+        else:
+            # Built-in agent: update in-memory config only (preserves real tool imports)
+            # Changes to description/system_prompt/LLM config apply until restart
+            current["description"] = description
+            current["system_prompt"] = system_prompt
+            current["context_turns"] = context_turns
+            current["required_env_vars"] = env_vars
+            if llm_provider is not None:
+                current["llm_provider"] = llm_provider
+            if llm_model is not None:
+                current["llm_model"] = llm_model
+            if llm_temperature is not None:
+                current["llm_temperature"] = llm_temperature
 
-        agent_file.write_text(agent_code, encoding="utf-8")
-
-        # Reload agents
+        # Reload agents (re-imports all agent modules from disk)
         reload_agents()
+        # Sync tool registry so the LLM sees updated agent tools
+        get_agent().sync_agent_tools()
 
         config = AVAILABLE_AGENTS.get(agent_name)
         if not config:
@@ -2327,16 +2369,26 @@ register_agent(
                 detail=f"Agent '{agent_name}' not found",
             )
 
-        # Delete the agent file
+        # Delete the agent file (only API-created files)
         agents_dir = settings.project_root / "nymeria" / "agents"
         agent_file = agents_dir / f"{agent_name.lower()}.py"
 
         if agent_file.exists():
-            agent_file.unlink()
+            # Only delete API-created files, not built-in agent modules
+            content = agent_file.read_text(encoding="utf-8")
+            if "Auto-generated via API" in content:
+                agent_file.unlink()
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot delete built-in agent '{agent_name}'. Disable it in settings instead.",
+                )
 
         # Unregister and reload
         unregister_agent(agent_name)
         reload_agents()
+        # Sync tool registry so the LLM no longer sees the deleted agent
+        get_agent().sync_agent_tools()
 
         return {"status": "ok", "deleted_name": agent_name}
 
@@ -2471,9 +2523,10 @@ register_agent(
             except Exception as e:
                 errors.append(f"{agent_data.get('name', 'unknown')}: {str(e)}")
 
-        # Reload all agents
+        # Reload all agents and sync tool registry
         if imported > 0:
             reload_agents()
+            get_agent().sync_agent_tools()
 
         return {
             "status": "ok",

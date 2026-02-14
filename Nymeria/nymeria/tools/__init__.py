@@ -46,6 +46,9 @@ from .outlook_email import EMAIL_TOOLS
 
 # Combined Outlook tools list (used by OutlookAgent)
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
+# Optional tools — available for per-thread enabling but NOT loaded by default.
+# Maps tool name -> tool object. Users enable these via thread config UI.
+OPTIONAL_TOOLS = {t.name: t for t in OUTLOOK_TOOLS}
 from .browser import BROWSER_TOOLS
 from .notify import notify, NOTIFY_TOOLS
 from .triggers import (
@@ -137,6 +140,8 @@ __all__ = [
     "AUTH_TOOLS",
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
+    # Optional tools (per-thread enabling)
+    "OPTIONAL_TOOLS",
     # Browser tools (handled by BrowserAgent, exported for reference)
     "BROWSER_TOOLS",
     # Main exports

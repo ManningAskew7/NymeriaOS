@@ -216,6 +216,12 @@ class NymeriaAgent:
         if tools:
             self.tool_registry.register_all(tools)
 
+        # Ensure agent wrapper tools (BrowserAgent, OutlookAgent, etc.) are always
+        # present, even if the caller passed only ALL_TOOLS without agent tools.
+        # This is defensive — run.py should pass get_all_tools_with_agents(), but
+        # NymeriaAgent must work correctly regardless.
+        self._ensure_agent_tools()
+
         # Load custom tools
         self._custom_tool_loader = None
         self._load_custom_tools()
@@ -488,6 +494,7 @@ class NymeriaAgent:
                 thread_config_str = (
                     f"|tc:{tc.instructions or ''}"
                     f"|dt:{sorted(tc.disabled_tools)}"
+                    f"|et:{sorted(tc.enabled_tools)}"
                     f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
                 )
 
@@ -1230,12 +1237,19 @@ class NymeriaAgent:
         # Use per-user tool filtering
         tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
 
-        # Apply per-thread tool filtering (remove disabled tools)
+        # Apply per-thread tool filtering (remove disabled, add enabled optional)
         if thread_id:
             tc = self.thread_config_manager.get_config(thread_id)
-            if tc and tc.disabled_tools:
-                disabled = set(tc.disabled_tools)
-                tools = [t for t in tools if t.name not in disabled]
+            if tc:
+                if tc.disabled_tools:
+                    disabled = set(tc.disabled_tools)
+                    tools = [t for t in tools if t.name not in disabled]
+                if tc.enabled_tools:
+                    from ..tools import OPTIONAL_TOOLS
+                    existing = {t.name for t in tools}
+                    for name in tc.enabled_tools:
+                        if name in OPTIONAL_TOOLS and name not in existing:
+                            tools.append(OPTIONAL_TOOLS[name])
 
         return create_graph(
             config=config,
@@ -1261,12 +1275,19 @@ class NymeriaAgent:
         # Use per-user tool filtering
         tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
 
-        # Apply per-thread tool filtering (remove disabled tools)
+        # Apply per-thread tool filtering (remove disabled, add enabled optional)
         if thread_id:
             tc = self.thread_config_manager.get_config(thread_id)
-            if tc and tc.disabled_tools:
-                disabled = set(tc.disabled_tools)
-                tools = [t for t in tools if t.name not in disabled]
+            if tc:
+                if tc.disabled_tools:
+                    disabled = set(tc.disabled_tools)
+                    tools = [t for t in tools if t.name not in disabled]
+                if tc.enabled_tools:
+                    from ..tools import OPTIONAL_TOOLS
+                    existing = {t.name for t in tools}
+                    for name in tc.enabled_tools:
+                        if name in OPTIONAL_TOOLS and name not in existing:
+                            tools.append(OPTIONAL_TOOLS[name])
 
         return create_graph(
             config=config,
@@ -1415,6 +1436,41 @@ class NymeriaAgent:
         self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
         return self
 
+    def sync_agent_tools(self) -> List[str]:
+        """
+        Sync agent tools into the tool registry after agent CRUD operations.
+
+        This is a lighter-weight alternative to reload_tools() that only refreshes
+        the agent tool wrappers (BrowserAgent, OutlookAgent, etc.) without reloading
+        all tool modules. Call this after reload_agents().
+
+        Returns:
+            List of agent tool names now in the registry
+        """
+        from ..agents import get_agent_tools, refresh_agent_tools
+        from ..tools import ALL_TOOLS
+
+        # Refresh the tool_factory cache (regenerate wrappers for current AVAILABLE_AGENTS)
+        agent_names = refresh_agent_tools()
+        agent_tools = get_agent_tools()
+
+        # Rebuild the tool registry with core tools + agent tools
+        combined = list(ALL_TOOLS) + agent_tools
+        self.tool_registry = ToolRegistry()
+        self.tool_registry.register_all(combined)
+
+        # Re-register custom tools
+        self._load_custom_tools()
+
+        # Clear all cached graphs so new graphs include updated tools
+        self._user_graphs.clear()
+        self._async_user_graphs.clear()
+        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
+        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+
+        logger.info(f"Synced agent tools: {agent_names} (total: {len(combined)} tools)")
+        return agent_names
+
     def invalidate_thread_config_cache(self, thread_id: str) -> None:
         """Remove cached graphs for a specific thread after its config changes."""
         with self._graph_cache_lock:
@@ -1425,6 +1481,37 @@ class NymeriaAgent:
             for k in keys_to_remove:
                 del self._async_user_graphs[k]
         logger.debug(f"Invalidated graph cache for thread {thread_id}")
+
+    def _ensure_agent_tools(self) -> None:
+        """Ensure agent wrapper tools are registered.
+
+        Sub-agents (BrowserAgent, OutlookAgent, etc.) are exposed as direct
+        tools via tool_factory.py.  If the caller constructed NymeriaAgent
+        with only ALL_TOOLS (the static 25-tool list), the agent wrappers
+        are missing.  This method adds them so sub-agents are always callable.
+        """
+        try:
+            from ..agents import get_agent_tools, AVAILABLE_AGENTS
+
+            if not AVAILABLE_AGENTS:
+                return
+
+            # Check if agent tools are already in the registry
+            registered = set(self.tool_registry._tools.keys())
+            missing = [name for name in AVAILABLE_AGENTS if name not in registered]
+
+            if not missing:
+                return  # All agent tools already present
+
+            agent_tools = get_agent_tools()
+            if agent_tools:
+                self.tool_registry.register_all(agent_tools)
+                logger.info(
+                    f"Auto-loaded {len(agent_tools)} agent tool(s): "
+                    f"{[t.name for t in agent_tools]}"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to auto-load agent tools: {e}", exc_info=True)
 
     def _load_custom_tools(self) -> int:
         """Load custom tools from the custom_tools directory.
