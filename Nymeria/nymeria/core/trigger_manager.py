@@ -44,7 +44,7 @@ class TriggerAction(BaseModel):
         default_factory=dict,
         description=(
             "Action-specific config. "
-            "agent_prompt: {prompt_template, thread_id?}. "
+            "agent_prompt: {prompt_template (or prompt), thread_id?}. "
             "notify: {message_template, platform?}. "
             "create_todo: {task_template, priority?, scheduled_for?}."
         ),
@@ -351,7 +351,11 @@ class TriggerManager:
         # Batch agent_prompt: render each event with the template, then
         # combine them into a single prompt.
         action = trigger.action
-        template = action.config.get("prompt_template", "Trigger {trigger_name} fired.")
+        template = (
+            action.config.get("prompt_template")
+            or action.config.get("prompt")
+            or "Trigger {trigger_name} fired."
+        )
         rendered_items = []
 
         for i, event in enumerate(events, 1):
@@ -402,7 +406,11 @@ class TriggerManager:
         trigger: TriggerDefinition,
     ) -> None:
         """Send a prompt to the agent, buffering events for mute-aware publishing."""
-        template = config.get("prompt_template", "Trigger {trigger_name} fired.")
+        template = (
+            config.get("prompt_template")
+            or config.get("prompt")
+            or "Trigger {trigger_name} fired."
+        )
         prompt = _safe_format(template, template_vars)
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
 
