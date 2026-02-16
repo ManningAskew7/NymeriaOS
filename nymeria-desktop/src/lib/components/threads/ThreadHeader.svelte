@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Thread, ThreadConfig } from '$lib/types';
   import { Icon } from '$lib/components/common';
+  import { triggersStore } from '$lib/stores/triggers.svelte';
 
   interface Props {
     thread: Thread;
@@ -23,6 +24,9 @@
   });
 
   const disabledCount = $derived(threadConfig?.disabledTools?.length ?? 0);
+  const triggerCount = $derived(
+    triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length
+  );
 </script>
 
 <div class="thread-header">
@@ -38,6 +42,11 @@
       {#if disabledCount > 0}
         <span class="badge tools-badge" title="{disabledCount} tool{disabledCount !== 1 ? 's' : ''} disabled">
           -{disabledCount} tools
+        </span>
+      {/if}
+      {#if triggerCount > 0}
+        <span class="badge triggers-badge" title="{triggerCount} active trigger{triggerCount !== 1 ? 's' : ''}">
+          {triggerCount} trigger{triggerCount !== 1 ? 's' : ''}
         </span>
       {/if}
       {#if hasConfig && !modelLabel() && disabledCount === 0}
@@ -116,6 +125,12 @@
     background: color-mix(in srgb, var(--warning, #f59e0b) 20%, transparent);
     color: var(--warning, #f59e0b);
     border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+  }
+
+  .triggers-badge {
+    background: color-mix(in srgb, var(--success, #10b981) 20%, transparent);
+    color: var(--success, #10b981);
+    border: 1px solid color-mix(in srgb, var(--success, #10b981) 30%, transparent);
   }
 
   .config-badge {
