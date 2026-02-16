@@ -37,6 +37,7 @@
           if (threadsStore.currentThreadId === restoredThreadId && !chatStore.isStreaming) {
             chatStore.setMessages(history.messages);
             chatStore.setContextStats(stats);
+            chatStore.setActiveModel(stats?.model ?? null);
           }
         }).catch((err) => {
           console.error('[Page] Failed to restore thread history:', err);

@@ -91,11 +91,48 @@ class ThreadLockManager:
 
 
 # Regex to strip injected time context from user messages in history
-# Matches: [Current Time: ...]\n[Trigger: ...]\n\n
+# Matches: [Current Time: ...]\n[Trigger: ...]\n\n  OR  [Time: ...]\n[Trigger: ...]\n\n
 _CONTEXT_PREFIX_PATTERN = re.compile(
-    r'^\[Current Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n',
+    r'^\[(?:Current )?Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n',
     re.MULTILINE
 )
+
+# Regex to extract the timestamp string from the time context prefix
+_TIMESTAMP_EXTRACT_PATTERN = re.compile(
+    r'^\[(?:Current )?Time:\s*(.+?)\s*\((\S+)\)\s*\]',
+    re.MULTILINE
+)
+
+def _extract_timestamp(text: str) -> Optional[str]:
+    """Extract ISO timestamp from [Time: Thursday, February 16, 2026 at 03:42 PM (America/New_York)] prefix."""
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+
+    m = _TIMESTAMP_EXTRACT_PATTERN.search(text)
+    if not m:
+        return None
+    try:
+        date_str = m.group(1).strip()
+        tz_name = m.group(2).strip()
+        # Remove the " at " between date and time: "Thursday, February 16, 2026 at 03:42 PM"
+        date_str = date_str.replace(" at ", " ")
+        dt = datetime.strptime(date_str, "%A, %B %d, %Y %I:%M %p")
+        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+        return dt.isoformat()
+    except (ValueError, KeyError):
+        return None
+
+
+def _extract_mime_from_data_url(data_url: str) -> str:
+    """Extract MIME type from a data URL like 'data:image/png;base64,...'."""
+    if data_url.startswith("data:"):
+        header = data_url.split(",", 1)[0]  # "data:image/png;base64"
+        mime = header[5:]  # remove "data:"
+        if ";" in mime:
+            mime = mime.split(";", 1)[0]
+        return mime
+    return "application/octet-stream"
+
 
 # Global reference to the current agent instance (for tools that need to trigger reload)
 _current_agent: Optional["NymeriaAgent"] = None
@@ -1165,11 +1202,15 @@ class NymeriaAgent:
             self._rehydrate_token_usage(thread_id)
             usage = self._token_tracker.get_usage(thread_id)
 
-        model_limit = get_context_limit(self.settings.llm_model)
+        # Use per-thread effective model for correct context limit calculation
+        llm_config = self._get_llm_config_for_thread(thread_id)
+        effective_model = llm_config.model
+        model_limit = get_context_limit(effective_model)
         context_used = usage.context_tokens  # Last call's prompt_tokens = actual window usage
 
         return {
             "thread_id": thread_id,
+            "model": effective_model,
             "total_tokens": context_used,
             "input_tokens": usage.last_input_tokens,
             "output_tokens": usage.last_output_tokens,
@@ -2506,9 +2547,59 @@ class NymeriaAgent:
                         "id": f"{thread_id}-{msg_counter}",
                         "role": "user",
                     }
-                    raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+
+                    # Parse multimodal content (images/files)
+                    attachments = []
+                    try:
+                        if isinstance(msg.content, list):
+                            text_parts = []
+                            for part in msg.content:
+                                if isinstance(part, dict):
+                                    if part.get("type") == "text":
+                                        text_parts.append(part.get("text", ""))
+                                    elif part.get("type") == "image_url":
+                                        data_url = part.get("image_url", {}).get("url", "")
+                                        mime = _extract_mime_from_data_url(data_url)
+                                        attachments.append({
+                                            "id": f"att-{msg_counter}-{len(attachments)}",
+                                            "type": "image",
+                                            "dataUrl": data_url,
+                                            "mimeType": mime,
+                                            "name": f"image.{mime.split('/')[-1] if '/' in mime else 'png'}",
+                                            "size": len(data_url),
+                                        })
+                                    elif part.get("type") == "file":
+                                        file_mime = part.get("mime_type", "application/octet-stream")
+                                        file_data = part.get("data", "")
+                                        data_url = f"data:{file_mime};base64,{file_data}"
+                                        ext = file_mime.split("/")[-1] if "/" in file_mime else "bin"
+                                        attachments.append({
+                                            "id": f"att-{msg_counter}-{len(attachments)}",
+                                            "type": "document",
+                                            "dataUrl": data_url,
+                                            "mimeType": file_mime,
+                                            "name": f"document.{ext}",
+                                            "size": len(file_data),
+                                        })
+                                elif isinstance(part, str):
+                                    text_parts.append(part)
+                            raw_content = "\n".join(text_parts)
+                        else:
+                            raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    except Exception:
+                        # Fallback: stringify content if multimodal parsing fails
+                        raw_content = str(msg.content)
+                        attachments = []
+
+                    # Extract timestamp from [Time: ...] prefix before stripping
+                    timestamp_iso = _extract_timestamp(raw_content)
+
                     # Strip injected time context prefix for display
                     entry["content"] = _CONTEXT_PREFIX_PATTERN.sub('', raw_content)
+                    if attachments:
+                        entry["attachments"] = attachments
+                    if timestamp_iso:
+                        entry["timestamp"] = timestamp_iso
                     history.append(entry)
 
                 elif isinstance(msg, AIMessage):

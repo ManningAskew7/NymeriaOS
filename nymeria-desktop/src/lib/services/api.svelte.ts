@@ -315,6 +315,7 @@ export class NymeriaAPI {
           const rawStats = data.context_stats as Record<string, unknown> | undefined;
           const contextStats = rawStats ? {
             threadId: rawStats.thread_id as string,
+            model: (rawStats.model as string) || '',
             totalTokens: rawStats.total_tokens as number,
             inputTokens: rawStats.input_tokens as number,
             outputTokens: rawStats.output_tokens as number,
@@ -492,7 +493,8 @@ export class NymeriaAPI {
         intermediateContent: m.intermediate_content as string | undefined, // Legacy fallback
         timestamp: new Date((m.timestamp as string) || Date.now()),
         status: 'complete' as const,
-        toolCalls: m.tool_calls as Message['toolCalls']                  // Legacy fallback
+        toolCalls: m.tool_calls as Message['toolCalls'],                 // Legacy fallback
+        attachments: m.attachments as Message['attachments']
       })
     );
 
@@ -514,6 +516,7 @@ export class NymeriaAPI {
       const data = await response.json();
       return {
         threadId: data.thread_id as string,
+        model: data.model as string,
         totalTokens: data.total_tokens as number,
         inputTokens: data.input_tokens as number,
         outputTokens: data.output_tokens as number,

@@ -126,6 +126,7 @@
       ]);
       chatStore.setMessages(history.messages);
       chatStore.setContextStats(stats);
+      chatStore.setActiveModel(stats?.model ?? null);
     } catch (error) {
       console.error('Failed to load thread history:', error);
       loadError = 'Could not load chat history. The thread may have been created before syncing was fixed.';

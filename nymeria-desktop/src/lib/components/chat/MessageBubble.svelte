@@ -14,11 +14,11 @@
 
   // Pattern to detect time context prefix (added by backend to all messages)
   // Format: [Current Time: ...]\n[Trigger: ...]\n\n{actual message}
-  const TIME_CONTEXT_PATTERN = /^\[Current Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n/;
+  const TIME_CONTEXT_PATTERN = /^\[(?:Current )?Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n/;
 
   // Pattern to detect autonomous wake-up messages (internal system triggers - should be hidden)
   // Format: [Current Time: ...]\n[Trigger: Autonomous Wake-up...]\n\nWork on TODO ...
-  const AUTONOMOUS_WAKEUP_PATTERN = /^\[Current Time:[^\]]+\]\n\[Trigger: Autonomous Wake-up[^\]]*\]\n\n/;
+  const AUTONOMOUS_WAKEUP_PATTERN = /^\[(?:Current )?Time:[^\]]+\]\n\[Trigger: Autonomous Wake-up[^\]]*\]\n\n/;
 
   // Pattern to detect compaction system request (should be hidden)
   const COMPACTION_REQUEST_PATTERN = /^\*\*System Request: Context Compaction\*\*/;
