@@ -648,3 +648,59 @@ export interface UnifiedToolListResponse {
   builtinCount: number;
   customCount: number;
 }
+
+// Trigger Types
+
+export type TriggerActionType = 'agent_prompt' | 'notify' | 'create_todo';
+export type TriggerCreatedBy = 'user' | 'agent';
+
+export interface TriggerSourceSchemaField {
+  type: 'string' | 'boolean' | 'integer' | 'number' | 'object' | 'array';
+  description: string;
+  required: boolean;
+}
+
+export interface TriggerSourceInfo {
+  name: string;
+  description: string;
+  config_schema: Record<string, TriggerSourceSchemaField>;
+}
+
+export interface TriggerAction {
+  type: TriggerActionType;
+  config: Record<string, unknown>;
+}
+
+export interface Trigger {
+  id: string;
+  name: string;
+  source_type: string;
+  source_config: Record<string, unknown>;
+  action: TriggerAction;
+  enabled: boolean;
+  cooldown_seconds: number;
+  last_fired: string | null;
+  fire_count: number;
+  thread_id: string;
+  created_at: string;
+  created_by: TriggerCreatedBy;
+}
+
+export interface TriggerCreateRequest {
+  name: string;
+  source_type: string;
+  source_config: Record<string, unknown>;
+  action_type: TriggerActionType;
+  action_config: Record<string, unknown>;
+  cooldown_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface TriggerUpdateRequest {
+  name?: string;
+  enabled?: boolean;
+  source_config?: Record<string, unknown>;
+  action_type?: TriggerActionType;
+  action_config?: Record<string, unknown>;
+  cooldown_seconds?: number;
+}

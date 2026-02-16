@@ -5,6 +5,8 @@
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { agentsStore } from '$lib/stores/agents.svelte';
   import { api } from '$lib/services/api.svelte';
+  import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
+  import { triggersStore } from '$lib/stores/triggers.svelte';
 
   interface Props {
     thread: Thread;
@@ -16,7 +18,7 @@
   let { thread, threadConfig, onClose, onSaved }: Props = $props();
 
   // Active tab
-  let activeTab = $state<'instructions' | 'model' | 'tools' | 'agents'>('instructions');
+  let activeTab = $state<'instructions' | 'model' | 'tools' | 'agents' | 'triggers'>('instructions');
 
   // Form state — initialized from threadConfig
   let instructions = $state(threadConfig?.instructions ?? '');
@@ -53,13 +55,16 @@
   let saving = $state(false);
   let error = $state('');
 
-  // Ensure tools and agents are loaded
+  // Ensure tools, agents, and triggers are loaded
   $effect(() => {
     if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
       unifiedToolsStore.loadTools();
     }
     if (!agentsStore.loaded && !agentsStore.loading) {
       agentsStore.loadAgents();
+    }
+    if (!triggersStore.loaded && !triggersStore.loading) {
+      triggersStore.loadTriggers();
     }
     if (optionalTools.length === 0 && !optionalToolsLoading) {
       optionalToolsLoading = true;
@@ -314,6 +319,17 @@
           <span class="tab-badge">{disabledAgentCount}</span>
         {/if}
       </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'triggers'}
+        onclick={() => (activeTab = 'triggers')}
+        type="button"
+      >
+        Triggers
+        {#if triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length > 0}
+          <span class="tab-badge">{triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length}</span>
+        {/if}
+      </button>
     </div>
 
     <div class="tab-content">
@@ -530,6 +546,11 @@
               {/each}
             </div>
           {/if}
+        </div>
+
+      {:else if activeTab === 'triggers'}
+        <div class="tab-panel">
+          <TriggerConfigTab {thread} />
         </div>
       {/if}
     </div>
