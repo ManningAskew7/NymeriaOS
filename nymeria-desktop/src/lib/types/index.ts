@@ -76,6 +76,18 @@ export interface Thread {
   hasCustomConfig?: boolean;
 }
 
+// Thread organization types
+export type SortMode = 'recent' | 'oldest' | 'alphabetical' | 'tasks' | 'active';
+
+export interface ThreadFolder {
+  id: string;
+  name: string;
+  createdAt: Date;
+  order: number;          // Manual ordering of folders in sidebar
+  threadIds: string[];    // Threads in this folder (ordered)
+  collapsed: boolean;     // UI collapse state
+}
+
 // Per-thread configuration types
 export interface ThreadLLMConfig {
   provider?: LLMProvider | null;

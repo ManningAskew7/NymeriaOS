@@ -5,16 +5,17 @@
   interface Props {
     thread: Thread;
     isActive: boolean;
+    isSelected?: boolean;
     taskCount?: number;
     hasActiveTask?: boolean;
     hasCustomConfig?: boolean;
-    onSelect: () => void;
+    onSelect: (e: MouseEvent) => void;
     onDelete: () => void;
     onRename: (newTitle: string) => void;
     onConfigure?: () => void;
   }
 
-  let { thread, isActive, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure }: Props = $props();
+  let { thread, isActive, isSelected = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -31,7 +32,7 @@
     // Don't select if clicking action buttons or editing
     const target = e.target as HTMLElement;
     if (target.closest('.delete-btn') || target.closest('.edit-btn') || isEditing) return;
-    onSelect();
+    onSelect(e);
   }
 
   function startEditing(e: MouseEvent) {
@@ -103,10 +104,11 @@
 <div
   class="thread-item"
   class:active={isActive}
+  class:selected={isSelected}
   class:editing={isEditing}
   onclick={handleClick}
   oncontextmenu={handleContextMenu}
-  onkeydown={(e) => e.key === 'Enter' && !isEditing && onSelect()}
+  onkeydown={(e) => e.key === 'Enter' && !isEditing && onSelect(e as unknown as MouseEvent)}
   onmouseenter={() => (showActions = true)}
   onmouseleave={() => (showActions = false)}
   role="button"
@@ -141,6 +143,12 @@
       <Icon name="chat" size={16} />
     {/if}
   </div>
+
+  {#if isSelected}
+    <div class="selection-check">
+      <Icon name="check" size={12} />
+    </div>
+  {/if}
 
   <div class="thread-content">
     {#if isEditing}
@@ -245,6 +253,26 @@
 
   .thread-item.active {
     background: var(--bg-active);
+  }
+
+  .thread-item.selected {
+    background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-hover));
+    outline: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
+  }
+
+  .selection-check {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-primary);
+    color: var(--bg-base);
+    border-radius: var(--radius-sm);
+    z-index: 1;
   }
 
   .thread-item:focus-visible {
