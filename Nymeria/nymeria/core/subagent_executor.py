@@ -1,5 +1,6 @@
 """Runtime executor for sub-agents."""
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -149,6 +150,8 @@ class SubAgentExecutor:
         max_tokens = agent_config.get("llm_max_tokens") or 16000  # Default limit to avoid credit errors
         api_key = self._get_api_key_for_provider(provider)
 
+        tool_timeout = self.settings.tool_timeout if hasattr(self.settings, "tool_timeout") else 300
+
         config = AgentConfig(
             llm=LLMConfig(
                 provider=provider,
@@ -160,32 +163,59 @@ class SubAgentExecutor:
             checkpointer=CheckpointerConfig(backend="memory"),
             system_prompt=agent_config["system_prompt"],
             max_iterations=30,
+            tool_timeout=tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
 
         return create_graph(config=config, tools=tools)
 
     def _execute_isolated(self, graph, messages: List, agent_name: str) -> str:
-        """Execute graph with context isolation."""
+        """Execute graph with context isolation and a timeout.
+
+        The entire sub-agent execution is bounded by tool_timeout (default 300s / 5 min)
+        to prevent a hanging sub-agent from blocking the parent agent indefinitely.
+        """
         import uuid
         from langchain_core.runnables.config import var_child_runnable_config
         from langchain_core.callbacks.manager import tracing_v2_callback_var
         from langchain_core.tracers.context import run_collector_var
+
+        timeout = self.settings.tool_timeout if hasattr(self.settings, "tool_timeout") else 300
 
         # Save and reset context vars to isolate from parent agent
         config_token = var_child_runnable_config.set(None)
         callback_token = tracing_v2_callback_var.set(None)
         collector_token = run_collector_var.set(None)
 
-        try:
+        def _run_graph():
             thread_id = f"subagent-{agent_name}-{uuid.uuid4().hex[:8]}"
-            result = graph.invoke(
+            return graph.invoke(
                 {"messages": messages},
                 config={
                     "recursion_limit": 70,
                     "configurable": {"thread_id": thread_id},
                 },
             )
+
+        try:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(_run_graph)
+            try:
+                result = future.result(timeout=timeout)
+                executor.shutdown(wait=False)
+            except concurrent.futures.TimeoutError:
+                # shutdown(wait=False) returns immediately — the daemon worker
+                # thread will finish on its own (or when the process exits).
+                executor.shutdown(wait=False)
+                logger.error(
+                    f"Sub-agent '{agent_name}' timed out after {timeout}s. "
+                    f"The agent will continue but the sub-agent may still be running in the background."
+                )
+                return (
+                    f"[Error]: {agent_name} timed out after {timeout} seconds. "
+                    f"The sub-agent took too long and was stopped. "
+                    f"Report this timeout to the user — do NOT retry."
+                )
 
             # Extract response
             for msg in reversed(result.get("messages", [])):

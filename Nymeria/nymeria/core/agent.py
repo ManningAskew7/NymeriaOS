@@ -1232,6 +1232,7 @@ class NymeriaAgent:
             checkpointer=self._checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=70,
+            tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
         # Use per-user tool filtering
@@ -1270,6 +1271,7 @@ class NymeriaAgent:
             checkpointer=self._async_checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=70,
+            tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
         # Use per-user tool filtering
@@ -2001,7 +2003,8 @@ class NymeriaAgent:
     async def astream(
         self, message: str, thread_id: str = "default", user_id: str = "default",
         attachments: Optional[List[Dict[str, str]]] = None,
-        images: Optional[List[Dict[str, str]]] = None
+        images: Optional[List[Dict[str, str]]] = None,
+        force_unsupported_attachments: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -2106,35 +2109,57 @@ class NymeriaAgent:
 
             # Build input state - multimodal if attachments provided
             if all_attachments:
-                # Check capabilities based on attachment types
-                from ..config.model_capabilities import supports_vision, supports_documents
+                from ..config.model_capabilities import (
+                    evaluate_attachment_compatibility,
+                    infer_mime_type,
+                    normalize_attachment_file_type,
+                )
 
-                has_images = any(a.get("file_type") == "image" for a in all_attachments)
-                has_docs = any(a.get("file_type") == "document" for a in all_attachments)
+                llm_cfg = self._get_llm_config_for_thread(thread_id)
+                effective_provider = llm_cfg.provider or self.settings.llm_provider
+                effective_model = llm_cfg.model or self.settings.llm_model
 
-                if has_images and not supports_vision(self.settings.llm_model):
+                compatibility = evaluate_attachment_compatibility(
+                    effective_model,
+                    effective_provider,
+                    all_attachments,
+                )
+
+                if not compatibility["compatible"] and not force_unsupported_attachments:
+                    unsupported = ", ".join(compatibility["unsupported_modalities"])
+                    warning_text = " ".join(compatibility["warnings"]).strip()
+                    message = (
+                        f"Current model ({effective_model}) may not support these attachments "
+                        f"(unsupported modalities: {unsupported or 'unknown'})."
+                    )
+                    if warning_text:
+                        message = f"{message} {warning_text}"
+
                     yield {
                         "type": "error",
-                        "content": f"Current model ({self.settings.llm_model}) doesn't support images. "
-                                   "Switch to Claude 3, GPT-4o, or another vision-capable model."
+                        "content": message
                     }
                     return
 
-                if has_docs and not supports_documents(self.settings.llm_model):
-                    yield {
-                        "type": "error",
-                        "content": f"Current model ({self.settings.llm_model}) doesn't support documents. "
-                                   "Switch to Claude 3, Gemini 1.5+, or another document-capable model."
-                    }
-                    return
+                if compatibility["warnings"]:
+                    logger.info(
+                        "Thread %s attachment warnings for model %s: %s",
+                        thread_id,
+                        effective_model,
+                        compatibility["warnings"],
+                    )
 
                 # Build multimodal content with text + files
                 import base64 as b64
 
                 content = [{"type": "text", "text": message_with_context}]
                 for att in all_attachments:
-                    file_type = att.get("file_type", "image")
-                    mime_type = att.get("mime_type", "")
+                    mime_type = infer_mime_type(att.get("mime_type", ""), att.get("file_name", ""))
+                    file_type = normalize_attachment_file_type(
+                        att.get("file_type", ""),
+                        mime_type,
+                        att.get("file_name", ""),
+                    )
                     data_url = att["data_url"]
 
                     # Strip the data URL prefix to get raw base64
@@ -2173,6 +2198,15 @@ class NymeriaAgent:
                                 "type": "text",
                                 "text": f"\n\n[Failed to read attached text file: {e}]\n"
                             })
+                    else:
+                        yield {
+                            "type": "error",
+                            "content": (
+                                "Unsupported attachment type. Supported types are images and "
+                                "documents (PDF, TXT, MD, CSV)."
+                            ),
+                        }
+                        return
 
                 input_state = {"messages": [HumanMessage(content=content)]}
             else:
