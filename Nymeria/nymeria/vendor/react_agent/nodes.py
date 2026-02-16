@@ -4,6 +4,8 @@ Graph Nodes for the ReAct Agent
 Modular node creation that accepts configuration for easy framework integration.
 """
 
+import asyncio
+import concurrent.futures
 import logging
 from typing import List, Callable, Optional
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
@@ -79,7 +81,7 @@ def create_agent_node(
     return agent_node
 
 
-def create_tools_node(tools: List[BaseTool], handle_errors: bool = True) -> "SafeToolNode":
+def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_timeout: Optional[int] = None) -> "SafeToolNode":
     """
     Create a tools node that executes tool calls.
 
@@ -87,24 +89,99 @@ def create_tools_node(tools: List[BaseTool], handle_errors: bool = True) -> "Saf
         tools: List of tools the node can execute
         handle_errors: If True, catch tool exceptions and return error messages
                       instead of letting them bubble up
+        tool_timeout: Seconds before a tool invocation is terminated (default 300)
 
     Returns:
-        SafeToolNode instance that handles errors gracefully
+        SafeToolNode instance that handles errors and timeouts gracefully
     """
-    return SafeToolNode(tools, handle_tool_errors=handle_errors)
+    return SafeToolNode(tools, handle_tool_errors=handle_errors, tool_timeout=tool_timeout)
 
 
 class SafeToolNode(ToolNode):
     """
-    A ToolNode wrapper that catches exceptions and returns them as tool results.
+    A ToolNode wrapper that catches exceptions and returns them as tool results,
+    and enforces a per-invocation timeout to prevent hanging tools from blocking
+    the agent indefinitely.
 
     This prevents tool failures from crashing the entire agent and allows
     the LLM to see the error and potentially retry or handle it.
     """
 
-    def __init__(self, tools: List[BaseTool], handle_tool_errors: bool = True):
+    DEFAULT_TOOL_TIMEOUT = 300  # 5 minutes
+
+    def __init__(self, tools: List[BaseTool], handle_tool_errors: bool = True, tool_timeout: Optional[int] = None):
         super().__init__(tools, handle_tool_errors=handle_tool_errors)
         self._handle_errors = handle_tool_errors
+        self._tool_timeout = tool_timeout if tool_timeout is not None else self.DEFAULT_TOOL_TIMEOUT
+
+    def invoke(self, input, config=None, **kwargs):
+        """Execute tools with a timeout to prevent indefinite hangs.
+
+        Wraps the parent ToolNode.invoke() in a thread with a timeout.
+        If the timeout fires, returns error ToolMessages for all pending
+        tool calls so the agent can recover gracefully.
+
+        Note: on timeout, the underlying thread may continue running in the
+        background (Python cannot forcibly kill threads), but the agent is
+        unblocked and can proceed. The executor is shut down with wait=False
+        so the caller is not blocked by ThreadPoolExecutor cleanup.
+        """
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(super().invoke, input, config, **kwargs)
+        try:
+            result = future.result(timeout=self._tool_timeout)
+            executor.shutdown(wait=False)
+            return result
+        except concurrent.futures.TimeoutError:
+            # shutdown(wait=False) returns immediately — the daemon worker
+            # thread will finish on its own (or when the process exits).
+            executor.shutdown(wait=False)
+            return self._build_timeout_response(input)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        """Async tool execution with timeout."""
+        try:
+            return await asyncio.wait_for(
+                super().ainvoke(input, config, **kwargs),
+                timeout=self._tool_timeout,
+            )
+        except asyncio.TimeoutError:
+            return self._build_timeout_response(input)
+
+    def _build_timeout_response(self, input) -> dict:
+        """Build error ToolMessages for timed-out tool calls.
+
+        LangGraph requires a matching ToolMessage for every tool_call in the
+        AIMessage, so we produce one error message per pending call.
+        """
+        messages = input.get("messages", []) if isinstance(input, dict) else []
+        last_message = messages[-1] if messages else None
+
+        error_messages = []
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            tool_names = [tc.get("name", "unknown") for tc in last_message.tool_calls]
+            logger.error(
+                f"Tool execution timed out after {self._tool_timeout}s. "
+                f"Tools: {tool_names}"
+            )
+            for tc in last_message.tool_calls:
+                tool_name = tc.get("name", "unknown")
+                tool_call_id = tc.get("id", "unknown")
+                error_messages.append(ToolMessage(
+                    content=(
+                        f"[Error]: Tool '{tool_name}' timed out after {self._tool_timeout} seconds. "
+                        f"The operation took too long and was stopped to prevent the agent from hanging. "
+                        f"Do NOT retry this tool — report the timeout to the user."
+                    ),
+                    tool_call_id=tool_call_id,
+                ))
+        else:
+            logger.error(
+                f"Tool execution timed out after {self._tool_timeout}s "
+                f"but could not extract tool calls from input to build error response."
+            )
+
+        return {"messages": error_messages}
 
 
 def create_should_continue(max_iterations: int = 10) -> Callable[[AgentState], str]:
@@ -218,7 +295,7 @@ class NodeFactory:
 
     def create_tools_node(self) -> ToolNode:
         """Create the tool execution node."""
-        return create_tools_node(self.tools)
+        return create_tools_node(self.tools, tool_timeout=self.config.tool_timeout)
 
     def create_router(self) -> Callable[[AgentState], str]:
         """Create the routing function."""

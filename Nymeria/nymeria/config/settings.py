@@ -209,6 +209,12 @@ class Settings(BaseSettings):
         le=600,
         description="Seconds to wait for per-thread lock before timing out"
     )
+    tool_timeout: int = Field(
+        default=300,
+        ge=30,
+        le=900,
+        description="Max seconds a single tool/agent invocation can run before being terminated (default 5 minutes)"
+    )
 
     # Watchdog/TODO Configuration
     watchdog_enabled: bool = Field(
