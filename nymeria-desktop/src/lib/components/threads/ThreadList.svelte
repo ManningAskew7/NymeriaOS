@@ -4,11 +4,113 @@
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { api } from '$lib/services/api.svelte';
   import ThreadItem from './ThreadItem.svelte';
+  import FolderItem from './FolderItem.svelte';
   import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
-  import type { Thread, ThreadConfig } from '$lib/types';
+  import { Icon } from '$lib/components/common';
+  import type { Thread, ThreadConfig, SortMode } from '$lib/types';
 
   let loadError = $state<string | null>(null);
   let configureThread = $state<Thread | null>(null);
+
+  // Multi-select state
+  let selectedIds = $state<Set<string>>(new Set());
+  let lastClickedId = $state<string | null>(null);
+
+  // Sort dropdown
+  let showSortDropdown = $state(false);
+
+  // Folder picker (for bulk group action)
+  let showFolderPicker = $state(false);
+  let newFolderName = $state('');
+
+  const sortOptions: { value: SortMode; label: string }[] = [
+    { value: 'recent',       label: 'Recent' },
+    { value: 'oldest',       label: 'Oldest' },
+    { value: 'alphabetical', label: 'A\u2013Z' },
+    { value: 'tasks',        label: 'Most Tasks' },
+    { value: 'active',       label: 'Active First' },
+  ];
+
+  function getCurrentSortLabel(): string {
+    return sortOptions.find(o => o.value === threadsStore.sortMode)?.label ?? 'Recent';
+  }
+
+  // Build ordered list of all visible thread IDs for Shift+Click range selection
+  function getVisibleThreadIds(): string[] {
+    const ids: string[] = [];
+    const threadMap = new Map(threadsStore.threads.map(t => [t.id, t]));
+
+    // Folders first (sorted by order)
+    const sortedFolders = [...threadsStore.folders].sort((a, b) => a.order - b.order);
+    for (const folder of sortedFolders) {
+      if (!folder.collapsed) {
+        for (const tid of folder.threadIds) {
+          if (threadMap.has(tid)) ids.push(tid);
+        }
+      }
+    }
+
+    // Then unfiled threads
+    if (threadsStore.sortMode === 'recent') {
+      for (const group of threadsStore.groupedUnfiledThreads) {
+        for (const thread of group.threads) {
+          ids.push(thread.id);
+        }
+      }
+    } else {
+      for (const thread of threadsStore.sortedUnfiledThreads) {
+        ids.push(thread.id);
+      }
+    }
+
+    return ids;
+  }
+
+  function handleThreadClick(threadId: string, event: MouseEvent) {
+    const isCtrl = event.ctrlKey || event.metaKey;
+    const isShift = event.shiftKey;
+
+    if (isCtrl) {
+      // Toggle individual selection
+      const next = new Set(selectedIds);
+      if (next.has(threadId)) {
+        next.delete(threadId);
+      } else {
+        next.add(threadId);
+      }
+      selectedIds = next;
+      lastClickedId = threadId;
+      return;
+    }
+
+    if (isShift && lastClickedId) {
+      // Range select
+      const visible = getVisibleThreadIds();
+      const startIdx = visible.indexOf(lastClickedId);
+      const endIdx = visible.indexOf(threadId);
+      if (startIdx !== -1 && endIdx !== -1) {
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const next = new Set(selectedIds);
+        for (let i = lo; i <= hi; i++) {
+          next.add(visible[i]);
+        }
+        selectedIds = next;
+      }
+      return;
+    }
+
+    // Plain click
+    if (selectedIds.size > 0) {
+      // Clear selection on plain click (don't navigate)
+      selectedIds = new Set();
+      lastClickedId = null;
+      return;
+    }
+
+    // Normal navigation — set anchor for future Shift+Click
+    lastClickedId = threadId;
+    handleSelectThread(threadId);
+  }
 
   async function handleSelectThread(threadId: string) {
     if (threadId === threadsStore.currentThreadId) return;
@@ -17,7 +119,6 @@
     threadsStore.selectThread(threadId);
     chatStore.clearMessages();
 
-    // Load thread history and context stats from API
     try {
       const [history, stats] = await Promise.all([
         api.getThreadHistory(threadId),
@@ -27,10 +128,7 @@
       chatStore.setContextStats(stats);
     } catch (error) {
       console.error('Failed to load thread history:', error);
-      // Show error but keep the thread selected (might be local-only or corrupted)
       loadError = 'Could not load chat history. The thread may have been created before syncing was fixed.';
-      // Optionally delete the broken thread
-      // threadsStore.deleteThread(threadId);
     }
   }
 
@@ -40,6 +138,12 @@
       if (threadsStore.currentThreadId === threadId) {
         chatStore.clearMessages();
       }
+      // Remove from selection if selected
+      if (selectedIds.has(threadId)) {
+        const next = new Set(selectedIds);
+        next.delete(threadId);
+        selectedIds = next;
+      }
     }
   }
 
@@ -48,7 +152,6 @@
   }
 
   function handleConfigureThread(thread: Thread) {
-    // Load config if not cached
     threadConfigStore.loadConfig(thread.id);
     configureThread = thread;
   }
@@ -56,41 +159,251 @@
   function handleConfigSaved(config: ThreadConfig) {
     // Config is already in the store
   }
+
+  // Sort controls
+  function handleSortChange(mode: SortMode) {
+    threadsStore.setSortMode(mode);
+    showSortDropdown = false;
+  }
+
+  // Bulk actions
+  function handleBulkDelete() {
+    const count = selectedIds.size;
+    if (confirm(`Delete ${count} thread${count > 1 ? 's' : ''}? This cannot be undone.`)) {
+      // Check if current thread is in selection before deleting (deleteThread changes currentThreadId)
+      const needsClear = threadsStore.currentThreadId !== null && selectedIds.has(threadsStore.currentThreadId);
+      for (const id of selectedIds) {
+        threadsStore.deleteThread(id);
+      }
+      if (needsClear) {
+        chatStore.clearMessages();
+      }
+      selectedIds = new Set();
+      lastClickedId = null;
+    }
+  }
+
+  function handleBulkGroup() {
+    showFolderPicker = true;
+  }
+
+  function handleCreateFolderAndGroup() {
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+    const folder = threadsStore.createFolder(trimmed);
+    threadsStore.addThreadsToFolder(folder.id, [...selectedIds]);
+    newFolderName = '';
+    showFolderPicker = false;
+    selectedIds = new Set();
+    lastClickedId = null;
+  }
+
+  function handleGroupIntoExisting(folderId: string) {
+    threadsStore.addThreadsToFolder(folderId, [...selectedIds]);
+    showFolderPicker = false;
+    selectedIds = new Set();
+    lastClickedId = null;
+  }
+
+  function clearSelection() {
+    selectedIds = new Set();
+    lastClickedId = null;
+    showFolderPicker = false;
+  }
+
+  function handleNewFolderKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleCreateFolderAndGroup();
+    } else if (e.key === 'Escape') {
+      showFolderPicker = false;
+    }
+  }
+
+  // Resolve folder threads (filter out orphan IDs)
+  function resolveFolderThreads(threadIds: string[]): Thread[] {
+    const threadMap = new Map(threadsStore.threads.map(t => [t.id, t]));
+    return threadIds.map(id => threadMap.get(id)).filter((t): t is Thread => t !== undefined);
+  }
+
+  // Whether we have any threads at all (folders + unfiled)
+  $effect(() => {
+    // Close folder picker if selection is cleared
+    if (selectedIds.size === 0) {
+      showFolderPicker = false;
+    }
+  });
 </script>
 
 <div class="thread-list">
+  <!-- Sort controls bar -->
+  <div class="sort-bar">
+    <button
+      class="sort-trigger"
+      type="button"
+      onclick={() => (showSortDropdown = !showSortDropdown)}
+    >
+      <Icon name="sort" size={14} />
+      <span>{getCurrentSortLabel()}</span>
+      <Icon name="chevronDown" size={12} />
+    </button>
+  </div>
+
+  {#if showSortDropdown}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="sort-backdrop" onclick={() => (showSortDropdown = false)}></div>
+    <div class="sort-dropdown">
+      {#each sortOptions as opt}
+        <button
+          class="sort-option"
+          class:active={threadsStore.sortMode === opt.value}
+          type="button"
+          onclick={() => handleSortChange(opt.value)}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   {#if loadError}
     <div class="load-error">
       <p>{loadError}</p>
       <button onclick={() => loadError = null}>Dismiss</button>
     </div>
   {/if}
-  {#if threadsStore.groupedThreads.length === 0}
+
+  {#if threadsStore.threads.length === 0}
     <div class="empty-state">
       <p>No conversations yet</p>
       <p class="hint">Start a new chat to begin</p>
     </div>
   {:else}
-    {#each threadsStore.groupedThreads as group (group.label)}
-      <div class="thread-group">
-        <h3 class="group-label">{group.label}</h3>
-        <div class="group-threads">
-          {#each group.threads as thread (thread.id)}
-            <ThreadItem
-              {thread}
-              isActive={thread.id === threadsStore.currentThreadId}
-              taskCount={threadsStore.getThreadTaskCount(thread.id)}
-              hasActiveTask={threadsStore.isThreadActive(thread.id)}
-              hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
-              onSelect={() => handleSelectThread(thread.id)}
-              onDelete={() => handleDeleteThread(thread.id)}
-              onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
-              onConfigure={() => handleConfigureThread(thread)}
-            />
-          {/each}
-        </div>
-      </div>
+    <!-- Folders section -->
+    {#each [...threadsStore.folders].sort((a, b) => a.order - b.order) as folder (folder.id)}
+      <FolderItem
+        {folder}
+        threads={resolveFolderThreads(folder.threadIds)}
+        currentThreadId={threadsStore.currentThreadId}
+        {selectedIds}
+        getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
+        isThreadActive={(id) => threadsStore.isThreadActive(id)}
+        getCustomConfig={(id) => threadConfigStore.getConfig(id)}
+        onSelectThread={handleThreadClick}
+        onDeleteThread={handleDeleteThread}
+        onRenameThread={handleRenameThread}
+        onConfigureThread={handleConfigureThread}
+        onToggleCollapse={() => threadsStore.toggleFolderCollapse(folder.id)}
+        onRenameFolder={(name) => threadsStore.renameFolder(folder.id, name)}
+        onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
+      />
     {/each}
+
+    {#if threadsStore.folders.length > 0 && threadsStore.unfiledThreads.length > 0}
+      <div class="folders-divider"></div>
+    {/if}
+
+    <!-- Unfiled threads -->
+    {#if threadsStore.sortMode === 'recent'}
+      {#each threadsStore.groupedUnfiledThreads as group (group.label)}
+        <div class="thread-group">
+          <h3 class="group-label">{group.label}</h3>
+          <div class="group-threads">
+            {#each group.threads as thread (thread.id)}
+              <ThreadItem
+                {thread}
+                isActive={thread.id === threadsStore.currentThreadId}
+                isSelected={selectedIds.has(thread.id)}
+                taskCount={threadsStore.getThreadTaskCount(thread.id)}
+                hasActiveTask={threadsStore.isThreadActive(thread.id)}
+                hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+                onSelect={(e) => handleThreadClick(thread.id, e)}
+                onDelete={() => handleDeleteThread(thread.id)}
+                onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+                onConfigure={() => handleConfigureThread(thread)}
+              />
+            {/each}
+          </div>
+        </div>
+      {/each}
+    {:else}
+      <div class="group-threads">
+        {#each threadsStore.sortedUnfiledThreads as thread (thread.id)}
+          <ThreadItem
+            {thread}
+            isActive={thread.id === threadsStore.currentThreadId}
+            isSelected={selectedIds.has(thread.id)}
+            taskCount={threadsStore.getThreadTaskCount(thread.id)}
+            hasActiveTask={threadsStore.isThreadActive(thread.id)}
+            hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+            onSelect={(e) => handleThreadClick(thread.id, e)}
+            onDelete={() => handleDeleteThread(thread.id)}
+            onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+            onConfigure={() => handleConfigureThread(thread)}
+          />
+        {/each}
+      </div>
+    {/if}
+
+    {#if threadsStore.unfiledThreads.length === 0 && threadsStore.folders.length > 0}
+      <div class="empty-state">
+        <p class="hint">All threads are in folders</p>
+      </div>
+    {/if}
+  {/if}
+
+  <!-- Bulk action bar -->
+  {#if selectedIds.size > 0}
+    <div class="bulk-action-bar">
+      {#if showFolderPicker}
+        <div class="folder-picker">
+          <div class="folder-picker-header">Move to folder</div>
+          <div class="folder-picker-new">
+            <input
+              type="text"
+              class="folder-picker-input"
+              placeholder="New folder name..."
+              bind:value={newFolderName}
+              onkeydown={handleNewFolderKeydown}
+            />
+            <button
+              class="folder-picker-create-btn"
+              type="button"
+              disabled={!newFolderName.trim()}
+              onclick={handleCreateFolderAndGroup}
+            >Create</button>
+          </div>
+          {#if threadsStore.folders.length > 0}
+            <div class="folder-picker-existing">
+              {#each threadsStore.folders as folder (folder.id)}
+                <button
+                  class="folder-picker-option"
+                  type="button"
+                  onclick={() => handleGroupIntoExisting(folder.id)}
+                >
+                  <Icon name="folder" size={14} />
+                  <span>{folder.name}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+      <div class="bulk-action-content">
+        <span class="bulk-count">{selectedIds.size} selected</span>
+        <button class="bulk-btn bulk-group" type="button" onclick={handleBulkGroup}>
+          <Icon name="folder" size={14} />
+          Group
+        </button>
+        <button class="bulk-btn bulk-delete" type="button" onclick={handleBulkDelete}>
+          <Icon name="trash" size={14} />
+          Delete
+        </button>
+        <button class="bulk-btn bulk-cancel" type="button" onclick={clearSelection}>
+          <Icon name="x" size={14} />
+        </button>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -106,6 +419,7 @@
 <style>
   .thread-list {
     padding: var(--spacing-sm);
+    position: relative;
   }
 
   .empty-state {
@@ -169,5 +483,233 @@
 
   .load-error button:hover {
     background: color-mix(in srgb, var(--error) 20%, transparent);
+  }
+
+  /* Sort bar */
+  .sort-bar {
+    display: flex;
+    align-items: center;
+    padding: 0 var(--spacing-xs) var(--spacing-xs);
+    position: relative;
+  }
+
+  .sort-trigger {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .sort-trigger:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border-default);
+  }
+
+  .sort-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 998;
+  }
+
+  .sort-dropdown {
+    position: absolute;
+    top: 32px;
+    left: var(--spacing-xs);
+    z-index: 999;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 4px;
+    min-width: 120px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  .sort-option {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-fast);
+    cursor: pointer;
+  }
+
+  .sort-option:hover {
+    background: var(--bg-hover);
+  }
+
+  .sort-option.active {
+    color: var(--accent-primary);
+    font-weight: 600;
+  }
+
+  /* Folders divider */
+  .folders-divider {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: var(--spacing-sm) var(--spacing-md);
+  }
+
+  /* Bulk action bar */
+  .bulk-action-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    background: var(--glass-bg-strong);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-top: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    margin-top: var(--spacing-sm);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.2);
+  }
+
+  .bulk-action-content {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+  }
+
+  .bulk-count {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-right: auto;
+  }
+
+  .bulk-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .bulk-group {
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+
+  .bulk-group:hover {
+    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
+  }
+
+  .bulk-delete {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+  }
+
+  .bulk-delete:hover {
+    background: color-mix(in srgb, var(--error) 20%, transparent);
+  }
+
+  .bulk-cancel {
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    padding: 4px;
+  }
+
+  .bulk-cancel:hover {
+    color: var(--text-primary);
+  }
+
+  /* Folder picker */
+  .folder-picker {
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .folder-picker-header {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .folder-picker-new {
+    display: flex;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .folder-picker-input {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+  }
+
+  .folder-picker-input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+  }
+
+  .folder-picker-create-btn {
+    padding: 4px 10px;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--bg-base);
+    background: var(--accent-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: opacity var(--transition-fast);
+  }
+
+  .folder-picker-create-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .folder-picker-create-btn:not(:disabled):hover {
+    opacity: 0.9;
+  }
+
+  .folder-picker-existing {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .folder-picker-option {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    width: 100%;
+    text-align: left;
+    padding: 4px 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+
+  .folder-picker-option:hover {
+    background: var(--bg-hover);
   }
 </style>
