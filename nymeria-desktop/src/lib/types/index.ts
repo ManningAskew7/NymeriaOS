@@ -244,12 +244,24 @@ export interface ChatRequest {
   message: string;
   threadId?: string;
   attachments?: FileAttachment[]; // Optional file attachments for multimodal models
+  forceUnsupportedAttachments?: boolean;
 }
 
 export interface ChatResponse {
   threadId: string;
   response: string;
   toolCalls?: ToolCall[];
+}
+
+export interface AttachmentValidationResult {
+  compatible: boolean;
+  effective_provider: string;
+  effective_model: string;
+  model_input_modalities: string[];
+  required_modalities: string[];
+  unsupported_modalities: string[];
+  warnings: string[];
+  can_force_send: boolean;
 }
 
 // SSE Event types
@@ -346,6 +358,7 @@ export interface AppConfig {
   apiKey: string;
   setupCompleted?: boolean;
   theme?: ThemeName;
+  suppressAttachmentWarnings?: boolean;
 }
 
 // Server settings types

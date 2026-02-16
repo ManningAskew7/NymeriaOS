@@ -5,12 +5,34 @@ Falls back to static lists if API is unavailable.
 """
 
 import logging
+from pathlib import Path
 import time
 from typing import Dict, List, Optional, Set
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+TEXT_DOCUMENT_MIME_TYPES = {
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+}
+
+SUPPORTED_DOCUMENT_MIME_TYPES = TEXT_DOCUMENT_MIME_TYPES | {"application/pdf"}
+
+EXTENSION_MIME_FALLBACKS = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 # Cache for model capabilities fetched from OpenRouter
 _capabilities_cache: Optional[Dict[str, Set[str]]] = None
@@ -356,3 +378,119 @@ def get_max_output_tokens(model_id: str) -> Optional[int]:
             return limit
 
     return None
+
+
+def infer_mime_type(mime_type: str, file_name: str = "") -> str:
+    """
+    Infer a stable MIME type from explicit MIME and optional filename.
+
+    Browser file APIs can produce an empty MIME type (or generic
+    application/octet-stream) for some extensions on certain platforms.
+    """
+    mime = (mime_type or "").strip().lower()
+
+    if mime and mime not in {"application/octet-stream", "binary/octet-stream"}:
+        return mime
+
+    suffix = Path(file_name or "").suffix.lower()
+    return EXTENSION_MIME_FALLBACKS.get(suffix, mime)
+
+
+def normalize_attachment_file_type(file_type: str, mime_type: str, file_name: str = "") -> str:
+    """Normalize attachment file type to 'image' | 'document' | 'unknown'."""
+    normalized = (file_type or "").strip().lower()
+    inferred_mime = infer_mime_type(mime_type, file_name)
+
+    if normalized in {"image", "document"}:
+        return normalized
+    if inferred_mime.startswith("image/"):
+        return "image"
+    if inferred_mime in SUPPORTED_DOCUMENT_MIME_TYPES:
+        return "document"
+    return "unknown"
+
+
+def evaluate_attachment_compatibility(
+    model_id: str,
+    provider: str,
+    attachments: Optional[List[Dict[str, str]]],
+) -> Dict[str, object]:
+    """
+    Evaluate whether attachments are likely compatible with a model.
+
+    Returns a structured compatibility report that callers can use for
+    preflight UI warnings and runtime guardrails.
+    """
+    normalized_provider = (provider or "").strip().lower()
+    modalities = get_model_modalities(model_id) if normalized_provider == "openrouter" else set()
+
+    required_modalities: Set[str] = set()
+    unsupported_modalities: Set[str] = set()
+    warnings: List[str] = []
+    has_pdf = False
+
+    for attachment in attachments or []:
+        mime_type = infer_mime_type(
+            attachment.get("mime_type", ""),
+            attachment.get("file_name", ""),
+        )
+        file_type = normalize_attachment_file_type(
+            attachment.get("file_type", ""),
+            mime_type,
+            attachment.get("file_name", ""),
+        )
+
+        if file_type == "image":
+            required_modalities.add("image")
+            continue
+
+        if file_type == "document":
+            if mime_type == "application/pdf":
+                has_pdf = True
+                required_modalities.add("file")
+                continue
+
+            if mime_type in TEXT_DOCUMENT_MIME_TYPES:
+                required_modalities.add("text")
+                continue
+
+            unsupported_modalities.add("document")
+            warnings.append(
+                f"Unsupported document type '{mime_type or 'unknown'}'. "
+                "Supported documents are PDF, TXT, MD, and CSV."
+            )
+            continue
+
+        unsupported_modalities.add("document")
+        warnings.append("Unsupported attachment type. Supported types are image and document.")
+
+    if normalized_provider == "openrouter":
+        if "image" in required_modalities:
+            if modalities:
+                if "image" not in modalities:
+                    unsupported_modalities.add("image")
+            elif not supports_vision(model_id):
+                unsupported_modalities.add("image")
+
+        # OpenRouter can parse PDFs even for models without native file input.
+        if has_pdf and modalities and "file" not in modalities:
+            warnings.append(
+                "This model does not report native file input. OpenRouter may parse PDFs before sending text to the model."
+            )
+    else:
+        if "image" in required_modalities and not supports_vision(model_id):
+            unsupported_modalities.add("image")
+
+        if has_pdf and not supports_documents(model_id):
+            unsupported_modalities.add("file")
+
+    if "text" in required_modalities and modalities and "text" not in modalities:
+        unsupported_modalities.add("text")
+
+    return {
+        "compatible": len(unsupported_modalities) == 0,
+        "model_input_modalities": sorted(modalities),
+        "required_modalities": sorted(required_modalities),
+        "unsupported_modalities": sorted(unsupported_modalities),
+        "warnings": warnings,
+    }

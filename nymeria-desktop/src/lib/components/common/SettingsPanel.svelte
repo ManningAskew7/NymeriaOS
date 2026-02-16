@@ -29,6 +29,7 @@
   let llmExtendedThinking = $state(false);
   let showAdvancedLlm = $state(false);
   // Agent settings
+  let contextManagement = $state<string>('auto_compact');
   let slidingWindowCycles = $state(5);
   let maxSelfInvokesPerHour = $state(50);
   let logLevel = $state<LogLevel>('INFO');
@@ -64,6 +65,7 @@
       llmPresencePenalty = serverSettings.llm_presence_penalty;
       llmReasoningEffort = serverSettings.llm_reasoning_effort;
       llmExtendedThinking = serverSettings.llm_extended_thinking;
+      contextManagement = serverSettings.context_management;
       slidingWindowCycles = serverSettings.sliding_window_cycles;
       maxSelfInvokesPerHour = serverSettings.max_self_invokes_per_hour;
       logLevel = serverSettings.log_level;
@@ -134,6 +136,7 @@
         llm_presence_penalty: llmPresencePenalty,
         llm_reasoning_effort: llmReasoningEffort,
         llm_extended_thinking: llmExtendedThinking,
+        context_management: contextManagement,
         sliding_window_cycles: slidingWindowCycles,
         max_self_invokes_per_hour: maxSelfInvokesPerHour,
         log_level: logLevel,
@@ -486,17 +489,37 @@
         <p class="loading">Loading settings...</p>
       {:else}
         <div class="field">
-          <label for="context-cycles">Context Window Cycles: {slidingWindowCycles}</label>
-          <input
-            id="context-cycles"
-            type="range"
-            min="1"
-            max="20"
-            step="1"
-            bind:value={slidingWindowCycles}
-          />
-          <p class="hint">Number of conversation cycles to keep in context</p>
+          <label for="context-management">Context Management</label>
+          <select id="context-management" bind:value={contextManagement}>
+            <option value="auto_compact">Auto-Compact (default)</option>
+            <option value="sliding_window">Sliding Window</option>
+            <option value="none">None</option>
+          </select>
+          <p class="hint">
+            {#if contextManagement === 'auto_compact'}
+              Automatically summarizes old messages when context gets large
+            {:else if contextManagement === 'sliding_window'}
+              Keeps only the N most recent conversation cycles
+            {:else}
+              No context management — conversation history grows unbounded
+            {/if}
+          </p>
         </div>
+
+        {#if contextManagement === 'sliding_window'}
+          <div class="field">
+            <label for="context-cycles">Context Window Cycles: {slidingWindowCycles}</label>
+            <input
+              id="context-cycles"
+              type="range"
+              min="1"
+              max="20"
+              step="1"
+              bind:value={slidingWindowCycles}
+            />
+            <p class="hint">Number of conversation cycles to keep in context</p>
+          </div>
+        {/if}
 
         <div class="field">
           <label for="max-invokes">Max Self-Invokes/Hour: {maxSelfInvokesPerHour}</label>
