@@ -6,6 +6,9 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
+
+  let isCollapsed = $derived(uiStore.rightPanelCollapsed);
 
   let activeTab = $state<'thread' | 'global'>('thread');
   let currentThreadId = $derived(threadsStore.currentThreadId);
@@ -31,7 +34,7 @@
   }
 </script>
 
-<div class="right-panel-content">
+<div class="right-panel-content" class:collapsed={isCollapsed} aria-hidden={isCollapsed}>
   <div class="panel-header">
     <h2>Dashboard</h2>
     <div class="tab-buttons">
@@ -93,6 +96,11 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    overflow: hidden;
+  }
+
+  .right-panel-content.collapsed {
+    visibility: hidden;
   }
 
   .panel-header {
