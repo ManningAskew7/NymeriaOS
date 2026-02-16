@@ -48,6 +48,7 @@
 
   /* Layout */
   --sidebar-width: 280px;
+  --sidebar-width-collapsed: 60px;
   --right-panel-width: 320px;
   --header-height: 48px;
 

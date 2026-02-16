@@ -6,9 +6,12 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { notificationStore } from '$lib/stores/notifications.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
 
   let showSettings = $state(false);
   let showNotifications = $state(false);
+
+  let isCollapsed = $derived(uiStore.sidebarCollapsed);
 
   function handleNewChat() {
     threadsStore.createThread();
@@ -41,39 +44,81 @@
   });
 </script>
 
-<div class="sidebar-content">
-  <div class="sidebar-header">
-    <h1 class="logo">Nymeria</h1>
-    <Button variant="primary" size="sm" onclick={handleNewChat}>
-      <Icon name="plus" size={16} />
-      New Chat
-    </Button>
-  </div>
-
-  <div class="threads-container">
-    <ThreadList />
-  </div>
-
-  <div class="sidebar-footer">
-    <div class="notification-wrapper">
+<div class="sidebar-content" class:collapsed={isCollapsed}>
+  <div class="sidebar-header" class:collapsed={isCollapsed}>
+    {#if !isCollapsed}
+      <h1 class="logo">Nymeria</h1>
+      <Button variant="primary" size="sm" onclick={handleNewChat}>
+        <Icon name="plus" size={16} />
+        New Chat
+      </Button>
+    {:else}
       <button
-        class="footer-btn"
-        class:has-unread={notificationStore.unreadCount > 0}
+        class="icon-btn"
         type="button"
-        onclick={toggleNotifications}
+        onclick={handleNewChat}
+        title="New Chat"
+        aria-label="New Chat"
       >
-        <Icon name="bell" size={18} />
-        Notifications
-        {#if notificationStore.unreadCount > 0}
-          <span class="notification-badge">{notificationStore.unreadCount}</span>
-        {/if}
+        <Icon name="plus" size={20} />
       </button>
+    {/if}
+  </div>
+
+  {#if !isCollapsed}
+    <div class="threads-container">
+      <ThreadList />
+    </div>
+  {/if}
+
+  <div class="sidebar-footer" class:collapsed={isCollapsed}>
+    <div class="notification-wrapper">
+      {#if !isCollapsed}
+        <button
+          class="footer-btn"
+          class:has-unread={notificationStore.unreadCount > 0}
+          type="button"
+          onclick={toggleNotifications}
+        >
+          <Icon name="bell" size={18} />
+          Notifications
+          {#if notificationStore.unreadCount > 0}
+            <span class="notification-badge">{notificationStore.unreadCount}</span>
+          {/if}
+        </button>
+      {:else}
+        <button
+          class="icon-btn"
+          class:has-unread={notificationStore.unreadCount > 0}
+          type="button"
+          onclick={toggleNotifications}
+          title="Notifications"
+          aria-label="Notifications"
+        >
+          <Icon name="bell" size={20} />
+          {#if notificationStore.unreadCount > 0}
+            <span class="notification-badge-collapsed">{notificationStore.unreadCount}</span>
+          {/if}
+        </button>
+      {/if}
       <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
     </div>
-    <button class="footer-btn" type="button" onclick={openSettings}>
-      <Icon name="settings" size={18} />
-      Settings
-    </button>
+    {#if !isCollapsed}
+      <button class="footer-btn" type="button" onclick={openSettings}>
+        <Icon name="settings" size={18} />
+        Settings
+      </button>
+    {:else}
+      <button
+        class="icon-btn"
+        type="button"
+        onclick={openSettings}
+        title="Settings"
+        aria-label="Settings"
+      >
+        <Icon name="settings" size={20} />
+      </button>
+    {/if}
   </div>
 </div>
 
@@ -86,6 +131,11 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    overflow: hidden;
+  }
+
+  .sidebar-content.collapsed {
+    align-items: center;
   }
 
   .sidebar-header {
@@ -94,6 +144,11 @@
     justify-content: space-between;
     padding: var(--spacing-md);
     border-bottom: 1px solid var(--glass-border);
+  }
+
+  .sidebar-header.collapsed {
+    justify-content: center;
+    padding: var(--spacing-md) var(--spacing-sm);
   }
 
   .logo {
@@ -115,6 +170,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
+  }
+
+  .sidebar-footer.collapsed {
+    padding: var(--spacing-md) var(--spacing-sm);
+    align-items: center;
+    width: 100%;
   }
 
   .notification-wrapper {
@@ -152,6 +213,47 @@
     color: white;
     background: var(--accent-primary);
     border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: glowPulse 2s ease-in-out infinite;
+  }
+
+  /* Icon-only buttons for collapsed state */
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    color: var(--text-secondary);
+    border-radius: var(--radius-md);
+    transition: all var(--transition-fast);
+    position: relative;
+  }
+
+  .icon-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .icon-btn.has-unread {
+    color: var(--accent-primary);
+  }
+
+  /* Notification badge for collapsed icon button */
+  .notification-badge-collapsed {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 3px;
+    font-size: 10px;
+    font-weight: 600;
+    color: white;
+    background: var(--accent-primary);
+    border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
