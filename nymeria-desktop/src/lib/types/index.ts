@@ -340,6 +340,7 @@ export interface ErrorEvent {
 
 export interface ContextStats {
   threadId: string;
+  model: string;
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;

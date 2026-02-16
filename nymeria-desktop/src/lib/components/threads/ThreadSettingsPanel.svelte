@@ -5,6 +5,8 @@
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { agentsStore } from '$lib/stores/agents.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { chatStore } from '$lib/stores/chat.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
 
@@ -215,6 +217,16 @@
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
       onSaved(result);
+
+      // Refresh context stats so status bar shows new model + correct percentage
+      const savedThreadId = thread.id;
+      api.getThreadContextStats(savedThreadId).then((stats) => {
+        if (stats && threadsStore.currentThreadId === savedThreadId) {
+          chatStore.setContextStats(stats);
+          chatStore.setActiveModel(stats.model);
+        }
+      });
+
       onClose();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to save';
@@ -248,6 +260,16 @@
         updatedAt: null,
         hasCustomizations: false,
       });
+
+      // Refresh context stats so status bar reverts to global model
+      const resetThreadId = thread.id;
+      api.getThreadContextStats(resetThreadId).then((stats) => {
+        if (stats && threadsStore.currentThreadId === resetThreadId) {
+          chatStore.setContextStats(stats);
+          chatStore.setActiveModel(stats.model);
+        }
+      });
+
       onClose();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to reset';

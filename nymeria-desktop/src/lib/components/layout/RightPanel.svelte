@@ -36,6 +36,7 @@
     ]).then(([history, stats]) => {
       chatStore.setMessages(history.messages);
       chatStore.setContextStats(stats);
+      chatStore.setActiveModel(stats?.model ?? null);
     });
     activeTab = 'thread';
   }
