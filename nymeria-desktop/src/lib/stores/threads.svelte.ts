@@ -1,6 +1,31 @@
 import type { Thread, ThreadPlatform } from '$lib/types';
 
 const STORAGE_KEY = 'nymeria-threads';
+const CURRENT_THREAD_KEY = 'nymeria-current-thread';
+
+function loadCurrentThreadId(threads: Thread[]): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const id = localStorage.getItem(CURRENT_THREAD_KEY);
+    if (id && threads.some((t) => t.id === id)) return id;
+  } catch (e) {
+    console.error('Failed to load current thread ID:', e);
+  }
+  return null;
+}
+
+function saveCurrentThreadId(id: string | null): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (id) {
+      localStorage.setItem(CURRENT_THREAD_KEY, id);
+    } else {
+      localStorage.removeItem(CURRENT_THREAD_KEY);
+    }
+  } catch (e) {
+    console.error('Failed to save current thread ID:', e);
+  }
+}
 
 function loadThreads(): Thread[] {
   if (typeof localStorage === 'undefined') return [];
@@ -66,7 +91,7 @@ function generateTitleFromMessage(message: string, maxLength: number = 40): stri
 
 function createThreadsStore() {
   let threads = $state<Thread[]>(loadThreads());
-  let currentThreadId = $state<string | null>(null);
+  let currentThreadId = $state<string | null>(loadCurrentThreadId(threads));
   let threadTaskCounts = $state<Record<string, number>>({});
   let activeThreadTasks = $state<Set<string>>(new Set());
 
@@ -133,6 +158,7 @@ function createThreadsStore() {
 
       threads = [thread, ...threads];
       currentThreadId = thread.id;
+      saveCurrentThreadId(currentThreadId);
       saveThreads(threads);
 
       return thread;
@@ -141,6 +167,7 @@ function createThreadsStore() {
     selectThread(id: string) {
       if (threads.some((t) => t.id === id)) {
         currentThreadId = id;
+        saveCurrentThreadId(currentThreadId);
       }
     },
 
@@ -157,6 +184,7 @@ function createThreadsStore() {
       threads = threads.filter((t) => t.id !== id);
       if (currentThreadId === id) {
         currentThreadId = threads.length > 0 ? threads[0].id : null;
+        saveCurrentThreadId(currentThreadId);
       }
       saveThreads(threads);
     },
@@ -176,6 +204,7 @@ function createThreadsStore() {
         saveThreads(threads);
       }
       currentThreadId = id;
+      saveCurrentThreadId(currentThreadId);
     },
 
     /**
@@ -233,6 +262,7 @@ function createThreadsStore() {
 
     clearCurrent() {
       currentThreadId = null;
+      saveCurrentThreadId(null);
     },
 
     // Thread task badge support

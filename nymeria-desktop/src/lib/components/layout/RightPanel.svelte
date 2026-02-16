@@ -13,6 +13,13 @@
   let activeTab = $state<'thread' | 'global'>('thread');
   let currentThreadId = $derived(threadsStore.currentThreadId);
 
+  // Auto-switch to Global tab when no thread is selected
+  $effect(() => {
+    if (activeTab === 'thread' && !currentThreadId) {
+      activeTab = 'global';
+    }
+  });
+
   // Build thread title lookup for global view
   let threadTitleMap = $derived(
     Object.fromEntries(threadsStore.threads.map(t => [t.id, t.title]))
