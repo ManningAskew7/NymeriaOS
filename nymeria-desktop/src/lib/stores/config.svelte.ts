@@ -5,7 +5,12 @@ const STORAGE_KEY = 'nymeria-config';
 
 function loadConfig(): AppConfig {
   if (typeof localStorage === 'undefined') {
-    return { apiUrl: 'http://localhost:8000', apiKey: '', theme: 'midnight' };
+    return {
+      apiUrl: 'http://localhost:8000',
+      apiKey: '',
+      theme: 'midnight',
+      suppressAttachmentWarnings: false,
+    };
   }
 
   try {
@@ -16,13 +21,21 @@ function loadConfig(): AppConfig {
       if (!config.theme) {
         config.theme = 'midnight';
       }
+      if (config.suppressAttachmentWarnings === undefined) {
+        config.suppressAttachmentWarnings = false;
+      }
       return config;
     }
   } catch (e) {
     console.error('Failed to load config:', e);
   }
 
-  return { apiUrl: 'http://localhost:8000', apiKey: '', theme: 'midnight' };
+  return {
+    apiUrl: 'http://localhost:8000',
+    apiKey: '',
+    theme: 'midnight',
+    suppressAttachmentWarnings: false,
+  };
 }
 
 function saveConfig(config: AppConfig): void {
@@ -41,6 +54,7 @@ function createConfigStore() {
   let apiKey = $state(initial.apiKey);
   let setupCompleted = $state(initial.setupCompleted ?? false);
   let theme = $state<ThemeName>(initial.theme ?? 'midnight');
+  let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
 
   // Apply theme on initial load (client-side only)
   if (typeof document !== 'undefined') {
@@ -48,7 +62,7 @@ function createConfigStore() {
   }
 
   function saveCurrentConfig() {
-    saveConfig({ apiUrl, apiKey, setupCompleted, theme });
+    saveConfig({ apiUrl, apiKey, setupCompleted, theme, suppressAttachmentWarnings });
   }
 
   return {
@@ -96,11 +110,19 @@ function createConfigStore() {
       setupCompleted = true;
       saveCurrentConfig();
     },
+    get suppressAttachmentWarnings() {
+      return suppressAttachmentWarnings;
+    },
+    set suppressAttachmentWarnings(value: boolean) {
+      suppressAttachmentWarnings = value;
+      saveCurrentConfig();
+    },
     reset() {
       apiUrl = 'http://localhost:8000';
       apiKey = '';
       setupCompleted = false;
       theme = 'midnight';
+      suppressAttachmentWarnings = false;
       applyTheme('midnight');
       saveCurrentConfig();
     }

@@ -3,16 +3,28 @@
   import InputBar from '$lib/components/chat/InputBar.svelte';
   import ContextStatusBar from '$lib/components/chat/ContextStatusBar.svelte';
   import { ThreadHeader, ThreadSettingsPanel } from '$lib/components/threads';
+  import { Button, Modal } from '$lib/components/common';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { activityStore } from '$lib/stores/activity.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import { untrack } from 'svelte';
-  import type { SSEEvent, FileAttachment, ContextStats, ThreadConfig } from '$lib/types';
+  import type {
+    SSEEvent,
+    FileAttachment,
+    ContextStats,
+    ThreadConfig,
+    AttachmentValidationResult
+  } from '$lib/types';
 
   let showThreadSettings = $state(false);
+  let showAttachmentWarningModal = $state(false);
+  let attachmentValidationResult = $state<AttachmentValidationResult | null>(null);
+  let warningSuppressChecked = $state(false);
+  let pendingSend = $state<{ message: string; attachments?: FileAttachment[] } | null>(null);
 
   // Load thread config when thread changes
   $effect(() => {
@@ -32,7 +44,18 @@
     // Config is already in the store via updateConfig/deleteConfig
   }
 
-  async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
+  function closeAttachmentWarningModal() {
+    showAttachmentWarningModal = false;
+    attachmentValidationResult = null;
+    warningSuppressChecked = false;
+    pendingSend = null;
+  }
+
+  async function streamMessage(
+    message: string,
+    attachments?: FileAttachment[],
+    forceUnsupportedAttachments: boolean = false
+  ) {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
 
     // Auto-title the thread from the first message if it's still "New Chat"
@@ -51,7 +74,7 @@
     const threadId = threadsStore.currentThreadId || undefined;
 
     try {
-      for await (const event of api.chatStream(message, threadId, attachments)) {
+      for await (const event of api.chatStream(message, threadId, attachments, forceUnsupportedAttachments)) {
         handleSSEEvent(event);
       }
     } catch (error) {
@@ -69,6 +92,48 @@
       chatStore.setLastMessageComplete();
       chatStore.clearActiveToolCalls();
     }
+  }
+
+  async function handleConfirmUnsupportedSend() {
+    const send = pendingSend;
+    if (!send) {
+      closeAttachmentWarningModal();
+      return;
+    }
+
+    if (warningSuppressChecked) {
+      configStore.suppressAttachmentWarnings = true;
+    }
+
+    closeAttachmentWarningModal();
+    await streamMessage(send.message, send.attachments, true);
+  }
+
+  async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
+    if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
+
+    if (attachments && attachments.length > 0) {
+      if (configStore.suppressAttachmentWarnings) {
+        await streamMessage(message, attachments, true);
+        return;
+      }
+
+      const threadId = threadsStore.currentThreadId || 'preview';
+      try {
+        const validation = await api.validateThreadAttachments(threadId, attachments);
+        if (!validation.compatible) {
+          attachmentValidationResult = validation;
+          pendingSend = { message, attachments };
+          warningSuppressChecked = false;
+          showAttachmentWarningModal = true;
+          return;
+        }
+      } catch (e) {
+        console.warn('Attachment preflight validation failed; proceeding without preflight:', e);
+      }
+    }
+
+    await streamMessage(message, attachments);
   }
 
   /**
@@ -300,6 +365,52 @@
   />
 {/if}
 
+<Modal
+  title="Attachment Compatibility Warning"
+  isOpen={showAttachmentWarningModal}
+  onClose={closeAttachmentWarningModal}
+>
+  <div class="attachment-warning-modal">
+    <p>
+      The current model <code>{attachmentValidationResult?.effective_model || 'unknown'}</code>
+      is likely incompatible with one or more attached files.
+    </p>
+
+    {#if attachmentValidationResult?.unsupported_modalities.length}
+      <p>
+        Unsupported modalities:
+        <strong>{attachmentValidationResult.unsupported_modalities.join(', ')}</strong>
+      </p>
+    {/if}
+
+    {#if attachmentValidationResult?.warnings.length}
+      <ul class="warning-list">
+        {#each attachmentValidationResult.warnings as warning}
+          <li>{warning}</li>
+        {/each}
+      </ul>
+    {/if}
+
+    <p class="warning-note">
+      Sending anyway will likely return an API error.
+    </p>
+
+    <label class="suppress-warning">
+      <input type="checkbox" bind:checked={warningSuppressChecked} />
+      <span>Don't show this warning again</span>
+    </label>
+
+    <div class="warning-actions">
+      <Button variant="ghost" onclick={closeAttachmentWarningModal}>
+        Cancel
+      </Button>
+      <Button variant="danger" onclick={handleConfirmUnsupportedSend}>
+        Send anyway
+      </Button>
+    </div>
+  </div>
+</Modal>
+
 <style>
   .main-panel-content {
     display: flex;
@@ -318,5 +429,43 @@
     padding: var(--spacing-md);
     border-top: 1px solid var(--border-subtle);
     background: var(--bg-elevated);
+  }
+
+  .attachment-warning-modal {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .attachment-warning-modal p {
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .warning-list {
+    margin: 0;
+    padding-left: var(--spacing-lg);
+    color: var(--warning);
+  }
+
+  .warning-note {
+    color: var(--error);
+    font-weight: 500;
+  }
+
+  .suppress-warning {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+  }
+
+  .warning-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
   }
 </style>

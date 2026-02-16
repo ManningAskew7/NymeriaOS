@@ -5,6 +5,19 @@
 
 import type { FileAttachment, FileType } from '$lib/types';
 
+const MIME_FALLBACK_BY_EXTENSION: Record<string, string> = {
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.pdf': 'application/pdf',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp'
+};
+
 // File constraints by type
 export const FILE_CONSTRAINTS = {
   image: {
@@ -29,15 +42,36 @@ export interface FileProcessingError {
   message: string;
 }
 
+function getLowercaseExtension(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf('.');
+  if (dotIndex < 0) return '';
+  return fileName.slice(dotIndex).toLowerCase();
+}
+
+/**
+ * Infer MIME type from browser-provided MIME and filename fallback.
+ */
+export function inferMimeType(mimeType: string, fileName: string): string {
+  const normalized = mimeType.trim().toLowerCase();
+  if (normalized && normalized !== 'application/octet-stream' && normalized !== 'binary/octet-stream') {
+    return normalized;
+  }
+
+  const ext = getLowercaseExtension(fileName);
+  return MIME_FALLBACK_BY_EXTENSION[ext] || normalized;
+}
+
 
 /**
  * Determine the file type category from a MIME type.
  */
-export function getFileType(mimeType: string): FileType | null {
-  if ((FILE_CONSTRAINTS.image.TYPES as readonly string[]).includes(mimeType)) {
+export function getFileType(mimeType: string, fileName: string = ''): FileType | null {
+  const inferredMimeType = inferMimeType(mimeType, fileName);
+
+  if ((FILE_CONSTRAINTS.image.TYPES as readonly string[]).includes(inferredMimeType)) {
     return 'image';
   }
-  if ((FILE_CONSTRAINTS.document.TYPES as readonly string[]).includes(mimeType)) {
+  if ((FILE_CONSTRAINTS.document.TYPES as readonly string[]).includes(inferredMimeType)) {
     return 'document';
   }
   return null;
@@ -47,14 +81,14 @@ export function getFileType(mimeType: string): FileType | null {
  * Check if a file is a supported type.
  */
 export function isFileSupported(file: File): boolean {
-  return getFileType(file.type) !== null;
+  return getFileType(file.type, file.name) !== null;
 }
 
 /**
  * Validate that a file is a supported image type.
  */
 export function validateImageType(file: File): boolean {
-  return getFileType(file.type) === 'image';
+  return getFileType(file.type, file.name) === 'image';
 }
 
 /**
@@ -166,7 +200,12 @@ async function processImageFile(file: File): Promise<FileAttachment> {
 
   try {
     let dataUrl = await readFileAsDataUrl(file);
-    let mimeType = file.type;
+    let mimeType = inferMimeType(file.type, file.name);
+
+    // Some browsers omit MIME in Data URL for unknown file types.
+    if (dataUrl.startsWith('data:;base64,') && mimeType) {
+      dataUrl = dataUrl.replace('data:;base64,', `data:${mimeType};base64,`);
+    }
 
     // Resize if over threshold
     if (file.size > FILE_CONSTRAINTS.image.RESIZE_THRESHOLD) {
@@ -208,12 +247,13 @@ async function processDocumentFile(file: File): Promise<FileAttachment> {
 
   try {
     const dataUrl = await readFileAsDataUrl(file);
+    const mimeType = inferMimeType(file.type, file.name);
 
     return {
       id: generateFileId(),
       type: 'document',
       dataUrl,
-      mimeType: file.type,
+      mimeType,
       name: file.name,
       size: file.size
     };
@@ -232,7 +272,7 @@ async function processDocumentFile(file: File): Promise<FileAttachment> {
  * @throws {FileProcessingError} If validation fails or processing errors
  */
 export async function processFile(file: File): Promise<FileAttachment> {
-  const fileType = getFileType(file.type);
+  const fileType = getFileType(file.type, file.name);
 
   if (!fileType) {
     throw {
@@ -340,5 +380,6 @@ export function getFileExtension(filename: string): string {
 export function getSupportedFileExtensions(): string {
   const imageTypes = FILE_CONSTRAINTS.image.TYPES.join(',');
   const docTypes = FILE_CONSTRAINTS.document.TYPES.join(',');
-  return `${imageTypes},${docTypes}`;
+  const extensionList = Object.keys(MIME_FALLBACK_BY_EXTENSION).join(',');
+  return `${imageTypes},${docTypes},${extensionList}`;
 }

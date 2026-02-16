@@ -61,6 +61,10 @@ class FileData(BaseModel):
     file_type: str = Field(..., description="File type: 'image' or 'document'")
     data_url: str = Field(..., description="Base64 data URL (data:mime/type;base64,...)")
     mime_type: str = Field(..., description="MIME type (image/jpeg, application/pdf, etc.)")
+    file_name: Optional[str] = Field(
+        default=None,
+        description="Original filename (used for MIME fallback when browser MIME type is missing)",
+    )
 
 
 class ImageData(BaseModel):
@@ -87,6 +91,32 @@ class ChatRequest(BaseModel):
     images: Optional[List[ImageData]] = Field(
         default=None, description="Deprecated: use attachments instead"
     )
+    force_unsupported_attachments: bool = Field(
+        default=False,
+        description="Allow send even when attachment compatibility checks fail",
+    )
+
+
+class AttachmentValidationRequest(BaseModel):
+    """Request model for attachment preflight validation."""
+
+    attachments: List[FileData] = Field(
+        default_factory=list,
+        description="Attachments to validate against the effective thread model",
+    )
+
+
+class AttachmentValidationResponse(BaseModel):
+    """Response model for attachment preflight validation."""
+
+    compatible: bool
+    effective_provider: str
+    effective_model: str
+    model_input_modalities: List[str]
+    required_modalities: List[str]
+    unsupported_modalities: List[str]
+    warnings: List[str]
+    can_force_send: bool = True
 
 
 class ChatResponse(BaseModel):
@@ -668,7 +698,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 yield f"data: {json.dumps({'type': 'response', 'content': msg})}\n\n"
                 # Include context_stats and model in done event
                 context_stats = agent.get_context_stats(thread_id)
-                yield f"data: {json.dumps({'type': 'done', 'thread_id': thread_id, 'context_stats': context_stats, 'model': agent.settings.llm_model})}\n\n"
+                effective_model = agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model
+                yield f"data: {json.dumps({'type': 'done', 'thread_id': thread_id, 'context_stats': context_stats, 'model': effective_model})}\n\n"
             return StreamingResponse(
                 compact_command_response(),
                 media_type="text/event-stream",
@@ -690,7 +721,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         {
                             "file_type": att.file_type,
                             "data_url": att.data_url,
-                            "mime_type": att.mime_type
+                            "mime_type": att.mime_type,
+                            "file_name": att.file_name or "",
                         }
                         for att in request.attachments
                     ]
@@ -706,6 +738,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     user_id=user_id,
                     attachments=attachments,
                     images=images,
+                    force_unsupported_attachments=request.force_unsupported_attachments,
                 ):
                     # Check if client disconnected (user clicked stop)
                     if await http_request.is_disconnected():
@@ -754,7 +787,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         'thread_id': thread_id,
                         'muted': is_muted,
                         'context_stats': context_stats,
-                        'model': agent.settings.llm_model,
+                        'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
                     }
                     if is_muted:
                         done_data['mute_reason'] = mute_info.get("reason", "")
@@ -974,6 +1007,56 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent.thread_config_manager.delete_config(thread_id)
         agent.invalidate_thread_config_cache(thread_id)
         return {"status": "ok", "thread_id": thread_id}
+
+    @app.post(
+        "/threads/{thread_id}/attachments/validate",
+        response_model=AttachmentValidationResponse,
+        tags=["Threads"],
+    )
+    async def validate_thread_attachments(
+        thread_id: str,
+        request: AttachmentValidationRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Preflight-check attachment compatibility against the effective thread model.
+
+        This does not send content to any model. It only evaluates whether
+        attachments are likely compatible and provides warnings plus force-send guidance.
+        """
+        from ..config.model_capabilities import evaluate_attachment_compatibility
+
+        agent = get_agent()
+        llm_cfg = agent._get_llm_config_for_thread(thread_id)
+        effective_provider = llm_cfg.provider or agent.settings.llm_provider
+        effective_model = llm_cfg.model or agent.settings.llm_model
+
+        attachments = [
+            {
+                "file_type": att.file_type,
+                "data_url": att.data_url,
+                "mime_type": att.mime_type,
+                "file_name": att.file_name or "",
+            }
+            for att in request.attachments
+        ]
+
+        report = evaluate_attachment_compatibility(
+            effective_model,
+            effective_provider,
+            attachments,
+        )
+
+        return AttachmentValidationResponse(
+            compatible=bool(report["compatible"]),
+            effective_provider=effective_provider,
+            effective_model=effective_model,
+            model_input_modalities=list(report["model_input_modalities"]),
+            required_modalities=list(report["required_modalities"]),
+            unsupported_modalities=list(report["unsupported_modalities"]),
+            warnings=list(report["warnings"]),
+            can_force_send=True,
+        )
 
     @app.post("/threads/{thread_id}/compact", tags=["Threads"])
     async def compact_thread(

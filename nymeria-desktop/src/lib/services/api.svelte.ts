@@ -20,6 +20,7 @@ import type {
   Notification,
   NotificationsResponse,
   FileAttachment,
+  AttachmentValidationResult,
   CustomTool,
   HTTPToolConfig,
   CustomToolListResponse,
@@ -99,7 +100,8 @@ export class NymeriaAPI {
   async *chatStream(
     message: string,
     threadId?: string,
-    attachments?: FileAttachment[]
+    attachments?: FileAttachment[],
+    forceUnsupportedAttachments: boolean = false
   ): AsyncGenerator<SSEEvent> {
     const url = `${this.getBaseUrl()}/chat`;
 
@@ -118,8 +120,13 @@ export class NymeriaAPI {
       requestBody.attachments = attachments.map((att) => ({
         file_type: att.type,
         data_url: att.dataUrl,
-        mime_type: att.mimeType
+        mime_type: att.mimeType,
+        file_name: att.name
       }));
+    }
+
+    if (forceUnsupportedAttachments) {
+      requestBody.force_unsupported_attachments = true;
     }
 
     const response = await fetch(url, {
@@ -207,6 +214,34 @@ export class NymeriaAPI {
       reader.releaseLock();
       currentAbortController = null;
     }
+  }
+
+  async validateThreadAttachments(
+    threadId: string,
+    attachments: FileAttachment[]
+  ): Promise<AttachmentValidationResult> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/attachments/validate`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({
+          attachments: attachments.map((att) => ({
+            file_type: att.type,
+            data_url: att.dataUrl,
+            mime_type: att.mimeType,
+            file_name: att.name
+          }))
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to validate attachments: ${response.status} ${text}`);
+    }
+
+    return await response.json() as AttachmentValidationResult;
   }
 
   private parseSSEEvent(data: Record<string, unknown>): SSEEvent | null {
