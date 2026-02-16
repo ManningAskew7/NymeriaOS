@@ -11,7 +11,10 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 - **Smart Thread Management**:
   - Auto-generated titles from the first message (no extra LLM calls)
   - Manual rename via inline editing (hover over thread, click pencil icon)
-  - Threads grouped by date (Today, Yesterday, Previous 7 Days, Older)
+  - Collapsible folders for organizing threads (right-click to rename/delete)
+  - Multi-select with Ctrl+Click / Shift+Click for bulk group or delete
+  - 5 sort modes: Recent, Oldest, A-Z, Most Tasks, Active First
+  - Unfiled threads grouped by date (Today, Yesterday, Previous 7 Days, Older)
 - **Advanced LLM Settings**: Fine-tune model parameters (top_p, top_k, penalties, reasoning effort)
 - **Persistent Configuration**: API settings and theme preferences saved locally
 - **First-Run Setup Wizard**: Guided configuration for new users
@@ -24,12 +27,12 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 │   (280px)    │        (flex-grow)             │   (320px)    │
 │              │                                │              │
 │ [+ New Chat] │  ┌──────────────────────────┐  │  ▼ Tasks (3) │
-│              │  │ User message (blue tint) │  │  IN PROGRESS │
-│ Today        │  └──────────────────────────┘  │  └─ Task 1   │
-│ ├─ Thread 1  │                                │  UPCOMING    │
-│ └─ Thread 2  │  ┌──────────────────────────┐  │  ├─ Task 2 ⏱ │
-│              │  │ ⚡ Tool: file_read   [▼] │  │  └─ Task 3   │
-│ Yesterday    │  │   Arguments: {...}       │  │  COMPLETED   │
+│ [Sort: ▼]    │  │ User message (blue tint) │  │  IN PROGRESS │
+│              │  └──────────────────────────┘  │  └─ Task 1   │
+│ ▼ Research 2 │                                │  UPCOMING    │
+│ ├─ Thread 1  │  ┌──────────────────────────┐  │  ├─ Task 2 ⏱ │
+│ └─ Thread 2  │  │ ⚡ Tool: file_read   [▼] │  │  └─ Task 3   │
+│ Today        │  │   Arguments: {...}       │  │  COMPLETED   │
 │ └─ Thread 3  │  │   Result: "..."          │  │  └─ Task 4 ✓ │
 │              │  └──────────────────────────┘  │              │
 │              │                                │  ▶ Activity  │
@@ -143,7 +146,7 @@ nymeria-desktop/
 │   │   ├── components/
 │   │   │   ├── layout/        # AppShell, Sidebar, MainPanel, RightPanel
 │   │   │   ├── chat/          # ChatContainer, MessageBubble, ToolCallCard, InputBar, StreamingText
-│   │   │   ├── threads/       # ThreadList, ThreadItem
+│   │   │   ├── threads/       # ThreadList, ThreadItem, FolderItem
 │   │   │   ├── todos/         # TodoFeed, TodoItem (collapsible with countdown badges)
 │   │   │   ├── dashboard/     # ActivityFeed, ActivityItem
 │   │   │   ├── notifications/ # NotificationCenter, NotificationItem
@@ -152,7 +155,7 @@ nymeria-desktop/
 │   │   │   └── api.svelte.ts      # REST + SSE streaming client
 │   │   ├── stores/                # Svelte 5 runes state
 │   │   │   ├── chat.svelte.ts     # Chat messages and streaming
-│   │   │   ├── threads.svelte.ts  # Conversation threads
+│   │   │   ├── threads.svelte.ts  # Conversation threads, folders, sort mode
 │   │   │   ├── config.svelte.ts   # API configuration + theme + setup state
 │   │   │   ├── todos.svelte.ts    # TODO items (includes scheduledTodos for dashboard)
 │   │   │   ├── activity.svelte.ts # Activity log feed (polls every 30s)
