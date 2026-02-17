@@ -788,7 +788,8 @@ class NymeriaAgent:
         if self.settings.context_management != "auto_compact":
             return None
 
-        model_limit = get_context_limit(self.settings.llm_model)
+        llm_config = self._get_llm_config_for_thread(thread_id)
+        model_limit = get_context_limit(llm_config.model)
         threshold = self.settings.compact_threshold
 
         if not self._token_tracker.should_compact(thread_id, model_limit, threshold):
@@ -985,6 +986,153 @@ class NymeriaAgent:
             "auto_resumed": True,
             "summary": summary[:500] if summary else None,
         }
+
+    # ------------------------------------------------------------------
+    # Sync compaction (for stream() / chat() / triggers / ticker / CLI)
+    # ------------------------------------------------------------------
+
+    def _check_and_compact_sync(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Pre-flight auto-compact for the sync stream()/chat() path.
+
+        Mirrors _check_and_compact() but uses sync graph calls.
+        If compaction triggers, summary is stored as pending and will be
+        picked up by the existing get_pending_summary() check.
+        """
+        if self.settings.context_management != "auto_compact":
+            return None
+
+        # Rehydrate tracker if empty (e.g. after server restart)
+        usage = self._token_tracker.get_usage(thread_id)
+        if usage.context_tokens == 0 and usage.total_tokens == 0:
+            self._rehydrate_token_usage(thread_id)
+
+        llm_config = self._get_llm_config_for_thread(thread_id)
+        model_limit = get_context_limit(llm_config.model)
+        threshold = self.settings.compact_threshold
+
+        if not self._token_tracker.should_compact(thread_id, model_limit, threshold):
+            return None
+
+        return self._do_compact_sync(thread_id, user_id)
+
+    def _do_compact_sync(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """Sync auto-compact: summarize -> clear -> store pending summary."""
+        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+        state = self._default_graph.get_state(config)
+        messages = state.values.get("messages", [])
+        msg_count = len(messages)
+
+        if msg_count < self.settings.compact_keep_messages:
+            return {"success": False, "reason": f"Not enough messages ({msg_count})"}
+
+        logger.info(f"Thread {thread_id}: Sync auto-compact starting ({msg_count} messages)")
+
+        summary = self._generate_summary_sync(thread_id, user_id)
+        if not summary:
+            return {"success": False, "reason": "Failed to generate summary"}
+
+        cleared = self._clear_and_reset_sync(thread_id, msg_count)
+        if not cleared:
+            return {"success": False, "reason": "Failed to clear messages"}
+
+        # Store as pending — picked up by get_pending_summary() in stream()/chat()
+        self._pending_summaries[thread_id] = summary
+
+        logger.info(f"Thread {thread_id}: Sync auto-compact complete, summary pending")
+        return {
+            "success": True,
+            "messages_before": msg_count,
+            "messages_removed": msg_count,
+            "summary": summary[:500] if summary else None,
+        }
+
+    def _generate_summary_sync(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> Optional[str]:
+        """Generate context summary via sync graph.invoke()."""
+        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+        graph = self._get_graph_for_user(user_id, thread_id=thread_id)
+
+        compact_prompt = self._compactor.get_compact_prompt()
+        input_state = {"messages": [_create_human_message(
+            compact_prompt,
+            internal=True,
+            internal_type="compact_prompt",
+        )]}
+
+        try:
+            result = graph.invoke(input_state, config=config)
+            messages = result.get("messages", [])
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    return self._compactor.extract_summary(msg)
+        except Exception as e:
+            logger.error(
+                f"Thread {thread_id}: Sync summary generation failed: {e}",
+                exc_info=True,
+            )
+
+        return None
+
+    def _clear_and_reset_sync(
+        self,
+        thread_id: str,
+        msg_count_before: int,
+    ) -> bool:
+        """Clear all messages and reset tokens — sync version of _clear_and_reset()."""
+        import uuid as _uuid
+
+        config = {"configurable": {"thread_id": thread_id}}
+
+        try:
+            graph = self._default_graph
+            state = graph.get_state(config)
+            messages = state.values.get("messages", [])
+
+            if not messages:
+                return True
+
+            remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
+            compaction_marker = _create_human_message(
+                "[Context compacted — older messages have been summarized]",
+                internal=True,
+                internal_type="compaction_marker",
+            )
+            compaction_marker.id = str(_uuid.uuid4())
+
+            graph.update_state(config, {"messages": remove_commands + [compaction_marker]})
+
+            # Verify: should have exactly 1 message (the marker)
+            remaining = graph.get_state(config).values.get("messages", [])
+            if len(remaining) != 1:
+                logger.error(
+                    f"Thread {thread_id}: Sync clear verification failed — "
+                    f"{len(remaining)} messages remain (expected 1 marker)"
+                )
+                return False
+
+            logger.info(
+                f"Thread {thread_id}: Cleared {len(messages)} messages via "
+                f"RemoveMessage sync (1 compaction marker remains)"
+            )
+
+        except Exception as e:
+            logger.error(f"Thread {thread_id}: Sync clear failed: {e}", exc_info=True)
+            return False
+
+        self._token_tracker.reset_after_compact(thread_id, 0)
+        return True
 
     async def compact_now(
         self,
@@ -1742,6 +1890,20 @@ class NymeriaAgent:
             time_context = self._get_time_context(is_autonomous=_is_self_invoke)
             message_with_context = f"{time_context}\n\n{message}"
 
+            # Pre-flight auto-compact (sync path)
+            try:
+                self._check_and_compact_sync(thread_id, user_id)
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Pre-flight compact failed in chat(): {e}")
+
+            # Check for pending summary (from pre-flight compact or manual /compact)
+            pending_summary = self.get_pending_summary(thread_id)
+            if pending_summary:
+                message_with_context = self._compactor.format_user_resume(
+                    message_with_context, pending_summary
+                )
+                logger.info(f"Thread {thread_id}: Attached pending summary to user message (chat)")
+
             # Pass user_id through config for tools to access
             config = {
                 "recursion_limit": 150,
@@ -1791,8 +1953,7 @@ class NymeriaAgent:
                         "My task may be incomplete — you can ask me to continue where I left off."
                     )
 
-                # Context management: sliding window only in sync chat
-                # (auto-compact requires async for LLM summarization)
+                # Context management: sliding window trim (auto-compact handled pre-flight)
                 if self.settings.context_management == "sliding_window":
                     self.trim_context_window(thread_id, user_id=user_id)
 
@@ -1866,7 +2027,14 @@ class NymeriaAgent:
             time_context = self._get_time_context(is_autonomous=_is_self_invoke)
             message_with_context = f"{time_context}\n\n{message}"
 
-            # Check for pending summary from manual /compact (mirrors astream() logic)
+            # Pre-flight auto-compact (sync path)
+            # Summary stored as pending -> picked up by get_pending_summary() below
+            try:
+                self._check_and_compact_sync(thread_id, user_id)
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Pre-flight compact failed in stream(): {e}")
+
+            # Check for pending summary (from pre-flight compact or manual /compact)
             pending_summary = self.get_pending_summary(thread_id)
             if pending_summary:
                 message_with_context = self._compactor.format_user_resume(
@@ -2017,8 +2185,7 @@ class NymeriaAgent:
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage in stream: {e}")
 
-                # Context management: sliding window only in sync stream
-                # (auto-compact requires async for LLM summarization)
+                # Context management: sliding window trim (auto-compact handled pre-flight)
                 if self.settings.context_management == "sliding_window":
                     self.trim_context_window(thread_id, user_id=user_id)
 

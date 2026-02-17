@@ -324,7 +324,11 @@ class TriggerManager:
             else:
                 logger.error(f"Unknown action type: {action.type}")
         except Exception as e:
-            logger.error(f"Action execution failed for trigger {trigger.id}: {e}", exc_info=True)
+            logger.error(
+                f"[TRIGGER] Action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
+                exc_info=True,
+            )
+            self._publish_trigger_error(trigger, user_id, str(e))
 
     def fire_action_batch(
         self,
@@ -379,23 +383,30 @@ class TriggerManager:
             f"on thread={thread_id}: {batch_prompt[:120]}..."
         )
 
-        response_parts, buffered_events = self._stream_and_buffer(
-            agent, batch_prompt, thread_id, user_id
-        )
-        response = "".join(response_parts)
+        try:
+            response_parts, buffered_events = self._stream_and_buffer(
+                agent, batch_prompt, thread_id, user_id
+            )
+            response = "".join(response_parts)
 
-        self._publish_trigger_events(
-            agent=agent,
-            trigger=trigger,
-            thread_id=thread_id,
-            user_id=user_id,
-            prompt=batch_prompt,
-            response=response,
-            buffered_events=buffered_events,
-            event_count=len(events),
-        )
+            self._publish_trigger_events(
+                agent=agent,
+                trigger=trigger,
+                thread_id=thread_id,
+                user_id=user_id,
+                prompt=batch_prompt,
+                response=response,
+                buffered_events=buffered_events,
+                event_count=len(events),
+            )
 
-        logger.info(f"[TRIGGER] Batched agent_prompt completed, response_len={len(response)}")
+            logger.info(f"[TRIGGER] Batched agent_prompt completed, response_len={len(response)}")
+        except Exception as e:
+            logger.error(
+                f"[TRIGGER] Batched action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
+                exc_info=True,
+            )
+            self._publish_trigger_error(trigger, user_id, str(e))
 
     def _fire_agent_prompt(
         self,
@@ -575,6 +586,52 @@ class TriggerManager:
                 "trigger_name": trigger.name,
                 "event_count": event_count,
                 "visibility": visibility,
+            },
+        )
+
+    def _publish_trigger_error(
+        self,
+        trigger: TriggerDefinition,
+        user_id: str,
+        error_msg: str,
+    ) -> None:
+        """Log trigger failure to activity feed and publish SSE error event."""
+        from .activity_log import ActivityType, log_activity
+        from .event_bus import publish_autonomous_event
+
+        thread_id = trigger.thread_id or f"trigger-{trigger.id}"
+        task_id = f"trigger-{trigger.id}"
+
+        # Truncate to avoid leaking sensitive provider diagnostics
+        safe_error = error_msg[:300] if error_msg else "Unknown error"
+
+        # Activity log entry
+        log_activity(
+            ActivityType.TRIGGER_COMPLETED,
+            f"{trigger.name}: error — {safe_error[:200]}",
+            user_id=user_id,
+            thread_id=thread_id,
+            metadata={
+                "trigger_id": trigger.id,
+                "trigger_name": trigger.name,
+                "status": "error",
+                "error": safe_error,
+            },
+        )
+
+        # SSE event (activity-only visibility — doesn't clutter chat)
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=user_id,
+            task_id=task_id,
+            data={
+                "visibility": "activity",
+                "content": f"Trigger '{trigger.name}' failed: {safe_error}",
+                "trigger_id": trigger.id,
+                "trigger_name": trigger.name,
+                "status": "error",
+                "error": safe_error,
             },
         )
 

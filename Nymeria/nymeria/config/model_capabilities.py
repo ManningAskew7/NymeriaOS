@@ -368,16 +368,34 @@ def get_max_output_tokens(model_id: str) -> Optional[int]:
 
     model_lower = model_id.lower()
 
+    raw_max_output: Optional[int] = None
+
     # Exact match
     if model_lower in _max_output_cache:
-        return _max_output_cache[model_lower]
+        raw_max_output = _max_output_cache[model_lower]
+    else:
+        # Prefix matching
+        for cached_id, limit in _max_output_cache.items():
+            if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
+                raw_max_output = limit
+                break
 
-    # Prefix matching
-    for cached_id, limit in _max_output_cache.items():
-        if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
-            return limit
+    if raw_max_output is None:
+        return None
 
-    return None
+    # Safety cap: never exceed 50% of context window.
+    # Prevents models that report max_completion_tokens == context_length
+    # (e.g. kimi-k2.5: 262k/262k) from reserving the entire window for output.
+    context_limit = get_context_limit(model_id)
+    safety_cap = context_limit // 2
+    if raw_max_output > safety_cap:
+        logger.info(
+            f"Capping max_output_tokens for {model_id}: "
+            f"{raw_max_output} -> {safety_cap} (50% of {context_limit} context)"
+        )
+        return safety_cap
+
+    return raw_max_output
 
 
 def infer_mime_type(mime_type: str, file_name: str = "") -> str:
