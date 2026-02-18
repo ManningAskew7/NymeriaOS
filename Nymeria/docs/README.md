@@ -83,7 +83,7 @@ C:\Nymeria\
 │   │   ├── notify.py       # Unified Telegram/Discord/Slack notifications
 │   │   ├── triggers.py     # Event-driven trigger CRUD
 │   │   ├── visibility.py   # Response visibility control (mute_response)
-│   │   ├── browser.py      # Native Playwright browser automation (8 tools)
+│   │   ├── browser.py      # Native Playwright browser automation (9 tools)
 │   │   ├── outlook_auth.py # Microsoft OAuth authentication (3 tools)
 │   │   └── outlook_email.py # Outlook email via Graph API (10 tools)
 │   ├── agents/             # Sub-agent definitions
@@ -108,7 +108,7 @@ C:\Nymeria\
 │       └── self_agent_prompt.md
 ├── data/
 │   ├── nymeria.db          # SQLite conversation storage
-│   ├── schedules.db        # SQLite scheduled TODOs
+│   ├── todo_schedule.db    # SQLite scheduled TODO index
 │   ├── tasks.db            # Legacy scheduled tasks (deprecated)
 │   ├── logs/               # Audit logs (tool executions)
 │   ├── users/              # User profiles and memories
@@ -116,7 +116,6 @@ C:\Nymeria\
 │   └── custom_tools/       # Custom tool definitions (JSON)
 ├── docs/                   # Documentation
 ├── run.py                  # Entry point
-├── test_nymeria.py         # Test suite
 ├── requirements.txt        # Dependencies
 └── .env.example            # Configuration template
 ```

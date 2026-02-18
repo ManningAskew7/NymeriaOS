@@ -6,7 +6,7 @@ This feature allows users to create, edit, and delete TODOs for Nymeria through 
 
 **Key Features:**
 - Full CRUD operations for TODOs via REST API
-- Simple recurrence presets (hourly, daily, weekly, monthly)
+- Recurrence presets (`5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly`)
 - Visual distinction between user-created vs agent-created TODOs
 - Visual distinction between recurring vs one-time TODOs
 - Thread selection for scheduled TODO output
@@ -69,7 +69,7 @@ class TodoItem(BaseModel):
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created: 'agent' or 'user'")
-    recurrence: Optional[str] = Field(default=None, description="'hourly', 'daily', 'weekly', 'monthly'")
+    recurrence: Optional[str] = Field(default=None, description="'5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly'")
 ```
 
 ### REST API Endpoints
@@ -92,8 +92,8 @@ class TodoCreateRequest(BaseModel):
     priority: Optional[str]      # low, medium, high
     deadline: Optional[datetime]
     notes: Optional[str]
-    scheduled_for: Optional[str] # "30m", "2h", or "2026-01-15T14:00"
-    recurrence: Optional[str]    # hourly, daily, weekly, monthly
+    scheduled_for: Optional[str] # "30s", "5m", "2h", or "2026-01-15T14:00"
+    recurrence: Optional[str]    # 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
     thread_id: Optional[str]     # Thread for scheduled execution output
 
 class TodoUpdateRequest(BaseModel):
@@ -115,7 +115,7 @@ class TodoUpdateRequest(BaseModel):
 
 **Critical Implementation Detail:**
 
-The `_parse_scheduled_for` function handles timezone conversion:
+The `_parse_scheduled_for` helper (aliasing `parse_scheduled_time`) handles timezone conversion:
 
 ```python
 def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
@@ -123,9 +123,9 @@ def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
     # Uses timezone-aware UTC: datetime.now(timezone.utc) + timedelta(...)
 
     # Absolute times: "2026-01-15T14:00"
-    # Parsed as LOCAL time, then converted to UTC:
+    # Parsed as USER_TIMEZONE time, then converted to UTC:
     # 1. datetime.strptime() -> naive datetime
-    # 2. .astimezone() -> add local timezone
+    # 2. .replace(tzinfo=user_tz) -> assign configured user timezone
     # 3. .astimezone(timezone.utc) -> convert to UTC
 ```
 
@@ -152,7 +152,15 @@ When a scheduled TODO is executed:
 
 ```python
 def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Optional[datetime]:
-    if recurrence == "hourly":
+    if recurrence == "5min":
+        return from_time + timedelta(minutes=5)
+    elif recurrence == "10min":
+        return from_time + timedelta(minutes=10)
+    elif recurrence == "15min":
+        return from_time + timedelta(minutes=15)
+    elif recurrence == "30min":
+        return from_time + timedelta(minutes=30)
+    elif recurrence == "hourly":
         return from_time + timedelta(hours=1)
     elif recurrence == "daily":
         return from_time + timedelta(days=1)
@@ -172,7 +180,7 @@ def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Opt
 **File:** `nymeria-desktop/src/lib/types/index.ts`
 
 ```typescript
-export type TodoRecurrence = 'hourly' | 'daily' | 'weekly' | 'monthly';
+export type TodoRecurrence = '5min' | '10min' | '15min' | '30min' | 'hourly' | 'daily' | 'weekly' | 'monthly';
 export type TodoCreatedBy = 'agent' | 'user';
 
 export interface TodoItem {
@@ -304,7 +312,7 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 
 **Current Behavior:** All times stored as UTC timestamps.
 
-**Mitigation:** Using UTC internally avoids most DST issues, but display in local time may show unexpected values during transitions.
+**Mitigation:** Using UTC internally avoids most DST issues, but display in `USER_TIMEZONE` may show unexpected values during transitions.
 
 ---
 
@@ -328,10 +336,10 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 5. **Verify:** Logs show schedule DB sync
 
 ### Test 3: Recurring TODO
-1. Create TODO with "hourly" recurrence, scheduled for 1 minute
+1. Create TODO with recurrence (for example `"5min"`), scheduled for 1 minute
 2. Wait for execution
 3. **Verify:** TODO status resets to pending
-4. **Verify:** Schedule updated to +1 hour
+4. **Verify:** Schedule updated to the configured recurrence interval (for example +5 minutes for `5min`)
 
 ### Test 4: Visual Distinction
 1. Create TODO via UI (should show user icon badge)
@@ -342,11 +350,11 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 
 ## Configuration
 
-No new configuration options. Uses existing settings:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `CONTEXT_WINDOW_CYCLES` | 5 | Cycles to keep in thread after scheduled execution |
+No new TODO-specific configuration options were introduced.
+Scheduling behavior uses existing runtime settings such as:
+- `TICKER_POLL_INTERVAL`
+- `MAX_SELF_INVOKES_PER_HOUR`
+- `MAX_CONCURRENT_AUTONOMOUS`
 
 ---
 

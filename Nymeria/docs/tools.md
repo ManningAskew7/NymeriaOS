@@ -13,7 +13,7 @@ Nymeria has a three-tier tool system: 25 core tools always loaded, 4 sub-agent w
 | **Triggers** | 4 | Event-driven automation CRUD |
 | **Sub-Agent Wrappers** | 4 | BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent |
 | **Optional: Outlook** | 13 | Microsoft Graph email and authentication (per-thread) |
-| **Optional: Browser** | 8 | Native Playwright browser automation (via BrowserAgent) |
+| **BrowserAgent Internal Tools** | 9 | Native Playwright browser automation (via BrowserAgent) |
 | **Custom Tools** | ∞ | User-defined HTTP or MCP tools |
 
 ---
@@ -97,11 +97,13 @@ file_list(directory: str, pattern: str = "*", recursive: bool = False)
 Search the web using Perplexity API.
 
 ```python
-web_search(query: str)
+web_search(query: str, search_depth: Optional[str] = None, max_sources: Optional[int] = None)
 ```
 
 **Parameters:**
 - `query`: Search query
+- `search_depth`: `"quick"`, `"standard"`, or `"deep"` (optional)
+- `max_sources`: Maximum number of cited sources to include (1-10, optional)
 
 **Returns:** Search results with citations
 
@@ -282,7 +284,9 @@ TODOs serve as the **primary driver for autonomous operation**. Active TODOs are
 Create a new TODO item, optionally scheduled for future autonomous execution.
 
 ```python
-todo_add(task: str, priority: Optional[str] = None, deadline: Optional[str] = None, scheduled_for: Optional[str] = None)
+todo_add(task: str, priority: Optional[str] = None, deadline: Optional[str] = None,
+         scheduled_for: Optional[str] = None, recurrence: Optional[str] = None,
+         thread_id: Optional[str] = None, permanent: bool = False)
 ```
 
 **Parameters:**
@@ -290,8 +294,11 @@ todo_add(task: str, priority: Optional[str] = None, deadline: Optional[str] = No
 - `priority`: Priority level - `"high"`, `"medium"`, or `"low"` (optional)
 - `deadline`: Due date in `YYYY-MM-DD` format (optional)
 - `scheduled_for`: Schedule for autonomous execution (optional). Formats:
-  - Relative: `"30m"`, `"1h"`, `"2d"` (minutes, hours, days)
-  - Absolute: `"2024-03-15 14:30"` or `"tomorrow 9am"`
+  - Relative: `"30s"`, `"5m"`, `"1h"`, `"2d"` (seconds, minutes, hours, days)
+  - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (interpreted in user timezone)
+- `recurrence`: Optional recurrence — `"5min"`, `"10min"`, `"15min"`, `"30min"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`
+- `thread_id`: Optional thread for autonomous output
+- `permanent`: If `True` (requires recurrence), TODO cannot be completed (only deleted)
 
 **Returns:** Confirmation with TODO ID
 
@@ -319,7 +326,10 @@ Update an existing TODO item.
 
 ```python
 todo_update(todo_id: str, status: Optional[str] = None, notes: Optional[str] = None,
-            blocked_reason: Optional[str] = None, priority: Optional[str] = None)
+            blocked_reason: Optional[str] = None, priority: Optional[str] = None,
+            scheduled_for: Optional[str] = None, recurrence: Optional[str] = None,
+            clear_schedule: bool = False, clear_recurrence: bool = False,
+            permanent: Optional[bool] = None)
 ```
 
 **Parameters:**
@@ -328,6 +338,11 @@ todo_update(todo_id: str, status: Optional[str] = None, notes: Optional[str] = N
 - `notes`: Add or update notes (max 1000 characters)
 - `blocked_reason`: Why the task is blocked (auto-sets status to blocked)
 - `priority`: Update priority level
+- `scheduled_for`: Set/update next execution time
+- `recurrence`: Set/update recurrence pattern
+- `clear_schedule`: Remove schedule if `True`
+- `clear_recurrence`: Remove recurrence if `True`
+- `permanent`: Set/clear permanent mode (requires recurrence)
 
 **Returns:** Confirmation message
 
@@ -336,6 +351,7 @@ todo_update(todo_id: str, status: Optional[str] = None, notes: Optional[str] = N
 todo_update("abc12345", status="in_progress")
 todo_update("abc12345", notes="Completed first 3 sections")
 todo_update("abc12345", blocked_reason="Waiting for API access")
+todo_update("abc12345", recurrence="daily")
 ```
 
 ---
@@ -430,7 +446,7 @@ clear_agent_context(agent_name: str)
 
 Nymeria operates autonomously 24/7 through **scheduled TODOs** - TODOs with a `scheduled_for` datetime that are automatically executed when due.
 
-**Durable Scheduling:** Scheduled TODOs are persisted to SQLite (`data/schedules.db`), so they survive application restarts. If Nymeria is restarted, missed scheduled TODOs are automatically recovered and executed.
+**Durable Scheduling:** Scheduled TODOs are persisted to SQLite (`data/todo_schedule.db`), so they survive application restarts. If Nymeria is restarted, missed scheduled TODOs are automatically recovered and executed.
 
 ### Creating Scheduled TODOs
 
@@ -443,44 +459,31 @@ todo_add(task: str, scheduled_for: str, priority: str = None)
 **Parameters:**
 - `task`: What to do when the scheduled time arrives
 - `scheduled_for`: When to execute. Formats:
-  - Relative: `"30m"`, `"1h"`, `"2d"` (minutes, hours, days)
-  - Absolute: `"2024-03-15 14:30"` or `"tomorrow 9am"`
+  - Relative: `"30s"`, `"5m"`, `"1h"`, `"2d"`
+  - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (user timezone)
 - `priority`: Optional priority level
 
 **Examples:**
 ```python
 todo_add("Check inbox for new emails", scheduled_for="30m")
 todo_add("Remind about meeting", scheduled_for="1h", priority="high")
-todo_add("Weekly report review", scheduled_for="monday 9am")
+todo_add("Weekly report review", scheduled_for="2026-03-15 09:00", recurrence="weekly")
 ```
 
 **Behavior:**
 - Scheduled TODOs are tracked in `TodoScheduleDB`
 - Ticker polls every 5 seconds for due TODOs
-- Auto-cancelled if user sends a message to the same thread
 - **Rate limited**: Default 50 autonomous executions per hour per user
-- **Sliding window**: Context automatically trimmed after execution
 
 **Rate Limiting:**
 To prevent runaway autonomous loops, scheduled TODO execution is rate limited to 50 executions per hour per user (configurable via `MAX_SELF_INVOKES_PER_HOUR`). The rate limiter uses a sliding window algorithm extracted to `rate_limiter.py`.
 
 ---
 
-## Legacy: self_invoke (Deprecated)
+## Legacy Scheduler (Migration Note)
 
-> **Note:** The `self_invoke` tool is deprecated. Use `todo_add` with `scheduled_for` instead.
-
-The legacy scheduler system is retained for backwards compatibility but emits deprecation warnings.
-
-```python
-# Deprecated
-self_invoke("Check inbox", "30m")
-
-# Preferred
-todo_add("Check inbox", scheduled_for="30m")
-```
-
-Old scheduled tasks are automatically migrated to the TODO system on startup via `migration.py`.
+The legacy scheduler (`self_invoke` + `tasks.db`) is not part of the active tool surface.
+Old scheduled tasks are automatically migrated to TODO scheduling on startup via `migration.py`.
 
 ---
 
@@ -742,6 +745,18 @@ browser_close()
 **Returns:** Success/error message
 
 **Note:** The browser persists between calls until explicitly closed or Nymeria stops.
+
+---
+
+### browser_status
+
+Get browser/Playwright diagnostics and current runtime state.
+
+```python
+browser_status()
+```
+
+**Returns:** Availability details (Playwright install, browser state, fallback mode).
 
 ---
 
@@ -1111,9 +1126,9 @@ CalendarAgent(task="What meetings do I have today?")
 **Built-in agents** (registered in `nymeria/agents/`):
 | Agent | Purpose | Tools Used |
 |-------|---------|------------|
-| BrowserAgent | Web browsing via Playwright | Browser tools (8) |
+| BrowserAgent | Web browsing via Playwright | Browser tools (9) |
 | OutlookAgent | Email operations via Microsoft Graph | Outlook tools (13) |
-| CalendarAgent | Calendar operations via Microsoft Graph | Calendar tools |
+| CalendarAgent | Google Calendar operations via MCP | Calendar tools |
 | SelfModifyAgent | Safe codebase self-modification | Self-modification tools |
 
 **How it works:** `agents/tool_factory.py` generates a LangChain `@tool` for each registered agent. The tool wraps `SubAgentExecutor.invoke()` and accepts a single `task` string parameter. Agent tools are loaded defensively by `NymeriaAgent._ensure_agent_tools()` at startup.
@@ -1191,7 +1206,7 @@ ALL_TOOLS = [
 
 ### 3. Tool is Automatically Available
 
-The tool is immediately available to the agent on next startup, or call `tools_reload()` for hot-reload.
+The tool is available on next startup, or call `reload_all()` for hot-reload.
 
 ---
 

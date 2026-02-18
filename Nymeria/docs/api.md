@@ -4,13 +4,17 @@ Base URL: `http://localhost:8000`
 
 ## Authentication
 
-All endpoints (except `/health`) require Bearer token authentication:
+Most endpoints require Bearer token authentication:
 
 ```
 Authorization: Bearer <NYMERIA_API_KEY>
 ```
 
 The API key is configured via the `NYMERIA_API_KEY` environment variable.
+
+Exceptions without Bearer auth:
+- `GET /health`
+- `POST /triggers/fire/{trigger_id}` (uses optional per-trigger secret instead)
 
 ---
 
@@ -47,7 +51,9 @@ Authorization: Bearer <token>
 {
   "message": "Hello",
   "thread_id": "optional-thread-id",
-  "user_id": "default"
+  "user_id": "default",
+  "attachments": [],
+  "force_unsupported_attachments": false
 }
 ```
 
@@ -56,6 +62,8 @@ Authorization: Bearer <token>
 | `message` | string | Yes | - | User message |
 | `thread_id` | string | No | auto-generated | Conversation thread ID |
 | `user_id` | string | No | `"default"` | User ID for profile/memory isolation |
+| `attachments` | array | No | - | Optional multimodal attachments (images/documents) |
+| `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
 
 **Response:** Server-Sent Events (SSE)
 
@@ -369,12 +377,18 @@ Authorization: Bearer <token>
   "llm_frequency_penalty": null,
   "llm_presence_penalty": null,
   "llm_reasoning_effort": null,
-  "context_window_cycles": 5,
+  "llm_extended_thinking": false,
+  "context_management": "auto_compact",
+  "compact_threshold": 0.8,
+  "compact_keep_messages": 4,
+  "compact_model": null,
+  "sliding_window_cycles": 5,
   "max_self_invokes_per_hour": 50,
   "log_level": "INFO",
   "watchdog_enabled": true,
   "watchdog_interval_minutes": 30,
-  "todo_staleness_hours": 4
+  "todo_staleness_hours": 4,
+  "activity_retention_hours": 12
 }
 ```
 
@@ -418,13 +432,13 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "message": "Settings updated",
+  "message": "Settings updated and applied",
   "updated": ["llm_model", "llm_temperature"],
-  "restart_required": true
+  "restart_required": false
 }
 ```
 
-**Note:** Changes are written to `.env` and require server restart to take effect.
+**Note:** Changes are written to `.env`/`.env.docker` and hot-reloaded immediately.
 
 ---
 
@@ -493,8 +507,9 @@ Authorization: Bearer <token>
 |-------|------|----------|-------------|
 | `task` | string | Yes | Task description |
 | `priority` | string | No | `low`, `medium`, `high` |
-| `scheduled_for` | string | No | Relative (`30m`, `2h`, `1d`) or ISO datetime |
-| `recurrence` | string | No | `hourly`, `daily`, `weekly`, `monthly` |
+| `deadline` | string | No | Optional due date/time (ISO datetime) |
+| `scheduled_for` | string | No | Relative (`30s`, `5m`, `2h`, `1d`) or absolute (`YYYY-MM-DD HH:MM[:SS]` / `YYYY-MM-DDTHH:MM[:SS]`, interpreted in `USER_TIMEZONE`) |
+| `recurrence` | string | No | `5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly` |
 | `thread_id` | string | No | Thread for autonomous output |
 | `notes` | string | No | Additional context |
 
@@ -517,11 +532,28 @@ Authorization: Bearer <token>
   "status": "in_progress",
   "priority": "high",
   "scheduled_for": "2h",
+  "thread_id": "thread-xyz",
   "clear_schedule": false,
   "recurrence": "weekly",
-  "clear_recurrence": false
+  "clear_recurrence": false,
+  "clear_deadline": false
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task` | string | Updated task text |
+| `status` | string | `pending`, `in_progress`, `blocked`, `done` |
+| `priority` | string | `low`, `medium`, `high` |
+| `deadline` | string | Set/update deadline (ISO datetime) |
+| `notes` | string | Set/update notes |
+| `blocked_reason` | string | Reason for blocked status |
+| `scheduled_for` | string | Set/update next scheduled execution |
+| `recurrence` | string | Set/update recurrence pattern |
+| `thread_id` | string | Thread for autonomous output |
+| `clear_schedule` | bool | Remove schedule if `true` |
+| `clear_recurrence` | bool | Remove recurrence if `true` |
+| `clear_deadline` | bool | Remove deadline if `true` |
 
 **Response:** Updated TODO object
 
@@ -1351,18 +1383,14 @@ Returns available tool categories.
 **Response:**
 ```json
 {
-  "categories": [
-    {"id": "core", "name": "Core Tools", "count": 6},
-    {"id": "memory", "name": "Memory Tools", "count": 5},
-    {"id": "rag", "name": "RAG Tools", "count": 2},
-    {"id": "todo", "name": "TODO Tools", "count": 5},
-    {"id": "self_modify", "name": "Self-Modification", "count": 4},
-    {"id": "subagent", "name": "Sub-Agent Tools", "count": 4},
-    {"id": "visibility", "name": "Visibility Tools", "count": 1},
-    {"id": "browser", "name": "Browser Tools", "count": 8},
-    {"id": "outlook", "name": "Outlook Tools", "count": 13},
-    {"id": "custom", "name": "Custom Tools", "count": 2}
-  ]
+  "categories": {
+    "core": ["bash_execute", "file_read", "file_write", "file_list", "web_search", "think", "claude_code", "notify"],
+    "memory": ["memory_save", "memory_forget", "memory_clear_all", "personality_set", "rag_search"],
+    "todo": ["todo_add", "todo_update", "todo_delete", "todo_list"],
+    "self_modify": ["self_modify_rollback"],
+    "subagent": ["clear_agent_context", "reload_all"],
+    "visibility": ["mute_response"]
+  }
 }
 ```
 
@@ -1388,7 +1416,7 @@ All errors follow this format:
 
 ## CORS
 
-The API allows all origins by default. For production, configure `CORSMiddleware` in `nymeria/triggers/api.py`.
+CORS is controlled by `CORS_ORIGINS` in environment settings.
 
 ---
 

@@ -4,35 +4,8 @@ This document outlines deployment options for Nymeria, from local development to
 
 ## Deployment Options Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Nymeria Deployment Options                       │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  💻 LOCAL (Most Users)                                              │
-│     python run.py api                                               │
-│     - Full system access                                            │
-│     - Install dependencies as needed                                │
-│     - Best for personal use on your own machine                     │
-│                                                                     │
-│  📦 DOCKER STANDARD                                                 │
-│     docker compose --profile standard up -d                         │
-│     - Includes Chromium + Playwright (BrowserAgent)                 │
-│     - Git, Node.js, dev tools                                       │
-│     - ~800MB image                                                  │
-│     - Good for servers, multi-device access                         │
-│                                                                     │
-│  🐉 DOCKER FULL (Kali Linux)                                        │
-│     docker compose --profile full up -d                             │
-│     - Everything in Standard, plus:                                 │
-│     - Kali Linux base with security tools                          │
-│     - Claude Code CLI pre-installed                                │
-│     - Full development environment                                  │
-│     - ~2-3GB image                                                  │
-│     - For power users                                               │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+- **Local**: run directly on host (`python run.py api`)
+- **Docker Compose**: production-oriented split services (`api`, `worker`, `postgres`, `redis`, `mcp`, optional `discord-bot`)
 
 ## Quick Start
 
@@ -57,24 +30,14 @@ cp .env.example .env
 python run.py api
 ```
 
-### Docker Standard (Server/Multi-device)
+### Docker Compose (Server/Multi-device)
 
 ```bash
 cd Nymeria
 cp .env.docker.example .env.docker
 # Edit .env.docker with your API keys and secrets
 
-docker compose --profile standard up -d
-```
-
-### Docker Full (Kali Linux Workstation)
-
-```bash
-cd Nymeria
-cp .env.docker.example .env.docker
-# Edit .env.docker with your API keys and secrets
-
-docker compose --profile full up -d
+docker compose --env-file .env.docker up -d
 ```
 
 ## Architecture
@@ -86,22 +49,19 @@ docker compose --profile full up -d
 │                     Docker Network                               │
 │                                                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │  PostgreSQL  │  │    Redis     │  │   Nymeria Container   │  │
+│  │  PostgreSQL  │  │    Redis     │  │   Nymeria Services    │  │
 │  │              │  │              │  │                       │  │
-│  │  Checkpoint  │  │  Event Bus   │  │  - API Server         │  │
-│  │  Storage     │  │  (Pub/Sub)   │  │  - Worker (Ticker)    │  │
-│  │              │  │              │  │  - All Tools          │  │
-│  └──────────────┘  └──────────────┘  │  - Browser (Standard+)│  │
-│                                      │  - Dev Tools (Full)   │  │
-│                                      │  - Kali Tools (Full)  │  │
+│  │  Checkpoint  │  │  Event Bus   │  │  - API container      │  │
+│  │  Storage     │  │  (Pub/Sub)   │  │  - Worker container   │  │
+│  │              │  │              │  │  - MCP container      │  │
+│  └──────────────┘  └──────────────┘  │  - Optional Discord   │  │
 │                                      └───────────────────────┘  │
 │                                                 │                │
 │  Volumes:                                       │                │
 │  - postgres_data: Conversation history          │                │
 │  - redis_data: Event persistence                │                │
 │  - nymeria_data: Memories, TODOs, profiles      │                │
-│  - nymeria_workspace: Project files (Full)      │                │
-│  - nymeria_code: Self-modifications (Full)      │                │
+│  - nymeria_workspace: Project files             │                │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -111,19 +71,13 @@ docker compose --profile full up -d
 
 ## Tool Availability by Deployment
 
-| Tool | Local | Docker Standard | Docker Full |
-|------|-------|-----------------|-------------|
-| bash_execute | ✅ Host system | ✅ Container (Debian) | ✅ Container (Kali) |
-| file_read/write/list | ✅ Full access | ✅ /data + /workspace | ✅ /data + /workspace |
-| web_search | ✅ | ✅ | ✅ |
-| memory tools | ✅ | ✅ | ✅ |
-| todo tools | ✅ | ✅ | ✅ |
-| self_modify | ✅ | ✅ (persisted) | ✅ (persisted) |
-| BrowserAgent | ⚠️ Install Playwright | ✅ Pre-installed | ✅ Pre-installed |
-| OutlookAgent | ✅ | ✅ | ✅ |
-| claude_code | ⚠️ Install CLI | ❌ Not included | ✅ Pre-installed |
-| notify tools | ✅ | ✅ | ✅ |
-| Kali security tools | ❌ | ❌ | ✅ nmap, nikto, etc. |
+| Capability | Local | Docker Compose |
+|------------|-------|----------------|
+| Core tools (`bash_execute`, file tools, web, memory, TODO, triggers, notify) | ✅ Host system | ✅ Containerized |
+| Sub-agent wrappers (`BrowserAgent`, `OutlookAgent`, `CalendarAgent`, `SelfModifyAgent`) | ✅ | ✅ |
+| Browser automation | ⚠️ Install Playwright/Chromium | ✅ Included in image |
+| `claude_code` integration | ⚠️ Install Claude Code CLI | ⚠️ Requires CLI availability in container |
+| Self-modification persistence | ✅ (local filesystem) | ✅ (via mounted volumes) |
 
 ## Configuration
 
@@ -193,7 +147,7 @@ python run.py mcp --http --port 8001
 
 ### Docker MCP
 
-The MCP server is exposed on port 8001 in Docker deployments:
+The `mcp` service starts by default in `docker compose --env-file .env.docker up -d` and is exposed on port 8001:
 
 ```yaml
 # In docker-compose.yml
@@ -220,7 +174,7 @@ Configure Claude Code to use Nymeria:
 The API server is stateless and can be scaled:
 
 ```bash
-docker compose --profile standard up -d --scale api=3
+docker compose --env-file .env.docker up -d --scale api=3
 ```
 
 Add a load balancer (nginx, traefik) in front.
@@ -239,7 +193,7 @@ The worker (ticker) should only run ONE instance to avoid duplicate task executi
 | Memories/Profiles | /data/users/ | Volume backup |
 | TODOs | /data/todos/ | Volume backup |
 | Custom Tools | /data/custom_tools/ | Volume backup |
-| Self-modifications | /app/nymeria/ (Full) | Volume backup |
+| Self-modifications | Host repo `./nymeria` (bind-mounted to `/app/nymeria`) | Git + host filesystem backup |
 
 ### Backup Script
 
@@ -260,7 +214,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 2. **CORS**: Restrict origins in production
 3. **Webhook Secret**: Validate incoming webhooks
 4. **Network**: Use HTTPS in production (reverse proxy)
-5. **Docker**: Run as non-root user (already configured)
+5. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments.
 6. **Kali Tools**: Use responsibly and only on authorized targets
 
 ## Troubleshooting
@@ -285,18 +239,19 @@ docker exec nymeria-api playwright install chromium
 
 ### Self-modifications lost after restart
 
-Ensure the code volume is mounted:
+Ensure code/data mounts are intact in `docker-compose.yml`:
 ```yaml
 volumes:
-  - nymeria_code:/app/nymeria
+  - ./nymeria:/app/nymeria
+  - nymeria_data:/data
 ```
 
 ## Upgrading
 
 ```bash
 git pull
-docker compose --profile <your-profile> build
-docker compose --profile <your-profile> up -d
+docker compose --env-file .env.docker build
+docker compose --env-file .env.docker up -d
 ```
 
-Self-modifications are preserved in volumes and will need to be re-applied to new code if there are conflicts.
+Self-modifications are preserved by the bind-mounted `./nymeria` code directory and `nymeria_data` volume. Re-apply carefully after upstream upgrades if merge conflicts occur.

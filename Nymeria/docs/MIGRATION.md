@@ -49,12 +49,16 @@ If you want to preserve your conversation history and user memories:
 1. **Backup SQLite databases:**
    ```bash
    cp data/nymeria.db data/nymeria.db.backup
-   cp data/tasks.db data/tasks.db.backup
+   cp data/todo_schedule.db data/todo_schedule.db.backup
+   # Legacy only (if present from older versions):
+   [ -f data/tasks.db ] && cp data/tasks.db data/tasks.db.backup
    ```
 
 2. **Backup user data:**
    ```bash
-   cp -r data/users data/users.backup
+   [ -d data/users ] && cp -r data/users data/users.backup
+   [ -d data/todos ] && cp -r data/todos data/todos.backup
+   [ -d data/custom_tools ] && cp -r data/custom_tools data/custom_tools.backup
    ```
 
 Note: SQLite to PostgreSQL migration requires a separate script. The Docker deployment starts with a fresh database by default.

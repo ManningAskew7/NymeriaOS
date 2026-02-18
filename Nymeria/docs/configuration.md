@@ -48,6 +48,7 @@ Set the API key for your chosen provider:
 | `DATABASE_BACKEND` | `sqlite` | Backend type: `sqlite`, `postgres`, or `memory` |
 | `SQLITE_PATH` | `data/nymeria.db` | SQLite database file location |
 | `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
+| `USER_TIMEZONE` | `Australia/Sydney` | IANA timezone used for time context and absolute schedule parsing |
 
 ### API Server
 
@@ -87,12 +88,15 @@ Set the API key for your chosen provider:
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `AUDIT_LOG_ENABLED` | `true` | Log all tool executions to audit log |
 
-### Scheduler (Autonomous Operation)
+### Autonomous Operation
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
+| `MAX_CONCURRENT_AUTONOMOUS` | `5` | Max concurrent autonomous tasks (`0` = unlimited) |
 | `MAX_SELF_INVOKES_PER_HOUR` | `50` | Rate limit per user to prevent runaway loops |
+| `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
+| `TOOL_TIMEOUT` | `300` | Max seconds a tool/sub-agent invocation may run |
 
 ### Context Management
 
@@ -137,7 +141,7 @@ Nymeria uses the following directories under the project root:
 | Directory | Purpose |
 |-----------|---------|
 | `data/nymeria.db` | SQLite conversation database |
-| `data/schedules.db` | SQLite scheduled TODO index for polling |
+| `data/todo_schedule.db` | SQLite scheduled TODO index for polling |
 | `data/tasks.db` | Legacy scheduled tasks database (deprecated) |
 | `data/todos/` | TODO list storage (`{user_id}.json`) |
 | `data/logs/` | Audit logs (`audit_YYYYMMDD.jsonl`) |
@@ -195,8 +199,9 @@ API_PORT=8000
 LOG_LEVEL=INFO
 AUDIT_LOG_ENABLED=true
 
-# Scheduler (optional - defaults shown)
+# Autonomous Operation (optional - defaults shown)
 # TICKER_POLL_INTERVAL=5
+# MAX_CONCURRENT_AUTONOMOUS=5
 # MAX_SELF_INVOKES_PER_HOUR=50
 
 # Context Management (optional - defaults shown)
