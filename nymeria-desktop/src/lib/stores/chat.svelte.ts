@@ -154,7 +154,7 @@ function createChatStore() {
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            status: 'complete' as const,
+            status: lastMessage.status === 'error' ? 'error' : 'complete',
             intermediateContent: lastMessage.intermediateContent || undefined
           }
         ];
@@ -169,12 +169,44 @@ function createChatStore() {
       const lastMessage = messages[lastIndex];
 
       if (lastMessage.role === 'assistant') {
+        const existing = (lastMessage.content || '').trim();
+        const errorText = (error || 'Unknown error').trim();
+        let mergedContent = errorText;
+        let updatedSteps = lastMessage.steps;
+
+        if (existing) {
+          mergedContent = existing.includes(errorText)
+            ? existing
+            : `${existing}\n\n---\n**Error:** ${errorText}`;
+        }
+
+        if (lastMessage.steps) {
+          const errorStepText = `\n\n---\n**Error:** ${errorText}`;
+          const steps = [...lastMessage.steps];
+          const lastStep = steps[steps.length - 1];
+
+          if (lastStep && lastStep.type === 'response') {
+            const existingStepText = lastStep.content || '';
+            if (!existingStepText.includes(errorText)) {
+              steps[steps.length - 1] = {
+                ...lastStep,
+                content: existingStepText + errorStepText
+              };
+            }
+          } else {
+            steps.push({ type: 'response', content: errorStepText });
+          }
+
+          updatedSteps = steps;
+        }
+
         messages = [
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            content: lastMessage.content || error,
+            content: mergedContent,
             status: 'error',
+            steps: updatedSteps,
             intermediateContent: lastMessage.intermediateContent || undefined
           }
         ];

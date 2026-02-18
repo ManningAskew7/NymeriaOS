@@ -194,6 +194,30 @@ class ServerSettingsUpdate(BaseModel):
     activity_retention_hours: Optional[int] = None
 
 
+class OpenRouterKeyDiagnostics(BaseModel):
+    """Runtime details for the currently active OpenRouter API key."""
+
+    label: Optional[str] = None
+    limit: Optional[float] = None
+    limit_remaining: Optional[float] = None
+    usage: Optional[float] = None
+    limit_reset: Optional[str] = None
+    include_byok_in_limit: Optional[bool] = None
+    is_management_key: Optional[bool] = None
+    fetch_error: Optional[str] = None
+
+
+class LLMRuntimeDiagnosticsResponse(BaseModel):
+    """Runtime diagnostics for currently active LLM configuration."""
+
+    provider: str
+    model: str
+    llm_max_tokens: Optional[int] = None
+    effective_max_tokens: Optional[int] = None
+    source_env_files: List[str] = []
+    openrouter: Optional[OpenRouterKeyDiagnostics] = None
+
+
 # Dashboard Response Models
 
 class TodoItemResponse(BaseModel):
@@ -642,9 +666,27 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             agent = get_agent()
             if agent and agent._ticker:
                 agent._ticker.stop()
+
+            # Build child env from current process, then overlay .env files.
+            # This guarantees restart picks up latest file values even if the
+            # current process inherited stale variables from its parent shell/service.
+            from dotenv import dotenv_values
+            from pathlib import Path
+
+            child_env = os.environ.copy()
+            project_root = Path(__file__).resolve().parents[2]
+            for filename in (".env", ".env.docker"):
+                env_path = project_root / filename
+                if not env_path.exists():
+                    continue
+                for key, value in dotenv_values(env_path).items():
+                    if key and value is not None:
+                        child_env[key] = value
+
             # Spawn a replacement process, then exit
             subprocess.Popen(
                 [sys.executable] + sys.argv,
+                env=child_env,
                 creationflags=(
                     subprocess.CREATE_NEW_PROCESS_GROUP
                     if sys.platform == "win32" else 0
@@ -1121,6 +1163,88 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             todo_staleness_hours=settings.todo_staleness_hours,
             activity_retention_hours=settings.activity_retention_hours,
         )
+
+    @app.get("/settings/llm/runtime", response_model=LLMRuntimeDiagnosticsResponse, tags=["Settings"])
+    async def get_llm_runtime_diagnostics(
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Get runtime LLM diagnostics including active OpenRouter key budget details."""
+        from pathlib import Path
+        import urllib.error
+        import urllib.request
+        from ..config.model_capabilities import get_max_output_tokens
+
+        agent = get_agent()
+        llm_cfg = agent._get_llm_config_for_thread("")
+
+        effective_max_tokens = llm_cfg.max_tokens
+        if effective_max_tokens is None and llm_cfg.provider == "openrouter":
+            try:
+                effective_max_tokens = get_max_output_tokens(llm_cfg.model)
+            except Exception as e:
+                logger.warning(f"Failed to resolve OpenRouter max output tokens: {e}")
+
+        project_root = Path(__file__).resolve().parents[2]
+        source_env_files = [
+            str(project_root / filename)
+            for filename in (".env", ".env.docker")
+            if (project_root / filename).exists()
+        ]
+
+        response = LLMRuntimeDiagnosticsResponse(
+            provider=llm_cfg.provider,
+            model=llm_cfg.model,
+            llm_max_tokens=settings.llm_max_tokens,
+            effective_max_tokens=effective_max_tokens,
+            source_env_files=source_env_files,
+        )
+
+        if llm_cfg.provider == "openrouter":
+            if not llm_cfg.api_key:
+                response.openrouter = OpenRouterKeyDiagnostics(
+                    fetch_error="OPENROUTER_API_KEY is missing in active runtime settings"
+                )
+                return response
+
+            request_obj = urllib.request.Request(
+                "https://openrouter.ai/api/v1/key",
+                headers={
+                    "Authorization": f"Bearer {llm_cfg.api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            try:
+                with urllib.request.urlopen(request_obj, timeout=6) as api_response:
+                    payload = json.loads(api_response.read().decode("utf-8"))
+                data = payload.get("data", {}) if isinstance(payload, dict) else {}
+
+                if isinstance(data, dict):
+                    response.openrouter = OpenRouterKeyDiagnostics(
+                        label=data.get("label"),
+                        limit=data.get("limit"),
+                        limit_remaining=data.get("limit_remaining"),
+                        usage=data.get("usage"),
+                        limit_reset=data.get("limit_reset"),
+                        include_byok_in_limit=data.get("include_byok_in_limit"),
+                        is_management_key=data.get("is_management_key"),
+                    )
+                else:
+                    response.openrouter = OpenRouterKeyDiagnostics(
+                        fetch_error="Unexpected response shape from OpenRouter /key endpoint"
+                    )
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="ignore")
+                response.openrouter = OpenRouterKeyDiagnostics(
+                    fetch_error=f"HTTP {e.code}: {body[:300]}"
+                )
+            except Exception as e:
+                response.openrouter = OpenRouterKeyDiagnostics(
+                    fetch_error=f"{type(e).__name__}: {e}"
+                )
+
+        return response
 
     @app.patch("/settings", tags=["Settings"])
     async def update_server_settings(

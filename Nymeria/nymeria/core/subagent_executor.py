@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 class SubAgentExecutor:
     """Executes sub-agents with isolated context."""
 
+    SUBAGENT_MAX_ITERATIONS = 30
+    ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
+
     def __init__(self):
         self.settings = get_settings()
         self.contexts_dir = self.settings.data_dir / "subagent_contexts"
@@ -162,12 +165,51 @@ class SubAgentExecutor:
             ),
             checkpointer=CheckpointerConfig(backend="memory"),
             system_prompt=agent_config["system_prompt"],
-            max_iterations=30,
+            max_iterations=self.SUBAGENT_MAX_ITERATIONS,
             tool_timeout=tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
 
         return create_graph(config=config, tools=tools)
+
+    @classmethod
+    def _build_error_result(cls, code: str, message: str, **metadata) -> str:
+        """Encode a machine-readable error marker plus a human-readable message."""
+        payload = {
+            "code": code,
+            "message": message,
+            "metadata": metadata,
+        }
+        marker = f"{cls.ERROR_MARKER_PREFIX}{json.dumps(payload, ensure_ascii=True, default=str)}"
+        return f"{marker}\n[Error]: {message}"
+
+    @staticmethod
+    def _current_turn_tool_call_count(messages: List) -> int:
+        """Count tool-call AI messages since the most recent HumanMessage."""
+        current_turn_messages = []
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                break
+            current_turn_messages.append(msg)
+
+        return sum(
+            1 for msg in current_turn_messages
+            if isinstance(msg, AIMessage) and msg.tool_calls
+        )
+
+    @staticmethod
+    def _extract_partial_response(messages: List, max_chars: int = 600) -> str:
+        """Extract the latest non-empty AI content for diagnostics."""
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                text = msg.content if isinstance(msg.content, str) else str(msg.content)
+                text = text.strip()
+                if not text:
+                    continue
+                if len(text) > max_chars:
+                    return text[:max_chars] + "..."
+                return text
+        return ""
 
     def _execute_isolated(self, graph, messages: List, agent_name: str) -> str:
         """Execute graph with context isolation and a timeout.
@@ -211,22 +253,62 @@ class SubAgentExecutor:
                     f"Sub-agent '{agent_name}' timed out after {timeout}s. "
                     f"The agent will continue but the sub-agent may still be running in the background."
                 )
-                return (
-                    f"[Error]: {agent_name} timed out after {timeout} seconds. "
-                    f"The sub-agent took too long and was stopped. "
-                    f"Report this timeout to the user — do NOT retry."
+                message = (
+                    f"{agent_name} timed out after {timeout} seconds. "
+                    f"The sub-agent took too long and was stopped."
+                )
+                return self._build_error_result(
+                    code="subagent_timeout",
+                    message=message,
+                    agent_name=agent_name,
+                    timeout_seconds=timeout,
                 )
 
+            result_messages = result.get("messages", [])
+
+            # Detect sub-agent max-iteration stop explicitly so parent agent + UI
+            # can surface this as a first-class event instead of truncated text.
+            if result_messages:
+                last_msg = result_messages[-1]
+                tool_call_count = self._current_turn_tool_call_count(result_messages)
+                if (
+                    isinstance(last_msg, AIMessage)
+                    and bool(last_msg.tool_calls)
+                    and tool_call_count > self.SUBAGENT_MAX_ITERATIONS
+                ):
+                    partial_response = self._extract_partial_response(result_messages)
+                    message = (
+                        f"{agent_name} reached its step limit "
+                        f"({tool_call_count}/{self.SUBAGENT_MAX_ITERATIONS}) and was stopped."
+                    )
+                    logger.warning(message)
+                    return self._build_error_result(
+                        code="subagent_iteration_limit",
+                        message=message,
+                        agent_name=agent_name,
+                        max_iterations=self.SUBAGENT_MAX_ITERATIONS,
+                        tool_call_count=tool_call_count,
+                        partial_response=partial_response,
+                    )
+
             # Extract response
-            for msg in reversed(result.get("messages", [])):
+            for msg in reversed(result_messages):
                 if isinstance(msg, AIMessage) and msg.content:
                     return msg.content
 
-            return "[Error]: No response from sub-agent"
+            return self._build_error_result(
+                code="subagent_no_response",
+                message=f"{agent_name} returned no response.",
+                agent_name=agent_name,
+            )
 
         except Exception as e:
             logger.error(f"Sub-agent execution failed: {e}", exc_info=True)
-            return f"[Error]: Sub-agent execution failed: {str(e)}"
+            return self._build_error_result(
+                code="subagent_execution_failed",
+                message=f"{agent_name} execution failed: {str(e)}",
+                agent_name=agent_name,
+            )
 
         finally:
             var_child_runnable_config.reset(config_token)

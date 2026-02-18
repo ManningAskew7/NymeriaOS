@@ -303,7 +303,8 @@ export class NymeriaAPI {
             type: 'error',
             data: {
               message: (data.content as string) || (data.error as string) || 'Unknown error',
-              code: data.code as string | undefined
+              code: data.code as string | undefined,
+              details: data.details as Record<string, unknown> | undefined,
             },
             timestamp: new Date(),
             threadId
@@ -397,6 +398,9 @@ export class NymeriaAPI {
             data: {
               message: (data.content as string) || 'Agent reached the maximum number of steps.',
               maxIterations: (data.max_iterations as number) || 70,
+              scope: (data.scope as 'main_agent' | 'sub_agent' | undefined),
+              agentName: data.agent_name as string | undefined,
+              toolCallCount: data.tool_call_count as number | undefined,
             },
             timestamp: new Date(),
             threadId

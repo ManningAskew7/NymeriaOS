@@ -14,6 +14,7 @@ from ..tools.browser import (
     browser_scroll,
     browser_close,
     browser_press_key,
+    browser_status,
 )
 
 BROWSER_AGENT_PROMPT = """You are a browser automation agent. You control a web browser to complete tasks.
@@ -27,6 +28,7 @@ BROWSER_AGENT_PROMPT = """You are a browser automation agent. You control a web 
 - browser_scroll(direction, amount): Scroll up/down
 - browser_press_key(key): Press keyboard key (Enter, Tab, Escape, etc.)
 - browser_close(): Close browser when done
+- browser_status(): Check browser/Playwright availability (use if having issues)
 
 ## Instructions
 1. Break tasks into small steps
@@ -34,13 +36,19 @@ BROWSER_AGENT_PROMPT = """You are a browser automation agent. You control a web 
 3. Use browser_get_content() to understand the page state
 4. For clicking, try CSS selectors first, then text= selectors
 5. If an action fails, try an alternative approach
-6. Report what you found/accomplished when done
+6. If you encounter errors, use browser_status() to diagnose
+7. Report what you found/accomplished when done
 
 ## Selector Tips
 - Buttons: "button", "text=Submit", "[type='submit']"
 - Links: "a", "text=Click Here", "a[href*='login']"
 - Inputs: "input[name='email']", "#search", "[placeholder='Search']"
 - By text: "text=Exact Text" or "text=/partial/i" (regex)
+
+## Error Handling
+- If navigation times out, the page may still have loaded - try browser_get_content()
+- If Playwright is unavailable, browser_navigate will fall back to simple HTTP fetch
+- Use browser_status() to check if Playwright and Chromium are properly installed
 
 Always be methodical and verify each step succeeded."""
 
@@ -55,6 +63,7 @@ BROWSER_TOOLS = [
     browser_scroll,
     browser_close,
     browser_press_key,
+    browser_status,
 ]
 
 # Register the browser agent
