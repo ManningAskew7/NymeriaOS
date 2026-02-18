@@ -20,14 +20,14 @@ Nymeria wraps LangGraph's ReAct (Reasoning + Acting) agent pattern with addition
 │                       NymeriaAgent                                   │
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │                 Context Injection                              │  │
-│  │   • Time context (Sydney timezone, quiet hours)               │  │
+│  │   • Time context (configured user timezone)                   │  │
 │  │   • User memories from profile                                │  │
 │  │   • Personality preferences                                    │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                           │                                          │
 │                           ▼                                          │
 │  ┌───────────────────────────────────────────────────────────────┐  │
-│  │              LangGraph ReAct Loop (max 25 iterations)         │  │
+│  │              LangGraph ReAct Loop (max 70 iterations)         │  │
 │  │                                                                │  │
 │  │   ┌─────────┐    ┌─────────┐    ┌─────────────────┐          │  │
 │  │   │   LLM   │───▶│ Router  │───▶│     Tools       │          │  │
@@ -82,8 +82,7 @@ response = agent.chat("Hello", thread_id="user123", user_id="default")
 
 **Key Features:**
 - Memory hash caching: Graphs are rebuilt only when user memories or thread config change
-- Time context injection: Every message includes current time (Sydney timezone)
-- Quiet hours awareness: Tracks if 10 PM - 7 AM for autonomous behavior
+- Time context injection: Every message includes current time in the configured `USER_TIMEZONE`
 - Defensive agent tool loading: `_ensure_agent_tools()` guarantees sub-agent tools are always available
 - Per-thread configuration: Custom instructions, tool overrides, and LLM settings per thread
 
@@ -196,7 +195,7 @@ Manages autonomous operation for 24/7 functionality through the **TODO system** 
 - **Durable**: Scheduled TODOs persist across restarts (SQLite via `todo_schedule_db.py`)
 - Global polling ticker instead of threading.Timer
 - Rate limiting via `RateLimiter` class (default: 50/hour)
-- Quiet hours support (10 PM - 7 AM Sydney time)
+- Parallel execution via thread pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5)
 
 **Components:**
 - `TodoManager`: Manages user TODO lists with atomic updates (JSON files in `data/todos/`)
@@ -521,13 +520,13 @@ Input interfaces and event-driven adapters that route messages to the agent:
 
 1. User sends message via CLI or API
 2. NymeriaAgent receives message
-3. Time context injected: `[Current Time: 2025-01-15 14:30:00 AEDT]`
+3. Time context injected (example): `[Time: Thursday, February 18, 2026 at 05:42 PM (America/New_York)]`
 4. User memories loaded and formatted into system prompt
 5. Message wrapped in `HumanMessage` and sent to graph
 6. LLM decides: respond directly OR call tools
 7. If tools needed: execute tools, feed results back to LLM
 8. All tool calls logged to audit log
-9. Loop until LLM generates final response (max 25 iterations)
+9. Loop until LLM generates final response (max 70 iterations)
 10. State saved to SQLite for conversation continuity
 11. Response returned to user
 
@@ -577,10 +576,10 @@ See [LangGraph PERSISTENCE.md](../../LangGraph/docs/PERSISTENCE.md) for full tec
 ### Scheduled TODO Storage
 
 SQLite stores scheduled TODOs for autonomous execution:
-- Located at `data/schedules.db` (managed by `TodoScheduleDB`)
+- Located at `data/todo_schedule.db` (managed by `TodoScheduleDB`)
 - Scheduled TODOs survive application restarts
 - Missed scheduled TODOs are recovered on startup
-- Schema: todo_id, user_id, scheduled_for, task_preview, thread_id, status
+- Schema: todo_id, user_id, thread_id, scheduled_for, task_preview, created_at
 
 **Legacy Task Storage (Deprecated):**
 - Located at `data/tasks.db` (via `_deprecated/task_db.py`)
@@ -621,8 +620,8 @@ When memories or thread config change, the graph is automatically rebuilt with t
 
 ```python
 # Internal cache structure
-self._user_graphs: Dict[str, Tuple[str, CompiledGraph]] = {}
-# user_id -> (combined_hash, graph)
+self._user_graphs: Dict[tuple, tuple] = {}
+# (user_id, thread_id) -> (combined_hash, graph)
 ```
 
 ---
