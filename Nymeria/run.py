@@ -30,8 +30,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+
+def _load_environment() -> None:
+    """Load environment files relative to project root, overriding inherited values."""
+    project_root = Path(__file__).resolve().parent
+
+    # Load base config first, then docker overrides if present.
+    # override=True ensures restarts pick up latest .env values even when
+    # the parent process has stale exported environment variables.
+    load_dotenv(project_root / ".env", override=True)
+    load_dotenv(project_root / ".env.docker", override=True)
+
+
+# Load environment variables before importing settings/users of os.environ
+_load_environment()
 
 
 def validate_config(skip_api_key: bool = False) -> None:

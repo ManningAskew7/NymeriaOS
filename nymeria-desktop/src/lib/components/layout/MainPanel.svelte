@@ -233,8 +233,15 @@
       }
 
       case 'error': {
-        const data = event.data as { message: string };
-        chatStore.setLastMessageError(data.message);
+        const data = event.data as {
+          message: string;
+          code?: string;
+          details?: Record<string, unknown>;
+        };
+        const message = data.code
+          ? `${data.message}\n\n(code: ${data.code})`
+          : data.message;
+        chatStore.setLastMessageError(message);
         break;
       }
 
@@ -317,11 +324,29 @@
 
       case 'iteration_limit': {
         // Agent was stopped because it hit the maximum number of steps
-        const data = event.data as { message: string; maxIterations: number };
-        chatStore.addResponseStep(
-          `\n\n---\n**Iteration limit reached (${data.maxIterations} steps).** ` +
-          `My task may be incomplete — you can ask me to continue where I left off.`
-        );
+        const data = event.data as {
+          message: string;
+          maxIterations: number;
+          scope?: 'main_agent' | 'sub_agent';
+          agentName?: string;
+          toolCallCount?: number;
+        };
+
+        if (data.scope === 'sub_agent') {
+          const agentName = data.agentName || 'Sub-agent';
+          const countText = data.toolCallCount
+            ? `${data.toolCallCount}/${data.maxIterations}`
+            : `${data.maxIterations}`;
+          chatStore.addResponseStep(
+            `\n\n---\n**${agentName} hit its iteration limit (${countText} steps).** ` +
+            `${data.message || 'The sub-agent was stopped before finishing.'}`
+          );
+        } else {
+          chatStore.addResponseStep(
+            `\n\n---\n**Iteration limit reached (${data.maxIterations} steps).** ` +
+            `${data.message || 'My task may be incomplete — you can ask me to continue where I left off.'}`
+          );
+        }
         break;
       }
     }

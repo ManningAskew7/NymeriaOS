@@ -2,6 +2,12 @@
 
 Uses a dedicated browser thread to avoid Playwright's threading restrictions.
 All browser operations are queued and executed on a single persistent thread.
+
+Features:
+- Auto-detects Playwright browser installation path
+- Configurable timeouts for different operations
+- Graceful error handling with detailed error messages
+- Fallback to requests+BeautifulSoup if Playwright unavailable
 """
 
 import base64
@@ -9,45 +15,89 @@ import logging
 import os
 import queue
 import threading
+import time
 from typing import Any, Optional, Tuple
+
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
 
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# Set Playwright browsers path based on environment
-def _setup_playwright_path():
-    """Configure Playwright browsers path for the current environment."""
+# Timeout configuration (in seconds)
+BROWSER_LAUNCH_TIMEOUT = 120  # Initial browser launch can be slow
+NAVIGATION_TIMEOUT = 60  # Page navigation timeout
+DEFAULT_OPERATION_TIMEOUT = 30  # Default for other operations
+QUEUE_TIMEOUT = 90  # How long to wait for result from browser thread
+
+
+def _find_playwright_browsers_path() -> Optional[str]:
+    """Auto-detect Playwright browsers installation path."""
     # Check if already set in environment
     if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        logger.info(f"Using PLAYWRIGHT_BROWSERS_PATH from env: {os.environ['PLAYWRIGHT_BROWSERS_PATH']}")
-        return
-
-    # Windows path (local development)
-    windows_path = r"C:\Users\user\AppData\Local\ms-playwright"
-    if os.path.exists(windows_path):
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = windows_path
-        logger.info(f"Set PLAYWRIGHT_BROWSERS_PATH to {windows_path}")
-        return
-
-    # Linux paths (Docker)
+        path = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+        if os.path.exists(path):
+            return path
+    
+    # Windows paths - check common locations
+    if os.name == 'nt':
+        # Get current user's home directory
+        user_home = os.path.expanduser("~")
+        windows_paths = [
+            os.path.join(user_home, "AppData", "Local", "ms-playwright"),
+            r"C:\Users\user\AppData\Local\ms-playwright",
+            r"C:\ms-playwright",
+        ]
+        for path in windows_paths:
+            if os.path.exists(path):
+                return path
+    
+    # Linux paths (Docker and native)
     linux_paths = [
+        os.path.expanduser("~/.cache/ms-playwright"),
         "/root/.cache/ms-playwright",
         "/home/nymeria/.cache/ms-playwright",
         "/ms-playwright",
     ]
     for path in linux_paths:
         if os.path.exists(path):
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = path
-            logger.info(f"Set PLAYWRIGHT_BROWSERS_PATH to {path}")
-            return
+            return path
+    
+    return None
 
-    # Let Playwright use its default
-    logger.info("Using default Playwright browsers path")
 
+def _setup_playwright_path():
+    """Configure Playwright browsers path for the current environment."""
+    path = _find_playwright_browsers_path()
+    if path:
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = path
+        logger.info(f"Set PLAYWRIGHT_BROWSERS_PATH to {path}")
+    else:
+        logger.warning("Could not find Playwright browsers path - will use default")
+
+
+# Setup path on module load
 _setup_playwright_path()
 
-# Determine if we should run headless (Docker/Linux without display)
+
+def _use_fallback_mode() -> bool:
+    """Check if we should skip Playwright entirely and use requests fallback.
+
+    Set BROWSER_FORCE_FALLBACK=true in .env to enable this.
+    Useful when Playwright hangs (e.g. SSL interception, Python 3.14 incompatibility).
+    """
+    return os.environ.get("BROWSER_FORCE_FALLBACK", "").lower() == "true"
+
+
+# Cache for fallback mode — tracks last fetched URL + content so browser_get_content
+# can work without a live browser session.
+_fallback_cache: dict = {"url": None, "title": None, "text": None, "links": []}
+
+
 def _should_run_headless() -> bool:
     """Determine if browser should run in headless mode."""
     # Explicit override from environment
@@ -66,6 +116,26 @@ def _should_run_headless() -> bool:
     return False
 
 
+def _check_playwright_available() -> Tuple[bool, str]:
+    """Check if Playwright is installed and browsers are available."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False, "Playwright not installed. Run: pip install playwright && playwright install chromium"
+    
+    # Check if browsers are installed
+    browsers_path = _find_playwright_browsers_path()
+    if not browsers_path:
+        return False, "Playwright browsers not installed. Run: playwright install chromium"
+    
+    # Check for chromium specifically
+    chromium_dirs = [d for d in os.listdir(browsers_path) if d.startswith('chromium')]
+    if not chromium_dirs:
+        return False, f"Chromium not found in {browsers_path}. Run: playwright install chromium"
+    
+    return True, "Playwright ready"
+
+
 class BrowserThread:
     """Dedicated thread for Playwright operations."""
 
@@ -74,18 +144,42 @@ class BrowserThread:
         self._result_queue: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._ready = threading.Event()
+        self._error: Optional[str] = None
         self._playwright = None
         self._browser = None
         self._page = None
 
-    def start(self):
-        """Start the browser thread."""
+    def start(self) -> Tuple[bool, str]:
+        """Start the browser thread. Returns (success, message)."""
         if self._thread is not None and self._thread.is_alive():
-            return
+            if self._ready.is_set():
+                return True, "Browser thread already running"
+            # Wait for it to become ready
+            if self._ready.wait(timeout=BROWSER_LAUNCH_TIMEOUT):
+                if self._error:
+                    return False, self._error
+                return True, "Browser thread ready"
+            return False, "Browser thread startup timed out"
+
+        # Check Playwright availability before starting
+        available, msg = _check_playwright_available()
+        if not available:
+            return False, msg
 
         self._running = True
+        self._ready.clear()
+        self._error = None
         self._thread = threading.Thread(target=self._run, daemon=True, name="BrowserThread")
         self._thread.start()
+        
+        # Wait for thread to signal ready or error
+        if self._ready.wait(timeout=BROWSER_LAUNCH_TIMEOUT):
+            if self._error:
+                return False, self._error
+            return True, "Browser thread started"
+        
+        return False, "Browser thread startup timed out"
 
     def stop(self):
         """Stop the browser thread."""
@@ -93,26 +187,37 @@ class BrowserThread:
         self._command_queue.put(("STOP", None))
         if self._thread:
             self._thread.join(timeout=10)
+        self._ready.clear()
 
-    def execute(self, command: str, args: dict) -> Tuple[bool, Any]:
+    def execute(self, command: str, args: dict, timeout: int = QUEUE_TIMEOUT) -> Tuple[bool, Any]:
         """Execute a command on the browser thread."""
-        self.start()  # Ensure thread is running
+        # Ensure thread is running
+        success, msg = self.start()
+        if not success:
+            return False, msg
 
         self._command_queue.put((command, args))
 
         try:
-            success, result = self._result_queue.get(timeout=60)
+            success, result = self._result_queue.get(timeout=timeout)
             return success, result
         except queue.Empty:
-            return False, "Browser operation timed out"
+            return False, f"Browser operation timed out after {timeout}s. The browser may be unresponsive."
 
     def _run(self):
         """Main browser thread loop."""
-        from playwright.sync_api import sync_playwright
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as e:
+            self._error = f"Failed to import Playwright: {e}"
+            self._ready.set()
+            return
 
         try:
+            logger.info("Starting Playwright...")
             self._playwright = sync_playwright().start()
-            logger.info("Playwright started on browser thread")
+            logger.info("Playwright started successfully")
+            self._ready.set()
 
             while self._running:
                 try:
@@ -125,41 +230,49 @@ class BrowserThread:
                         result = self._execute_command(command, args)
                         self._result_queue.put((True, result))
                     except Exception as e:
-                        logger.error(f"Browser command failed: {e}")
-                        self._result_queue.put((False, str(e)))
+                        error_msg = str(e)
+                        logger.error(f"Browser command '{command}' failed: {error_msg}")
+                        self._result_queue.put((False, error_msg))
 
                 except queue.Empty:
                     continue
 
         except Exception as e:
-            logger.error(f"Browser thread error: {e}")
+            error_msg = f"Browser thread error: {e}"
+            logger.error(error_msg)
+            self._error = error_msg
+            self._ready.set()
         finally:
             self._cleanup()
 
     def _execute_command(self, command: str, args: dict) -> Any:
         """Execute a browser command."""
-        # Ensure browser and page exist
+        # Ensure browser and page exist (except for close)
         if command != "close" and self._page is None:
             self._ensure_page()
 
         if command == "navigate":
-            self._page.goto(args["url"], wait_until='domcontentloaded', timeout=30000)
+            url = args["url"]
+            logger.info(f"Navigating to {url}")
+            self._page.goto(url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT * 1000)
             return {"title": self._page.title(), "url": self._page.url}
 
         elif command == "click":
             selector = args["selector"]
+            timeout_ms = DEFAULT_OPERATION_TIMEOUT * 1000
             if selector.startswith('text='):
-                self._page.click(selector, timeout=10000)
+                self._page.click(selector, timeout=timeout_ms)
             else:
                 try:
-                    self._page.click(selector, timeout=5000)
+                    self._page.click(selector, timeout=timeout_ms // 2)
                 except Exception:
-                    self._page.click(f'text="{selector}"', timeout=5000)
-            self._page.wait_for_load_state('domcontentloaded', timeout=10000)
+                    # Fallback to text selector
+                    self._page.click(f'text="{selector}"', timeout=timeout_ms // 2)
+            self._page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
             return "clicked"
 
         elif command == "type":
-            self._page.fill(args["selector"], args["text"], timeout=10000)
+            self._page.fill(args["selector"], args["text"], timeout=DEFAULT_OPERATION_TIMEOUT * 1000)
             return "typed"
 
         elif command == "get_content":
@@ -205,11 +318,11 @@ class BrowserThread:
         """Ensure browser and page are ready."""
         if self._browser is None or not self._browser.is_connected():
             headless = _should_run_headless()
-            logger.info(f"Launching browser in {'headless' if headless else 'visible'} mode")
+            logger.info(f"Launching Chromium in {'headless' if headless else 'visible'} mode")
 
             launch_args = ['--disable-blink-features=AutomationControlled']
             if headless:
-                # Additional args for headless Docker environment
+                # Additional args for headless/Docker environment
                 launch_args.extend([
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
@@ -220,37 +333,41 @@ class BrowserThread:
 
             self._browser = self._playwright.chromium.launch(
                 headless=headless,
-                args=launch_args
+                args=launch_args,
+                timeout=BROWSER_LAUNCH_TIMEOUT * 1000
             )
+            logger.info("Browser launched successfully")
 
         if self._page is None or self._page.is_closed():
             context = self._browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
             self._page = context.new_page()
+            logger.info("Browser page created")
 
     def _cleanup(self):
         """Cleanup browser resources."""
+        logger.info("Cleaning up browser resources")
         try:
             if self._page:
                 self._page.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error closing page: {e}")
         self._page = None
 
         try:
             if self._browser:
                 self._browser.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error closing browser: {e}")
         self._browser = None
 
         try:
             if self._playwright:
                 self._playwright.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error stopping playwright: {e}")
         self._playwright = None
 
 
@@ -268,6 +385,113 @@ def _get_browser() -> BrowserThread:
         return _browser_thread
 
 
+def _reset_browser():
+    """Reset the browser thread (useful after errors)."""
+    global _browser_thread
+    with _browser_lock:
+        if _browser_thread is not None:
+            _browser_thread.stop()
+            _browser_thread = None
+
+
+# ============================================================================
+# Fallback implementation using requests + BeautifulSoup
+# ============================================================================
+
+def _fallback_navigate(url: str) -> str:
+    """Fallback navigation using requests (SSL verification disabled for corporate proxies)."""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "[Error]: Fallback requires 'requests' and 'beautifulsoup4'. Install with: pip install requests beautifulsoup4"
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=30, verify=False)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        title = soup.title.string if soup.title else "No title"
+
+        # Remove scripts/styles for clean text
+        for element in soup(['script', 'style', 'noscript']):
+            element.decompose()
+        text = soup.get_text(separator='\n', strip=True)
+        if len(text) > 8000:
+            text = text[:8000] + "\n...[truncated]"
+
+        links = []
+        for a in soup.find_all('a', href=True)[:20]:
+            href = a['href']
+            if href.startswith('http'):
+                link_text = a.get_text(strip=True)[:50]
+                if link_text:
+                    links.append({"text": link_text, "href": href})
+
+        # Populate cache for browser_get_content
+        _fallback_cache["url"] = url
+        _fallback_cache["title"] = title
+        _fallback_cache["text"] = text
+        _fallback_cache["links"] = links
+
+        return f"[Success - Fallback Mode]: Fetched {url}\nPage title: {title}"
+    except Exception as e:
+        return f"[Error]: Fallback navigation failed - {e}"
+
+
+def _fallback_get_content(url: str) -> str:
+    """Fallback content extraction using requests + BeautifulSoup (SSL verification disabled for corporate proxies)."""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "[Error]: Fallback requires 'requests' and 'beautifulsoup4'"
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=30, verify=False)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove script and style elements
+        for element in soup(['script', 'style', 'noscript']):
+            element.decompose()
+        
+        title = soup.title.string if soup.title else "No title"
+        text = soup.get_text(separator='\n', strip=True)
+        
+        # Truncate if too long
+        if len(text) > 8000:
+            text = text[:8000] + "\n...[truncated]"
+        
+        # Get links
+        links = []
+        for a in soup.find_all('a', href=True)[:20]:
+            href = a['href']
+            if href.startswith('http'):
+                link_text = a.get_text(strip=True)[:50]
+                if link_text:
+                    links.append(f"- [{link_text}]({href})")
+        
+        output = f"URL: {url}\nTitle: {title}\n\nContent:\n{text}"
+        if links:
+            output += "\n\nLinks:\n" + "\n".join(links)
+        
+        return output
+    except Exception as e:
+        return f"[Error]: Fallback content extraction failed - {e}"
+
+
+# ============================================================================
+# Tool definitions
+# ============================================================================
+
 @tool
 def browser_navigate(url: str) -> str:
     """
@@ -277,13 +501,23 @@ def browser_navigate(url: str) -> str:
         url: URL to navigate to (e.g., "https://google.com")
     """
     logger.info(f"browser_navigate: {url}")
+
+    if _use_fallback_mode():
+        logger.info("BROWSER_FORCE_FALLBACK=true — skipping Playwright, using requests fallback")
+        return _fallback_navigate(url)
+
     browser = _get_browser()
     success, result = browser.execute("navigate", {"url": url})
 
     if success:
         return f"[Success]: Navigated to {url}\nPage title: {result['title']}"
     else:
-        return f"[Error]: Failed to navigate - {result}"
+        # Try fallback if Playwright failed
+        logger.warning(f"Playwright navigation failed: {result}. Trying fallback...")
+        fallback_result = _fallback_navigate(url)
+        if "[Success" in fallback_result:
+            return fallback_result
+        return f"[Error]: Failed to navigate - {result}\n\nFallback also failed: {fallback_result}"
 
 
 @tool
@@ -332,6 +566,17 @@ def browser_get_content(include_links: bool = True) -> str:
         include_links: Whether to include link URLs (default True)
     """
     logger.info("browser_get_content")
+
+    if _use_fallback_mode():
+        if not _fallback_cache["url"]:
+            return "[Error]: No page loaded. Use browser_navigate(url) first."
+        output = f"URL: {_fallback_cache['url']}\nTitle: {_fallback_cache['title']}\n\nContent:\n{_fallback_cache['text']}"
+        if include_links and _fallback_cache.get("links"):
+            output += "\n\nLinks:\n"
+            for link in _fallback_cache["links"]:
+                output += f"- [{link['text']}]({link['href']})\n"
+        return output
+
     browser = _get_browser()
     success, result = browser.execute("get_content", {})
 
@@ -394,6 +639,9 @@ def browser_close() -> str:
     logger.info("browser_close")
     browser = _get_browser()
     success, result = browser.execute("close", {})
+    
+    # Reset the browser thread so next operation creates a fresh instance
+    _reset_browser()
 
     if success:
         return "[Success]: Browser closed"
@@ -419,6 +667,29 @@ def browser_press_key(key: str) -> str:
         return f"[Error]: Key press failed - {result}"
 
 
+@tool
+def browser_status() -> str:
+    """
+    Check the browser status and Playwright availability.
+    Useful for diagnosing issues.
+    """
+    fallback = _use_fallback_mode()
+    available, msg = _check_playwright_available()
+
+    status_lines = [
+        f"Force fallback mode (BROWSER_FORCE_FALLBACK): {fallback}",
+        f"Playwright available: {available}",
+        f"Status: {msg}",
+        f"Browsers path: {_find_playwright_browsers_path() or 'Not found'}",
+        f"Headless mode: {_should_run_headless()}",
+    ]
+    if fallback:
+        cached_url = _fallback_cache.get("url") or "none"
+        status_lines.append(f"Fallback last URL: {cached_url}")
+
+    return "\n".join(status_lines)
+
+
 # Export browser tools
 BROWSER_TOOLS = [
     browser_navigate,
@@ -429,4 +700,5 @@ BROWSER_TOOLS = [
     browser_scroll,
     browser_close,
     browser_press_key,
+    browser_status,
 ]

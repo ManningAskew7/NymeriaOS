@@ -1,6 +1,7 @@
 """NymeriaAgent - Main agent wrapper around LangGraph ReactAgent."""
 
 import asyncio
+import json
 import logging
 import re
 import sys
@@ -187,6 +188,9 @@ class NymeriaAgent:
     - SQLite/PostgreSQL persistence for conversations
     - User memories automatically injected into system prompt
     """
+
+    MAIN_AGENT_MAX_ITERATIONS = 70
+    SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
 
     def __init__(
         self,
@@ -713,17 +717,189 @@ class NymeriaAgent:
     # =========================================================================
 
     @staticmethod
-    def _check_iteration_limit_hit(messages: List) -> bool:
-        """Check if the agent was stopped by the iteration limit.
+    def _count_current_turn_tool_calls(messages: List) -> int:
+        """Count tool-call AI messages since the most recent HumanMessage."""
+        current_turn_messages = []
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                break
+            current_turn_messages.append(msg)
 
-        When the ReAct router's should_continue returns "end" due to hitting
-        max_iterations, the last message in state will be an AIMessage with
-        unfulfilled tool_calls (the agent wanted to continue but was cut off).
-        """
+        return sum(
+            1 for msg in current_turn_messages
+            if isinstance(msg, AIMessage) and msg.tool_calls
+        )
+
+    @classmethod
+    def _check_iteration_limit_hit(cls, messages: List, max_iterations: int) -> bool:
+        """Check if routing stopped because the turn exceeded max_iterations."""
         if not messages:
             return False
+
         last_msg = messages[-1]
-        return isinstance(last_msg, AIMessage) and bool(last_msg.tool_calls)
+        if not (isinstance(last_msg, AIMessage) and bool(last_msg.tool_calls)):
+            return False
+
+        return cls._count_current_turn_tool_calls(messages) > max_iterations
+
+    @staticmethod
+    def _extract_http_status_code(error: Exception) -> Optional[int]:
+        """Best-effort extraction of HTTP status code from provider exceptions."""
+        status_code = getattr(error, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+
+        response = getattr(error, "response", None)
+        response_status = getattr(response, "status_code", None) if response else None
+        if isinstance(response_status, int):
+            return response_status
+
+        match = re.search(r"error code:\s*(\d{3})", str(error), re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+
+        return None
+
+    def _classify_stream_exception(self, error: Exception) -> Dict[str, Any]:
+        """Map raw exceptions into frontend-friendly structured error payloads."""
+        raw_message = str(error)
+        status_code = self._extract_http_status_code(error)
+        lower = raw_message.lower()
+
+        if (
+            status_code == 402
+            or "error code: 402" in lower
+            or "requires more credits" in lower
+        ):
+            requested_tokens = None
+            affordable_tokens = None
+            token_match = re.search(
+                r"requested up to\s+(\d+)\s+tokens.*?can only afford\s+(\d+)",
+                raw_message,
+                re.IGNORECASE,
+            )
+            if token_match:
+                try:
+                    requested_tokens = int(token_match.group(1))
+                    affordable_tokens = int(token_match.group(2))
+                except ValueError:
+                    requested_tokens = None
+                    affordable_tokens = None
+
+            details: Dict[str, Any] = {
+                "provider": "openrouter",
+                "http_status": 402,
+            }
+            if requested_tokens is not None:
+                details["requested_max_tokens"] = requested_tokens
+            if affordable_tokens is not None:
+                details["affordable_max_tokens"] = affordable_tokens
+
+            message = (
+                "OpenRouter rejected the request due to insufficient credit/token budget. "
+                "Reduce max output tokens (for example set LLM_MAX_TOKENS lower) "
+                "or increase your OpenRouter credit limit, then retry."
+            )
+            if requested_tokens is not None and affordable_tokens is not None:
+                message = (
+                    f"{message} Requested up to {requested_tokens} tokens, "
+                    f"but only {affordable_tokens} were affordable."
+                )
+
+            return {
+                "type": "error",
+                "content": message,
+                "code": "openrouter_insufficient_credits",
+                "details": details,
+            }
+
+        details = {"http_status": status_code} if status_code is not None else {}
+        return {
+            "type": "error",
+            "content": f"An error occurred: {raw_message}",
+            "code": "agent_runtime_error",
+            "details": details,
+        }
+
+    @classmethod
+    def _parse_subagent_error_marker(cls, result: str) -> Optional[Dict[str, Any]]:
+        """Parse structured sub-agent error markers from tool output."""
+        if not isinstance(result, str):
+            return None
+        if not result.startswith(cls.SUBAGENT_ERROR_MARKER_PREFIX):
+            return None
+
+        first_line = result.splitlines()[0]
+        payload_json = first_line[len(cls.SUBAGENT_ERROR_MARKER_PREFIX):].strip()
+        if not payload_json:
+            return None
+
+        try:
+            payload = json.loads(payload_json)
+            if isinstance(payload, dict):
+                return payload
+            return None
+        except Exception:
+            return None
+
+    @classmethod
+    def _strip_subagent_error_marker(cls, result: str) -> str:
+        """Remove structured marker line from tool output for frontend display."""
+        if not isinstance(result, str):
+            return str(result)
+        if not result.startswith(cls.SUBAGENT_ERROR_MARKER_PREFIX):
+            return result
+
+        lines = result.splitlines()
+        cleaned = "\n".join(lines[1:]).strip()
+        if cleaned:
+            return cleaned
+
+        payload = cls._parse_subagent_error_marker(result)
+        if payload:
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        return result
+
+    def _tool_result_extra_events(self, tool_name: str, raw_result: str) -> List[Dict[str, Any]]:
+        """Build extra stream events for structured tool results."""
+        payload = self._parse_subagent_error_marker(raw_result)
+        if not payload:
+            return []
+
+        code = payload.get("code")
+        message = payload.get("message")
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        if code == "subagent_iteration_limit":
+            max_iterations = metadata.get("max_iterations", 0)
+            tool_call_count = metadata.get("tool_call_count", 0)
+            agent_name = metadata.get("agent_name") or tool_name
+
+            event = {
+                "type": "iteration_limit",
+                "scope": "sub_agent",
+                "agent_name": agent_name,
+                "max_iterations": max_iterations if isinstance(max_iterations, int) and max_iterations > 0 else 0,
+                "tool_call_count": tool_call_count if isinstance(tool_call_count, int) and tool_call_count > 0 else None,
+                "content": message if isinstance(message, str) and message.strip()
+                else f"{agent_name} hit its iteration limit.",
+            }
+
+            if event["max_iterations"] <= 0:
+                event["max_iterations"] = 30
+            if event["tool_call_count"] is None:
+                event.pop("tool_call_count")
+
+            return [event]
+
+        return []
 
     def _extract_tokens_from_response(self, messages: List) -> tuple:
         """
@@ -1420,7 +1596,7 @@ class NymeriaAgent:
             llm=llm_config,
             checkpointer=self._checkpointer_config,
             system_prompt=system_prompt,
-            max_iterations=70,
+            max_iterations=self.MAIN_AGENT_MAX_ITERATIONS,
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
@@ -1459,7 +1635,7 @@ class NymeriaAgent:
             llm=llm_config,
             checkpointer=self._async_checkpointer_config,
             system_prompt=system_prompt,
-            max_iterations=70,
+            max_iterations=self.MAIN_AGENT_MAX_ITERATIONS,
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
@@ -1946,10 +2122,15 @@ class NymeriaAgent:
                     self._token_tracker.record_usage(thread_id, input_tok, output_tok)
 
                 # Detect if the agent was stopped by the iteration limit
-                if self._check_iteration_limit_hit(messages):
-                    logger.warning(f"Thread {thread_id}: Agent hit iteration limit (70 steps)")
+                if self._check_iteration_limit_hit(messages, self.MAIN_AGENT_MAX_ITERATIONS):
+                    tool_call_count = self._count_current_turn_tool_calls(messages)
+                    logger.warning(
+                        f"Thread {thread_id}: Agent hit iteration limit "
+                        f"({tool_call_count}/{self.MAIN_AGENT_MAX_ITERATIONS} steps)"
+                    )
                     response += (
-                        "\n\n---\n**Note:** I was stopped because I reached the maximum number of steps (70). "
+                        f"\n\n---\n**Note:** I was stopped because I reached the maximum number of steps "
+                        f"({self.MAIN_AGENT_MAX_ITERATIONS}). "
                         "My task may be incomplete — you can ask me to continue where I left off."
                     )
 
@@ -1961,7 +2142,8 @@ class NymeriaAgent:
 
             except Exception as e:
                 logger.error(f"Error in chat: {e}", exc_info=True)
-                return f"An error occurred: {str(e)}"
+                error_event = self._classify_stream_exception(e)
+                return str(error_event.get("content") or f"An error occurred: {str(e)}")
         finally:
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
@@ -2147,12 +2329,18 @@ class NymeriaAgent:
 
                                 logger.info(f"[STREAM] ToolMessage: id={tool_call_id}, name={tool_name}")
 
+                                raw_result = msg.content if isinstance(msg.content, str) else str(msg.content)
+                                display_result = self._strip_subagent_error_marker(raw_result)
+
                                 yield {
                                     "type": "tool_result",
                                     "id": tool_call_id,
                                     "name": tool_name,
-                                    "result": msg.content,
+                                    "result": display_result,
                                 }
+
+                                for extra_event in self._tool_result_extra_events(tool_name or "", raw_result):
+                                    yield extra_event
 
                 # Index conversation turn in RAG (if enabled)
                 if final_response_parts:
@@ -2174,13 +2362,22 @@ class NymeriaAgent:
                         self._token_tracker.record_usage(thread_id, input_tok, output_tok)
 
                     # Detect if the agent was stopped by the iteration limit
-                    if self._check_iteration_limit_hit(result_messages):
-                        logger.warning(f"Thread {thread_id}: Agent hit iteration limit (70 steps) in stream()")
+                    if self._check_iteration_limit_hit(result_messages, self.MAIN_AGENT_MAX_ITERATIONS):
+                        tool_call_count = self._count_current_turn_tool_calls(result_messages)
+                        logger.warning(
+                            f"Thread {thread_id}: Agent hit iteration limit "
+                            f"({tool_call_count}/{self.MAIN_AGENT_MAX_ITERATIONS} steps) in stream()"
+                        )
                         yield {
                             "type": "iteration_limit",
-                            "content": "I reached the maximum number of steps (70) and had to stop. "
-                                       "My task may be incomplete — you can ask me to continue where I left off.",
-                            "max_iterations": 70,
+                            "scope": "main_agent",
+                            "content": (
+                                f"I reached the maximum number of steps "
+                                f"({self.MAIN_AGENT_MAX_ITERATIONS}) and had to stop. "
+                                "My task may be incomplete — you can ask me to continue where I left off."
+                            ),
+                            "max_iterations": self.MAIN_AGENT_MAX_ITERATIONS,
+                            "tool_call_count": tool_call_count,
                         }
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage in stream: {e}")
@@ -2193,7 +2390,7 @@ class NymeriaAgent:
                 import traceback
                 logger.error(f"[STREAM] === ERROR === thread={thread_id}: {e}")
                 logger.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
-                yield {"type": "error", "content": f"An error occurred: {str(e)}"}
+                yield self._classify_stream_exception(e)
 
                 # Try to track tokens even after error so status bar stays alive
                 try:
@@ -2477,12 +2674,16 @@ class NymeriaAgent:
                                 result = output.content
                             else:
                                 result = str(output)
+                            raw_result = result if isinstance(result, str) else str(result)
+                            display_result = self._strip_subagent_error_marker(raw_result)
                             yield {
                                 "type": "tool_result",
                                 "id": run_id,
                                 "name": tool_name,
-                                "result": result,
+                                "result": display_result,
                             }
+                            for extra_event in self._tool_result_extra_events(tool_name, raw_result):
+                                yield extra_event
 
                     # Handle chat model streaming - classify content by type
                     elif event_type == "on_chat_model_stream":
@@ -2557,13 +2758,22 @@ class NymeriaAgent:
                         )
 
                     # Detect if the agent was stopped by the iteration limit
-                    if self._check_iteration_limit_hit(result_messages):
-                        logger.warning(f"Thread {thread_id}: Agent hit iteration limit (70 steps) in astream()")
+                    if self._check_iteration_limit_hit(result_messages, self.MAIN_AGENT_MAX_ITERATIONS):
+                        tool_call_count = self._count_current_turn_tool_calls(result_messages)
+                        logger.warning(
+                            f"Thread {thread_id}: Agent hit iteration limit "
+                            f"({tool_call_count}/{self.MAIN_AGENT_MAX_ITERATIONS} steps) in astream()"
+                        )
                         yield {
                             "type": "iteration_limit",
-                            "content": "I reached the maximum number of steps (70) and had to stop. "
-                                       "My task may be incomplete — you can ask me to continue where I left off.",
-                            "max_iterations": 70,
+                            "scope": "main_agent",
+                            "content": (
+                                f"I reached the maximum number of steps "
+                                f"({self.MAIN_AGENT_MAX_ITERATIONS}) and had to stop. "
+                                "My task may be incomplete — you can ask me to continue where I left off."
+                            ),
+                            "max_iterations": self.MAIN_AGENT_MAX_ITERATIONS,
+                            "tool_call_count": tool_call_count,
                         }
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage: {e}")
@@ -2585,7 +2795,7 @@ class NymeriaAgent:
 
             except Exception as e:
                 logger.error(f"Error in astream: {e}", exc_info=True)
-                yield {"type": "error", "content": f"An error occurred: {str(e)}"}
+                yield self._classify_stream_exception(e)
 
                 # Try to track tokens even after error so status bar stays alive
                 try:
