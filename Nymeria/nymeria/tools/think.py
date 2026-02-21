@@ -1,4 +1,8 @@
-"""Think/reasoning tool for Nymeria - deep reasoning via Gemini on OpenRouter."""
+"""Consult tool for Nymeria - external reasoning via Gemini on OpenRouter.
+
+Sends a question to a Gemini model (with reasoning tokens enabled) and
+returns its analysis.  This is an external LLM call, not internal reasoning.
+"""
 
 import logging
 from typing import Optional
@@ -7,11 +11,11 @@ from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# Default model for deep reasoning
-DEFAULT_THINK_MODEL = "google/gemini-3-pro-preview"
+# Default model for consultation
+DEFAULT_CONSULT_MODEL = "google/gemini-3-pro-preview"
 
 # Model aliases for convenience
-THINK_MODELS = {
+CONSULT_MODELS = {
     "gemini-3-pro": "google/gemini-3-pro-preview",
     "gemini-2.5-pro": "google/gemini-2.5-pro",
     "gemini-2.5-flash": "google/gemini-2.5-flash-preview",
@@ -19,37 +23,42 @@ THINK_MODELS = {
 
 
 @tool
-def think(
+def consult(
     question: str,
     context: Optional[str] = None,
     model: Optional[str] = None,
 ) -> str:
     """
-    Deep reasoning via Gemini. Use for complex analysis, planning, debugging,
-    or any question that benefits from extended reasoning.
+    Ask another AI (Gemini) for a second opinion. Sends the question to a
+    Gemini model via OpenRouter and returns its analysis. Use when you want
+    an outside perspective, need help with a hard problem, or want to
+    cross-check your own reasoning.
+
+    Gemini has no memory of previous calls — include all relevant context
+    with every request.
 
     Args:
-        question: The question or problem to reason about
+        question: The question or problem to get help with
         context: Optional additional context to include
         model: Model alias - "gemini-3-pro" (default), "gemini-2.5-pro", or "gemini-2.5-flash"
 
     Returns:
-        Reasoning output with analysis
+        Gemini's reasoning and analysis
     """
-    logger.info(f"Think tool: {question[:80]}")
+    logger.info(f"Consult tool: {question[:80]}")
 
     from ..config import get_settings
     settings = get_settings()
 
     api_key = settings.openrouter_api_key
     if not api_key:
-        return "[Error]: OPENROUTER_API_KEY not set. Think tool requires OpenRouter."
+        return "[Error]: OPENROUTER_API_KEY not set. Consult tool requires OpenRouter."
 
     # Resolve model
-    if model and model.lower() in THINK_MODELS:
-        resolved_model = THINK_MODELS[model.lower()]
+    if model and model.lower() in CONSULT_MODELS:
+        resolved_model = CONSULT_MODELS[model.lower()]
     else:
-        resolved_model = DEFAULT_THINK_MODEL
+        resolved_model = DEFAULT_CONSULT_MODEL
 
     # Build messages
     messages = [
@@ -124,7 +133,7 @@ def think(
 
         result = "\n\n".join(result_parts) if result_parts else "[No response generated]"
 
-        logger.debug(f"Think tool returned {len(result)} characters (model={resolved_model}, reasoning_tokens={reasoning_tokens})")
+        logger.debug(f"Consult tool returned {len(result)} characters (model={resolved_model}, reasoning_tokens={reasoning_tokens})")
         return result
 
     except httpx.HTTPStatusError as e:
@@ -139,10 +148,10 @@ def think(
         return f"[Error]: {error_msg}"
 
     except Exception as e:
-        error_msg = f"Think tool failed: {str(e)}"
+        error_msg = f"Consult tool failed: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return f"[Error]: {error_msg}"
 
 
 # Export
-THINK_TOOLS = [think]
+CONSULT_TOOLS = [consult]

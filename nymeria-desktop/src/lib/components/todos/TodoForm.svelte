@@ -2,7 +2,7 @@
   import { Modal, Button, Icon } from '$lib/components/common';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { TodoItem, TodoPriority, TodoRecurrence } from '$lib/types';
+  import type { TodoItem, TodoRecurrence } from '$lib/types';
 
   interface Props {
     isOpen: boolean;
@@ -14,7 +14,6 @@
 
   // Form state
   let task = $state('');
-  let priority = $state<TodoPriority | ''>('');
   let notes = $state('');
   let scheduledFor = $state('');
   let recurrence = $state<TodoRecurrence | ''>('');
@@ -37,7 +36,6 @@
       if (editTodo) {
         // Edit mode: populate form with existing todo data
         task = editTodo.task;
-        priority = editTodo.priority || '';
         notes = editTodo.notes || '';
         scheduledFor = editTodo.scheduledFor ? formatDateTimeForInput(editTodo.scheduledFor) : '';
         recurrence = editTodo.recurrence || '';
@@ -46,7 +44,6 @@
       } else {
         // Create mode: reset form
         task = '';
-        priority = '';
         notes = '';
         scheduledFor = '';
         recurrence = '';
@@ -118,7 +115,6 @@
         // Update existing todo
         await todosStore.update(editTodo.id, {
           task: task.trim(),
-          priority: priority || undefined,
           notes: notes.trim() || undefined,
           scheduledFor: scheduledForValue,
           recurrence: recurrence || undefined,
@@ -130,7 +126,6 @@
         // Create new todo
         await todosStore.create({
           task: task.trim(),
-          priority: priority || undefined,
           notes: notes.trim() || undefined,
           scheduledFor: scheduledForValue,
           recurrence: recurrence || undefined,
@@ -187,16 +182,6 @@
         required
         disabled={saving || deleting}
       />
-    </div>
-
-    <div class="form-group">
-      <label for="priority">Priority</label>
-      <select id="priority" bind:value={priority} disabled={saving || deleting}>
-        <option value="">None</option>
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-      </select>
     </div>
 
     <div class="form-group">

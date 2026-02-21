@@ -6,30 +6,30 @@ Use get_all_tools_with_agents() to get ALL_TOOLS combined with agent tools.
 
 Changes from original:
 - notify: Unified from telegram_notify, discord_notify, slack_notify
-- todo_complete: Removed, use todo_update(status="done")
+- todo_complete: Removed, use todo(todo_id=..., status="done")
 - sub_agent, list_agents: Removed, agents are direct tools
 - self_modify: Removed, SelfModifyAgent is now a direct sub-agent tool
 - reload_all: Replaces reload_agents + auto-reload from self_modify
-- memory_list: Removed, memories are auto-injected
+- memory_clear_all: Removed, dangerous for cheap models
 - rag_settings: Removed, configure via UI
+- file_list: Removed, redundant with bash_execute
 """
 
 from .bash import bash_execute
-from .filesystem import file_read, file_write, file_list
+from .filesystem import file_read, file_write
 from .web import web_search
-from .think import think, THINK_TOOLS
+from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
     memory_save,
     memory_forget,
-    memory_clear_all,
+    memory_list,
     personality_set,
     rag_search,
     MEMORY_TOOLS,
 )
 from .todo import (
-    todo_add,
-    todo_update,
+    todo,
     todo_delete,
     todo_list,
     TODO_TOOLS,
@@ -59,25 +59,23 @@ from .triggers import (
     TRIGGER_TOOLS,
 )
 
-# All available tools (20 core tools + sub-agents as direct tools)
+# All available tools (23 core tools + sub-agents as direct tools)
 ALL_TOOLS = [
     # Core system tools
     bash_execute,
     file_read,
     file_write,
-    file_list,
     web_search,
-    think,
+    consult,
     claude_code,
-    # Memory tools (memories are auto-injected into system prompt)
+    # Memory tools
     memory_save,
     memory_forget,
-    memory_clear_all,
+    memory_list,
     personality_set,
     rag_search,
     # TODO tools (task tracking + scheduling for autonomous operation)
-    todo_add,
-    todo_update,  # Use status="done" to complete
+    todo,  # Create or update (use status="done" to complete)
     todo_delete,
     todo_list,
     # Sub-agent management + self-modification utilities
@@ -102,21 +100,19 @@ __all__ = [
     "bash_execute",
     "file_read",
     "file_write",
-    "file_list",
     "web_search",
-    "think",
-    "THINK_TOOLS",
+    "consult",
+    "CONSULT_TOOLS",
     "claude_code",
     # Memory tools
     "memory_save",
     "memory_forget",
-    "memory_clear_all",
+    "memory_list",
     "personality_set",
     "rag_search",
     "MEMORY_TOOLS",
     # TODO tools
-    "todo_add",
-    "todo_update",
+    "todo",
     "todo_delete",
     "todo_list",
     "TODO_TOOLS",
@@ -155,7 +151,7 @@ def get_all_tools_with_agents() -> list:
     Get ALL_TOOLS combined with dynamically generated agent tools.
 
     This function returns the complete list of tools including:
-    - Static tools defined in ALL_TOOLS (20 core tools)
+    - Static tools defined in ALL_TOOLS (23 core tools)
     - Dynamically generated tools for each registered sub-agent
       (BrowserAgent, OutlookAgent, SelfModifyAgent)
 

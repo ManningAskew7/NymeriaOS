@@ -629,12 +629,9 @@ export class NymeriaAPI {
             id: item.id as string,
             task: item.task as string,
             status: item.status as string,
-            priority: item.priority as string | undefined,
             createdAt: this.parseUtcTimestamp(item.created_at as string),
             updatedAt: this.parseUtcTimestamp(item.updated_at as string),
-            deadline: item.deadline ? this.parseUtcTimestamp(item.deadline as string) : undefined,
             notes: item.notes as string | undefined,
-            blockedReason: item.blocked_reason as string | undefined,
             // Scheduling fields
             scheduledFor: item.scheduled_for ? this.parseUtcTimestamp(item.scheduled_for as string) : undefined,
             threadId: item.thread_id as string | undefined,
@@ -653,12 +650,9 @@ export class NymeriaAPI {
       id: item.id as string,
       task: item.task as string,
       status: item.status as string,
-      priority: item.priority as string | undefined,
       createdAt: this.parseUtcTimestamp(item.created_at as string),
       updatedAt: this.parseUtcTimestamp(item.updated_at as string),
-      deadline: item.deadline ? this.parseUtcTimestamp(item.deadline as string) : undefined,
       notes: item.notes as string | undefined,
-      blockedReason: item.blocked_reason as string | undefined,
       scheduledFor: item.scheduled_for ? this.parseUtcTimestamp(item.scheduled_for as string) : undefined,
       threadId: item.thread_id as string | undefined,
       lastExecution: item.last_execution ? this.parseUtcTimestamp(item.last_execution as string) : undefined,
@@ -673,8 +667,6 @@ export class NymeriaAPI {
       headers: this.getHeaders(),
       body: JSON.stringify({
         task: request.task,
-        priority: request.priority,
-        deadline: request.deadline,
         notes: request.notes,
         scheduled_for: request.scheduledFor,
         recurrence: request.recurrence,
@@ -697,17 +689,13 @@ export class NymeriaAPI {
       headers: this.getHeaders(),
       body: JSON.stringify({
         task: request.task,
-        priority: request.priority,
         status: request.status,
-        deadline: request.deadline,
         notes: request.notes,
-        blocked_reason: request.blockedReason,
         scheduled_for: request.scheduledFor,
         recurrence: request.recurrence,
         thread_id: request.threadId,
         clear_schedule: request.clearSchedule,
-        clear_recurrence: request.clearRecurrence,
-        clear_deadline: request.clearDeadline
+        clear_recurrence: request.clearRecurrence
       })
     });
 

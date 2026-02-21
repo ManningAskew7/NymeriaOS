@@ -4,22 +4,22 @@ TODOs are the primary driver for autonomous operation. Active TODOs are
 automatically injected into the system prompt, so Nymeria always knows
 what tasks need attention.
 
-Scheduling is now integrated into TODOs via the `scheduled_for` field.
+Scheduling is integrated into TODOs via the `scheduled_for` field.
 When a TODO has a scheduled time, Nymeria wakes up to work on it.
 """
 
 import logging
 import uuid as _uuid
 from datetime import datetime
-from typing import Annotated, List, Optional, Union
+from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.activity_log import ActivityType, log_activity
-from ..core.time_utils import parse_deadline, parse_scheduled_time, get_user_tz
-from ..core.todo_constants import STATUS_ICONS, PRIORITY_MARKERS, STATUS_ORDER, PRIORITY_ORDER, PERMANENT_MARKER, PERMANENT_REJECT_MSG
-from ..core.todo_manager import TodoManager, TodoPriority, TodoStatus
+from ..core.time_utils import parse_scheduled_time, get_user_tz
+from ..core.todo_constants import STATUS_ICONS, STATUS_ORDER, VALID_RECURRENCES
+from ..core.todo_manager import TodoManager, TodoStatus
 from ..core.watchdog import get_watchdog
 from .utils import get_user_id, get_thread_id
 
@@ -41,7 +41,6 @@ def _get_todo_manager() -> TodoManager:
 
 
 # Use shared time parsing utilities
-_parse_deadline = parse_deadline
 _parse_scheduled_for = parse_scheduled_time
 
 
@@ -57,22 +56,12 @@ def _get_schedule_db():
 def _format_todo_item(item, show_notes: bool = False) -> str:
     """Format a single TODO item for display."""
     icon = STATUS_ICONS.get(item.status, "[ ]")
-    priority = PRIORITY_MARKERS.get(item.priority, "") if item.priority else ""
 
-    line = f"{icon} [{item.id}] {priority}{item.task}"
-
-    if item.permanent:
-        line += f" {PERMANENT_MARKER}"
+    line = f"{icon} [{item.id}] {item.task}"
 
     if item.scheduled_for:
         display_time = item.scheduled_for.astimezone(get_user_tz())
         line += f" [scheduled: {display_time.strftime('%Y-%m-%d %H:%M')}]"
-
-    if item.deadline:
-        line += f" (due: {item.deadline.strftime('%Y-%m-%d')})"
-
-    if item.status == TodoStatus.BLOCKED and item.blocked_reason:
-        line += f" - BLOCKED: {item.blocked_reason}"
 
     if show_notes and item.notes:
         line += f"\n    Notes: {item.notes}"
@@ -80,31 +69,34 @@ def _format_todo_item(item, show_notes: bool = False) -> str:
     return line
 
 
-# Valid recurrence patterns
-VALID_RECURRENCES = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
-
-
 @tool
-def todo_add(
-    task: Union[str, List[dict]],
-    priority: Optional[str] = None,
-    deadline: Optional[str] = None,
+def todo(
+    todo_id: Optional[str] = None,
+    task: Optional[str] = None,
     scheduled_for: Optional[str] = None,
+    status: Optional[str] = None,
+    notes: Optional[str] = None,
     recurrence: Optional[str] = None,
-    permanent: bool = False,
+    clear_schedule: bool = False,
+    clear_recurrence: bool = False,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Add TODO item(s). Use scheduled_for to auto-wake at that time.
+    Create or update a TODO item. Omit todo_id to create, provide it to update.
+
+    Recurring TODOs auto-reschedule when marked done — use todo_delete or
+    clear_recurrence to stop them permanently.
 
     Args:
-        task: Task string, or list of dicts with task/priority/deadline/scheduled_for/recurrence/permanent
-        priority: "high", "medium", or "low"
-        deadline: Due date (YYYY-MM-DD)
-        scheduled_for: "30s", "5m", "1h", "1d" or "YYYY-MM-DD HH:MM"
+        todo_id: 8-char TODO ID (omit to create a new TODO)
+        task: Task description (required for create, optional for update)
+        scheduled_for: When to auto-wake: "30s", "5m", "1h", "1d" or "YYYY-MM-DD HH:MM" (required for create)
+        status: "pending", "in_progress", or "done"
+        notes: Additional notes (max 1000 chars)
         recurrence: "5min", "10min", "15min", "30min", "hourly", "daily", "weekly", "monthly"
-        permanent: If True, task cannot be completed (requires recurrence)
+        clear_schedule: Remove scheduled time
+        clear_recurrence: Remove recurrence pattern
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
@@ -113,175 +105,37 @@ def todo_add(
     manager = _get_todo_manager()
     schedule_db = _get_schedule_db()
 
-    # Handle batch mode
-    if isinstance(task, list):
-        return _todo_add_batch(task, user_id, thread_id, manager, schedule_db)
+    # --- CREATE mode (no todo_id) ---
+    if todo_id is None:
+        if not task:
+            return "[Error]: 'task' is required when creating a new TODO."
+        if not scheduled_for:
+            return "[Error]: 'scheduled_for' is required when creating a new TODO. Every TODO needs a wake time."
 
-    # Single task mode
-    logger.info(f"todo_add called: task={task[:50]}")
+        logger.info(f"todo create: task={task[:50]}")
 
-    # Parse priority
-    todo_priority = None
-    if priority:
-        try:
-            todo_priority = TodoPriority(priority.lower())
-        except ValueError:
-            return f"[Error]: Invalid priority '{priority}'. Use 'high', 'medium', or 'low'."
-
-    # Parse deadline
-    todo_deadline = None
-    if deadline:
-        todo_deadline = _parse_deadline(deadline)
-        if not todo_deadline:
-            return f"[Error]: Invalid deadline format '{deadline}'. Use YYYY-MM-DD format."
-
-    # Parse scheduled_for
-    todo_scheduled = None
-    if scheduled_for:
+        # Parse scheduled_for
         todo_scheduled = _parse_scheduled_for(scheduled_for)
         if not todo_scheduled:
             return f"[Error]: Invalid scheduled_for format '{scheduled_for}'. Use '30s', '5m', '1h', '1d' or 'YYYY-MM-DD HH:MM'."
 
-    # Validate recurrence
-    todo_recurrence = None
-    if recurrence:
-        if recurrence.lower() not in VALID_RECURRENCES:
-            return f"[Error]: Invalid recurrence '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
-        todo_recurrence = recurrence.lower()
+        # Validate recurrence
+        todo_recurrence = None
+        if recurrence:
+            if recurrence.lower() not in VALID_RECURRENCES:
+                return f"[Error]: Invalid recurrence '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
+            todo_recurrence = recurrence.lower()
 
-    # Validate permanent requires recurrence
-    if permanent and not todo_recurrence:
-        return "[Error]: permanent=True requires a recurrence pattern to be set."
-
-    # Use atomic update to prevent race conditions
-    with manager.atomic_update(user_id) as todo_list:
-        item = todo_list.add_item(
-            task,
-            priority=todo_priority,
-            deadline=todo_deadline,
-            scheduled_for=todo_scheduled,
-            thread_id=thread_id,
-            recurrence=todo_recurrence,
-            permanent=permanent,
-        )
-        if item:
-            logger.info(f"TODO added for user {user_id}: {item.id} - {task[:50]}")
-
-            # Sync to schedule database if scheduled
-            if todo_scheduled and schedule_db:
-                schedule_db.add_scheduled(
-                    todo_id=item.id,
-                    user_id=user_id,
-                    scheduled_for=todo_scheduled,
-                    task_preview=task[:100],
-                    thread_id=thread_id,
-                )
-
-            # Log activity
-            metadata = {"todo_id": item.id, "priority": priority}
-            if scheduled_for:
-                metadata["scheduled_for"] = scheduled_for
-            if todo_recurrence:
-                metadata["recurrence"] = todo_recurrence
-            log_activity(
-                ActivityType.TODO_ADDED,
-                f"TODO added: {task[:80]}",
-                user_id=user_id,
-                metadata=metadata,
-            )
-
-            result = f"[Added]: TODO {item.id}: {task[:100]}"
-            if todo_scheduled:
-                result += f" (scheduled for {scheduled_for})"
-            if todo_recurrence:
-                result += f" (recurring: {todo_recurrence})"
-            if permanent:
-                result += " (permanent)"
-            return result
-        else:
-            return f"[Error]: TODO limit reached ({todo_list.MAX_TODOS} active items). Complete or delete some tasks first."
-
-
-def _todo_add_batch(
-    tasks: List[dict],
-    user_id: str,
-    thread_id: str,
-    manager: TodoManager,
-    schedule_db,
-) -> str:
-    """Handle batch TODO creation."""
-    if not tasks:
-        return "[Error]: Empty task list provided."
-
-    if len(tasks) > 20:
-        return "[Error]: Maximum 20 TODOs per batch."
-
-    results = []
-    errors = []
-
-    with manager.atomic_update(user_id) as todo_list:
-        for i, spec in enumerate(tasks):
-            if not isinstance(spec, dict):
-                errors.append(f"Item {i+1}: Must be a dictionary")
-                continue
-
-            task_text = spec.get("task")
-            if not task_text:
-                errors.append(f"Item {i+1}: Missing 'task' field")
-                continue
-
-            # Parse priority
-            todo_priority = None
-            if spec.get("priority"):
-                try:
-                    todo_priority = TodoPriority(spec["priority"].lower())
-                except ValueError:
-                    errors.append(f"Item {i+1}: Invalid priority '{spec['priority']}'")
-                    continue
-
-            # Parse deadline
-            todo_deadline = None
-            if spec.get("deadline"):
-                todo_deadline = _parse_deadline(spec["deadline"])
-                if not todo_deadline:
-                    errors.append(f"Item {i+1}: Invalid deadline '{spec['deadline']}'")
-                    continue
-
-            # Parse scheduled_for
-            todo_scheduled = None
-            if spec.get("scheduled_for"):
-                todo_scheduled = _parse_scheduled_for(spec["scheduled_for"])
-                if not todo_scheduled:
-                    errors.append(f"Item {i+1}: Invalid scheduled_for '{spec['scheduled_for']}'")
-                    continue
-
-            # Parse recurrence
-            todo_recurrence = None
-            if spec.get("recurrence"):
-                if spec["recurrence"].lower() not in VALID_RECURRENCES:
-                    errors.append(f"Item {i+1}: Invalid recurrence '{spec['recurrence']}'")
-                    continue
-                todo_recurrence = spec["recurrence"].lower()
-
-            # Parse permanent
-            todo_permanent = bool(spec.get("permanent", False))
-            if todo_permanent and not todo_recurrence:
-                errors.append(f"Item {i+1}: permanent=True requires recurrence")
-                continue
-
-            # Add the item
+        # Use atomic update to prevent race conditions
+        with manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
-                task_text,
-                priority=todo_priority,
-                deadline=todo_deadline,
+                task,
                 scheduled_for=todo_scheduled,
                 thread_id=thread_id,
                 recurrence=todo_recurrence,
-                permanent=todo_permanent,
             )
-
             if item:
-                results.append(item)
+                logger.info(f"TODO added for user {user_id}: {item.id} - {task[:50]}")
 
                 # Sync to schedule database if scheduled
                 if todo_scheduled and schedule_db:
@@ -289,76 +143,34 @@ def _todo_add_batch(
                         todo_id=item.id,
                         user_id=user_id,
                         scheduled_for=todo_scheduled,
-                        task_preview=task_text[:100],
+                        task_preview=task[:100],
                         thread_id=thread_id,
                     )
 
                 # Log activity
+                metadata = {"todo_id": item.id}
+                if scheduled_for:
+                    metadata["scheduled_for"] = scheduled_for
+                if todo_recurrence:
+                    metadata["recurrence"] = todo_recurrence
                 log_activity(
                     ActivityType.TODO_ADDED,
-                    f"TODO added: {task_text[:60]}",
+                    f"TODO added: {task[:80]}",
                     user_id=user_id,
-                    metadata={"todo_id": item.id, "batch": True},
+                    metadata=metadata,
                 )
+
+                result = f"[Added]: TODO {item.id}: {task[:100]}"
+                if todo_scheduled:
+                    result += f" (scheduled for {scheduled_for})"
+                if todo_recurrence:
+                    result += f" (recurring: {todo_recurrence})"
+                return result
             else:
-                errors.append(f"Item {i+1}: TODO limit reached")
-                break
+                return f"[Error]: TODO limit reached ({todo_list.MAX_TODOS} active items). Complete or delete some tasks first."
 
-    # Build response
-    if results:
-        lines = [f"[Added]: {len(results)} TODO(s) created:"]
-        for item in results:
-            scheduled_info = ""
-            if item.scheduled_for:
-                scheduled_info = f" (scheduled)"
-            lines.append(f"  - {item.id}: {item.task[:50]}{scheduled_info}")
-
-        if errors:
-            lines.append(f"\n[Errors]: {len(errors)} failed:")
-            for err in errors[:5]:
-                lines.append(f"  - {err}")
-
-        return "\n".join(lines)
-    else:
-        return f"[Error]: No TODOs created. Errors: {'; '.join(errors[:5])}"
-
-
-@tool
-def todo_update(
-    todo_id: str,
-    task: Optional[str] = None,
-    status: Optional[str] = None,
-    notes: Optional[str] = None,
-    blocked_reason: Optional[str] = None,
-    priority: Optional[str] = None,
-    scheduled_for: Optional[str] = None,
-    clear_schedule: bool = False,
-    recurrence: Optional[str] = None,
-    clear_recurrence: bool = False,
-    *,
-    config: Annotated[RunnableConfig, InjectedToolArg],
-) -> str:
-    """
-    Update a TODO item.
-
-    Args:
-        todo_id: 8-char TODO ID
-        task: New task description
-        status: "pending", "in_progress", "done", or "blocked"
-        notes: Add notes (max 1000 chars)
-        blocked_reason: Why blocked (auto-sets status to blocked)
-        priority: "high", "medium", or "low"
-        scheduled_for: "30s", "5m", "1h", "1d" or "YYYY-MM-DD HH:MM"
-        clear_schedule: Remove scheduled time
-        recurrence: "5min", "10min", "15min", "30min", "hourly", "daily", "weekly", "monthly"
-        clear_recurrence: Remove recurrence pattern
-    """
-    logger.info(f"todo_update called: id={todo_id}")
-
-    user_id = get_user_id(config)
-    thread_id = get_thread_id(config)
-    manager = _get_todo_manager()
-    schedule_db = _get_schedule_db()
+    # --- UPDATE mode (todo_id provided) ---
+    logger.info(f"todo update: id={todo_id}")
 
     # Parse status
     todo_status = None
@@ -366,15 +178,7 @@ def todo_update(
         try:
             todo_status = TodoStatus(status.lower())
         except ValueError:
-            return f"[Error]: Invalid status '{status}'. Use 'pending', 'in_progress', 'done', or 'blocked'."
-
-    # Parse priority
-    todo_priority = None
-    if priority:
-        try:
-            todo_priority = TodoPriority(priority.lower())
-        except ValueError:
-            return f"[Error]: Invalid priority '{priority}'. Use 'high', 'medium', or 'low'."
+            return f"[Error]: Invalid status '{status}'. Use 'pending', 'in_progress', or 'done'."
 
     # Parse scheduled_for
     todo_scheduled = None
@@ -391,19 +195,13 @@ def todo_update(
         todo_recurrence = recurrence.lower()
 
     # Use atomic update to prevent race conditions
+    rescheduled_time = None
     with manager.atomic_update(user_id) as todo_list:
-        # Check permanent guard before update
-        item_check = todo_list.get_item(todo_id)
-        if item_check and todo_status == TodoStatus.DONE and item_check.permanent:
-            return f"[Error]: {PERMANENT_REJECT_MSG}"
-
         success = todo_list.update_item(
             todo_id,
             task=task,
             status=todo_status,
             notes=notes,
-            blocked_reason=blocked_reason,
-            priority=todo_priority,
             scheduled_for=todo_scheduled,
             clear_schedule=clear_schedule,
             thread_id=thread_id if todo_scheduled else None,  # Only update thread on reschedule
@@ -420,9 +218,33 @@ def todo_update(
                 if watchdog:
                     watchdog.clear_nudge_tracking(user_id, todo_id)
 
+            # Auto-reschedule recurring TODOs marked as done
+            if todo_status == TodoStatus.DONE and item.recurrence:
+                from ..core.todo_constants import RECURRENCE_DELTAS
+                delta = RECURRENCE_DELTAS.get(item.recurrence)
+                if delta:
+                    rescheduled_time = datetime.utcnow() + delta
+                    todo_list.update_item(
+                        todo_id,
+                        scheduled_for=rescheduled_time,
+                        status=TodoStatus.PENDING,
+                    )
+                    item = todo_list.get_item(todo_id)
+                    if item:
+                        item.last_execution = datetime.utcnow()
+                    logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
+
             # Sync to schedule database
             if schedule_db:
-                if clear_schedule or todo_status == TodoStatus.DONE:
+                if rescheduled_time:
+                    schedule_db.add_scheduled(
+                        todo_id=item.id,
+                        user_id=user_id,
+                        scheduled_for=rescheduled_time,
+                        task_preview=item.task[:100],
+                        thread_id=item.thread_id,
+                    )
+                elif clear_schedule or todo_status == TodoStatus.DONE:
                     schedule_db.remove_scheduled(todo_id)
                 elif todo_scheduled:
                     schedule_db.add_scheduled(
@@ -443,6 +265,8 @@ def todo_update(
                 metadata["recurrence"] = todo_recurrence
             if clear_recurrence:
                 metadata["recurrence_cleared"] = True
+            if rescheduled_time:
+                metadata["rescheduled"] = True
             log_activity(
                 ActivityType.TODO_UPDATED,
                 f"TODO updated: {item.task[:60]} (status: {item.status.value})",
@@ -451,11 +275,13 @@ def todo_update(
             )
 
             result = f"[Updated]: TODO {todo_id} - {item.task[:50]} (status: {item.status.value})"
-            if item.scheduled_for:
+            if rescheduled_time:
+                result += f" (auto-rescheduled: recurring {item.recurrence})"
+            elif item.scheduled_for:
                 result += f" (scheduled)"
             elif clear_schedule:
                 result += " (schedule cleared)"
-            if item.recurrence:
+            if item.recurrence and not rescheduled_time:
                 result += f" (recurring: {item.recurrence})"
             elif clear_recurrence:
                 result += " (recurrence cleared)"
@@ -470,7 +296,7 @@ def _todo_complete_internal(
 ) -> str:
     """
     Internal function to mark a TODO as completed.
-    Used by MCP server. For tool usage, use todo_update(status="done").
+    Used by MCP server. For tool usage, use todo(todo_id=..., status="done").
 
     Args:
         todo_id: 8-char TODO ID
@@ -482,16 +308,14 @@ def _todo_complete_internal(
     schedule_db = _get_schedule_db()
 
     # Use atomic update to prevent race conditions
+    rescheduled_time = None
     with manager.atomic_update(user_id) as todo_list:
         item = todo_list.get_item(todo_id)
         if not item:
             return f"[Error]: TODO '{todo_id}' not found. Use todo_list to see available TODOs."
 
-        # Check permanent guard
-        if item.permanent:
-            return f"[Error]: {PERMANENT_REJECT_MSG}"
-
         task_name = item.task
+        has_recurrence = item.recurrence
         success = todo_list.complete_item(todo_id)
         if success:
             logger.info(f"TODO completed for user {user_id}: {todo_id}")
@@ -501,9 +325,34 @@ def _todo_complete_internal(
             if watchdog:
                 watchdog.clear_nudge_tracking(user_id, todo_id)
 
-            # Remove from schedule database
+            # Auto-reschedule recurring TODOs
+            if has_recurrence:
+                from ..core.todo_constants import RECURRENCE_DELTAS
+                delta = RECURRENCE_DELTAS.get(has_recurrence)
+                if delta:
+                    rescheduled_time = datetime.utcnow() + delta
+                    todo_list.update_item(
+                        todo_id,
+                        scheduled_for=rescheduled_time,
+                        status=TodoStatus.PENDING,
+                    )
+                    refreshed = todo_list.get_item(todo_id)
+                    if refreshed:
+                        refreshed.last_execution = datetime.utcnow()
+                    logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
+
+            # Sync schedule database
             if schedule_db:
-                schedule_db.remove_scheduled(todo_id)
+                if rescheduled_time:
+                    schedule_db.add_scheduled(
+                        todo_id=todo_id,
+                        user_id=user_id,
+                        scheduled_for=rescheduled_time,
+                        task_preview=task_name[:100],
+                        thread_id=item.thread_id,
+                    )
+                else:
+                    schedule_db.remove_scheduled(todo_id)
 
             # Log activity
             log_activity(
@@ -512,6 +361,8 @@ def _todo_complete_internal(
                 user_id=user_id,
                 metadata={"todo_id": todo_id},
             )
+            if rescheduled_time:
+                return f"[Completed]: {task_name[:100]} (auto-rescheduled: recurring {has_recurrence})"
             return f"[Completed]: {task_name[:100]}"
         else:
             return f"[Error]: Failed to complete TODO '{todo_id}'."
@@ -572,7 +423,7 @@ def todo_list(
     List TODO items. Shows active (non-done) by default.
 
     Args:
-        filter_status: "pending", "in_progress", "blocked", "done", or "all"
+        filter_status: "pending", "in_progress", "done", or "all"
     """
     logger.info(f"todo_list called: filter={filter_status}")
 
@@ -588,7 +439,7 @@ def todo_list(
             status = TodoStatus(filter_status.lower())
             items = [i for i in todo_list_obj.items if i.status == status]
         except ValueError:
-            return f"[Error]: Invalid status filter '{filter_status}'. Use 'pending', 'in_progress', 'blocked', 'done', or 'all'."
+            return f"[Error]: Invalid status filter '{filter_status}'. Use 'pending', 'in_progress', 'done', or 'all'."
     else:
         # Default: active (non-done) items
         items = todo_list_obj.get_active_todos()
@@ -596,12 +447,16 @@ def todo_list(
     if not items:
         if filter_status:
             return f"[Info]: No TODOs with status '{filter_status}'."
-        return "[Info]: No active TODOs. Use todo_add to create tasks."
+        return "[Info]: No active TODOs. Use todo to create tasks."
 
-    # Sort: in_progress first, then by priority (high > medium > low > none), then by created_at
+    # Sort: in_progress first, then pending, then done; then by scheduled_for, then created_at
     sorted_items = sorted(
         items,
-        key=lambda i: (STATUS_ORDER.get(i.status, 4), PRIORITY_ORDER.get(i.priority, 3), i.created_at),
+        key=lambda i: (
+            STATUS_ORDER.get(i.status, 3),
+            (i.scheduled_for or datetime.max).timestamp() if i.scheduled_for else float('inf'),
+            i.created_at,
+        ),
     )
 
     # Format output
@@ -615,10 +470,8 @@ def todo_list(
 
 
 # Export TODO tools
-# Note: todo_complete removed - use todo_update(status="done") instead
 TODO_TOOLS = [
-    todo_add,
-    todo_update,
+    todo,
     todo_delete,
     todo_list,
 ]

@@ -338,13 +338,10 @@ class NymeriaDiscordBot(discord.Client):
                     color=discord.Color.blue(),
                 )
                 for item in items[:25]:  # Discord embed limit
-                    status_icon = {"pending": "⏳", "in_progress": "🔄", "blocked": "🚫", "done": "✅"}.get(
+                    status_icon = {"pending": "⏳", "in_progress": "🔄", "done": "✅"}.get(
                         item.status, "❓"
                     )
-                    priority_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(
-                        item.priority or "medium", ""
-                    )
-                    name = f"{status_icon} {priority_icon} {item.task[:80]}"
+                    name = f"{status_icon} {item.task[:80]}"
                     value = f"ID: `{item.id[:8]}` | Status: {item.status}"
                     if item.scheduled_for:
                         value += f" | Scheduled: {item.scheduled_for}"

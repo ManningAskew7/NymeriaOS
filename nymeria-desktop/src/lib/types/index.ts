@@ -133,8 +133,7 @@ export interface ThreadHistory {
 }
 
 // TODO types (from backend)
-export type TodoStatus = 'pending' | 'in_progress' | 'blocked' | 'done';
-export type TodoPriority = 'high' | 'medium' | 'low';
+export type TodoStatus = 'pending' | 'in_progress' | 'done';
 export type TodoRecurrence = '5min' | '10min' | '15min' | '30min' | 'hourly' | 'daily' | 'weekly' | 'monthly';
 export type TodoCreatedBy = 'agent' | 'user';
 
@@ -142,12 +141,9 @@ export interface TodoItem {
   id: string;
   task: string;
   status: TodoStatus;
-  priority?: TodoPriority;
   createdAt: Date;
   updatedAt: Date;
-  deadline?: Date;
   notes?: string;
-  blockedReason?: string;
   // Scheduling fields
   scheduledFor?: Date;
   threadId?: string;
@@ -159,8 +155,6 @@ export interface TodoItem {
 
 export interface TodoCreateRequest {
   task: string;
-  priority?: TodoPriority;
-  deadline?: string; // ISO date string
   notes?: string;
   scheduledFor?: string; // Relative ("2h") or absolute
   recurrence?: TodoRecurrence;
@@ -169,17 +163,13 @@ export interface TodoCreateRequest {
 
 export interface TodoUpdateRequest {
   task?: string;
-  priority?: TodoPriority;
   status?: TodoStatus;
-  deadline?: string; // ISO date string
   notes?: string;
-  blockedReason?: string;
   scheduledFor?: string; // Relative ("2h") or absolute
   recurrence?: TodoRecurrence;
   threadId?: string; // Thread ID for scheduled execution output
   clearSchedule?: boolean;
   clearRecurrence?: boolean;
-  clearDeadline?: boolean;
 }
 
 export interface TodoListResponse {

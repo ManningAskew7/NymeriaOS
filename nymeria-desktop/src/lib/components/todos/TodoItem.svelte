@@ -52,8 +52,6 @@
         return 'check';
       case 'in_progress':
         return 'clock';
-      case 'blocked':
-        return 'warning';
       default:
         return 'clock';
     }
@@ -65,23 +63,8 @@
         return 'var(--success)';
       case 'in_progress':
         return 'var(--accent-primary)';
-      case 'blocked':
-        return 'var(--error)';
       default:
         return 'var(--text-muted)';
-    }
-  });
-
-  // Priority badge
-  let priorityBadge = $derived.by(() => {
-    if (!todo.priority) return null;
-    switch (todo.priority) {
-      case 'high':
-        return { text: '!!', color: 'var(--error)' };
-      case 'medium':
-        return { text: '!', color: 'var(--warning)' };
-      default:
-        return null;
     }
   });
 
@@ -112,7 +95,7 @@
   });
 
   // Check if there are expandable details
-  let hasDetails = $derived(!!todo.notes || !!todo.blockedReason);
+  let hasDetails = $derived(!!todo.notes);
 
   // Check if user-created
   let isUserCreated = $derived(todo.createdBy === 'user');
@@ -192,9 +175,6 @@
 
   <div class="todo-content">
     <div class="todo-header">
-      {#if priorityBadge}
-        <span class="priority-badge" style="color: {priorityBadge.color}">{priorityBadge.text}</span>
-      {/if}
       {#if isUserCreated}
         <span class="creator-badge user" title="Created by you">
           <Icon name="user" size={10} />
@@ -238,12 +218,6 @@
           <div class="detail-row notes">
             <Icon name="fileText" size={12} />
             <span>{todo.notes}</span>
-          </div>
-        {/if}
-        {#if todo.status === 'blocked' && todo.blockedReason}
-          <div class="detail-row blocked">
-            <Icon name="warning" size={12} />
-            <span>Blocked: {todo.blockedReason}</span>
           </div>
         {/if}
       </div>
@@ -383,12 +357,6 @@
     gap: var(--spacing-xs);
   }
 
-  .priority-badge {
-    font-size: var(--font-size-xs);
-    font-weight: 700;
-    flex-shrink: 0;
-  }
-
   .creator-badge {
     display: inline-flex;
     align-items: center;
@@ -493,10 +461,6 @@
   .detail-row.notes span {
     white-space: pre-wrap;
     word-break: break-word;
-  }
-
-  .detail-row.blocked {
-    color: var(--error);
   }
 
   .todo-item.scheduled {

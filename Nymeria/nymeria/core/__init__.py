@@ -8,7 +8,7 @@ from .self_agent import SelfModifyAgent
 from .ticker import Ticker, get_ticker, set_ticker
 from .scheduler import DurableScheduler, ExecutionResult
 from .rate_limiter import RateLimiter
-from .todo_manager import TodoManager, TodoList, TodoItem, TodoStatus, TodoPriority
+from .todo_manager import TodoManager, TodoList, TodoItem, TodoStatus
 from .todo_schedule_db import TodoScheduleDB, ScheduledTodoEntry
 from .watchdog import Watchdog, get_watchdog, set_watchdog
 
@@ -51,7 +51,6 @@ __all__ = [
     "TodoList",
     "TodoItem",
     "TodoStatus",
-    "TodoPriority",
     # TODO Schedule Database
     "TodoScheduleDB",
     "ScheduledTodoEntry",

@@ -56,7 +56,7 @@ def trigger_create(
         action_config: Action-specific configuration dict.
             agent_prompt: {"prompt_template": "...", "thread_id": "optional"}
             notify: {"message_template": "...", "platform": "auto"}
-            create_todo: {"task_template": "...", "priority": "medium"}
+            create_todo: {"task_template": "..."}
             Templates support {variable} interpolation from event data.
         source_config: Source-specific config (e.g. {"secret": "mykey"} for webhooks).
         cooldown_seconds: Minimum seconds between trigger firings (0 = no cooldown).
