@@ -106,6 +106,10 @@ export interface ThreadConfig {
   disabledTools: string[];
   enabledTools: string[];
   llmConfig?: ThreadLLMConfig | null;
+  systemPrompt?: string | null;
+  callable: boolean;
+  callableName?: string | null;
+  callableDescription?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
@@ -116,10 +120,39 @@ export interface ThreadConfigUpdateRequest {
   disabled_tools?: string[] | null;
   enabled_tools?: string[] | null;
   llm_config?: Partial<ThreadLLMConfig> | null;
+  system_prompt?: string | null;
+  callable?: boolean;
+  callable_name?: string | null;
+  callable_description?: string | null;
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
   clear_llm_config?: boolean;
+  clear_system_prompt?: boolean;
+}
+
+export interface AgentTemplate {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  tools: string[];
+  allowedTools: string[];
+  requiredEnvVars: string[];
+  llmProvider?: string | null;
+  llmModel?: string | null;
+  llmTemperature?: number | null;
+  llmMaxTokens?: number | null;
+}
+
+export interface AgentThreadCreateRequest {
+  callable_name: string;
+  callable_description?: string;
+  system_prompt?: string;
+  from_template?: string;
+  llm_provider?: string;
+  llm_model?: string;
+  llm_temperature?: number;
+  llm_max_tokens?: number;
 }
 
 export interface OptionalTool {

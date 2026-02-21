@@ -18,6 +18,15 @@ function createThreadConfigStore() {
       return loading.has(threadId);
     },
 
+    isCallableThread(threadId: string): boolean {
+      const config = configs.get(threadId);
+      return config?.callable ?? false;
+    },
+
+    getCallableThreads(): ThreadConfig[] {
+      return Array.from(configs.values()).filter((c) => c.callable);
+    },
+
     async loadConfig(threadId: string): Promise<ThreadConfig> {
       loading = new Set([...loading, threadId]);
       try {

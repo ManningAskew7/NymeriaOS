@@ -160,4 +160,69 @@ from .tool_factory import (
     get_agent_tools,
     refresh_agent_tools,
     clear_agent_tools_cache,
+    get_callable_thread_tools,
 )
+
+
+def ensure_callable_threads(thread_config_manager) -> list[str]:
+    """Ensure callable threads exist for all registered agent templates.
+
+    For each registered agent in AVAILABLE_AGENTS, checks if a callable thread
+    with matching callable_name already exists. If not, creates one with
+    the template's system_prompt, LLM config, and description.
+
+    This is idempotent — only creates threads that don't exist yet.
+
+    Args:
+        thread_config_manager: ThreadConfigManager instance
+
+    Returns:
+        List of agent names that had callable threads created
+    """
+    import uuid
+    from ..core.thread_config import ThreadConfig, ThreadLLMConfig
+
+    created = []
+
+    for agent_name, config in AVAILABLE_AGENTS.items():
+        # Check if callable thread already exists for this agent
+        existing = thread_config_manager.get_callable_thread_by_name(agent_name)
+        if existing:
+            logger.debug(f"Callable thread already exists for {agent_name}: {existing.thread_id}")
+            continue
+
+        # Generate a unique thread ID
+        random_suffix = uuid.uuid4().hex[:8]
+        thread_id = f"agent-{agent_name.lower()}-{random_suffix}"
+
+        # Build LLM config from template
+        llm_config = None
+        if config.get("llm_provider") or config.get("llm_model") or config.get("llm_temperature") is not None or config.get("llm_max_tokens") is not None:
+            llm_config = ThreadLLMConfig(
+                provider=config.get("llm_provider"),
+                model=config.get("llm_model"),
+                temperature=config.get("llm_temperature"),
+                max_tokens=config.get("llm_max_tokens"),
+            )
+
+        tc = ThreadConfig(
+            thread_id=thread_id,
+            system_prompt=config.get("system_prompt", ""),
+            callable=True,
+            callable_name=agent_name,
+            callable_description=config.get("description", f"Invoke the {agent_name} sub-agent"),
+            llm_config=llm_config,
+        )
+
+        if thread_config_manager.save_config(tc):
+            created.append(agent_name)
+            logger.info(f"Created callable thread for {agent_name}: {thread_id}")
+        else:
+            logger.error(f"Failed to create callable thread for {agent_name}")
+
+    if created:
+        logger.info(f"ensure_callable_threads: created {len(created)} callable threads: {created}")
+    else:
+        logger.info("ensure_callable_threads: all callable threads already exist")
+
+    return created

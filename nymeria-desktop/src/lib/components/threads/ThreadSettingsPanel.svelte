@@ -20,7 +20,7 @@
   let { thread, threadConfig, onClose, onSaved }: Props = $props();
 
   // Active tab
-  let activeTab = $state<'instructions' | 'model' | 'tools' | 'agents' | 'triggers'>('instructions');
+  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'agents' | 'triggers'>('instructions');
 
   // Form state — initialized from threadConfig
   let instructions = $state(threadConfig?.instructions ?? '');
@@ -50,6 +50,12 @@
       : 'default'
   );
   let llmReasoningEffort = $state(threadConfig?.llmConfig?.reasoning_effort ?? '');
+
+  // System prompt & agent fields
+  let systemPrompt = $state(threadConfig?.systemPrompt ?? '');
+  let isCallable = $state(threadConfig?.callable ?? false);
+  let callableName = $state(threadConfig?.callableName ?? '');
+  let callableDescription = $state(threadConfig?.callableDescription ?? '');
 
   // Search
   let toolSearch = $state('');
@@ -148,6 +154,10 @@
     const origReasoning = threadConfig?.llmConfig?.reasoning_effort ?? '';
 
     const origEnabled = new Set(threadConfig?.enabledTools ?? []);
+    const origSystemPrompt = threadConfig?.systemPrompt ?? '';
+    const origCallable = threadConfig?.callable ?? false;
+    const origCallableName = threadConfig?.callableName ?? '';
+    const origCallableDescription = threadConfig?.callableDescription ?? '';
 
     if (instructions !== origInstructions) return true;
     if (disabledTools.size !== origDisabled.size) return true;
@@ -164,6 +174,10 @@
     if (llmMaxTokens !== origMaxTokens) return true;
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
+    if (systemPrompt !== origSystemPrompt) return true;
+    if (isCallable !== origCallable) return true;
+    if (callableName !== origCallableName) return true;
+    if (callableDescription !== origCallableDescription) return true;
 
     return false;
   }
@@ -215,7 +229,27 @@
         updates.clear_llm_config = true;
       }
 
+      // System prompt
+      if (systemPrompt.trim()) {
+        updates.system_prompt = systemPrompt.trim();
+      } else {
+        updates.clear_system_prompt = true;
+      }
+
+      // Callable fields
+      updates.callable = isCallable;
+      if (isCallable) {
+        updates.callable_name = callableName.trim() || null;
+        updates.callable_description = callableDescription.trim() || null;
+      }
+
       const result = await threadConfigStore.updateConfig(thread.id, updates);
+
+      // Auto-folder callable threads
+      if (result.callable) {
+        threadsStore.addToAgentsFolder(thread.id);
+      }
+
       onSaved(result);
 
       // Refresh context stats so status bar shows new model + correct percentage
@@ -250,12 +284,20 @@
       llmMaxTokens = '';
       llmExtendedThinking = 'default';
       llmReasoningEffort = '';
+      systemPrompt = '';
+      isCallable = false;
+      callableName = '';
+      callableDescription = '';
       onSaved({
         threadId: thread.id,
         instructions: null,
         disabledTools: [],
         enabledTools: [],
         llmConfig: null,
+        systemPrompt: null,
+        callable: false,
+        callableName: null,
+        callableDescription: null,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -310,6 +352,17 @@
         type="button"
       >
         Instructions
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'system-prompt'}
+        onclick={() => (activeTab = 'system-prompt')}
+        type="button"
+      >
+        System Prompt
+        {#if systemPrompt.trim()}
+          <span class="tab-badge">1</span>
+        {/if}
       </button>
       <button
         class="tab"
@@ -372,6 +425,67 @@
             rows={8}
           ></textarea>
           <span class="char-count">{instructions.length} / 5000</span>
+        </div>
+
+      {:else if activeTab === 'system-prompt'}
+        <div class="tab-panel">
+          <label class="field-label" for="system-prompt-input">
+            Custom System Prompt
+          </label>
+          <p class="field-hint">
+            Replaces the base system prompt (soul.md) entirely for this thread.
+            Leave empty to use the default. For agent threads, this defines the agent's personality and capabilities.
+          </p>
+          <textarea
+            id="system-prompt-input"
+            class="instructions-input system-prompt-input"
+            bind:value={systemPrompt}
+            placeholder="You are a specialized assistant that..."
+            maxlength={50000}
+            rows={12}
+          ></textarea>
+          <span class="char-count">{systemPrompt.length} / 50000</span>
+
+          <div class="agent-config-section">
+            <h3 class="section-title">Agent Configuration</h3>
+            <p class="field-hint">
+              Mark this thread as a callable sub-agent. When enabled, Nymeria can delegate tasks to this thread.
+            </p>
+
+            <label class="toggle-row">
+              <input type="checkbox" bind:checked={isCallable} />
+              <span class="toggle-label">Make Callable</span>
+            </label>
+
+            {#if isCallable}
+              <div class="field-group">
+                <label class="field-label" for="callable-name-input">Callable Name</label>
+                <p class="field-hint">The tool name Nymeria uses to call this thread (e.g., "BrowserAgent").</p>
+                <input
+                  id="callable-name-input"
+                  class="field-input"
+                  type="text"
+                  bind:value={callableName}
+                  placeholder="e.g. ResearchAgent"
+                  maxlength={64}
+                />
+              </div>
+
+              <div class="field-group">
+                <label class="field-label" for="callable-desc-input">Callable Description</label>
+                <p class="field-hint">What the LLM sees as the tool description — describe when to use this thread.</p>
+                <textarea
+                  id="callable-desc-input"
+                  class="instructions-input"
+                  bind:value={callableDescription}
+                  placeholder="e.g. Autonomous web research — finds information, summarizes articles, and compiles reports"
+                  maxlength={500}
+                  rows={3}
+                ></textarea>
+                <span class="char-count">{callableDescription.length} / 500</span>
+              </div>
+            {/if}
+          </div>
         </div>
 
       {:else if activeTab === 'model'}
@@ -782,6 +896,46 @@
 
   .instructions-input::placeholder {
     color: var(--text-muted);
+  }
+
+  .system-prompt-input {
+    min-height: 200px;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: calc(var(--font-size-sm) - 1px);
+    line-height: 1.5;
+  }
+
+  .agent-config-section {
+    margin-top: var(--spacing-lg);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--border-default);
+  }
+
+  .section-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 var(--spacing-xs) 0;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin: var(--spacing-sm) 0;
+    cursor: pointer;
+  }
+
+  .toggle-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+  }
+
+  .toggle-label {
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
   }
 
   .char-count {

@@ -12,6 +12,8 @@
   let { thread, threadConfig, onOpenSettings }: Props = $props();
 
   const hasConfig = $derived(threadConfig?.hasCustomizations ?? false);
+  const isCallable = $derived(threadConfig?.callable ?? false);
+  const callableLabel = $derived(threadConfig?.callableName ?? null);
 
   const modelLabel = $derived(() => {
     if (threadConfig?.llmConfig?.model) {
@@ -34,6 +36,14 @@
     <span class="thread-title">{thread.title}</span>
 
     <div class="header-badges">
+      {#if isCallable}
+        <span class="badge agent-badge" title="Callable thread{callableLabel ? `: ${callableLabel}` : ''}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -1px; margin-right: 3px;">
+            <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.07A7.001 7.001 0 0 1 7.07 19H6a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h-1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2zM9 15a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm6 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>
+          </svg>
+          {callableLabel ?? 'Callable'}
+        </span>
+      {/if}
       {#if modelLabel()}
         <span class="badge model-badge" title="Custom model for this thread">
           {modelLabel()}
@@ -113,6 +123,14 @@
     font-weight: 500;
     border-radius: var(--radius-full);
     white-space: nowrap;
+  }
+
+  .agent-badge {
+    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
+    color: var(--accent-primary);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    display: inline-flex;
+    align-items: center;
   }
 
   .model-badge {

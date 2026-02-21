@@ -282,6 +282,12 @@ def run_worker(args: argparse.Namespace) -> None:
     # Create agent with all tools (this starts the ticker)
     agent = NymeriaAgent(tools=get_all_tools_with_agents())
 
+    # Ensure agent threads exist for all registered templates
+    # Always sync so thread-agent tools take priority over legacy ones
+    from nymeria.agents import ensure_callable_threads
+    ensure_callable_threads(agent.thread_config_manager)
+    agent.sync_agent_tools()
+
     # Handle shutdown signals
     def signal_handler(signum, frame):
         print("\nShutdown signal received, stopping ticker...")

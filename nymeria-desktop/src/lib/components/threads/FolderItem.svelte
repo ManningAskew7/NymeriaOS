@@ -12,7 +12,7 @@
     isThreadPinned?: (id: string) => boolean;
     getThreadTaskCount: (id: string) => number;
     isThreadActive: (id: string) => boolean;
-    getCustomConfig: (id: string) => { hasCustomizations?: boolean } | null | undefined;
+    getCustomConfig: (id: string) => { hasCustomizations?: boolean; callable?: boolean } | null | undefined;
     onSelectThread: (id: string, e: MouseEvent) => void;
     onDeleteThread: (id: string) => void;
     onRenameThread: (id: string, title: string) => void;
@@ -155,6 +155,7 @@
             isPinned={isThreadPinned?.(thread.id) ?? false}
             taskCount={getThreadTaskCount(thread.id)}
             hasActiveTask={isThreadActive(thread.id)}
+            isCallable={getCustomConfig(thread.id)?.callable ?? false}
             hasCustomConfig={getCustomConfig(thread.id)?.hasCustomizations}
             onSelect={(e) => onSelectThread(thread.id, e)}
             onDelete={() => onDeleteThread(thread.id)}
