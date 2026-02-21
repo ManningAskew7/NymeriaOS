@@ -6,6 +6,7 @@
     thread: Thread;
     isActive: boolean;
     isSelected?: boolean;
+    isPinned?: boolean;
     taskCount?: number;
     hasActiveTask?: boolean;
     hasCustomConfig?: boolean;
@@ -13,9 +14,10 @@
     onDelete: () => void;
     onRename: (newTitle: string) => void;
     onConfigure?: () => void;
+    onTogglePin?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure }: Props = $props();
+  let { thread, isActive, isSelected = false, isPinned = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onTogglePin }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -82,6 +84,11 @@
 
   function dismissContextMenu() {
     contextMenu = null;
+  }
+
+  function handleContextPin() {
+    contextMenu = null;
+    onTogglePin?.();
   }
 
   function handleContextConfigure() {
@@ -170,6 +177,9 @@
 
   {#if !showActions && !isEditing}
     <div class="thread-badges">
+      {#if isPinned}
+        <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
+      {/if}
       {#if hasCustomConfig}
         <span class="config-dot" title="Custom config"></span>
       {/if}
@@ -199,6 +209,12 @@
   <div class="context-backdrop" onclick={dismissContextMenu}>
   </div>
   <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+    {#if onTogglePin}
+      <button class="context-item" onclick={handleContextPin} type="button">
+        <Icon name="pin" size={14} />
+        <span>{isPinned ? 'Unpin' : 'Pin'}</span>
+      </button>
+    {/if}
     {#if onConfigure}
       <button class="context-item" onclick={handleContextConfigure} type="button">
         <Icon name="cog" size={14} />
@@ -424,6 +440,13 @@
 
   @keyframes badgeSpin {
     to { transform: rotate(360deg); }
+  }
+
+  .pin-indicator {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    opacity: 0.6;
   }
 
   .config-dot {

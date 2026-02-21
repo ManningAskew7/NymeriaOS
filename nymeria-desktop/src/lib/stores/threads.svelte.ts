@@ -20,6 +20,13 @@ function saveCurrentThreadId(id: string | null): void {
   if (typeof localStorage === 'undefined') return;
   try {
     if (id) {
+      // Don't persist non-desktop thread IDs (trigger, discord, telegram, slack)
+      // so they won't be restored on app restart. The in-memory currentThreadId
+      // still updates normally for within-session navigation.
+      if (detectPlatform(id) !== 'desktop') {
+        localStorage.removeItem(CURRENT_THREAD_KEY);
+        return;
+      }
       localStorage.setItem(CURRENT_THREAD_KEY, id);
     } else {
       localStorage.removeItem(CURRENT_THREAD_KEY);
@@ -212,15 +219,19 @@ function createThreadsStore() {
     },
     get sortedUnfiledThreads(): Thread[] {
       const unfiled = this.unfiledThreads;
+      // Pin-aware comparator: pinned items always float to top
+      const pinFirst = (a: Thread, b: Thread) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
       switch (sortMode) {
         case 'recent':
-          return [...unfiled].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+          return [...unfiled].sort((a, b) => pinFirst(a, b) || b.updatedAt.getTime() - a.updatedAt.getTime());
         case 'oldest':
-          return [...unfiled].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+          return [...unfiled].sort((a, b) => pinFirst(a, b) || a.createdAt.getTime() - b.createdAt.getTime());
         case 'alphabetical':
-          return [...unfiled].sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+          return [...unfiled].sort((a, b) => pinFirst(a, b) || a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
         case 'tasks': {
           return [...unfiled].sort((a, b) => {
+            const p = pinFirst(a, b);
+            if (p !== 0) return p;
             const countDiff = (threadTaskCounts[b.id] ?? 0) - (threadTaskCounts[a.id] ?? 0);
             if (countDiff !== 0) return countDiff;
             return b.updatedAt.getTime() - a.updatedAt.getTime();
@@ -228,6 +239,8 @@ function createThreadsStore() {
         }
         case 'active': {
           return [...unfiled].sort((a, b) => {
+            const p = pinFirst(a, b);
+            if (p !== 0) return p;
             const aActive = activeThreadTasks.has(a.id) ? 1 : 0;
             const bActive = activeThreadTasks.has(b.id) ? 1 : 0;
             if (bActive !== aActive) return bActive - aActive;
@@ -247,6 +260,7 @@ function createThreadsStore() {
       const weekAgo = new Date(today);
       weekAgo.setDate(weekAgo.getDate() - 7);
 
+      const pinnedGroup: { label: string; threads: Thread[] } = { label: 'Pinned', threads: [] };
       const groups: { label: string; threads: Thread[] }[] = [
         { label: 'Today', threads: [] },
         { label: 'Yesterday', threads: [] },
@@ -259,6 +273,11 @@ function createThreadsStore() {
       );
 
       for (const thread of sorted) {
+        if (thread.pinned) {
+          pinnedGroup.threads.push(thread);
+          continue;
+        }
+
         const threadDate = new Date(
           thread.updatedAt.getFullYear(),
           thread.updatedAt.getMonth(),
@@ -276,7 +295,12 @@ function createThreadsStore() {
         }
       }
 
-      return groups.filter((g) => g.threads.length > 0);
+      const result: { label: string; threads: Thread[] }[] = [];
+      if (pinnedGroup.threads.length > 0) result.push(pinnedGroup);
+      for (const g of groups) {
+        if (g.threads.length > 0) result.push(g);
+      }
+      return result;
     },
 
     createThread(title?: string): Thread {
@@ -489,6 +513,29 @@ function createThreadsStore() {
         threadIds: f.threadIds.filter(tid => !idsSet.has(tid)),
       }));
       saveFolders(folders);
+    },
+
+    // Pin methods
+    togglePinThread(id: string) {
+      threads = threads.map(t =>
+        t.id === id ? { ...t, pinned: !t.pinned } : t
+      );
+      saveThreads(threads);
+    },
+
+    togglePinFolder(id: string) {
+      folders = folders.map(f =>
+        f.id === id ? { ...f, pinned: !f.pinned } : f
+      );
+      saveFolders(folders);
+    },
+
+    isThreadPinned(id: string): boolean {
+      return threads.find(t => t.id === id)?.pinned ?? false;
+    },
+
+    isFolderPinned(id: string): boolean {
+      return folders.find(f => f.id === id)?.pinned ?? false;
     },
   };
 }
