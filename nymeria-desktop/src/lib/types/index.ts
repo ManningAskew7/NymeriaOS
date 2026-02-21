@@ -74,6 +74,7 @@ export interface Thread {
     channelId?: string;
   };
   hasCustomConfig?: boolean;
+  pinned?: boolean;
 }
 
 // Thread organization types
@@ -86,6 +87,7 @@ export interface ThreadFolder {
   order: number;          // Manual ordering of folders in sidebar
   threadIds: string[];    // Threads in this folder (ordered)
   collapsed: boolean;     // UI collapse state
+  pinned?: boolean;
 }
 
 // Per-thread configuration types

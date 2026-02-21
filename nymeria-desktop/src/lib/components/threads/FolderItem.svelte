@@ -8,6 +8,8 @@
     threads: Thread[];
     currentThreadId: string | null;
     selectedIds: Set<string>;
+    isPinned?: boolean;
+    isThreadPinned?: (id: string) => boolean;
     getThreadTaskCount: (id: string) => number;
     isThreadActive: (id: string) => boolean;
     getCustomConfig: (id: string) => { hasCustomizations?: boolean } | null | undefined;
@@ -18,6 +20,8 @@
     onToggleCollapse: () => void;
     onRenameFolder: (name: string) => void;
     onDeleteFolder: () => void;
+    onTogglePin?: () => void;
+    onTogglePinThread?: (id: string) => void;
   }
 
   let {
@@ -25,6 +29,8 @@
     threads,
     currentThreadId,
     selectedIds,
+    isPinned = false,
+    isThreadPinned,
     getThreadTaskCount,
     isThreadActive,
     getCustomConfig,
@@ -35,6 +41,8 @@
     onToggleCollapse,
     onRenameFolder,
     onDeleteFolder,
+    onTogglePin,
+    onTogglePinThread,
   }: Props = $props();
 
   let isEditingName = $state(false);
@@ -53,6 +61,11 @@
 
   function dismissContextMenu() {
     contextMenu = null;
+  }
+
+  function handleContextPin() {
+    contextMenu = null;
+    onTogglePin?.();
   }
 
   function handleContextRename() {
@@ -123,6 +136,9 @@
     {:else}
       <span class="folder-name">{folder.name}</span>
     {/if}
+    {#if isPinned}
+      <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
+    {/if}
     <span class="folder-count">{threads.length}</span>
   </div>
 
@@ -136,6 +152,7 @@
             {thread}
             isActive={thread.id === currentThreadId}
             isSelected={selectedIds.has(thread.id)}
+            isPinned={isThreadPinned?.(thread.id) ?? false}
             taskCount={getThreadTaskCount(thread.id)}
             hasActiveTask={isThreadActive(thread.id)}
             hasCustomConfig={getCustomConfig(thread.id)?.hasCustomizations}
@@ -143,6 +160,7 @@
             onDelete={() => onDeleteThread(thread.id)}
             onRename={(newTitle) => onRenameThread(thread.id, newTitle)}
             onConfigure={() => onConfigureThread(thread)}
+            onTogglePin={onTogglePinThread ? () => onTogglePinThread(thread.id) : undefined}
           />
         {/each}
       {/if}
@@ -154,6 +172,12 @@
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="context-backdrop" onclick={dismissContextMenu}></div>
   <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+    {#if onTogglePin}
+      <button class="context-item" onclick={handleContextPin} type="button">
+        <Icon name="pin" size={14} />
+        <span>{isPinned ? 'Unpin' : 'Pin'}</span>
+      </button>
+    {/if}
     <button class="context-item" onclick={handleContextRename} type="button">
       <Icon name="edit" size={14} />
       <span>Rename</span>
@@ -233,6 +257,14 @@
 
   .folder-name-input:focus {
     box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+  }
+
+  .pin-indicator {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    opacity: 0.6;
+    flex-shrink: 0;
   }
 
   .folder-count {

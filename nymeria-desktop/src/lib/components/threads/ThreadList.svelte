@@ -40,12 +40,19 @@
     const ids: string[] = [];
     const threadMap = new Map(threadsStore.threads.map(t => [t.id, t]));
 
-    // Folders first (sorted by order)
-    const sortedFolders = [...threadsStore.folders].sort((a, b) => a.order - b.order);
+    // Folders first (pinned folders first, then by order)
+    const sortedFolders = [...threadsStore.folders].sort((a, b) =>
+      (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || a.order - b.order
+    );
     for (const folder of sortedFolders) {
       if (!folder.collapsed) {
-        for (const tid of folder.threadIds) {
-          if (threadMap.has(tid)) ids.push(tid);
+        // Match rendered order: pinned threads first within folder
+        const resolved = folder.threadIds
+          .map(tid => threadMap.get(tid))
+          .filter((t): t is Thread => t !== undefined)
+          .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+        for (const t of resolved) {
+          ids.push(t.id);
         }
       }
     }
@@ -221,10 +228,11 @@
     }
   }
 
-  // Resolve folder threads (filter out orphan IDs)
+  // Resolve folder threads (filter out orphan IDs, pinned threads first)
   function resolveFolderThreads(threadIds: string[]): Thread[] {
     const threadMap = new Map(threadsStore.threads.map(t => [t.id, t]));
-    return threadIds.map(id => threadMap.get(id)).filter((t): t is Thread => t !== undefined);
+    const resolved = threadIds.map(id => threadMap.get(id)).filter((t): t is Thread => t !== undefined);
+    return resolved.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
   }
 
   // Whether we have any threads at all (folders + unfiled)
@@ -281,12 +289,14 @@
     </div>
   {:else}
     <!-- Folders section -->
-    {#each [...threadsStore.folders].sort((a, b) => a.order - b.order) as folder (folder.id)}
+    {#each [...threadsStore.folders].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || a.order - b.order) as folder (folder.id)}
       <FolderItem
         {folder}
         threads={resolveFolderThreads(folder.threadIds)}
         currentThreadId={threadsStore.currentThreadId}
         {selectedIds}
+        isPinned={folder.pinned ?? false}
+        isThreadPinned={(id) => threadsStore.isThreadPinned(id)}
         getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
         isThreadActive={(id) => threadsStore.isThreadActive(id)}
         getCustomConfig={(id) => threadConfigStore.getConfig(id)}
@@ -297,6 +307,8 @@
         onToggleCollapse={() => threadsStore.toggleFolderCollapse(folder.id)}
         onRenameFolder={(name) => threadsStore.renameFolder(folder.id, name)}
         onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
+        onTogglePin={() => threadsStore.togglePinFolder(folder.id)}
+        onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
       />
     {/each}
 
@@ -315,6 +327,7 @@
                 {thread}
                 isActive={thread.id === threadsStore.currentThreadId}
                 isSelected={selectedIds.has(thread.id)}
+                isPinned={thread.pinned ?? false}
                 taskCount={threadsStore.getThreadTaskCount(thread.id)}
                 hasActiveTask={threadsStore.isThreadActive(thread.id)}
                 hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
@@ -322,6 +335,7 @@
                 onDelete={() => handleDeleteThread(thread.id)}
                 onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
                 onConfigure={() => handleConfigureThread(thread)}
+                onTogglePin={() => threadsStore.togglePinThread(thread.id)}
               />
             {/each}
           </div>
@@ -334,6 +348,7 @@
             {thread}
             isActive={thread.id === threadsStore.currentThreadId}
             isSelected={selectedIds.has(thread.id)}
+            isPinned={thread.pinned ?? false}
             taskCount={threadsStore.getThreadTaskCount(thread.id)}
             hasActiveTask={threadsStore.isThreadActive(thread.id)}
             hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
@@ -341,6 +356,7 @@
             onDelete={() => handleDeleteThread(thread.id)}
             onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
             onConfigure={() => handleConfigureThread(thread)}
+            onTogglePin={() => threadsStore.togglePinThread(thread.id)}
           />
         {/each}
       </div>
