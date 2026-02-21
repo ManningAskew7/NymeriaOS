@@ -947,6 +947,65 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         return {"platform": "desktop"}
 
     # =========================================================================
+    # Thread Listing
+    # =========================================================================
+
+    def _classify_thread_platform(thread_id: str) -> str:
+        """Classify a thread ID into its platform origin."""
+        if thread_id.startswith("trigger-"):
+            return "trigger"
+        if thread_id.startswith("discord_"):
+            return "discord"
+        if thread_id.startswith("telegram_"):
+            return "telegram"
+        if thread_id.startswith("slack_"):
+            return "slack"
+        return "desktop"
+
+    @app.get("/threads", tags=["Threads"])
+    async def list_threads(
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        List all thread IDs known to the backend with platform classification.
+
+        Queries distinct thread IDs from the checkpoint database so the frontend
+        can validate which threads actually exist and what platform they belong to.
+        """
+        settings = get_settings()
+        thread_ids: list[str] = []
+
+        if settings.database_backend == "sqlite":
+            import sqlite3 as _sqlite3
+
+            db_path = str(settings.db_path)
+            try:
+                conn = _sqlite3.connect(db_path)
+                cursor = conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
+                thread_ids = [row[0] for row in cursor.fetchall()]
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Failed to query thread IDs from SQLite: {e}")
+
+        elif settings.database_backend == "postgres":
+            import psycopg  # type: ignore[import-untyped]
+
+            try:
+                with psycopg.connect(settings.postgres_uri) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
+                        thread_ids = [row[0] for row in cur.fetchall()]
+            except Exception as e:
+                logger.warning(f"Failed to query thread IDs from PostgreSQL: {e}")
+
+        threads = [
+            {"thread_id": tid, "platform": _classify_thread_platform(tid)}
+            for tid in thread_ids
+        ]
+
+        return {"threads": threads, "total": len(threads)}
+
+    # =========================================================================
     # Thread Configuration
     # =========================================================================
 

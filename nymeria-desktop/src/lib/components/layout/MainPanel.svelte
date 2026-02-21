@@ -58,6 +58,12 @@
   ) {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
 
+    // Ensure a thread exists before sending — prevents the backend from
+    // generating a fallback ID that triggers syncThreadIdFromEvent's replace logic
+    if (!threadsStore.currentThreadId) {
+      threadsStore.createThread();
+    }
+
     // Auto-title the thread from the first message if it's still "New Chat"
     const currentThread = threadsStore.currentThread;
     if (currentThread && currentThread.title === 'New Chat' && message.trim()) {
@@ -137,6 +143,19 @@
   }
 
   /**
+   * Returns true if the thread ID belongs to a non-desktop platform
+   * (trigger, discord, telegram, slack).
+   */
+  function isNonDesktopThread(id: string): boolean {
+    return (
+      id.startsWith('trigger-') ||
+      id.startsWith('discord_') ||
+      id.startsWith('telegram_') ||
+      id.startsWith('slack_')
+    );
+  }
+
+  /**
    * Sync thread ID from any SSE event.
    * This ensures the frontend knows the backend's thread ID even if the stream is stopped early.
    */
@@ -157,6 +176,13 @@
 
     // If we have a local thread with different ID, update it to use backend's ID
     if (currentId !== backendThreadId) {
+      // Guard: never replace a desktop thread with a trigger/system thread
+      // and never replace a trigger thread with another trigger thread.
+      // Only allow replacement for backend-generated 8-char fallback IDs.
+      if (isNonDesktopThread(backendThreadId) || isNonDesktopThread(currentId)) {
+        return;
+      }
+
       const currentThread = threadsStore.currentThread;
       if (currentThread) {
         threadsStore.deleteThread(currentId);

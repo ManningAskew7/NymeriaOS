@@ -19,6 +19,71 @@
     configStore.setupCompleted = true;
   }
 
+  /**
+   * Load history for a thread ID, guarding against stale applies.
+   * Only updates chat state if the user hasn't navigated away.
+   */
+  function loadThreadHistory(threadId: string) {
+    chatStore.clearMessages();
+    Promise.all([
+      api.getThreadHistory(threadId),
+      api.getThreadContextStats(threadId),
+    ]).then(([history, stats]) => {
+      // Only apply if the user hasn't switched threads or started streaming
+      if (threadsStore.currentThreadId === threadId && !chatStore.isStreaming) {
+        chatStore.setMessages(history.messages);
+        chatStore.setContextStats(stats);
+        chatStore.setActiveModel(stats?.model ?? null);
+      }
+    }).catch((err) => {
+      console.error('[Page] Failed to load thread history:', err);
+    });
+  }
+
+  /**
+   * Validate the restored thread against the backend and load its history.
+   * If the restored thread is non-desktop (trigger, webhook), switch to
+   * the most recent desktop thread instead.
+   */
+  function restoreThread(restoredId: string) {
+    api.listThreads().then((backendThreads) => {
+      // Bail if user already navigated away during the request
+      if (threadsStore.currentThreadId !== restoredId) return;
+
+      const match = backendThreads.find((t) => t.thread_id === restoredId);
+      if (match && match.platform !== 'desktop') {
+        console.log(`[Page] Restored thread ${restoredId} is ${match.platform}, finding desktop thread`);
+        const desktopThreads = threadsStore.threads.filter(
+          (t) => !t.id.startsWith('trigger-') &&
+                 !t.id.startsWith('discord_') &&
+                 !t.id.startsWith('telegram_') &&
+                 !t.id.startsWith('slack_')
+        );
+        const fallback = desktopThreads.sort(
+          (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()
+        )[0];
+        if (fallback) {
+          threadsStore.selectThread(fallback.id);
+          console.log('[Page] Switched to desktop thread:', fallback.id);
+          loadThreadHistory(fallback.id);
+        } else {
+          threadsStore.clearCurrent();
+          console.log('[Page] No desktop threads available, cleared selection');
+        }
+        return;
+      }
+
+      // Thread is desktop (or unknown to backend) — load it
+      loadThreadHistory(restoredId);
+    }).catch((err) => {
+      console.warn('[Page] Backend thread validation failed, loading directly:', err);
+      // Backend unreachable — load the restored thread as-is
+      if (threadsStore.currentThreadId === restoredId) {
+        loadThreadHistory(restoredId);
+      }
+    });
+  }
+
   // Connect to autonomous event stream on mount
   onMount(() => {
     console.log('[Page] onMount - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
@@ -26,22 +91,10 @@
     // Connect if configured (setupCompleted is redundant now but kept for safety)
     if (configStore.isConfigured) {
       // Restore last thread's chat history if one was saved
-      const restoredThreadId = threadsStore.currentThreadId;
-      if (restoredThreadId) {
-        console.log('[Page] Restoring thread:', restoredThreadId);
-        Promise.all([
-          api.getThreadHistory(restoredThreadId),
-          api.getThreadContextStats(restoredThreadId),
-        ]).then(([history, stats]) => {
-          // Only apply if the user hasn't switched threads or started streaming
-          if (threadsStore.currentThreadId === restoredThreadId && !chatStore.isStreaming) {
-            chatStore.setMessages(history.messages);
-            chatStore.setContextStats(stats);
-            chatStore.setActiveModel(stats?.model ?? null);
-          }
-        }).catch((err) => {
-          console.error('[Page] Failed to restore thread history:', err);
-        });
+      const initialThreadId = threadsStore.currentThreadId;
+      if (initialThreadId) {
+        console.log('[Page] Restoring thread:', initialThreadId);
+        restoreThread(initialThreadId);
       }
 
       console.log('[Page] Config ready, connecting to SSE in 500ms');
