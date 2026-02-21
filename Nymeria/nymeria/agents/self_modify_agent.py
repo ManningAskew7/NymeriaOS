@@ -6,6 +6,7 @@ It has access to restricted file operations within nymeria/tools/ and nymeria/ag
 
 from . import register_agent
 from ..core.self_agent import SELF_AGENT_TOOLS
+from ..tools.triggers import TRIGGER_TOOLS
 
 SELF_MODIFY_AGENT_PROMPT = """You are a code modification agent for Nymeria. You can read, write, and delete files within the nymeria/tools/, nymeria/agents/, and nymeria/triggers/sources/ directories.
 
@@ -18,6 +19,12 @@ SELF_MODIFY_AGENT_PROMPT = """You are a code modification agent for Nymeria. You
 - **self_test_import()**: Test that all tools can be imported successfully
 - **self_reload()**: Reload all tools and agents after making changes (makes new tools live)
 - **self_invoke_tool(tool_name, arguments_json)**: Test a tool by invoking it with arguments
+
+### Trigger Management Tools
+- **trigger_create(name, source_type, action_type, action_config, ...)**: Create an event-driven trigger
+- **trigger_list(enabled_only)**: List all triggers with status and config
+- **trigger_update(trigger_id, ...)**: Update a trigger's configuration
+- **trigger_delete(trigger_id)**: Delete a trigger permanently
 
 ## Workflow for Creating Tools
 
@@ -104,10 +111,10 @@ register_agent(
     "SelfModifyAgent",
     {
         "name": "SelfModifyAgent",
-        "description": "Code modification agent - creates and modifies Nymeria's tools and agents",
+        "description": "Code modification agent - creates/modifies tools, agents, and manages triggers",
         "system_prompt": SELF_MODIFY_AGENT_PROMPT,
         "context_turns": 5,
-        "tools": SELF_AGENT_TOOLS,
+        "tools": SELF_AGENT_TOOLS + TRIGGER_TOOLS,
         "allowed_tools": [],
         "required_env_vars": ["OPENROUTER_API_KEY"],
         # Default LLM config - uses Claude Opus 4.5 for high-quality code

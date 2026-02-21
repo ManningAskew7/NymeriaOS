@@ -42,12 +42,6 @@ from .subagent import (
 )
 from .outlook_auth import AUTH_TOOLS
 from .outlook_email import EMAIL_TOOLS
-
-# Combined Outlook tools list (used by OutlookAgent)
-OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
-# Optional tools — available for per-thread enabling but NOT loaded by default.
-# Maps tool name -> tool object. Users enable these via thread config UI.
-OPTIONAL_TOOLS = {t.name: t for t in OUTLOOK_TOOLS}
 from .browser import BROWSER_TOOLS
 from .notify import notify, NOTIFY_TOOLS
 from .triggers import (
@@ -58,7 +52,14 @@ from .triggers import (
     TRIGGER_TOOLS,
 )
 
-# All available tools (22 core tools + sub-agents as direct tools)
+# Combined Outlook tools list (used by OutlookAgent)
+OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
+# Optional tools — available for per-thread enabling but NOT loaded by default.
+# Maps tool name -> tool object. Users enable these via thread config UI.
+# Includes: 13 Outlook email tools + 4 trigger tools.
+OPTIONAL_TOOLS = {t.name: t for t in OUTLOOK_TOOLS + TRIGGER_TOOLS}
+
+# All available tools (18 core tools + sub-agents as direct tools)
 ALL_TOOLS = [
     # Core system tools
     bash_execute,
@@ -83,11 +84,7 @@ ALL_TOOLS = [
     self_modify_rollback,
     # Unified notification tool
     notify,
-    # Trigger tools (event-driven automation)
-    trigger_create,
-    trigger_list,
-    trigger_update,
-    trigger_delete,
+    # NOTE: Trigger tools are optional (enable per-thread) + available to SelfModifyAgent
     # NOTE: Outlook tools handled by OutlookAgent sub-agent
     # NOTE: Browser tools handled by BrowserAgent sub-agent
 ]
@@ -121,7 +118,7 @@ __all__ = [
     # Notification
     "notify",
     "NOTIFY_TOOLS",
-    # Trigger tools
+    # Trigger tools (optional — enabled per-thread or via SelfModifyAgent)
     "trigger_create",
     "trigger_list",
     "trigger_update",
@@ -146,9 +143,9 @@ def get_all_tools_with_agents() -> list:
     Get ALL_TOOLS combined with dynamically generated agent tools.
 
     This function returns the complete list of tools including:
-    - Static tools defined in ALL_TOOLS (22 core tools)
+    - Static tools defined in ALL_TOOLS (18 core tools)
     - Dynamically generated tools for each registered sub-agent
-      (BrowserAgent, OutlookAgent, SelfModifyAgent)
+      (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
 
     Returns:
         List of all tools including agent tools

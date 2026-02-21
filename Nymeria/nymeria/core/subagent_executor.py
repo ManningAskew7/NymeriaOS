@@ -63,7 +63,7 @@ class SubAgentExecutor:
         messages = context + [HumanMessage(content=instruction)]
 
         # Execute with context isolation
-        result = self._execute_isolated(graph, messages, agent_name)
+        result = self._execute_isolated(graph, messages, agent_name, user_id)
 
         # Save updated context (trimmed)
         self._save_context(
@@ -162,6 +162,7 @@ class SubAgentExecutor:
                 api_key=api_key,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                request_timeout=120,  # Prevent sub-agent LLM calls from hanging indefinitely
             ),
             checkpointer=CheckpointerConfig(backend="memory"),
             system_prompt=agent_config["system_prompt"],
@@ -211,7 +212,7 @@ class SubAgentExecutor:
                 return text
         return ""
 
-    def _execute_isolated(self, graph, messages: List, agent_name: str) -> str:
+    def _execute_isolated(self, graph, messages: List, agent_name: str, user_id: str = "default") -> str:
         """Execute graph with context isolation and a timeout.
 
         The entire sub-agent execution is bounded by tool_timeout (default 300s / 5 min)
@@ -235,20 +236,17 @@ class SubAgentExecutor:
                 {"messages": messages},
                 config={
                     "recursion_limit": 70,
-                    "configurable": {"thread_id": thread_id},
+                    "configurable": {"thread_id": thread_id, "user_id": user_id},
                 },
             )
 
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             future = executor.submit(_run_graph)
             try:
                 result = future.result(timeout=timeout)
-                executor.shutdown(wait=False)
             except concurrent.futures.TimeoutError:
-                # shutdown(wait=False) returns immediately — the daemon worker
-                # thread will finish on its own (or when the process exits).
-                executor.shutdown(wait=False)
+                future.cancel()  # Best-effort cancel (only works if not yet started)
                 logger.error(
                     f"Sub-agent '{agent_name}' timed out after {timeout}s. "
                     f"The agent will continue but the sub-agent may still be running in the background."
@@ -311,6 +309,8 @@ class SubAgentExecutor:
             )
 
         finally:
+            # Always clean up: shutdown executor + restore context vars
+            executor.shutdown(wait=False)
             var_child_runnable_config.reset(config_token)
             tracing_v2_callback_var.reset(callback_token)
             run_collector_var.reset(collector_token)

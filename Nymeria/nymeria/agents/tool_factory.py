@@ -37,8 +37,8 @@ def create_agent_tool(agent_name: str, agent_config: Dict[str, Any]) -> BaseTool
     # Build a descriptive docstring for the tool
     tool_description = f"""{description}
 
-This is a sub-agent with specialized capabilities. Pass your task/instruction
-and it will execute autonomously using its own tools and context.
+This is a sub-agent with specialized capabilities. Provide a clear task
+description and it will execute autonomously using its own tools and context.
 """
 
     # Capture agent_name in closure
@@ -52,7 +52,11 @@ and it will execute autonomously using its own tools and context.
         *,
         config: Annotated[RunnableConfig, InjectedToolArg],
     ) -> str:
-        """Placeholder docstring - replaced below."""
+        """Invoke this sub-agent with a task.
+
+        Args:
+            task: A clear description of what you want the sub-agent to do. Be specific about the goal and any constraints.
+        """
         from ..core.subagent_executor import SubAgentExecutor
 
         user_id = config.get("configurable", {}).get("user_id", "default") if config else "default"

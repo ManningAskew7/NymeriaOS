@@ -16,7 +16,8 @@ class ToolCategory(str, Enum):
     MEMORY = "memory"       # memory_save, memory_forget, memory_list, personality_set, rag_search
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # todo, todo_delete, todo_list
-    SUBAGENT = "subagent"   # clear_agent_context, reload_agents
+    SUBAGENT = "subagent"   # clear_agent_context, reload_all
+    TRIGGER = "trigger"     # trigger_create, trigger_list, trigger_update, trigger_delete
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
 
 
@@ -181,6 +182,32 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.SUBAGENT,
         security_level=SecurityLevel.MODERATE,
         description="Reload all tools, agents, and trigger sources",
+    ),
+
+    # Trigger tools - event-driven automation (optional, not in ALL_TOOLS by default)
+    "trigger_create": ToolMetadata(
+        name="trigger_create",
+        category=ToolCategory.TRIGGER,
+        security_level=SecurityLevel.MODERATE,
+        description="Create an event-driven trigger",
+    ),
+    "trigger_list": ToolMetadata(
+        name="trigger_list",
+        category=ToolCategory.TRIGGER,
+        security_level=SecurityLevel.SAFE,
+        description="List event triggers",
+    ),
+    "trigger_update": ToolMetadata(
+        name="trigger_update",
+        category=ToolCategory.TRIGGER,
+        security_level=SecurityLevel.MODERATE,
+        description="Update a trigger",
+    ),
+    "trigger_delete": ToolMetadata(
+        name="trigger_delete",
+        category=ToolCategory.TRIGGER,
+        security_level=SecurityLevel.MODERATE,
+        description="Delete a trigger",
     ),
 
 }

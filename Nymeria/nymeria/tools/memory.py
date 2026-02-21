@@ -212,8 +212,8 @@ def personality_set(
     Set a communication preference. Auto-applied in future conversations.
 
     Args:
-        trait: Preference category (e.g., "tone", "verbosity")
-        value: Desired behavior
+        trait: Preference category (e.g., "tone", "verbosity", "formality", "humor", "detail_level")
+        value: Desired behavior (e.g., "casual and friendly", "concise", "always include code examples")
     """
     logger.info(f"personality_set called: trait={trait}, value={value}")
 

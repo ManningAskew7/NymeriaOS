@@ -1,10 +1,10 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **22 core tools** always loaded, **4 sub-agent wrapper tools** generated dynamically, and **13 optional Outlook tools** available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 26 default tools.
+Nymeria has a three-tier tool system: **18 core tools** always loaded, **4 sub-agent wrapper tools** generated dynamically, and **17 optional tools** (13 Outlook + 4 trigger) available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 22 default tools.
 
 ## Summary Table
 
-### Core Tools (22)
+### Core Tools (18)
 
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
@@ -26,12 +26,17 @@ Nymeria has a three-tier tool system: **22 core tools** always loaded, **4 sub-a
 | 16 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
 | 17 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
 | 18 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
-| 19 | `trigger_create` | Trigger | *None* | On | Create an event-driven trigger |
-| 20 | `trigger_list` | Trigger | *None* | On | List triggers |
-| 21 | `trigger_update` | Trigger | *None* | On | Update a trigger |
-| 22 | `trigger_delete` | Trigger | *None* | On | Delete a trigger |
 
-> **Note:** Trigger tools are missing from `TOOL_METADATA` in `metadata.py` — they have no assigned security level and are always loaded.
+### Optional: Trigger Tools (4)
+
+Not loaded by default. Enable per-thread via thread config, or use through SelfModifyAgent.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `trigger_create` | Trigger | MODERATE | Create an event-driven trigger |
+| 2 | `trigger_list` | Trigger | SAFE | List triggers |
+| 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
+| 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
 
 ### Sub-Agent Wrapper Tools (4)
 
@@ -437,11 +442,11 @@ self_modify_rollback(file_path: str)
 
 ---
 
-## Trigger Tools
+## Trigger Tools (Optional)
 
 Event-driven automation — triggers fire agent prompts or actions in response to external events. These complement recurring TODOs, which handle time-based work.
 
-> **Note:** Trigger tools are NOT listed in `TOOL_METADATA` (`metadata.py`). They have no assigned security level and are always loaded.
+> **Note:** Trigger tools are **not loaded by default** for the main agent. They are available in `OPTIONAL_TOOLS` for per-thread enabling, and are always available to SelfModifyAgent.
 
 ### trigger_create
 
@@ -582,7 +587,7 @@ Google Calendar management — list, create, update, delete events and manage Go
 
 ### SelfModifyAgent
 
-Code modification agent — creates and modifies Nymeria's tools, agents, and trigger sources.
+Code modification agent — creates/modifies tools, agents, trigger sources, and manages trigger instances.
 
 | Setting | Value |
 |---------|-------|
@@ -852,7 +857,9 @@ Tool metadata is defined in `tools/metadata.py`. Each tool has a category, secur
 
 **SENSITIVE:** `self_modify_rollback`
 
-**Not in TOOL_METADATA:** `trigger_create`, `trigger_list`, `trigger_update`, `trigger_delete` — these tools have no security level assigned and are always loaded regardless of user preferences.
+**MODERATE (optional):** `trigger_create`, `trigger_update`, `trigger_delete` — in `OPTIONAL_TOOLS`, not loaded by default
+
+**SAFE (optional):** `trigger_list` — in `OPTIONAL_TOOLS`, not loaded by default
 
 ---
 

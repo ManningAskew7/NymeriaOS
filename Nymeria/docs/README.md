@@ -12,7 +12,7 @@ Nymeria is a personal AI assistant framework built on LangGraph's ReAct architec
 - **Multi-User Support**: Isolated profiles per user with thread-safe operations
 - **Auto-Compact Context**: Automatically summarizes conversations when approaching context limits, preserving important facts in memory
 - **Rate Limiting**: Prevents runaway autonomous loops (configurable limit per hour)
-- **26 Default Tools** (22 core + 4 sub-agent wrappers) + 13 optional Outlook tools: Shell, file ops, web search, thinking, Claude Code, memory, RAG, TODOs, notifications, triggers, plus sub-agents (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
+- **22 Default Tools** (18 core + 4 sub-agent wrappers) + 17 optional tools (13 Outlook + 4 trigger): Shell, file ops, web search, thinking, Claude Code, memory, RAG, TODOs, notifications, plus sub-agents (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ C:\Nymeria\
 │   │   ├── scheduler.py    # Deprecated scheduler (rate limiter extracted)
 │   │   └── _deprecated/    # Legacy modules (pending removal)
 │   │       └── task_db.py  # Old task database (migrated to TODOs)
-│   ├── tools/              # Tool definitions (25 core + 13 optional Outlook)
+│   ├── tools/              # Tool definitions (18 core + 17 optional)
 │   │   ├── bash.py         # Shell command execution
 │   │   ├── filesystem.py   # File read/write/list
 │   │   ├── web.py          # Web search via Perplexity
@@ -125,11 +125,11 @@ C:\Nymeria\
 |----------|-------|---------|
 | **Core System** | 7 | Shell execution, file operations, web search, thinking, Claude Code |
 | **Memory & RAG** | 5 | User memories, personality preferences, semantic search |
-| **TODO** | 4 | Task management with scheduled autonomous execution |
+| **TODO** | 3 | Task management with scheduled autonomous execution |
 | **Agent Management** | 3 | Agent context, reload, rollback |
 | **Notification** | 1 | Unified Telegram/Discord/Slack notifications |
-| **Triggers** | 4 | Event-driven automation CRUD |
 | **Sub-Agent Wrappers** | 4 | BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent |
+| **Optional: Triggers** | 4 | Event-driven automation CRUD (per-thread or via SelfModifyAgent) |
 | **Optional: Outlook** | 13 | Microsoft Graph email + OAuth (per-thread enabling) |
 | **Custom** | ∞ | User-defined HTTP or MCP tools |
 

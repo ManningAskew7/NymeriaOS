@@ -19,7 +19,7 @@ Core operating model:
 
 Nymeria is organized into:
 - `nymeria/core/` runtime orchestration (`NymeriaAgent`, ticker, TODO manager, trigger manager, event bus)
-- `nymeria/tools/` tool surface (25 core tools)
+- `nymeria/tools/` tool surface (18 core + 17 optional tools)
 - `nymeria/agents/` sub-agent registry + direct tool wrappers
 - `nymeria/triggers/` interfaces (API, CLI, webhooks, Discord bot)
 - `nymeria/config/` settings and system prompts
@@ -64,19 +64,21 @@ Legacy migration artifacts:
 ## Tooling Model
 
 Nymeria currently exposes:
-- **25 core tools** (`ALL_TOOLS`)
+- **18 core tools** (`ALL_TOOLS`)
 - **4 sub-agent wrappers** generated via `tool_factory.py`
-- **13 optional Outlook tools** enabled per thread (`OPTIONAL_TOOLS`)
+- **17 optional tools** enabled per thread (`OPTIONAL_TOOLS`) — 13 Outlook email + 4 trigger
 
 Default tool surface for runtime initialization:
-- `get_all_tools_with_agents()` => 29 tools (25 core + 4 sub-agent wrappers)
+- `get_all_tools_with_agents()` => 22 tools (18 core + 4 sub-agent wrappers)
 
 Core categories include:
 - system execution (`bash_execute`, file tools, web, think, claude_code)
-- memory/rag (`memory_save`, `memory_forget`, `memory_clear_all`, `personality_set`, `rag_search`)
+- memory/rag (`memory_save`, `memory_forget`, `personality_set`, `rag_search`)
 - tasking (`todo`, `todo_delete`, `todo_list`)
 - agent ops (`clear_agent_context`, `reload_all`, `self_modify_rollback`)
 - notifications (`notify`)
+
+Optional (per-thread or via SelfModifyAgent):
 - triggers (`trigger_create/list/update/delete`)
 
 ## Sub-Agents
