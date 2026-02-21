@@ -330,6 +330,7 @@
                 isPinned={thread.pinned ?? false}
                 taskCount={threadsStore.getThreadTaskCount(thread.id)}
                 hasActiveTask={threadsStore.isThreadActive(thread.id)}
+                isCallable={threadConfigStore.isCallableThread(thread.id)}
                 hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
                 onSelect={(e) => handleThreadClick(thread.id, e)}
                 onDelete={() => handleDeleteThread(thread.id)}
@@ -351,6 +352,7 @@
             isPinned={thread.pinned ?? false}
             taskCount={threadsStore.getThreadTaskCount(thread.id)}
             hasActiveTask={threadsStore.isThreadActive(thread.id)}
+            isCallable={threadConfigStore.isCallableThread(thread.id)}
             hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
             onSelect={(e) => handleThreadClick(thread.id, e)}
             onDelete={() => handleDeleteThread(thread.id)}

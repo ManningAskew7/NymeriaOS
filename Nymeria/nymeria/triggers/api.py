@@ -629,6 +629,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     trigger_router = create_trigger_router(get_agent, verify_api_key)
     app.include_router(trigger_router)
 
+    # Ensure agent threads exist for all registered agent templates
+    # Always sync tools so thread-agent tools take priority over legacy ones
+    from ..agents import ensure_callable_threads
+    ensure_callable_threads(_agent.thread_config_manager)
+    _agent.sync_agent_tools()
+
     # ========================================================================
     # Endpoints
     # ========================================================================
@@ -983,10 +989,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         disabled_tools: Optional[List[str]] = None
         enabled_tools: Optional[List[str]] = None
         llm_config: Optional[ThreadLLMConfigRequest] = None
+        system_prompt: Optional[str] = Field(default=None, max_length=50000)
+        callable: Optional[bool] = None
+        callable_name: Optional[str] = Field(default=None, max_length=64)
+        callable_description: Optional[str] = Field(default=None, max_length=500)
         clear_instructions: bool = False
         clear_disabled_tools: bool = False
         clear_enabled_tools: bool = False
         clear_llm_config: bool = False
+        clear_system_prompt: bool = False
 
     @app.get("/threads/{thread_id}/config", tags=["Threads"])
     async def get_thread_config(
@@ -997,7 +1008,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent = get_agent()
         tc = agent.thread_config_manager.get_config(thread_id)
         if tc:
-            return tc.model_dump(mode="json")
+            result = tc.model_dump(mode="json")
+            result["has_customizations"] = tc.has_customizations()
+            return result
         # Return empty default
         return {
             "thread_id": thread_id,
@@ -1005,6 +1018,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "disabled_tools": [],
             "enabled_tools": [],
             "llm_config": None,
+            "system_prompt": None,
+            "callable": False,
+            "callable_name": None,
+            "callable_description": None,
             "created_at": None,
             "updated_at": None,
             "has_customizations": False,
@@ -1034,6 +1051,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.enabled_tools = []
         if request.clear_llm_config:
             tc.llm_config = None
+        if request.clear_system_prompt:
+            tc.system_prompt = None
 
         # Apply updates
         if request.instructions is not None and not request.clear_instructions:
@@ -1049,11 +1068,45 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             else:
                 for key, value in llm_data.items():
                     setattr(tc.llm_config, key, value)
+        if request.system_prompt is not None and not request.clear_system_prompt:
+            tc.system_prompt = request.system_prompt
+        if request.callable is not None:
+            tc.callable = request.callable
+            # Require callable_name when enabling callable
+            if request.callable and not (request.callable_name or tc.callable_name):
+                raise HTTPException(
+                    status_code=400,
+                    detail="callable_name is required when enabling callable",
+                )
+        if request.callable_name is not None:
+            # Validate callable_name doesn't collide with core tool names
+            if request.callable_name:
+                from ..tools import ALL_TOOLS
+                core_tool_names = {t.name for t in ALL_TOOLS}
+                if request.callable_name in core_tool_names:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Callable name '{request.callable_name}' conflicts with a core tool name",
+                    )
+                # Check for duplicate callable_name across other threads
+                existing = agent.thread_config_manager.get_callable_thread_by_name(request.callable_name)
+                if existing and existing.thread_id != thread_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Callable name '{request.callable_name}' is already used by thread {existing.thread_id}",
+                    )
+            tc.callable_name = request.callable_name
+        if request.callable_description is not None:
+            tc.callable_description = request.callable_description
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")
 
         agent.invalidate_thread_config_cache(thread_id)
+
+        # If this is an agent thread config change, rebuild agent tools
+        if request.callable is not None or request.callable_name is not None or request.callable_description is not None:
+            agent.sync_agent_tools()
 
         result = tc.model_dump(mode="json")
         result["has_customizations"] = tc.has_customizations()
@@ -1066,8 +1119,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     ):
         """Reset thread to global defaults (delete custom config)."""
         agent = get_agent()
+        # Check if this was an agent thread before deleting
+        tc = agent.thread_config_manager.get_config(thread_id)
+        was_agent = tc.callable if tc else False
         agent.thread_config_manager.delete_config(thread_id)
         agent.invalidate_thread_config_cache(thread_id)
+        # If it was an agent thread, rebuild tool registry to remove the stale tool
+        if was_agent:
+            agent.sync_agent_tools()
         return {"status": "ok", "thread_id": thread_id}
 
     @app.post(
@@ -2334,6 +2393,139 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "imported": imported,
             "errors": errors,
         }
+
+    # ========================================================================
+    # Agent Thread Endpoints
+    # ========================================================================
+
+    @app.get("/agents/templates", tags=["Agent Threads"])
+    async def list_agent_templates(_: bool = Depends(verify_api_key)):
+        """List built-in agent templates with their default configs."""
+        from ..agents import AVAILABLE_AGENTS
+
+        templates = []
+        for name, config in AVAILABLE_AGENTS.items():
+            templates.append({
+                "name": name,
+                "description": config.get("description", ""),
+                "system_prompt": config.get("system_prompt", ""),
+                "tools": [t.name if hasattr(t, "name") else str(t) for t in config.get("tools", [])],
+                "allowed_tools": config.get("allowed_tools", []),
+                "required_env_vars": config.get("required_env_vars", []),
+                "llm_provider": config.get("llm_provider"),
+                "llm_model": config.get("llm_model"),
+                "llm_temperature": config.get("llm_temperature"),
+                "llm_max_tokens": config.get("llm_max_tokens"),
+            })
+        return {"templates": templates, "total": len(templates)}
+
+    @app.get("/agents/threads", tags=["Agent Threads"])
+    async def list_agent_threads(_: bool = Depends(verify_api_key)):
+        """List all callable thread configs (callable=True)."""
+        agent = get_agent()
+        threads = agent.thread_config_manager.list_callable_threads()
+        result = []
+        for tc in threads:
+            data = tc.model_dump(mode="json")
+            data["has_customizations"] = tc.has_customizations()
+            result.append(data)
+        return {"threads": result, "total": len(result)}
+
+    class AgentThreadCreateRequest(BaseModel):
+        """Request to create a new callable thread."""
+        callable_name: str = Field(..., min_length=1, max_length=64)
+        callable_description: str = Field(default="", max_length=500)
+        system_prompt: str = Field(default="", max_length=50000)
+        from_template: Optional[str] = Field(default=None, description="Name of a built-in template to copy from")
+        llm_provider: Optional[str] = None
+        llm_model: Optional[str] = None
+        llm_temperature: Optional[float] = None
+        llm_max_tokens: Optional[int] = None
+
+    @app.post("/agents/threads", tags=["Agent Threads"])
+    async def create_agent_thread(
+        request: AgentThreadCreateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Create a new callable thread (from template or custom)."""
+        import uuid
+        from ..core.thread_config import ThreadConfig, ThreadLLMConfig
+        from ..agents import AVAILABLE_AGENTS
+
+        agent = get_agent()
+
+        # Validate callable_name doesn't collide with core tool names
+        from ..tools import ALL_TOOLS
+        core_tool_names = {t.name for t in ALL_TOOLS}
+        if request.callable_name in core_tool_names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Callable name '{request.callable_name}' conflicts with a core tool name",
+            )
+
+        # Check if a callable thread with this name already exists
+        existing = agent.thread_config_manager.get_callable_thread_by_name(request.callable_name)
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Callable thread for '{request.callable_name}' already exists: {existing.thread_id}",
+            )
+
+        # If from_template, copy defaults from the template
+        system_prompt = request.system_prompt
+        description = request.callable_description
+        llm_provider = request.llm_provider
+        llm_model = request.llm_model
+        llm_temperature = request.llm_temperature
+        llm_max_tokens = request.llm_max_tokens
+
+        if request.from_template and request.from_template in AVAILABLE_AGENTS:
+            template = AVAILABLE_AGENTS[request.from_template]
+            if not system_prompt:
+                system_prompt = template.get("system_prompt", "")
+            if not description:
+                description = template.get("description", "")
+            if llm_provider is None:
+                llm_provider = template.get("llm_provider")
+            if llm_model is None:
+                llm_model = template.get("llm_model")
+            if llm_temperature is None:
+                llm_temperature = template.get("llm_temperature")
+            if llm_max_tokens is None:
+                llm_max_tokens = template.get("llm_max_tokens")
+
+        # Build LLM config
+        llm_config = None
+        if llm_provider or llm_model or llm_temperature is not None or llm_max_tokens is not None:
+            llm_config = ThreadLLMConfig(
+                provider=llm_provider,
+                model=llm_model,
+                temperature=llm_temperature,
+                max_tokens=llm_max_tokens,
+            )
+
+        # Generate thread ID
+        random_suffix = uuid.uuid4().hex[:8]
+        thread_id = f"agent-{request.callable_name.lower()}-{random_suffix}"
+
+        tc = ThreadConfig(
+            thread_id=thread_id,
+            system_prompt=system_prompt,
+            callable=True,
+            callable_name=request.callable_name,
+            callable_description=description or f"Invoke the {request.callable_name} sub-agent",
+            llm_config=llm_config,
+        )
+
+        if not agent.thread_config_manager.save_config(tc):
+            raise HTTPException(status_code=500, detail="Failed to create agent thread")
+
+        # Rebuild agent tools to include the new thread-agent
+        agent.sync_agent_tools()
+
+        result = tc.model_dump(mode="json")
+        result["has_customizations"] = tc.has_customizations()
+        return result
 
     # ========================================================================
     # Sub-Agent Endpoints

@@ -497,6 +497,18 @@ class NymeriaAgent:
 
     def _get_memory_hash(self, user_id: str, thread_id: str = "") -> str:
         """Get a hash of the user's memories, thread-scoped TODOs, and tool preferences to detect changes."""
+        # For callable threads with custom system_prompt, skip memory/TODO/personality hash
+        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+        if tc and tc.callable and tc.system_prompt:
+            thread_config_str = (
+                f"sp:{hash(tc.system_prompt or '')}"
+                f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
+                f"|dt:{sorted(tc.disabled_tools)}"
+                f"|et:{sorted(tc.enabled_tools)}"
+                f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
+            )
+            return f"{hash(thread_config_str)}"
+
         profile = self.profile_manager.get_profile(user_id)
         # Simple hash based on memory keys and values
         memory_str = "|".join(f"{m.key}:{m.value}" for m in profile.memories)
@@ -519,15 +531,15 @@ class NymeriaAgent:
 
         # Include thread config in the hash (so graph is rebuilt when config changes)
         thread_config_str = ""
-        if thread_id:
-            tc = self.thread_config_manager.get_config(thread_id)
-            if tc:
-                thread_config_str = (
-                    f"|tc:{tc.instructions or ''}"
-                    f"|dt:{sorted(tc.disabled_tools)}"
-                    f"|et:{sorted(tc.enabled_tools)}"
-                    f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
-                )
+        if thread_id and tc:
+            thread_config_str = (
+                f"|tc:{tc.instructions or ''}"
+                f"|sp:{hash(tc.system_prompt or '')}"
+                f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
+                f"|dt:{sorted(tc.disabled_tools)}"
+                f"|et:{sorted(tc.enabled_tools)}"
+                f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
+            )
 
         return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str)}"
 
@@ -541,6 +553,10 @@ class NymeriaAgent:
         - INTERACTIVE_MODE_RULES for user messages (simple, natural responses)
         - AUTONOMOUS_MODE_RULES for self_invoke (autonomous task execution)
 
+        Thread config overrides:
+        - Callable threads with system_prompt: use system_prompt + time context only (focused context)
+        - Regular threads with system_prompt: replace soul.md but keep memories/TODOs/instructions
+
         Args:
             user_id: User identifier
             is_autonomous: If True, append autonomous mode rules; otherwise interactive rules
@@ -550,15 +566,23 @@ class NymeriaAgent:
             Full system prompt with base content + user memories + thread-scoped TODOs
             + mode-specific rules
         """
+        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+
+        # Callable threads with system_prompt: focused context (no memories/TODOs/instructions)
+        if tc and tc.callable and tc.system_prompt:
+            time_context = self._get_time_context(is_autonomous=is_autonomous)
+            return f"{tc.system_prompt}\n\n{time_context}"
+
+        # Determine base prompt: custom system_prompt or default soul.md
+        base = tc.system_prompt if (tc and tc.system_prompt) else self._base_system_prompt
+
         memories_section = self._build_user_memories_section(user_id)
         todos_section = self._build_active_todos_section(user_id, thread_id)
-        prompt = self._base_system_prompt + memories_section + todos_section
+        prompt = base + memories_section + todos_section
 
         # Inject per-thread instructions (before mode rules so they always come last)
-        if thread_id:
-            tc = self.thread_config_manager.get_config(thread_id)
-            if tc and tc.instructions:
-                prompt += f"\n\n---\n\n## Thread-Specific Instructions\n\n{tc.instructions}\n"
+        if tc and tc.instructions:
+            prompt += f"\n\n---\n\n## Thread-Specific Instructions\n\n{tc.instructions}\n"
 
         # Add mode-specific behavioral rules
         if is_autonomous:
@@ -1516,6 +1540,43 @@ class NymeriaAgent:
             extended_thinking=extended_thinking,
         )
 
+    def _get_callable_thread_tools(self, tc) -> List[BaseTool]:
+        """Get tools for a callable thread from its AVAILABLE_AGENTS template.
+
+        If the callable_name matches a registered agent template, loads the template's
+        native tool list (e.g., BROWSER_TOOLS for BrowserAgent) and any allowed global
+        tools. Otherwise, gives the standard tool set.
+        """
+        from ..agents import AVAILABLE_AGENTS
+        from ..tools import ALL_TOOLS
+
+        tools = []
+        template = AVAILABLE_AGENTS.get(tc.callable_name) if tc.callable_name else None
+
+        if template:
+            # Add the template's native tools (e.g., browser_navigate, browser_click)
+            tools.extend(template.get("tools", []))
+            # Add any allowed global tools
+            allowed = template.get("allowed_tools", [])
+            if allowed:
+                for t in ALL_TOOLS:
+                    if t.name in allowed:
+                        tools.append(t)
+        else:
+            # Custom callable thread without a template — give it the standard tool set
+            # but exclude all callable thread tools to prevent self-invocation loops
+            callable_names = {
+                t2.callable_name
+                for t2 in self.thread_config_manager.list_callable_threads()
+                if t2.callable_name
+            }
+            tools = [
+                t for t in self.tool_registry.get_tools_for_user("default", self.profile_manager)
+                if t.name not in callable_names
+            ]
+
+        return tools
+
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a LangGraph execution graph with a specific system prompt.
 
@@ -1525,6 +1586,8 @@ class NymeriaAgent:
             thread_id: Thread ID for per-thread config (tool filtering, LLM overrides)
         """
         llm_config = self._get_llm_config_for_thread(thread_id)
+        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+
         config = AgentConfig(
             llm=llm_config,
             checkpointer=self._checkpointer_config,
@@ -1533,22 +1596,25 @@ class NymeriaAgent:
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
-        # Use per-user tool filtering
-        tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+        # Callable threads with a template: load tools from template + allowed global tools
+        if tc and tc.callable and tc.callable_name:
+            tools = self._get_callable_thread_tools(tc)
+        else:
+            # Use per-user tool filtering
+            tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
 
         # Apply per-thread tool filtering (remove disabled, add enabled optional)
-        if thread_id:
-            tc = self.thread_config_manager.get_config(thread_id)
-            if tc:
-                if tc.disabled_tools:
-                    disabled = set(tc.disabled_tools)
-                    tools = [t for t in tools if t.name not in disabled]
-                if tc.enabled_tools:
-                    from ..tools import OPTIONAL_TOOLS
-                    existing = {t.name for t in tools}
-                    for name in tc.enabled_tools:
-                        if name in OPTIONAL_TOOLS and name not in existing:
-                            tools.append(OPTIONAL_TOOLS[name])
+        if tc:
+            if tc.disabled_tools:
+                disabled = set(tc.disabled_tools)
+                tools = [t for t in tools if t.name not in disabled]
+            if tc.enabled_tools:
+                from ..tools import OPTIONAL_TOOLS
+                existing = {t.name for t in tools}
+                for name in tc.enabled_tools:
+                    if name in OPTIONAL_TOOLS and name not in existing:
+                        tools.append(OPTIONAL_TOOLS[name])
 
         return create_graph(
             config=config,
@@ -1564,6 +1630,8 @@ class NymeriaAgent:
             thread_id: Thread ID for per-thread config (tool filtering, LLM overrides)
         """
         llm_config = self._get_llm_config_for_thread(thread_id)
+        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+
         config = AgentConfig(
             llm=llm_config,
             checkpointer=self._async_checkpointer_config,
@@ -1572,22 +1640,25 @@ class NymeriaAgent:
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
         )
-        # Use per-user tool filtering
-        tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+        # Callable threads with a template: load tools from template + allowed global tools
+        if tc and tc.callable and tc.callable_name:
+            tools = self._get_callable_thread_tools(tc)
+        else:
+            # Use per-user tool filtering
+            tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
 
         # Apply per-thread tool filtering (remove disabled, add enabled optional)
-        if thread_id:
-            tc = self.thread_config_manager.get_config(thread_id)
-            if tc:
-                if tc.disabled_tools:
-                    disabled = set(tc.disabled_tools)
-                    tools = [t for t in tools if t.name not in disabled]
-                if tc.enabled_tools:
-                    from ..tools import OPTIONAL_TOOLS
-                    existing = {t.name for t in tools}
-                    for name in tc.enabled_tools:
-                        if name in OPTIONAL_TOOLS and name not in existing:
-                            tools.append(OPTIONAL_TOOLS[name])
+        if tc:
+            if tc.disabled_tools:
+                disabled = set(tc.disabled_tools)
+                tools = [t for t in tools if t.name not in disabled]
+            if tc.enabled_tools:
+                from ..tools import OPTIONAL_TOOLS
+                existing = {t.name for t in tools}
+                for name in tc.enabled_tools:
+                    if name in OPTIONAL_TOOLS and name not in existing:
+                        tools.append(OPTIONAL_TOOLS[name])
 
         return create_graph(
             config=config,
@@ -1744,18 +1815,28 @@ class NymeriaAgent:
         the agent tool wrappers (BrowserAgent, OutlookAgent, etc.) without reloading
         all tool modules. Call this after reload_agents().
 
+        Thread-agent tools take priority: if an agent thread exists for a given
+        agent_name, its thread-based tool replaces the legacy SubAgentExecutor tool.
+
         Returns:
             List of agent tool names now in the registry
         """
         from ..agents import get_agent_tools, refresh_agent_tools
+        from ..agents.tool_factory import get_callable_thread_tools
         from ..tools import ALL_TOOLS
 
-        # Refresh the tool_factory cache (regenerate wrappers for current AVAILABLE_AGENTS)
-        agent_names = refresh_agent_tools()
-        agent_tools = get_agent_tools()
+        # Get callable thread tools (from threads with callable=True)
+        thread_tools = get_callable_thread_tools(self.thread_config_manager)
+        thread_tool_names = {t.name for t in thread_tools}
 
-        # Rebuild the tool registry with core tools + agent tools
-        combined = list(ALL_TOOLS) + agent_tools
+        # Refresh the legacy tool_factory cache
+        agent_names = refresh_agent_tools()
+        legacy_tools = get_agent_tools()
+        # Filter out legacy tools that have thread-agent replacements
+        legacy_tools = [t for t in legacy_tools if t.name not in thread_tool_names]
+
+        # Rebuild the tool registry: core + thread-agent + remaining legacy
+        combined = list(ALL_TOOLS) + thread_tools + legacy_tools
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_all(combined)
 
@@ -1768,8 +1849,9 @@ class NymeriaAgent:
         self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
         self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
 
-        logger.info(f"Synced agent tools: {agent_names} (total: {len(combined)} tools)")
-        return agent_names
+        all_names = list(thread_tool_names) + [t.name for t in legacy_tools]
+        logger.info(f"Synced agent tools: {all_names} (thread: {len(thread_tools)}, legacy: {len(legacy_tools)}, total: {len(combined)} tools)")
+        return all_names
 
     def invalidate_thread_config_cache(self, thread_id: str) -> None:
         """Remove cached graphs for a specific thread after its config changes."""
@@ -2014,9 +2096,12 @@ class NymeriaAgent:
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message (chat)")
 
             # Pass user_id through config for tools to access
+            # callbacks=[] prevents LLM events from leaking into a parent
+            # astream_events() when chat() is called from inside a tool
             config = {
                 "recursion_limit": 150,
                 "configurable": {"thread_id": thread_id, "user_id": user_id},
+                "callbacks": [],
             }
 
             # Create message - mark autonomous wake-ups as internal so they're filtered from user history

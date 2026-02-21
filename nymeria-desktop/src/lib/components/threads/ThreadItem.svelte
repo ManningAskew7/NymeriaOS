@@ -7,6 +7,7 @@
     isActive: boolean;
     isSelected?: boolean;
     isPinned?: boolean;
+    isCallable?: boolean;
     taskCount?: number;
     hasActiveTask?: boolean;
     hasCustomConfig?: boolean;
@@ -17,7 +18,7 @@
     onTogglePin?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, isPinned = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onTogglePin }: Props = $props();
+  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onTogglePin }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -144,6 +145,12 @@
       <span class="platform-icon trigger" title="Trigger">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+        </svg>
+      </span>
+    {:else if isCallable}
+      <span class="platform-icon agent" title="Callable Thread">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.07A7.001 7.001 0 0 1 7.07 19H6a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h-1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2zM9 15a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm6 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>
         </svg>
       </span>
     {:else}
@@ -324,6 +331,10 @@
   }
 
   .platform-icon.trigger {
+    color: var(--accent-primary);
+  }
+
+  .platform-icon.agent {
     color: var(--accent-primary);
   }
 

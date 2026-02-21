@@ -4,6 +4,8 @@ Each thread can override:
 - System prompt instructions (appended to soul.md)
 - Disabled tools (removed from the graph entirely)
 - LLM settings (provider, model, temperature, etc.)
+- Full system prompt (replaces soul.md entirely)
+- Callable status (makes the thread invocable by Nymeria as a tool)
 """
 
 import json
@@ -13,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,34 @@ class ThreadConfig(BaseModel):
     disabled_tools: List[str] = Field(default_factory=list)
     enabled_tools: List[str] = Field(default_factory=list)
     llm_config: Optional[ThreadLLMConfig] = None
+    # Full system prompt replacement (overrides soul.md entirely)
+    system_prompt: Optional[str] = Field(default=None, max_length=50000)
+    # Callable thread fields — any thread can become callable by Nymeria
+    callable: bool = False
+    callable_name: Optional[str] = None
+    callable_description: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_fields(cls, data: dict) -> dict:
+        """Migrate old is_agent/agent_name/agent_description to callable fields."""
+        if not isinstance(data, dict):
+            return data
+        if "is_agent" in data and "callable" not in data:
+            data["callable"] = data.pop("is_agent")
+        elif "is_agent" in data:
+            data.pop("is_agent")
+        if "agent_name" in data and "callable_name" not in data:
+            data["callable_name"] = data.pop("agent_name")
+        elif "agent_name" in data:
+            data.pop("agent_name")
+        if "agent_description" in data and "callable_description" not in data:
+            data["callable_description"] = data.pop("agent_description")
+        elif "agent_description" in data:
+            data.pop("agent_description")
+        return data
 
     def has_customizations(self) -> bool:
         """Check if this config has any non-default values."""
@@ -56,6 +84,10 @@ class ThreadConfig(BaseModel):
             d = self.llm_config.model_dump(exclude_none=True)
             if d:
                 return True
+        if self.system_prompt:
+            return True
+        if self.callable:
+            return True
         return False
 
 
@@ -140,3 +172,19 @@ class ThreadConfigManager:
                 if path.is_file() and path.suffix == ".json":
                     result.append(path.stem)
         return sorted(result)
+
+    def list_callable_threads(self) -> List[ThreadConfig]:
+        """Return all ThreadConfig entries where callable=True."""
+        result = []
+        for thread_id in self.list_configured_threads():
+            tc = self.get_config(thread_id)
+            if tc and tc.callable:
+                result.append(tc)
+        return result
+
+    def get_callable_thread_by_name(self, name: str) -> Optional[ThreadConfig]:
+        """Find a callable thread by its callable_name."""
+        for tc in self.list_callable_threads():
+            if tc.callable_name == name:
+                return tc
+        return None
