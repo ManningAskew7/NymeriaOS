@@ -22,7 +22,7 @@ from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, log_ac
 from ..core.event_bus import get_event_bus, AutonomousEvent
 from ..core.notifications import NotificationStore, Notification
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
-from ..core.todo_manager import TodoManager, TodoItem, TodoStatus, TodoPriority
+from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
 from ..tools.visibility import get_and_clear_mute_flag
 from ..tools.definitions.schema import (
@@ -226,12 +226,9 @@ class TodoItemResponse(BaseModel):
     id: str
     task: str
     status: str
-    priority: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    deadline: Optional[datetime] = None
     notes: Optional[str] = None
-    blocked_reason: Optional[str] = None
     # Scheduling fields
     scheduled_for: Optional[datetime] = None
     thread_id: Optional[str] = None
@@ -245,8 +242,6 @@ class TodoCreateRequest(BaseModel):
     """Request model for creating a new TODO."""
 
     task: str = Field(..., min_length=1, max_length=500, description="Task description")
-    priority: Optional[str] = Field(default=None, description="Priority: low, medium, high")
-    deadline: Optional[datetime] = Field(default=None, description="Due date")
     notes: Optional[str] = Field(default=None, max_length=1000, description="Additional notes")
     scheduled_for: Optional[str] = Field(default=None, description="When to execute: relative ('2h', '30m') or ISO datetime")
     recurrence: Optional[str] = Field(default=None, description="Recurrence: hourly, daily, weekly, monthly")
@@ -257,17 +252,13 @@ class TodoUpdateRequest(BaseModel):
     """Request model for updating a TODO."""
 
     task: Optional[str] = Field(default=None, max_length=500, description="Task description")
-    priority: Optional[str] = Field(default=None, description="Priority: low, medium, high")
-    status: Optional[str] = Field(default=None, description="Status: pending, in_progress, blocked, done")
-    deadline: Optional[datetime] = Field(default=None, description="Due date")
+    status: Optional[str] = Field(default=None, description="Status: pending, in_progress, done")
     notes: Optional[str] = Field(default=None, max_length=1000, description="Additional notes")
-    blocked_reason: Optional[str] = Field(default=None, max_length=500, description="Reason if blocked")
     scheduled_for: Optional[str] = Field(default=None, description="When to execute: relative ('2h', '30m') or ISO datetime")
     recurrence: Optional[str] = Field(default=None, description="Recurrence: hourly, daily, weekly, monthly")
     thread_id: Optional[str] = Field(default=None, description="Thread ID for scheduled execution output")
     clear_schedule: bool = Field(default=False, description="Clear the schedule")
     clear_recurrence: bool = Field(default=False, description="Clear the recurrence")
-    clear_deadline: bool = Field(default=False, description="Clear the deadline")
 
 
 class TodoListResponse(BaseModel):
@@ -1479,36 +1470,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if thread_id:
             items = [i for i in items if i.thread_id == thread_id]
 
-        # Sort: in_progress first, then by priority, then by created_at
-        priority_order = {TodoPriority.HIGH: 0, TodoPriority.MEDIUM: 1, TodoPriority.LOW: 2, None: 3}
-        status_order = {TodoStatus.IN_PROGRESS: 0, TodoStatus.BLOCKED: 1, TodoStatus.PENDING: 2, TodoStatus.DONE: 3}
-
+        # Sort: in_progress first, then pending, then done; then by created_at
+        from ..core.todo_constants import STATUS_ORDER
         sorted_items = sorted(
             items,
-            key=lambda i: (status_order.get(i.status, 4), priority_order.get(i.priority, 3), i.created_at),
+            key=lambda i: (STATUS_ORDER.get(i.status, 3), i.created_at),
         )
 
         return TodoListResponse(
             user_id=user_id,
-            items=[
-                TodoItemResponse(
-                    id=item.id,
-                    task=item.task,
-                    status=item.status.value,
-                    priority=item.priority.value if item.priority else None,
-                    created_at=item.created_at,
-                    updated_at=item.updated_at,
-                    deadline=item.deadline,
-                    notes=item.notes,
-                    blocked_reason=item.blocked_reason,
-                    scheduled_for=item.scheduled_for,
-                    thread_id=item.thread_id,
-                    last_execution=item.last_execution,
-                    created_by=item.created_by,
-                    recurrence=item.recurrence,
-                )
-                for item in sorted_items
-            ],
+            items=[_todo_to_response(item) for item in sorted_items],
             total=len(sorted_items),
         )
 
@@ -1586,12 +1557,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             id=item.id,
             task=item.task,
             status=item.status.value,
-            priority=item.priority.value if item.priority else None,
             created_at=item.created_at,
             updated_at=item.updated_at,
-            deadline=item.deadline,
             notes=item.notes,
-            blocked_reason=item.blocked_reason,
             scheduled_for=item.scheduled_for,
             thread_id=item.thread_id,
             last_execution=item.last_execution,
@@ -1612,26 +1580,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         The TODO is created by the user (created_by='user').
         """
         from ..core.todo_schedule_db import TodoScheduleDB
+        from ..core.todo_constants import VALID_RECURRENCES
 
         todo_manager = TodoManager(settings.data_dir)
 
-        # Parse priority
-        priority = None
-        if request.priority:
-            try:
-                priority = TodoPriority(request.priority.lower())
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid priority: '{request.priority}'. Use: low, medium, high"
-                )
-
         # Validate recurrence
-        valid_recurrences = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
-        if request.recurrence and request.recurrence.lower() not in valid_recurrences:
+        if request.recurrence and request.recurrence.lower() not in VALID_RECURRENCES:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid recurrence: '{request.recurrence}'. Use: {', '.join(valid_recurrences)}"
+                detail=f"Invalid recurrence: '{request.recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
             )
 
         # Parse scheduled_for
@@ -1643,8 +1600,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
                 task=request.task,
-                priority=priority,
-                deadline=request.deadline,
                 notes=request.notes,
                 scheduled_for=scheduled_for,
                 thread_id=todo_thread_id,
@@ -1685,6 +1640,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Update an existing TODO item.
         """
         from ..core.todo_schedule_db import TodoScheduleDB
+        from ..core.todo_constants import VALID_RECURRENCES
 
         todo_manager = TodoManager(settings.data_dir)
 
@@ -1696,28 +1652,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             except ValueError:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid status: '{request.status}'. Use: pending, in_progress, blocked, done"
-                )
-
-        # Parse priority
-        priority = None
-        if request.priority:
-            try:
-                priority = TodoPriority(request.priority.lower())
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid priority: '{request.priority}'. Use: low, medium, high"
+                    detail=f"Invalid status: '{request.status}'. Use: pending, in_progress, done"
                 )
 
         # Validate recurrence
-        valid_recurrences = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
         recurrence = None
         if request.recurrence and not request.clear_recurrence:
-            if request.recurrence.lower() not in valid_recurrences:
+            if request.recurrence.lower() not in VALID_RECURRENCES:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid recurrence: '{request.recurrence}'. Use: {', '.join(valid_recurrences)}"
+                    detail=f"Invalid recurrence: '{request.recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
                 )
             recurrence = request.recurrence.lower()
 
@@ -1738,16 +1682,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 todo_id=todo_id,
                 task=request.task,
                 status=status,
-                priority=priority,
-                deadline=request.deadline,
                 notes=request.notes,
-                blocked_reason=request.blocked_reason,
                 scheduled_for=scheduled_for,
                 clear_schedule=request.clear_schedule,
                 thread_id=request.thread_id,
                 recurrence=recurrence,
                 clear_recurrence=request.clear_recurrence,
-                clear_deadline=request.clear_deadline,
             )
 
             if not success:
@@ -1755,6 +1695,22 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     status_code=404,
                     detail=f"TODO '{todo_id}' not found"
                 )
+
+            # Auto-reschedule recurring TODOs marked as done
+            if status == TodoStatus.DONE:
+                updated = todo_list.get_item(todo_id)
+                if updated and updated.recurrence:
+                    from ..core.todo_constants import RECURRENCE_DELTAS
+                    delta = RECURRENCE_DELTAS.get(updated.recurrence)
+                    if delta:
+                        next_execution = datetime.now(timezone.utc) + delta
+                        todo_list.update_item(
+                            todo_id,
+                            scheduled_for=next_execution,
+                            status=TodoStatus.PENDING,
+                        )
+                        updated.last_execution = datetime.now(timezone.utc)
+                        logger.info(f"[API] Auto-rescheduled recurring TODO {todo_id} for {next_execution}")
 
             # Re-fetch the updated item (still in memory)
             updated_item = todo_list.get_item(todo_id)
@@ -1817,6 +1773,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     detail=f"TODO '{todo_id}' not found"
                 )
 
+            has_recurrence = item.recurrence
             success = todo_list.complete_item(todo_id)
             if not success:
                 raise HTTPException(
@@ -1824,12 +1781,31 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     detail=f"TODO '{todo_id}' not found"
                 )
 
+            # Auto-reschedule recurring TODOs
+            if has_recurrence:
+                from ..core.todo_constants import RECURRENCE_DELTAS
+                delta = RECURRENCE_DELTAS.get(has_recurrence)
+                if delta:
+                    next_execution = datetime.now(timezone.utc) + delta
+                    todo_list.update_item(
+                        todo_id,
+                        scheduled_for=next_execution,
+                        status=TodoStatus.PENDING,
+                    )
+                    refreshed = todo_list.get_item(todo_id)
+                    if refreshed:
+                        refreshed.last_execution = datetime.now(timezone.utc)
+                    logger.info(f"[API] Auto-rescheduled recurring TODO {todo_id} for {next_execution}")
+
             # Re-fetch the updated item
             item = todo_list.get_item(todo_id)
 
-            # Remove from schedule
+            # Sync schedule
             schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
-            schedule_db.remove_scheduled(todo_id)
+            if has_recurrence and item.scheduled_for:
+                todo_manager.sync_schedule_to_db(user_id, todo_id, schedule_db)
+            else:
+                schedule_db.remove_scheduled(todo_id)
 
             return _todo_to_response(item)
 

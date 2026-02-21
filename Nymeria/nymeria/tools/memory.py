@@ -106,10 +106,10 @@ def memory_forget(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Remove a memory by key.
+    Remove a memory or personality preference by key.
 
     Args:
-        key: The memory key to delete
+        key: The memory key or personality trait to delete
     """
     logger.info(f"memory_forget called: key={key}")
 
@@ -118,16 +118,21 @@ def memory_forget(
 
     # Use atomic update to prevent race conditions
     with manager.atomic_update(user_id) as profile:
-        success = profile.remove_memory(key)
-        if success:
+        # Try memories first, then personality preferences
+        if profile.remove_memory(key):
             logger.info(f"Memory deleted for user {user_id}: {key}")
             return f"[Deleted]: Forgot '{key}'. This will no longer appear in future conversations."
-        else:
-            # List available keys to help
-            keys = profile.list_memory_keys()
-            if keys:
-                return f"[Error]: No memory found with key '{key}'. Available keys: {', '.join(keys)}"
-            return f"[Error]: No memories stored yet."
+        if profile.clear_personality(key):
+            logger.info(f"Personality preference deleted for user {user_id}: {key}")
+            return f"[Deleted]: Removed personality preference '{key}'."
+
+        # Not found in either — list available keys to help
+        keys = profile.list_memory_keys()
+        traits = list(profile.personality_overrides.keys())
+        available = keys + traits
+        if available:
+            return f"[Error]: No memory or preference found with key '{key}'. Available keys: {', '.join(available)}"
+        return f"[Error]: No memories stored yet."
 
 
 @tool
@@ -388,12 +393,12 @@ def rag_settings(
 
 
 # Export memory tools
-# memory_list removed - memories are auto-injected into system prompt
+# memory_clear_all removed - dangerous, cheap models could hallucinate and wipe all memories
 # rag_settings removed - should be configured via UI settings
 MEMORY_TOOLS = [
     memory_save,
     memory_forget,
-    memory_clear_all,
+    memory_list,
     personality_set,
     rag_search,
 ]

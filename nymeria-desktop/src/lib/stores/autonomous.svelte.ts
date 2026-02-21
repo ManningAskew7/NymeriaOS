@@ -199,7 +199,7 @@ function createAutonomousStore() {
           );
         }
         // Refresh todos if it's a todo tool
-        if ((event.name as string)?.startsWith('todo_')) {
+        if ((event.name as string)?.startsWith('todo')) {
           todosStore.onTodoToolCompleted();
         }
         break;
@@ -214,7 +214,7 @@ function createAutonomousStore() {
           );
         }
         // Refresh relevant stores based on tool
-        if ((event.name as string)?.startsWith('todo_')) {
+        if ((event.name as string)?.startsWith('todo')) {
           todosStore.onTodoToolCompleted();
           activityStore.fetch();
         }

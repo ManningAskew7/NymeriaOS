@@ -1,3 +1,6 @@
+# TODO: Consider removing this SQLite index entirely. With a single user and
+# ≤50 TODOs, scanning JSON files directly on the 5-second ticker poll would be
+# trivial and would eliminate all dual-storage sync complexity.
 """SQLite index for scheduled TODOs - enables efficient polling."""
 
 import logging

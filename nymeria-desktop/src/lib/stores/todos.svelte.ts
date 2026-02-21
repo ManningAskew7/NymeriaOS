@@ -17,7 +17,6 @@ function createTodosStore() {
   const groupedTodos = $derived.by((): StatusGroup[] => {
     const groups: StatusGroup[] = [
       { status: 'in_progress', label: 'In Progress', todos: [] },
-      { status: 'blocked', label: 'Blocked', todos: [] },
       { status: 'pending', label: 'Pending', todos: [] },
       { status: 'done', label: 'Completed', todos: [] }
     ];
@@ -54,7 +53,7 @@ function createTodosStore() {
 
   // Computed: organized todos for dashboard display
   // - In-progress at top (highlighted)
-  // - Active (pending/blocked) sorted chronologically by scheduledFor or createdAt
+  // - Active (pending) sorted chronologically by scheduledFor or createdAt
   // - Completed at bottom sorted chronologically (newest first)
   const organizedTodos = $derived.by(() => {
     const inProgress: TodoItem[] = [];
@@ -67,7 +66,7 @@ function createTodosStore() {
       } else if (todo.status === 'done') {
         completed.push(todo);
       } else {
-        // pending or blocked
+        // pending
         active.push(todo);
       }
     }

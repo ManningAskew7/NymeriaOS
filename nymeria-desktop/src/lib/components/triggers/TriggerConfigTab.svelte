@@ -494,20 +494,6 @@
           ></textarea>
         </div>
         <div class="field-group">
-          <label class="field-label" for="action-priority">Priority</label>
-          <select
-            id="action-priority"
-            class="field-select"
-            value={(formActionConfig.priority ?? '') as string}
-            onchange={(e) => handleActionConfigChange('priority', (e.target as HTMLSelectElement).value || undefined)}
-          >
-            <option value="">Default</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-        </div>
-        <div class="field-group">
           <label class="field-label" for="action-schedule">Scheduled For</label>
           <input
             id="action-schedule"

@@ -138,6 +138,10 @@ class Ticker:
         self._last_trigger_check: float = 0.0
         self._trigger_manager: Optional[TriggerManager] = None
 
+        # Auto-purge: archive completed TODOs periodically (~1 hour)
+        self._archive_interval = 3600  # 1 hour
+        self._last_archive_check: float = 0.0
+
     def start(self) -> None:
         """Start the ticker thread."""
         if self._running:
@@ -197,8 +201,16 @@ class Ticker:
             except Exception as e:
                 logger.error(f"Ticker poll error: {e}", exc_info=True)
 
-            # Check poll-based trigger sources at a slower interval
+            # Auto-purge completed TODOs (~every hour)
             now = time.time()
+            if now - self._last_archive_check >= self._archive_interval:
+                try:
+                    self._archive_completed_todos()
+                except Exception as e:
+                    logger.error(f"Archive completed TODOs error: {e}", exc_info=True)
+                self._last_archive_check = now
+
+            # Check poll-based trigger sources at a slower interval
             if now - self._last_trigger_check >= self.trigger_poll_interval:
                 try:
                     self._check_triggers()
@@ -212,6 +224,15 @@ class Ticker:
                 if not self._running:
                     break
                 time.sleep(0.1)
+
+    def _archive_completed_todos(self) -> None:
+        """Archive completed TODOs older than 7 days for all users."""
+        users = self.todo_manager.get_all_users_with_todos()
+        for user_id in users:
+            with self.todo_manager.atomic_update(user_id) as todo_list:
+                archived = todo_list.archive_completed(days_old=7)
+                if archived > 0:
+                    logger.info(f"Archived {archived} completed TODO(s) for user {user_id}")
 
     def _check_triggers(self) -> None:
         """Check all poll-based trigger sources for events and fire actions.
@@ -288,17 +309,8 @@ class Ticker:
         Returns:
             Next execution datetime, or None if invalid recurrence
         """
-        recurrence_deltas = {
-            '5min': timedelta(minutes=5),
-            '10min': timedelta(minutes=10),
-            '15min': timedelta(minutes=15),
-            '30min': timedelta(minutes=30),
-            'hourly': timedelta(hours=1),
-            'daily': timedelta(days=1),
-            'weekly': timedelta(weeks=1),
-            'monthly': timedelta(days=30),  # Approximate
-        }
-        delta = recurrence_deltas.get(recurrence)
+        from .todo_constants import RECURRENCE_DELTAS
+        delta = RECURRENCE_DELTAS.get(recurrence)
         if delta:
             return from_time + delta
         return None
@@ -480,10 +492,6 @@ class Ticker:
             # Handle recurring TODOs: reschedule instead of clearing
             # Re-fetch the TODO to get the recurrence field
             current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
-            # Safety: permanent items must never be marked DONE
-            if current_todo and current_todo.permanent and current_todo.status == TodoStatus.DONE:
-                with self.todo_manager.atomic_update(entry.user_id) as todo_list:
-                    todo_list.update_item(todo.id, status=TodoStatus.PENDING)
             if current_todo and current_todo.recurrence:
                 # Calculate next execution time
                 next_execution = self._calculate_next_execution(
@@ -639,12 +647,12 @@ class Ticker:
                 # Remove from schedule after too many retries
                 self.schedule_db.remove_scheduled(todo.id)
 
-                # Update TODO to blocked status
+                # Update TODO with failure info and clear schedule
                 with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                     todo_list.update_item(
                         todo.id,
-                        status=TodoStatus.BLOCKED,
-                        blocked_reason=f"Scheduled execution failed after {retry_count} retries: {str(e)[:100]}",
+                        status=TodoStatus.PENDING,
+                        notes=f"Scheduled execution failed after {retry_count} retries: {str(e)[:100]}",
                         clear_schedule=True,
                     )
 

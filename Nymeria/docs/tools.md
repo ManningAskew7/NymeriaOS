@@ -1,24 +1,51 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: 25 core tools always loaded, 4 sub-agent wrapper tools generated dynamically, and 13 optional Outlook tools available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 29 default tools.
+Nymeria has a three-tier tool system: **23 core tools** always loaded, **4 sub-agent wrapper tools** generated dynamically, and **13 optional Outlook tools** available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 27 default tools.
 
-| Category | Count | Purpose |
-|----------|-------|---------|
-| **Core System** | 7 | Shell execution, file operations, web search, thinking, Claude Code |
-| **Memory & RAG** | 5 | User memories, personality preferences, semantic search |
-| **TODO** | 4 | Task management with scheduled autonomous execution |
-| **Agent Management** | 3 | Agent context, reload, rollback |
-| **Notification** | 1 | Unified Telegram/Discord/Slack notifications |
-| **Visibility** | 1 | Control response display (mute_response) |
-| **Triggers** | 4 | Event-driven automation CRUD |
-| **Sub-Agent Wrappers** | 4 | BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent |
-| **Optional: Outlook** | 13 | Microsoft Graph email and authentication (per-thread) |
-| **BrowserAgent Internal Tools** | 9 | Native Playwright browser automation (via BrowserAgent) |
-| **Custom Tools** | ∞ | User-defined HTTP or MCP tools |
+## Summary Table
+
+### Core Tools (23)
+
+| # | Tool | Category | Security | Default | Description |
+|---|------|----------|----------|---------|-------------|
+| 1 | `bash_execute` | Core | MODERATE | On | Execute shell commands |
+| 2 | `file_read` | Core | SAFE | On | Read file contents |
+| 3 | `file_write` | Core | MODERATE | On | Write content to files |
+| 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
+| 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
+| 6 | `claude_code` | Core | MODERATE | On | Invoke Claude Code CLI for coding tasks |
+| 7 | `memory_save` | Memory | SAFE | On | Save a user memory |
+| 8 | `memory_forget` | Memory | SAFE | On | Remove a memory by key |
+| 9 | `memory_list` | Memory | SAFE | On | List all saved memories and preferences |
+| 10 | `personality_set` | Memory | SAFE | On | Set communication preferences |
+| 11 | `rag_search` | Memory | SAFE | On | Semantic search over past conversations |
+| 12 | `todo` | TODO | SAFE | On | Create or update a TODO item |
+| 13 | `todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
+| 14 | `todo_list` | TODO | SAFE | On | List TODO items |
+| 15 | `clear_agent_context` | Subagent | SAFE | On | Clear sub-agent conversation context |
+| 16 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
+| 17 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
+| 18 | `mute_response` | Visibility | SAFE | On | Move response to activity log |
+| 19 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 20 | `trigger_create` | Trigger | *None* | On | Create an event-driven trigger |
+| 21 | `trigger_list` | Trigger | *None* | On | List triggers |
+| 22 | `trigger_update` | Trigger | *None* | On | Update a trigger |
+| 23 | `trigger_delete` | Trigger | *None* | On | Delete a trigger |
+
+> **Note:** Trigger tools are missing from `TOOL_METADATA` in `metadata.py` — they have no assigned security level and are always loaded.
+
+### Sub-Agent Wrapper Tools (4)
+
+| Tool | LLM | Context Turns | Internal Tools |
+|------|-----|---------------|----------------|
+| `BrowserAgent` | `google/gemini-3-flash-preview` (OpenRouter) | 10 | 9 browser tools |
+| `OutlookAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 8 | 13 Outlook tools |
+| `CalendarAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 8 | 12 calendar tools |
+| `SelfModifyAgent` | `anthropic/claude-opus-4.5` (OpenRouter) | 5 | 7 self-modify tools |
 
 ---
 
-## Core Tools
+## Core System Tools
 
 ### bash_execute
 
@@ -29,30 +56,32 @@ bash_execute(command: str, working_directory: Optional[str] = None, timeout_seco
 ```
 
 **Parameters:**
-- `command`: Shell command to execute
-- `working_directory`: Directory to run the command in (optional)
-- `timeout_seconds`: Maximum execution time (default: 120s)
+- `command` (`str`): Shell command to execute
+- `working_directory` (`Optional[str]`, default `None`): Directory to run the command in
+- `timeout_seconds` (`int`, default `120`): Maximum execution time in seconds
 
-**Returns:** Command output (stdout + stderr) or error message
+**Returns:** Command output (stdout + stderr combined) or error message. Non-zero exit codes are appended. Output truncated at 50,000 characters.
+
+**Security:** MODERATE — runs commands without sandboxing.
 
 ---
 
 ### file_read
 
-Read contents of a file.
+Read the contents of a file.
 
 ```python
 file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None)
 ```
 
 **Parameters:**
-- `file_path`: Path to the file to read
-- `encoding`: File encoding (default: utf-8)
-- `max_lines`: Limit number of lines to read (optional)
+- `file_path` (`str`): Absolute or relative path to the file
+- `encoding` (`str`, default `"utf-8"`): File encoding
+- `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read
 
-**Returns:** File contents or error message
+**Returns:** File contents, or error message.
 
-**Limits:** 10MB maximum file size
+**Limits:** 10 MB maximum file size.
 
 ---
 
@@ -65,55 +94,79 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 ```
 
 **Parameters:**
-- `file_path`: Path to the file to write
-- `content`: Content to write
-- `encoding`: File encoding (default: utf-8)
-- `create_directories`: Create parent directories if needed (default: true)
-- `append`: Append to existing file instead of overwriting (default: false)
+- `file_path` (`str`): Absolute or relative path to the file
+- `content` (`str`): Content to write
+- `encoding` (`str`, default `"utf-8"`): File encoding
+- `create_directories` (`bool`, default `True`): Create parent directories if they don't exist
+- `append` (`bool`, default `False`): Append to file instead of overwriting
 
-**Returns:** Success/error message
+**Returns:** Success/error message with character count.
+
+**Protected paths:** Writes to `nymeria/core/`, `nymeria/config/`, `nymeria/triggers/`, `nymeria/gateway/`, and `nymeria/__init__.py` are blocked. Use the SelfModifyAgent for those directories.
 
 ---
 
-### file_list
+### ~~file_list~~ (removed)
 
-List files in a directory.
-
-```python
-file_list(directory: str, pattern: str = "*", recursive: bool = False)
-```
-
-**Parameters:**
-- `directory`: Directory to list
-- `pattern`: Glob pattern to filter files (default: *)
-- `recursive`: Include subdirectories (default: false)
-
-**Returns:** List of files with sizes
+**Deprecated.** Redundant with `bash_execute` — use `bash_execute("ls -la /path")` or `bash_execute("find /path -name '*.py'")` instead. Removed from `ALL_TOOLS` and `TOOL_METADATA`.
 
 ---
 
 ### web_search
 
-Search the web using Perplexity API.
+Search the web using the Perplexity API.
 
 ```python
 web_search(query: str, search_depth: Optional[str] = None, max_sources: Optional[int] = None)
 ```
 
 **Parameters:**
-- `query`: Search query
-- `search_depth`: `"quick"`, `"standard"`, or `"deep"` (optional)
-- `max_sources`: Maximum number of cited sources to include (1-10, optional)
+- `query` (`str`): Search query
+- `search_depth` (`Optional[str]`): `"quick"` (sonar), `"standard"` (sonar-pro), or `"deep"` (sonar-deep-research). Defaults to `settings.perplexity_search_model`.
+- `max_sources` (`Optional[int]`): Maximum sources to cite (1-10, default 5)
 
-**Returns:** Search results with citations
+**Returns:** Search results with citations.
 
-**Requires:** `PERPLEXITY_API_KEY` environment variable
+**Requires:** `PERPLEXITY_API_KEY` environment variable.
+
+**Timeouts:** 60s for quick/standard, 180s for deep research. Max tokens: 2000 for quick/standard, 4000 for deep.
+
+---
+
+### consult
+
+Ask another AI (Gemini) for a second opinion. Sends the question to a Gemini model via OpenRouter with reasoning tokens enabled and returns its analysis. Use when you want an outside perspective, need help with a hard problem, or want to cross-check your own reasoning.
+
+> **Previously named `think`.** Renamed to `consult` to clarify that this is an external LLM call (costs credits, takes seconds), not internal reasoning.
+
+```python
+consult(question: str, context: Optional[str] = None, model: Optional[str] = None)
+```
+
+**Parameters:**
+- `question` (`str`): The question or problem to get help with
+- `context` (`Optional[str]`, default `None`): Additional context to include
+- `model` (`Optional[str]`, default `None`): Model alias — `"gemini-3-pro"` (default), `"gemini-2.5-pro"`, or `"gemini-2.5-flash"`
+
+**Model mapping:**
+
+| Alias | OpenRouter model ID |
+|-------|-------------------|
+| `gemini-3-pro` (default) | `google/gemini-3-pro-preview` |
+| `gemini-2.5-pro` | `google/gemini-2.5-pro` |
+| `gemini-2.5-flash` | `google/gemini-2.5-flash-preview` |
+
+**Returns:** Gemini's reasoning text, content, and reasoning token count.
+
+**Requires:** `OPENROUTER_API_KEY` environment variable. Uses OpenRouter credits.
+
+**Config:** temperature=1.0, max_tokens=16000, reasoning enabled. Timeout: 180s.
 
 ---
 
 ### claude_code
 
-Invoke Claude Code in headless mode to create, modify, or analyze code in a specific directory.
+Invoke Claude Code in headless mode to create, modify, or analyze code.
 
 ```python
 claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet",
@@ -121,46 +174,26 @@ claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet
 ```
 
 **Parameters:**
-- `prompt`: The coding task or question for Claude Code
-- `working_dir`: Directory to run in (defaults to current directory)
-- `model`: Model to use - `"sonnet"`, `"opus"`, or `"haiku"` (default: "sonnet")
-- `allow_edit`: Allow Claude Code to edit files (default: True)
-- `allow_bash`: Allow Claude Code to run commands (default: True)
-- `timeout`: Timeout in seconds (default: 300)
+- `prompt` (`str`): The coding task or question
+- `working_dir` (`Optional[str]`, default `None`): Directory to run in (defaults to current directory)
+- `model` (`str`, default `"sonnet"`): Model — `"sonnet"`, `"opus"`, or `"haiku"`
+- `allow_edit` (`bool`, default `True`): Allow Claude Code to edit files
+- `allow_bash` (`bool`, default `True`): Allow Claude Code to run commands
+- `timeout` (`int`, default `300`): Timeout in seconds
 
-**Returns:** Claude Code's response or error message
+**Returns:** Claude Code's response or error message. Output truncated at 50,000 characters.
 
-**Examples:**
-```python
-claude_code("Create a Python script that sorts a CSV file")
-claude_code("Fix the bug in main.py", working_dir="/path/to/project")
-claude_code("Analyze the code structure", allow_edit=False)
-```
+**Requires:** `claude` CLI binary in PATH (install with `npm install -g @anthropic-ai/claude-code`).
 
-**Requires:** Claude Code extension installed (VSCode)
-
----
-
-### think
-
-Internal reasoning tool for complex multi-step problems. Allows the LLM to think through a problem without taking any action.
-
-```python
-think(thought: str)
-```
-
-**Parameters:**
-- `thought`: The reasoning or analysis to work through
-
-**Returns:** Acknowledgement (the thinking itself is the value)
-
-**Use case:** Complex decisions, multi-step planning, evaluating trade-offs before acting.
+**Tools passed to Claude Code:** Always includes `Read`. Adds `Edit` if `allow_edit=True`, `Bash` if `allow_bash=True`.
 
 ---
 
 ## Memory Tools
 
-Memories are **automatically injected** into Nymeria's system prompt. There's no need for a "recall" tool - Nymeria always knows stored memories without explicit retrieval.
+Memories are **automatically injected** into Nymeria's system prompt. The `memory_list` tool provides an explicit way for models to retrieve exact keys before updating or deleting.
+
+> **Implementation note:** `memory_save`, `memory_forget`, `memory_list`, `personality_set`, and `rag_search` all accept a `config: Annotated[RunnableConfig, InjectedToolArg]` parameter that is automatically injected by LangGraph. The LLM never passes this parameter.
 
 ### memory_save
 
@@ -171,54 +204,55 @@ memory_save(key: str, value: str)
 ```
 
 **Parameters:**
-- `key`: Short identifier (e.g., "name", "occupation", "preference_tone")
-- `value`: Information to remember (max 1000 characters)
+- `key` (`str`): Category identifier (e.g., `"user_name"`, `"occupation"`)
+- `value` (`str`): Information to remember (truncated to 1000 characters)
 
-**Returns:** Confirmation message
+**Returns:** Confirmation message, or error if limit reached.
 
-**Examples:**
-```python
-memory_save("name", "Alex")
-memory_save("occupation", "Software engineer at Acme Corp")
-memory_save("preference_communication", "Prefers concise responses")
-```
+**Behavior:**
+- If a memory with the same `key` exists, it's updated (not duplicated).
+- Also indexed in RAG for semantic search if RAG is enabled.
 
-**Limits:** 100 memories per user
+**Limits:** 100 memories per user (`MAX_MEMORIES` in `UserProfile`).
 
 ---
 
 ### memory_forget
 
-Remove a memory from persistent storage.
+Remove a memory or personality preference by key.
 
 ```python
 memory_forget(key: str)
 ```
 
 **Parameters:**
-- `key`: Memory key to delete
+- `key` (`str`): Memory key or personality trait to delete
 
-**Returns:** Confirmation message or error with available keys
+**Returns:** Confirmation, or error with list of available keys (memories + personality traits) if not found.
 
-**Examples:**
-```python
-memory_forget("old_project")
-memory_forget("previous_employer")
-```
+**Behavior:** Tries memories first, then personality preferences. Use `memory_list` to see exact keys before calling.
 
 ---
 
-### memory_clear_all
+### memory_list
 
-Clear ALL memories for the current user. This is irreversible.
+List all saved memories and personality preferences for the current user.
 
 ```python
-memory_clear_all()
+memory_list()
 ```
 
-**Returns:** Confirmation with count of deleted memories
+**Returns:** Formatted list of all memories (key: value) and personality preferences (trait: value), or a message indicating no memories are stored.
 
-**Use case:** When user explicitly asks to "forget everything" about them
+**Notes:**
+- Use this before `memory_forget` to get exact key names.
+- Memories are also auto-injected into the system prompt, but weaker models may struggle to extract exact keys from long prompts.
+
+---
+
+### ~~memory_clear_all~~ (removed)
+
+Removed — a cheap model could hallucinate this call and wipe all user memories irreversibly. Delete memories individually with `memory_forget` instead.
 
 ---
 
@@ -231,313 +265,130 @@ personality_set(trait: str, value: str)
 ```
 
 **Parameters:**
-- `trait`: Preference category (e.g., "tone", "verbosity", "expertise_level")
-- `value`: Desired behavior
+- `trait` (`str`): Preference category (e.g., `"tone"`, `"verbosity"`, `"expertise_level"`)
+- `value` (`str`): Desired behavior
 
-**Returns:** Confirmation message
-
-**Examples:**
-```python
-personality_set("tone", "casual and friendly")
-personality_set("verbosity", "be very concise, bullet points preferred")
-personality_set("expertise_level", "assume advanced programming knowledge")
-personality_set("humor", "include occasional dry humor")
-```
+**Returns:** Confirmation message.
 
 ---
 
-## RAG Search
-
-RAG (Retrieval Augmented Generation) enables semantic search across past conversations, memories, and TODOs to provide relevant context in responses.
-
 ### rag_search
 
-Search past conversations and memories for relevant context.
+Search past conversations and memories for relevant context using semantic vector search.
 
 ```python
 rag_search(query: str, max_results: int = 5)
 ```
 
 **Parameters:**
-- `query`: What to search for (e.g., "user's project", "deadline", "preferences")
-- `max_results`: Maximum number of results to return (1-10, default: 5)
+- `query` (`str`): What to search for
+- `max_results` (`int`, default `5`): Maximum results (clamped 1-10)
 
-**Returns:** Relevant context from past conversations and memories, or a message if nothing relevant was found.
+**Returns:** Formatted results with content type, relevance score, and content. Results filtered by user's RAG preferences (`include_conversations`, `include_memories`, `include_todos`).
 
-**Examples:**
-```python
-rag_search("what project is the user working on")
-rag_search("user's programming language preferences")
-rag_search("previous conversations about deadlines")
-```
-
-**Note:** RAG is configured via the desktop UI settings, not a separate tool.
+**Requires:** RAG must be enabled for the user (`opt_in.rag_enabled`).
 
 ---
 
 ## TODO Tools
 
-TODOs serve as the **primary driver for autonomous operation**. Active TODOs are automatically injected into the system prompt, so Nymeria always knows what tasks need attention.
+TODOs are the **primary driver for autonomous operation**. Active TODOs are automatically injected into the system prompt. Every TODO must have a `scheduled_for` time — TODOs are for the agent's autonomous work queue, not a general task list.
 
-### todo_add
+> **Implementation note:** `todo`, `todo_delete`, and `todo_list` all accept an injected `config` parameter for user/thread identification. The LLM never passes this.
+>
+> **Migration note:** `todo_add` and `todo_update` were merged into the single `todo` tool. Priority, deadline, blocked status, and the permanent flag have been removed.
 
-Create a new TODO item, optionally scheduled for future autonomous execution.
+### todo
+
+Create or update a TODO item. Omit `todo_id` to create; provide it to update.
 
 ```python
-todo_add(task: str, priority: Optional[str] = None, deadline: Optional[str] = None,
-         scheduled_for: Optional[str] = None, recurrence: Optional[str] = None,
-         thread_id: Optional[str] = None, permanent: bool = False)
+todo(todo_id: Optional[str] = None, task: Optional[str] = None,
+     scheduled_for: Optional[str] = None, status: Optional[str] = None,
+     notes: Optional[str] = None, recurrence: Optional[str] = None,
+     clear_schedule: bool = False, clear_recurrence: bool = False)
 ```
 
 **Parameters:**
-- `task`: Description of the task (max 500 characters)
-- `priority`: Priority level - `"high"`, `"medium"`, or `"low"` (optional)
-- `deadline`: Due date in `YYYY-MM-DD` format (optional)
-- `scheduled_for`: Schedule for autonomous execution (optional). Formats:
-  - Relative: `"30s"`, `"5m"`, `"1h"`, `"2d"` (seconds, minutes, hours, days)
-  - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (interpreted in user timezone)
-- `recurrence`: Optional recurrence — `"5min"`, `"10min"`, `"15min"`, `"30min"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`
-- `thread_id`: Optional thread for autonomous output
-- `permanent`: If `True` (requires recurrence), TODO cannot be completed (only deleted)
+- `todo_id` (`Optional[str]`): Omit to create a new TODO, provide the 8-character ID to update an existing one
+- `task` (`str`): Task description — **required** for create, optional for update
+- `scheduled_for` (`str`): When to execute — **required** for create, optional for update. Formats:
+  - Relative: `"30s"`, `"5m"`, `"1h"`, `"1d"` (seconds, minutes, hours, days)
+  - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (user timezone)
+- `status` (`Optional[str]`): `"pending"`, `"in_progress"`, or `"done"` (update only)
+- `notes` (`Optional[str]`): Add or update notes (max 1000 characters)
+- `recurrence` (`Optional[str]`): `"5min"`, `"10min"`, `"15min"`, `"30min"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`
+- `clear_schedule` (`bool`, default `False`): Remove scheduled time (update only)
+- `clear_recurrence` (`bool`, default `False`): Remove recurrence pattern (update only)
 
-**Returns:** Confirmation with TODO ID
+**Returns:** Confirmation with TODO ID and details, or error.
 
-**Examples:**
-```python
-# Simple TODO (manual execution)
-todo_add("Research Python async patterns")
-todo_add("Deploy new feature to production", priority="high")
-todo_add("Review quarterly reports", deadline="2024-03-15")
+**Limits:** 50 active TODOs per user (`MAX_TODOS` in `TodoList`).
 
-# Scheduled TODO (autonomous execution)
-todo_add("Check inbox for new emails", scheduled_for="30m")
-todo_add("Remind about meeting", scheduled_for="1h", priority="high")
-```
+**Statuses:** `pending` (default), `in_progress`, `done`. Use `todo(todo_id=..., status="done")` to complete a TODO.
 
-**Limits:** 50 active TODOs per user
+**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `todo(todo_id=..., clear_recurrence=True)` or `todo_delete`.
 
-**Scheduling:** TODOs with `scheduled_for` are automatically executed by the Ticker when due. See "Scheduled TODO Execution" section for details.
-
----
-
-### todo_update
-
-Update an existing TODO item.
-
-```python
-todo_update(todo_id: str, status: Optional[str] = None, notes: Optional[str] = None,
-            blocked_reason: Optional[str] = None, priority: Optional[str] = None,
-            scheduled_for: Optional[str] = None, recurrence: Optional[str] = None,
-            clear_schedule: bool = False, clear_recurrence: bool = False,
-            permanent: Optional[bool] = None)
-```
-
-**Parameters:**
-- `todo_id`: The 8-character TODO ID
-- `status`: New status - `"pending"`, `"in_progress"`, `"done"`, or `"blocked"`
-- `notes`: Add or update notes (max 1000 characters)
-- `blocked_reason`: Why the task is blocked (auto-sets status to blocked)
-- `priority`: Update priority level
-- `scheduled_for`: Set/update next execution time
-- `recurrence`: Set/update recurrence pattern
-- `clear_schedule`: Remove schedule if `True`
-- `clear_recurrence`: Remove recurrence if `True`
-- `permanent`: Set/clear permanent mode (requires recurrence)
-
-**Returns:** Confirmation message
-
-**Examples:**
-```python
-todo_update("abc12345", status="in_progress")
-todo_update("abc12345", notes="Completed first 3 sections")
-todo_update("abc12345", blocked_reason="Waiting for API access")
-todo_update("abc12345", recurrence="daily")
-```
+**Auto-purge:** Non-recurring completed TODOs are automatically archived after 7 days by the ticker daemon.
 
 ---
 
 ### todo_delete
 
-Delete a TODO item permanently.
+Delete a TODO permanently. No archive — immediately removed. Cancels any scheduled execution.
 
 ```python
 todo_delete(todo_id: str)
 ```
 
 **Parameters:**
-- `todo_id`: The 8-character TODO ID
+- `todo_id` (`str`): The 8-character TODO ID
 
-**Returns:** Confirmation message
-
-**Note:** Unlike completing, deleted items are immediately removed with no archive.
+**Returns:** Confirmation with deleted task text, or error.
 
 ---
 
 ### todo_list
 
-List all TODO items for the current user.
+List TODO items. Shows active (non-done) by default.
 
 ```python
 todo_list(filter_status: Optional[str] = None)
 ```
 
 **Parameters:**
-- `filter_status`: Filter by status - `"pending"`, `"in_progress"`, `"blocked"`, `"done"`, or `"all"`
+- `filter_status` (`Optional[str]`): `"pending"`, `"in_progress"`, `"done"`, or `"all"`
 
-**Returns:** Formatted list of TODO items with status icons
+**Returns:** Formatted list sorted by: status (in_progress first, then pending, then done), then scheduled time, then creation date.
 
-**Default behavior:** Shows all active (non-done) items, sorted by priority and creation date.
-
----
-
-## Agent Management Tools
-
-Tools for managing sub-agents and self-modification recovery.
-
-> **Note:** Self-modification is now handled by the **SelfModifyAgent** sub-agent (called directly as a tool). The old `self_modify` and `tools_reload` tools have been removed. Use `reload_all` to refresh tools and agents after changes.
-
-### self_modify_rollback
-
-Rollback a file to its previous version from backup.
-
-```python
-self_modify_rollback(file_path: str)
-```
-
-**Parameters:**
-- `file_path`: Path to file to rollback (e.g., "nymeria/tools/my_tool.py")
-
-**Returns:** Success or error message
-
-**Use case:** When a self-modification broke something
-
----
-
-### reload_all
-
-Reload all tools, agents, and custom tools. Replaces the old `tools_reload` and `reload_agents` tools.
-
-```python
-reload_all()
-```
-
-**Returns:** Summary of reloaded tools and agents
-
-**Use case:** After SelfModifyAgent creates or modifies tools, or after CRUD operations on agents.
-
----
-
-### clear_agent_context
-
-Clear the conversation context for a sub-agent.
-
-```python
-clear_agent_context(agent_name: str)
-```
-
-**Parameters:**
-- `agent_name`: Name of the sub-agent
-
-**Returns:** Confirmation message
-
----
-
-## Scheduled TODO Execution
-
-Nymeria operates autonomously 24/7 through **scheduled TODOs** - TODOs with a `scheduled_for` datetime that are automatically executed when due.
-
-**Durable Scheduling:** Scheduled TODOs are persisted to SQLite (`data/todo_schedule.db`), so they survive application restarts. If Nymeria is restarted, missed scheduled TODOs are automatically recovered and executed.
-
-### Creating Scheduled TODOs
-
-Use `todo_add` with the `scheduled_for` parameter:
-
-```python
-todo_add(task: str, scheduled_for: str, priority: str = None)
-```
-
-**Parameters:**
-- `task`: What to do when the scheduled time arrives
-- `scheduled_for`: When to execute. Formats:
-  - Relative: `"30s"`, `"5m"`, `"1h"`, `"2d"`
-  - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (user timezone)
-- `priority`: Optional priority level
-
-**Examples:**
-```python
-todo_add("Check inbox for new emails", scheduled_for="30m")
-todo_add("Remind about meeting", scheduled_for="1h", priority="high")
-todo_add("Weekly report review", scheduled_for="2026-03-15 09:00", recurrence="weekly")
-```
-
-**Behavior:**
-- Scheduled TODOs are tracked in `TodoScheduleDB`
-- Ticker polls every 5 seconds for due TODOs
-- **Rate limited**: Default 50 autonomous executions per hour per user
-
-**Rate Limiting:**
-To prevent runaway autonomous loops, scheduled TODO execution is rate limited to 50 executions per hour per user (configurable via `MAX_SELF_INVOKES_PER_HOUR`). The rate limiter uses a sliding window algorithm extracted to `rate_limiter.py`.
-
----
-
-## Legacy Scheduler (Migration Note)
-
-The legacy scheduler (`self_invoke` + `tasks.db`) is not part of the active tool surface.
-Old scheduled tasks are automatically migrated to TODO scheduling on startup via `migration.py`.
+**Status icons:** `[ ]` pending, `[>]` in_progress, `[x]` done.
 
 ---
 
 ## Visibility Tools
 
-Control how responses are displayed to the user.
-
 ### mute_response
 
-Move the current response to the activity log instead of showing in chat.
+Move the current response to the activity log instead of showing in chat. The response is still saved to conversation history — the LLM retains full context.
 
 ```python
 mute_response(reason: str = "")
 ```
 
 **Parameters:**
-- `reason`: Brief explanation of why this response is being muted (e.g., "routine check, no changes")
+- `reason` (`str`, default `""`): Brief explanation (e.g., `"routine check, no changes"`)
 
-**Returns:** Confirmation message
+**Returns:** Confirmation message.
 
 **Behavior:**
-- Response is moved from chat thread to activity log
-- **Response is still saved to conversation history** - the LLM can see muted messages in subsequent turns
-- Works for both autonomous (scheduled) and interactive (user-initiated) messages
-- The `done` SSE event includes `muted: true` so the frontend can hide the message
+- Sets a thread-local mute flag that's checked after streaming completes.
+- The `done` SSE event includes `muted: true` and `mute_reason`.
+- For autonomous tasks, the `task_completed` event gets `visibility: "activity"` instead of `"full"`.
+- Muted turn HumanMessage IDs are persisted to `muted_turns.json` so they're hidden when reloading history.
 
-**When to use `mute_response`:**
-- ✅ Routine background checks with nothing to report
-- ✅ Scheduled monitoring tasks with no changes detected
-- ✅ Autonomous work where the user didn't ask for updates
+**When to use:** Routine background checks with nothing to report. Scheduled monitoring with no changes.
 
-**When NOT to use `mute_response`:**
-- ❌ User explicitly asked a question
-- ❌ Something important or interesting happened
-- ❌ Significant actions were taken
-- ❌ User is actively engaged and expecting a response
-
-**Example:**
-```python
-# During a scheduled "check for updates" task where nothing changed
-mute_response(reason="hourly check, no new updates found")
-```
-
-**Implementation Notes:**
-- Uses thread-local storage to track mute flag during tool execution
-- Flag is checked after streaming completes, before sending `done` event
-- Muted messages are logged to activity feed for user review if needed
-
-**Autonomous Task Integration:**
-When `mute_response` is called during autonomous execution (scheduled TODO):
-1. The `task_completed` event includes `visibility: "activity"`
-2. Frontend removes the streaming message from chat
-3. Response appears only in the activity feed
-4. If `visibility: "full"`, the message stays in chat
+**When NOT to use:** User asked a question. Something important happened. Significant actions were taken.
 
 ---
 
@@ -548,450 +399,345 @@ When `mute_response` is called during autonomous execution (scheduled TODO):
 Send notifications to messaging platforms (Telegram, Discord, Slack).
 
 ```python
-notify(message: str, platform: Optional[str] = None)
+notify(message: str, platform: Literal["auto", "telegram", "discord", "slack"] = "auto")
 ```
 
 **Parameters:**
-- `message`: Notification message to send
-- `platform`: Target platform - `"telegram"`, `"discord"`, or `"slack"` (optional, sends to all configured if omitted)
+- `message` (`str`): The message text to send
+- `platform` (`Literal["auto", "telegram", "discord", "slack"]`, default `"auto"`): Target platform. `"auto"` tries all configured platforms.
 
-**Returns:** Success/error message
+**Returns:** Success/error message.
 
-**Requires:** Platform-specific credentials in `.env` (e.g., `TELEGRAM_BOT_TOKEN`, `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`).
+**Requires:** Platform-specific credentials in `.env`:
+- Telegram: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_CHAT_ID`
+- Discord: `DISCORD_WEBHOOK_URL`
+- Slack: `SLACK_WEBHOOK_URL`
+
+**Behavior in auto mode:** Tries all configured platforms. If any succeed, returns the success messages (failures are not reported in mixed outcomes). If all fail, returns all errors. If none are configured, returns an error listing the required env vars.
+
+---
+
+## Agent Management Tools
+
+### clear_agent_context
+
+Clear the conversation context for a sub-agent, making it start fresh.
+
+```python
+clear_agent_context(agent_name: str)
+```
+
+**Parameters:**
+- `agent_name` (`str`): Name of the sub-agent (e.g., `"BrowserAgent"`)
+
+**Returns:** Success or info message.
+
+---
+
+### reload_all
+
+Reload all tools, agents, and trigger sources. Call after SelfModifyAgent creates/modifies code, or after manual file edits.
+
+```python
+reload_all()
+```
+
+**Returns:** Count of reloaded tools and trigger sources.
+
+**Important:** Due to how LangGraph works, newly created tools are NOT available in the same conversation turn. They work on the next user message.
+
+---
+
+### self_modify_rollback
+
+Rollback a file to its previous version from a SelfModifyAgent backup.
+
+```python
+self_modify_rollback(file_path: str)
+```
+
+**Parameters:**
+- `file_path` (`str`): Path to file to rollback (e.g., `"nymeria/tools/my_tool.py"`)
+
+**Returns:** Success or error message.
+
+**Security:** **SENSITIVE** — disabled by default. Requires explicit opt-in via user tool preferences or per-thread config. This is the only core tool with `SecurityLevel.SENSITIVE`.
 
 ---
 
 ## Trigger Tools
 
-Event-driven automation — create triggers that fire agent prompts or actions in response to events.
+Event-driven automation — triggers fire agent prompts or actions in response to external events. These complement recurring TODOs, which handle time-based work.
+
+> **Note:** Trigger tools are NOT listed in `TOOL_METADATA` (`metadata.py`). They have no assigned security level and are always loaded.
 
 ### trigger_create
 
 Create a new event-driven trigger.
 
 ```python
-trigger_create(name: str, source_type: str, config: dict, action: str)
+trigger_create(name: str, source_type: str, action_type: str, action_config: dict,
+               source_config: Optional[dict] = None, cooldown_seconds: int = 0)
 ```
 
 **Parameters:**
-- `name`: Trigger name
-- `source_type`: Event source type (e.g., `"webhook"`, `"outlook_email"`)
-- `config`: Source-specific configuration
-- `action`: What to do when triggered (agent prompt or action)
+- `name` (`str`): Human-friendly trigger name (e.g., `"Wake-up morning briefing"`)
+- `source_type` (`str`): Event source type. Use `"webhook"` for HTTP push triggers. Call `trigger_list_sources()` to see available sources.
+- `action_type` (`str`): What to do when triggered:
+  - `"agent_prompt"` — send a prompt to the agent (most powerful, triggers an LLM call)
+  - `"notify"` — send a notification to the user (no LLM call)
+  - `"create_todo"` — create a TODO item (no LLM call)
+- `action_config` (`dict`): Action-specific configuration:
+  - `agent_prompt`: `{"prompt_template": "...", "thread_id": "optional"}`
+  - `notify`: `{"message_template": "...", "platform": "auto"}`
+  - `create_todo`: `{"task_template": "..."}`
+  - Templates support `{variable}` interpolation from event data.
+- `source_config` (`Optional[dict]`, default `None`): Source-specific config (e.g., `{"secret": "mykey"}` for webhooks)
+- `cooldown_seconds` (`int`, default `0`): Minimum seconds between trigger firings
 
-**Returns:** Created trigger with ID
+**Returns:** Success message with trigger ID and webhook URL (for webhook sources), or error.
+
+**Examples:**
+```python
+trigger_create("Wake-up briefing", "webhook", "agent_prompt",
+    {"prompt_template": "User woke up at {fired_at}. Create morning briefing."})
+
+trigger_create("Deployment alert", "webhook", "notify",
+    {"message_template": "Deploy event: {status}"}, {"secret": "s3cr3t"}, cooldown_seconds=60)
+```
 
 ---
 
 ### trigger_list
 
-List all triggers for the current user.
+List all event triggers with their status and configuration.
 
 ```python
-trigger_list()
+trigger_list(enabled_only: bool = False)
 ```
 
-**Returns:** List of triggers with status and configuration
+**Parameters:**
+- `enabled_only` (`bool`, default `False`): If `True`, only show enabled triggers
+
+**Returns:** Formatted list of triggers with ID, status (ON/OFF), name, source type, action type, fire count, and last fired timestamp.
 
 ---
 
 ### trigger_update
 
-Update an existing trigger.
+Update an existing trigger's configuration or enable/disable it.
 
 ```python
-trigger_update(trigger_id: str, **kwargs)
+trigger_update(trigger_id: str, name: Optional[str] = None, enabled: Optional[bool] = None,
+               source_config: Optional[dict] = None, action_type: Optional[str] = None,
+               action_config: Optional[dict] = None, cooldown_seconds: Optional[int] = None)
 ```
 
 **Parameters:**
-- `trigger_id`: Trigger ID to update
-- Additional keyword arguments for fields to change
+- `trigger_id` (`str`): The 8-char trigger ID
+- `name` (`Optional[str]`): New display name
+- `enabled` (`Optional[bool]`): Enable (`True`) or disable (`False`) the trigger
+- `source_config` (`Optional[dict]`): Updated source configuration
+- `action_type` (`Optional[str]`): New action type
+- `action_config` (`Optional[dict]`): New action config
+- `cooldown_seconds` (`Optional[int]`): New cooldown in seconds
 
-**Returns:** Updated trigger
+**Returns:** Success or error message. Returns error if no updates are specified.
 
 ---
 
 ### trigger_delete
 
-Delete a trigger.
+Delete a trigger permanently.
 
 ```python
 trigger_delete(trigger_id: str)
 ```
 
 **Parameters:**
-- `trigger_id`: Trigger ID to delete
-
-**Returns:** Confirmation message
-
----
-
-## Browser Tools
-
-Native Playwright browser automation tools. The browser runs in a dedicated thread to avoid Playwright's threading restrictions.
-
-### browser_navigate
-
-Navigate browser to a URL. Opens browser if not already open.
-
-```python
-browser_navigate(url: str)
-```
-
-**Parameters:**
-- `url`: URL to navigate to (e.g., "https://google.com")
-
-**Returns:** Page title and URL on success
-
----
-
-### browser_click
-
-Click an element on the page.
-
-```python
-browser_click(selector: str)
-```
-
-**Parameters:**
-- `selector`: CSS selector or text to click (e.g., "button.submit", "text=Login")
-
-**Returns:** Success/error message
-
----
-
-### browser_type
-
-Type text into an input field.
-
-```python
-browser_type(selector: str, text: str)
-```
-
-**Parameters:**
-- `selector`: CSS selector for input field (e.g., "input[name='search']", "#email")
-- `text`: Text to type
-
-**Returns:** Success/error message
-
----
-
-### browser_get_content
-
-Get the text content of the current page.
-
-```python
-browser_get_content(include_links: bool = True)
-```
-
-**Parameters:**
-- `include_links`: Whether to include link URLs (default: True)
-
-**Returns:** Page URL, title, text content, and optionally links
-
----
-
-### browser_screenshot
-
-Take a screenshot of the current page.
-
-```python
-browser_screenshot()
-```
-
-**Returns:** Base64 encoded PNG image
-
----
-
-### browser_scroll
-
-Scroll the page.
-
-```python
-browser_scroll(direction: str = "down", amount: int = 500)
-```
-
-**Parameters:**
-- `direction`: "up" or "down"
-- `amount`: Pixels to scroll (default: 500)
-
-**Returns:** Success/error message
-
----
-
-### browser_press_key
-
-Press a keyboard key.
-
-```python
-browser_press_key(key: str)
-```
-
-**Parameters:**
-- `key`: Key to press (e.g., "Enter", "Tab", "Escape", "ArrowDown")
-
-**Returns:** Success/error message
-
----
-
-### browser_close
-
-Close the browser.
-
-```python
-browser_close()
-```
-
-**Returns:** Success/error message
-
-**Note:** The browser persists between calls until explicitly closed or Nymeria stops.
-
----
-
-### browser_status
-
-Get browser/Playwright diagnostics and current runtime state.
-
-```python
-browser_status()
-```
-
-**Returns:** Availability details (Playwright install, browser state, fallback mode).
-
----
-
-## Outlook Tools
-
-Microsoft Graph API integration for Outlook email operations. Uses OAuth device code flow for authentication.
-
-### Authentication Tools
-
-#### outlook_auth_start
-
-Start the Microsoft OAuth authentication flow using device code.
-
-```python
-outlook_auth_start()
-```
-
-**Returns:** Device code and URL for user to visit to complete authentication.
-
-**Flow:**
-1. Call `outlook_auth_start()` to get a device code
-2. User visits the provided URL and enters the code
-3. Call `outlook_auth_complete()` to finish authentication
-
----
-
-#### outlook_auth_complete
-
-Complete the OAuth authentication after user has entered the device code.
-
-```python
-outlook_auth_complete()
-```
-
-**Returns:** Success with account info, or error if authentication failed.
-
----
-
-#### outlook_list_authenticated_accounts
-
-List all Microsoft accounts that have been authenticated.
-
-```python
-outlook_list_authenticated_accounts()
-```
-
-**Returns:** List of authenticated accounts with IDs and email addresses.
-
----
-
-### Email Tools
-
-#### outlook_list_emails
-
-List recent emails from Outlook.
-
-```python
-outlook_list_emails(account_id: Optional[str] = None, limit: int = 10,
-                    folder: str = "inbox", unread_only: bool = False)
-```
-
-**Parameters:**
-- `account_id`: Microsoft account ID (optional, uses first account if not specified)
-- `limit`: Maximum number of emails to return (default: 10, max: 50)
-- `folder`: Mail folder to list from (default: "inbox"). Options: inbox, sentitems, drafts, deleteditems, archive, junkemail
-- `unread_only`: If True, only show unread emails
-
-**Returns:** List of emails with sender, subject, date, and ID for each.
-
----
-
-#### outlook_get_email
-
-Get full details of a specific email by ID.
-
-```python
-outlook_get_email(email_id: str, account_id: Optional[str] = None)
-```
-
-**Parameters:**
-- `email_id`: The email ID (from outlook_list_emails or outlook_search_emails)
-- `account_id`: Microsoft account ID (optional)
-
-**Returns:** Full email details including body content.
-
----
-
-#### outlook_search_emails
-
-Search emails using keywords.
-
-```python
-outlook_search_emails(query: str, account_id: Optional[str] = None, limit: int = 10)
-```
-
-**Parameters:**
-- `query`: Search query (searches subject, body, sender)
-- `account_id`: Microsoft account ID (optional)
-- `limit`: Maximum results (default: 10)
-
-**Returns:** List of matching emails.
-
----
-
-#### outlook_send_email
-
-Send a new email.
-
-```python
-outlook_send_email(to: str, subject: str, body: str, account_id: Optional[str] = None,
-                   cc: Optional[str] = None, bcc: Optional[str] = None, is_html: bool = False)
-```
-
-**Parameters:**
-- `to`: Recipient email address(es), comma-separated for multiple
-- `subject`: Email subject line
-- `body`: Email body content
-- `account_id`: Microsoft account ID (optional)
-- `cc`: CC recipients, comma-separated (optional)
-- `bcc`: BCC recipients, comma-separated (optional)
-- `is_html`: Set to True if body contains HTML (default: False)
+- `trigger_id` (`str`): The 8-char trigger ID
 
 **Returns:** Success or error message.
 
 ---
 
-#### outlook_reply_email
+## Sub-Agent Wrapper Tools
 
-Reply to an email.
+Sub-agents are specialized assistants with their own system prompts, LLMs, and tool restrictions. They appear as **directly callable tools** — each generated by `agents/tool_factory.py`, which wraps `SubAgentExecutor.invoke()`.
 
 ```python
-outlook_reply_email(email_id: str, body: str, account_id: Optional[str] = None, reply_all: bool = False)
+# All agent wrapper tools have this signature:
+AgentName(task: str) -> str
 ```
 
-**Parameters:**
-- `email_id`: ID of the email to reply to
-- `body`: Reply message body
-- `account_id`: Microsoft account ID (optional)
-- `reply_all`: If True, reply to all recipients (default: False)
+The `task` parameter is the instruction for the sub-agent. An injected `config` parameter provides user context.
 
-**Returns:** Success or error message.
+### BrowserAgent
+
+Autonomous browser control — navigate, click, type, extract data from websites.
+
+| Setting | Value |
+|---------|-------|
+| LLM | `google/gemini-3-flash-preview` via OpenRouter |
+| Temperature | 0.3 |
+| Context turns | 10 |
+| Required env | `OPENROUTER_API_KEY` |
+| Internal tools | 9 browser tools (see below) |
+
+### OutlookAgent
+
+Email management — read, send, search, and organize Outlook emails via Microsoft Graph API.
+
+| Setting | Value |
+|---------|-------|
+| LLM | `x-ai/grok-4.1-fast` via OpenRouter |
+| Temperature | 0.3 |
+| Context turns | 8 |
+| Required env | `OPENROUTER_API_KEY` |
+| Internal tools | 13 Outlook tools (see below) |
+
+### CalendarAgent
+
+Google Calendar management — list, create, update, delete events and manage Google accounts.
+
+| Setting | Value |
+|---------|-------|
+| LLM | `x-ai/grok-4.1-fast` via OpenRouter |
+| Temperature | 0.3 |
+| Context turns | 8 |
+| Required env | `OPENROUTER_API_KEY`, `GOOGLE_OAUTH_CREDENTIALS` |
+| Internal tools | 12 calendar tools (see below) |
+
+### SelfModifyAgent
+
+Code modification agent — creates and modifies Nymeria's tools, agents, and trigger sources.
+
+| Setting | Value |
+|---------|-------|
+| LLM | `anthropic/claude-opus-4.5` via OpenRouter |
+| Temperature | 0.5 |
+| Max tokens | 16000 |
+| Context turns | 5 |
+| Required env | `OPENROUTER_API_KEY` |
+| Internal tools | 7 self-modify tools (see below) |
 
 ---
 
-#### outlook_create_draft
+## Sub-Agent Internal Tools
 
-Create an email draft without sending it.
+### Browser Tools (9)
 
-```python
-outlook_create_draft(to: str, subject: str, body: str, account_id: Optional[str] = None, cc: Optional[str] = None)
-```
+Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
-**Parameters:**
-- `to`: Recipient email address(es), comma-separated
-- `subject`: Email subject line
-- `body`: Email body content
-- `account_id`: Microsoft account ID (optional)
-- `cc`: CC recipients, comma-separated (optional)
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `browser_navigate` | `(url: str)` | Navigate to a URL. Falls back to requests+BeautifulSoup if Playwright unavailable. |
+| `browser_click` | `(selector: str)` | Click element by CSS selector or `text=` selector. |
+| `browser_type` | `(selector: str, text: str)` | Type text into an input field. |
+| `browser_get_content` | `(include_links: bool = True)` | Get page text content and optionally links. |
+| `browser_screenshot` | `()` | Take a screenshot. Returns a data URI preview string (first 100 chars of base64 + total length). |
+| `browser_scroll` | `(direction: str = "down", amount: int = 500)` | Scroll page up or down by pixel amount. |
+| `browser_press_key` | `(key: str)` | Press a keyboard key (e.g., `"Enter"`, `"Tab"`). |
+| `browser_close` | `()` | Close the browser and reset the thread. |
+| `browser_status` | `()` | Check Playwright availability and browser state. |
 
-**Returns:** Success message with draft ID.
+**Architecture:** All browser operations run on a dedicated `BrowserThread` to satisfy Playwright's single-thread requirement. Operations are queued and results retrieved via thread-safe queues. The browser persists between calls until explicitly closed.
 
----
-
-#### outlook_delete_email
-
-Delete an email (moves to Deleted Items, or permanently deletes).
-
-```python
-outlook_delete_email(email_id: str, account_id: Optional[str] = None, permanent: bool = False)
-```
-
-**Parameters:**
-- `email_id`: ID of the email to delete
-- `account_id`: Microsoft account ID (optional)
-- `permanent`: If True, permanently delete. If False, move to trash (default)
-
-**Returns:** Success or error message.
+**Fallback mode:** Set `BROWSER_FORCE_FALLBACK=true` in `.env` to skip Playwright entirely and use requests+BeautifulSoup for navigation and content extraction. Useful when Playwright hangs.
 
 ---
 
-#### outlook_mark_email
+### Outlook Tools (13)
 
-Mark an email as read or unread.
+Used internally by OutlookAgent. Also available as **optional tools** for per-thread enabling. Defined in `tools/outlook_auth.py` (3 auth) and `tools/outlook_email.py` (10 email).
 
-```python
-outlook_mark_email(email_id: str, is_read: bool, account_id: Optional[str] = None)
-```
+**Authentication tools:**
 
-**Parameters:**
-- `email_id`: ID of the email to update
-- `is_read`: True to mark as read, False to mark as unread
-- `account_id`: Microsoft account ID (optional)
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `outlook_auth_start` | `()` | Start Microsoft OAuth device code flow. Returns URL and code. |
+| `outlook_auth_complete` | `()` | Complete auth after user signs in. Polls Microsoft (up to 5 min). |
+| `outlook_list_authenticated_accounts` | `()` | List all authenticated Microsoft accounts with IDs. |
 
-**Returns:** Success or error message.
+**Email tools:**
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `outlook_list_emails` | `(account_id?, limit=10, folder="inbox", unread_only=False)` | List recent emails. Limit max 50. |
+| `outlook_get_email` | `(email_id, account_id?)` | Get full email details including body. |
+| `outlook_search_emails` | `(query, account_id?, limit=10)` | Search emails by keyword. Limit max 25. |
+| `outlook_send_email` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Send a new email. |
+| `outlook_reply_email` | `(email_id, body, account_id?, reply_all=False)` | Reply to an email. |
+| `outlook_create_draft` | `(to, subject, body, account_id?, cc?)` | Create a draft without sending. |
+| `outlook_delete_email` | `(email_id, account_id?, permanent=False)` | Move to trash or permanently delete. |
+| `outlook_mark_email` | `(email_id, is_read, account_id?)` | Mark email as read or unread. |
+| `outlook_move_email` | `(email_id, folder, account_id?)` | Move email to a folder. |
+| `outlook_forward_email` | `(email_id, to, comment?, account_id?)` | Forward an email. |
+
+**Folder names** (case-insensitive):
+- `outlook_list_emails` accepts: `inbox`, `sent`/`sentitems`, `drafts`, `deleted`/`deleteditems`, `junk`/`junkemail`, `archive`
+- `outlook_move_email` additionally accepts: `trash` (→ deleteditems), `spam` (→ junkemail)
 
 ---
 
-#### outlook_move_email
+### Calendar Tools (12)
 
-Move an email to a different folder.
+Used internally by CalendarAgent. Wraps the Google Calendar MCP server via JSON-RPC over stdio. Defined in `agents/calendar_agent_tools.py`.
 
-```python
-outlook_move_email(email_id: str, folder: str, account_id: Optional[str] = None)
-```
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `calendar_list_calendars` | `()` | List all available Google calendars. |
+| `calendar_list_events` | `(calendar_id="primary", max_results=10, time_min?, time_max?)` | List events from a calendar. |
+| `calendar_get_event` | `(event_id, calendar_id="primary")` | Get full event details. |
+| `calendar_search_events` | `(query, calendar_id="primary", max_results=10)` | Search events by text. |
+| `calendar_create_event` | `(summary, start_time, end_time, calendar_id="primary", description?, location?, attendees?, timezone?)` | Create a new event. |
+| `calendar_update_event` | `(event_id, calendar_id="primary", summary?, start_time?, end_time?, description?, location?)` | Update an existing event. |
+| `calendar_delete_event` | `(event_id, calendar_id="primary")` | Delete a calendar event. |
+| `calendar_respond_to_event` | `(event_id, response, calendar_id="primary")` | Respond to invitation: `"accepted"`, `"declined"`, `"tentative"`. |
+| `calendar_get_freebusy` | `(time_min, time_max, calendars?)` | Get free/busy info. `calendars` is comma-separated IDs. |
+| `calendar_get_current_time` | `()` | Get current time for relative scheduling. |
+| `calendar_list_colors` | `()` | List available event colors. |
+| `calendar_manage_accounts` | `(action)` | Manage Google accounts: `"list"`, `"add"`, `"remove"`. |
 
-**Parameters:**
-- `email_id`: ID of the email to move
-- `folder`: Destination folder (inbox, archive, deleteditems, junkemail, etc.)
-- `account_id`: Microsoft account ID (optional)
-
-**Returns:** Success or error message.
+**Requires:** `GOOGLE_OAUTH_CREDENTIALS` env var pointing to the OAuth credentials file. Node.js and `npx` must be installed.
 
 ---
 
-#### outlook_forward_email
+### SelfModify Tools (7)
 
-Forward an email to another recipient.
+Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** and **list** operations work on any path within the project root. **Write** and **delete** are restricted to `nymeria/tools/`, `nymeria/agents/`, and `nymeria/triggers/sources/`.
 
-```python
-outlook_forward_email(email_id: str, to: str, comment: Optional[str] = None, account_id: Optional[str] = None)
-```
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `self_file_read` | `(file_path: str)` | Read a file from the Nymeria codebase. |
+| `self_file_write` | `(file_path: str, content: str)` | Write content to tools/, agents/, or triggers/sources/. Auto-backups. |
+| `self_file_list` | `(directory: str = "nymeria/tools")` | List files in a directory. |
+| `self_file_delete` | `(file_path: str)` | Delete a file from tools/, agents/, or triggers/sources/. |
+| `self_test_import` | `()` | Test that all tools can be imported successfully. |
+| `self_reload` | `()` | Reload all tools and agents after making changes. |
+| `self_invoke_tool` | `(tool_name: str, arguments_json: str)` | Test a tool by invoking it with JSON arguments. |
 
-**Parameters:**
-- `email_id`: ID of the email to forward
-- `to`: Recipient email address(es), comma-separated
-- `comment`: Optional message to include with the forward
-- `account_id`: Microsoft account ID (optional)
+**Workflow:** Write code → `self_test_import()` → `self_reload()` → `self_invoke_tool()` → report results.
 
-**Returns:** Success or error message.
+---
+
+## Optional Tools System
+
+Optional tools are NOT loaded by default. They're available for per-thread enabling via the thread config UI.
+
+**Currently available:** 13 Outlook tools (3 auth + 10 email) — the same tools used internally by OutlookAgent.
+
+**How it works:**
+1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects: `{t.name: t for t in OUTLOOK_TOOLS}`
+2. Per-thread config has an `enabled_tools` list (tool names)
+3. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
+4. Users enable/disable optional tools via the desktop UI thread settings or `PATCH /threads/{id}/config`
 
 ---
 
 ## Custom Tools
 
-Custom tools allow you to extend Nymeria's capabilities without writing Python code. You can create tools via the **Desktop UI** (Settings → Tools) or the **REST API**.
+Custom tools extend Nymeria's capabilities without writing Python. Created via the **Desktop UI** (Settings → Tools) or the **REST API**.
 
 ### Tool Types
 
@@ -1034,13 +780,9 @@ HTTP tools make REST API calls with configurable:
 }
 ```
 
-**Parameter Interpolation:**
-- `${param_name}` - Replaced with the parameter value
-- `${env:VAR_NAME}` - Replaced with environment variable (for secrets)
-
 ### MCP Tools
 
-MCP (Model Context Protocol) tools connect to external MCP servers via JSON-RPC over stdio. This allows you to use any existing MCP server as a Nymeria tool.
+MCP tools connect to external MCP servers via JSON-RPC over stdio.
 
 **Configuration:**
 - **Server Command**: Command to start the MCP server (e.g., `npx`, `python`)
@@ -1089,83 +831,56 @@ MCP (Model Context Protocol) tools connect to external MCP servers via JSON-RPC 
 
 **Via REST API:**
 ```bash
-# List all custom tools
-GET /tools/custom
-
-# Create a new tool
-POST /tools/custom
-
-# Update a tool
-PUT /tools/custom/{tool_id}
-
-# Delete a tool
-DELETE /tools/custom/{tool_id}
-
-# Test a tool
-POST /tools/custom/{tool_id}/test
+GET /tools/custom              # List all custom tools
+POST /tools/custom             # Create a new tool
+PUT /tools/custom/{tool_id}    # Update a tool
+DELETE /tools/custom/{tool_id} # Delete a tool
+POST /tools/custom/{tool_id}/test  # Test a tool
 ```
 
-### Custom Tool Storage
-
-Custom tools are stored as JSON files in `data/custom_tools/`. Each tool is a separate `.json` file named by its ID.
+**Storage:** Custom tools are stored as JSON files in `data/custom_tools/`, one `.json` per tool ID.
 
 ---
 
-## Sub-Agents
+## Scheduled TODO Execution
 
-Sub-agents are specialized assistants with their own system prompts and tool restrictions. They appear as **directly callable tools** in Nymeria's tool list — no wrapper needed.
+Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a `scheduled_for` datetime that are automatically executed when due.
 
-```python
-# Direct invocation — each agent appears as a tool
-BrowserAgent(task="Go to google.com and search for cats")
-OutlookAgent(task="Check inbox for new emails")
-SelfModifyAgent(task="Create a calculator tool")
-CalendarAgent(task="What meetings do I have today?")
-```
+### How It Works
 
-**Built-in agents** (registered in `nymeria/agents/`):
-| Agent | Purpose | Tools Used |
-|-------|---------|------------|
-| BrowserAgent | Web browsing via Playwright | Browser tools (9) |
-| OutlookAgent | Email operations via Microsoft Graph | Outlook tools (13) |
-| CalendarAgent | Google Calendar operations via MCP | Calendar tools |
-| SelfModifyAgent | Safe codebase self-modification | Self-modification tools |
+1. `todo(task=..., scheduled_for=...)` creates a TODO and registers it in `TodoScheduleDB` (SQLite at `data/todo_schedule.db`).
+2. The **Ticker** daemon polls every 5 seconds for due TODOs.
+3. When a TODO is due, the ticker sends its `task` text as a prompt to the agent on the TODO's `thread_id`.
+4. For recurring TODOs, **any completion** (ticker execution, agent marking done, API, or MCP) auto-reschedules to the next `scheduled_for` based on the recurrence pattern. Use `clear_recurrence` or `todo_delete` to stop.
+5. Non-recurring completed TODOs are auto-archived after 7 days (hourly cleanup in the ticker).
 
-**How it works:** `agents/tool_factory.py` generates a LangChain `@tool` for each registered agent. The tool wraps `SubAgentExecutor.invoke()` and accepts a single `task` string parameter. Agent tools are loaded defensively by `NymeriaAgent._ensure_agent_tools()` at startup.
+**Durable scheduling:** Scheduled TODOs survive application restarts. Missed TODOs are recovered and executed on startup.
 
-### Managing Sub-Agents
+**Rate limiting:** Default 50 autonomous executions per hour per user (`MAX_SELF_INVOKES_PER_HOUR`). Uses a sliding window algorithm in `rate_limiter.py`.
 
-**Via Desktop UI:**
-1. Open Settings → Sub-Agents tab
-2. Click "+ New Agent" to create
-3. Configure: name, description, system prompt, allowed tools
-4. Test the agent with sample instructions
-5. Enable/disable agents as needed
+---
 
-**Via REST API:**
-```bash
-# List all sub-agents
-GET /agents
+## Security Levels & Metadata
 
-# Create a new sub-agent
-POST /agents
+Tool metadata is defined in `tools/metadata.py`. Each tool has a category, security level, and default enabled state.
 
-# Update a sub-agent
-PUT /agents/{agent_name}
+### Security Levels
 
-# Delete a sub-agent
-DELETE /agents/{agent_name}
+| Level | Default Enabled | Description |
+|-------|----------------|-------------|
+| **SAFE** | Yes | Always available, no risk |
+| **MODERATE** | Yes | Can be disabled by user |
+| **SENSITIVE** | **No** | Requires explicit opt-in |
 
-# Test a sub-agent
-POST /agents/{agent_name}/test
-```
+### Tools by Security Level
 
-**Sub-Agent Configuration:**
-- **Name**: Unique identifier (lowercase, underscores allowed)
-- **Description**: Brief description of the agent's purpose
-- **System Prompt**: Instructions defining the agent's behavior
-- **Tools**: List of allowed tool names (empty = all tools)
-- **Context Turns**: Number of conversation turns to include
+**SAFE:** `file_read`, `web_search`, `consult`, `memory_save`, `memory_forget`, `memory_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `clear_agent_context`, `mute_response`
+
+**MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, `reload_all`
+
+**SENSITIVE:** `self_modify_rollback`
+
+**Not in TOOL_METADATA:** `trigger_create`, `trigger_list`, `trigger_update`, `trigger_delete` — these tools have no security level assigned and are always loaded regardless of user preferences.
 
 ---
 
@@ -1220,3 +935,4 @@ The tool is available on next startup, or call `reload_all()` for hot-reload.
 | **Prefix results** | Use `[Success]`, `[Error]`, `[Info]` prefixes |
 | **Be specific** | One tool = one job |
 | **Log operations** | Use `logger.info()` for audit trail |
+| **Use InjectedToolArg** | For user/thread context: `config: Annotated[RunnableConfig, InjectedToolArg]` |

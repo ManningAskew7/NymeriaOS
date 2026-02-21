@@ -333,7 +333,7 @@ async def nymeria_todo_list(
 
     Args:
         user_id: User ID to list TODOs for (default: "default")
-        status: Filter by status - "pending", "in_progress", "blocked", "done", or "all"
+        status: Filter by status - "pending", "in_progress", "done", or "all"
 
     Returns:
         Formatted list of TODO items
@@ -344,7 +344,7 @@ async def nymeria_todo_list(
         todo_list_obj = agent.todo_manager.get_todos(user_id)
 
         # Import constants for formatting
-        from nymeria.core.todo_constants import STATUS_ICONS, PRIORITY_MARKERS, STATUS_ORDER, PRIORITY_ORDER
+        from nymeria.core.todo_constants import STATUS_ICONS, STATUS_ORDER
         from nymeria.core.todo_manager import TodoStatus
 
         # Filter items
@@ -355,7 +355,7 @@ async def nymeria_todo_list(
                 filter_status = TodoStatus(status.lower())
                 items = [i for i in todo_list_obj.items if i.status == filter_status]
             except ValueError:
-                return f"Error: Invalid status '{status}'. Use 'pending', 'in_progress', 'blocked', 'done', or 'all'."
+                return f"Error: Invalid status '{status}'. Use 'pending', 'in_progress', 'done', or 'all'."
         else:
             items = todo_list_obj.get_active_todos()
 
@@ -364,10 +364,10 @@ async def nymeria_todo_list(
                 return f"No TODOs with status '{status}' for user '{user_id}'."
             return f"No active TODOs for user '{user_id}'."
 
-        # Sort: in_progress first, then by priority, then by created_at
+        # Sort: in_progress first, then pending, then done; then by created_at
         sorted_items = sorted(
             items,
-            key=lambda i: (STATUS_ORDER.get(i.status, 4), PRIORITY_ORDER.get(i.priority, 3), i.created_at),
+            key=lambda i: (STATUS_ORDER.get(i.status, 3), i.created_at),
         )
 
         # Format output
@@ -376,19 +376,12 @@ async def nymeria_todo_list(
 
         for item in sorted_items:
             icon = STATUS_ICONS.get(item.status, "[ ]")
-            priority = PRIORITY_MARKERS.get(item.priority, "") if item.priority else ""
-            line = f"{icon} [{item.id}] {priority}{item.task}"
+            line = f"{icon} [{item.id}] {item.task}"
 
-            if item.permanent:
-                line += " [P]"
             if item.scheduled_for:
                 from nymeria.core.time_utils import get_user_tz
                 display_time = item.scheduled_for.astimezone(get_user_tz())
                 line += f" [scheduled: {display_time.strftime('%Y-%m-%d %H:%M')}]"
-            if item.deadline:
-                line += f" (due: {item.deadline.strftime('%Y-%m-%d')})"
-            if item.status == TodoStatus.BLOCKED and item.blocked_reason:
-                line += f" - BLOCKED: {item.blocked_reason}"
 
             lines.append(line)
 
@@ -401,10 +394,8 @@ async def nymeria_todo_list(
 @mcp.tool()
 async def nymeria_todo_add(
     task: str,
-    priority: str = None,
     scheduled_for: str = None,
     recurrence: str = None,
-    permanent: bool = False,
     user_id: str = "default",
 ) -> str:
     """
@@ -415,20 +406,18 @@ async def nymeria_todo_add(
 
     Args:
         task: The task description
-        priority: Priority level - "high", "medium", or "low" (optional)
         scheduled_for: When Nymeria should work on this task.
                       Formats: "30s", "5m", "1h", "1d" (relative),
                       or "2024-03-15 14:00" (absolute)
         recurrence: Recurrence pattern - "5min", "10min", "15min", "30min", "hourly", "daily", "weekly", "monthly"
-        permanent: If True, task cannot be completed - only deleted (requires recurrence)
         user_id: User ID to add TODO for (default: "default")
 
     Returns:
         Confirmation message with the new TODO ID
 
     Examples:
-        nymeria_todo_add(task="Research Python async patterns")
-        nymeria_todo_add(task="Deploy feature", priority="high", scheduled_for="2h")
+        nymeria_todo_add(task="Research Python async patterns", scheduled_for="2h")
+        nymeria_todo_add(task="Deploy feature", scheduled_for="1d", recurrence="daily")
     """
     if not task:
         return "Error: task is required."
@@ -437,18 +426,8 @@ async def nymeria_todo_add(
 
     try:
         from nymeria.core.time_utils import parse_scheduled_time
-        from nymeria.core.todo_manager import TodoPriority
+        from nymeria.core.todo_constants import VALID_RECURRENCES
         from nymeria.core.activity_log import ActivityType, log_activity
-
-        VALID_RECURRENCES = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
-
-        # Parse priority
-        todo_priority = None
-        if priority:
-            try:
-                todo_priority = TodoPriority(priority.lower())
-            except ValueError:
-                return f"Error: Invalid priority '{priority}'. Use 'high', 'medium', or 'low'."
 
         # Parse scheduled_for
         todo_scheduled = None
@@ -464,17 +443,11 @@ async def nymeria_todo_add(
                 return f"Error: Invalid recurrence '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
             todo_recurrence = recurrence.lower()
 
-        # Validate permanent requires recurrence
-        if permanent and not todo_recurrence:
-            return "Error: permanent=True requires a recurrence pattern to be set."
-
         with agent.todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
                 task,
-                priority=todo_priority,
                 scheduled_for=todo_scheduled,
                 recurrence=todo_recurrence,
-                permanent=permanent,
             )
             if item:
                 logger.info(f"TODO added: user={user_id}, id={item.id}")
@@ -493,7 +466,7 @@ async def nymeria_todo_add(
                     ActivityType.TODO_ADDED,
                     f"TODO added (MCP): {task[:80]}",
                     user_id=user_id,
-                    metadata={"todo_id": item.id, "priority": priority, "source": "mcp"},
+                    metadata={"todo_id": item.id, "source": "mcp"},
                 )
 
                 result = f"Added TODO {item.id}: {task[:100]}"
@@ -501,8 +474,6 @@ async def nymeria_todo_add(
                     result += f" (scheduled for {scheduled_for})"
                 if todo_recurrence:
                     result += f" (recurring: {todo_recurrence})"
-                if permanent:
-                    result += " (permanent)"
                 return result
             else:
                 return f"Error: TODO limit reached ({todo_list.MAX_TODOS}). Complete or delete some tasks first."
@@ -536,19 +507,16 @@ async def nymeria_todo_complete(
 
     try:
         from nymeria.core.activity_log import ActivityType, log_activity
+        from nymeria.core.todo_manager import TodoStatus
         from nymeria.core.watchdog import get_watchdog
-        from nymeria.core.todo_constants import PERMANENT_REJECT_MSG
 
         with agent.todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
             if not item:
                 return f"Error: TODO '{todo_id}' not found."
 
-            # Check permanent guard
-            if item.permanent:
-                return f"Error: {PERMANENT_REJECT_MSG}"
-
             task_name = item.task
+            has_recurrence = item.recurrence
             success = todo_list.complete_item(todo_id)
             if success:
                 logger.info(f"TODO completed: user={user_id}, id={todo_id}")
@@ -558,9 +526,33 @@ async def nymeria_todo_complete(
                 if watchdog:
                     watchdog.clear_nudge_tracking(user_id, todo_id)
 
-                # Remove from schedule database
+                # Auto-reschedule recurring TODOs
+                rescheduled = False
+                if has_recurrence:
+                    from nymeria.core.todo_constants import RECURRENCE_DELTAS
+                    from datetime import datetime
+                    delta = RECURRENCE_DELTAS.get(has_recurrence)
+                    if delta:
+                        next_execution = datetime.utcnow() + delta
+                        todo_list.update_item(
+                            todo_id,
+                            scheduled_for=next_execution,
+                            status=TodoStatus.PENDING,
+                        )
+                        refreshed = todo_list.get_item(todo_id)
+                        if refreshed:
+                            refreshed.last_execution = datetime.utcnow()
+                        rescheduled = True
+                        logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {next_execution}")
+
+                # Sync schedule database
                 if hasattr(agent, '_schedule_db'):
-                    agent._schedule_db.remove_scheduled(todo_id)
+                    if rescheduled:
+                        agent.todo_manager.sync_schedule_to_db(
+                            user_id, todo_id, agent._schedule_db
+                        )
+                    else:
+                        agent._schedule_db.remove_scheduled(todo_id)
 
                 # Log activity
                 log_activity(
@@ -570,6 +562,8 @@ async def nymeria_todo_complete(
                     metadata={"todo_id": todo_id, "source": "mcp"},
                 )
 
+                if rescheduled:
+                    return f"Completed: {task_name[:100]} (auto-rescheduled: recurring {has_recurrence})"
                 return f"Completed: {task_name[:100]}"
             else:
                 return f"Error: Failed to complete TODO '{todo_id}'."
@@ -584,7 +578,6 @@ async def nymeria_todo_update(
     task: str = None,
     status: str = None,
     notes: str = None,
-    priority: str = None,
     scheduled_for: str = None,
     clear_schedule: bool = False,
     user_id: str = "default",
@@ -595,9 +588,8 @@ async def nymeria_todo_update(
     Args:
         todo_id: The 8-character TODO ID to update
         task: New task description (optional)
-        status: New status - "pending", "in_progress", "done", or "blocked" (optional)
+        status: New status - "pending", "in_progress", or "done" (optional)
         notes: Add notes to the TODO (max 1000 chars, optional)
-        priority: New priority - "high", "medium", or "low" (optional)
         scheduled_for: New schedule - "30s", "5m", "1h", "1d" or "YYYY-MM-DD HH:MM" (optional)
         clear_schedule: Set to true to remove the scheduled time (optional)
         user_id: User ID (default: "default")
@@ -612,7 +604,7 @@ async def nymeria_todo_update(
 
     try:
         from nymeria.core.time_utils import parse_scheduled_time
-        from nymeria.core.todo_manager import TodoPriority, TodoStatus
+        from nymeria.core.todo_manager import TodoStatus
         from nymeria.core.activity_log import ActivityType, log_activity
         from nymeria.core.watchdog import get_watchdog
 
@@ -622,15 +614,7 @@ async def nymeria_todo_update(
             try:
                 todo_status = TodoStatus(status.lower())
             except ValueError:
-                return f"Error: Invalid status '{status}'. Use 'pending', 'in_progress', 'done', or 'blocked'."
-
-        # Parse priority
-        todo_priority = None
-        if priority:
-            try:
-                todo_priority = TodoPriority(priority.lower())
-            except ValueError:
-                return f"Error: Invalid priority '{priority}'. Use 'high', 'medium', or 'low'."
+                return f"Error: Invalid status '{status}'. Use 'pending', 'in_progress', or 'done'."
 
         # Parse scheduled_for
         todo_scheduled = None
@@ -640,18 +624,11 @@ async def nymeria_todo_update(
                 return f"Error: Invalid scheduled_for format '{scheduled_for}'. Use '30s', '5m', '1h', '1d' or 'YYYY-MM-DD HH:MM'."
 
         with agent.todo_manager.atomic_update(user_id) as todo_list:
-            # Check permanent guard before update
-            item_check = todo_list.get_item(todo_id)
-            if item_check and todo_status == TodoStatus.DONE and item_check.permanent:
-                from nymeria.core.todo_constants import PERMANENT_REJECT_MSG
-                return f"Error: {PERMANENT_REJECT_MSG}"
-
             success = todo_list.update_item(
                 todo_id,
                 task=task,
                 status=todo_status,
                 notes=notes,
-                priority=todo_priority,
                 scheduled_for=todo_scheduled,
                 clear_schedule=clear_schedule,
             )

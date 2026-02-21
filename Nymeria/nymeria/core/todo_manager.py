@@ -25,15 +25,6 @@ class TodoStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     DONE = "done"
-    BLOCKED = "blocked"
-
-
-class TodoPriority(str, Enum):
-    """Priority level for a TODO item."""
-
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
 
 
 class TodoItem(BaseModel):
@@ -42,12 +33,9 @@ class TodoItem(BaseModel):
     id: str = Field(..., description="8-character unique identifier")
     task: str = Field(..., max_length=500, description="Task description")
     status: TodoStatus = Field(default=TodoStatus.PENDING)
-    priority: Optional[TodoPriority] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
-    deadline: Optional[datetime] = Field(default=None)
     notes: Optional[str] = Field(default=None, max_length=1000)
-    blocked_reason: Optional[str] = Field(default=None, max_length=500)
 
     # Scheduling fields - when set, Nymeria wakes up to work on this TODO
     scheduled_for: Optional[datetime] = Field(default=None, description="When to wake up and work on this TODO")
@@ -56,16 +44,27 @@ class TodoItem(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def _migrate_thread_id(cls, data: dict) -> dict:
-        """Backfill thread_id='legacy' for old TODOs that lack one."""
-        if isinstance(data, dict) and not data.get('thread_id'):
-            data['thread_id'] = 'legacy'
+    def _migrate_legacy_fields(cls, data: dict) -> dict:
+        """Migrate old TODO data: backfill thread_id, strip removed fields, convert blocked→pending."""
+        if isinstance(data, dict):
+            # Backfill thread_id='legacy' for old TODOs that lack one
+            if not data.get('thread_id'):
+                data['thread_id'] = 'legacy'
+            # Migrate blocked → pending
+            if data.get('status') == 'blocked':
+                data['status'] = 'pending'
+                if data.get('blocked_reason'):
+                    existing_notes = data.get('notes') or ''
+                    migrated = f"[was blocked: {data['blocked_reason']}] {existing_notes}".strip()
+                    data['notes'] = migrated[:1000]  # Respect max_length
+            # Strip removed fields (Pydantic would reject unknown fields)
+            for field in ('priority', 'deadline', 'blocked_reason', 'permanent'):
+                data.pop(field, None)
         return data
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
     recurrence: Optional[str] = Field(default=None, description="Recurrence pattern: 'hourly', 'daily', 'weekly', 'monthly'")
-    permanent: bool = Field(default=False, description="Permanent recurring TODO - cannot be completed, only deleted")
 
     def is_active(self) -> bool:
         """Check if this TODO is active (not done)."""
@@ -109,28 +108,22 @@ class TodoList(BaseModel):
     def add_item(
         self,
         task: str,
-        priority: Optional[TodoPriority] = None,
-        deadline: Optional[datetime] = None,
         scheduled_for: Optional[datetime] = None,
         thread_id: str = "legacy",
         created_by: str = "agent",
         recurrence: Optional[str] = None,
         notes: Optional[str] = None,
-        permanent: bool = False,
     ) -> Optional[TodoItem]:
         """
         Add a new TODO item.
 
         Args:
             task: Task description
-            priority: Priority level
-            deadline: Due date
             scheduled_for: When Nymeria should wake up to work on this
             thread_id: Thread context for scheduled execution
             created_by: Who created this TODO ('agent' or 'user')
             recurrence: Recurrence pattern ('hourly', 'daily', 'weekly', 'monthly')
             notes: Additional notes
-            permanent: If True (requires recurrence), task cannot be completed
 
         Returns:
             The created TodoItem, or None if at limit.
@@ -143,24 +136,17 @@ class TodoList(BaseModel):
         # Truncate task if too long
         task = task[:500]
 
-        # Permanent requires recurrence
-        if permanent and not recurrence:
-            permanent = False
-
         # Generate short ID
         todo_id = str(uuid.uuid4())[:8]
 
         item = TodoItem(
             id=todo_id,
             task=task,
-            priority=priority,
-            deadline=deadline,
             scheduled_for=scheduled_for,
             thread_id=thread_id,
             created_by=created_by,
             recurrence=recurrence,
             notes=notes[:1000] if notes else None,
-            permanent=permanent,
         )
         self.items.append(item)
         self.updated_at = datetime.utcnow()
@@ -171,17 +157,12 @@ class TodoList(BaseModel):
         todo_id: str,
         status: Optional[TodoStatus] = None,
         notes: Optional[str] = None,
-        blocked_reason: Optional[str] = None,
-        priority: Optional[TodoPriority] = None,
         task: Optional[str] = None,
         scheduled_for: Optional[datetime] = None,
         clear_schedule: bool = False,
         thread_id: Optional[str] = None,
         recurrence: Optional[str] = None,
         clear_recurrence: bool = False,
-        deadline: Optional[datetime] = None,
-        clear_deadline: bool = False,
-        permanent: Optional[bool] = None,
     ) -> bool:
         """
         Update a TODO item.
@@ -190,45 +171,25 @@ class TodoList(BaseModel):
             todo_id: ID of the TODO to update
             status: New status
             notes: Add or update notes
-            blocked_reason: Why the task is blocked
-            priority: New priority
             task: Update task description
             scheduled_for: Set/update scheduled execution time
             clear_schedule: If True, removes the schedule
             thread_id: Update thread context for scheduled execution
             recurrence: Recurrence pattern ('hourly', 'daily', 'weekly', 'monthly')
             clear_recurrence: If True, removes the recurrence
-            deadline: Set/update deadline
-            clear_deadline: If True, removes the deadline
-            permanent: Set/clear permanent flag (requires recurrence)
 
         Returns:
-            True if successful, False if not found or rejected.
+            True if successful, False if not found.
         """
         item = self.get_item(todo_id)
         if not item:
             return False
 
-        # Reject completion of permanent items
-        if status == TodoStatus.DONE and item.permanent:
-            return False
-
         if status is not None:
             item.status = status
-            # Clear blocked_reason if not blocked
-            if status != TodoStatus.BLOCKED:
-                item.blocked_reason = None
 
         if notes is not None:
             item.notes = notes[:1000] if notes else None
-
-        if blocked_reason is not None:
-            item.blocked_reason = blocked_reason[:500] if blocked_reason else None
-            if blocked_reason:
-                item.status = TodoStatus.BLOCKED
-
-        if priority is not None:
-            item.priority = priority
 
         if task is not None:
             item.task = task[:500]
@@ -244,23 +205,8 @@ class TodoList(BaseModel):
 
         if clear_recurrence:
             item.recurrence = None
-            item.permanent = False  # Auto-clear permanent when clearing recurrence
         elif recurrence is not None:
             item.recurrence = recurrence
-
-        if clear_deadline:
-            item.deadline = None
-        elif deadline is not None:
-            item.deadline = deadline
-
-        # Handle permanent flag update
-        if permanent is not None:
-            if permanent:
-                # Only allow permanent if item has recurrence
-                if item.recurrence:
-                    item.permanent = True
-            else:
-                item.permanent = False
 
         item.updated_at = datetime.utcnow()
         self.updated_at = datetime.utcnow()
@@ -271,14 +217,10 @@ class TodoList(BaseModel):
         Mark a TODO item as done.
 
         Returns:
-            True if successful, False if not found or permanent.
+            True if successful, False if not found.
         """
         item = self.get_item(todo_id)
         if not item:
-            return False
-
-        # Permanent items cannot be completed
-        if item.permanent:
             return False
 
         item.status = TodoStatus.DONE

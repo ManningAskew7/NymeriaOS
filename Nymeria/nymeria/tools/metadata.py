@@ -12,10 +12,10 @@ from typing import Dict, List, Optional, Set
 class ToolCategory(str, Enum):
     """Categories for grouping related tools."""
 
-    CORE = "core"           # bash_execute, file_read, file_write, file_list, web_search, claude_code
-    MEMORY = "memory"       # memory_save, memory_forget, memory_clear_all, personality_set, rag_search
+    CORE = "core"           # bash_execute, file_read, file_write, web_search, claude_code
+    MEMORY = "memory"       # memory_save, memory_forget, memory_list, personality_set, rag_search
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
-    TODO = "todo"           # todo_add, todo_update, todo_delete, todo_list
+    TODO = "todo"           # todo, todo_delete, todo_list
     SUBAGENT = "subagent"   # clear_agent_context, reload_agents
     VISIBILITY = "visibility"   # mute_response
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
@@ -80,23 +80,18 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         security_level=SecurityLevel.MODERATE,
         description="Write content to files",
     ),
-    "file_list": ToolMetadata(
-        name="file_list",
-        category=ToolCategory.CORE,
-        security_level=SecurityLevel.SAFE,
-        description="List directory contents",
-    ),
+    # file_list: Removed — redundant with bash_execute
     "web_search": ToolMetadata(
         name="web_search",
         category=ToolCategory.CORE,
         security_level=SecurityLevel.SAFE,
         description="Search the web",
     ),
-    "think": ToolMetadata(
-        name="think",
+    "consult": ToolMetadata(
+        name="consult",
         category=ToolCategory.CORE,
         security_level=SecurityLevel.SAFE,
-        description="Deep reasoning via Gemini (uses OpenRouter credits)",
+        description="Ask Gemini for a second opinion (uses OpenRouter credits)",
     ),
     "claude_code": ToolMetadata(
         name="claude_code",
@@ -124,13 +119,13 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         security_level=SecurityLevel.SAFE,
         description="Remove saved information",
     ),
-    # memory_list removed - memories are auto-injected into system prompt
-    "memory_clear_all": ToolMetadata(
-        name="memory_clear_all",
+    "memory_list": ToolMetadata(
+        name="memory_list",
         category=ToolCategory.MEMORY,
-        security_level=SecurityLevel.MODERATE,
-        description="Clear all user memories",
+        security_level=SecurityLevel.SAFE,
+        description="List all saved memories and personality preferences",
     ),
+    # memory_clear_all: Removed — dangerous, cheap models could hallucinate and wipe all memories
     "personality_set": ToolMetadata(
         name="personality_set",
         category=ToolCategory.MEMORY,
@@ -155,19 +150,12 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
     # tools_reload and invoke_tool removed - self_modify now auto-reloads
 
     # TODO tools - task management
-    "todo_add": ToolMetadata(
-        name="todo_add",
+    "todo": ToolMetadata(
+        name="todo",
         category=ToolCategory.TODO,
         security_level=SecurityLevel.SAFE,
-        description="Add a new TODO item",
+        description="Create or update a TODO item",
     ),
-    "todo_update": ToolMetadata(
-        name="todo_update",
-        category=ToolCategory.TODO,
-        security_level=SecurityLevel.SAFE,
-        description="Update an existing TODO",
-    ),
-    # todo_complete removed - use todo_update(status="done") instead
     "todo_delete": ToolMetadata(
         name="todo_delete",
         category=ToolCategory.TODO,

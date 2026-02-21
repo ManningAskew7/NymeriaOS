@@ -56,18 +56,7 @@
     todo.status === 'in_progress' ? 'var(--accent-primary)' : 'var(--text-muted)'
   );
 
-  // Priority indicator
-  let priorityBadge = $derived.by(() => {
-    if (!todo.priority) return null;
-    switch (todo.priority) {
-      case 'high':
-        return { text: '!!', color: 'var(--error)' };
-      case 'medium':
-        return { text: '!', color: 'var(--warning)' };
-      default:
-        return null;
-    }
-  });
+
 </script>
 
 <div class="todo-item" class:running={todo.status === 'in_progress'}>
@@ -77,9 +66,6 @@
 
   <div class="todo-content">
     <div class="todo-header">
-      {#if priorityBadge}
-        <span class="priority-badge" style="color: {priorityBadge.color}">{priorityBadge.text}</span>
-      {/if}
       <span class="todo-task">{todo.task}</span>
     </div>
     <span class="todo-time">{timeUntil}</span>
@@ -121,12 +107,6 @@
     display: flex;
     align-items: baseline;
     gap: var(--spacing-xs);
-  }
-
-  .priority-badge {
-    font-size: var(--font-size-xs);
-    font-weight: 700;
-    flex-shrink: 0;
   }
 
   .todo-task {

@@ -6,6 +6,7 @@ import logging
 import re
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
 
@@ -29,8 +30,8 @@ from .compactor import ConversationCompactor, estimate_tokens
 from ._deprecated.task_db import TaskDatabase
 from .scheduler import DurableScheduler
 from .ticker import Ticker, set_ticker
-from .todo_manager import TodoManager, TodoPriority, TodoStatus
-from .todo_constants import STATUS_ICONS, PRIORITY_MARKERS, STATUS_ORDER, PRIORITY_ORDER
+from .todo_manager import TodoManager, TodoStatus
+from .todo_constants import STATUS_ICONS, STATUS_ORDER
 from .todo_schedule_db import TodoScheduleDB
 from .watchdog import Watchdog, set_watchdog
 from .audit import AuditLogger
@@ -456,17 +457,19 @@ class NymeriaAgent:
         if not active:
             return ""
 
-        # Sort: in_progress first, then by priority (high > medium > low > none), then by created_at
+        # Sort: in_progress first, then pending, then done; then by scheduled_for, then created_at
         sorted_todos = sorted(
             active,
-            key=lambda t: (STATUS_ORDER.get(t.status, 3), PRIORITY_ORDER.get(t.priority, 3), t.created_at),
+            key=lambda t: (
+                STATUS_ORDER.get(t.status, 2),
+                (t.scheduled_for or datetime.max).timestamp() if t.scheduled_for else float('inf'),
+                t.created_at,
+            ),
         )
 
         # Limit to 20 items in context to avoid explosion
         display_todos = sorted_todos[:20]
         remaining = len(sorted_todos) - 20
-
-        has_permanent = any(t.permanent for t in display_todos)
 
         lines = [
             "",
@@ -475,26 +478,13 @@ class NymeriaAgent:
             "## Active TODOs",
             "",
             "The following tasks are pending. Work on them proactively when appropriate.",
-            "Use todo_update to mark progress (status='done' when complete), or todo_delete if no longer needed.",
+            "Use todo(todo_id=..., status='done') to mark complete, or todo_delete if no longer needed.",
+            "",
         ]
-
-        if has_permanent:
-            lines.append("TODOs marked [P] are permanent recurring tasks. You CANNOT complete them. They will keep activating at their scheduled interval. If you believe one should stop, ask the user to delete it.")
-
-        lines.append("")
 
         for todo in display_todos:
             icon = STATUS_ICONS.get(todo.status, "[ ]")
-            # Add a space before priority marker for display in system prompt
-            priority = (" " + PRIORITY_MARKERS.get(todo.priority, "")) if todo.priority and PRIORITY_MARKERS.get(todo.priority) else ""
-            permanent_tag = " [P]" if todo.permanent else ""
-            line = f"- {icon} **{todo.id}**{priority}: {todo.task}{permanent_tag}"
-
-            if todo.deadline:
-                line += f" (due: {todo.deadline.strftime('%Y-%m-%d')})"
-
-            if todo.status == TodoStatus.BLOCKED and todo.blocked_reason:
-                line += f" - BLOCKED: {todo.blocked_reason}"
+            line = f"- {icon} **{todo.id}**: {todo.task}"
 
             lines.append(line)
 

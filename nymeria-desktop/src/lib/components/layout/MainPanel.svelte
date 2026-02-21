@@ -236,8 +236,8 @@
           chatStore.updateToolCallResultByName(data.name, data.result, data.status, data.id);
         }
 
-        // Refresh TODOs when a todo_* tool completes
-        if (data.name.startsWith('todo_')) {
+        // Refresh TODOs when a todo* tool completes
+        if (data.name.startsWith('todo')) {
           todosStore.onTodoToolCompleted();
           // Also refresh activity since todo changes are logged
           activityStore.fetch();

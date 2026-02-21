@@ -46,7 +46,7 @@ class TriggerAction(BaseModel):
             "Action-specific config. "
             "agent_prompt: {prompt_template (or prompt), thread_id?}. "
             "notify: {message_template, platform?}. "
-            "create_todo: {task_template, priority?, scheduled_for?}."
+            "create_todo: {task_template, scheduled_for?}."
         ),
     )
 
@@ -650,12 +650,10 @@ class TriggerManager:
     def _fire_create_todo(self, config: dict, template_vars: dict, user_id: str) -> None:
         """Create a TODO item (no LLM call)."""
         from ..config import get_settings
-        from .todo_manager import TodoManager, TodoPriority
+        from .todo_manager import TodoManager
 
         template = config.get("task_template", "Triggered: {trigger_name}")
         task = _safe_format(template, template_vars)
-        priority_str = config.get("priority", "medium")
-        priority = TodoPriority(priority_str) if priority_str else None
 
         settings = get_settings()
         todo_manager = TodoManager(settings.data_dir)
@@ -663,7 +661,6 @@ class TriggerManager:
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
                 task=task,
-                priority=priority,
                 created_by="trigger",
                 thread_id=f"trigger_{template_vars.get('trigger_id', 'auto')}",
             )

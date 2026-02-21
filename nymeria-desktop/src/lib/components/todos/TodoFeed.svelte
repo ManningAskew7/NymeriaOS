@@ -97,7 +97,7 @@
       </div>
     {/if}
 
-    <!-- Active Tasks Section (pending/blocked) -->
+    <!-- Active Tasks Section (pending) -->
     {#if organized.active.length > 0}
       <div class="todo-group">
         <h3 class="group-label">
