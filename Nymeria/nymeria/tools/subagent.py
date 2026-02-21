@@ -23,7 +23,7 @@ def clear_agent_context(agent_name: str) -> str:
     previous conversations.
 
     Args:
-        agent_name: Name of the sub-agent
+        agent_name: Name of the sub-agent (e.g., "BrowserAgent", "OutlookAgent", "CalendarAgent", "SelfModifyAgent")
 
     Returns:
         Success or error message

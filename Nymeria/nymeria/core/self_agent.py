@@ -25,7 +25,7 @@ def self_file_read(file_path: str) -> str:
     Read a file from the Nymeria codebase.
 
     Args:
-        file_path: Path to the file (relative to C:\\Nymeria or absolute)
+        file_path: Relative path from the project root (e.g., "nymeria/tools/my_tool.py") or absolute path
 
     Returns:
         File contents or error message
@@ -66,7 +66,7 @@ def self_file_write(file_path: str, content: str) -> str:
     IMPORTANT: Only files in nymeria/tools/ or nymeria/agents/ can be modified.
 
     Args:
-        file_path: Path to the file (relative to C:\\Nymeria or absolute)
+        file_path: Relative path from the project root (e.g., "nymeria/tools/my_tool.py") or absolute path
         content: Content to write
 
     Returns:
@@ -188,7 +188,7 @@ def self_file_delete(file_path: str) -> str:
     IMPORTANT: Only files in nymeria/tools/ or nymeria/agents/ can be deleted.
 
     Args:
-        file_path: Path to the file (relative to C:\\Nymeria or absolute)
+        file_path: Relative path from the project root (e.g., "nymeria/tools/my_tool.py") or absolute path
 
     Returns:
         Success or error message

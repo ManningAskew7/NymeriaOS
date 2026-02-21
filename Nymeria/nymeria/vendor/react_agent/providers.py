@@ -78,6 +78,10 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
         "base_url": config.base_url or "https://openrouter.ai/api/v1",
     }
 
+    # HTTP read timeout — prevents hanging on stalled OpenRouter connections.
+    if config.request_timeout is not None:
+        kwargs["timeout"] = config.request_timeout
+
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
     else:
@@ -141,6 +145,9 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         "api_key": api_key,
     }
 
+    if config.request_timeout is not None:
+        kwargs["timeout"] = config.request_timeout
+
     if config.base_url:
         kwargs["base_url"] = config.base_url
 
@@ -181,6 +188,9 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
         "temperature": config.temperature,
         "api_key": api_key,
     }
+
+    if config.request_timeout is not None:
+        kwargs["timeout"] = config.request_timeout
 
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens

@@ -32,6 +32,12 @@ class LLMConfig:
     reasoning_effort: Optional[str] = None  # For reasoning models: "low", "medium", "high"
     extended_thinking: bool = False  # Enable extended thinking/reasoning tokens
 
+    # HTTP timeout for LLM API calls (seconds). Prevents hanging on stalled connections.
+    # Applies as the read timeout — if the server sends no data for this long, the call fails.
+    # Default None = no timeout (relies on tool_timeout for execution bounds).
+    # SubAgentExecutor sets 120s explicitly for sub-agent LLM calls.
+    request_timeout: Optional[int] = None
+
     # For custom providers
     custom_llm: Optional[object] = field(default=None, repr=False)
 

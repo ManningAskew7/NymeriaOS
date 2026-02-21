@@ -3072,7 +3072,7 @@ register_agent(
         """
         Enable or disable an entire tool category.
 
-        Categories: core, memory, self_modify, todo, subagent
+        Categories: core, memory, self_modify, todo, subagent, trigger
         """
         from ..tools.metadata import get_all_categories
 
