@@ -473,6 +473,19 @@ export class NymeriaAPI {
     return response.json();
   }
 
+  async listThreads(): Promise<{ thread_id: string; platform: string }[]> {
+    const response = await fetch(`${this.getBaseUrl()}/threads`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.threads || [];
+  }
+
   async getThreadHistory(threadId: string): Promise<ThreadHistory> {
     const response = await fetch(
       `${this.getBaseUrl()}/threads/${threadId}/history`,
