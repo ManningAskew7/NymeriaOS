@@ -635,9 +635,8 @@ class NymeriaDiscordBot(discord.Client):
                 if not event.thread_id.startswith("discord_"):
                     continue
 
-                # Only post full-visibility events
-                visibility = event.data.get("visibility", "full")
-                if visibility != "full":
+                # Skip error events
+                if event.data.get("error"):
                     continue
 
                 # Parse thread ID to find the channel
@@ -762,8 +761,8 @@ class NymeriaDiscordBot(discord.Client):
         if not thread_id.startswith("discord_"):
             return
 
-        visibility = event.get("visibility", "full")
-        if visibility != "full":
+        # Skip error events
+        if event.get("error"):
             return
 
         parsed = parse_thread_id(thread_id)

@@ -224,7 +224,7 @@ Events from user-initiated conversations:
 | `tool_result` | Tool execution result |
 | `response` | Streamed response text |
 | `error` | Error messages |
-| `done` | Stream complete (includes `muted` flag for visibility control) |
+| `done` | Stream complete (includes `contextStats`, `model`) |
 
 ### Autonomous Tasks (`/autonomous/stream`)
 Events from scheduled TODO execution (via `autonomousStore`):
@@ -236,11 +236,7 @@ Events from scheduled TODO execution (via `autonomousStore`):
 | `tool_call` | Tool invocation with id, name, and arguments |
 | `tool_result` | Tool execution result |
 | `response` | Streamed response text chunks |
-| `task_completed` | Execution finished (includes `visibility`, `notify`, `content`) |
-
-**Visibility Control:**
-- `visibility: "full"` → Response shown in chat thread
-- `visibility: "activity"` → Response hidden from chat, logged to activity feed only
+| `task_completed` | Execution finished (includes `notify`, `content`) |
 
 ## Architecture
 
@@ -274,7 +270,7 @@ Backend Ticker                    Frontend
 - `task_started` → Creates placeholder message in chat, refreshes todos
 - `tool_call/tool_result` → Updates tool cards in streaming message
 - `response` → Appends content to streaming message
-- `task_completed` → If `visibility="activity"`, removes message from chat
+- `task_completed` → Marks message as complete
 
 ### Config Store & Setup Flow
 

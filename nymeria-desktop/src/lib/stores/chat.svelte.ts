@@ -149,7 +149,6 @@ function createChatStore() {
 
       if (lastMessage.role === 'assistant') {
         // No parsing needed - just mark as complete
-        // Visibility is controlled by mute_response tool, not embedded format
         messages = [
           ...messages.slice(0, lastIndex),
           {

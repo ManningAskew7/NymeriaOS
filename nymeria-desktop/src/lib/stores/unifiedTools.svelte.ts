@@ -43,11 +43,6 @@ const CATEGORY_INFO: Record<string, { name: string; icon: string; description: s
     icon: 'users',
     description: 'Tools for delegating tasks to specialized sub-agents'
   },
-  visibility: {
-    name: 'Visibility',
-    icon: 'eye',
-    description: 'Tools that control response visibility'
-  },
   custom: {
     name: 'Custom',
     icon: 'puzzle',

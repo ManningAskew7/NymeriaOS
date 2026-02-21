@@ -539,7 +539,7 @@ class NymeriaAgent:
 
         Mode-specific rules are appended:
         - INTERACTIVE_MODE_RULES for user messages (simple, natural responses)
-        - AUTONOMOUS_MODE_RULES for self_invoke (can use mute_response tool)
+        - AUTONOMOUS_MODE_RULES for self_invoke (autonomous task execution)
 
         Args:
             user_id: User identifier
@@ -1377,63 +1377,6 @@ class NymeriaAgent:
     def has_pending_summary(self, thread_id: str) -> bool:
         """Check if thread has a pending summary."""
         return thread_id in self._pending_summaries
-
-    def mark_last_turn_muted(self, thread_id: str) -> bool:
-        """Mark the last conversation turn as muted (hidden from UI, kept for model).
-
-        Finds the last HumanMessage and persists its ID. On history load,
-        get_conversation_history() uses this to skip the entire turn
-        (prompt + all AI/tool responses) via skip_until_next_human.
-
-        Args:
-            thread_id: Conversation thread ID
-
-        Returns:
-            True if a turn was marked muted, False otherwise
-        """
-        from ..tools.visibility import persist_muted_turn
-
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = self._default_graph.get_state(config)
-            messages = state.values.get("messages", [])
-
-            # Find the last HumanMessage (start of the turn)
-            for i in range(len(messages) - 1, -1, -1):
-                if isinstance(messages[i], HumanMessage) and messages[i].id:
-                    persist_muted_turn(self.settings.data_dir, thread_id, messages[i].id)
-                    return True
-            return False
-
-        except Exception as e:
-            logger.error(f"Error marking last turn muted for thread {thread_id}: {e}")
-            return False
-
-    async def amark_last_turn_muted(self, thread_id: str) -> bool:
-        """Async version of mark_last_turn_muted.
-
-        Args:
-            thread_id: Conversation thread ID
-
-        Returns:
-            True if a turn was marked muted, False otherwise
-        """
-        from ..tools.visibility import persist_muted_turn
-
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = await self._default_async_graph.aget_state(config)
-            messages = state.values.get("messages", [])
-
-            for i in range(len(messages) - 1, -1, -1):
-                if isinstance(messages[i], HumanMessage) and messages[i].id:
-                    persist_muted_turn(self.settings.data_dir, thread_id, messages[i].id)
-                    return True
-            return False
-
-        except Exception as e:
-            logger.error(f"Error marking last turn muted for thread {thread_id}: {e}")
-            return False
 
     def _rehydrate_token_usage(self, thread_id: str) -> None:
         """
@@ -2834,42 +2777,26 @@ class NymeriaAgent:
             # - autonomous_wakeup: Hide the prompt, but SHOW the AI response (user wants to see task output)
             # - compact_prompt: Hide both prompt AND response (internal housekeeping)
             # - auto_resume: Hide both prompt AND response (internal housekeeping)
-            # - muted turns: Hide prompt AND all responses (mute_response tool was called)
             if not include_internal:
-                from ..tools.visibility import get_muted_turn_ids
-                muted_turn_ids = get_muted_turn_ids(self.settings.data_dir, thread_id)
-
                 filtered_messages = []
                 skip_until_next_human = False
 
                 for msg in messages:
-                    # Check if this is an internal HumanMessage
                     if isinstance(msg, HumanMessage):
                         is_internal = (
                             hasattr(msg, 'additional_kwargs') and
                             msg.additional_kwargs.get('internal', False)
                         )
-                        is_muted = bool(muted_turn_ids and msg.id in muted_turn_ids)
 
                         if is_internal:
-                            # Check the internal type to decide filtering behavior
                             internal_type = msg.additional_kwargs.get('internal_type', '')
                             if internal_type == 'autonomous_wakeup':
-                                if is_muted:
-                                    # Muted autonomous: skip prompt AND all responses
-                                    skip_until_next_human = True
-                                else:
-                                    # Normal autonomous: skip prompt but show AI responses
-                                    pass
+                                # Skip prompt but show AI responses
                                 continue
                             else:
                                 # For compact_prompt, auto_resume: skip prompt AND following responses
                                 skip_until_next_human = True
                                 continue
-                        elif is_muted:
-                            # Muted interactive turn: skip prompt AND all responses
-                            skip_until_next_human = True
-                            continue
                         else:
                             # Regular user message - include it and reset skip flag
                             skip_until_next_human = False

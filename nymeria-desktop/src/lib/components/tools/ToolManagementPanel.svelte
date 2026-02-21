@@ -124,7 +124,7 @@
   });
 
   // Category order for display (subagent excluded - managed in Sub-Agents tab)
-  const categoryOrder: ToolCategory[] = ['core', 'memory', 'todo', 'self_modify', 'visibility'];
+  const categoryOrder: ToolCategory[] = ['core', 'memory', 'todo', 'self_modify'];
 
   async function handleCreate(request: CustomToolCreateRequest) {
     const tool = await toolsStore.createTool(request);
@@ -268,7 +268,7 @@
   }
 
   // Category order for unified view
-  const unifiedCategoryOrder = ['core', 'memory', 'todo', 'subagent', 'self_modify', 'visibility', 'custom'];
+  const unifiedCategoryOrder = ['core', 'memory', 'todo', 'subagent', 'self_modify', 'custom'];
 </script>
 
 <div class="tool-management">

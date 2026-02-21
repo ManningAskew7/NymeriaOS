@@ -348,8 +348,6 @@ export interface DoneEvent {
   type: 'done';
   data: {
     threadId: string;
-    muted?: boolean;
-    muteReason?: string;
     contextStats?: ContextStats;
     model?: string;
   };
@@ -592,7 +590,7 @@ export interface SubAgentTestResponse {
 // Built-in Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'subagent' | 'visibility' | 'custom';
+export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'subagent' | 'custom';
 export type ToolType = 'builtin' | 'custom';
 
 export interface BuiltInTool {

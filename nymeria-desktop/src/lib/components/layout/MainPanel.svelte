@@ -274,12 +274,9 @@
       case 'done': {
         const data = event.data as {
           threadId: string;
-          muted?: boolean;
-          muteReason?: string;
           contextStats?: ContextStats;
           model?: string;
         };
-        console.log('[MainPanel] done event received:', { muted: data.muted, muteReason: data.muteReason });
 
         // Reclassify any trailing thinking as response (if no tool calls followed it)
         chatStore.reclassifyThinkingAsResponse();
@@ -294,21 +291,6 @@
 
         // Clear queued state
         chatStore.setQueued(false);
-
-        // If response was muted via mute_response tool, remove the assistant message from chat
-        if (data.muted) {
-          const messages = chatStore.messages;
-          const lastMessage = messages[messages.length - 1];
-          console.log('[MainPanel] muted=true, removing message:', {
-            messageCount: messages.length,
-            lastMessageRole: lastMessage?.role,
-            lastMessageId: lastMessage?.id
-          });
-          if (lastMessage && lastMessage.role === 'assistant') {
-            chatStore.removeMessage(lastMessage.id);
-            console.log('[MainPanel] Message removed');
-          }
-        }
         // Note: Thread ID syncing is handled by syncThreadIdFromEvent() called at top of handleSSEEvent
         break;
       }

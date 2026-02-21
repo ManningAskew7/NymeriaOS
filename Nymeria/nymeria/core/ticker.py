@@ -26,7 +26,6 @@ from .response_handler import create_response
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
-from ..tools.visibility import get_and_clear_mute_flag
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
@@ -317,13 +316,11 @@ class Ticker:
 
     def _execute_scheduled_todo(self, entry: ScheduledTodoEntry) -> None:
         """
-        Execute a scheduled TODO with buffered output.
+        Execute a scheduled TODO.
 
-        Streams from the agent internally but buffers all events until
-        the mute decision is made. If the agent calls mute_response,
-        nothing is published to the frontend — the response only appears
-        in the activity log. If not muted, task_started + all buffered
-        events are flushed to the event bus, then task_completed.
+        Streams from the agent, buffering events until streaming completes,
+        then publishes task_started + buffered events + task_completed to
+        the event bus.
 
         Args:
             entry: The scheduled TODO entry to execute
@@ -375,15 +372,13 @@ class Ticker:
             prompt += f"\n\nNotes: {todo.notes}"
 
         try:
-            # Execute through agent, buffering events until mute decision is made.
-            # Events are only published to the frontend AFTER streaming completes:
-            # - Muted: nothing reaches the frontend (no flash of content)
-            # - Not muted: task_started + buffered events flushed, then task_completed
+            # Execute through agent, buffering events until streaming completes.
+            # After streaming, task_started + buffered events are flushed to the frontend.
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
             logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
             response_parts = []
             thinking_parts = []
-            buffered_events = []  # Buffer events until mute decision
+            buffered_events = []
             chunk_count = 0
             for chunk in self.agent.stream(
                 message=prompt,
@@ -397,7 +392,7 @@ class Ticker:
                 logger.info(f"[TICKER] Chunk #{chunk_count}: type={chunk_type}, content_preview={chunk_content_preview}")
                 chunk_type = chunk.get("type")
 
-                # Buffer streaming events (published after mute decision)
+                # Buffer streaming events (published after stream completes)
                 if chunk_type == "tool_call":
                     buffered_events.append({
                         "event_type": "tool_call",
@@ -453,41 +448,30 @@ class Ticker:
                 response_text = ""
             logger.info(f"[TICKER] === STREAM DONE === chunks={chunk_count}, response_parts={len(response_parts)}, thinking_parts={len(thinking_parts)}, response_len={len(response_text)}")
 
-            # Check mute BEFORE publishing any events to the frontend
-            mute_info = get_and_clear_mute_flag(thread_id)
-            if mute_info and mute_info.get("muted"):
-                visibility = "activity"
-                logger.info(f"Response muted via tool: {mute_info.get('reason', 'no reason')}")
-                # Persist muted turn so UI hides it on history reload too
-                self.agent.mark_last_turn_muted(thread_id)
-            else:
-                visibility = "full"
-                # Not muted — flush task_started + buffered events to frontend
+            # Flush task_started + buffered events to frontend
+            publish_autonomous_event(
+                event_type="task_started",
+                thread_id=thread_id,
+                user_id=entry.user_id,
+                task_id=todo.id,
+                data={"prompt": prompt, "todo_id": todo.id},
+            )
+            for event in buffered_events:
                 publish_autonomous_event(
-                    event_type="task_started",
+                    event_type=event["event_type"],
                     thread_id=thread_id,
                     user_id=entry.user_id,
                     task_id=todo.id,
-                    data={"prompt": prompt, "todo_id": todo.id},
+                    data=event["data"],
                 )
-                for event in buffered_events:
-                    publish_autonomous_event(
-                        event_type=event["event_type"],
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                        data=event["data"],
-                    )
 
-            # Create response object (no parsing needed - just raw content)
+            # Create response object
             logger.info(f"Raw autonomous response (first 500 chars): {response_text[:500] if response_text else 'empty'}")
             response = create_response(
                 content=response_text,
-                visibility=visibility,
-                notify=False,  # Notifications will be handled by separate tool later
+                notify=False,
             )
-            logger.info(f"Response: visibility={response.visibility}, notify={response.notify}")
-            is_activity_only = response.visibility == "activity"
+            logger.info(f"Response: notify={response.notify}")
 
             # Handle recurring TODOs: reschedule instead of clearing
             # Re-fetch the TODO to get the recurrence field
@@ -523,14 +507,13 @@ class Ticker:
             if todo.id in self._retry_counts:
                 del self._retry_counts[todo.id]
 
-            # Publish task completed event with visibility info
+            # Publish task completed event
             publish_autonomous_event(
                 event_type="task_completed",
                 thread_id=thread_id,
                 user_id=entry.user_id,
                 task_id=todo.id,
                 data={
-                    "visibility": response.visibility,
                     "notify": response.notify,
                     "content": response.content,
                     "summary": response.summary,
@@ -547,60 +530,33 @@ class Ticker:
                 response_summary=response.summary or response.content[:200] if response.content else "",
             )
 
-            # Route based on visibility mode
-            if is_activity_only:
-                # Activity log only - minimal console output
-                log_activity(
-                    ActivityType.TASK_COMPLETED,
-                    response.content[:200] if response.content else "Scheduled TODO executed",
+            # Log activity
+            log_activity(
+                ActivityType.TASK_COMPLETED,
+                response.summary or response.content[:200] if response.content else "Scheduled TODO executed",
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                metadata={"todo_id": todo.id, "notify": response.notify},
+            )
+
+            # Show response in console
+            sanitized_content = _sanitize_unicode(response.content)
+            _console.print()
+            _console.print("[bold green]Nymeria:[/bold green]")
+            _console.print(Markdown(sanitized_content))
+
+            # Create notification if requested
+            if response.notify and response.summary:
+                create_notification(
                     user_id=entry.user_id,
+                    summary=response.summary,
                     thread_id=thread_id,
-                    metadata={"todo_id": todo.id, "visibility": "activity"},
+                    task_id=todo.id,
                 )
-
-                # Show minimal console output
-                next_entry = self.schedule_db.get_next_for_user(entry.user_id)
-                if next_entry:
-                    time_remaining = next_entry.scheduled_for - time.time()
-                    mins = max(0, int(time_remaining // 60))
-                    next_task_sanitized = _sanitize_unicode(next_entry.task_preview[:50])
-                    _console.print(
-                        Panel(
-                            f"[dim]Nothing important to report. Next check: {next_task_sanitized}... in {mins}m[/dim]",
-                            title="[dim]Background task complete[/dim]",
-                            border_style="dim",
-                        )
-                    )
-                else:
-                    _console.print("[dim]Background task complete, nothing to report.[/dim]")
-            else:
-                # Full visibility - show in thread
-                log_activity(
-                    ActivityType.TASK_COMPLETED,
-                    response.summary or response.content[:200] if response.content else "Scheduled TODO executed",
-                    user_id=entry.user_id,
-                    thread_id=thread_id,
-                    metadata={"todo_id": todo.id, "visibility": "full", "notify": response.notify},
-                )
-
-                # Show full response
-                sanitized_content = _sanitize_unicode(response.content)
-                _console.print()
-                _console.print("[bold green]Nymeria:[/bold green]")
-                _console.print(Markdown(sanitized_content))
-
-                # Create notification if requested
-                if response.notify and response.summary:
-                    create_notification(
-                        user_id=entry.user_id,
-                        summary=response.summary,
-                        thread_id=thread_id,
-                        task_id=todo.id,
-                    )
-                    _console.print(f"[yellow]Notification sent: {response.summary}[/yellow]")
+                _console.print(f"[yellow]Notification sent: {response.summary}[/yellow]")
 
             _console.print()
-            logger.info(f"TODO {todo.id} scheduled execution completed, visibility={response.visibility}, notify={response.notify}")
+            logger.info(f"TODO {todo.id} scheduled execution completed, notify={response.notify}")
 
             # Trim context window if needed (only in sliding_window mode)
             if self.agent.settings.context_management == "sliding_window":
@@ -631,7 +587,6 @@ class Ticker:
                 user_id=entry.user_id,
                 task_id=todo.id,
                 data={
-                    "visibility": "activity",
                     "error": True,
                     "error_message": str(e)[:200],
                     "content": f"Task failed: {str(e)[:200]}",

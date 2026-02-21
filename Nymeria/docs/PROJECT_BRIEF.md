@@ -74,9 +74,8 @@ Default tool surface for runtime initialization:
 Core categories include:
 - system execution (`bash_execute`, file tools, web, think, claude_code)
 - memory/rag (`memory_save`, `memory_forget`, `memory_clear_all`, `personality_set`, `rag_search`)
-- tasking (`todo_add`, `todo_update`, `todo_delete`, `todo_list`)
+- tasking (`todo`, `todo_delete`, `todo_list`)
 - agent ops (`clear_agent_context`, `reload_all`, `self_modify_rollback`)
-- visibility (`mute_response`)
 - notifications (`notify`)
 - triggers (`trigger_create/list/update/delete`)
 
@@ -101,7 +100,6 @@ Ticker behavior (`core/ticker.py`):
 - Parallel autonomous execution via thread pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5)
 - Retry handling for failures
 - Recurrence support (`5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly`)
-- Visibility-aware completion via `mute_response`
 
 ### Triggered Work
 
