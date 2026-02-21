@@ -12,7 +12,7 @@ Nymeria is a personal AI assistant framework built on LangGraph's ReAct architec
 - **Multi-User Support**: Isolated profiles per user with thread-safe operations
 - **Auto-Compact Context**: Automatically summarizes conversations when approaching context limits, preserving important facts in memory
 - **Rate Limiting**: Prevents runaway autonomous loops (configurable limit per hour)
-- **29 Default Tools** (25 core + 4 sub-agent wrappers) + 13 optional Outlook tools: Shell, file ops, web search, thinking, Claude Code, memory, RAG, TODOs, notifications, triggers, visibility, plus sub-agents (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
+- **26 Default Tools** (22 core + 4 sub-agent wrappers) + 13 optional Outlook tools: Shell, file ops, web search, thinking, Claude Code, memory, RAG, TODOs, notifications, triggers, plus sub-agents (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
 
 ## Quick Start
 
@@ -56,7 +56,7 @@ C:\Nymeria\
 │   │   ├── todo_schedule_db.py  # SQLite schedule index for polling
 │   │   ├── ticker.py       # Global polling thread for scheduled TODO execution
 │   │   ├── event_bus.py    # Pub/sub for streaming autonomous events to frontend
-│   │   ├── response_handler.py  # Response visibility control
+│   │   ├── response_handler.py  # Autonomous response data model
 │   │   ├── activity_log.py # Activity feed logging
 │   │   ├── notifications.py # Push notification storage
 │   │   ├── backup.py       # File backup system
@@ -82,7 +82,6 @@ C:\Nymeria\
 │   │   ├── subagent.py     # Agent management (reload_all, clear_agent_context, rollback)
 │   │   ├── notify.py       # Unified Telegram/Discord/Slack notifications
 │   │   ├── triggers.py     # Event-driven trigger CRUD
-│   │   ├── visibility.py   # Response visibility control (mute_response)
 │   │   ├── browser.py      # Native Playwright browser automation (9 tools)
 │   │   ├── outlook_auth.py # Microsoft OAuth authentication (3 tools)
 │   │   └── outlook_email.py # Outlook email via Graph API (10 tools)
@@ -129,7 +128,6 @@ C:\Nymeria\
 | **TODO** | 4 | Task management with scheduled autonomous execution |
 | **Agent Management** | 3 | Agent context, reload, rollback |
 | **Notification** | 1 | Unified Telegram/Discord/Slack notifications |
-| **Visibility** | 1 | Control response display (mute_response) |
 | **Triggers** | 4 | Event-driven automation CRUD |
 | **Sub-Agent Wrappers** | 4 | BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent |
 | **Optional: Outlook** | 13 | Microsoft Graph email + OAuth (per-thread enabling) |

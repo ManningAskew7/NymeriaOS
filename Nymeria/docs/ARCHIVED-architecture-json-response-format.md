@@ -2,7 +2,7 @@
 
 > **⚠️ DEPRECATED**: This document describes the OLD JSON-based response format that has been **replaced** by the tool-based visibility control system.
 >
-> **New Approach**: The LLM now streams responses naturally without any special formatting. To control visibility, it calls the `mute_response()` tool. See [tools.md](./tools.md#visibility-tools) for the current implementation.
+> **New Approach**: The LLM now streams responses naturally without any special formatting. All responses are shown in chat.
 >
 > **Why the change?**
 > - Simpler: No complex JSON parsing with multiple fallback strategies

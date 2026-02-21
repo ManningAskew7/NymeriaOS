@@ -252,11 +252,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 | `tool_call` | Tool invocation | `id`, `name`, `args` |
 | `tool_result` | Tool execution result | `id`, `name`, `result` |
 | `response` | Response text chunks | `content` |
-| `task_completed` | Execution finished | `visibility`, `notify`, `content`, `summary`, `todo_id` |
-
-**Visibility Values:**
-- `"full"` - Response should be shown in chat thread
-- `"activity"` - Response should only appear in activity log (muted via `mute_response` tool)
+| `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id` |
 
 **Example Stream:**
 ```
@@ -266,7 +262,7 @@ data: {"type":"thinking","content":"I'll check the inbox now..."}
 data: {"type":"tool_call","id":"tool1","name":"bash_execute","args":{"command":"ls ~/inbox"}}
 data: {"type":"tool_result","id":"tool1","name":"bash_execute","result":"email1.txt\nemail2.txt"}
 data: {"type":"response","content":"Found 2 new emails in inbox."}
-data: {"type":"task_completed","visibility":"full","notify":false,"content":"Found 2 new emails.","todo_id":"xyz"}
+data: {"type":"task_completed","notify":false,"content":"Found 2 new emails.","todo_id":"xyz"}
 : heartbeat
 ```
 
@@ -610,7 +606,7 @@ Returns recent activity entries (autonomous tasks, tool executions, etc.).
       "type": "task_completed",
       "message": "Checked inbox, found 2 emails",
       "thread_id": "thread-xyz",
-      "metadata": {"todo_id": "abc123", "visibility": "full"}
+      "metadata": {"todo_id": "abc123"}
     }
   ],
   "total": 1
@@ -1386,10 +1382,9 @@ Returns available tool categories.
   "categories": {
     "core": ["bash_execute", "file_read", "file_write", "file_list", "web_search", "think", "claude_code", "notify"],
     "memory": ["memory_save", "memory_forget", "memory_clear_all", "personality_set", "rag_search"],
-    "todo": ["todo_add", "todo_update", "todo_delete", "todo_list"],
+    "todo": ["todo", "todo_delete", "todo_list"],
     "self_modify": ["self_modify_rollback"],
-    "subagent": ["clear_agent_context", "reload_all"],
-    "visibility": ["mute_response"]
+    "subagent": ["clear_agent_context", "reload_all"]
   }
 }
 ```

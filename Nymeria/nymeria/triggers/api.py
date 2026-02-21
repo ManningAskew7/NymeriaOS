@@ -24,7 +24,6 @@ from ..core.notifications import NotificationStore, Notification
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
-from ..tools.visibility import get_and_clear_mute_flag
 from ..tools.definitions.schema import (
     CustomToolDefinition,
     HTTPToolConfig,
@@ -745,7 +744,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         async def event_generator():
             """Generate SSE events from agent stream."""
-            response_content = []
             try:
                 # Convert attachments to dict format for agent
                 attachments = None
@@ -781,32 +779,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
                     yield f"data: {event_data}\n\n"
 
-                    # Collect response content for activity log if muted
-                    if chunk.get("type") == "response":
-                        response_content.append(chunk.get("content", ""))
-
                 # Only send done event if not disconnected
                 if not await http_request.is_disconnected():
-                    # Check if mute_response was called during this turn
-                    mute_info = get_and_clear_mute_flag(thread_id)
-                    is_muted = mute_info and mute_info.get("muted", False)
-                    logger.info(f"[API DONE] thread={thread_id}, mute_info={mute_info}, is_muted={is_muted}")
-
-                    # If muted, mark in persistent store and log to activity
-                    if is_muted:
-                        # Persist muted turn so UI hides it on history reload too
-                        await agent.amark_last_turn_muted(thread_id)
-                        logger.info(f"Marked turn as muted for thread {thread_id} (interactive)")
-
-                        full_response = "".join(response_content)
-                        log_activity(
-                            ActivityType.TASK_COMPLETED,
-                            full_response[:200] if full_response else "Response muted",
-                            user_id=user_id,
-                            thread_id=thread_id,
-                            metadata={"muted": True, "reason": mute_info.get("reason", "")},
-                        )
-
                     # Get context stats and model info for UI
                     try:
                         context_stats = agent.get_context_stats(thread_id)
@@ -814,16 +788,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         logger.warning(f"Failed to get context stats: {e}")
                         context_stats = None
 
-                    # Send done event with mute status + context stats
                     done_data = {
                         'type': 'done',
                         'thread_id': thread_id,
-                        'muted': is_muted,
                         'context_stats': context_stats,
                         'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
                     }
-                    if is_muted:
-                        done_data['mute_reason'] = mute_info.get("reason", "")
                     yield f"data: {json.dumps(done_data)}\n\n"
 
             except Exception as e:
@@ -3102,7 +3072,7 @@ register_agent(
         """
         Enable or disable an entire tool category.
 
-        Categories: core, memory, self_modify, todo, subagent, visibility
+        Categories: core, memory, self_modify, todo, subagent
         """
         from ..tools.metadata import get_all_categories
 

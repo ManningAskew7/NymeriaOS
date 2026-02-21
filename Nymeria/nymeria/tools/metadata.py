@@ -17,7 +17,6 @@ class ToolCategory(str, Enum):
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # todo, todo_delete, todo_list
     SUBAGENT = "subagent"   # clear_agent_context, reload_agents
-    VISIBILITY = "visibility"   # mute_response
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
 
 
@@ -184,13 +183,6 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Reload all tools, agents, and trigger sources",
     ),
 
-    # Visibility tools
-    "mute_response": ToolMetadata(
-        name="mute_response",
-        category=ToolCategory.VISIBILITY,
-        security_level=SecurityLevel.SAFE,
-        description="Suppress response in autonomous mode",
-    ),
 }
 
 

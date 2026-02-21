@@ -262,25 +262,17 @@ function createAutonomousStore() {
             break;
           }
 
-          // Check visibility - if "activity", remove the message from chat
-          // (it will only appear in the activity log)
-          if (event.visibility === 'activity' && activeMessageId) {
-            console.log('[Autonomous] Visibility is "activity", removing message from chat');
-            chatStore.removeMessage(activeMessageId);
-          } else {
-            // Visibility is "full", keep the message in chat
-            // Reclassify trailing thinking as response (same as regular chat done handler)
-            chatStore.reclassifyThinkingAsResponse();
+          // Reclassify trailing thinking as response (same as regular chat done handler)
+          chatStore.reclassifyThinkingAsResponse();
 
-            // Only set content from task_completed if nothing was streamed via steps.
-            const parsedContent = event.content as string;
-            const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-            const hasResponseSteps = lastMsg?.steps?.some(s => s.type === 'response');
-            if (parsedContent && lastMsg?.role === 'assistant' && !hasResponseSteps) {
-              chatStore.addResponseStep(parsedContent);
-            }
-            chatStore.setLastMessageComplete();
+          // Only set content from task_completed if nothing was streamed via steps.
+          const parsedContent = event.content as string;
+          const lastMsg = chatStore.messages[chatStore.messages.length - 1];
+          const hasResponseSteps = lastMsg?.steps?.some(s => s.type === 'response');
+          if (parsedContent && lastMsg?.role === 'assistant' && !hasResponseSteps) {
+            chatStore.addResponseStep(parsedContent);
           }
+          chatStore.setLastMessageComplete();
 
           chatStore.clearActiveToolCalls();
           activeTaskId = null;
@@ -291,12 +283,6 @@ function createAutonomousStore() {
         if (isOurTask) {
           activeTaskId = null;
           activeMessageId = null;
-        }
-
-        // If visibility is "full" and user is on a different thread,
-        // we could show a notification or indicator
-        if (!isCurrentThread && event.visibility === 'full') {
-          console.log('[Autonomous] Task completed on different thread:', event.thread_id);
         }
         break;
 

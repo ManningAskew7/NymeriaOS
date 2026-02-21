@@ -416,7 +416,7 @@ class TriggerManager:
         user_id: str,
         trigger: TriggerDefinition,
     ) -> None:
-        """Send a prompt to the agent, buffering events for mute-aware publishing."""
+        """Send a prompt to the agent, buffering events for publishing."""
         template = (
             config.get("prompt_template")
             or config.get("prompt")
@@ -526,49 +526,40 @@ class TriggerManager:
         buffered_events: List[dict],
         event_count: int = 1,
     ) -> None:
-        """Check mute flag and publish buffered events to the event bus."""
+        """Publish buffered events to the event bus."""
         from .activity_log import ActivityType, log_activity
         from .event_bus import publish_autonomous_event
-        from ..tools.visibility import get_and_clear_mute_flag
 
         task_id = f"trigger-{trigger.id}"
 
-        mute_info = get_and_clear_mute_flag(thread_id)
-        if mute_info and mute_info.get("muted"):
-            visibility = "activity"
-            logger.info(f"[TRIGGER] Response muted: {mute_info.get('reason', 'no reason')}")
-            agent.mark_last_turn_muted(thread_id)
-        else:
-            visibility = "full"
-            # Flush task_started + buffered events to frontend
+        # Flush task_started + buffered events to frontend
+        publish_autonomous_event(
+            event_type="task_started",
+            thread_id=thread_id,
+            user_id=user_id,
+            task_id=task_id,
+            data={
+                "prompt": prompt,
+                "trigger_id": trigger.id,
+                "trigger_name": trigger.name,
+            },
+        )
+        for event in buffered_events:
             publish_autonomous_event(
-                event_type="task_started",
+                event_type=event["event_type"],
                 thread_id=thread_id,
                 user_id=user_id,
                 task_id=task_id,
-                data={
-                    "prompt": prompt,
-                    "trigger_id": trigger.id,
-                    "trigger_name": trigger.name,
-                },
+                data=event["data"],
             )
-            for event in buffered_events:
-                publish_autonomous_event(
-                    event_type=event["event_type"],
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data=event["data"],
-                )
 
-        # Always publish task_completed (activity log needs it regardless of visibility)
+        # Publish task_completed
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=thread_id,
             user_id=user_id,
             task_id=task_id,
             data={
-                "visibility": visibility,
                 "content": response,
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
@@ -585,7 +576,6 @@ class TriggerManager:
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
                 "event_count": event_count,
-                "visibility": visibility,
             },
         )
 
@@ -619,14 +609,13 @@ class TriggerManager:
             },
         )
 
-        # SSE event (activity-only visibility — doesn't clutter chat)
+        # SSE event so frontend can exit streaming state
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=thread_id,
             user_id=user_id,
             task_id=task_id,
             data={
-                "visibility": "activity",
                 "content": f"Trigger '{trigger.name}' failed: {safe_error}",
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,

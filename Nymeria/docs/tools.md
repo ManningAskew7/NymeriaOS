@@ -1,10 +1,10 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **23 core tools** always loaded, **4 sub-agent wrapper tools** generated dynamically, and **13 optional Outlook tools** available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 27 default tools.
+Nymeria has a three-tier tool system: **22 core tools** always loaded, **4 sub-agent wrapper tools** generated dynamically, and **13 optional Outlook tools** available for per-thread enabling. Use `get_all_tools_with_agents()` to get all 26 default tools.
 
 ## Summary Table
 
-### Core Tools (23)
+### Core Tools (22)
 
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
@@ -25,12 +25,11 @@ Nymeria has a three-tier tool system: **23 core tools** always loaded, **4 sub-a
 | 15 | `clear_agent_context` | Subagent | SAFE | On | Clear sub-agent conversation context |
 | 16 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
 | 17 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
-| 18 | `mute_response` | Visibility | SAFE | On | Move response to activity log |
-| 19 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
-| 20 | `trigger_create` | Trigger | *None* | On | Create an event-driven trigger |
-| 21 | `trigger_list` | Trigger | *None* | On | List triggers |
-| 22 | `trigger_update` | Trigger | *None* | On | Update a trigger |
-| 23 | `trigger_delete` | Trigger | *None* | On | Delete a trigger |
+| 18 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 19 | `trigger_create` | Trigger | *None* | On | Create an event-driven trigger |
+| 20 | `trigger_list` | Trigger | *None* | On | List triggers |
+| 21 | `trigger_update` | Trigger | *None* | On | Update a trigger |
+| 22 | `trigger_delete` | Trigger | *None* | On | Delete a trigger |
 
 > **Note:** Trigger tools are missing from `TOOL_METADATA` in `metadata.py` — they have no assigned security level and are always loaded.
 
@@ -362,33 +361,6 @@ todo_list(filter_status: Optional[str] = None)
 **Returns:** Formatted list sorted by: status (in_progress first, then pending, then done), then scheduled time, then creation date.
 
 **Status icons:** `[ ]` pending, `[>]` in_progress, `[x]` done.
-
----
-
-## Visibility Tools
-
-### mute_response
-
-Move the current response to the activity log instead of showing in chat. The response is still saved to conversation history — the LLM retains full context.
-
-```python
-mute_response(reason: str = "")
-```
-
-**Parameters:**
-- `reason` (`str`, default `""`): Brief explanation (e.g., `"routine check, no changes"`)
-
-**Returns:** Confirmation message.
-
-**Behavior:**
-- Sets a thread-local mute flag that's checked after streaming completes.
-- The `done` SSE event includes `muted: true` and `mute_reason`.
-- For autonomous tasks, the `task_completed` event gets `visibility: "activity"` instead of `"full"`.
-- Muted turn HumanMessage IDs are persisted to `muted_turns.json` so they're hidden when reloading history.
-
-**When to use:** Routine background checks with nothing to report. Scheduled monitoring with no changes.
-
-**When NOT to use:** User asked a question. Something important happened. Significant actions were taken.
 
 ---
 
@@ -874,7 +846,7 @@ Tool metadata is defined in `tools/metadata.py`. Each tool has a category, secur
 
 ### Tools by Security Level
 
-**SAFE:** `file_read`, `web_search`, `consult`, `memory_save`, `memory_forget`, `memory_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `clear_agent_context`, `mute_response`
+**SAFE:** `file_read`, `web_search`, `consult`, `memory_save`, `memory_forget`, `memory_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `clear_agent_context`
 
 **MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, `reload_all`
 

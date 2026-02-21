@@ -311,7 +311,6 @@ export class NymeriaAPI {
           };
 
         case 'done': {
-          console.log('[API] Parsing done event:', { rawMuted: data.muted, rawMuteReason: data.mute_reason });
           // Map snake_case context_stats to camelCase ContextStats
           const rawStats = data.context_stats as Record<string, unknown> | undefined;
           const contextStats = rawStats ? {
@@ -330,8 +329,6 @@ export class NymeriaAPI {
             type: 'done',
             data: {
               threadId: threadId || '',
-              muted: data.muted as boolean | undefined,
-              muteReason: data.mute_reason as string | undefined,
               contextStats,
               model: data.model as string | undefined,
             },
@@ -444,8 +441,6 @@ export class NymeriaAPI {
         type: 'done',
         data: {
           threadId: threadId || '',
-          muted: data.muted as boolean | undefined,
-          muteReason: data.mute_reason as string | undefined
         },
         timestamp: new Date(),
         threadId

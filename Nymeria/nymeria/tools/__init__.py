@@ -40,7 +40,6 @@ from .subagent import (
     self_modify_rollback,
     SUBAGENT_TOOLS,
 )
-from .visibility import mute_response
 from .outlook_auth import AUTH_TOOLS
 from .outlook_email import EMAIL_TOOLS
 
@@ -59,7 +58,7 @@ from .triggers import (
     TRIGGER_TOOLS,
 )
 
-# All available tools (23 core tools + sub-agents as direct tools)
+# All available tools (22 core tools + sub-agents as direct tools)
 ALL_TOOLS = [
     # Core system tools
     bash_execute,
@@ -82,8 +81,6 @@ ALL_TOOLS = [
     clear_agent_context,
     reload_all,
     self_modify_rollback,
-    # Visibility control
-    mute_response,
     # Unified notification tool
     notify,
     # Trigger tools (event-driven automation)
@@ -121,8 +118,6 @@ __all__ = [
     "reload_all",
     "self_modify_rollback",
     "SUBAGENT_TOOLS",
-    # Visibility control
-    "mute_response",
     # Notification
     "notify",
     "NOTIFY_TOOLS",
@@ -151,7 +146,7 @@ def get_all_tools_with_agents() -> list:
     Get ALL_TOOLS combined with dynamically generated agent tools.
 
     This function returns the complete list of tools including:
-    - Static tools defined in ALL_TOOLS (23 core tools)
+    - Static tools defined in ALL_TOOLS (22 core tools)
     - Dynamically generated tools for each registered sub-agent
       (BrowserAgent, OutlookAgent, SelfModifyAgent)
 
