@@ -515,30 +515,6 @@ function createThreadsStore() {
       saveFolders(folders);
     },
 
-    ensureAgentsFolder(): ThreadFolder {
-      let agentsFolder = folders.find(f => f.name === 'Agents');
-      if (!agentsFolder) {
-        agentsFolder = {
-          id: generateId(),
-          name: 'Agents',
-          createdAt: new Date(),
-          order: folders.length,
-          threadIds: [],
-          collapsed: false,
-        };
-        folders = [...folders, agentsFolder];
-        saveFolders(folders);
-      }
-      return agentsFolder;
-    },
-
-    addToAgentsFolder(threadId: string) {
-      const agentsFolder = this.ensureAgentsFolder();
-      if (!agentsFolder.threadIds.includes(threadId)) {
-        this.addThreadsToFolder(agentsFolder.id, [threadId]);
-      }
-    },
-
     // Pin methods
     togglePinThread(id: string) {
       threads = threads.map(t =>

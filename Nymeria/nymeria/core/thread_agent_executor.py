@@ -1,21 +1,23 @@
 """Thread-based callable executor.
 
-Delegates tasks to callable threads via NymeriaAgent.chat(), replacing the old
+Delegates tasks to callable threads via NymeriaAgent.stream(), replacing the old
 SubAgentExecutor for agents that have been migrated to thread-based execution.
 
 Key differences from SubAgentExecutor:
-- Uses agent.chat() directly — honors all thread config (system prompt, tools, LLM)
+- Uses agent.stream() directly — honors all thread config (system prompt, tools, LLM)
+- Publishes live events to the event bus so the frontend can stream callable thread activity
 - Conversation persists in SQLite/Postgres (not in-memory)
 - Thread is visible in the UI
-- No context var isolation needed (different thread_id prevents streaming leakage)
 """
 
 import json
 import logging
+from uuid import uuid4
+
+from .event_bus import publish_autonomous_event
 
 logger = logging.getLogger(__name__)
 
-# Reuse the same error marker format as SubAgentExecutor for backward compat
 ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
 
 
@@ -31,7 +33,10 @@ def _build_error_result(code: str, message: str, **metadata) -> str:
 
 
 def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -> str:
-    """Delegate a task to a callable thread via NymeriaAgent.chat().
+    """Delegate a task to a callable thread via NymeriaAgent.stream().
+
+    Streams events in real-time to the event bus so the frontend can display
+    live thinking, tool calls, and responses for the callable thread.
 
     Args:
         thread_id: The thread_id of the callable thread to invoke
@@ -61,30 +66,127 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
             callable_name=callable_name,
         )
 
-    # Check required env vars (from the agent template, if one exists)
-    from ..agents import AVAILABLE_AGENTS
-    import os
-    template = AVAILABLE_AGENTS.get(callable_name)
-    if template:
-        required = template.get("required_env_vars", [])
-        missing = [var for var in required if not os.environ.get(var)]
-        if missing:
-            return _build_error_result(
-                code="missing_env_vars",
-                message=f"Missing environment variables for {callable_name}: {', '.join(missing)}",
-                callable_name=callable_name,
-            )
+    task_id = f"callable-{callable_name}-{uuid4().hex[:8]}"
 
     try:
-        logger.info(f"ThreadExecutor: invoking {callable_name} (thread={thread_id})")
-        response = agent.chat(
+        logger.info(f"ThreadExecutor: invoking {callable_name} (thread={thread_id}, task_id={task_id})")
+
+        # Publish task_started immediately so frontend can enter streaming mode
+        publish_autonomous_event(
+            event_type="task_started",
+            thread_id=thread_id,
+            user_id=caller_user_id,
+            task_id=task_id,
+            data={"prompt": task, "callable_name": callable_name},
+        )
+
+        response_parts = []
+        thinking_parts = []
+
+        for chunk in agent.stream(
             message=task,
             thread_id=thread_id,
             user_id=caller_user_id,
+            _is_self_invoke=False,
+        ):
+            chunk_type = chunk.get("type")
+
+            if chunk_type == "tool_call":
+                publish_autonomous_event(
+                    event_type="tool_call",
+                    thread_id=thread_id,
+                    user_id=caller_user_id,
+                    task_id=task_id,
+                    data={
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "args": chunk.get("args", {}),
+                    },
+                )
+
+            elif chunk_type == "tool_result":
+                publish_autonomous_event(
+                    event_type="tool_result",
+                    thread_id=thread_id,
+                    user_id=caller_user_id,
+                    task_id=task_id,
+                    data={
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "result": chunk.get("result"),
+                    },
+                )
+
+            elif chunk_type == "thinking":
+                content = chunk.get("content", "")
+                if content:
+                    thinking_parts.append(content)
+                publish_autonomous_event(
+                    event_type="thinking",
+                    thread_id=thread_id,
+                    user_id=caller_user_id,
+                    task_id=task_id,
+                    data={"content": content},
+                )
+
+            elif chunk_type == "response":
+                content = chunk.get("content", "")
+                if content:
+                    response_parts.append(content)
+                publish_autonomous_event(
+                    event_type="response",
+                    thread_id=thread_id,
+                    user_id=caller_user_id,
+                    task_id=task_id,
+                    data={"content": content},
+                )
+
+            elif chunk_type == "error":
+                # Stream-level error (e.g. lock timeout, LLM failure)
+                content = chunk.get("content", "")
+                logger.warning(f"ThreadExecutor: stream error for {callable_name}: {content}")
+                raise RuntimeError(content or f"{callable_name} encountered a stream error")
+
+        # Compute final response text
+        if response_parts:
+            response_text = "".join(response_parts)
+        elif thinking_parts:
+            # No response chunks — reclassify thinking as response
+            response_text = "".join(thinking_parts)
+        else:
+            response_text = ""
+
+        # Publish task_completed with final response
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=caller_user_id,
+            task_id=task_id,
+            data={
+                "content": response_text,
+                "callable_name": callable_name,
+            },
         )
-        return response
+
+        return response_text
+
     except Exception as e:
         logger.error(f"ThreadExecutor: {callable_name} failed: {e}", exc_info=True)
+
+        # Always publish task_completed on error so frontend exits streaming state
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=caller_user_id,
+            task_id=task_id,
+            data={
+                "error": True,
+                "error_message": str(e)[:200],
+                "content": f"Task failed: {str(e)[:200]}",
+                "callable_name": callable_name,
+            },
+        )
+
         return _build_error_result(
             code="thread_execution_failed",
             message=f"{callable_name} execution failed: {str(e)}",

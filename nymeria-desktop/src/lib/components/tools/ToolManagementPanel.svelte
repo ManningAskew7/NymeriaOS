@@ -123,7 +123,7 @@
     return filtered as Record<ToolCategory, BuiltInTool[]>;
   });
 
-  // Category order for display (subagent excluded - managed in Sub-Agents tab)
+  // Category order for display
   const categoryOrder: ToolCategory[] = ['core', 'memory', 'todo', 'self_modify'];
 
   async function handleCreate(request: CustomToolCreateRequest) {
@@ -268,7 +268,7 @@
   }
 
   // Category order for unified view
-  const unifiedCategoryOrder = ['core', 'memory', 'todo', 'subagent', 'self_modify', 'custom'];
+  const unifiedCategoryOrder = ['core', 'memory', 'todo', 'self_modify', 'custom'];
 </script>
 
 <div class="tool-management">

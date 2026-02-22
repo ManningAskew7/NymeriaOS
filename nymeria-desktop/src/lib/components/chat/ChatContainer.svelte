@@ -7,19 +7,32 @@
   // Auto-scroll when new messages arrive or during streaming
   $effect(() => {
     if (chatStore.messages.length > 0 || chatStore.isStreaming) {
-      scrollToBottom();
+      if (chatStore.instantScroll) {
+        chatStore.setInstantScroll(false);
+        scrollToBottom('instant');
+      } else {
+        scrollToBottom('smooth');
+      }
     }
   });
 
   let scrollRafPending = false;
 
-  function scrollToBottom() {
-    if (containerRef && !scrollRafPending) {
+  function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
+    if (!containerRef) return;
+
+    // Instant scroll always wins — bypass the rAF dedup guard so a pending
+    // smooth scroll from the previous thread can't swallow it.
+    if (behavior === 'instant') {
+      scrollRafPending = false;
+    }
+
+    if (!scrollRafPending) {
       scrollRafPending = true;
       requestAnimationFrame(() => {
         scrollRafPending = false;
         if (containerRef) {
-          containerRef.scrollTop = containerRef.scrollHeight;
+          containerRef.scrollTo({ top: containerRef.scrollHeight, behavior });
         }
       });
     }
@@ -61,7 +74,7 @@
     height: 100%;
     overflow-y: auto;
     padding: var(--spacing-lg);
-    scroll-behavior: smooth;
+    /* scroll-behavior handled programmatically via scrollToBottom() */
   }
 
   .empty-state {

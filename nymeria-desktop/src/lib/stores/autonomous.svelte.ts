@@ -37,6 +37,10 @@ function createAutonomousStore() {
   let activeTasksByThread = $state<Map<string, string>>(new Map()); // thread_id -> task_id
   let activeMessagesByThread = $state<Map<string, string>>(new Map()); // thread_id -> message_id
 
+  // Buffer events that arrive during thread switch gap (between prepareForThreadSwitch
+  // clearing isStreaming and the post-history-load recovery re-entering streaming)
+  let _pendingEvents = new Map<string, AutonomousEvent[]>();
+
   const MAX_RECONNECT_ATTEMPTS = 10;
   const RECONNECT_DELAY_MS = 3000;
 
@@ -166,6 +170,7 @@ function createAutonomousStore() {
         activeTasksByThread = new Map(activeTasksByThread).set(
           event.thread_id, event.task_id as string
         );
+        _pendingEvents.delete(event.thread_id); // clear stale buffer from previous task
         threadsStore.setThreadActive(event.thread_id, true);
 
         // If on the same thread and not already streaming (user typing),
@@ -186,6 +191,11 @@ function createAutonomousStore() {
         // Only update if this is our autonomous task on the current thread
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           chatStore.addThinkingStep(event.content as string || 'Thinking...');
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          // Buffer during thread switch gap (streaming not yet re-armed)
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
         }
         break;
 
@@ -197,6 +207,10 @@ function createAutonomousStore() {
             event.name as string,
             (event.args as Record<string, unknown>) || {}
           );
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
         }
         // Refresh todos if it's a todo tool
         if ((event.name as string)?.startsWith('todo')) {
@@ -212,6 +226,10 @@ function createAutonomousStore() {
             event.result as string || '',
             'success'
           );
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
         }
         // Refresh relevant stores based on tool
         if ((event.name as string)?.startsWith('todo')) {
@@ -228,6 +246,10 @@ function createAutonomousStore() {
       case 'response':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           chatStore.addResponseStep(event.content as string || '');
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
         }
         break;
 
@@ -245,6 +267,7 @@ function createAutonomousStore() {
           const nextMsgs = new Map(activeMessagesByThread);
           nextMsgs.delete(event.thread_id);
           activeMessagesByThread = nextMsgs;
+          _pendingEvents.delete(event.thread_id);
         }
         threadsStore.setThreadActive(event.thread_id, false);
 
@@ -284,6 +307,15 @@ function createAutonomousStore() {
           activeTaskId = null;
           activeMessageId = null;
         }
+
+        // Reload canonical history to fill gaps from mid-stream thread switch
+        if (isCurrentThread) {
+          api.getThreadHistory(event.thread_id).then((history) => {
+            if (threadsStore.currentThreadId === event.thread_id && !chatStore.isStreaming) {
+              chatStore.setMessages(history.messages);
+            }
+          }).catch(() => {});
+        }
         break;
 
       case 'webhook_message':
@@ -317,7 +349,28 @@ function createAutonomousStore() {
       return activeTaskId !== null;
     },
     connect,
-    disconnect
+    disconnect,
+    hasActiveTask(threadId: string): boolean {
+      return activeTasksByThread.has(threadId);
+    },
+    getActiveTaskId(threadId: string): string | undefined {
+      return activeTasksByThread.get(threadId);
+    },
+    /** Called after thread switch recovery re-arms streaming. Replays any events
+     *  that arrived during the gap and syncs activeTaskId for consistency. */
+    resumeStreamingForThread(threadId: string) {
+      const taskId = activeTasksByThread.get(threadId);
+      if (taskId) {
+        activeTaskId = taskId;
+      }
+      const pending = _pendingEvents.get(threadId);
+      if (pending && pending.length > 0) {
+        _pendingEvents.delete(threadId);
+        for (const evt of pending) {
+          handleEvent(evt);
+        }
+      }
+    }
   };
 }
 

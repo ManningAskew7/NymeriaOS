@@ -384,19 +384,33 @@ class TriggerManager:
         )
 
         try:
-            response_parts, buffered_events = self._stream_and_buffer(
-                agent, batch_prompt, thread_id, user_id
+            from .event_bus import publish_autonomous_event
+
+            task_id = f"trigger-{trigger.id}"
+
+            # Publish task_started immediately so frontend enters streaming mode
+            publish_autonomous_event(
+                event_type="task_started",
+                thread_id=thread_id,
+                user_id=user_id,
+                task_id=task_id,
+                data={
+                    "prompt": batch_prompt,
+                    "trigger_id": trigger.id,
+                    "trigger_name": trigger.name,
+                },
+            )
+
+            response_parts, _thinking_parts = self._stream_live(
+                agent, batch_prompt, thread_id, user_id, task_id
             )
             response = "".join(response_parts)
 
-            self._publish_trigger_events(
-                agent=agent,
+            self._publish_trigger_completion(
                 trigger=trigger,
                 thread_id=thread_id,
                 user_id=user_id,
-                prompt=batch_prompt,
                 response=response,
-                buffered_events=buffered_events,
                 event_count=len(events),
             )
 
@@ -416,7 +430,9 @@ class TriggerManager:
         user_id: str,
         trigger: TriggerDefinition,
     ) -> None:
-        """Send a prompt to the agent, buffering events for publishing."""
+        """Send a prompt to the agent, streaming events live."""
+        from .event_bus import publish_autonomous_event
+
         template = (
             config.get("prompt_template")
             or config.get("prompt")
@@ -424,115 +440,11 @@ class TriggerManager:
         )
         prompt = _safe_format(template, template_vars)
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
+        task_id = f"trigger-{trigger.id}"
 
         logger.info(f"[TRIGGER] Firing agent_prompt on thread={thread_id}: {prompt[:100]}...")
 
-        response_parts, buffered_events = self._stream_and_buffer(
-            agent, prompt, thread_id, user_id
-        )
-        response = "".join(response_parts)
-
-        self._publish_trigger_events(
-            agent=agent,
-            trigger=trigger,
-            thread_id=thread_id,
-            user_id=user_id,
-            prompt=prompt,
-            response=response,
-            buffered_events=buffered_events,
-            event_count=1,
-        )
-
-        logger.info(f"[TRIGGER] agent_prompt completed, response_len={len(response)}")
-
-    def _stream_and_buffer(
-        self,
-        agent: "NymeriaAgent",
-        prompt: str,
-        thread_id: str,
-        user_id: str,
-    ) -> Tuple[List[str], List[dict]]:
-        """Stream through the agent and buffer events for deferred publishing.
-
-        Returns (response_parts, buffered_events).
-        """
-        response_parts: List[str] = []
-        thinking_parts: List[str] = []
-        buffered_events: List[dict] = []
-
-        for chunk in agent.stream(
-            message=prompt,
-            thread_id=thread_id,
-            user_id=user_id,
-            _is_self_invoke=True,
-        ):
-            chunk_type = chunk.get("type")
-
-            if chunk_type == "tool_call":
-                buffered_events.append({
-                    "event_type": "tool_call",
-                    "data": {
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "args": chunk.get("args", {}),
-                    },
-                })
-            elif chunk_type == "tool_result":
-                buffered_events.append({
-                    "event_type": "tool_result",
-                    "data": {
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "result": chunk.get("result"),
-                    },
-                })
-            elif chunk_type == "thinking":
-                content = chunk.get("content", "")
-                if content:
-                    thinking_parts.append(content)
-                buffered_events.append({
-                    "event_type": "thinking",
-                    "data": {"content": content},
-                })
-            elif chunk_type == "response":
-                content = chunk.get("content", "")
-                if content:
-                    response_parts.append(content)
-                    buffered_events.append({
-                        "event_type": "response",
-                        "data": {"content": content},
-                    })
-
-        # If no response chunks, promote thinking to response (same as ticker)
-        if not response_parts and thinking_parts:
-            response_parts = thinking_parts
-            for i, evt in enumerate(buffered_events):
-                if evt["event_type"] == "thinking":
-                    buffered_events[i] = {
-                        "event_type": "response",
-                        "data": {"content": evt["data"]["content"]},
-                    }
-
-        return response_parts, buffered_events
-
-    def _publish_trigger_events(
-        self,
-        agent: "NymeriaAgent",
-        trigger: TriggerDefinition,
-        thread_id: str,
-        user_id: str,
-        prompt: str,
-        response: str,
-        buffered_events: List[dict],
-        event_count: int = 1,
-    ) -> None:
-        """Publish buffered events to the event bus."""
-        from .activity_log import ActivityType, log_activity
-        from .event_bus import publish_autonomous_event
-
-        task_id = f"trigger-{trigger.id}"
-
-        # Flush task_started + buffered events to frontend
+        # Publish task_started immediately so frontend enters streaming mode
         publish_autonomous_event(
             event_type="task_started",
             thread_id=thread_id,
@@ -544,16 +456,114 @@ class TriggerManager:
                 "trigger_name": trigger.name,
             },
         )
-        for event in buffered_events:
-            publish_autonomous_event(
-                event_type=event["event_type"],
-                thread_id=thread_id,
-                user_id=user_id,
-                task_id=task_id,
-                data=event["data"],
-            )
 
-        # Publish task_completed
+        response_parts, _thinking_parts = self._stream_live(
+            agent, prompt, thread_id, user_id, task_id
+        )
+        response = "".join(response_parts)
+
+        self._publish_trigger_completion(
+            trigger=trigger,
+            thread_id=thread_id,
+            user_id=user_id,
+            response=response,
+            event_count=1,
+        )
+
+        logger.info(f"[TRIGGER] agent_prompt completed, response_len={len(response)}")
+
+    def _stream_live(
+        self,
+        agent: "NymeriaAgent",
+        prompt: str,
+        thread_id: str,
+        user_id: str,
+        task_id: str,
+    ) -> Tuple[List[str], List[str]]:
+        """Stream through the agent, publishing each event live.
+
+        Returns (response_parts, thinking_parts).
+        """
+        from .event_bus import publish_autonomous_event
+
+        response_parts: List[str] = []
+        thinking_parts: List[str] = []
+
+        for chunk in agent.stream(
+            message=prompt,
+            thread_id=thread_id,
+            user_id=user_id,
+            _is_self_invoke=True,
+        ):
+            chunk_type = chunk.get("type")
+
+            if chunk_type == "tool_call":
+                publish_autonomous_event(
+                    event_type="tool_call",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "args": chunk.get("args", {}),
+                    },
+                )
+            elif chunk_type == "tool_result":
+                publish_autonomous_event(
+                    event_type="tool_result",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "result": chunk.get("result"),
+                    },
+                )
+            elif chunk_type == "thinking":
+                content = chunk.get("content", "")
+                if content:
+                    thinking_parts.append(content)
+                publish_autonomous_event(
+                    event_type="thinking",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={"content": content},
+                )
+            elif chunk_type == "response":
+                content = chunk.get("content", "")
+                if content:
+                    response_parts.append(content)
+                    publish_autonomous_event(
+                        event_type="response",
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        task_id=task_id,
+                        data={"content": content},
+                    )
+
+        # If no response chunks, promote thinking to response
+        if not response_parts and thinking_parts:
+            response_parts = thinking_parts
+
+        return response_parts, thinking_parts
+
+    def _publish_trigger_completion(
+        self,
+        trigger: TriggerDefinition,
+        thread_id: str,
+        user_id: str,
+        response: str,
+        event_count: int = 1,
+    ) -> None:
+        """Publish task_completed and log to activity feed."""
+        from .activity_log import ActivityType, log_activity
+        from .event_bus import publish_autonomous_event
+
+        task_id = f"trigger-{trigger.id}"
+
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=thread_id,
@@ -566,7 +576,6 @@ class TriggerManager:
             },
         )
 
-        # Persist to activity log
         log_activity(
             ActivityType.TRIGGER_COMPLETED,
             f"{trigger.name}: processed {event_count} event(s)",

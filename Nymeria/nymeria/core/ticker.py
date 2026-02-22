@@ -372,13 +372,20 @@ class Ticker:
             prompt += f"\n\nNotes: {todo.notes}"
 
         try:
-            # Execute through agent, buffering events until streaming completes.
-            # After streaming, task_started + buffered events are flushed to the frontend.
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
             logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
+
+            # Publish task_started immediately so frontend enters streaming mode
+            publish_autonomous_event(
+                event_type="task_started",
+                thread_id=thread_id,
+                user_id=entry.user_id,
+                task_id=todo.id,
+                data={"prompt": prompt, "todo_id": todo.id},
+            )
+
             response_parts = []
             thinking_parts = []
-            buffered_events = []
             chunk_count = 0
             for chunk in self.agent.stream(
                 message=prompt,
@@ -392,78 +399,63 @@ class Ticker:
                 logger.info(f"[TICKER] Chunk #{chunk_count}: type={chunk_type}, content_preview={chunk_content_preview}")
                 chunk_type = chunk.get("type")
 
-                # Buffer streaming events (published after stream completes)
+                # Publish each event live as it arrives
                 if chunk_type == "tool_call":
-                    buffered_events.append({
-                        "event_type": "tool_call",
-                        "data": {
+                    publish_autonomous_event(
+                        event_type="tool_call",
+                        thread_id=thread_id,
+                        user_id=entry.user_id,
+                        task_id=todo.id,
+                        data={
                             "id": chunk.get("id"),
                             "name": chunk.get("name"),
                             "args": chunk.get("args", {}),
                         },
-                    })
+                    )
                 elif chunk_type == "tool_result":
-                    buffered_events.append({
-                        "event_type": "tool_result",
-                        "data": {
+                    publish_autonomous_event(
+                        event_type="tool_result",
+                        thread_id=thread_id,
+                        user_id=entry.user_id,
+                        task_id=todo.id,
+                        data={
                             "id": chunk.get("id"),
                             "name": chunk.get("name"),
                             "result": chunk.get("result"),
                         },
-                    })
+                    )
                 elif chunk_type == "thinking":
                     content = chunk.get("content", "")
                     if content:
                         thinking_parts.append(content)
-                    buffered_events.append({
-                        "event_type": "thinking",
-                        "data": {"content": content},
-                    })
+                    publish_autonomous_event(
+                        event_type="thinking",
+                        thread_id=thread_id,
+                        user_id=entry.user_id,
+                        task_id=todo.id,
+                        data={"content": content},
+                    )
                 elif chunk_type == "response":
                     content = chunk.get("content", "")
                     if content:
                         response_parts.append(content)
-                        buffered_events.append({
-                            "event_type": "response",
-                            "data": {"content": content},
-                        })
+                        publish_autonomous_event(
+                            event_type="response",
+                            thread_id=thread_id,
+                            user_id=entry.user_id,
+                            task_id=todo.id,
+                            data={"content": content},
+                        )
 
-            # Combine response parts
+            # Compute final response text
             if response_parts:
                 response_text = "".join(response_parts)
             elif thinking_parts:
                 response_text = "".join(thinking_parts)
                 logger.info(f"[TICKER] No response chunks, using thinking content as response ({len(thinking_parts)} parts)")
-                # Convert thinking events to response events in the buffer so the
-                # frontend places the text in `content` (below tool cards) instead
-                # of `intermediateContent` (above tool cards), preventing duplication
-                # with the same text sent in task_completed.
-                for i, evt in enumerate(buffered_events):
-                    if evt["event_type"] == "thinking":
-                        buffered_events[i] = {
-                            "event_type": "response",
-                            "data": {"content": evt["data"]["content"]},
-                        }
             else:
                 response_text = ""
             logger.info(f"[TICKER] === STREAM DONE === chunks={chunk_count}, response_parts={len(response_parts)}, thinking_parts={len(thinking_parts)}, response_len={len(response_text)}")
-
-            # Flush task_started + buffered events to frontend
-            publish_autonomous_event(
-                event_type="task_started",
-                thread_id=thread_id,
-                user_id=entry.user_id,
-                task_id=todo.id,
-                data={"prompt": prompt, "todo_id": todo.id},
-            )
-            for event in buffered_events:
-                publish_autonomous_event(
-                    event_type=event["event_type"],
-                    thread_id=thread_id,
-                    user_id=entry.user_id,
-                    task_id=todo.id,
-                    data=event["data"],
-                )
 
             # Create response object
             logger.info(f"Raw autonomous response (first 500 chars): {response_text[:500] if response_text else 'empty'}")

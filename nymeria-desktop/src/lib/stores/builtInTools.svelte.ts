@@ -38,11 +38,6 @@ const CATEGORY_INFO: Record<ToolCategory, { name: string; icon: string; descript
     icon: 'list',
     description: 'Task management and scheduling tools'
   },
-  subagent: {
-    name: 'Sub-Agents',
-    icon: 'users',
-    description: 'Tools for delegating tasks to specialized sub-agents'
-  },
   custom: {
     name: 'Custom',
     icon: 'puzzle',

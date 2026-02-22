@@ -147,12 +147,6 @@
           <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
         </svg>
       </span>
-    {:else if isCallable}
-      <span class="platform-icon agent" title="Callable Thread">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.07A7.001 7.001 0 0 1 7.07 19H6a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h-1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2zM9 15a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm6 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>
-        </svg>
-      </span>
     {:else}
       <Icon name="chat" size={16} />
     {/if}
@@ -184,6 +178,9 @@
 
   {#if !showActions && !isEditing}
     <div class="thread-badges">
+      {#if isCallable}
+        <span class="callable-indicator" title="Callable">&lt;</span>
+      {/if}
       {#if isPinned}
         <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
       {/if}
@@ -334,10 +331,6 @@
     color: var(--accent-primary);
   }
 
-  .platform-icon.agent {
-    color: var(--accent-primary);
-  }
-
   .thread-content {
     flex: 1;
     min-width: 0;
@@ -451,6 +444,15 @@
 
   @keyframes badgeSpin {
     to { transform: rotate(360deg); }
+  }
+
+  .callable-indicator {
+    display: inline-flex;
+    align-items: center;
+    font-size: 14.4px;
+    font-weight: 700;
+    color: var(--accent-primary);
+    line-height: 1;
   }
 
   .pin-indicator {

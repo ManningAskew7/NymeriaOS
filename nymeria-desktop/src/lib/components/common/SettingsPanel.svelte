@@ -7,7 +7,6 @@
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import { ToolManagementPanel } from '../tools';
-  import { AgentManagerPanel } from '../agents';
 
   // Connection settings
   let apiUrl = $state(configStore.apiUrl);
@@ -42,7 +41,7 @@
   const themeList = getThemeList();
 
   // UI state
-  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'agents'>('connection');
+  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools'>('connection');
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
   let loadingSettings = $state(false);
@@ -203,14 +202,6 @@
       disabled={!serverSettings}
     >
       Tools
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'agents'}
-      onclick={() => (activeTab = 'agents')}
-      disabled={!serverSettings}
-    >
-      Sub-Agents
     </button>
   </div>
 
@@ -593,13 +584,6 @@
   {#if activeTab === 'tools'}
     <div class="tab-content tab-content-full">
       <ToolManagementPanel />
-    </div>
-  {/if}
-
-  <!-- Sub-Agents Tab -->
-  {#if activeTab === 'agents'}
-    <div class="tab-content tab-content-full">
-      <AgentManagerPanel />
     </div>
   {/if}
 

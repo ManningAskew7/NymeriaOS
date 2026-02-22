@@ -16,7 +16,7 @@ class ToolCategory(str, Enum):
     MEMORY = "memory"       # memory_save, memory_forget, memory_list, personality_set, rag_search
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # todo, todo_delete, todo_list
-    SUBAGENT = "subagent"   # clear_agent_context, reload_all
+    SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
     TRIGGER = "trigger"     # trigger_create, trigger_list, trigger_update, trigger_delete
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
 
@@ -169,14 +169,7 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="List TODO items",
     ),
 
-    # Sub-agent tools - agent delegation
-    # sub_agent and list_agents removed - agents are now direct tools (e.g., BrowserAgent)
-    "clear_agent_context": ToolMetadata(
-        name="clear_agent_context",
-        category=ToolCategory.SUBAGENT,
-        security_level=SecurityLevel.SAFE,
-        description="Clear sub-agent conversation context",
-    ),
+    # Utility tools (optional — enabled per-thread)
     "reload_all": ToolMetadata(
         name="reload_all",
         category=ToolCategory.SUBAGENT,
