@@ -148,7 +148,6 @@ export interface AgentThreadCreateRequest {
   callable_name: string;
   callable_description?: string;
   system_prompt?: string;
-  from_template?: string;
   llm_provider?: string;
   llm_model?: string;
   llm_temperature?: number;
@@ -557,73 +556,10 @@ export interface CustomToolTestResponse {
   executionTimeMs: number;
 }
 
-// Sub-Agent Types
-
-export interface SubAgent {
-  name: string;
-  description: string;
-  systemPrompt: string;
-  tools: string[];
-  allowedTools: string[];
-  contextTurns: number;
-  requiredEnvVars: string[];
-  enabled: boolean;
-  // Optional per-agent LLM configuration
-  llmProvider?: LLMProvider | null;
-  llmModel?: string | null;
-  llmTemperature?: number | null;
-}
-
-export interface SubAgentCreateRequest {
-  name: string;
-  description: string;
-  systemPrompt: string;
-  allowedTools?: string[];
-  contextTurns?: number;
-  requiredEnvVars?: string[];
-  // Optional per-agent LLM configuration
-  llmProvider?: LLMProvider | null;
-  llmModel?: string | null;
-  llmTemperature?: number | null;
-}
-
-export interface SubAgentUpdateRequest {
-  description?: string;
-  systemPrompt?: string;
-  allowedTools?: string[];
-  contextTurns?: number;
-  requiredEnvVars?: string[];
-  enabled?: boolean;
-  // Optional per-agent LLM configuration
-  llmProvider?: LLMProvider | null;
-  llmModel?: string | null;
-  llmTemperature?: number | null;
-}
-
-export interface SubAgentListResponse {
-  agents: SubAgent[];
-  total: number;
-}
-
-export interface SubAgentTestRequest {
-  instruction: string;
-}
-
-export interface SubAgentTestResponse {
-  status: 'ok' | 'error';
-  agentName: string;
-  result?: string;
-  error?: string;
-  success: boolean;
-  executionTimeMs: number;
-  response?: string;
-  toolsUsed?: string[];
-}
-
 // Built-in Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'subagent' | 'custom';
+export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'custom';
 export type ToolType = 'builtin' | 'custom';
 
 export interface BuiltInTool {

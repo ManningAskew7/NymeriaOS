@@ -1,7 +1,9 @@
-"""Tools for CalendarAgent sub-agent.
+"""Google Calendar tools.
 
 Wraps the Google Calendar MCP server (https://github.com/nspady/google-calendar-mcp)
 using JSON-RPC over stdio communication.
+
+Optional tools — enable per-thread via thread config.
 """
 
 import json
@@ -440,7 +442,7 @@ def calendar_manage_accounts(action: str) -> str:
 
 
 # Export the tools list
-CALENDAR_AGENT_TOOLS = [
+CALENDAR_TOOLS = [
     calendar_list_calendars,
     calendar_list_events,
     calendar_get_event,

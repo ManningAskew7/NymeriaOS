@@ -1,18 +1,11 @@
 """Nymeria tools module.
 
 Consolidated tool set for maximum autonomy with minimal complexity.
-Sub-agents are exposed as directly callable tools (e.g., BrowserAgent).
-Use get_all_tools_with_agents() to get ALL_TOOLS combined with agent tools.
+Callable threads replace the old sub-agent system — any thread can become
+a callable tool with its own system prompt, LLM config, and tool set.
 
-Changes from original:
-- notify: Unified from telegram_notify, discord_notify, slack_notify
-- todo_complete: Removed, use todo(todo_id=..., status="done")
-- sub_agent, list_agents: Removed, agents are direct tools
-- self_modify: Removed, SelfModifyAgent is now a direct sub-agent tool
-- reload_all: Replaces reload_agents + auto-reload from self_modify
-- memory_clear_all: Removed, dangerous for cheap models
-- rag_settings: Removed, configure via UI
-- file_list: Removed, redundant with bash_execute
+Use get_all_tools_with_agents() for backward compatibility (returns ALL_TOOLS).
+Callable thread tools are added per-graph in _build_graph_with_prompt(), not globally.
 """
 
 from .bash import bash_execute
@@ -35,7 +28,6 @@ from .todo import (
     TODO_TOOLS,
 )
 from .subagent import (
-    clear_agent_context,
     reload_all,
     self_modify_rollback,
     SUBAGENT_TOOLS,
@@ -43,6 +35,7 @@ from .subagent import (
 from .outlook_auth import AUTH_TOOLS
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
+from .calendar import CALENDAR_TOOLS
 from .notify import notify, NOTIFY_TOOLS
 from .triggers import (
     trigger_create,
@@ -52,14 +45,25 @@ from .triggers import (
     TRIGGER_TOOLS,
 )
 
-# Combined Outlook tools list (used by OutlookAgent)
+# Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
+
+# Self-modify tools (from core/self_agent.py)
+from ..core.self_agent import SELF_AGENT_TOOLS
+
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
-# Includes: 13 Outlook email tools + 4 trigger tools.
-OPTIONAL_TOOLS = {t.name: t for t in OUTLOOK_TOOLS + TRIGGER_TOOLS}
+# Includes: 13 Outlook + 4 trigger + 9 browser + 12 calendar + 7 self-modify + 2 utility = 47 optional tools.
+OPTIONAL_TOOLS = {t.name: t for t in (
+    OUTLOOK_TOOLS
+    + TRIGGER_TOOLS
+    + BROWSER_TOOLS
+    + CALENDAR_TOOLS
+    + SELF_AGENT_TOOLS
+    + SUBAGENT_TOOLS
+)}
 
-# All available tools (18 core tools + sub-agents as direct tools)
+# All available tools (15 core tools)
 ALL_TOOLS = [
     # Core system tools
     bash_execute,
@@ -78,15 +82,8 @@ ALL_TOOLS = [
     todo,  # Create or update (use status="done" to complete)
     todo_delete,
     todo_list,
-    # Sub-agent management + self-modification utilities
-    clear_agent_context,
-    reload_all,
-    self_modify_rollback,
     # Unified notification tool
     notify,
-    # NOTE: Trigger tools are optional (enable per-thread) + available to SelfModifyAgent
-    # NOTE: Outlook tools handled by OutlookAgent sub-agent
-    # NOTE: Browser tools handled by BrowserAgent sub-agent
 ]
 
 __all__ = [
@@ -110,28 +107,31 @@ __all__ = [
     "todo_delete",
     "todo_list",
     "TODO_TOOLS",
-    # Sub-agent tools + self-modification utilities
-    "clear_agent_context",
+    # Utility tools (optional — enabled per-thread)
     "reload_all",
     "self_modify_rollback",
     "SUBAGENT_TOOLS",
     # Notification
     "notify",
     "NOTIFY_TOOLS",
-    # Trigger tools (optional — enabled per-thread or via SelfModifyAgent)
+    # Trigger tools (optional — enabled per-thread)
     "trigger_create",
     "trigger_list",
     "trigger_update",
     "trigger_delete",
     "TRIGGER_TOOLS",
-    # Outlook tools (handled by OutlookAgent, exported for reference)
+    # Outlook tools (optional — enabled per-thread)
     "AUTH_TOOLS",
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
-    # Optional tools (per-thread enabling)
-    "OPTIONAL_TOOLS",
-    # Browser tools (handled by BrowserAgent, exported for reference)
+    # Browser tools (optional — enabled per-thread)
     "BROWSER_TOOLS",
+    # Calendar tools (optional — enabled per-thread)
+    "CALENDAR_TOOLS",
+    # Self-modify tools (optional — enabled per-thread)
+    "SELF_AGENT_TOOLS",
+    # Optional tools dict (per-thread enabling)
+    "OPTIONAL_TOOLS",
     # Main exports
     "ALL_TOOLS",
     "get_all_tools_with_agents",
@@ -140,23 +140,12 @@ __all__ = [
 
 def get_all_tools_with_agents() -> list:
     """
-    Get ALL_TOOLS combined with dynamically generated agent tools.
+    Get ALL_TOOLS list.
 
-    This function returns the complete list of tools including:
-    - Static tools defined in ALL_TOOLS (18 core tools)
-    - Dynamically generated tools for each registered sub-agent
-      (BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent)
+    Kept for backward compatibility. Callable thread tools are now added
+    per-graph in _build_graph_with_prompt(), not globally.
 
     Returns:
-        List of all tools including agent tools
+        List of core tools
     """
-    from ..agents import get_agent_tools
-
-    # Start with static tools
-    all_tools = list(ALL_TOOLS)
-
-    # Add agent tools
-    agent_tools = get_agent_tools()
-    all_tools.extend(agent_tools)
-
-    return all_tools
+    return list(ALL_TOOLS)

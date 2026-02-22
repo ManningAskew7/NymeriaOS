@@ -35,6 +35,7 @@ function createChatStore() {
   let contextStats = $state<ContextStats | null>(null);
   let activeModel = $state<string | null>(null);
   let isQueued = $state(false);
+  let _instantScroll = $state(false);
 
   // Throttle state for streaming buffers
   let _responseBuffer = '';
@@ -72,6 +73,9 @@ function createChatStore() {
     },
     get isQueued() {
       return isQueued;
+    },
+    get instantScroll() {
+      return _instantScroll;
     },
 
     addUserMessage(content: string, attachments?: FileAttachment[]): string {
@@ -156,6 +160,19 @@ function createChatStore() {
             status: lastMessage.status === 'error' ? 'error' : 'complete',
             intermediateContent: lastMessage.intermediateContent || undefined
           }
+        ];
+      }
+    },
+
+    /** Re-mark the last assistant message as streaming (used by thread switch recovery). */
+    setLastMessageStreaming() {
+      if (messages.length === 0) return;
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+      if (lastMessage.role === 'assistant' && lastMessage.status !== 'streaming') {
+        messages = [
+          ...messages.slice(0, lastIndex),
+          { ...lastMessage, status: 'streaming' as const }
         ];
       }
     },
@@ -673,7 +690,12 @@ function createChatStore() {
     },
 
     setMessages(newMessages: Message[]) {
+      _instantScroll = true;
       messages = newMessages;
+    },
+
+    setInstantScroll(v: boolean) {
+      _instantScroll = v;
     },
 
     clearMessages() {
@@ -684,6 +706,23 @@ function createChatStore() {
       contextStats = null;
       activeModel = null;
       isQueued = false;
+    },
+
+    /**
+     * Lightweight reset for thread switches. Clears streaming state but keeps
+     * current messages visible until setMessages() overwrites them, avoiding
+     * the empty-state flash that clearMessages() would cause.
+     */
+    prepareForThreadSwitch() {
+      this._forceFlush();
+      activeToolCalls = new Map();
+      isStreaming = false;
+      isQueued = false;
+      isCompacting = false;
+      compactingMessage = '';
+      lastCompactResult = null;
+      contextAttachedMessage = null;
+      _lastFlushTime = 0;
     },
 
     removeMessage(messageId: string) {

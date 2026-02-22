@@ -50,6 +50,7 @@ def _get_agent():
         from nymeria import NymeriaAgent
         from nymeria.tools import get_all_tools_with_agents
         _agent = NymeriaAgent(tools=get_all_tools_with_agents())
+        _agent.sync_agent_tools()
         logger.info("Nymeria agent initialized successfully")
     return _agent
 

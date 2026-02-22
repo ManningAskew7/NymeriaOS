@@ -2,7 +2,8 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { autonomousStore } from '$lib/stores/autonomous.svelte';
+  import { api, hasActiveStreamForThread } from '$lib/services/api.svelte';
   import ThreadItem from './ThreadItem.svelte';
   import FolderItem from './FolderItem.svelte';
   import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
@@ -124,7 +125,7 @@
 
     loadError = null;
     threadsStore.selectThread(threadId);
-    chatStore.clearMessages();
+    chatStore.prepareForThreadSwitch();
 
     try {
       const [history, stats] = await Promise.all([
@@ -134,8 +135,27 @@
       chatStore.setMessages(history.messages);
       chatStore.setContextStats(stats);
       chatStore.setActiveModel(stats?.model ?? null);
+
+      // Resume streaming if this thread has an active autonomous task OR an
+      // active interactive chat stream (POST /chat still running).
+      const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);
+      const hasInteractiveStream = hasActiveStreamForThread(threadId);
+
+      if (hasAutonomousTask || hasInteractiveStream) {
+        const lastMsg = chatStore.messages[chatStore.messages.length - 1];
+        if (lastMsg?.role !== 'assistant') {
+          chatStore.addAssistantMessage();
+        } else {
+          chatStore.setLastMessageStreaming();
+        }
+        chatStore.setStreaming(true);
+        if (hasAutonomousTask) {
+          autonomousStore.resumeStreamingForThread(threadId);
+        }
+      }
     } catch (error) {
       console.error('Failed to load thread history:', error);
+      chatStore.clearMessages();
       loadError = 'Could not load chat history. The thread may have been created before syncing was fixed.';
     }
   }
@@ -152,6 +172,8 @@
         next.delete(threadId);
         selectedIds = next;
       }
+      // Delete backend thread config (also removes callable thread tools via sync_agent_tools)
+      api.deleteThreadConfig(threadId).catch(() => {});
     }
   }
 
@@ -182,6 +204,8 @@
       const needsClear = threadsStore.currentThreadId !== null && selectedIds.has(threadsStore.currentThreadId);
       for (const id of selectedIds) {
         threadsStore.deleteThread(id);
+        // Delete backend thread config (also removes callable thread tools via sync_agent_tools)
+        api.deleteThreadConfig(id).catch(() => {});
       }
       if (needsClear) {
         chatStore.clearMessages();

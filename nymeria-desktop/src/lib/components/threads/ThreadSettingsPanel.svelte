@@ -1,9 +1,8 @@
 <script lang="ts">
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, SubAgent, OptionalTool } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, OptionalTool } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
-  import { agentsStore } from '$lib/stores/agents.svelte';
   import { api } from '$lib/services/api.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -20,7 +19,7 @@
   let { thread, threadConfig, onClose, onSaved }: Props = $props();
 
   // Active tab
-  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'agents' | 'triggers'>('instructions');
+  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'triggers'>('instructions');
 
   // Form state — initialized from threadConfig
   let instructions = $state(threadConfig?.instructions ?? '');
@@ -59,17 +58,13 @@
 
   // Search
   let toolSearch = $state('');
-  let agentSearch = $state('');
   let saving = $state(false);
   let error = $state('');
 
-  // Ensure tools, agents, and triggers are loaded
+  // Ensure tools and triggers are loaded
   $effect(() => {
     if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
       unifiedToolsStore.loadTools();
-    }
-    if (!agentsStore.loaded && !agentsStore.loading) {
-      agentsStore.loadAgents();
     }
     if (!triggersStore.loaded && !triggersStore.loading) {
       triggersStore.loadTriggers();
@@ -84,9 +79,6 @@
     }
   });
 
-  // All agent names (from agents store) for filtering
-  const agentNames = $derived(new Set(agentsStore.agents.map((a: SubAgent) => a.name)));
-
   const filteredTools = $derived(() => {
     const allTools = unifiedToolsStore.tools;
     if (!toolSearch.trim()) return allTools;
@@ -99,24 +91,7 @@
     );
   });
 
-  const filteredAgents = $derived(() => {
-    const agents = agentsStore.agents;
-    if (!agentSearch.trim()) return agents;
-    const q = agentSearch.toLowerCase();
-    return agents.filter(
-      (a: SubAgent) =>
-        a.name.toLowerCase().includes(q) ||
-        a.description.toLowerCase().includes(q)
-    );
-  });
-
-  const disabledToolCount = $derived(
-    Array.from(disabledTools).filter((name) => !agentNames.has(name)).length
-  );
-
-  const disabledAgentCount = $derived(
-    Array.from(disabledTools).filter((name) => agentNames.has(name)).length
-  );
+  const disabledToolCount = $derived(disabledTools.size);
 
   const enabledToolCount = $derived(enabledTools.size);
 
@@ -244,11 +219,6 @@
       }
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
-
-      // Auto-folder callable threads
-      if (result.callable) {
-        threadsStore.addToAgentsFolder(thread.id);
-      }
 
       onSaved(result);
 
@@ -381,17 +351,6 @@
         Tools
         {#if disabledToolCount > 0}
           <span class="tab-badge">{disabledToolCount}</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'agents'}
-        onclick={() => (activeTab = 'agents')}
-        type="button"
-      >
-        Agents
-        {#if disabledAgentCount > 0}
-          <span class="tab-badge">{disabledAgentCount}</span>
         {/if}
       </button>
       <button
@@ -634,52 +593,6 @@
                   </div>
                 {/each}
               </div>
-            </div>
-          {/if}
-        </div>
-
-      {:else if activeTab === 'agents'}
-        <div class="tab-panel tools-panel">
-          <p class="field-hint" style="margin-top: 0;">
-            Disable sub-agents to prevent this thread from delegating tasks to them.
-          </p>
-          <div class="tools-search">
-            <input
-              type="text"
-              class="field-input"
-              bind:value={agentSearch}
-              placeholder="Search agents..."
-            />
-          </div>
-
-          {#if agentsStore.loading}
-            <div class="tools-loading">Loading agents...</div>
-          {:else if filteredAgents().length === 0}
-            <div class="tools-loading">No sub-agents available</div>
-          {:else}
-            <div class="tools-list">
-              {#each filteredAgents() as agent (agent.name)}
-                <div
-                  class="tool-row"
-                  class:disabled={disabledTools.has(agent.name)}
-                >
-                  <div class="tool-info">
-                    <span class="tool-name">{agent.name}</span>
-                    <span class="tool-desc">{agent.description}</span>
-                  </div>
-                  <button
-                    class="tool-toggle"
-                    class:off={disabledTools.has(agent.name)}
-                    onclick={() => toggleTool(agent.name)}
-                    type="button"
-                    title={disabledTools.has(agent.name) ? 'Enable agent' : 'Disable agent'}
-                  >
-                    <span class="toggle-track">
-                      <span class="toggle-thumb"></span>
-                    </span>
-                  </button>
-                </div>
-              {/each}
             </div>
           {/if}
         </div>
@@ -946,7 +859,7 @@
     margin-top: 4px;
   }
 
-  /* Tools / Agents tab */
+  /* Tools tab */
   .tools-panel {
     padding-bottom: var(--spacing-md);
   }

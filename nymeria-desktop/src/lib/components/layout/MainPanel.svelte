@@ -94,9 +94,14 @@
         error instanceof Error ? error.message : 'Unknown error occurred'
       );
     } finally {
-      chatStore.setStreaming(false);
-      chatStore.setLastMessageComplete();
-      chatStore.clearActiveToolCalls();
+      // Only touch chat store if we're still on the stream's original thread —
+      // a thread switch during streaming replaces messages, so touching them here
+      // would corrupt the new thread's state.
+      if (threadsStore.currentThreadId === threadId) {
+        chatStore.setStreaming(false);
+        chatStore.setLastMessageComplete();
+        chatStore.clearActiveToolCalls();
+      }
     }
   }
 
@@ -144,14 +149,16 @@
 
   /**
    * Returns true if the thread ID belongs to a non-desktop platform
-   * (trigger, discord, telegram, slack).
+   * or a callable agent thread — these must never be replaced by
+   * syncThreadIdFromEvent.
    */
   function isNonDesktopThread(id: string): boolean {
     return (
       id.startsWith('trigger-') ||
       id.startsWith('discord_') ||
       id.startsWith('telegram_') ||
-      id.startsWith('slack_')
+      id.startsWith('slack_') ||
+      id.startsWith('agent-')
     );
   }
 
@@ -192,7 +199,14 @@
   }
 
   function handleSSEEvent(event: SSEEvent) {
-    // Sync thread ID early from any event (not just 'done')
+    // Guard: skip events from a different thread (cross-thread SSE pollution).
+    // Must run BEFORE syncThreadIdFromEvent to prevent destructive thread replacement.
+    // When currentThreadId is null (initial sync case), allow through.
+    if (event.threadId && threadsStore.currentThreadId && event.threadId !== threadsStore.currentThreadId) {
+      return;
+    }
+
+    // Sync thread ID from any event (not just 'done')
     // This ensures context is preserved even if user stops generation
     syncThreadIdFromEvent(event);
 

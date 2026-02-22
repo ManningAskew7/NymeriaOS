@@ -1,56 +1,21 @@
-"""Sub-agent management tools.
-
-Sub-agents are invoked directly as tools (e.g., BrowserAgent(task="Go to google.com")).
-This module provides utilities for managing agent context, reloading definitions,
-and rolling back self-modifications.
-"""
+"""Utility tools for reloading and rolling back self-modifications."""
 
 import logging
-from typing import Annotated
+from pathlib import Path
 
-from langchain_core.tools import tool, InjectedToolArg
-from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
 
 @tool
-def clear_agent_context(agent_name: str) -> str:
-    """
-    Clear the conversation context for a sub-agent.
-
-    Use this if you want the sub-agent to start fresh without remembering
-    previous conversations.
-
-    Args:
-        agent_name: Name of the sub-agent (e.g., "BrowserAgent", "OutlookAgent", "CalendarAgent", "SelfModifyAgent")
-
-    Returns:
-        Success or error message
-    """
-    logger.info(f"clear_agent_context called: agent_name={agent_name}")
-
-    from ..core.subagent_executor import SubAgentExecutor
-
-    try:
-        executor = SubAgentExecutor()
-        if executor.clear_context(agent_name):
-            return f"[Success]: Cleared context for {agent_name}"
-        else:
-            return f"[Info]: No saved context found for {agent_name}"
-    except Exception as e:
-        logger.error(f"clear_agent_context failed: {e}", exc_info=True)
-        return f"[Error]: Failed to clear context: {str(e)}"
-
-
-@tool
 def reload_all() -> str:
     """
-    Reload all tools, agents, and trigger sources.
+    Reload all tools and trigger sources.
 
-    Use this after making manual changes to tool or agent files, or after
-    SelfModifyAgent has created/modified code. This reloads all Python modules,
-    refreshes agent registrations, and rebuilds graphs.
+    Use this after making manual changes to tool files or after
+    self-modify tools have created/modified code. This reloads all Python modules
+    and rebuilds graphs.
 
     NOTE: Due to how LangGraph works, newly created tools are NOT available
     in the same conversation turn. They will work on the next user message.
@@ -92,7 +57,7 @@ def self_modify_rollback(file_path: str) -> str:
     """
     Rollback a file to its previous version if a self-modification broke something.
 
-    Every file written by SelfModifyAgent is automatically backed up. This tool
+    Every file written by self-modify tools is automatically backed up. This tool
     restores the most recent backup for the given file.
 
     Args:
@@ -100,11 +65,22 @@ def self_modify_rollback(file_path: str) -> str:
     """
     logger.info(f"self_modify_rollback called: file_path={file_path}")
 
-    from ..core.self_agent import SelfModifyAgent
+    from ..core.backup import BackupManager
+    from ..config import get_settings
 
     try:
-        agent = SelfModifyAgent()
-        return agent.rollback_last(file_path)
+        settings = get_settings()
+        backup_manager = BackupManager(settings.backups_dir, settings.project_root)
+
+        path = Path(file_path)
+        if not path.is_absolute():
+            path = settings.project_root / file_path
+
+        success = backup_manager.restore_backup(path)
+        if success:
+            return f"[Success]: Rolled back {file_path} to previous version"
+        else:
+            return f"[Error]: No backup found for {file_path}"
     except Exception as e:
         logger.error(f"self_modify_rollback failed: {e}", exc_info=True)
         return f"[Error]: Rollback failed: {str(e)}"
@@ -112,7 +88,6 @@ def self_modify_rollback(file_path: str) -> str:
 
 # Export tools
 SUBAGENT_TOOLS = [
-    clear_agent_context,
     reload_all,
     self_modify_rollback,
 ]

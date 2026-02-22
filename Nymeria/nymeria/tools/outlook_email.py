@@ -243,7 +243,7 @@ def graph_request(
             error_msg = error_data.get("error", {}).get("message", response.text)
             return False, f"API Error ({response.status_code}): {error_msg}"
 
-        if response.status_code == 204:  # No content
+        if response.status_code in (202, 204) or not response.text:
             return True, {}
 
         return True, response.json()

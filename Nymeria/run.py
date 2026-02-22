@@ -145,8 +145,9 @@ def run_cli(args: argparse.Namespace) -> None:
     from nymeria.tools import get_all_tools_with_agents
     from nymeria.triggers.cli import run_cli as start_cli
 
-    # Create agent with all tools (core + sub-agent tools)
+    # Create agent with all tools
     agent = NymeriaAgent(tools=get_all_tools_with_agents())
+    agent.sync_agent_tools()
 
     # Start CLI
     start_cli(agent=agent, thread_id=args.thread)
@@ -282,10 +283,7 @@ def run_worker(args: argparse.Namespace) -> None:
     # Create agent with all tools (this starts the ticker)
     agent = NymeriaAgent(tools=get_all_tools_with_agents())
 
-    # Ensure agent threads exist for all registered templates
-    # Always sync so thread-agent tools take priority over legacy ones
-    from nymeria.agents import ensure_callable_threads
-    ensure_callable_threads(agent.thread_config_manager)
+    # Sync callable thread tools into the registry
     agent.sync_agent_tools()
 
     # Handle shutdown signals
@@ -355,6 +353,7 @@ def run_discord_bot(args: argparse.Namespace) -> None:
 
     # Create agent without ticker (ticker runs in worker/api, not bot)
     agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=False)
+    agent.sync_agent_tools()
 
     # Create and run bot
     bot = NymeriaDiscordBot(

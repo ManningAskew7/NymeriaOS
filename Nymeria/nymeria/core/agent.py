@@ -258,12 +258,6 @@ class NymeriaAgent:
         if tools:
             self.tool_registry.register_all(tools)
 
-        # Ensure agent wrapper tools (BrowserAgent, OutlookAgent, etc.) are always
-        # present, even if the caller passed only ALL_TOOLS without agent tools.
-        # This is defensive — run.py should pass get_all_tools_with_agents(), but
-        # NymeriaAgent must work correctly regardless.
-        self._ensure_agent_tools()
-
         # Load custom tools
         self._custom_tool_loader = None
         self._load_custom_tools()
@@ -1541,41 +1535,20 @@ class NymeriaAgent:
         )
 
     def _get_callable_thread_tools(self, tc) -> List[BaseTool]:
-        """Get tools for a callable thread from its AVAILABLE_AGENTS template.
+        """Get tools for a callable thread.
 
-        If the callable_name matches a registered agent template, loads the template's
-        native tool list (e.g., BROWSER_TOOLS for BrowserAgent) and any allowed global
-        tools. Otherwise, gives the standard tool set.
+        Gives the standard tool set but excludes all callable thread tools
+        to prevent self-invocation loops.
         """
-        from ..agents import AVAILABLE_AGENTS
-        from ..tools import ALL_TOOLS
-
-        tools = []
-        template = AVAILABLE_AGENTS.get(tc.callable_name) if tc.callable_name else None
-
-        if template:
-            # Add the template's native tools (e.g., browser_navigate, browser_click)
-            tools.extend(template.get("tools", []))
-            # Add any allowed global tools
-            allowed = template.get("allowed_tools", [])
-            if allowed:
-                for t in ALL_TOOLS:
-                    if t.name in allowed:
-                        tools.append(t)
-        else:
-            # Custom callable thread without a template — give it the standard tool set
-            # but exclude all callable thread tools to prevent self-invocation loops
-            callable_names = {
-                t2.callable_name
-                for t2 in self.thread_config_manager.list_callable_threads()
-                if t2.callable_name
-            }
-            tools = [
-                t for t in self.tool_registry.get_tools_for_user("default", self.profile_manager)
-                if t.name not in callable_names
-            ]
-
-        return tools
+        callable_names = {
+            t2.callable_name
+            for t2 in self.thread_config_manager.list_callable_threads()
+            if t2.callable_name
+        }
+        return [
+            t for t in self.tool_registry.get_tools_for_user("default", self.profile_manager)
+            if t.name not in callable_names
+        ]
 
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a LangGraph execution graph with a specific system prompt.
@@ -1809,19 +1782,14 @@ class NymeriaAgent:
 
     def sync_agent_tools(self) -> List[str]:
         """
-        Sync agent tools into the tool registry after agent CRUD operations.
+        Sync callable thread tools into the tool registry.
 
-        This is a lighter-weight alternative to reload_tools() that only refreshes
-        the agent tool wrappers (BrowserAgent, OutlookAgent, etc.) without reloading
-        all tool modules. Call this after reload_agents().
-
-        Thread-agent tools take priority: if an agent thread exists for a given
-        agent_name, its thread-based tool replaces the legacy SubAgentExecutor tool.
+        Rebuilds the registry with ALL_TOOLS + callable thread tools + custom tools.
+        Call this after creating/deleting callable threads.
 
         Returns:
-            List of agent tool names now in the registry
+            List of callable thread tool names now in the registry
         """
-        from ..agents import get_agent_tools, refresh_agent_tools
         from ..agents.tool_factory import get_callable_thread_tools
         from ..tools import ALL_TOOLS
 
@@ -1829,14 +1797,8 @@ class NymeriaAgent:
         thread_tools = get_callable_thread_tools(self.thread_config_manager)
         thread_tool_names = {t.name for t in thread_tools}
 
-        # Refresh the legacy tool_factory cache
-        agent_names = refresh_agent_tools()
-        legacy_tools = get_agent_tools()
-        # Filter out legacy tools that have thread-agent replacements
-        legacy_tools = [t for t in legacy_tools if t.name not in thread_tool_names]
-
-        # Rebuild the tool registry: core + thread-agent + remaining legacy
-        combined = list(ALL_TOOLS) + thread_tools + legacy_tools
+        # Rebuild the tool registry: core + callable thread tools
+        combined = list(ALL_TOOLS) + thread_tools
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_all(combined)
 
@@ -1849,8 +1811,8 @@ class NymeriaAgent:
         self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
         self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
 
-        all_names = list(thread_tool_names) + [t.name for t in legacy_tools]
-        logger.info(f"Synced agent tools: {all_names} (thread: {len(thread_tools)}, legacy: {len(legacy_tools)}, total: {len(combined)} tools)")
+        all_names = list(thread_tool_names)
+        logger.info(f"Synced agent tools: {all_names} ({len(thread_tools)} callable threads, {len(combined)} total tools)")
         return all_names
 
     def invalidate_thread_config_cache(self, thread_id: str) -> None:
@@ -1863,37 +1825,6 @@ class NymeriaAgent:
             for k in keys_to_remove:
                 del self._async_user_graphs[k]
         logger.debug(f"Invalidated graph cache for thread {thread_id}")
-
-    def _ensure_agent_tools(self) -> None:
-        """Ensure agent wrapper tools are registered.
-
-        Sub-agents (BrowserAgent, OutlookAgent, etc.) are exposed as direct
-        tools via tool_factory.py.  If the caller constructed NymeriaAgent
-        with only ALL_TOOLS (the static 25-tool list), the agent wrappers
-        are missing.  This method adds them so sub-agents are always callable.
-        """
-        try:
-            from ..agents import get_agent_tools, AVAILABLE_AGENTS
-
-            if not AVAILABLE_AGENTS:
-                return
-
-            # Check if agent tools are already in the registry
-            registered = set(self.tool_registry._tools.keys())
-            missing = [name for name in AVAILABLE_AGENTS if name not in registered]
-
-            if not missing:
-                return  # All agent tools already present
-
-            agent_tools = get_agent_tools()
-            if agent_tools:
-                self.tool_registry.register_all(agent_tools)
-                logger.info(
-                    f"Auto-loaded {len(agent_tools)} agent tool(s): "
-                    f"{[t.name for t in agent_tools]}"
-                )
-        except Exception as e:
-            logger.warning(f"Failed to auto-load agent tools: {e}", exc_info=True)
 
     def _load_custom_tools(self) -> int:
         """Load custom tools from the custom_tools directory.
@@ -2000,22 +1931,12 @@ class NymeriaAgent:
         ALL_TOOLS = getattr(tools_module, 'ALL_TOOLS', [])
         logger.info(f"ALL_TOOLS after reload: {[t.name for t in ALL_TOOLS]}")
 
-        # Reload agent modules (picks up new agent files like outlook_agent.py)
-        # Then refresh agent tools cache (regenerates tools for all registered agents)
-        from ..agents import reload_agents, refresh_agent_tools
-        registered_count = reload_agents()
-        logger.info(f"Reloaded agents: {registered_count} registered")
-        agent_names = refresh_agent_tools()
-        logger.info(f"Refreshed agent tools: {agent_names}")
+        # Get callable thread tools
+        from ..agents.tool_factory import get_callable_thread_tools
+        thread_tools = get_callable_thread_tools(self.thread_config_manager)
 
-        # Get combined tools (static + agent tools)
-        get_all_tools_with_agents = getattr(tools_module, 'get_all_tools_with_agents', None)
-        if get_all_tools_with_agents:
-            combined_tools = get_all_tools_with_agents()
-        else:
-            combined_tools = ALL_TOOLS
-
-        # Clear and re-register all tools
+        # Clear and re-register all tools (core + callable thread tools)
+        combined_tools = list(ALL_TOOLS) + thread_tools
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_all(combined_tools)
 

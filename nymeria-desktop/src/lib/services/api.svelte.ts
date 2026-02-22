@@ -28,12 +28,6 @@ import type {
   CustomToolUpdateRequest,
   CustomToolTestRequest,
   CustomToolTestResponse,
-  SubAgent,
-  SubAgentListResponse,
-  SubAgentCreateRequest,
-  SubAgentUpdateRequest,
-  SubAgentTestRequest,
-  SubAgentTestResponse,
   BuiltInTool,
   BuiltInToolsResponse,
   ToolPreferences,
@@ -49,6 +43,8 @@ import type {
 
 // Module-level abort controller for current stream
 let currentAbortController: AbortController | null = null;
+// Track which thread the active interactive stream belongs to
+let currentStreamThreadId: string | null = null;
 
 /**
  * Abort the current streaming request.
@@ -59,6 +55,12 @@ export function abortCurrentStream(): void {
     currentAbortController.abort();
     currentAbortController = null;
   }
+  currentStreamThreadId = null;
+}
+
+/** Check if there's an active interactive chat stream for the given thread. */
+export function hasActiveStreamForThread(threadId: string): boolean {
+  return currentAbortController !== null && currentStreamThreadId === threadId;
 }
 
 export class NymeriaAPI {
@@ -107,6 +109,7 @@ export class NymeriaAPI {
 
     // Create abort controller for this stream
     currentAbortController = new AbortController();
+    currentStreamThreadId = threadId || null;
 
     // Build request body with optional attachments
     const requestBody: Record<string, unknown> = {
@@ -213,6 +216,7 @@ export class NymeriaAPI {
     } finally {
       reader.releaseLock();
       currentAbortController = null;
+      currentStreamThreadId = null;
     }
   }
 
@@ -1092,198 +1096,6 @@ export class NymeriaAPI {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ tools })
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  // =========================================================================
-  // Sub-Agents API
-  // =========================================================================
-
-  private subAgentFromResponse(item: Record<string, unknown>): SubAgent {
-    return {
-      name: item.name as string,
-      description: item.description as string,
-      systemPrompt: item.system_prompt as string,
-      tools: (item.tools || []) as string[],
-      allowedTools: (item.allowed_tools || []) as string[],
-      contextTurns: (item.context_turns || 5) as number,
-      requiredEnvVars: (item.required_env_vars || []) as string[],
-      enabled: (item.enabled ?? true) as boolean,
-      llmProvider: (item.llm_provider as SubAgent['llmProvider']) || null,
-      llmModel: (item.llm_model as string) || null,
-      llmTemperature: (item.llm_temperature as number) ?? null
-    };
-  }
-
-  async getSubAgents(): Promise<SubAgentListResponse> {
-    const response = await fetch(`${this.getBaseUrl()}/agents`, {
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return {
-      agents: (data.agents || []).map((item: Record<string, unknown>) =>
-        this.subAgentFromResponse(item)
-      ),
-      total: data.total
-    };
-  }
-
-  async createSubAgent(request: SubAgentCreateRequest): Promise<SubAgent> {
-    const body: Record<string, unknown> = {
-      name: request.name,
-      description: request.description,
-      system_prompt: request.systemPrompt,
-      allowed_tools: request.allowedTools || [],
-      context_turns: request.contextTurns || 5,
-      required_env_vars: request.requiredEnvVars || []
-    };
-
-    // Add LLM config if provided
-    if (request.llmProvider !== undefined) body.llm_provider = request.llmProvider;
-    if (request.llmModel !== undefined) body.llm_model = request.llmModel;
-    if (request.llmTemperature !== undefined) body.llm_temperature = request.llmTemperature;
-
-    const response = await fetch(`${this.getBaseUrl()}/agents`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    return this.subAgentFromResponse(data);
-  }
-
-  async getSubAgent(agentName: string): Promise<SubAgent> {
-    const response = await fetch(`${this.getBaseUrl()}/agents/${agentName}`, {
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return this.subAgentFromResponse(data);
-  }
-
-  async updateSubAgent(agentName: string, request: SubAgentUpdateRequest): Promise<SubAgent> {
-    const body: Record<string, unknown> = {};
-
-    if (request.description !== undefined) body.description = request.description;
-    if (request.systemPrompt !== undefined) body.system_prompt = request.systemPrompt;
-    if (request.allowedTools !== undefined) body.allowed_tools = request.allowedTools;
-    if (request.contextTurns !== undefined) body.context_turns = request.contextTurns;
-    if (request.requiredEnvVars !== undefined) body.required_env_vars = request.requiredEnvVars;
-    if (request.enabled !== undefined) body.enabled = request.enabled;
-    if (request.llmProvider !== undefined) body.llm_provider = request.llmProvider;
-    if (request.llmModel !== undefined) body.llm_model = request.llmModel;
-    if (request.llmTemperature !== undefined) body.llm_temperature = request.llmTemperature;
-
-    const response = await fetch(`${this.getBaseUrl()}/agents/${agentName}`, {
-      method: 'PUT',
-      headers: this.getHeaders(),
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    return this.subAgentFromResponse(data);
-  }
-
-  async deleteSubAgent(agentName: string): Promise<void> {
-    const response = await fetch(`${this.getBaseUrl()}/agents/${agentName}`, {
-      method: 'DELETE',
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-  }
-
-  async testSubAgent(agentName: string, instruction: string): Promise<SubAgentTestResponse> {
-    const startTime = performance.now();
-    const response = await fetch(`${this.getBaseUrl()}/agents/${agentName}/test`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ instruction })
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const executionTimeMs = Math.round(performance.now() - startTime);
-    return {
-      status: data.status,
-      agentName: data.agent_name,
-      result: data.result,
-      error: data.error,
-      success: data.status === 'ok',
-      executionTimeMs,
-      response: data.result,
-      toolsUsed: data.tools_used
-    };
-  }
-
-  async exportSubAgents(): Promise<{ agents: SubAgent[]; total: number; exportedAt: string }> {
-    const response = await fetch(`${this.getBaseUrl()}/agents/export`, {
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return {
-      agents: (data.agents || []).map((item: Record<string, unknown>) =>
-        this.subAgentFromResponse(item)
-      ),
-      total: data.total,
-      exportedAt: data.exported_at
-    };
-  }
-
-  async importSubAgents(
-    agents: SubAgentCreateRequest[]
-  ): Promise<{ imported: number; errors: string[] }> {
-    const body = {
-      agents: agents.map((a) => ({
-        name: a.name,
-        description: a.description,
-        system_prompt: a.systemPrompt,
-        allowed_tools: a.allowedTools || [],
-        context_turns: a.contextTurns || 5,
-        required_env_vars: a.requiredEnvVars || []
-      }))
-    };
-
-    const response = await fetch(`${this.getBaseUrl()}/agents/import`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(body)
     });
 
     if (!response.ok) {

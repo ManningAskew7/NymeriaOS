@@ -474,64 +474,6 @@ class UnifiedToolConfigRequest(BaseModel):
 # Sub-Agent Models
 
 
-class SubAgentResponse(BaseModel):
-    """Response model for a sub-agent."""
-
-    name: str
-    description: str
-    system_prompt: str
-    tools: List[str] = []
-    allowed_tools: List[str] = []
-    context_turns: int = 5
-    required_env_vars: List[str] = []
-    enabled: bool = True
-    # Optional per-agent LLM configuration
-    llm_provider: Optional[Literal["anthropic", "openai", "openrouter"]] = None
-    llm_model: Optional[str] = None
-    llm_temperature: Optional[float] = None
-
-
-class SubAgentCreateRequest(BaseModel):
-    """Request model for creating a sub-agent."""
-
-    name: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_]*$")
-    description: str = Field(..., min_length=1, max_length=500)
-    system_prompt: str = Field(..., min_length=1, max_length=10000)
-    allowed_tools: List[str] = []
-    context_turns: int = Field(default=5, ge=1, le=20)
-    required_env_vars: List[str] = []
-    # Optional per-agent LLM configuration (falls back to global settings if not specified)
-    llm_provider: Optional[Literal["anthropic", "openai", "openrouter"]] = None
-    llm_model: Optional[str] = None
-    llm_temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-
-
-class SubAgentUpdateRequest(BaseModel):
-    """Request model for updating a sub-agent."""
-
-    description: Optional[str] = Field(default=None, max_length=500)
-    system_prompt: Optional[str] = Field(default=None, max_length=10000)
-    allowed_tools: Optional[List[str]] = None
-    context_turns: Optional[int] = Field(default=None, ge=1, le=20)
-    required_env_vars: Optional[List[str]] = None
-    enabled: Optional[bool] = None
-    # Optional per-agent LLM configuration
-    llm_provider: Optional[Literal["anthropic", "openai", "openrouter"]] = None
-    llm_model: Optional[str] = None
-    llm_temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-
-
-class SubAgentTestRequest(BaseModel):
-    """Request model for testing a sub-agent."""
-
-    instruction: str = Field(..., min_length=1, max_length=2000)
-
-
-class SubAgentListResponse(BaseModel):
-    """Response model for sub-agents list."""
-
-    agents: List[SubAgentResponse]
-    total: int
 
 
 # ============================================================================
@@ -629,10 +571,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     trigger_router = create_trigger_router(get_agent, verify_api_key)
     app.include_router(trigger_router)
 
-    # Ensure agent threads exist for all registered agent templates
-    # Always sync tools so thread-agent tools take priority over legacy ones
-    from ..agents import ensure_callable_threads
-    ensure_callable_threads(_agent.thread_config_manager)
+    # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
 
     # ========================================================================
@@ -2400,24 +2339,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/agents/templates", tags=["Agent Threads"])
     async def list_agent_templates(_: bool = Depends(verify_api_key)):
-        """List built-in agent templates with their default configs."""
-        from ..agents import AVAILABLE_AGENTS
-
-        templates = []
-        for name, config in AVAILABLE_AGENTS.items():
-            templates.append({
-                "name": name,
-                "description": config.get("description", ""),
-                "system_prompt": config.get("system_prompt", ""),
-                "tools": [t.name if hasattr(t, "name") else str(t) for t in config.get("tools", [])],
-                "allowed_tools": config.get("allowed_tools", []),
-                "required_env_vars": config.get("required_env_vars", []),
-                "llm_provider": config.get("llm_provider"),
-                "llm_model": config.get("llm_model"),
-                "llm_temperature": config.get("llm_temperature"),
-                "llm_max_tokens": config.get("llm_max_tokens"),
-            })
-        return {"templates": templates, "total": len(templates)}
+        """List agent templates (legacy — returns empty list)."""
+        return {"templates": [], "total": 0}
 
     @app.get("/agents/threads", tags=["Agent Threads"])
     async def list_agent_threads(_: bool = Depends(verify_api_key)):
@@ -2436,7 +2359,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable_name: str = Field(..., min_length=1, max_length=64)
         callable_description: str = Field(default="", max_length=500)
         system_prompt: str = Field(default="", max_length=50000)
-        from_template: Optional[str] = Field(default=None, description="Name of a built-in template to copy from")
         llm_provider: Optional[str] = None
         llm_model: Optional[str] = None
         llm_temperature: Optional[float] = None
@@ -2447,10 +2369,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         request: AgentThreadCreateRequest,
         _: bool = Depends(verify_api_key),
     ):
-        """Create a new callable thread (from template or custom)."""
+        """Create a new callable thread."""
         import uuid
         from ..core.thread_config import ThreadConfig, ThreadLLMConfig
-        from ..agents import AVAILABLE_AGENTS
 
         agent = get_agent()
 
@@ -2471,37 +2392,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 detail=f"Callable thread for '{request.callable_name}' already exists: {existing.thread_id}",
             )
 
-        # If from_template, copy defaults from the template
-        system_prompt = request.system_prompt
-        description = request.callable_description
-        llm_provider = request.llm_provider
-        llm_model = request.llm_model
-        llm_temperature = request.llm_temperature
-        llm_max_tokens = request.llm_max_tokens
-
-        if request.from_template and request.from_template in AVAILABLE_AGENTS:
-            template = AVAILABLE_AGENTS[request.from_template]
-            if not system_prompt:
-                system_prompt = template.get("system_prompt", "")
-            if not description:
-                description = template.get("description", "")
-            if llm_provider is None:
-                llm_provider = template.get("llm_provider")
-            if llm_model is None:
-                llm_model = template.get("llm_model")
-            if llm_temperature is None:
-                llm_temperature = template.get("llm_temperature")
-            if llm_max_tokens is None:
-                llm_max_tokens = template.get("llm_max_tokens")
-
         # Build LLM config
         llm_config = None
-        if llm_provider or llm_model or llm_temperature is not None or llm_max_tokens is not None:
+        if request.llm_provider or request.llm_model or request.llm_temperature is not None or request.llm_max_tokens is not None:
             llm_config = ThreadLLMConfig(
-                provider=llm_provider,
-                model=llm_model,
-                temperature=llm_temperature,
-                max_tokens=llm_max_tokens,
+                provider=request.llm_provider,
+                model=request.llm_model,
+                temperature=request.llm_temperature,
+                max_tokens=request.llm_max_tokens,
             )
 
         # Generate thread ID
@@ -2510,433 +2408,22 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         tc = ThreadConfig(
             thread_id=thread_id,
-            system_prompt=system_prompt,
+            system_prompt=request.system_prompt,
             callable=True,
             callable_name=request.callable_name,
-            callable_description=description or f"Invoke the {request.callable_name} sub-agent",
+            callable_description=request.callable_description or f"Invoke the {request.callable_name} callable thread",
             llm_config=llm_config,
         )
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to create agent thread")
 
-        # Rebuild agent tools to include the new thread-agent
+        # Rebuild agent tools to include the new callable thread
         agent.sync_agent_tools()
 
         result = tc.model_dump(mode="json")
         result["has_customizations"] = tc.has_customizations()
         return result
-
-    # ========================================================================
-    # Sub-Agent Endpoints
-    # ========================================================================
-
-    def _agent_config_to_response(name: str, config: dict) -> SubAgentResponse:
-        """Convert an agent config dict to API response format."""
-        return SubAgentResponse(
-            name=name,
-            description=config.get("description", ""),
-            system_prompt=config.get("system_prompt", ""),
-            tools=[t.name if hasattr(t, "name") else str(t) for t in config.get("tools", [])],
-            allowed_tools=config.get("allowed_tools", []),
-            context_turns=config.get("context_turns", 5),
-            required_env_vars=config.get("required_env_vars", []),
-            enabled=config.get("enabled", True),
-            llm_provider=config.get("llm_provider"),
-            llm_model=config.get("llm_model"),
-            llm_temperature=config.get("llm_temperature"),
-        )
-
-    @app.get("/agents", response_model=SubAgentListResponse, tags=["Sub-Agents"])
-    async def list_sub_agents(
-        _: bool = Depends(verify_api_key),
-    ):
-        """List all sub-agents."""
-        from ..agents import AVAILABLE_AGENTS
-
-        agents = [
-            _agent_config_to_response(name, config)
-            for name, config in AVAILABLE_AGENTS.items()
-        ]
-
-        return SubAgentListResponse(agents=agents, total=len(agents))
-
-    @app.post("/agents", response_model=SubAgentResponse, tags=["Sub-Agents"])
-    async def create_sub_agent(
-        request: SubAgentCreateRequest,
-        _: bool = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """Create a new sub-agent."""
-        from ..agents import AVAILABLE_AGENTS, reload_agents
-
-        # Check if agent already exists
-        if request.name in AVAILABLE_AGENTS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Agent '{request.name}' already exists",
-            )
-
-        # Create the agent module file
-        agents_dir = settings.project_root / "nymeria" / "agents"
-        agent_file = agents_dir / f"{request.name.lower()}.py"
-
-        # Build allowed tools list
-        allowed_tools_str = ", ".join(f'"{t}"' for t in request.allowed_tools)
-
-        # Build required env vars list
-        env_vars_str = ", ".join(f'"{v}"' for v in request.required_env_vars)
-
-        # Build optional LLM config fields
-        llm_config_lines = []
-        if request.llm_provider:
-            llm_config_lines.append(f'        "llm_provider": "{request.llm_provider}",')
-        if request.llm_model:
-            llm_config_lines.append(f'        "llm_model": "{request.llm_model}",')
-        if request.llm_temperature is not None:
-            llm_config_lines.append(f'        "llm_temperature": {request.llm_temperature},')
-        llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
-
-        # Generate the agent module code
-        agent_code = f'''"""Sub-agent: {request.name}
-
-{request.description}
-
-Auto-generated via API.
-"""
-
-from . import register_agent
-
-register_agent(
-    "{request.name}",
-    {{
-        "name": "{request.name}",
-        "description": """{request.description}""",
-        "system_prompt": """{request.system_prompt}""",
-        "tools": [],
-        "allowed_tools": [{allowed_tools_str}],
-        "context_turns": {request.context_turns},
-        "required_env_vars": [{env_vars_str}],{llm_config_str}
-    }},
-)
-'''
-
-        # Write the file
-        agent_file.write_text(agent_code, encoding="utf-8")
-
-        # Reload agents and sync tool registry so LLM can call the new agent
-        reload_agents()
-        get_agent().sync_agent_tools()
-
-        # Return the created agent
-        config = AVAILABLE_AGENTS.get(request.name)
-        if not config:
-            raise HTTPException(
-                status_code=500,
-                detail="Agent created but failed to load",
-            )
-
-        return _agent_config_to_response(request.name, config)
-
-    @app.get("/agents/{agent_name}", response_model=SubAgentResponse, tags=["Sub-Agents"])
-    async def get_sub_agent(
-        agent_name: str,
-        _: bool = Depends(verify_api_key),
-    ):
-        """Get a sub-agent by name."""
-        from ..agents import AVAILABLE_AGENTS
-
-        config = AVAILABLE_AGENTS.get(agent_name)
-        if not config:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Agent '{agent_name}' not found",
-            )
-
-        return _agent_config_to_response(agent_name, config)
-
-    @app.put("/agents/{agent_name}", response_model=SubAgentResponse, tags=["Sub-Agents"])
-    async def update_sub_agent(
-        agent_name: str,
-        request: SubAgentUpdateRequest,
-        _: bool = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """Update an existing sub-agent."""
-        from ..agents import AVAILABLE_AGENTS, reload_agents
-
-        if agent_name not in AVAILABLE_AGENTS:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Agent '{agent_name}' not found",
-            )
-
-        # Get current config
-        current = AVAILABLE_AGENTS[agent_name]
-
-        # Update fields
-        description = request.description if request.description is not None else current.get("description", "")
-        system_prompt = request.system_prompt if request.system_prompt is not None else current.get("system_prompt", "")
-        allowed_tools = request.allowed_tools if request.allowed_tools is not None else current.get("allowed_tools", [])
-        context_turns = request.context_turns if request.context_turns is not None else current.get("context_turns", 5)
-        env_vars = request.required_env_vars if request.required_env_vars is not None else current.get("required_env_vars", [])
-
-        # Handle LLM config - use request value if provided, otherwise keep current
-        llm_provider = request.llm_provider if request.llm_provider is not None else current.get("llm_provider")
-        llm_model = request.llm_model if request.llm_model is not None else current.get("llm_model")
-        llm_temperature = request.llm_temperature if request.llm_temperature is not None else current.get("llm_temperature")
-
-        # Check if this is a built-in agent (has a hand-written file with real tool imports)
-        # vs an API-created agent (auto-generated file with "tools": [])
-        agents_dir = settings.project_root / "nymeria" / "agents"
-        # API-created files use agent_name.lower() (e.g., "outlookagent.py")
-        api_file = agents_dir / f"{agent_name.lower()}.py"
-        is_api_created = api_file.exists() and "Auto-generated via API" in api_file.read_text(encoding="utf-8")
-
-        if is_api_created:
-            # API-created agent: rewrite the file
-            allowed_tools_str = ", ".join(f'"{t}"' for t in allowed_tools)
-            env_vars_str = ", ".join(f'"{v}"' for v in env_vars)
-
-            llm_config_lines = []
-            if llm_provider:
-                llm_config_lines.append(f'        "llm_provider": "{llm_provider}",')
-            if llm_model:
-                llm_config_lines.append(f'        "llm_model": "{llm_model}",')
-            if llm_temperature is not None:
-                llm_config_lines.append(f'        "llm_temperature": {llm_temperature},')
-            llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
-
-            agent_code = f'''"""Sub-agent: {agent_name}
-
-{description}
-
-Auto-generated via API.
-"""
-
-from . import register_agent
-
-register_agent(
-    "{agent_name}",
-    {{
-        "name": "{agent_name}",
-        "description": """{description}""",
-        "system_prompt": """{system_prompt}""",
-        "tools": [],
-        "allowed_tools": [{allowed_tools_str}],
-        "context_turns": {context_turns},
-        "required_env_vars": [{env_vars_str}],{llm_config_str}
-    }},
-)
-'''
-            api_file.write_text(agent_code, encoding="utf-8")
-        else:
-            # Built-in agent: update in-memory config only (preserves real tool imports)
-            # Changes to description/system_prompt/LLM config apply until restart
-            current["description"] = description
-            current["system_prompt"] = system_prompt
-            current["context_turns"] = context_turns
-            current["required_env_vars"] = env_vars
-            if llm_provider is not None:
-                current["llm_provider"] = llm_provider
-            if llm_model is not None:
-                current["llm_model"] = llm_model
-            if llm_temperature is not None:
-                current["llm_temperature"] = llm_temperature
-
-        # Reload agents (re-imports all agent modules from disk)
-        reload_agents()
-        # Sync tool registry so the LLM sees updated agent tools
-        get_agent().sync_agent_tools()
-
-        config = AVAILABLE_AGENTS.get(agent_name)
-        if not config:
-            raise HTTPException(
-                status_code=500,
-                detail="Agent updated but failed to reload",
-            )
-
-        return _agent_config_to_response(agent_name, config)
-
-    @app.delete("/agents/{agent_name}", tags=["Sub-Agents"])
-    async def delete_sub_agent(
-        agent_name: str,
-        _: bool = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """Delete a sub-agent."""
-        from ..agents import AVAILABLE_AGENTS, unregister_agent, reload_agents
-
-        if agent_name not in AVAILABLE_AGENTS:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Agent '{agent_name}' not found",
-            )
-
-        # Delete the agent file (only API-created files)
-        agents_dir = settings.project_root / "nymeria" / "agents"
-        agent_file = agents_dir / f"{agent_name.lower()}.py"
-
-        if agent_file.exists():
-            # Only delete API-created files, not built-in agent modules
-            content = agent_file.read_text(encoding="utf-8")
-            if "Auto-generated via API" in content:
-                agent_file.unlink()
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot delete built-in agent '{agent_name}'. Disable it in settings instead.",
-                )
-
-        # Unregister and reload
-        unregister_agent(agent_name)
-        reload_agents()
-        # Sync tool registry so the LLM no longer sees the deleted agent
-        get_agent().sync_agent_tools()
-
-        return {"status": "ok", "deleted_name": agent_name}
-
-    @app.post("/agents/{agent_name}/test", tags=["Sub-Agents"])
-    async def test_sub_agent(
-        agent_name: str,
-        request: SubAgentTestRequest,
-        _: bool = Depends(verify_api_key),
-    ):
-        """Test a sub-agent with an instruction."""
-        from ..core.subagent_executor import SubAgentExecutor
-
-        executor = SubAgentExecutor()
-
-        try:
-            result = executor.invoke(agent_name, request.instruction, user_id="test")
-            return {
-                "status": "ok",
-                "agent_name": agent_name,
-                "result": result,
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "agent_name": agent_name,
-                "error": str(e),
-            }
-
-    @app.get("/agents/export", tags=["Sub-Agents"])
-    async def export_sub_agents(
-        _: bool = Depends(verify_api_key),
-    ):
-        """Export all sub-agents as JSON."""
-        from ..agents import AVAILABLE_AGENTS
-
-        agents = []
-        for name, config in AVAILABLE_AGENTS.items():
-            agent_data = {
-                "name": name,
-                "description": config.get("description", ""),
-                "system_prompt": config.get("system_prompt", ""),
-                "allowed_tools": config.get("allowed_tools", []),
-                "context_turns": config.get("context_turns", 5),
-                "required_env_vars": config.get("required_env_vars", []),
-            }
-            # Include LLM config if set
-            if config.get("llm_provider"):
-                agent_data["llm_provider"] = config["llm_provider"]
-            if config.get("llm_model"):
-                agent_data["llm_model"] = config["llm_model"]
-            if config.get("llm_temperature") is not None:
-                agent_data["llm_temperature"] = config["llm_temperature"]
-            agents.append(agent_data)
-
-        return {
-            "agents": agents,
-            "total": len(agents),
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    @app.post("/agents/import", tags=["Sub-Agents"])
-    async def import_sub_agents(
-        request: Request,
-        _: bool = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """Import sub-agents from JSON."""
-        from ..agents import reload_agents
-
-        body = await request.json()
-        agents_data = body.get("agents", [])
-        imported = 0
-        errors = []
-
-        agents_dir = settings.project_root / "nymeria" / "agents"
-
-        for agent_data in agents_data:
-            try:
-                name = agent_data.get("name")
-                if not name:
-                    errors.append("Missing agent name")
-                    continue
-
-                description = agent_data.get("description", "")
-                system_prompt = agent_data.get("system_prompt", "")
-                allowed_tools = agent_data.get("allowed_tools", [])
-                context_turns = agent_data.get("context_turns", 5)
-                env_vars = agent_data.get("required_env_vars", [])
-                llm_provider = agent_data.get("llm_provider")
-                llm_model = agent_data.get("llm_model")
-                llm_temperature = agent_data.get("llm_temperature")
-
-                agent_file = agents_dir / f"{name.lower()}.py"
-                allowed_tools_str = ", ".join(f'"{t}"' for t in allowed_tools)
-                env_vars_str = ", ".join(f'"{v}"' for v in env_vars)
-
-                # Build optional LLM config fields
-                llm_config_lines = []
-                if llm_provider:
-                    llm_config_lines.append(f'        "llm_provider": "{llm_provider}",')
-                if llm_model:
-                    llm_config_lines.append(f'        "llm_model": "{llm_model}",')
-                if llm_temperature is not None:
-                    llm_config_lines.append(f'        "llm_temperature": {llm_temperature},')
-                llm_config_str = "\n" + "\n".join(llm_config_lines) if llm_config_lines else ""
-
-                agent_code = f'''"""Sub-agent: {name}
-
-{description}
-
-Imported via API.
-"""
-
-from . import register_agent
-
-register_agent(
-    "{name}",
-    {{
-        "name": "{name}",
-        "description": """{description}""",
-        "system_prompt": """{system_prompt}""",
-        "tools": [],
-        "allowed_tools": [{allowed_tools_str}],
-        "context_turns": {context_turns},
-        "required_env_vars": [{env_vars_str}],{llm_config_str}
-    }},
-)
-'''
-                agent_file.write_text(agent_code, encoding="utf-8")
-                imported += 1
-
-            except Exception as e:
-                errors.append(f"{agent_data.get('name', 'unknown')}: {str(e)}")
-
-        # Reload all agents and sync tool registry
-        if imported > 0:
-            reload_agents()
-            get_agent().sync_agent_tools()
-
-        return {
-            "status": "ok",
-            "imported": imported,
-            "errors": errors,
-        }
 
     # ==========================================================================
     # RAG (Retrieval Augmented Generation) Endpoints

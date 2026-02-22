@@ -4,7 +4,7 @@ from .agent import NymeriaAgent, get_current_agent, set_current_agent
 from .user_profile import Memory, OptInSettings, UserProfile, UserProfileManager
 from .backup import BackupManager
 from .validator import CodeValidator
-from .self_agent import SelfModifyAgent
+from .self_agent import SELF_AGENT_TOOLS
 from .ticker import Ticker, get_ticker, set_ticker
 from .scheduler import DurableScheduler, ExecutionResult
 from .rate_limiter import RateLimiter
@@ -31,7 +31,7 @@ __all__ = [
     # Utilities
     "BackupManager",
     "CodeValidator",
-    "SelfModifyAgent",
+    "SELF_AGENT_TOOLS",
     # Rate Limiter
     "RateLimiter",
     # Task Database (DEPRECATED - use TodoScheduleDB, will be removed)
