@@ -5,11 +5,13 @@
   interface Props {
     title: string;
     defaultOpen?: boolean;
+    chevronIcon?: string;
+    chevronSize?: number;
     header?: Snippet;
     children: Snippet;
   }
 
-  let { title, defaultOpen = false, header, children }: Props = $props();
+  let { title, defaultOpen = false, chevronIcon = 'chevronRight', chevronSize = 16, header, children }: Props = $props();
 
   let isOpen = $state(defaultOpen);
 
@@ -21,7 +23,7 @@
 <div class="collapsible" class:open={isOpen}>
   <button class="header" onclick={toggle} type="button">
     <span class="chevron">
-      <Icon name="chevronRight" size={16} />
+      <Icon name={chevronIcon} size={chevronSize} />
     </span>
     {#if header}
       {@render header()}
