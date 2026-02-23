@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ToolCall } from '$lib/types';
-  import { Collapsible, Icon, Spinner } from '$lib/components/common';
+  import { Collapsible } from '$lib/components/common';
 
   interface Props {
     toolCall: ToolCall;
@@ -8,30 +8,12 @@
 
   let { toolCall }: Props = $props();
 
-  let statusIcon = $derived.by(() => {
-    switch (toolCall.status) {
-      case 'running':
-        return null; // Will show spinner
-      case 'success':
-        return 'success';
-      case 'error':
-        return 'error';
-      default:
-        return 'clock';
-    }
-  });
-
-  let statusColor = $derived.by(() => {
-    switch (toolCall.status) {
-      case 'running':
-        return 'var(--accent-primary)';
-      case 'success':
-        return 'var(--success)';
-      case 'error':
-        return 'var(--error)';
-      default:
-        return 'var(--text-muted)';
-    }
+  let duration = $derived.by(() => {
+    if (!toolCall.startTime || !toolCall.endTime) return null;
+    const ms = toolCall.endTime.getTime() - toolCall.startTime.getTime();
+    if (ms < 1000) return `${ms}ms`;
+    const s = ms / 1000;
+    return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
   });
 
   function formatArgs(args: Record<string, unknown>): string {
@@ -45,7 +27,6 @@
   function formatResult(result: string | undefined): string {
     if (!result) return '';
     try {
-      // Try to parse and pretty-print JSON
       const parsed = JSON.parse(result);
       return JSON.stringify(parsed, null, 2);
     } catch {
@@ -55,20 +36,12 @@
 </script>
 
 <div class="tool-call-card" class:running={toolCall.status === 'running'}>
-  <Collapsible title={toolCall.name}>
+  <Collapsible title={toolCall.name} chevronIcon="terminal" chevronSize={20}>
     {#snippet header()}
       <div class="tool-header">
-        <div class="status-indicator" style="color: {statusColor}">
-          {#if toolCall.status === 'running'}
-            <Spinner size="sm" />
-          {:else if statusIcon}
-            <Icon name={statusIcon} size={16} />
-          {/if}
-        </div>
-        <Icon name="tool" size={16} class="tool-icon" />
         <span class="tool-name">{toolCall.name}</span>
-        {#if toolCall.status === 'running'}
-          <span class="status-text">Running...</span>
+        {#if duration}
+          <span class="duration-badge">{duration}</span>
         {/if}
       </div>
     {/snippet}
@@ -104,18 +77,42 @@
 
 <style>
   .tool-call-card {
+    position: relative;
     background: var(--glass-bg);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     border-radius: var(--radius-md);
     border: 1px solid var(--glass-border);
     overflow: hidden;
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    transition: border-color var(--transition-fast);
   }
 
   .tool-call-card.running {
-    border-color: var(--accent-primary);
-    animation: glowPulse 2s ease-in-out infinite;
+    border-color: color-mix(in srgb, var(--accent-primary) 30%, var(--glass-border));
+  }
+
+  /* Gradient wave animation — accent-colored band sweeps left to right */
+  .tool-call-card.running::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent 30%,
+      var(--accent-primary) 50%,
+      transparent 70%,
+      transparent 100%
+    );
+    opacity: 0.1;
+    transform: translateX(-100%);
+    animation: toolWave 2s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  @keyframes toolWave {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
   }
 
   .tool-header {
@@ -125,12 +122,13 @@
     flex: 1;
   }
 
-  .status-indicator {
-    display: flex;
-    align-items: center;
+  /* Reduce header height ~15% by tightening vertical padding */
+  .tool-call-card :global(.header) {
+    padding-top: 6px;
+    padding-bottom: 6px;
   }
 
-  :global(.tool-icon) {
+  .tool-call-card :global(.chevron) {
     color: var(--accent-primary);
   }
 
@@ -141,11 +139,11 @@
     font-size: var(--font-size-sm);
   }
 
-  .status-text {
+  .duration-badge {
     margin-left: auto;
     font-size: var(--font-size-xs);
-    color: var(--accent-primary);
-    font-style: italic;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
   }
 
   .tool-details {
