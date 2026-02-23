@@ -421,7 +421,7 @@ export interface ServerSettings {
   log_level: LogLevel;
   watchdog_enabled: boolean;
   watchdog_interval_minutes: number;
-  todo_staleness_hours: number;
+  todo_staleness_minutes: number;
   activity_retention_hours: number;
 }
 
@@ -445,7 +445,7 @@ export interface ServerSettingsUpdate {
   log_level?: LogLevel;
   watchdog_enabled?: boolean;
   watchdog_interval_minutes?: number;
-  todo_staleness_hours?: number;
+  todo_staleness_minutes?: number;
   activity_retention_hours?: number;
 }
 

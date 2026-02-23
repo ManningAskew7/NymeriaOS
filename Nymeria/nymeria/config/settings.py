@@ -224,16 +224,16 @@ class Settings(BaseSettings):
         description="Enable watchdog to monitor TODO staleness"
     )
     watchdog_interval_minutes: int = Field(
-        default=30,
-        ge=5,
-        le=120,
+        default=5,
+        ge=1,
+        le=60,
         description="Minutes between watchdog checks for stale TODOs"
     )
-    todo_staleness_hours: int = Field(
-        default=4,
-        ge=1,
-        le=24,
-        description="Hours without update before a TODO is considered stale"
+    todo_staleness_minutes: int = Field(
+        default=20,
+        ge=5,
+        le=1440,
+        description="Minutes without update before a TODO is considered stale"
     )
     todo_auto_archive_days: int = Field(
         default=7,

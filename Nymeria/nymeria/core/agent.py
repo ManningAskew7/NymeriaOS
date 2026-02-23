@@ -319,7 +319,7 @@ class NymeriaAgent:
                 self,
                 self.todo_manager,
                 interval_minutes=self.settings.watchdog_interval_minutes,
-                staleness_hours=self.settings.todo_staleness_hours,
+                staleness_minutes=self.settings.todo_staleness_minutes,
             )
             self._watchdog.start()
             set_watchdog(self._watchdog)

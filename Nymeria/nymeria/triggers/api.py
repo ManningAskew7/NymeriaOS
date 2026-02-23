@@ -162,7 +162,7 @@ class ServerSettingsResponse(BaseModel):
     log_level: str
     watchdog_enabled: bool
     watchdog_interval_minutes: int
-    todo_staleness_hours: int
+    todo_staleness_minutes: int
     activity_retention_hours: int
 
 
@@ -189,7 +189,7 @@ class ServerSettingsUpdate(BaseModel):
     log_level: Optional[str] = None
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None
-    todo_staleness_hours: Optional[int] = None
+    todo_staleness_minutes: Optional[int] = None
     activity_retention_hours: Optional[int] = None
 
 
@@ -1178,7 +1178,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             log_level=settings.log_level,
             watchdog_enabled=settings.watchdog_enabled,
             watchdog_interval_minutes=settings.watchdog_interval_minutes,
-            todo_staleness_hours=settings.todo_staleness_hours,
+            todo_staleness_minutes=settings.todo_staleness_minutes,
             activity_retention_hours=settings.activity_retention_hours,
         )
 
@@ -1306,7 +1306,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "log_level": "LOG_LEVEL",
             "watchdog_enabled": "WATCHDOG_ENABLED",
             "watchdog_interval_minutes": "WATCHDOG_INTERVAL_MINUTES",
-            "todo_staleness_hours": "TODO_STALENESS_HOURS",
+            "todo_staleness_minutes": "TODO_STALENESS_MINUTES",
             "activity_retention_hours": "ACTIVITY_RETENTION_HOURS",
         }
 
