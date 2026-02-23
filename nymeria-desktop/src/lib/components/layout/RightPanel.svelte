@@ -4,8 +4,7 @@
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import { chatStore } from '$lib/stores/chat.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { switchToThread } from '$lib/stores/navigation.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
 
   let isCollapsed = $derived(uiStore.rightPanelCollapsed);
@@ -26,19 +25,10 @@
   );
 
   // Navigate to a thread (for clicking activity/todo items in global view)
-  function navigateToThread(threadId: string) {
-    if (threadId === threadsStore.currentThreadId) return;
-    threadsStore.selectThread(threadId);
-    chatStore.clearMessages();
-    Promise.all([
-      api.getThreadHistory(threadId),
-      api.getThreadContextStats(threadId),
-    ]).then(([history, stats]) => {
-      chatStore.setMessages(history.messages);
-      chatStore.setContextStats(stats);
-      chatStore.setActiveModel(stats?.model ?? null);
-    });
+  async function navigateToThread(threadId: string) {
     activeTab = 'thread';
+    const title = threadTitleMap[threadId] || threadId;
+    await switchToThread(threadId, { ensureTitle: title });
   }
 </script>
 
