@@ -382,8 +382,8 @@ Authorization: Bearer <token>
   "max_self_invokes_per_hour": 50,
   "log_level": "INFO",
   "watchdog_enabled": true,
-  "watchdog_interval_minutes": 30,
-  "todo_staleness_hours": 4,
+  "watchdog_interval_minutes": 5,
+  "todo_staleness_minutes": 20,
   "activity_retention_hours": 12
 }
 ```

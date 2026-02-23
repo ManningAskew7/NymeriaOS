@@ -33,8 +33,8 @@
   let maxSelfInvokesPerHour = $state(50);
   let logLevel = $state<LogLevel>('INFO');
   let watchdogEnabled = $state(true);
-  let watchdogIntervalMinutes = $state(30);
-  let todoStalenessHours = $state(4);
+  let watchdogIntervalMinutes = $state(5);
+  let todoStalenessMinutes = $state(20);
 
   // Theme settings
   let selectedTheme = $state<ThemeName>(configStore.theme);
@@ -70,7 +70,7 @@
       logLevel = serverSettings.log_level;
       watchdogEnabled = serverSettings.watchdog_enabled;
       watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
-      todoStalenessHours = serverSettings.todo_staleness_hours;
+      todoStalenessMinutes = serverSettings.todo_staleness_minutes;
     } catch (e) {
       console.error('Failed to load server settings:', e);
     } finally {
@@ -141,7 +141,7 @@
         log_level: logLevel,
         watchdog_enabled: watchdogEnabled,
         watchdog_interval_minutes: watchdogIntervalMinutes,
-        todo_staleness_hours: todoStalenessHours
+        todo_staleness_minutes: todoStalenessMinutes
       });
 
       testStatus = 'success';
@@ -552,21 +552,21 @@
               id="watchdog-interval"
               type="range"
               min="5"
-              max="120"
+              max="60"
               step="5"
               bind:value={watchdogIntervalMinutes}
             />
           </div>
 
           <div class="field">
-            <label for="staleness-hours">Staleness Threshold: {todoStalenessHours} hours</label>
+            <label for="staleness-minutes">Staleness Threshold: {todoStalenessMinutes} minutes</label>
             <input
-              id="staleness-hours"
+              id="staleness-minutes"
               type="range"
-              min="1"
-              max="24"
-              step="1"
-              bind:value={todoStalenessHours}
+              min="5"
+              max="240"
+              step="5"
+              bind:value={todoStalenessMinutes}
             />
           </div>
         {/if}

@@ -127,8 +127,8 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WATCHDOG_ENABLED` | `true` | Enable watchdog to monitor TODO staleness |
-| `WATCHDOG_INTERVAL_MINUTES` | `30` | Minutes between watchdog checks (5-120) |
-| `TODO_STALENESS_HOURS` | `4` | Hours without update before TODO is stale (1-24) |
+| `WATCHDOG_INTERVAL_MINUTES` | `5` | Minutes between watchdog checks (1-60) |
+| `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before auto-archive (1-30) |
 | `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
 
