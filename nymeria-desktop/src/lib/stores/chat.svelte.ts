@@ -471,7 +471,8 @@ function createChatStore() {
           id,
           name,
           arguments: args,
-          status: 'running'
+          status: 'running',
+          startTime: new Date()
         };
         const updatedSteps = [...(lastMessage.steps || []), newStep];
 
@@ -512,7 +513,7 @@ function createChatStore() {
         if (msg.role === 'assistant' && msg.steps) {
           const updatedSteps = msg.steps.map((step) => {
             if (step.type === 'tool_call' && step.id === id) {
-              return { ...step, result, status };
+              return { ...step, result, status, endTime: new Date() };
             }
             return step;
           });
@@ -685,7 +686,9 @@ function createChatStore() {
           name: s.name || '',
           arguments: s.arguments || {},
           result: s.result,
-          status: s.status || 'pending'
+          status: s.status || 'pending',
+          startTime: s.startTime,
+          endTime: s.endTime
         }));
     },
 

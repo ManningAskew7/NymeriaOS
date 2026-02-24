@@ -31,6 +31,8 @@ export interface MessageStep {
   arguments?: Record<string, unknown>;
   result?: string;
   status?: ToolCallStatus;
+  startTime?: Date;
+  endTime?: Date;
 }
 
 export interface Message {

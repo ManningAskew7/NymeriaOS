@@ -239,7 +239,9 @@
                 name: step.name || '',
                 arguments: step.arguments || {},
                 result: step.result,
-                status: step.status || 'pending'
+                status: step.status || 'pending',
+                startTime: step.startTime,
+                endTime: step.endTime
               }} />
             </div>
           {:else if step.type === 'response' && step.content}
