@@ -44,7 +44,7 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 |------|-----|---------------|----------------|
 | `BrowserAgent` | `google/gemini-3-flash-preview` (OpenRouter) | 10 | 9 browser tools |
 | `OutlookAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 8 | 13 Outlook tools |
-| `CalendarAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 8 | 12 calendar tools |
+| `CalendarAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 8 | 14 calendar tools |
 | `SelfModifyAgent` | `anthropic/claude-opus-4.5` (OpenRouter) | 5 | 7 self-modify tools |
 
 ---
@@ -583,7 +583,7 @@ Google Calendar management — list, create, update, delete events and manage Go
 | Temperature | 0.3 |
 | Context turns | 8 |
 | Required env | `OPENROUTER_API_KEY`, `GOOGLE_OAUTH_CREDENTIALS` |
-| Internal tools | 12 calendar tools (see below) |
+| Internal tools | 14 calendar tools (see below) |
 
 ### SelfModifyAgent
 
@@ -657,26 +657,35 @@ Used internally by OutlookAgent. Also available as **optional tools** for per-th
 
 ---
 
-### Calendar Tools (12)
+### Calendar Tools (14)
 
-Used internally by CalendarAgent. Wraps the Google Calendar MCP server via JSON-RPC over stdio. Defined in `agents/calendar_agent_tools.py`.
+Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (3 auth) and `tools/calendar.py` (11 event). Uses `google-api-python-client` for direct API calls with agent-guided OAuth flow.
+
+**Authentication tools:**
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
-| `calendar_list_calendars` | `()` | List all available Google calendars. |
-| `calendar_list_events` | `(calendar_id="primary", max_results=10, time_min?, time_max?)` | List events from a calendar. |
-| `calendar_get_event` | `(event_id, calendar_id="primary")` | Get full event details. |
-| `calendar_search_events` | `(query, calendar_id="primary", max_results=10)` | Search events by text. |
-| `calendar_create_event` | `(summary, start_time, end_time, calendar_id="primary", description?, location?, attendees?, timezone?)` | Create a new event. |
-| `calendar_update_event` | `(event_id, calendar_id="primary", summary?, start_time?, end_time?, description?, location?)` | Update an existing event. |
-| `calendar_delete_event` | `(event_id, calendar_id="primary")` | Delete a calendar event. |
-| `calendar_respond_to_event` | `(event_id, response, calendar_id="primary")` | Respond to invitation: `"accepted"`, `"declined"`, `"tentative"`. |
-| `calendar_get_freebusy` | `(time_min, time_max, calendars?)` | Get free/busy info. `calendars` is comma-separated IDs. |
-| `calendar_get_current_time` | `()` | Get current time for relative scheduling. |
-| `calendar_list_colors` | `()` | List available event colors. |
-| `calendar_manage_accounts` | `(action)` | Manage Google accounts: `"list"`, `"add"`, `"remove"`. |
+| `calendar_auth_start` | `()` | Start Google OAuth flow. Returns authorization URL for the user. |
+| `calendar_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
+| `calendar_list_authenticated_accounts` | `()` | List authenticated Google accounts with token status. |
 
-**Requires:** `GOOGLE_OAUTH_CREDENTIALS` env var pointing to the OAuth credentials file. Node.js and `npx` must be installed.
+**Event tools:**
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `calendar_list_calendars` | `(account_id?)` | List all available Google calendars. |
+| `calendar_list_events` | `(calendar_id="primary", max_results=10, time_min?, time_max?, account_id?)` | List events from a calendar. |
+| `calendar_get_event` | `(event_id, calendar_id="primary", account_id?)` | Get full event details. |
+| `calendar_search_events` | `(query, calendar_id="primary", max_results=10, account_id?)` | Search events by text. |
+| `calendar_create_event` | `(summary, start_time, end_time, calendar_id="primary", description?, location?, attendees?, timezone?, account_id?)` | Create a new event. Supports all-day (date-only) and timed events. |
+| `calendar_update_event` | `(event_id, calendar_id="primary", summary?, start_time?, end_time?, description?, location?, account_id?)` | Update an existing event (patch — only sends changed fields). |
+| `calendar_delete_event` | `(event_id, calendar_id="primary", account_id?)` | Delete a calendar event. |
+| `calendar_respond_to_event` | `(event_id, response, calendar_id="primary", account_id?)` | Respond to invitation: `"accepted"`, `"declined"`, `"tentative"`. |
+| `calendar_get_freebusy` | `(time_min, time_max, calendars?, account_id?)` | Get free/busy info. `calendars` is comma-separated IDs. |
+| `calendar_get_current_time` | `()` | Get current time in ISO 8601 (no API call — local system time). |
+| `calendar_list_colors` | `(account_id?)` | List available event colors. |
+
+**Requires:** `GOOGLE_OAUTH_CREDENTIALS` env var pointing to the OAuth Desktop App credentials JSON from Google Cloud Console. Tokens stored at `~/.google_calendar_token_cache.json` with auto-refresh. Node.js/npx are **not** required.
 
 ---
 
