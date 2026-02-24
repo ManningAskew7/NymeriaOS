@@ -140,14 +140,61 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
     ),
     # rag_settings removed - configure via UI settings
 
-    # Self-modification tools - SENSITIVE
+    # Self-modification tools — SENSITIVE (can write arbitrary Python code)
+    "self_modify_instructions": ToolMetadata(
+        name="self_modify_instructions",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Get the self-modification workflow guide and code templates",
+    ),
+    "self_file_read": ToolMetadata(
+        name="self_file_read",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Read a file from the Nymeria codebase",
+    ),
+    "self_file_write": ToolMetadata(
+        name="self_file_write",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Write content to a file in the tools or agents directory",
+    ),
+    "self_file_list": ToolMetadata(
+        name="self_file_list",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="List files in a directory",
+    ),
+    "self_file_delete": ToolMetadata(
+        name="self_file_delete",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Delete a file from the tools or agents directory",
+    ),
+    "self_test_import": ToolMetadata(
+        name="self_test_import",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Test that all tools can be imported successfully",
+    ),
+    "self_reload": ToolMetadata(
+        name="self_reload",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Reload all tools after making code changes",
+    ),
+    "self_invoke_tool": ToolMetadata(
+        name="self_invoke_tool",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Test a tool by invoking it with given arguments",
+    ),
     "self_modify_rollback": ToolMetadata(
         name="self_modify_rollback",
         category=ToolCategory.SELF_MODIFY,
         security_level=SecurityLevel.SENSITIVE,
-        description="Rollback code modifications",
+        description="Rollback code modifications to previous backup",
     ),
-    # tools_reload and invoke_tool removed - self_modify now auto-reloads
 
     # TODO tools - task management
     "todo": ToolMetadata(
@@ -169,12 +216,11 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="List TODO items",
     ),
 
-    # Utility tools (optional — enabled per-thread)
     "reload_all": ToolMetadata(
         name="reload_all",
-        category=ToolCategory.SUBAGENT,
-        security_level=SecurityLevel.MODERATE,
-        description="Reload all tools, agents, and trigger sources",
+        category=ToolCategory.SELF_MODIFY,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Reload all tools and trigger sources after code changes",
     ),
 
     # Trigger tools - event-driven automation (optional, not in ALL_TOOLS by default)

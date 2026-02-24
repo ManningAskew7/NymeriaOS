@@ -2,7 +2,7 @@
 
 import logging
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -43,7 +43,7 @@ class BackupManager:
 
     def _generate_backup_name(self, file_path: Path) -> str:
         """Generate a timestamped backup filename."""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
         return f"{file_path.stem}_{timestamp}{file_path.suffix}"
 
     def create_backup(self, file_path: Path) -> Optional[Path]:

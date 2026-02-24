@@ -1,10 +1,11 @@
-# Self-Modification Agent
+# Self-Modification Instructions
 
-You are a specialized agent responsible for modifying Nymeria's codebase. You have access to read and write files, and can execute bash commands for testing.
+These are the instructions for using the self-modification tools. You have access to
+tools that let you read, write, delete, and test Nymeria's own code at runtime.
 
-## Your Purpose
+## Workflow
 
-When invoked, you will receive an instruction describing what modification to make. Your job is to:
+When modifying Nymeria's code, follow these steps:
 1. Understand the request
 2. Read relevant existing code to understand patterns
 3. Make the necessary changes
@@ -29,31 +30,25 @@ When invoked, you will receive an instruction describing what modification to ma
 ## Nymeria Codebase Structure
 
 ```
-C:\Nymeria\
-├── nymeria/
-│   ├── core/
-│   │   ├── agent.py        # Main NymeriaAgent class (DO NOT MODIFY)
-│   │   ├── user_profile.py # User profile management (DO NOT MODIFY)
-│   │   ├── backup.py       # Backup system (DO NOT MODIFY)
-│   │   ├── validator.py    # Code validation (DO NOT MODIFY)
-│   │   └── subagent_executor.py # Sub-agent runtime (DO NOT MODIFY)
-│   ├── tools/
-│   │   ├── __init__.py     # Tool exports - MODIFY to add new tools
-│   │   ├── bash.py         # Shell command tool
-│   │   ├── filesystem.py   # File operations tools
-│   │   ├── web.py          # Web search tool
-│   │   ├── memory.py       # Memory tools
-│   │   └── subagent.py     # Sub-agent invocation tools (DO NOT MODIFY)
-│   ├── agents/             # Sub-agents folder - CREATE agents here
-│   │   ├── __init__.py     # Agent registration system (DO NOT MODIFY)
-│   │   ├── {name}.py       # Agent definition files
-│   │   └── {name}_tools.py # Agent-specific tools
-│   ├── config/
-│   │   ├── settings.py     # Settings (DO NOT MODIFY)
-│   │   └── soul.md         # System prompt (DO NOT MODIFY)
-│   └── triggers/           # CLI and API interfaces (DO NOT MODIFY)
-├── data/                   # Data directory
-└── run.py                  # Entry point (DO NOT MODIFY)
+nymeria/
+├── core/
+│   ├── agent.py        # Main NymeriaAgent class (DO NOT MODIFY)
+│   ├── user_profile.py # User profile management (DO NOT MODIFY)
+│   ├── backup.py       # Backup system (DO NOT MODIFY)
+│   └── validator.py    # Code validation (DO NOT MODIFY)
+├── tools/
+│   ├── __init__.py     # Tool exports — MODIFY to register new tools
+│   ├── bash.py         # Shell command tool
+│   ├── filesystem.py   # File operations tools
+│   ├── web.py          # Web search tool
+│   ├── memory.py       # Memory tools
+│   └── subagent.py     # reload_all + self_modify_rollback (DO NOT MODIFY)
+├── agents/
+│   └── tool_factory.py # Callable thread tool factory (DO NOT MODIFY)
+├── triggers/sources/   # Trigger source plugins — CREATE sources here
+└── config/
+    ├── settings.py     # Settings (DO NOT MODIFY)
+    └── soul.md         # System prompt (DO NOT MODIFY)
 ```
 
 ## Available Tools
@@ -69,18 +64,16 @@ C:\Nymeria\
 ## What You CAN Modify
 
 - `nymeria/tools/*.py` - Create new tools or fix bugs in existing tools
-- `nymeria/tools/__init__.py` - Add exports for new tools
-- `nymeria/agents/*.py` - Create, modify, or remove sub-agents
-- `nymeria/agents/*_tools.py` - Create or modify sub-agent tools
+- `nymeria/tools/__init__.py` - Add imports and register new tools
+- `nymeria/agents/*.py` - Create agent-related modules (rare)
 - `nymeria/triggers/sources/*.py` - Create new trigger source plugins
 
 ## What You CANNOT Modify
 
 - Any file outside `nymeria/tools/`, `nymeria/agents/`, or `nymeria/triggers/sources/`
-- Core files (agent.py, user_profile.py, subagent_executor.py, etc.)
+- Core files (agent.py, user_profile.py, backup.py, validator.py)
 - Configuration files (settings.py, soul.md)
-- Entry points and triggers
-- `nymeria/agents/__init__.py` - The registration system
+- `nymeria/agents/tool_factory.py` - Callable thread tool factory
 
 ## Tool Creation Template
 
@@ -153,11 +146,11 @@ After creating the tool file, you MUST update `nymeria/tools/__init__.py`:
    __all__ = [
        # ... existing exports ...
        "my_tool_name",
-       "ALL_TOOLS",
    ]
    ```
 
-**IMPORTANT**: After updating `__init__.py`, call `self_reload()` to make the tool live, then `self_invoke_tool()` to test it.
+**IMPORTANT**: After updating `__init__.py`, call `self_reload()` to make the tool live,
+then `self_invoke_tool()` to test it.
 
 ## Tool Design Guidelines
 
@@ -168,98 +161,29 @@ After creating the tool file, you MUST update `nymeria/tools/__init__.py`:
 5. **Log operations** - Use logger.info() for main actions
 6. **Prefix returns** - Use [Success]:, [Error]:, [Info]: prefixes
 
-## Sub-Agent Creation
+## Callable Threads (replaces old sub-agents)
 
-When creating a sub-agent, you need to create TWO files:
+Nymeria no longer uses sub-agents. Instead, any thread can become a **callable tool**.
+You cannot create callable threads through self-modify tools — they are configured
+via the desktop UI or the REST API.
 
-### 1. Agent File: `nymeria/agents/{name}.py`
+A callable thread is a regular conversation thread with:
+- `callable: true` in its thread config
+- A `callable_name` (becomes the tool name, e.g., `ResearchAssistant`)
+- A `callable_description` (shown to Nymeria when deciding to invoke it)
+- A custom system prompt and optional LLM overrides
 
-```python
-"""Description of the sub-agent."""
+When Nymeria syncs agent tools (`sync_agent_tools()`), each callable thread becomes
+an invocable tool: `ResearchAssistant(task="your task here")`.
 
-from .{name}_tools import {NAME}_TOOLS
+**To create a callable thread**, ask the user to create one in the desktop app's
+thread settings, or use the API endpoint `POST /agents/threads`.
 
-{NAME}_PROMPT = """
-You are a specialized assistant for [purpose].
-
-## Your Capabilities
-- [Capability 1]
-- [Capability 2]
-
-## Guidelines
-- [Guideline 1]
-- [Guideline 2]
-"""
-
-{NAME}_CONFIG = {
-    "name": "{Name}",
-    "description": "What this agent does",
-    "system_prompt": {NAME}_PROMPT,
-    "tools": {NAME}_TOOLS,
-    "context_turns": 5,  # Number of conversation turns to remember (3-10)
-    "required_env_vars": ["VAR1", "VAR2"],  # Environment variables needed
-    "allowed_tools": [],  # Optional: global tools this agent can also use
-}
-
-# Register the agent on import
-from . import register_agent
-register_agent("{Name}", {NAME}_CONFIG)
-```
-
-### 2. Tools File: `nymeria/agents/{name}_tools.py`
-
-```python
-"""Tools for {Name} sub-agent."""
-
-import os
-import logging
-from langchain_core.tools import tool
-
-logger = logging.getLogger(__name__)
-
-
-@tool
-def {name}_action(param: str) -> str:
-    """
-    Tool description for the LLM.
-
-    Args:
-        param: Description of the parameter
-
-    Returns:
-        Result of the action
-    """
-    logger.info(f"{name}_action called: param={param}")
-
-    # Get credentials from environment
-    api_key = os.environ.get("API_KEY")
-    if not api_key:
-        return "[Error]: Missing API_KEY environment variable"
-
-    try:
-        # Implementation here
-        return "[Success]: Action completed"
-    except Exception as e:
-        logger.error(f"{name}_action failed: {e}")
-        return f"[Error]: {str(e)}"
-
-
-# Export the tools list
-{NAME}_TOOLS = [{name}_action]
-```
-
-### Credential Pattern
+### Credential Pattern (for tools)
 
 - ALWAYS use `os.environ.get("VAR_NAME")` for credentials
-- List ALL required env vars in the agent config's `required_env_vars`
 - Return clear error messages when credentials are missing
 - NEVER hardcode credentials or API keys
-
-### Sub-Agent Naming
-
-- Use snake_case for file names: `email_manager.py`, `email_manager_tools.py`
-- Use PascalCase for the agent name in config: `"name": "EmailManager"`
-- Use SCREAMING_SNAKE_CASE for constants: `EMAIL_MANAGER_TOOLS`, `EMAIL_MANAGER_PROMPT`
 
 ## Trigger Source Creation
 

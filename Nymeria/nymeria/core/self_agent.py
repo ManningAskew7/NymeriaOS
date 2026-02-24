@@ -18,7 +18,7 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 
-# Define tools available to the self-modification agent
+# Self-modification tools (optional — enabled per-thread)
 @tool
 def self_file_read(file_path: str) -> str:
     """
@@ -102,6 +102,18 @@ def self_file_write(file_path: str, content: str) -> str:
     valid, msg = validator.validate_python_syntax(content)
     if not valid:
         return f"[Error]: Invalid Python syntax: {msg}"
+
+    # For NEW files in nymeria/tools/, verify @tool decorator is present
+    # (prevents writing a plain module that won't export any callable tools)
+    # Existing files are excluded — they may be legitimate helpers (utils.py, metadata.py)
+    try:
+        path.relative_to(tools_dir)
+        if not path.exists() and path.name != "__init__.py":
+            tool_valid, tool_msg = validator.validate_tool_definition(content)
+            if not tool_valid:
+                return f"[Error]: {tool_msg}. New tool files in nymeria/tools/ must contain at least one @tool decorated function."
+    except ValueError:
+        pass  # File is in agents/ or triggers/sources/ — no @tool check needed
 
     # Create backup if file exists
     backup_manager = BackupManager(settings.backups_dir, project_root)
@@ -230,11 +242,14 @@ def self_file_delete(file_path: str) -> str:
     backup_path = backup_manager.create_backup(path)
     if backup_path:
         logger.info(f"Created backup before delete: {backup_path}")
+    else:
+        logger.warning(f"Could not create backup before deleting {path}")
 
     # Delete the file
     try:
         path.unlink()
-        return f"[Success]: Deleted {file_path}"
+        backup_note = " (backup saved)" if backup_path else " (warning: no backup created)"
+        return f"[Success]: Deleted {file_path}{backup_note}"
     except Exception as e:
         return f"[Error]: Failed to delete file: {e}"
 
@@ -308,8 +323,34 @@ def self_invoke_tool(tool_name: str, arguments_json: str) -> str:
         return f"[Error]: Tool invocation failed: {str(e)}"
 
 
+@tool
+def self_modify_instructions() -> str:
+    """
+    Get the self-modification workflow guide, code templates, and safety rules.
+
+    IMPORTANT: Call this tool FIRST before using any other self_* tools.
+    It returns the complete instructions for how to correctly create, modify,
+    test, and register tools — including the required create->reload->test cycle,
+    the code template to follow, codebase structure, and safety rules.
+
+    Returns:
+        The full self-modification instruction guide
+    """
+    settings = get_settings()
+    prompt_path = settings.project_root / "nymeria" / "config" / "self_agent_prompt.md"
+
+    try:
+        content = prompt_path.read_text(encoding="utf-8")
+        return content
+    except FileNotFoundError:
+        return "[Error]: Self-modification instructions file not found at nymeria/config/self_agent_prompt.md"
+    except Exception as e:
+        return f"[Error]: Failed to read instructions: {e}"
+
+
 # Tools available for self-modification (optional — enabled per-thread)
 SELF_AGENT_TOOLS: List[BaseTool] = [
+    self_modify_instructions,
     self_file_read,
     self_file_write,
     self_file_list,

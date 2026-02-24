@@ -54,7 +54,6 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
-# Includes: 13 Outlook + 4 trigger + 9 browser + 14 calendar + 7 self-modify + 2 utility = 49 optional tools.
 OPTIONAL_TOOLS = {t.name: t for t in (
     OUTLOOK_TOOLS
     + TRIGGER_TOOLS
@@ -64,7 +63,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SUBAGENT_TOOLS
 )}
 
-# All available tools (15 core tools + hello_test)
+# All available tools
 ALL_TOOLS = [
     # Core system tools
     bash_execute,
@@ -79,8 +78,8 @@ ALL_TOOLS = [
     memory_list,
     personality_set,
     rag_search,
-    # TODO tools (task tracking + scheduling for autonomous operation)
-    todo,  # Create or update (use status="done" to complete)
+    # TODO tools
+    todo,
     todo_delete,
     todo_list,
     # Unified notification tool
@@ -90,7 +89,6 @@ ALL_TOOLS = [
 ]
 
 __all__ = [
-    # Core tools
     "bash_execute",
     "file_read",
     "file_write",
@@ -98,47 +96,35 @@ __all__ = [
     "consult",
     "CONSULT_TOOLS",
     "claude_code",
-    # Memory tools
     "memory_save",
     "memory_forget",
     "memory_list",
     "personality_set",
     "rag_search",
     "MEMORY_TOOLS",
-    # TODO tools
     "todo",
     "todo_delete",
     "todo_list",
     "TODO_TOOLS",
-    # Utility tools (optional — enabled per-thread)
     "reload_all",
     "self_modify_rollback",
     "SUBAGENT_TOOLS",
-    # Notification
     "notify",
     "NOTIFY_TOOLS",
-    # Trigger tools (optional — enabled per-thread)
     "trigger_create",
     "trigger_list",
     "trigger_update",
     "trigger_delete",
     "TRIGGER_TOOLS",
-    # Outlook tools (optional — enabled per-thread)
     "AUTH_TOOLS",
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
-    # Browser tools (optional — enabled per-thread)
     "BROWSER_TOOLS",
-    # Calendar tools (optional — enabled per-thread)
     "CALENDAR_TOOLS",
-    # Self-modify tools (optional — enabled per-thread)
     "SELF_AGENT_TOOLS",
-    # Optional tools dict (per-thread enabling)
     "OPTIONAL_TOOLS",
-    # Main exports
     "ALL_TOOLS",
     "get_all_tools_with_agents",
-    # Test tool
     "hello_test",
 ]
 
