@@ -44,6 +44,7 @@ from .triggers import (
     trigger_delete,
     TRIGGER_TOOLS,
 )
+from .hello_test import hello_test
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -53,7 +54,7 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
-# Includes: 13 Outlook + 4 trigger + 9 browser + 12 calendar + 7 self-modify + 2 utility = 47 optional tools.
+# Includes: 13 Outlook + 4 trigger + 9 browser + 14 calendar + 7 self-modify + 2 utility = 49 optional tools.
 OPTIONAL_TOOLS = {t.name: t for t in (
     OUTLOOK_TOOLS
     + TRIGGER_TOOLS
@@ -63,7 +64,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SUBAGENT_TOOLS
 )}
 
-# All available tools (15 core tools)
+# All available tools (15 core tools + hello_test)
 ALL_TOOLS = [
     # Core system tools
     bash_execute,
@@ -84,6 +85,8 @@ ALL_TOOLS = [
     todo_list,
     # Unified notification tool
     notify,
+    # Test tool
+    hello_test,
 ]
 
 __all__ = [
@@ -135,6 +138,8 @@ __all__ = [
     # Main exports
     "ALL_TOOLS",
     "get_all_tools_with_agents",
+    # Test tool
+    "hello_test",
 ]
 
 

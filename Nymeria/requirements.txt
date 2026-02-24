@@ -44,5 +44,9 @@ discord.py>=2.3.0
 # langgraph-checkpoint-postgres>=0.2.0
 # psycopg[binary]>=3.2.0
 
+# Google Calendar (native Python — optional tools)
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.1.0
+
 # Windows Service Support
 pywin32>=306; sys_platform == 'win32'
