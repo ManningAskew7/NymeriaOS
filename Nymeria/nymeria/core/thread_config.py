@@ -33,6 +33,7 @@ class ThreadLLMConfig(BaseModel):
     max_tokens: Optional[int] = None
     extended_thinking: Optional[bool] = None
     reasoning_effort: Optional[str] = None
+    use_model_defaults: Optional[bool] = None
 
 
 class ThreadConfig(BaseModel):
@@ -49,6 +50,8 @@ class ThreadConfig(BaseModel):
     callable: bool = False
     callable_name: Optional[str] = None
     callable_description: Optional[str] = None
+    # Debug: show autonomous wakeup prompts (triggers, scheduler, watchdog) in chat
+    show_autonomous_prompts: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -87,6 +90,8 @@ class ThreadConfig(BaseModel):
         if self.system_prompt:
             return True
         if self.callable:
+            return True
+        if self.show_autonomous_prompts:
             return True
         return False
 

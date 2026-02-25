@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     llm_extended_thinking: bool = Field(
         default=False, description="Enable extended thinking/reasoning for compatible models"
     )
+    llm_use_model_defaults: bool = Field(
+        default=False,
+        description="Use model-specific defaults for temperature/top_p/frequency_penalty instead of global values"
+    )
 
     # API Keys
     openai_api_key: Optional[str] = Field(default=None)

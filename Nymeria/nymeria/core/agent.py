@@ -136,6 +136,15 @@ def _extract_mime_from_data_url(data_url: str) -> str:
     return "application/octet-stream"
 
 
+def _classify_autonomous_source(text: str) -> str:
+    """Classify the source of an autonomous wakeup from its stripped prompt text."""
+    if text.startswith("Work on TODO "):
+        return "scheduler"
+    if text.startswith("[WATCHDOG ALERT]"):
+        return "watchdog"
+    return "trigger"
+
+
 # Global reference to the current agent instance (for tools that need to trigger reload)
 _current_agent: Optional["NymeriaAgent"] = None
 
@@ -1512,6 +1521,25 @@ class NymeriaAgent:
         extended_thinking = tc.extended_thinking if tc and tc.extended_thinking is not None else self.settings.llm_extended_thinking
         reasoning_effort = tc.reasoning_effort if tc and tc.reasoning_effort else self.settings.llm_reasoning_effort
 
+        # Resolve use_model_defaults (per-thread overrides global)
+        use_model_defaults = (
+            tc.use_model_defaults
+            if tc and tc.use_model_defaults is not None
+            else self.settings.llm_use_model_defaults
+        )
+
+        top_p = self.settings.llm_top_p
+        frequency_penalty = self.settings.llm_frequency_penalty
+        presence_penalty = self.settings.llm_presence_penalty
+
+        # When use_model_defaults is enabled, don't send temperature/top_p/frequency_penalty/
+        # presence_penalty — let the provider apply model-specific optimal defaults.
+        if use_model_defaults:
+            temperature = None
+            top_p = None
+            frequency_penalty = None
+            presence_penalty = None
+
         # Resolve API key based on effective provider
         key_map = {
             "openai": self.settings.openai_api_key,
@@ -1526,10 +1554,10 @@ class NymeriaAgent:
             api_key=api_key,
             temperature=temperature,
             max_tokens=max_tokens,
-            top_p=self.settings.llm_top_p,
+            top_p=top_p,
             top_k=self.settings.llm_top_k,
-            frequency_penalty=self.settings.llm_frequency_penalty,
-            presence_penalty=self.settings.llm_presence_penalty,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
             reasoning_effort=reasoning_effort,
             extended_thinking=extended_thinking,
         )
@@ -2753,6 +2781,7 @@ class NymeriaAgent:
         self,
         thread_id: str,
         include_internal: bool = False,
+        show_autonomous_prompts: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Get the conversation history for a thread.
@@ -2768,6 +2797,8 @@ class NymeriaAgent:
             thread_id: Conversation thread ID
             include_internal: If False (default), filters out internal system messages.
                               Set to True for debugging to see all messages.
+            show_autonomous_prompts: If True, include autonomous_wakeup prompts
+                                     (but still hide compact_prompt/auto_resume).
 
         Returns:
             List of messages formatted for the frontend
@@ -2797,8 +2828,13 @@ class NymeriaAgent:
                         if is_internal:
                             internal_type = msg.additional_kwargs.get('internal_type', '')
                             if internal_type == 'autonomous_wakeup':
-                                # Skip prompt but show AI responses
-                                continue
+                                if show_autonomous_prompts:
+                                    # Include prompt for display (marked for annotation later)
+                                    skip_until_next_human = False
+                                    filtered_messages.append(msg)
+                                else:
+                                    # Skip prompt but show AI responses
+                                    continue
                             else:
                                 # For compact_prompt, auto_resume: skip prompt AND following responses
                                 skip_until_next_human = True
@@ -2900,6 +2936,15 @@ class NymeriaAgent:
                         entry["attachments"] = attachments
                     if timestamp_iso:
                         entry["timestamp"] = timestamp_iso
+
+                    # Annotate autonomous wakeup prompts with their source
+                    if (show_autonomous_prompts and
+                            hasattr(msg, 'additional_kwargs') and
+                            msg.additional_kwargs.get('internal_type') == 'autonomous_wakeup'):
+                        entry["autonomous_source"] = _classify_autonomous_source(
+                            entry["content"]
+                        )
+
                     history.append(entry)
 
                 elif isinstance(msg, AIMessage):

@@ -5,7 +5,7 @@ import logging
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -489,7 +489,7 @@ class TodoManager:
         with self.atomic_update(user_id) as todo_list:
             todo = todo_list.get_item(todo_id)
             if todo:
-                todo.last_execution = datetime.utcnow()
+                todo.last_execution = datetime.now(timezone.utc)
                 todo.scheduled_for = None
                 schedule_db.remove_scheduled(todo_id)
                 return True

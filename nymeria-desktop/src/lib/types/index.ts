@@ -46,6 +46,7 @@ export interface Message {
   toolCalls?: ToolCall[];         // Legacy: all tool calls (computed from steps)
   attachments?: FileAttachment[]; // File attachments for multimodal messages
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
+  autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
 }
 
 export interface ToolCall {
@@ -100,6 +101,7 @@ export interface ThreadLLMConfig {
   max_tokens?: number | null;
   extended_thinking?: boolean | null;
   reasoning_effort?: string | null;
+  use_model_defaults?: boolean | null;
 }
 
 export interface ThreadConfig {
@@ -112,6 +114,7 @@ export interface ThreadConfig {
   callable: boolean;
   callableName?: string | null;
   callableDescription?: string | null;
+  showAutonomousPrompts: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
@@ -126,6 +129,7 @@ export interface ThreadConfigUpdateRequest {
   callable?: boolean;
   callable_name?: string | null;
   callable_description?: string | null;
+  show_autonomous_prompts?: boolean;
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
@@ -403,6 +407,22 @@ export interface AppConfig {
 export type LLMProvider = 'openrouter' | 'openai' | 'anthropic';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
+// OpenRouter model metadata (from GET /models)
+export interface ModelMetadata {
+  id: string;
+  name: string;
+  context_length: number;
+  max_completion_tokens: number | null;
+  pricing_prompt: number | null;
+  pricing_completion: number | null;
+  supported_parameters: string[];
+  input_modalities: string[];
+  tokenizer: string | null;
+  default_temperature: number | null;
+  default_top_p: number | null;
+  default_frequency_penalty: number | null;
+}
+
 export interface ServerSettings {
   llm_provider: LLMProvider;
   llm_model: string;
@@ -414,6 +434,7 @@ export interface ServerSettings {
   llm_presence_penalty: number | null;
   llm_reasoning_effort: string | null;
   llm_extended_thinking: boolean;
+  llm_use_model_defaults: boolean;
   context_management: string;
   compact_threshold: number;
   compact_keep_messages: number;
@@ -438,6 +459,7 @@ export interface ServerSettingsUpdate {
   llm_presence_penalty?: number | null;
   llm_reasoning_effort?: string | null;
   llm_extended_thinking?: boolean;
+  llm_use_model_defaults?: boolean;
   context_management?: string;
   compact_threshold?: number;
   compact_keep_messages?: number;

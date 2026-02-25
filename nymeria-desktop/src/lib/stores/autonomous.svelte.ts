@@ -10,6 +10,7 @@ import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
+import { threadConfigStore } from './threadConfig.svelte';
 import { api } from '$lib/services/api.svelte';
 
 interface AutonomousEvent {
@@ -19,6 +20,16 @@ interface AutonomousEvent {
   timestamp: string;
   // Additional fields depend on event type
   [key: string]: unknown;
+}
+
+/**
+ * Classify the source of an autonomous task from its SSE event data.
+ */
+function classifyAutonomousSource(event: AutonomousEvent): string {
+  if (event.todo_id) return 'scheduler';
+  if (event.source === 'watchdog') return 'watchdog';
+  if (event.trigger_id || event.trigger_name) return 'trigger';
+  return 'autonomous';
 }
 
 // Debug: log when module loads
@@ -177,6 +188,15 @@ function createAutonomousStore() {
         // show that autonomous activity is starting
         if (isCurrentThread && !chatStore.isStreaming) {
           activeTaskId = event.task_id;
+
+          // Show autonomous prompt if thread config has it enabled
+          // Only for scheduler/watchdog/trigger tasks, not callable thread invocations
+          const threadCfg = threadConfigStore.getConfig(event.thread_id);
+          if (threadCfg?.showAutonomousPrompts && event.prompt && !event.callable_name) {
+            const sourceLabel = classifyAutonomousSource(event);
+            chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
+          }
+
           // Add a placeholder message for the autonomous task and track its ID
           activeMessageId = chatStore.addAssistantMessage();
           activeMessagesByThread = new Map(activeMessagesByThread).set(

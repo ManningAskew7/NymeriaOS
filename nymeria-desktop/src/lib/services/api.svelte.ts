@@ -38,7 +38,8 @@ import type {
   TriggerCreateRequest,
   TriggerUpdateRequest,
   TriggerSourceInfo,
-  TriggerCreatedBy
+  TriggerCreatedBy,
+  ModelMetadata
 } from '$lib/types';
 
 // Module-level abort controller for current stream
@@ -510,7 +511,8 @@ export class NymeriaAPI {
         timestamp: new Date((m.timestamp as string) || Date.now()),
         status: 'complete' as const,
         toolCalls: m.tool_calls as Message['toolCalls'],                 // Legacy fallback
-        attachments: m.attachments as Message['attachments']
+        attachments: m.attachments as Message['attachments'],
+        autonomousSource: m.autonomous_source as string | undefined
       })
     );
 
@@ -585,6 +587,21 @@ export class NymeriaAPI {
     }
 
     return response.json();
+  }
+
+  // Model Metadata
+
+  async getOpenRouterModels(): Promise<ModelMetadata[]> {
+    try {
+      const response = await fetch(`${this.getBaseUrl()}/models`, {
+        headers: this.getHeaders()
+      });
+
+      if (!response.ok) return [];
+      return response.json();
+    } catch {
+      return [];
+    }
   }
 
   // Dashboard API Methods
@@ -1521,6 +1538,7 @@ export class NymeriaAPI {
       callable: data.callable ?? false,
       callableName: data.callable_name ?? null,
       callableDescription: data.callable_description ?? null,
+      showAutonomousPrompts: data.show_autonomous_prompts ?? false,
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
       hasCustomizations: data.has_customizations ?? false,
