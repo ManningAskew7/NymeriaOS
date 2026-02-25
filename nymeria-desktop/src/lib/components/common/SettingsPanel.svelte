@@ -4,6 +4,7 @@
   import type { ServerSettings, LLMProvider, LogLevel, ThemeName } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
+  import { modelsStore } from '$lib/stores/models.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import { ToolManagementPanel } from '../tools';
@@ -26,6 +27,7 @@
   let llmPresencePenalty = $state<number | null>(null);
   let llmReasoningEffort = $state<string | null>(null);
   let llmExtendedThinking = $state(false);
+  let llmUseModelDefaults = $state(false);
   let showAdvancedLlm = $state(false);
   // Agent settings
   let contextManagement = $state<string>('auto_compact');
@@ -39,6 +41,11 @@
   // Theme settings
   let selectedTheme = $state<ThemeName>(configStore.theme);
   const themeList = getThemeList();
+
+  // Model metadata (reactive lookup based on current model ID)
+  const currentModelMeta = $derived(
+    llmProvider === 'openrouter' ? modelsStore.getById(llmModel) : undefined
+  );
 
   // UI state
   let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools'>('connection');
@@ -64,7 +71,12 @@
       llmPresencePenalty = serverSettings.llm_presence_penalty;
       llmReasoningEffort = serverSettings.llm_reasoning_effort;
       llmExtendedThinking = serverSettings.llm_extended_thinking;
+      llmUseModelDefaults = serverSettings.llm_use_model_defaults;
       contextManagement = serverSettings.context_management;
+      // Load model metadata for OpenRouter enrichment
+      if (serverSettings.llm_provider === 'openrouter') {
+        modelsStore.loadModels();
+      }
       slidingWindowCycles = serverSettings.sliding_window_cycles;
       maxSelfInvokesPerHour = serverSettings.max_self_invokes_per_hour;
       logLevel = serverSettings.log_level;
@@ -82,6 +94,13 @@
   $effect(() => {
     if (configStore.isConfigured && !serverSettings && !loadingSettings) {
       loadServerSettings();
+    }
+  });
+
+  // Load model metadata when provider switches to openrouter
+  $effect(() => {
+    if (llmProvider === 'openrouter') {
+      modelsStore.loadModels();
     }
   });
 
@@ -135,6 +154,7 @@
         llm_presence_penalty: llmPresencePenalty,
         llm_reasoning_effort: llmReasoningEffort,
         llm_extended_thinking: llmExtendedThinking,
+        llm_use_model_defaults: llmUseModelDefaults,
         context_management: contextManagement,
         sliding_window_cycles: slidingWindowCycles,
         max_self_invokes_per_hour: maxSelfInvokesPerHour,
@@ -337,9 +357,47 @@
               {/if}
             </div>
           {/if}
+          {#if currentModelMeta}
+            <div class="model-meta-hint">
+              <span class="meta-name">{currentModelMeta.name}</span>
+              <span class="meta-details">
+                {modelsStore.formatContext(currentModelMeta.context_length)} ctx
+                {#if currentModelMeta.pricing_prompt != null}
+                  &middot; In: {modelsStore.formatPrice(currentModelMeta.pricing_prompt)}
+                {/if}
+                {#if currentModelMeta.pricing_completion != null}
+                  &middot; Out: {modelsStore.formatPrice(currentModelMeta.pricing_completion)}
+                {/if}
+                {#if currentModelMeta.input_modalities.includes('image')}
+                  &middot; Vision
+                {/if}
+                {#if currentModelMeta.supported_parameters.includes('reasoning')}
+                  &middot; Reasoning
+                {/if}
+              </span>
+            </div>
+          {/if}
         </div>
 
         <div class="field">
+          <label class="toggle-label" for="llm-use-model-defaults">
+            <input type="checkbox" id="llm-use-model-defaults" bind:checked={llmUseModelDefaults} />
+            Use model defaults
+          </label>
+          <p class="hint">
+            Let the provider apply model-specific optimal defaults for temperature, top_p, and frequency penalty
+            {#if llmUseModelDefaults && currentModelMeta}
+              {#if currentModelMeta.default_temperature != null}
+                &mdash; temp: {currentModelMeta.default_temperature}
+              {/if}
+              {#if currentModelMeta.default_top_p != null}
+                , top_p: {currentModelMeta.default_top_p}
+              {/if}
+            {/if}
+          </p>
+        </div>
+
+        <div class="field" class:field-disabled={llmUseModelDefaults}>
           <label for="llm-temperature">Temperature: {llmTemperature}</label>
           <input
             id="llm-temperature"
@@ -348,6 +406,7 @@
             max="2"
             step="0.1"
             bind:value={llmTemperature}
+            disabled={llmUseModelDefaults}
           />
           <p class="hint">0 = deterministic, 2 = creative</p>
         </div>
@@ -385,7 +444,7 @@
                 <p class="hint">Maximum output tokens (1-32000)</p>
               </div>
 
-              <div class="field">
+              <div class="field" class:field-disabled={llmUseModelDefaults}>
                 <label for="llm-top-p">Top P: {llmTopP !== null ? llmTopP.toFixed(2) : 'Default'}</label>
                 <div class="slider-with-clear">
                   <input
@@ -396,10 +455,16 @@
                     step="0.05"
                     value={llmTopP ?? 1}
                     oninput={(e) => (llmTopP = parseFloat(e.currentTarget.value))}
+                    disabled={llmUseModelDefaults}
                   />
-                  <button class="clear-btn" onclick={() => (llmTopP = null)} title="Reset to default">×</button>
+                  <button class="clear-btn" onclick={() => (llmTopP = null)} title="Reset to default" disabled={llmUseModelDefaults}>×</button>
                 </div>
-                <p class="hint">Nucleus sampling threshold (0-1)</p>
+                <p class="hint">
+                  Nucleus sampling threshold (0-1)
+                  {#if llmUseModelDefaults && currentModelMeta?.default_top_p != null}
+                    &mdash; Model default: {currentModelMeta.default_top_p}
+                  {/if}
+                </p>
               </div>
 
               <div class="field">
@@ -415,7 +480,7 @@
                 <p class="hint">Top-k sampling (1-100)</p>
               </div>
 
-              <div class="field">
+              <div class="field" class:field-disabled={llmUseModelDefaults}>
                 <label for="llm-freq-penalty">Frequency Penalty: {llmFrequencyPenalty !== null ? llmFrequencyPenalty.toFixed(1) : 'Default'}</label>
                 <div class="slider-with-clear">
                   <input
@@ -426,13 +491,19 @@
                     step="0.1"
                     value={llmFrequencyPenalty ?? 0}
                     oninput={(e) => (llmFrequencyPenalty = parseFloat(e.currentTarget.value))}
+                    disabled={llmUseModelDefaults}
                   />
-                  <button class="clear-btn" onclick={() => (llmFrequencyPenalty = null)} title="Reset to default">×</button>
+                  <button class="clear-btn" onclick={() => (llmFrequencyPenalty = null)} title="Reset to default" disabled={llmUseModelDefaults}>×</button>
                 </div>
-                <p class="hint">Reduce repetition of token sequences (-2 to 2)</p>
+                <p class="hint">
+                  Reduce repetition of token sequences (-2 to 2)
+                  {#if llmUseModelDefaults && currentModelMeta?.default_frequency_penalty != null}
+                    &mdash; Model default: {currentModelMeta.default_frequency_penalty}
+                  {/if}
+                </p>
               </div>
 
-              <div class="field">
+              <div class="field" class:field-disabled={llmUseModelDefaults}>
                 <label for="llm-pres-penalty">Presence Penalty: {llmPresencePenalty !== null ? llmPresencePenalty.toFixed(1) : 'Default'}</label>
                 <div class="slider-with-clear">
                   <input
@@ -443,8 +514,9 @@
                     step="0.1"
                     value={llmPresencePenalty ?? 0}
                     oninput={(e) => (llmPresencePenalty = parseFloat(e.currentTarget.value))}
+                    disabled={llmUseModelDefaults}
                   />
-                  <button class="clear-btn" onclick={() => (llmPresencePenalty = null)} title="Reset to default">×</button>
+                  <button class="clear-btn" onclick={() => (llmPresencePenalty = null)} title="Reset to default" disabled={llmUseModelDefaults}>×</button>
                 </div>
                 <p class="hint">Encourage new topics (-2 to 2)</p>
               </div>
@@ -809,6 +881,33 @@
     margin: 0;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+  }
+
+  .model-meta-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+    padding: 6px 10px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+  }
+
+  .meta-name {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .meta-details {
+    color: var(--text-muted);
+  }
+
+  .field-disabled {
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   .loading {

@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, Optional, Set
 
 from rich.console import Console
@@ -32,8 +32,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Console for printing ticker output with UTF-8 encoding
-_console = Console(force_terminal=True)
+# Console for printing ticker output
+# safe_box=True uses ASCII box-drawing characters, avoiding UnicodeEncodeError
+# on Windows consoles that use cp1252/charmap encoding
+_console = Console(force_terminal=True, safe_box=True)
 
 
 def _sanitize_unicode(text: str) -> str:
@@ -355,23 +357,25 @@ class Ticker:
             metadata={"todo_id": todo.id},
         )
 
-        # Print wake-up message (sanitize for Windows console)
-        sanitized_task = _sanitize_unicode(todo.task)
-        _console.print()
-        _console.print(
-            Panel(
-                f"[italic]{sanitized_task}[/italic]",
-                title="[bold yellow]Wake up Nymeria, you have work to do[/bold yellow]",
-                border_style="yellow",
-            )
-        )
-
         # Build prompt from TODO
         prompt = f"Work on TODO {todo.id}: {todo.task}"
         if todo.notes:
             prompt += f"\n\nNotes: {todo.notes}"
 
         try:
+            # Print wake-up message (inside try so console errors don't prevent execution)
+            try:
+                sanitized_task = _sanitize_unicode(todo.task)
+                _console.print()
+                _console.print(
+                    Panel(
+                        f"[italic]{sanitized_task}[/italic]",
+                        title="[bold yellow]Wake up Nymeria, you have work to do[/bold yellow]",
+                        border_style="yellow",
+                    )
+                )
+            except Exception as console_err:
+                logger.warning(f"Console print failed (non-fatal): {console_err}")
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
             logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
 
@@ -472,7 +476,7 @@ class Ticker:
                 # Calculate next execution time
                 next_execution = self._calculate_next_execution(
                     current_todo.recurrence,
-                    datetime.utcnow()
+                    datetime.now(timezone.utc)
                 )
                 if next_execution:
                     logger.info(f"Rescheduling recurring TODO {todo.id} ({current_todo.recurrence}) for {next_execution}")
@@ -485,7 +489,7 @@ class Ticker:
                         # Update last_execution
                         item = todo_list.get_item(todo.id)
                         if item:
-                            item.last_execution = datetime.utcnow()
+                            item.last_execution = datetime.now(timezone.utc)
                     # Sync the new schedule
                     self.todo_manager.sync_schedule_to_db(entry.user_id, todo.id, self.schedule_db)
                 else:
@@ -531,23 +535,32 @@ class Ticker:
                 metadata={"todo_id": todo.id, "notify": response.notify},
             )
 
-            # Show response in console
-            sanitized_content = _sanitize_unicode(response.content)
-            _console.print()
-            _console.print("[bold green]Nymeria:[/bold green]")
-            _console.print(Markdown(sanitized_content))
+            # Show response in console (non-fatal — task already succeeded)
+            try:
+                sanitized_content = _sanitize_unicode(response.content)
+                _console.print()
+                _console.print("[bold green]Nymeria:[/bold green]")
+                _console.print(Markdown(sanitized_content))
+            except Exception as console_err:
+                logger.warning(f"Console print failed (non-fatal): {console_err}")
 
             # Create notification if requested
             if response.notify and response.summary:
-                create_notification(
-                    user_id=entry.user_id,
-                    summary=response.summary,
-                    thread_id=thread_id,
-                    task_id=todo.id,
-                )
-                _console.print(f"[yellow]Notification sent: {response.summary}[/yellow]")
+                try:
+                    create_notification(
+                        user_id=entry.user_id,
+                        summary=response.summary,
+                        thread_id=thread_id,
+                        task_id=todo.id,
+                    )
+                    _console.print(f"[yellow]Notification sent: {response.summary}[/yellow]")
+                except Exception as notify_err:
+                    logger.error(f"Failed to create notification for TODO {todo.id}: {notify_err}")
 
-            _console.print()
+            try:
+                _console.print()
+            except Exception:
+                pass
             logger.info(f"TODO {todo.id} scheduled execution completed, notify={response.notify}")
 
             # Trim context window if needed (only in sliding_window mode)
@@ -561,16 +574,22 @@ class Ticker:
                             f"Thread {thread_id}: Sliding window trimmed {messages_removed} messages "
                             f"(was {cycle_count} cycles, now {max_cycles})"
                         )
-                        _console.print(
-                            f"[dim]Context window trimmed: kept last {max_cycles} cycles[/dim]"
-                        )
+                        try:
+                            _console.print(
+                                f"[dim]Context window trimmed: kept last {max_cycles} cycles[/dim]"
+                            )
+                        except Exception:
+                            pass  # Console output is cosmetic
 
         except Exception as e:
             import traceback
             logger.error(f"[TICKER] === ERROR === TODO {todo.id} failed: {e}")
             logger.error(f"[TICKER] Traceback:\n{traceback.format_exc()}")
-            sanitized_error = _sanitize_unicode(str(e))
-            _console.print(f"[red]Scheduled TODO failed: {sanitized_error}[/red]")
+            try:
+                sanitized_error = _sanitize_unicode(str(e))
+                _console.print(f"[red]Scheduled TODO failed: {sanitized_error}[/red]")
+            except Exception:
+                pass  # Console output is cosmetic
 
             # Always publish task_completed so frontend can exit streaming state
             publish_autonomous_event(
@@ -682,16 +701,19 @@ class Ticker:
 
         if missed_entries:
             logger.info(f"Recovering {len(missed_entries)} missed scheduled TODO(s)")
-            _console.print()
-            _console.print(
-                Panel(
-                    f"[yellow]Found {len(missed_entries)} scheduled TODO(s) from before shutdown. "
-                    f"Executing now...[/yellow]",
-                    title="[bold]Scheduler Recovery[/bold]",
-                    border_style="yellow",
+            try:
+                _console.print()
+                _console.print(
+                    Panel(
+                        f"[yellow]Found {len(missed_entries)} scheduled TODO(s) from before shutdown. "
+                        f"Executing now...[/yellow]",
+                        title="[bold]Scheduler Recovery[/bold]",
+                        border_style="yellow",
+                    )
                 )
-            )
-            _console.print()
+                _console.print()
+            except Exception:
+                pass  # Console output is cosmetic
 
         return len(missed_entries)
 

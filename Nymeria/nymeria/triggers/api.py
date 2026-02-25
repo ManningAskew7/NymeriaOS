@@ -152,6 +152,7 @@ class ServerSettingsResponse(BaseModel):
     llm_presence_penalty: Optional[float] = None
     llm_reasoning_effort: Optional[str] = None
     llm_extended_thinking: bool = False
+    llm_use_model_defaults: bool = False
     # Context management settings
     context_management: str
     compact_threshold: float
@@ -179,6 +180,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_presence_penalty: Optional[float] = None
     llm_reasoning_effort: Optional[str] = None
     llm_extended_thinking: Optional[bool] = None
+    llm_use_model_defaults: Optional[bool] = None
     # Context management settings
     context_management: Optional[str] = None
     compact_threshold: Optional[float] = None
@@ -799,7 +801,19 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         are filtered out. Set include_internal=true for debugging to see all messages.
         """
         agent = get_agent()
-        history = agent.get_conversation_history(thread_id, include_internal=include_internal)
+
+        # Check per-thread config for autonomous prompt visibility
+        show_autonomous = False
+        if not include_internal:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            if tc and tc.show_autonomous_prompts:
+                show_autonomous = True
+
+        history = agent.get_conversation_history(
+            thread_id,
+            include_internal=include_internal,
+            show_autonomous_prompts=show_autonomous,
+        )
         return ThreadHistoryResponse(thread_id=thread_id, messages=history)
 
     @app.get("/threads/{thread_id}/context", tags=["Threads"])
@@ -922,6 +936,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         max_tokens: Optional[int] = None
         extended_thinking: Optional[bool] = None
         reasoning_effort: Optional[str] = None
+        use_model_defaults: Optional[bool] = None
 
     class ThreadConfigUpdateRequest(BaseModel):
         instructions: Optional[str] = Field(default=None, max_length=5000)
@@ -932,6 +947,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable: Optional[bool] = None
         callable_name: Optional[str] = Field(default=None, max_length=64)
         callable_description: Optional[str] = Field(default=None, max_length=500)
+        show_autonomous_prompts: Optional[bool] = None
         clear_instructions: bool = False
         clear_disabled_tools: bool = False
         clear_enabled_tools: bool = False
@@ -961,6 +977,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "callable": False,
             "callable_name": None,
             "callable_description": None,
+            "show_autonomous_prompts": False,
             "created_at": None,
             "updated_at": None,
             "has_customizations": False,
@@ -1001,9 +1018,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.enabled_tools is not None and not request.clear_enabled_tools:
             tc.enabled_tools = request.enabled_tools
         if request.llm_config is not None and not request.clear_llm_config:
-            llm_data = request.llm_config.model_dump(exclude_none=True)
+            # Use exclude_unset to distinguish "not sent" from "explicitly set to null"
+            llm_data = request.llm_config.model_dump(exclude_unset=True)
             if tc.llm_config is None:
-                tc.llm_config = ThreadLLMConfig(**llm_data)
+                # For new configs, filter out None values (no field to clear)
+                tc.llm_config = ThreadLLMConfig(**{k: v for k, v in llm_data.items() if v is not None})
             else:
                 for key, value in llm_data.items():
                     setattr(tc.llm_config, key, value)
@@ -1037,6 +1056,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.callable_name = request.callable_name
         if request.callable_description is not None:
             tc.callable_description = request.callable_description
+        if request.show_autonomous_prompts is not None:
+            tc.show_autonomous_prompts = request.show_autonomous_prompts
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")
@@ -1169,6 +1190,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             llm_presence_penalty=settings.llm_presence_penalty,
             llm_reasoning_effort=settings.llm_reasoning_effort,
             llm_extended_thinking=settings.llm_extended_thinking,
+            llm_use_model_defaults=settings.llm_use_model_defaults,
             context_management=settings.context_management,
             compact_threshold=settings.compact_threshold,
             compact_keep_messages=settings.compact_keep_messages,
@@ -1297,6 +1319,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "llm_presence_penalty": "LLM_PRESENCE_PENALTY",
             "llm_reasoning_effort": "LLM_REASONING_EFFORT",
             "llm_extended_thinking": "LLM_EXTENDED_THINKING",
+            "llm_use_model_defaults": "LLM_USE_MODEL_DEFAULTS",
             "context_management": "CONTEXT_MANAGEMENT",
             "compact_threshold": "COMPACT_THRESHOLD",
             "compact_keep_messages": "COMPACT_KEEP_MESSAGES",
@@ -1369,7 +1392,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         llm_fields = {"llm_provider", "llm_model", "llm_temperature",
                        "llm_max_tokens", "llm_top_p", "llm_top_k",
                        "llm_frequency_penalty", "llm_presence_penalty",
-                       "llm_reasoning_effort", "llm_extended_thinking"}
+                       "llm_reasoning_effort", "llm_extended_thinking",
+                       "llm_use_model_defaults"}
         if llm_fields & set(updates_dict.keys()):
             # Clear graph caches so they rebuild with new LLM config
             with agent._graph_cache_lock:
@@ -1385,6 +1409,36 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "updated": list(updates_dict.keys()),
             "restart_required": False,
         }
+
+    # ========================================================================
+    # Model Metadata Endpoint
+    # ========================================================================
+
+    @app.get("/models", tags=["Settings"])
+    async def get_openrouter_models(
+        _: bool = Depends(verify_api_key),
+    ):
+        """Return cached OpenRouter model metadata for frontend enrichment."""
+        from ..config.model_capabilities import list_all_models
+
+        models = list_all_models()
+        return [
+            {
+                "id": m.id,
+                "name": m.name,
+                "context_length": m.context_length,
+                "max_completion_tokens": m.max_completion_tokens,
+                "pricing_prompt": m.pricing_prompt,
+                "pricing_completion": m.pricing_completion,
+                "supported_parameters": sorted(m.supported_parameters),
+                "input_modalities": sorted(m.input_modalities),
+                "tokenizer": m.tokenizer,
+                "default_temperature": m.default_temperature,
+                "default_top_p": m.default_top_p,
+                "default_frequency_penalty": m.default_frequency_penalty,
+            }
+            for m in models
+        ]
 
     # ========================================================================
     # Dashboard Endpoints

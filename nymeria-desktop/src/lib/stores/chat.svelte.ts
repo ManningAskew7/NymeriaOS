@@ -92,6 +92,20 @@ function createChatStore() {
       return id;
     },
 
+    addAutonomousPromptMessage(prompt: string, source: string): string {
+      const id = generateId();
+      const message: Message = {
+        id,
+        role: 'user',
+        content: prompt,
+        timestamp: new Date(),
+        status: 'complete',
+        autonomousSource: source,
+      };
+      messages = [...messages, message];
+      return id;
+    },
+
     addAssistantMessage(): string {
       const id = generateId();
       const message: Message = {

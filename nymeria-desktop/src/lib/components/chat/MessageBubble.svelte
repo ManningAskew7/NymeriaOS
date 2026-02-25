@@ -121,8 +121,9 @@
   );
 
   // Should this entire message be hidden from the UI?
+  // Never hide messages explicitly tagged as autonomous prompts (user opted in to see them)
   let isHiddenMessage = $derived(
-    (message.role === 'user' && parsedUserContent.hidden) ||
+    (message.role === 'user' && parsedUserContent.hidden && !message.autonomousSource) ||
     (message.role === 'assistant' && parsedAssistantContent.hidden)
   );
 
@@ -181,7 +182,7 @@
 </script>
 
 {#if !isHiddenMessage}
-<div class="message-bubble" class:user={isUser} class:assistant={!isUser}>
+<div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource}>
   <div class="bubble-content">
     {#if isUser}
       {#if hasAttachments}
@@ -207,6 +208,21 @@
               </div>
             {/if}
           {/each}
+        </div>
+      {/if}
+      {#if message.autonomousSource}
+        <div class="autonomous-badge">
+          <span class="autonomous-source-label">
+            {#if message.autonomousSource === 'scheduler'}
+              Scheduled Task
+            {:else if message.autonomousSource === 'watchdog'}
+              Watchdog Nudge
+            {:else if message.autonomousSource === 'trigger'}
+              Trigger
+            {:else}
+              Autonomous
+            {/if}
+          </span>
         </div>
       {/if}
       {#if parsedUserContent.text}
@@ -335,6 +351,30 @@
     background: var(--bubble-user);
     border-bottom-right-radius: var(--radius-sm);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  }
+
+  .autonomous-prompt .bubble-content {
+    background: color-mix(in srgb, var(--accent-secondary) 10%, var(--bg-elevated));
+    border: 1px dashed color-mix(in srgb, var(--accent-secondary) 50%, transparent);
+    border-bottom-right-radius: var(--radius-sm);
+    box-shadow: none;
+  }
+
+  .autonomous-badge {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-sm);
+    padding-bottom: var(--spacing-xs);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-secondary) 25%, transparent);
+  }
+
+  .autonomous-source-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--accent-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
 
   .assistant .bubble-content {

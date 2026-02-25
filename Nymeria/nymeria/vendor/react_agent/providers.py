@@ -59,6 +59,22 @@ def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatM
     llm = create_llm(config)
 
     if tools:
+        # For OpenRouter: check if model reports supported_parameters and skip
+        # bind_tools if "tools" is positively excluded. If no support data,
+        # assume tools are supported (conservative policy).
+        if config.provider == "openrouter":
+            try:
+                from nymeria.config.model_capabilities import get_supported_parameters
+                supported = get_supported_parameters(config.model)
+                if supported and "tools" not in supported:
+                    logger.warning(
+                        f"[LLM] Model {config.model} does not list 'tools' in supported_parameters — "
+                        f"skipping bind_tools. Agent will respond in text only."
+                    )
+                    return llm
+            except Exception as e:
+                logger.debug(f"Could not check tool support: {e}")
+
         return llm.bind_tools(tools)
 
     return llm
@@ -73,10 +89,13 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
 
     kwargs = {
         "model": config.model,
-        "temperature": config.temperature,
         "api_key": config.api_key,
         "base_url": config.base_url or "https://openrouter.ai/api/v1",
     }
+
+    # Temperature: only send if not None (None = let OpenRouter apply model defaults)
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
 
     # HTTP read timeout — prevents hanging on stalled OpenRouter connections.
     if config.request_timeout is not None:
@@ -107,18 +126,32 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     if config.presence_penalty is not None:
         kwargs["presence_penalty"] = config.presence_penalty
 
+    # Check supported_parameters for smart gating.
+    # Conservative policy: only skip a param when we have positive data saying
+    # it's unsupported. If cache is empty, no gates activate.
+    supported: set = set()
+    has_support_data = False
+    try:
+        from nymeria.config.model_capabilities import get_supported_parameters
+        supported = get_supported_parameters(config.model)
+        has_support_data = bool(supported)
+    except Exception as e:
+        logger.debug(f"Could not fetch supported_parameters: {e}")
+
     # Build OpenRouter reasoning config for extra_body.
-    # extra_body passes params directly to the provider without LangChain
-    # intercepting them (model_kwargs triggers a warning about 'reasoning'
-    # being a first-class field, and direct reasoning= switches to Responses API).
-    reasoning_config = {}
+    # Only send when extended thinking is explicitly enabled AND the model
+    # supports reasoning (or we have no support data to say otherwise).
     if config.extended_thinking:
-        reasoning_config["enabled"] = True
-        if config.reasoning_effort is not None:
-            reasoning_config["effort"] = config.reasoning_effort
-    else:
-        reasoning_config["effort"] = "none"
-    kwargs["extra_body"] = {"reasoning": reasoning_config}
+        if not has_support_data or "reasoning" in supported:
+            reasoning_config = {"enabled": True}
+            if config.reasoning_effort is not None:
+                reasoning_config["effort"] = config.reasoning_effort
+            kwargs["extra_body"] = {"reasoning": reasoning_config}
+        else:
+            logger.warning(
+                f"[LLM] Skipping reasoning config for {config.model} — "
+                f"'reasoning' not in supported_parameters"
+            )
 
     # Other provider-specific params that aren't first-class ChatOpenAI fields
     model_kwargs = {}
@@ -141,9 +174,11 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
 
     kwargs = {
         "model": config.model,
-        "temperature": config.temperature,
         "api_key": api_key,
     }
+
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
 
     if config.request_timeout is not None:
         kwargs["timeout"] = config.request_timeout
@@ -185,9 +220,11 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 
     kwargs = {
         "model": config.model,
-        "temperature": config.temperature,
         "api_key": api_key,
     }
+
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
 
     if config.request_timeout is not None:
         kwargs["timeout"] = config.request_timeout

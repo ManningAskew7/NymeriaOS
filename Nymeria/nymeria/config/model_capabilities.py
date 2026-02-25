@@ -5,6 +5,7 @@ Falls back to static lists if API is unavailable.
 """
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 import time
 from typing import Dict, List, Optional, Set
@@ -34,11 +35,33 @@ EXTENSION_MIME_FALLBACKS = {
     ".webp": "image/webp",
 }
 
-# Cache for model capabilities fetched from OpenRouter
-_capabilities_cache: Optional[Dict[str, Set[str]]] = None
-_context_limits_cache: Dict[str, int] = {}
-_max_output_cache: Dict[str, int] = {}
+
+# ============================================================================
+# Unified ModelInfo cache
+# ============================================================================
+
+@dataclass
+class ModelInfo:
+    """Unified model metadata from OpenRouter API."""
+
+    id: str                                          # "anthropic/claude-sonnet-4"
+    name: str = ""                                   # "Claude Sonnet 4"
+    context_length: int = 0
+    max_completion_tokens: Optional[int] = None
+    input_modalities: Set[str] = field(default_factory=set)
+    supported_parameters: Set[str] = field(default_factory=set)
+    default_temperature: Optional[float] = None
+    default_top_p: Optional[float] = None
+    default_frequency_penalty: Optional[float] = None
+    pricing_prompt: Optional[float] = None           # USD per token
+    pricing_completion: Optional[float] = None       # USD per token
+    tokenizer: Optional[str] = None                  # "Claude", "GPT", "Llama3"
+
+
+# Single unified cache: model_id (lowercase) -> ModelInfo
+_model_cache: Dict[str, ModelInfo] = {}
 _cache_timestamp: float = 0
+_cache_populated: bool = False
 _CACHE_TTL_SECONDS = 3600  # Refresh cache every hour
 
 # Default context limits for common models (fallback when API unavailable)
@@ -65,17 +88,21 @@ DEFAULT_CONTEXT_LIMITS = {
 }
 
 
-def _fetch_openrouter_models() -> Dict[str, Set[str]]:
-    """
-    Fetch model capabilities from OpenRouter API.
+def _safe_float(value, allow_zero: bool = False) -> Optional[float]:
+    """Safely parse a pricing string or number to float."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+        if allow_zero:
+            return f if f >= 0 else None
+        return f if f > 0 else None
+    except (ValueError, TypeError):
+        return None
 
-    Also populates _context_limits_cache with context_length and
-    _max_output_cache with max_completion_tokens for each model.
 
-    Returns:
-        Dict mapping model_id to set of input modalities (e.g., {"image", "file", "text"})
-    """
-    global _context_limits_cache, _max_output_cache
+def _fetch_openrouter_models() -> Dict[str, ModelInfo]:
+    """Fetch model metadata from OpenRouter API and populate unified cache."""
     try:
         response = httpx.get(
             "https://openrouter.ai/api/v1/models",
@@ -84,78 +111,104 @@ def _fetch_openrouter_models() -> Dict[str, Set[str]]:
         response.raise_for_status()
         data = response.json()
 
-        capabilities = {}
+        cache: Dict[str, ModelInfo] = {}
         for model in data.get("data", []):
             model_id = model.get("id", "")
+            if not model_id:
+                continue
+
+            model_key = model_id.lower()
             architecture = model.get("architecture", {})
-            input_modalities = architecture.get("input_modalities", [])
+            top_provider = model.get("top_provider", {})
+            pricing = model.get("pricing", {})
 
-            if model_id:
-                model_key = model_id.lower()
+            # Supported parameters
+            supported_params = set()
+            raw_params = model.get("supported_parameters") or []
+            if isinstance(raw_params, list):
+                supported_params = {str(p) for p in raw_params}
 
-                # Extract context length
-                context_length = model.get("context_length", 0)
-                if context_length:
-                    _context_limits_cache[model_key] = context_length
+            # Default parameters
+            default_params = model.get("default_parameters", {}) or {}
 
-                # Extract max output tokens from top_provider
-                top_provider = model.get("top_provider", {})
-                max_completion = top_provider.get("max_completion_tokens")
-                if max_completion and isinstance(max_completion, int):
-                    _max_output_cache[model_key] = max_completion
+            # Max completion tokens
+            max_completion = top_provider.get("max_completion_tokens")
+            if not (max_completion and isinstance(max_completion, int)):
+                max_completion = None
 
-                # Extract modalities
-                if input_modalities:
-                    capabilities[model_key] = set(input_modalities)
+            info = ModelInfo(
+                id=model_id,
+                name=model.get("name", model_id),
+                context_length=model.get("context_length", 0) or 0,
+                max_completion_tokens=max_completion,
+                input_modalities=set(architecture.get("input_modalities") or []),
+                supported_parameters=supported_params,
+                default_temperature=_safe_float(default_params.get("temperature"), allow_zero=True),
+                default_top_p=_safe_float(default_params.get("top_p"), allow_zero=True),
+                default_frequency_penalty=_safe_float(default_params.get("frequency_penalty"), allow_zero=True),
+                pricing_prompt=_safe_float(pricing.get("prompt")),
+                pricing_completion=_safe_float(pricing.get("completion")),
+                tokenizer=architecture.get("tokenizer"),
+            )
 
-        logger.info(f"Fetched capabilities for {len(capabilities)} models from OpenRouter")
-        logger.info(f"Cached context limits for {len(_context_limits_cache)} models")
-        return capabilities
+            cache[model_key] = info
+
+        logger.info(f"Fetched metadata for {len(cache)} models from OpenRouter")
+        return cache
 
     except Exception as e:
         logger.warning(f"Failed to fetch OpenRouter models: {e}")
         return {}
 
 
-def _get_capabilities_cache() -> Dict[str, Set[str]]:
-    """Get cached capabilities, refreshing if stale."""
-    global _capabilities_cache, _cache_timestamp
+def _ensure_cache() -> Dict[str, ModelInfo]:
+    """Ensure cache is populated and not stale."""
+    global _model_cache, _cache_timestamp, _cache_populated
 
     now = time.time()
-    if _capabilities_cache is None or (now - _cache_timestamp) > _CACHE_TTL_SECONDS:
-        _capabilities_cache = _fetch_openrouter_models()
-        _cache_timestamp = now
+    if not _cache_populated or (now - _cache_timestamp) > _CACHE_TTL_SECONDS:
+        result = _fetch_openrouter_models()
+        if result:
+            _model_cache = result
+            _cache_timestamp = now
+            _cache_populated = True
+        elif not _cache_populated:
+            # First fetch failed — allow retry on next call
+            pass
 
-    return _capabilities_cache or {}
+    return _model_cache
 
 
-def _check_modality(model_id: str, modality: str) -> Optional[bool]:
-    """
-    Check if a model supports a specific input modality using OpenRouter API.
-
-    Args:
-        model_id: The model identifier
-        modality: The modality to check ("image", "file", "audio", etc.)
-
-    Returns:
-        True if supported, False if not supported, None if unknown (not in cache)
-    """
+def _lookup_model(model_id: str) -> Optional[ModelInfo]:
+    """Look up a model by ID with prefix-match fallback."""
     if not model_id:
-        return False
+        return None
 
-    cache = _get_capabilities_cache()
+    cache = _ensure_cache()
     model_lower = model_id.lower()
 
     # Direct match
     if model_lower in cache:
-        return modality in cache[model_lower]
+        return cache[model_lower]
 
-    # Try prefix matching (e.g., "anthropic/claude-3-sonnet" matches "anthropic/claude-3-sonnet:beta")
-    for cached_id, modalities in cache.items():
+    # Prefix matching (e.g., "anthropic/claude-3-sonnet" matches "anthropic/claude-3-sonnet:beta")
+    for cached_id, info in cache.items():
         if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
-            return modality in modalities
+            return info
 
-    return None  # Unknown model
+    return None
+
+
+def _check_modality(model_id: str, modality: str) -> Optional[bool]:
+    """Check if a model supports a specific input modality."""
+    if not model_id:
+        return False
+
+    info = _lookup_model(model_id)
+    if info is None:
+        return None  # Unknown model
+
+    return modality in info.input_modalities
 
 
 # ============================================================================
@@ -217,130 +270,62 @@ def _fallback_check(model_id: str, model_set: Set[str]) -> bool:
 
 
 # ============================================================================
-# Public API
+# Public API — existing functions (same signatures, same behavior)
 # ============================================================================
 
 def supports_vision(model_id: str) -> bool:
-    """
-    Check if a model supports vision/image input.
-
-    First tries OpenRouter API, falls back to static list.
-
-    Args:
-        model_id: The model identifier (e.g., "anthropic/claude-3-sonnet")
-
-    Returns:
-        True if the model supports vision, False otherwise
-    """
-    # Try dynamic check first
+    """Check if a model supports vision/image input."""
     result = _check_modality(model_id, "image")
     if result is not None:
         return result
-
-    # Fallback to static list
     return _fallback_check(model_id, VISION_CAPABLE_MODELS)
 
 
 def supports_documents(model_id: str) -> bool:
-    """
-    Check if a model supports document/file input (PDFs, text files, etc.).
-
-    First tries OpenRouter API, falls back to static list.
-
-    Args:
-        model_id: The model identifier (e.g., "anthropic/claude-3-sonnet")
-
-    Returns:
-        True if the model supports documents, False otherwise
-    """
-    # Try dynamic check first
+    """Check if a model supports document/file input (PDFs, text files, etc.)."""
     result = _check_modality(model_id, "file")
     if result is not None:
         return result
-
-    # Fallback to static list
     return _fallback_check(model_id, DOCUMENT_CAPABLE_MODELS)
 
 
 def get_model_modalities(model_id: str) -> Set[str]:
-    """
-    Get all input modalities supported by a model.
-
-    Args:
-        model_id: The model identifier
-
-    Returns:
-        Set of modality strings (e.g., {"text", "image", "file"})
-    """
+    """Get all input modalities supported by a model."""
     if not model_id:
         return set()
 
-    cache = _get_capabilities_cache()
-    model_lower = model_id.lower()
+    info = _lookup_model(model_id)
+    if info is not None:
+        return info.input_modalities.copy()
 
-    # Direct match
-    if model_lower in cache:
-        return cache[model_lower].copy()
-
-    # Prefix matching
-    for cached_id, modalities in cache.items():
-        if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
-            return modalities.copy()
-
-    # Unknown - return empty set
     return set()
 
 
 def refresh_capabilities_cache() -> int:
-    """
-    Force refresh the capabilities cache.
+    """Force refresh the capabilities cache."""
+    global _model_cache, _cache_timestamp, _cache_populated
 
-    Returns:
-        Number of models in the refreshed cache
-    """
-    global _capabilities_cache, _cache_timestamp
-
-    _capabilities_cache = _fetch_openrouter_models()
+    _model_cache = _fetch_openrouter_models()
     _cache_timestamp = time.time()
+    _cache_populated = True
 
-    return len(_capabilities_cache)
+    return len(_model_cache)
 
 
 def get_context_limit(model_id: str) -> int:
-    """
-    Get context window size (in tokens) for a model.
-
-    First tries the cache populated from OpenRouter API, then falls back
-    to DEFAULT_CONTEXT_LIMITS for known models.
-
-    Args:
-        model_id: The model identifier (e.g., "anthropic/claude-sonnet-4" or "claude-sonnet-4")
-
-    Returns:
-        Context window size in tokens
-    """
+    """Get context window size (in tokens) for a model."""
     if not model_id:
         return DEFAULT_CONTEXT_LIMITS["_default"]
 
-    # Ensure cache is populated
-    _get_capabilities_cache()
-
-    model_lower = model_id.lower()
-
-    # Try exact match in dynamic cache first
-    if model_lower in _context_limits_cache:
-        return _context_limits_cache[model_lower]
-
-    # Try prefix matching in dynamic cache
-    for cached_id, limit in _context_limits_cache.items():
-        if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
-            return limit
+    info = _lookup_model(model_id)
+    if info is not None and info.context_length > 0:
+        return info.context_length
 
     # Fallback to static defaults
+    model_lower = model_id.lower()
     for known_model, limit in DEFAULT_CONTEXT_LIMITS.items():
         if known_model == "_default":
             continue
-        # Flexible matching: either direction
         if known_model.lower() in model_lower or model_lower in known_model.lower():
             return limit
 
@@ -348,44 +333,17 @@ def get_context_limit(model_id: str) -> int:
 
 
 def get_max_output_tokens(model_id: str) -> Optional[int]:
-    """
-    Get the maximum output token limit for a model.
-
-    Uses ``top_provider.max_completion_tokens`` from the OpenRouter API.
-    Returns ``None`` if the model is unknown or has no reported limit.
-
-    Args:
-        model_id: The model identifier (e.g., "anthropic/claude-sonnet-4")
-
-    Returns:
-        Max output tokens, or None if unknown
-    """
+    """Get the maximum output token limit for a model."""
     if not model_id:
         return None
 
-    # Ensure cache is populated
-    _get_capabilities_cache()
-
-    model_lower = model_id.lower()
-
-    raw_max_output: Optional[int] = None
-
-    # Exact match
-    if model_lower in _max_output_cache:
-        raw_max_output = _max_output_cache[model_lower]
-    else:
-        # Prefix matching
-        for cached_id, limit in _max_output_cache.items():
-            if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
-                raw_max_output = limit
-                break
-
-    if raw_max_output is None:
+    info = _lookup_model(model_id)
+    if info is None or info.max_completion_tokens is None:
         return None
 
+    raw_max_output = info.max_completion_tokens
+
     # Safety cap: never exceed 50% of context window.
-    # Prevents models that report max_completion_tokens == context_length
-    # (e.g. kimi-k2.5: 262k/262k) from reserving the entire window for output.
     context_limit = get_context_limit(model_id)
     safety_cap = context_limit // 2
     if raw_max_output > safety_cap:
@@ -398,13 +356,56 @@ def get_max_output_tokens(model_id: str) -> Optional[int]:
     return raw_max_output
 
 
-def infer_mime_type(mime_type: str, file_name: str = "") -> str:
-    """
-    Infer a stable MIME type from explicit MIME and optional filename.
+# ============================================================================
+# New public API
+# ============================================================================
 
-    Browser file APIs can produce an empty MIME type (or generic
-    application/octet-stream) for some extensions on certain platforms.
-    """
+def get_supported_parameters(model_id: str) -> Set[str]:
+    """Get the set of API parameters a model supports (e.g. 'tools', 'reasoning', 'temperature')."""
+    info = _lookup_model(model_id)
+    if info is not None:
+        return info.supported_parameters.copy()
+    return set()
+
+
+def get_model_defaults(model_id: str) -> Dict[str, float]:
+    """Get model-specific default parameter values (temperature, top_p, frequency_penalty)."""
+    info = _lookup_model(model_id)
+    if info is None:
+        return {}
+
+    defaults: Dict[str, float] = {}
+    if info.default_temperature is not None:
+        defaults["temperature"] = info.default_temperature
+    if info.default_top_p is not None:
+        defaults["top_p"] = info.default_top_p
+    if info.default_frequency_penalty is not None:
+        defaults["frequency_penalty"] = info.default_frequency_penalty
+    return defaults
+
+
+def get_model_info(model_id: str) -> Optional[ModelInfo]:
+    """Get full model metadata. Returns None if model is unknown."""
+    return _lookup_model(model_id)
+
+
+def list_all_models() -> List[ModelInfo]:
+    """Return all cached model metadata entries."""
+    cache = _ensure_cache()
+    return list(cache.values())
+
+
+def get_cache_timestamp() -> float:
+    """Return the timestamp of the last cache refresh (0 if never fetched)."""
+    return _cache_timestamp
+
+
+# ============================================================================
+# Attachment utilities (unchanged)
+# ============================================================================
+
+def infer_mime_type(mime_type: str, file_name: str = "") -> str:
+    """Infer a stable MIME type from explicit MIME and optional filename."""
     mime = (mime_type or "").strip().lower()
 
     if mime and mime not in {"application/octet-stream", "binary/octet-stream"}:
@@ -433,12 +434,7 @@ def evaluate_attachment_compatibility(
     provider: str,
     attachments: Optional[List[Dict[str, str]]],
 ) -> Dict[str, object]:
-    """
-    Evaluate whether attachments are likely compatible with a model.
-
-    Returns a structured compatibility report that callers can use for
-    preflight UI warnings and runtime guardrails.
-    """
+    """Evaluate whether attachments are likely compatible with a model."""
     normalized_provider = (provider or "").strip().lower()
     modalities = get_model_modalities(model_id) if normalized_provider == "openrouter" else set()
 

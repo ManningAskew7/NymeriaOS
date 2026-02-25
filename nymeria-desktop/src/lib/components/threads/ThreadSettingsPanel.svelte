@@ -8,6 +8,7 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { modelsStore } from '$lib/stores/models.svelte';
 
   interface Props {
     thread: Thread;
@@ -49,6 +50,14 @@
       : 'default'
   );
   let llmReasoningEffort = $state(threadConfig?.llmConfig?.reasoning_effort ?? '');
+  let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(
+    threadConfig?.llmConfig?.use_model_defaults != null
+      ? String(threadConfig.llmConfig.use_model_defaults) as 'true' | 'false'
+      : 'default'
+  );
+
+  // Model metadata (reactive lookup)
+  const threadModelMeta = $derived(modelsStore.getById(llmModel));
 
   // System prompt & agent fields
   let systemPrompt = $state(threadConfig?.systemPrompt ?? '');
@@ -56,18 +65,24 @@
   let callableName = $state(threadConfig?.callableName ?? '');
   let callableDescription = $state(threadConfig?.callableDescription ?? '');
 
+  // Visibility
+  let showAutonomousPrompts = $state(threadConfig?.showAutonomousPrompts ?? false);
+
   // Search
   let toolSearch = $state('');
   let saving = $state(false);
   let error = $state('');
 
-  // Ensure tools and triggers are loaded
+  // Ensure tools, triggers, and model metadata are loaded
   $effect(() => {
     if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
       unifiedToolsStore.loadTools();
     }
     if (!triggersStore.loaded && !triggersStore.loading) {
       triggersStore.loadTriggers();
+    }
+    if (!modelsStore.loaded && !modelsStore.loading) {
+      modelsStore.loadModels();
     }
     if (optionalTools.length === 0 && !optionalToolsLoading) {
       optionalToolsLoading = true;
@@ -127,6 +142,8 @@
     const origExtThinking = threadConfig?.llmConfig?.extended_thinking != null
       ? String(threadConfig.llmConfig.extended_thinking) : 'default';
     const origReasoning = threadConfig?.llmConfig?.reasoning_effort ?? '';
+    const origUseModelDefaults = threadConfig?.llmConfig?.use_model_defaults != null
+      ? String(threadConfig.llmConfig.use_model_defaults) : 'default';
 
     const origEnabled = new Set(threadConfig?.enabledTools ?? []);
     const origSystemPrompt = threadConfig?.systemPrompt ?? '';
@@ -149,10 +166,14 @@
     if (llmMaxTokens !== origMaxTokens) return true;
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
+    if (llmUseModelDefaults !== origUseModelDefaults) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
     if (callableDescription !== origCallableDescription) return true;
+
+    const origShowAutonomous = threadConfig?.showAutonomousPrompts ?? false;
+    if (showAutonomousPrompts !== origShowAutonomous) return true;
 
     return false;
   }
@@ -187,7 +208,8 @@
 
       // LLM config
       const hasLlm = llmProvider || llmModel || llmTemperature || llmMaxTokens ||
-        llmExtendedThinking !== 'default' || llmReasoningEffort;
+        llmExtendedThinking !== 'default' || llmReasoningEffort ||
+        llmUseModelDefaults !== 'default';
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -199,6 +221,12 @@
           llm.extended_thinking = llmExtendedThinking === 'true';
         }
         if (llmReasoningEffort) llm.reasoning_effort = llmReasoningEffort;
+        if (llmUseModelDefaults !== 'default') {
+          llm.use_model_defaults = llmUseModelDefaults === 'true';
+        } else {
+          // Explicitly clear to remove stale per-thread override
+          llm.use_model_defaults = null;
+        }
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -217,6 +245,9 @@
         updates.callable_name = callableName.trim() || null;
         updates.callable_description = callableDescription.trim() || null;
       }
+
+      // Visibility
+      updates.show_autonomous_prompts = showAutonomousPrompts;
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
@@ -258,6 +289,7 @@
       isCallable = false;
       callableName = '';
       callableDescription = '';
+      showAutonomousPrompts = false;
       onSaved({
         threadId: thread.id,
         instructions: null,
@@ -268,6 +300,7 @@
         callable: false,
         callableName: null,
         callableDescription: null,
+        showAutonomousPrompts: false,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -384,6 +417,18 @@
             rows={8}
           ></textarea>
           <span class="char-count">{instructions.length} / 5000</span>
+
+          <div class="visibility-section">
+            <h3 class="section-title">Visibility</h3>
+            <label class="toggle-row">
+              <input type="checkbox" bind:checked={showAutonomousPrompts} />
+              <span class="toggle-label">Show autonomous prompts</span>
+            </label>
+            <p class="field-hint">
+              Show the prompts sent by the scheduler, watchdog, and triggers as
+              messages in the chat. Useful for debugging autonomous behavior.
+            </p>
+          </div>
         </div>
 
       {:else if activeTab === 'system-prompt'}
@@ -468,6 +513,41 @@
               bind:value={llmModel}
               placeholder="Leave empty for global default"
             />
+            {#if threadModelMeta && llmModel}
+              <div class="model-meta-hint">
+                <span class="meta-name">{threadModelMeta.name}</span>
+                <span class="meta-details">
+                  {modelsStore.formatContext(threadModelMeta.context_length)} ctx
+                  {#if threadModelMeta.pricing_prompt != null}
+                    &middot; In: {modelsStore.formatPrice(threadModelMeta.pricing_prompt)}
+                  {/if}
+                  {#if threadModelMeta.pricing_completion != null}
+                    &middot; Out: {modelsStore.formatPrice(threadModelMeta.pricing_completion)}
+                  {/if}
+                  {#if threadModelMeta.input_modalities.includes('image')}
+                    &middot; Vision
+                  {/if}
+                  {#if threadModelMeta.supported_parameters.includes('reasoning')}
+                    &middot; Reasoning
+                  {/if}
+                </span>
+              </div>
+            {/if}
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="llm-use-defaults">Use Model Defaults</label>
+            <select id="llm-use-defaults" class="field-select" bind:value={llmUseModelDefaults}>
+              <option value="default">Default (inherit global)</option>
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+            <span class="field-hint">
+              Let the provider apply optimal defaults for temperature, top_p, frequency penalty
+              {#if llmUseModelDefaults === 'true' && threadModelMeta?.default_temperature != null}
+                (temp: {threadModelMeta.default_temperature})
+              {/if}
+            </span>
           </div>
 
           <div class="field-group">
@@ -481,6 +561,7 @@
               step="0.1"
               bind:value={llmTemperature}
               placeholder="Default"
+              disabled={llmUseModelDefaults === 'true'}
             />
           </div>
 
@@ -756,6 +837,28 @@
     margin: 0 0 var(--spacing-sm) 0;
   }
 
+  .model-meta-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+    padding: 5px 8px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+  }
+
+  .meta-name {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .meta-details {
+    color: var(--text-muted);
+  }
+
   .field-group {
     margin-bottom: var(--spacing-md);
   }
@@ -816,6 +919,12 @@
     font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
     font-size: calc(var(--font-size-sm) - 1px);
     line-height: 1.5;
+  }
+
+  .visibility-section {
+    margin-top: var(--spacing-lg);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--border-default);
   }
 
   .agent-config-section {
