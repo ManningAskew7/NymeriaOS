@@ -28,6 +28,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking) |
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
+| `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for `openrouter` or `openai` providers (e.g., `http://localhost:8317/v1` for a local proxy). Leave unset to use the provider's standard URL. |
 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
@@ -177,6 +178,7 @@ LLM_TEMPERATURE=1.0
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Advanced LLM Settings (all optional)
+# LLM_BASE_URL=                       # Override API endpoint (e.g., local proxy)
 # LLM_MAX_TOKENS=4096
 # LLM_TOP_P=0.95
 # LLM_TOP_K=40
@@ -270,6 +272,21 @@ OpenRouter provides access to many models from different providers through a uni
 - `z-ai/glm-4.7` - Basic compatibility
 
 Most OpenRouter models work with Nymeria's agent harness, including tool calling.
+
+### Local Proxy (e.g., CLIProxyAPI)
+
+Route requests through a local OpenAI-compatible proxy to use a subscription plan instead of per-API-call billing. Uses the `openai` provider with `LLM_BASE_URL` override.
+
+```bash
+LLM_PROVIDER=openai
+LLM_MODEL=claude-sonnet-4-6           # Model name from the proxy's /v1/models
+OPENAI_API_KEY=not-required            # Proxy ignores this, but validation requires it
+LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint
+```
+
+**Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy.
+
+**Known limitation**: CLIProxyAPI has an [open issue](https://github.com/router-for-me/CLIProxyAPI/issues/1165) where tool calling can fail through the proxy (tool names get a `proxy_` prefix). Workaround: set callable threads that rely on tool calling (e.g., OutlookAgent, CalendarAgent) to `provider=openrouter` so they bypass the proxy.
 
 ---
 
