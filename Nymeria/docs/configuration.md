@@ -27,8 +27,9 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_PRESENCE_PENALTY` | (provider default) | -2.0 - 2.0 | Encourage new topics |
 | `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking) |
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models |
+| `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
 
-**Note:** Not all providers support all parameters. Unsupported parameters are silently ignored.
+**Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
 ### API Keys
 
@@ -182,6 +183,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 # LLM_FREQUENCY_PENALTY=0.0
 # LLM_PRESENCE_PENALTY=0.0
 # LLM_REASONING_EFFORT=medium  # For reasoning models
+# LLM_USE_MODEL_DEFAULTS=false # Let provider use model-specific optimal defaults
 
 # Web search (optional but recommended)
 PERPLEXITY_API_KEY=pplx-...

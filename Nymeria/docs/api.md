@@ -374,6 +374,7 @@ Authorization: Bearer <token>
   "llm_presence_penalty": null,
   "llm_reasoning_effort": null,
   "llm_extended_thinking": false,
+  "llm_use_model_defaults": false,
   "context_management": "auto_compact",
   "compact_threshold": 0.8,
   "compact_keep_messages": 4,
@@ -409,7 +410,8 @@ Authorization: Bearer <token>
   "llm_top_k": 40,
   "llm_frequency_penalty": 0.5,
   "llm_presence_penalty": 0.3,
-  "llm_reasoning_effort": "medium"
+  "llm_reasoning_effort": "medium",
+  "llm_use_model_defaults": false
 }
 ```
 
@@ -424,6 +426,7 @@ Authorization: Bearer <token>
 | `llm_frequency_penalty` | float | -2.0-2.0 | Reduce repetition |
 | `llm_presence_penalty` | float | -2.0-2.0 | Encourage new topics |
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
+| `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 
 **Response:**
 ```json
@@ -435,6 +438,52 @@ Authorization: Bearer <token>
 ```
 
 **Note:** Changes are written to `.env`/`.env.docker` and hot-reloaded immediately.
+
+---
+
+### List OpenRouter Models
+
+```http
+GET /models
+Authorization: Bearer <token>
+```
+
+Returns cached OpenRouter model metadata. The backend fetches model data from the OpenRouter API and caches it for 1 hour. Returns an empty list if the cache hasn't been populated yet (non-critical enrichment data).
+
+**Response:**
+```json
+[
+  {
+    "id": "anthropic/claude-sonnet-4",
+    "name": "Claude Sonnet 4",
+    "context_length": 200000,
+    "max_completion_tokens": 16384,
+    "pricing_prompt": 0.000003,
+    "pricing_completion": 0.000015,
+    "supported_parameters": ["temperature", "top_p", "tools", "reasoning", "max_tokens"],
+    "input_modalities": ["text", "image", "file"],
+    "tokenizer": "Claude",
+    "default_temperature": 1.0,
+    "default_top_p": null,
+    "default_frequency_penalty": null
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | OpenRouter model identifier (e.g. `anthropic/claude-sonnet-4`) |
+| `name` | string | Human-readable model name |
+| `context_length` | int | Maximum context window in tokens |
+| `max_completion_tokens` | int \| null | Maximum output tokens (null if unknown) |
+| `pricing_prompt` | float \| null | Cost per input token in USD |
+| `pricing_completion` | float \| null | Cost per output token in USD |
+| `supported_parameters` | string[] | API parameters the model accepts (used for smart parameter gating) |
+| `input_modalities` | string[] | Supported input types: `text`, `image`, `file` |
+| `tokenizer` | string \| null | Tokenizer family: `Claude`, `GPT`, `Llama3`, etc. |
+| `default_temperature` | float \| null | Model's default temperature (shown when "Use model defaults" is enabled) |
+| `default_top_p` | float \| null | Model's default top_p |
+| `default_frequency_penalty` | float \| null | Model's default frequency penalty |
 
 ---
 
