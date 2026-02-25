@@ -129,6 +129,10 @@ class Settings(BaseSettings):
         default=False,
         description="Use model-specific defaults for temperature/top_p/frequency_penalty instead of global values"
     )
+    llm_base_url: Optional[str] = Field(
+        default=None,
+        description="Override base URL for LLM API (e.g., local proxy at http://localhost:8317/v1)"
+    )
 
     # API Keys
     openai_api_key: Optional[str] = Field(default=None)

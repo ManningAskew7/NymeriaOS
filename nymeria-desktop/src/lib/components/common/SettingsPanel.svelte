@@ -28,6 +28,7 @@
   let llmReasoningEffort = $state<string | null>(null);
   let llmExtendedThinking = $state(false);
   let llmUseModelDefaults = $state(false);
+  let llmBaseUrl = $state('');
   let showAdvancedLlm = $state(false);
   // Agent settings
   let contextManagement = $state<string>('auto_compact');
@@ -72,6 +73,7 @@
       llmReasoningEffort = serverSettings.llm_reasoning_effort;
       llmExtendedThinking = serverSettings.llm_extended_thinking;
       llmUseModelDefaults = serverSettings.llm_use_model_defaults;
+      llmBaseUrl = serverSettings.llm_base_url || '';
       contextManagement = serverSettings.context_management;
       // Load model metadata for OpenRouter enrichment
       if (serverSettings.llm_provider === 'openrouter') {
@@ -155,6 +157,7 @@
         llm_reasoning_effort: llmReasoningEffort,
         llm_extended_thinking: llmExtendedThinking,
         llm_use_model_defaults: llmUseModelDefaults,
+        llm_base_url: llmBaseUrl,
         context_management: contextManagement,
         sliding_window_cycles: slidingWindowCycles,
         max_self_invokes_per_hour: maxSelfInvokesPerHour,
@@ -530,6 +533,20 @@
                   <option value="high">High</option>
                 </select>
                 <p class="hint">For reasoning models (o1, Claude with thinking)</p>
+              </div>
+
+              <div class="field">
+                <label for="llm-base-url">API Base URL (optional)</label>
+                <input
+                  id="llm-base-url"
+                  type="text"
+                  placeholder="Default (provider's standard URL)"
+                  bind:value={llmBaseUrl}
+                />
+                <p class="hint">
+                  Override the API endpoint (e.g., <code>http://localhost:8317/v1</code> for a local proxy).
+                  Leave empty to use the provider's default URL.
+                </p>
               </div>
 
             </div>

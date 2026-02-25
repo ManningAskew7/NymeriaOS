@@ -435,6 +435,7 @@ export interface ServerSettings {
   llm_reasoning_effort: string | null;
   llm_extended_thinking: boolean;
   llm_use_model_defaults: boolean;
+  llm_base_url: string | null;
   context_management: string;
   compact_threshold: number;
   compact_keep_messages: number;
@@ -460,6 +461,7 @@ export interface ServerSettingsUpdate {
   llm_reasoning_effort?: string | null;
   llm_extended_thinking?: boolean;
   llm_use_model_defaults?: boolean;
+  llm_base_url?: string | null;
   context_management?: string;
   compact_threshold?: number;
   compact_keep_messages?: number;

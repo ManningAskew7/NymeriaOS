@@ -1540,6 +1540,14 @@ class NymeriaAgent:
             frequency_penalty = None
             presence_penalty = None
 
+        # Only apply global base_url when the thread is using the global provider
+        # (or the same provider as global). If a thread overrides to a DIFFERENT
+        # provider, ignore the global base_url — that provider uses its own endpoint.
+        thread_switches_provider = (
+            tc and tc.provider and tc.provider != self.settings.llm_provider
+        )
+        base_url = None if thread_switches_provider else self.settings.llm_base_url
+
         # Resolve API key based on effective provider
         key_map = {
             "openai": self.settings.openai_api_key,
@@ -1552,6 +1560,7 @@ class NymeriaAgent:
             provider=provider,
             model=model,
             api_key=api_key,
+            base_url=base_url,
             temperature=temperature,
             max_tokens=max_tokens,
             top_p=top_p,

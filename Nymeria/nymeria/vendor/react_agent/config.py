@@ -20,7 +20,7 @@ class LLMConfig:
     provider: Literal["openrouter", "openai", "anthropic", "custom"] = "openrouter"
     model: str = field(default_factory=lambda: os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"))
     api_key: Optional[str] = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY"))
-    base_url: Optional[str] = field(default_factory=lambda: os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"))
+    base_url: Optional[str] = field(default_factory=lambda: os.getenv("LLM_BASE_URL"))
     temperature: Optional[float] = 1.0  # None = don't send (use model defaults)
     max_tokens: Optional[int] = None
 
