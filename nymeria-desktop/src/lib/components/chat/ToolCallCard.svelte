@@ -35,13 +35,15 @@
   }
 </script>
 
-<div class="tool-call-card" class:running={toolCall.status === 'running'}>
+<div class="tool-call-card" class:running={toolCall.status === 'running'} class:cancelled={toolCall.status === 'cancelled'}>
   <Collapsible title={toolCall.name} chevronIcon="terminal" chevronSize={20}>
     {#snippet header()}
       <div class="tool-header">
         <span class="tool-name">{toolCall.name}</span>
         {#if duration}
           <span class="duration-badge">{duration}</span>
+        {:else if toolCall.status === 'cancelled'}
+          <span class="duration-badge cancelled-badge">Cancelled</span>
         {/if}
       </div>
     {/snippet}
@@ -89,6 +91,16 @@
 
   .tool-call-card.running {
     border-color: color-mix(in srgb, var(--accent-primary) 30%, var(--glass-border));
+  }
+
+  .tool-call-card.cancelled {
+    border-color: color-mix(in srgb, var(--text-muted) 30%, var(--glass-border));
+    opacity: 0.7;
+  }
+
+  .cancelled-badge {
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   /* Gradient wave animation — accent-colored band sweeps left to right */

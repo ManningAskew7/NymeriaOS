@@ -50,6 +50,12 @@ class ThreadConfig(BaseModel):
     callable: bool = False
     callable_name: Optional[str] = None
     callable_description: Optional[str] = None
+    callable_max_iterations: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="Max ReAct iterations for this callable thread (1-200). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
+    )
     # Debug: show autonomous wakeup prompts (triggers, scheduler, watchdog) in chat
     show_autonomous_prompts: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)

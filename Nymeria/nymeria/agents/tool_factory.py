@@ -56,8 +56,15 @@ description and it will execute autonomously.
         from ..core.thread_agent_executor import invoke as thread_invoke
 
         user_id = config.get("configurable", {}).get("user_id", "default") if config else "default"
+        parent_thread_id = config.get("configurable", {}).get("thread_id") if config else None
 
         logger.info(f"{_name} callable thread tool called: task={task[:100]}...")
+
+        # Register parent→child relationship for cascading abort
+        from ..core.agent import get_current_agent
+        _agent = get_current_agent()
+        if _agent and parent_thread_id:
+            _agent.register_callable_invocation(parent_thread_id, _thread_id)
 
         # Break the LangChain callback/tracing inheritance chain so the inner
         # graph.invoke() doesn't propagate LLM token events back to the
@@ -74,6 +81,9 @@ description and it will execute autonomously.
             run_collector_var.reset(collector_token)
             tracing_v2_callback_var.reset(callback_token)
             var_child_runnable_config.reset(config_token)
+            # Unregister parent→child (child is done or failed)
+            if _agent and parent_thread_id:
+                _agent.unregister_callable_invocation(parent_thread_id, _thread_id)
 
     callable_thread_tool_func.description = tool_description
     return callable_thread_tool_func

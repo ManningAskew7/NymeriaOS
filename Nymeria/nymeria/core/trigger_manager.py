@@ -378,9 +378,11 @@ class TriggerManager:
         )
 
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
+        import time as _time
+        _start = _time.monotonic()
         logger.info(
-            f"[TRIGGER] Firing batched agent_prompt ({len(events)} events) "
-            f"on thread={thread_id}: {batch_prompt[:120]}..."
+            f"[TRIGGER] === START === thread={thread_id}, user={user_id}, "
+            f"trigger={trigger.name} ({trigger.id}), batched={len(events)} events"
         )
 
         try:
@@ -414,7 +416,12 @@ class TriggerManager:
                 event_count=len(events),
             )
 
-            logger.info(f"[TRIGGER] Batched agent_prompt completed, response_len={len(response)}")
+            _elapsed = _time.monotonic() - _start
+            logger.info(
+                f"[TRIGGER] === END === thread={thread_id}, "
+                f"trigger={trigger.name}, batched={len(events)}, "
+                f"response_len={len(response)}, elapsed={_elapsed:.1f}s"
+            )
         except Exception as e:
             logger.error(
                 f"[TRIGGER] Batched action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
@@ -442,7 +449,12 @@ class TriggerManager:
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
         task_id = f"trigger-{trigger.id}"
 
-        logger.info(f"[TRIGGER] Firing agent_prompt on thread={thread_id}: {prompt[:100]}...")
+        import time as _time
+        _start = _time.monotonic()
+        logger.info(
+            f"[TRIGGER] === START === thread={thread_id}, user={user_id}, "
+            f"trigger={trigger.name} ({trigger.id}), prompt={prompt[:100]}..."
+        )
 
         # Publish task_started immediately so frontend enters streaming mode
         publish_autonomous_event(
@@ -470,7 +482,11 @@ class TriggerManager:
             event_count=1,
         )
 
-        logger.info(f"[TRIGGER] agent_prompt completed, response_len={len(response)}")
+        _elapsed = _time.monotonic() - _start
+        logger.info(
+            f"[TRIGGER] === END === thread={thread_id}, "
+            f"trigger={trigger.name}, response_len={len(response)}, elapsed={_elapsed:.1f}s"
+        )
 
     def _stream_live(
         self,
@@ -488,6 +504,7 @@ class TriggerManager:
 
         response_parts: List[str] = []
         thinking_parts: List[str] = []
+        chunk_count = 0
 
         for chunk in agent.stream(
             message=prompt,
@@ -496,6 +513,8 @@ class TriggerManager:
             _is_self_invoke=True,
         ):
             chunk_type = chunk.get("type")
+            chunk_count += 1
+            logger.debug(f"[TRIGGER] thread={thread_id}: chunk #{chunk_count} type={chunk_type}")
 
             if chunk_type == "tool_call":
                 publish_autonomous_event(
@@ -543,6 +562,25 @@ class TriggerManager:
                         task_id=task_id,
                         data={"content": content},
                     )
+
+            elif chunk_type == "error":
+                error_content = chunk.get("content", "")
+                error_code = chunk.get("code", "unknown")
+                logger.error(
+                    f"[TRIGGER] Stream error on thread {thread_id}: "
+                    f"code={error_code}, content={error_content}"
+                )
+                raise RuntimeError(
+                    error_content or f"Trigger stream error (code={error_code})"
+                )
+
+            elif chunk_type == "iteration_limit":
+                logger.warning(
+                    f"[TRIGGER] Iteration limit on thread {thread_id}: "
+                    f"scope={chunk.get('scope')}, "
+                    f"max_iterations={chunk.get('max_iterations')}. "
+                    f"Using partial response."
+                )
 
         # If no response chunks, promote thinking to response
         if not response_parts and thinking_parts:

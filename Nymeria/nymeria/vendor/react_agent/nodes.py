@@ -45,19 +45,23 @@ def create_agent_node(
         """
         messages = state["messages"]
 
-        # DEBUG: Log exactly what messages are being sent to LLM
-        logger.info(f"[LLM CALL DEBUG] Sending {len(messages)} messages to LLM (+ system prompt)")
-        for i, msg in enumerate(messages):
-            msg_type = type(msg).__name__
-            content_preview = ""
-            if hasattr(msg, 'content') and msg.content:
-                content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
-                content_preview = content_str[:150].replace('\n', ' ')
-            tool_info = ""
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                tool_names = [tc.get('name', '?') for tc in msg.tool_calls]
-                tool_info = f" [tools: {', '.join(tool_names)}]"
-            logger.info(f"[LLM CALL DEBUG]   [{i}] {msg_type}{tool_info}: {content_preview}...")
+        # Summary line at INFO (always visible)
+        tool_rounds = sum(1 for m in messages if isinstance(m, AIMessage) and m.tool_calls)
+        logger.info(f"[LLM] Invoking with {len(messages)} messages ({tool_rounds} tool rounds)")
+
+        # Detailed message dump at DEBUG (visible with llm profile)
+        if logger.isEnabledFor(logging.DEBUG):
+            for i, msg in enumerate(messages):
+                msg_type = type(msg).__name__
+                content_preview = ""
+                if hasattr(msg, 'content') and msg.content:
+                    content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    content_preview = content_str[:150].replace('\n', ' ')
+                tool_info = ""
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    tool_names = [tc.get('name', '?') for tc in msg.tool_calls]
+                    tool_info = f" [tools: {', '.join(tool_names)}]"
+                logger.debug(f"[LLM]   [{i}] {msg_type}{tool_info}: {content_preview}...")
 
         # Prepend system prompt (not stored in state)
         messages_with_system = [SystemMessage(content=system_prompt)] + messages
@@ -65,14 +69,30 @@ def create_agent_node(
         # Call the LLM
         response = llm_with_tools.invoke(messages_with_system)
 
+        # Sanitize tool call names — some models emit leading/trailing whitespace
+        # (e.g. ' CalendarAgent' instead of 'CalendarAgent') which breaks routing.
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            for tc in response.tool_calls:
+                if 'name' in tc and tc['name'] != tc['name'].strip():
+                    logger.warning(f"[LLM] Stripped whitespace from tool call name: {tc['name']!r} -> {tc['name'].strip()!r}")
+                    tc['name'] = tc['name'].strip()
+
+        # Log response summary at INFO
+        resp_content = response.content if isinstance(response.content, str) else str(response.content)
+        has_tools = bool(response.tool_calls) if hasattr(response, 'tool_calls') else False
+        tool_names = [tc.get('name', '?') for tc in response.tool_calls] if has_tools else []
+        logger.info(
+            f"[LLM] Response: {len(resp_content)} chars"
+            + (f", tool_calls={tool_names}" if has_tools else ", final answer")
+        )
+
         # Check if response was truncated due to hitting max_tokens
         if hasattr(response, 'response_metadata'):
             finish_reason = response.response_metadata.get('finish_reason')
             if finish_reason == 'length':
-                content_len = len(response.content) if isinstance(response.content, str) else 0
                 logger.warning(
-                    f"[LLM TRUNCATED] Response hit max_tokens limit "
-                    f"(finish_reason='length', content_length={content_len}). "
+                    f"[LLM] TRUNCATED — Response hit max_tokens limit "
+                    f"(finish_reason='length', content_length={len(resp_content)}). "
                     f"The model's output was cut off mid-generation."
                 )
 
@@ -81,7 +101,7 @@ def create_agent_node(
     return agent_node
 
 
-def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_timeout: Optional[int] = None) -> "SafeToolNode":
+def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_timeout: Optional[int] = None, on_timeout: Optional[Callable] = None) -> "SafeToolNode":
     """
     Create a tools node that executes tool calls.
 
@@ -90,11 +110,12 @@ def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_ti
         handle_errors: If True, catch tool exceptions and return error messages
                       instead of letting them bubble up
         tool_timeout: Seconds before a tool invocation is terminated (default 300)
+        on_timeout: Optional callback invoked with the input dict when a timeout occurs
 
     Returns:
         SafeToolNode instance that handles errors and timeouts gracefully
     """
-    return SafeToolNode(tools, handle_tool_errors=handle_errors, tool_timeout=tool_timeout)
+    return SafeToolNode(tools, handle_tool_errors=handle_errors, tool_timeout=tool_timeout, on_timeout=on_timeout)
 
 
 class SafeToolNode(ToolNode):
@@ -109,10 +130,11 @@ class SafeToolNode(ToolNode):
 
     DEFAULT_TOOL_TIMEOUT = 300  # 5 minutes
 
-    def __init__(self, tools: List[BaseTool], handle_tool_errors: bool = True, tool_timeout: Optional[int] = None):
+    def __init__(self, tools: List[BaseTool], handle_tool_errors: bool = True, tool_timeout: Optional[int] = None, on_timeout: Optional[Callable] = None):
         super().__init__(tools, handle_tool_errors=handle_tool_errors)
         self._handle_errors = handle_tool_errors
         self._tool_timeout = tool_timeout if tool_timeout is not None else self.DEFAULT_TOOL_TIMEOUT
+        self._on_timeout = on_timeout  # Optional callback: fn(input_dict) -> None
 
     def invoke(self, input, config=None, **kwargs):
         """Execute tools with a timeout to prevent indefinite hangs.
@@ -136,6 +158,11 @@ class SafeToolNode(ToolNode):
             # shutdown(wait=False) returns immediately — the daemon worker
             # thread will finish on its own (or when the process exits).
             executor.shutdown(wait=False)
+            if self._on_timeout:
+                try:
+                    self._on_timeout(input)
+                except Exception as e:
+                    logger.warning(f"on_timeout callback failed: {e}")
             return self._build_timeout_response(input)
 
     async def ainvoke(self, input, config=None, **kwargs):
@@ -146,6 +173,11 @@ class SafeToolNode(ToolNode):
                 timeout=self._tool_timeout,
             )
         except asyncio.TimeoutError:
+            if self._on_timeout:
+                try:
+                    self._on_timeout(input)
+                except Exception as e:
+                    logger.warning(f"on_timeout callback failed: {e}")
             return self._build_timeout_response(input)
 
     def _build_timeout_response(self, input) -> dict:
@@ -295,7 +327,11 @@ class NodeFactory:
 
     def create_tools_node(self) -> ToolNode:
         """Create the tool execution node."""
-        return create_tools_node(self.tools, tool_timeout=self.config.tool_timeout)
+        return create_tools_node(
+            self.tools,
+            tool_timeout=self.config.tool_timeout,
+            on_timeout=self.config.on_timeout,
+        )
 
     def create_router(self) -> Callable[[AgentState], str]:
         """Create the routing function."""

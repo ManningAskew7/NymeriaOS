@@ -93,47 +93,47 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
     """
     Configure logging for the application.
 
+    Uses the centralized logging_config module which provides:
+    - Named debug profiles (LOG_PROFILES env var)
+    - Per-module overrides (LOG_MODULES env var)
+    - Compact NymeriaFormatter with short module names and ANSI color
+    - Third-party noise suppression (httpx, langchain, etc.)
+    - Automatic log file with rotation alongside console output
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        file_mode: If True, log to file with rotation (for service mode)
+        file_mode: If True, ONLY log to file (for Windows service mode)
     """
     from nymeria.config import get_settings
+    from nymeria.config.logging_config import (
+        configure_logging,
+        parse_profiles_from_env,
+        parse_module_overrides_from_env,
+    )
 
     settings = get_settings()
 
-    handlers = []
+    # Build a rotating file handler for persistent logs.
+    # Always enabled so logs are readable from other terminals (e.g. Claude Code
+    # on WSL while the API runs in PowerShell on Windows).
+    log_dir = settings.logs_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / settings.service_log_file
 
-    if file_mode:
-        # File logging with rotation for service mode
-        log_dir = settings.logs_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        log_file = log_dir / settings.service_log_file
-
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=settings.service_log_max_bytes,
-            backupCount=settings.service_log_backup_count,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        handlers.append(file_handler)
-    else:
-        # Console logging for interactive mode
-        handlers.append(logging.StreamHandler(sys.stdout))
-
-    logging.basicConfig(
-        level=getattr(logging, level.upper()),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=handlers,
-        force=True,  # Override any existing configuration
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=settings.service_log_max_bytes,
+        backupCount=settings.service_log_backup_count,
+        encoding="utf-8",
     )
 
-    # Reduce noise from httpx/httpcore
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    configure_logging(
+        base_level=level,
+        profiles=parse_profiles_from_env(),
+        module_overrides=parse_module_overrides_from_env(),
+        file_handler=file_handler,
+        use_color=not file_mode,  # No ANSI in file-only mode
+    )
 
 
 def run_cli(args: argparse.Namespace) -> None:
@@ -400,15 +400,8 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 
     settings = get_settings()
 
-    # Use file logging in foreground mode too (matches service behavior)
-    setup_logging(settings.log_level, file_mode=True)
-
-    # Also print to console in foreground mode
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
-    logging.getLogger().addHandler(console_handler)
+    # Use standard logging (console + file) — same as api/worker
+    setup_logging(settings.log_level)
 
     print(f"Starting Nymeria Gateway in foreground mode...")
     print(f"  REST API: http://{settings.api_host}:{settings.api_port}")

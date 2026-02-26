@@ -522,6 +522,18 @@ export class NymeriaAPI {
     };
   }
 
+  async stopThread(threadId: string): Promise<void> {
+    try {
+      await fetch(`${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/stop`, {
+        method: 'POST',
+        headers: this.getHeaders()
+      });
+    } catch {
+      // Fire-and-forget — the AbortController already dropped the connection
+      // and the backend safety net (disconnect detection) will clean up.
+    }
+  }
+
   async getThreadContextStats(threadId: string): Promise<ContextStats | null> {
     try {
       const response = await fetch(

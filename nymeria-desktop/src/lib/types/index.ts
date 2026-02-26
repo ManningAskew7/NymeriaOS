@@ -17,7 +17,7 @@ export interface FileAttachment {
 
 
 // Tool call types (defined early so MessageStep can reference ToolCallStatus)
-export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error';
+export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
 
 // Step in a message - either thinking content or a tool call
 // Steps are ordered by arrival time to preserve interleaving

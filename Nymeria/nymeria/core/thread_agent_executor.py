@@ -68,8 +68,14 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
 
     task_id = f"callable-{callable_name}-{uuid4().hex[:8]}"
 
+    import time as _time
+    _start = _time.monotonic()
+
     try:
-        logger.info(f"ThreadExecutor: invoking {callable_name} (thread={thread_id}, task_id={task_id})")
+        logger.info(
+            f"[CALLABLE] === START === name={callable_name}, thread={thread_id}, "
+            f"task_id={task_id}, user={caller_user_id}, task={task[:80]}..."
+        )
 
         # Publish task_started immediately so frontend can enter streaming mode
         publish_autonomous_event(
@@ -82,6 +88,8 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
 
         response_parts = []
         thinking_parts = []
+        chunk_count = 0
+        tool_call_count = 0
 
         for chunk in agent.stream(
             message=task,
@@ -90,8 +98,11 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
             _is_self_invoke=False,
         ):
             chunk_type = chunk.get("type")
+            chunk_count += 1
 
             if chunk_type == "tool_call":
+                tool_call_count += 1
+                logger.debug(f"[CALLABLE] {callable_name}: tool_call #{tool_call_count} name={chunk.get('name')}")
                 publish_autonomous_event(
                     event_type="tool_call",
                     thread_id=thread_id,
@@ -105,6 +116,8 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
                 )
 
             elif chunk_type == "tool_result":
+                result_preview = str(chunk.get("result", ""))[:100]
+                logger.debug(f"[CALLABLE] {callable_name}: tool_result name={chunk.get('name')}, result={result_preview}...")
                 publish_autonomous_event(
                     event_type="tool_result",
                     thread_id=thread_id,
@@ -144,7 +157,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
             elif chunk_type == "error":
                 # Stream-level error (e.g. lock timeout, LLM failure)
                 content = chunk.get("content", "")
-                logger.warning(f"ThreadExecutor: stream error for {callable_name}: {content}")
+                logger.warning(f"[CALLABLE] {callable_name}: stream error: {content}")
                 raise RuntimeError(content or f"{callable_name} encountered a stream error")
 
         # Compute final response text
@@ -155,6 +168,13 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
             response_text = "".join(thinking_parts)
         else:
             response_text = ""
+
+        _elapsed = _time.monotonic() - _start
+        logger.info(
+            f"[CALLABLE] === END === name={callable_name}, thread={thread_id}, "
+            f"task_id={task_id}, chunks={chunk_count}, tools={tool_call_count}, "
+            f"response_len={len(response_text)}, elapsed={_elapsed:.1f}s"
+        )
 
         # Publish task_completed with final response
         publish_autonomous_event(
@@ -171,7 +191,12 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
         return response_text
 
     except Exception as e:
-        logger.error(f"ThreadExecutor: {callable_name} failed: {e}", exc_info=True)
+        _elapsed = _time.monotonic() - _start
+        logger.error(
+            f"[CALLABLE] === ERROR === name={callable_name}, thread={thread_id}, "
+            f"task_id={task_id}, elapsed={_elapsed:.1f}s: {e}",
+            exc_info=True,
+        )
 
         # Always publish task_completed on error so frontend exits streaming state
         publish_autonomous_event(

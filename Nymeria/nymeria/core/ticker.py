@@ -391,6 +391,7 @@ class Ticker:
             response_parts = []
             thinking_parts = []
             chunk_count = 0
+            iteration_limit_hit = False
             for chunk in self.agent.stream(
                 message=prompt,
                 thread_id=thread_id,
@@ -450,6 +451,160 @@ class Ticker:
                             task_id=todo.id,
                             data={"content": content},
                         )
+
+                elif chunk_type == "error":
+                    error_content = chunk.get("content", "")
+                    error_code = chunk.get("code", "unknown")
+                    logger.error(
+                        f"[TICKER] Stream error for TODO {todo.id}: "
+                        f"code={error_code}, content={error_content}"
+                    )
+                    raise RuntimeError(
+                        error_content or f"Agent stream error (code={error_code})"
+                    )
+
+                elif chunk_type == "iteration_limit":
+                    scope = chunk.get("scope", "unknown")
+                    logger.warning(
+                        f"[TICKER] Iteration limit for TODO {todo.id}: "
+                        f"scope={scope}, "
+                        f"max_iterations={chunk.get('max_iterations')}, "
+                        f"tool_call_count={chunk.get('tool_call_count')}"
+                    )
+                    # Only trigger continuation for main_agent limits.
+                    # Sub-agent limits are informational — the main agent
+                    # can still continue working.
+                    if scope == "main_agent":
+                        iteration_limit_hit = True
+
+            # --- Continuation on iteration_limit (one attempt max) ---
+            if iteration_limit_hit:
+                continuation_prompt = (
+                    f"Continue working on the scheduled task: {todo.task}. "
+                    f"If you have already completed everything, please confirm "
+                    f"the results."
+                )
+                logger.info(
+                    f"[TICKER] Sending continuation prompt for TODO {todo.id} "
+                    f"after iteration_limit"
+                )
+                continuation_limit_hit = False
+
+                for chunk in self.agent.stream(
+                    message=continuation_prompt,
+                    thread_id=thread_id,
+                    user_id=entry.user_id,
+                    _is_self_invoke=True,
+                ):
+                    chunk_count += 1
+                    chunk_type = chunk.get("type")
+
+                    if chunk_type == "tool_call":
+                        publish_autonomous_event(
+                            event_type="tool_call",
+                            thread_id=thread_id,
+                            user_id=entry.user_id,
+                            task_id=todo.id,
+                            data={
+                                "id": chunk.get("id"),
+                                "name": chunk.get("name"),
+                                "args": chunk.get("args", {}),
+                            },
+                        )
+                    elif chunk_type == "tool_result":
+                        publish_autonomous_event(
+                            event_type="tool_result",
+                            thread_id=thread_id,
+                            user_id=entry.user_id,
+                            task_id=todo.id,
+                            data={
+                                "id": chunk.get("id"),
+                                "name": chunk.get("name"),
+                                "result": chunk.get("result"),
+                            },
+                        )
+                    elif chunk_type == "thinking":
+                        content = chunk.get("content", "")
+                        if content:
+                            thinking_parts.append(content)
+                        publish_autonomous_event(
+                            event_type="thinking",
+                            thread_id=thread_id,
+                            user_id=entry.user_id,
+                            task_id=todo.id,
+                            data={"content": content},
+                        )
+                    elif chunk_type == "response":
+                        content = chunk.get("content", "")
+                        if content:
+                            response_parts.append(content)
+                            publish_autonomous_event(
+                                event_type="response",
+                                thread_id=thread_id,
+                                user_id=entry.user_id,
+                                task_id=todo.id,
+                                data={"content": content},
+                            )
+                    elif chunk_type == "error":
+                        error_content = chunk.get("content", "")
+                        error_code = chunk.get("code", "unknown")
+                        logger.error(
+                            f"[TICKER] Continuation stream error for TODO "
+                            f"{todo.id}: code={error_code}, "
+                            f"content={error_content}"
+                        )
+                        raise RuntimeError(
+                            error_content
+                            or f"Agent continuation error (code={error_code})"
+                        )
+                    elif chunk_type == "iteration_limit":
+                        logger.warning(
+                            f"[TICKER] Continuation also hit iteration_limit "
+                            f"for TODO {todo.id}. Task too complex — leaving "
+                            f"schedule for next tick cycle."
+                        )
+                        continuation_limit_hit = True
+
+                if continuation_limit_hit:
+                    # Task too complex even with a second pass.
+                    # Reschedule 10 minutes ahead to avoid hot-looping
+                    # (the old scheduled_for is in the past, so leaving it
+                    # as-is would re-trigger on the next tick poll).
+                    backoff_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+                    with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                        todo_list.update_item(
+                            todo.id,
+                            scheduled_for=backoff_time,
+                            notes=(
+                                f"Hit iteration limit twice — rescheduled "
+                                f"for {backoff_time.isoformat()}"
+                            ),
+                        )
+                    self.todo_manager.sync_schedule_to_db(
+                        entry.user_id, todo.id, self.schedule_db
+                    )
+                    logger.info(
+                        f"[TICKER] TODO {todo.id} rescheduled to "
+                        f"{backoff_time.isoformat()} after double iteration_limit"
+                    )
+
+                    publish_autonomous_event(
+                        event_type="task_completed",
+                        thread_id=thread_id,
+                        user_id=entry.user_id,
+                        task_id=todo.id,
+                        data={
+                            "notify": False,
+                            "content": (
+                                "Task requires more steps than the current "
+                                "iteration limit allows. Rescheduled for "
+                                "10 minutes from now."
+                            ),
+                            "todo_id": todo.id,
+                        },
+                    )
+                    return
+            # --- End continuation ---
 
             # Compute final response text
             if response_parts:

@@ -55,6 +55,7 @@ class ThreadLockManager:
     def __init__(self):
         self._locks: Dict[str, threading.Lock] = {}
         self._lock_info: Dict[str, Dict[str, Any]] = {}
+        self._abort_events: Dict[str, threading.Event] = {}
         self._meta_lock = threading.Lock()
 
     def get_lock(self, thread_id: str) -> threading.Lock:
@@ -78,6 +79,26 @@ class ThreadLockManager:
         """Clear lock holder metadata."""
         with self._meta_lock:
             self._lock_info.pop(thread_id, None)
+
+    def get_abort_event(self, thread_id: str) -> threading.Event:
+        """Get or create an abort event for a specific thread_id."""
+        with self._meta_lock:
+            if thread_id not in self._abort_events:
+                self._abort_events[thread_id] = threading.Event()
+            return self._abort_events[thread_id]
+
+    def signal_abort(self, thread_id: str):
+        """Signal the abort event for a thread, requesting cancellation."""
+        with self._meta_lock:
+            if thread_id not in self._abort_events:
+                self._abort_events[thread_id] = threading.Event()
+            self._abort_events[thread_id].set()
+
+    def clear_abort(self, thread_id: str):
+        """Clear the abort event so a new operation can start cleanly."""
+        with self._meta_lock:
+            if thread_id in self._abort_events:
+                self._abort_events[thread_id].clear()
 
     def get_lock_info(self, thread_id: str) -> Optional[Dict[str, Any]]:
         """Get current lock holder info including held_seconds."""
@@ -252,6 +273,7 @@ class NymeriaAgent:
     """
 
     MAIN_AGENT_MAX_ITERATIONS = 70
+    CALLABLE_DEFAULT_MAX_ITERATIONS = 25
     SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
 
     def __init__(
@@ -325,6 +347,11 @@ class NymeriaAgent:
 
         # Per-thread locking to prevent concurrent access (ticker vs API)
         self._thread_locks = ThreadLockManager()
+        # Maps callable tool names to their thread IDs (for auto-abort on timeout)
+        self._callable_tool_thread_map: Dict[str, str] = {}
+        # Tracks active parent→children callable invocations for cascading abort
+        self._active_callable_invocations: Dict[str, set] = {}
+        self._invocations_lock = threading.Lock()
         # Lock for graph cache dict mutations
         self._graph_cache_lock = threading.Lock()
 
@@ -1650,13 +1677,20 @@ class NymeriaAgent:
         llm_config = self._get_llm_config_for_thread(thread_id)
         tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
 
+        # Use a lower iteration limit for callable threads
+        if tc and tc.callable and tc.callable_name:
+            max_iters = tc.callable_max_iterations or self.CALLABLE_DEFAULT_MAX_ITERATIONS
+        else:
+            max_iters = self.MAIN_AGENT_MAX_ITERATIONS
+
         config = AgentConfig(
             llm=llm_config,
             checkpointer=self._checkpointer_config,
             system_prompt=system_prompt,
-            max_iterations=self.MAIN_AGENT_MAX_ITERATIONS,
+            max_iterations=max_iters,
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
+            on_timeout=self._on_tool_timeout,
         )
 
         # Callable threads with a template: load tools from template + allowed global tools
@@ -1694,13 +1728,20 @@ class NymeriaAgent:
         llm_config = self._get_llm_config_for_thread(thread_id)
         tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
 
+        # Use a lower iteration limit for callable threads
+        if tc and tc.callable and tc.callable_name:
+            max_iters = tc.callable_max_iterations or self.CALLABLE_DEFAULT_MAX_ITERATIONS
+        else:
+            max_iters = self.MAIN_AGENT_MAX_ITERATIONS
+
         config = AgentConfig(
             llm=llm_config,
             checkpointer=self._async_checkpointer_config,
             system_prompt=system_prompt,
-            max_iterations=self.MAIN_AGENT_MAX_ITERATIONS,
+            max_iterations=max_iters,
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
+            on_timeout=self._on_tool_timeout,
         )
 
         # Callable threads with a template: load tools from template + allowed global tools
@@ -1869,6 +1910,152 @@ class NymeriaAgent:
         self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
         return self
 
+    def register_callable_invocation(self, parent_thread_id: str, child_thread_id: str):
+        """Register that parent_thread_id has spawned child_thread_id.
+
+        Used for cascading abort: stopping a parent also stops its children.
+        """
+        with self._invocations_lock:
+            if parent_thread_id not in self._active_callable_invocations:
+                self._active_callable_invocations[parent_thread_id] = set()
+            self._active_callable_invocations[parent_thread_id].add(child_thread_id)
+
+    def unregister_callable_invocation(self, parent_thread_id: str, child_thread_id: str):
+        """Remove a completed/aborted child from the parent's active set."""
+        with self._invocations_lock:
+            if parent_thread_id in self._active_callable_invocations:
+                self._active_callable_invocations[parent_thread_id].discard(child_thread_id)
+                if not self._active_callable_invocations[parent_thread_id]:
+                    del self._active_callable_invocations[parent_thread_id]
+
+    def abort_with_cascade(self, thread_id: str):
+        """Signal abort on a thread and recursively on all its active callable children."""
+        self._thread_locks.signal_abort(thread_id)
+        with self._invocations_lock:
+            children = set(self._active_callable_invocations.get(thread_id, ()))
+        for child_id in children:
+            logger.info(f"Cascading abort from thread {thread_id} to child {child_id}")
+            self.abort_with_cascade(child_id)
+
+    def _patch_dangling_tool_calls(self, graph, config: dict) -> int:
+        """Patch dangling AIMessage tool_calls with synthetic ToolMessages after cancellation.
+
+        When a turn is cancelled mid-execution, the checkpoint may contain an
+        AIMessage with tool_calls but no corresponding ToolMessages (the tools
+        were still running when the abort fired).  This leaves an invalid message
+        sequence that confuses the LLM on the next turn — it may hallucinate
+        that earlier (completed) tool calls also never ran.
+
+        This method loads the current state, detects any unmatched tool_calls on
+        the last AIMessage, and injects synthetic ToolMessages via update_state
+        so the next turn sees a clean, valid history.
+
+        Returns:
+            Number of synthetic ToolMessages injected (0 if state was clean).
+        """
+        try:
+            state = graph.get_state(config)
+            messages = state.values.get("messages", [])
+            if not messages:
+                return 0
+
+            last_msg = messages[-1]
+            if not (isinstance(last_msg, AIMessage) and last_msg.tool_calls):
+                return 0
+
+            # Collect tool_call IDs from the last AIMessage
+            pending_ids = {tc["id"] for tc in last_msg.tool_calls if tc.get("id")}
+
+            # Check if any ToolMessages already follow (shouldn't, but be safe)
+            for msg in reversed(messages[:-1]):
+                if isinstance(msg, ToolMessage) and msg.tool_call_id in pending_ids:
+                    pending_ids.discard(msg.tool_call_id)
+                elif isinstance(msg, (AIMessage, HumanMessage)):
+                    break  # Stop scanning once we hit a non-ToolMessage
+
+            if not pending_ids:
+                return 0
+
+            # Build synthetic ToolMessages for each dangling tool_call
+            synthetic = []
+            for tc in last_msg.tool_calls:
+                if tc.get("id") in pending_ids:
+                    synthetic.append(ToolMessage(
+                        content="[Cancelled by user before this tool completed]",
+                        tool_call_id=tc["id"],
+                        name=tc.get("name", ""),
+                    ))
+
+            graph.update_state(config, {"messages": synthetic})
+            names = [tc.get("name", "?") for tc in last_msg.tool_calls if tc.get("id") in pending_ids]
+            logger.info(
+                f"Patched {len(synthetic)} dangling tool call(s) after cancellation: {names}"
+            )
+            return len(synthetic)
+
+        except Exception as e:
+            logger.warning(f"Failed to patch dangling tool calls: {e}")
+            return 0
+
+    async def _apatch_dangling_tool_calls(self, graph, config: dict) -> int:
+        """Async version of _patch_dangling_tool_calls for astream()."""
+        try:
+            state = await graph.aget_state(config)
+            messages = state.values.get("messages", [])
+            if not messages:
+                return 0
+
+            last_msg = messages[-1]
+            if not (isinstance(last_msg, AIMessage) and last_msg.tool_calls):
+                return 0
+
+            pending_ids = {tc["id"] for tc in last_msg.tool_calls if tc.get("id")}
+
+            for msg in reversed(messages[:-1]):
+                if isinstance(msg, ToolMessage) and msg.tool_call_id in pending_ids:
+                    pending_ids.discard(msg.tool_call_id)
+                elif isinstance(msg, (AIMessage, HumanMessage)):
+                    break
+
+            if not pending_ids:
+                return 0
+
+            synthetic = []
+            for tc in last_msg.tool_calls:
+                if tc.get("id") in pending_ids:
+                    synthetic.append(ToolMessage(
+                        content="[Cancelled by user before this tool completed]",
+                        tool_call_id=tc["id"],
+                        name=tc.get("name", ""),
+                    ))
+
+            await graph.aupdate_state(config, {"messages": synthetic})
+            names = [tc.get("name", "?") for tc in last_msg.tool_calls if tc.get("id") in pending_ids]
+            logger.info(
+                f"Patched {len(synthetic)} dangling tool call(s) after cancellation: {names}"
+            )
+            return len(synthetic)
+
+        except Exception as e:
+            logger.warning(f"Failed to patch dangling tool calls: {e}")
+            return 0
+
+    def _on_tool_timeout(self, input_dict: dict):
+        """Called when SafeToolNode times out. Auto-aborts callable threads (with cascade)."""
+        messages = input_dict.get("messages", []) if isinstance(input_dict, dict) else []
+        last_message = messages[-1] if messages else None
+        if not (isinstance(last_message, AIMessage) and last_message.tool_calls):
+            return
+        for tc in last_message.tool_calls:
+            tool_name = tc.get("name")
+            thread_id = self._callable_tool_thread_map.get(tool_name)
+            if thread_id:
+                logger.warning(
+                    f"Auto-aborting callable thread '{tool_name}' "
+                    f"(thread={thread_id}) after tool timeout"
+                )
+                self.abort_with_cascade(thread_id)
+
     def sync_agent_tools(self) -> List[str]:
         """
         Sync callable thread tools into the tool registry.
@@ -1885,6 +2072,14 @@ class NymeriaAgent:
         # Get callable thread tools (from threads with callable=True)
         thread_tools = get_callable_thread_tools(self.thread_config_manager)
         thread_tool_names = {t.name for t in thread_tools}
+
+        # Rebuild callable tool -> thread_id map (for auto-abort on timeout)
+        # Build locally then assign atomically so readers never see a partial map
+        new_map: Dict[str, str] = {}
+        for tc in self.thread_config_manager.list_callable_threads():
+            if tc.callable_name:
+                new_map[tc.callable_name] = tc.thread_id
+        self._callable_tool_thread_map = new_map
 
         # Rebuild the tool registry: core + callable thread tools
         combined = list(ALL_TOOLS) + thread_tools
@@ -2223,6 +2418,10 @@ class NymeriaAgent:
             holder = "autonomous" if _is_self_invoke else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
 
+            # Clear any stale abort signal and capture the event for this run
+            abort_event = self._thread_locks.get_abort_event(thread_id)
+            abort_event.clear()
+
             # Cancel pending self_invoke if this is a USER message (not self_invoke)
             if not _is_self_invoke:
                 self.scheduler.cancel(user_id)
@@ -2275,19 +2474,21 @@ class NymeriaAgent:
             # Track final response for RAG indexing
             final_response_parts: List[str] = []
 
-            # Debug logging for autonomous execution troubleshooting
-            logger.info(f"[STREAM] === START === thread={thread_id}, user={user_id}, is_self_invoke={_is_self_invoke}")
-            logger.info(f"[STREAM] Graph type: {type(graph).__name__}")
+            import time as _time
+            _stream_start = _time.monotonic()
+            holder = "autonomous" if _is_self_invoke else "user"
+            logger.info(f"[STREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
+            logger.debug(f"[STREAM] Graph type: {type(graph).__name__}")
             if hasattr(graph, 'checkpointer'):
                 checkpointer = graph.checkpointer
-                logger.info(f"[STREAM] Checkpointer: {type(checkpointer).__name__} id={id(checkpointer)}")
+                logger.debug(f"[STREAM] Checkpointer: {type(checkpointer).__name__} id={id(checkpointer)}")
                 if hasattr(checkpointer, '_saver'):
-                    logger.info(f"[STREAM] Wrapped saver: {type(checkpointer._saver).__name__} id={id(checkpointer._saver)}")
+                    logger.debug(f"[STREAM] Wrapped saver: {type(checkpointer._saver).__name__} id={id(checkpointer._saver)}")
             else:
-                logger.info(f"[STREAM] WARNING: Graph has no checkpointer attribute!")
+                logger.warning(f"[STREAM] Graph has no checkpointer attribute!")
 
             try:
-                logger.info(f"[STREAM] Calling graph.stream() with stream_mode='updates' config={config}")
+                logger.debug(f"[STREAM] Calling graph.stream() with stream_mode='updates' config={config}")
                 stream_chunk_count = 0
 
                 # Use stream_mode="updates" to get complete node outputs with full tool_calls
@@ -2295,8 +2496,18 @@ class NymeriaAgent:
                 for update in graph.stream(
                     input_state, config=config, stream_mode="updates"
                 ):
+                    # Check for abort signal between graph iterations
+                    if abort_event.is_set():
+                        logger.info(f"[STREAM] Thread {thread_id}: Aborted by cancel signal")
+                        yield {
+                            "type": "error",
+                            "content": "Operation was cancelled.",
+                            "code": "cancelled",
+                        }
+                        break
+
                     stream_chunk_count += 1
-                    logger.info(f"[STREAM] Update #{stream_chunk_count}: keys={list(update.keys()) if isinstance(update, dict) else type(update)}")
+                    logger.debug(f"[STREAM] Update #{stream_chunk_count}: keys={list(update.keys()) if isinstance(update, dict) else type(update)}")
 
                     # update is a dict like {"agent": {"messages": [...]}} or {"tools": {"messages": [...]}}
                     if not isinstance(update, dict):
@@ -2325,7 +2536,7 @@ class NymeriaAgent:
                                         tool_name = tool_call.get("name")
                                         tool_args = tool_call.get("args", {})
 
-                                        logger.info(f"[STREAM] Tool call from agent node: id={tool_id}, name={tool_name}, args={tool_args}")
+                                        logger.debug(f"[STREAM] Tool call from agent node: id={tool_id}, name={tool_name}, args={tool_args}")
 
                                         if tool_name and tool_id:
                                             # Store the complete tool call with args
@@ -2337,7 +2548,7 @@ class NymeriaAgent:
                                             # Emit tool_call event immediately (args are complete)
                                             if tool_id not in emitted_tool_calls:
                                                 emitted_tool_calls.add(tool_id)
-                                                logger.info(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
+                                                logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
                                                 yield {
                                                     "type": "tool_call",
                                                     "id": tool_id,
@@ -2355,7 +2566,7 @@ class NymeriaAgent:
                                 tool_call_id = msg.tool_call_id
                                 tool_name = msg.name
 
-                                logger.info(f"[STREAM] ToolMessage: id={tool_call_id}, name={tool_name}")
+                                logger.debug(f"[STREAM] ToolMessage: id={tool_call_id}, name={tool_name}")
 
                                 raw_result = msg.content if isinstance(msg.content, str) else str(msg.content)
                                 display_result = self._strip_subagent_error_marker(raw_result)
@@ -2379,7 +2590,8 @@ class NymeriaAgent:
                         ai_response="".join(final_response_parts),
                     )
 
-                logger.info(f"[STREAM] === END === thread={thread_id}, total_chunks={stream_chunk_count}")
+                _elapsed = _time.monotonic() - _stream_start
+                logger.info(f"[STREAM] === END === thread={thread_id}, chunks={stream_chunk_count}, elapsed={_elapsed:.1f}s")
 
                 # Track token usage from final state
                 try:
@@ -2430,6 +2642,17 @@ class NymeriaAgent:
                 except Exception:
                     pass
         finally:
+            # Patch dangling tool_calls in finally so it runs even when the
+            # generator is abandoned (e.g. executor raises on error chunk).
+            try:
+                if abort_event.is_set():
+                    patched = self._patch_dangling_tool_calls(graph, config)
+                    if patched:
+                        logger.info(f"[STREAM] Thread {thread_id}: Patched {patched} dangling tool call(s) in finally")
+            except (NameError, UnboundLocalError):
+                pass  # abort_event/graph/config not yet assigned (early exit)
+            except Exception as e:
+                logger.warning(f"[STREAM] Thread {thread_id}: Failed to patch dangling tool calls in finally: {e}")
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
@@ -2483,30 +2706,39 @@ class NymeriaAgent:
         try:
             self._thread_locks.set_lock_info(thread_id, "user")
 
+            # Clear any stale abort signal and capture the event for this run
+            abort_event = self._thread_locks.get_abort_event(thread_id)
+            abort_event.clear()
+
+            import time as _time
+            _stream_start = _time.monotonic()
+            logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}")
+
             # Cancel pending self_invoke (user is active)
             self.scheduler.cancel(user_id)
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
             graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
 
-            # DEBUG: Log what messages are currently in the checkpoint before processing
-            try:
-                state = graph.get_state({"configurable": {"thread_id": thread_id}})
-                existing_messages = state.values.get("messages", [])
-                logger.info(f"[CONTEXT DEBUG] Thread {thread_id}: {len(existing_messages)} messages in checkpoint BEFORE new message")
-                for i, msg in enumerate(existing_messages):
-                    msg_type = type(msg).__name__
-                    content_preview = ""
-                    if hasattr(msg, 'content') and msg.content:
-                        content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
-                        content_preview = content_str[:100].replace('\n', ' ')
-                    tool_info = ""
-                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        tool_names = [tc.get('name', '?') for tc in msg.tool_calls]
-                        tool_info = f" [tools: {', '.join(tool_names)}]"
-                    logger.info(f"[CONTEXT DEBUG]   [{i}] {msg_type}{tool_info}: {content_preview}...")
-            except Exception as e:
-                logger.warning(f"[CONTEXT DEBUG] Could not fetch existing state: {e}")
+            # Log checkpoint state before processing (DEBUG level — visible with agent/llm profiles)
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    state = graph.get_state({"configurable": {"thread_id": thread_id}})
+                    existing_messages = state.values.get("messages", [])
+                    logger.debug(f"[ASTREAM] Thread {thread_id}: {len(existing_messages)} messages in checkpoint BEFORE new message")
+                    for i, msg in enumerate(existing_messages):
+                        msg_type = type(msg).__name__
+                        content_preview = ""
+                        if hasattr(msg, 'content') and msg.content:
+                            content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                            content_preview = content_str[:100].replace('\n', ' ')
+                        tool_info = ""
+                        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                            tool_names = [tc.get('name', '?') for tc in msg.tool_calls]
+                            tool_info = f" [tools: {', '.join(tool_names)}]"
+                        logger.debug(f"[ASTREAM]   [{i}] {msg_type}{tool_info}: {content_preview}...")
+                except Exception as e:
+                    logger.warning(f"[ASTREAM] Could not fetch existing state: {e}")
 
             # Inject time context into the message
             time_context = self._get_time_context(is_autonomous=False)
@@ -2669,6 +2901,16 @@ class NymeriaAgent:
                 async for event in graph.astream_events(
                     input_state, config=config, version="v2"
                 ):
+                    # Check for abort signal between events
+                    if abort_event.is_set():
+                        logger.info(f"[ASTREAM] Thread {thread_id}: Aborted by cancel signal")
+                        yield {
+                            "type": "error",
+                            "content": "Operation was cancelled.",
+                            "code": "cancelled",
+                        }
+                        break
+
                     event_type = event.get("event")
 
                     # Reset preamble tracking when a new LLM call starts
@@ -2821,8 +3063,12 @@ class NymeriaAgent:
                     # Legacy sliding window trimming
                     self.trim_context_window(thread_id, user_id=user_id)
 
+                _elapsed = _time.monotonic() - _stream_start
+                logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
+
             except Exception as e:
-                logger.error(f"Error in astream: {e}", exc_info=True)
+                _elapsed = _time.monotonic() - _stream_start
+                logger.error(f"[ASTREAM] === ERROR === thread={thread_id}, elapsed={_elapsed:.1f}s: {e}", exc_info=True)
                 yield self._classify_stream_exception(e)
 
                 # Try to track tokens even after error so status bar stays alive
@@ -2835,6 +3081,18 @@ class NymeriaAgent:
                 except Exception:
                     pass
         finally:
+            # Patch dangling tool_calls in finally so it runs even when the
+            # async generator is force-closed (GeneratorExit from SSE disconnect).
+            # Must use the SYNC patch — await is forbidden during GeneratorExit.
+            try:
+                if abort_event.is_set():
+                    patched = self._patch_dangling_tool_calls(graph, config)
+                    if patched:
+                        logger.info(f"[ASTREAM] Thread {thread_id}: Patched {patched} dangling tool call(s) in finally")
+            except (NameError, UnboundLocalError):
+                pass  # abort_event/graph/config not yet assigned (early exit)
+            except Exception as e:
+                logger.warning(f"[ASTREAM] Thread {thread_id}: Failed to patch dangling tool calls in finally: {e}")
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
