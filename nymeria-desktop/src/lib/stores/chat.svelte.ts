@@ -1,5 +1,5 @@
 import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats } from '$lib/types';
-import { abortCurrentStream } from '$lib/services/api.svelte';
+import { abortCurrentStream, api } from '$lib/services/api.svelte';
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -750,32 +750,55 @@ function createChatStore() {
      * Stop the current generation and mark the message as stopped.
      * Aborts the active stream and appends context for the AI.
      */
-    stopGenerating() {
+    stopGenerating(threadId?: string) {
       if (!isStreaming) return;
 
       this._forceFlush();
-
-      // Abort the stream
       abortCurrentStream();
 
-      // Mark last message as stopped with context for the AI
+      // Mark last assistant message: update running tool calls to 'cancelled'
       const lastIndex = messages.length - 1;
       if (lastIndex >= 0) {
         const lastMessage = messages[lastIndex];
         if (lastMessage.role === 'assistant') {
+          const updatedSteps = lastMessage.steps?.map((step) => {
+            if (step.type === 'tool_call' && step.status === 'running') {
+              return { ...step, status: 'cancelled' as ToolCallStatus, endTime: new Date() };
+            }
+            return step;
+          });
+
+          const updatedToolCalls = lastMessage.toolCalls?.map((tc) => {
+            if (tc.status === 'running') {
+              return { ...tc, status: 'cancelled' as ToolCallStatus, endTime: new Date() };
+            }
+            return tc;
+          });
+
           const stoppedContent = lastMessage.content
             ? lastMessage.content + '\n\n[User stopped this output]'
             : '[User stopped this output]';
 
           messages = [
             ...messages.slice(0, lastIndex),
-            { ...lastMessage, content: stoppedContent, status: 'complete' as const }
+            {
+              ...lastMessage,
+              content: stoppedContent,
+              steps: updatedSteps ?? lastMessage.steps,
+              toolCalls: updatedToolCalls ?? lastMessage.toolCalls,
+              status: 'complete' as const,
+            }
           ];
         }
       }
 
       isStreaming = false;
       activeToolCalls = new Map();
+
+      // Signal the backend to abort and clean up checkpoint (fire-and-forget)
+      if (threadId) {
+        api.stopThread(threadId).catch(() => {});
+      }
     },
 
     // Compaction status methods

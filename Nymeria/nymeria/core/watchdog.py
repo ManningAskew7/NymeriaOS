@@ -303,9 +303,11 @@ class Watchdog:
         Follows the ticker's _execute_scheduled_todo pattern: streams via
         agent.stream() and publishes SSE events for the frontend.
         """
+        import time as _time
+        _nudge_start = _time.monotonic()
         logger.info(
-            f"Sending watchdog nudge for user {user_id}, thread {thread_id}: "
-            f"{len(stale_todos)} stale TODO(s)"
+            f"[WATCHDOG] === START === thread={thread_id}, user={user_id}, "
+            f"stale_todos={len(stale_todos)}"
         )
 
         # Build per-thread nudge prompt
@@ -346,6 +348,7 @@ class Watchdog:
         task_id = f"watchdog-{thread_id}"
         response_parts: list = []
         thinking_parts: list = []
+        nudge_failed = False
 
         try:
             # Publish task_started so frontend enters streaming mode
@@ -357,6 +360,7 @@ class Watchdog:
                 data={"prompt": nudge_message, "source": "watchdog"},
             )
 
+            chunk_count = 0
             for chunk in self.agent.stream(
                 message=nudge_message,
                 thread_id=thread_id,
@@ -364,6 +368,8 @@ class Watchdog:
                 _is_self_invoke=True,
             ):
                 chunk_type = chunk.get("type")
+                chunk_count += 1
+                logger.debug(f"[WATCHDOG] thread={thread_id}: chunk #{chunk_count} type={chunk_type}")
 
                 if chunk_type == "tool_call":
                     publish_autonomous_event(
@@ -412,6 +418,25 @@ class Watchdog:
                             data={"content": content},
                         )
 
+                elif chunk_type == "error":
+                    error_content = chunk.get("content", "")
+                    error_code = chunk.get("code", "unknown")
+                    logger.error(
+                        f"[WATCHDOG] Stream error for thread {thread_id}: "
+                        f"code={error_code}, content={error_content}"
+                    )
+                    nudge_failed = True
+                    raise RuntimeError(
+                        error_content or f"Watchdog stream error (code={error_code})"
+                    )
+
+                elif chunk_type == "iteration_limit":
+                    logger.warning(
+                        f"[WATCHDOG] Iteration limit during nudge for thread "
+                        f"{thread_id}: scope={chunk.get('scope')}. "
+                        f"Proceeding with partial delivery."
+                    )
+
             # Compute final response text
             if response_parts:
                 response_text = "".join(response_parts)
@@ -438,47 +463,56 @@ class Watchdog:
                     task_id=task_id,
                 )
 
-            # Mark TODOs as nudged
-            with self._lock:
-                now = time.time()
-                for todo in stale_todos:
-                    key = (user_id, todo.id)
-                    self._nudged_todos[key] = now
+            # Only mark TODOs as nudged and log success if stream didn't fail
+            if not nudge_failed:
+                # Mark TODOs as nudged
+                with self._lock:
+                    now = time.time()
+                    for todo in stale_todos:
+                        key = (user_id, todo.id)
+                        self._nudged_todos[key] = now
 
-            # Log activity on the real thread
-            log_activity(
-                ActivityType.WATCHDOG_NUDGE,
-                f"Watchdog alert: {len(stale_todos)} stale TODO(s) need attention",
-                user_id=user_id,
-                thread_id=thread_id,
-                metadata={
-                    "stale_todo_ids": [t.id for t in stale_todos],
-                    "staleness_minutes": self.staleness_minutes,
-                },
-            )
+                # Log activity on the real thread
+                log_activity(
+                    ActivityType.WATCHDOG_NUDGE,
+                    f"Watchdog alert: {len(stale_todos)} stale TODO(s) need attention",
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    metadata={
+                        "stale_todo_ids": [t.id for t in stale_todos],
+                        "staleness_minutes": self.staleness_minutes,
+                    },
+                )
 
-            logger.info(
-                f"Watchdog nudge completed for user {user_id}, thread {thread_id}"
-            )
+                _elapsed = _time.monotonic() - _nudge_start
+                logger.info(
+                    f"[WATCHDOG] === END === thread={thread_id}, "
+                    f"chunks={chunk_count}, response_len={len(response_text)}, elapsed={_elapsed:.1f}s"
+                )
 
         except Exception as e:
             import traceback
+            nudge_failed = True
+            _elapsed = _time.monotonic() - _nudge_start
             logger.error(
-                f"Watchdog nudge failed for thread {thread_id}: {e}"
+                f"[WATCHDOG] === ERROR === thread={thread_id}, elapsed={_elapsed:.1f}s: {e}"
             )
-            logger.error(f"Watchdog traceback:\n{traceback.format_exc()}")
+            logger.error(f"[WATCHDOG] Traceback:\n{traceback.format_exc()}")
         finally:
-            # Always publish task_completed
+            # Always publish task_completed so frontend exits streaming state
+            completed_data: dict = {
+                "notify": False,
+                "content": "".join(response_parts),
+                "source": "watchdog",
+            }
+            if nudge_failed:
+                completed_data["error"] = True
             publish_autonomous_event(
                 event_type="task_completed",
                 thread_id=thread_id,
                 user_id=user_id,
                 task_id=task_id,
-                data={
-                    "notify": False,
-                    "content": "".join(response_parts),
-                    "source": "watchdog",
-                },
+                data=completed_data,
             )
 
         # Send external notifications so the user actually sees it

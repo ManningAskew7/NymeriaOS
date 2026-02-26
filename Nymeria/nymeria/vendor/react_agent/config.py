@@ -93,6 +93,7 @@ Guidelines:
     max_iterations: int = 70  # Max ReAct loops before forcing stop
     recursion_limit: int = 150  # LangGraph recursion limit (must exceed 2x max_iterations)
     tool_timeout: int = 300  # Per-tool-node timeout in seconds (5 minutes)
+    on_timeout: Optional[object] = field(default=None, repr=False)  # Callback for tool timeout: fn(input_dict) -> None
 
     # Debug settings
     verbose: bool = field(default_factory=lambda: os.getenv("AGENT_VERBOSE", "false").lower() == "true")

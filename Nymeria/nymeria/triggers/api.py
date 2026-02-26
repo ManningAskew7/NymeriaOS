@@ -722,7 +722,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 ):
                     # Check if client disconnected (user clicked stop)
                     if await http_request.is_disconnected():
-                        logger.info(f"Client disconnected for thread {thread_id}")
+                        logger.info(f"Client disconnected for thread {thread_id}, signalling abort")
+                        agent.abort_with_cascade(thread_id)
                         break
 
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
@@ -1155,6 +1156,37 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent = get_agent()
         result = await agent.compact_now(thread_id, user_id)
         return result
+
+    @app.post("/threads/{thread_id}/stop", tags=["Threads"])
+    async def stop_thread(thread_id: str, _=Depends(verify_api_key)):
+        """Stop any running operation on a thread.
+
+        Signals the abort event for the thread and cascades to any active
+        callable threads it has spawned. The current stream()/astream() call
+        breaks at the next iteration boundary, releasing the thread lock.
+        """
+        agent = get_agent()
+        lock_info = agent._thread_locks.get_lock_info(thread_id)
+
+        # Only create abort events for threads with active operations
+        # to prevent unbounded memory growth from arbitrary thread IDs
+        if lock_info:
+            agent.abort_with_cascade(thread_id)
+            return {
+                "status": "stopping",
+                "thread_id": thread_id,
+                "message": (
+                    f"Stop signal sent. Thread was held by '{lock_info.get('holder')}' "
+                    f"for {lock_info.get('held_seconds', 0):.0f}s. "
+                    f"Will stop at next iteration boundary."
+                ),
+            }
+        else:
+            return {
+                "status": "idle",
+                "thread_id": thread_id,
+                "message": "Thread was not running. No stop signal needed.",
+            }
 
     @app.get("/tools", tags=["Tools"])
     async def list_tools(_: bool = Depends(verify_api_key)):

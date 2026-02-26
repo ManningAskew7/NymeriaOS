@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button, Icon } from '$lib/components/common';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
   import type { FileAttachment } from '$lib/types';
   import FilePreview from './FilePreview.svelte';
   import ImageModal from './ImageModal.svelte';
@@ -54,7 +55,7 @@
 
   function handleButtonClick() {
     if (isStreaming) {
-      chatStore.stopGenerating();
+      chatStore.stopGenerating(threadsStore.currentThreadId ?? undefined);
     } else {
       handleSubmit();
     }
