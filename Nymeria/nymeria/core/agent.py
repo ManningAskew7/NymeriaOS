@@ -125,6 +125,58 @@ def _extract_timestamp(text: str) -> Optional[str]:
         return None
 
 
+def _build_message_timestamp_map(
+    graph: Any,
+    thread_id: str,
+    target_ids: Optional[set] = None,
+) -> Dict[str, str]:
+    """Build a message_id -> ISO timestamp map from LangGraph checkpoint history.
+
+    Each checkpoint records a ``created_at`` timestamp.  Messages are
+    append-only (via the ``add_messages`` reducer), so the *first*
+    checkpoint where a message ID appears gives its true creation time.
+
+    Args:
+        graph: The compiled LangGraph.
+        thread_id: Thread to look up.
+        target_ids: If provided, only resolve these IDs and early-exit
+                    once all are found (avoids scanning older checkpoints).
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    timestamp_map: Dict[str, str] = {}
+
+    try:
+        # get_state_history() returns newest-first; reverse to oldest-first
+        all_states = list(graph.get_state_history(config))
+        all_states.reverse()
+
+        seen_ids: set = set()
+
+        for state in all_states:
+            try:
+                checkpoint_ts = state.created_at
+                if not checkpoint_ts:
+                    continue
+
+                for msg in state.values.get("messages", []):
+                    try:
+                        if msg.id and msg.id not in seen_ids:
+                            timestamp_map[msg.id] = checkpoint_ts
+                            seen_ids.add(msg.id)
+                    except Exception:
+                        continue
+
+                # Early exit once all target IDs are resolved
+                if target_ids and target_ids.issubset(seen_ids):
+                    break
+            except Exception:
+                continue
+    except Exception as e:
+        logger.warning(f"[Timestamps] Failed to build checkpoint map for thread {thread_id}: {e}")
+
+    return timestamp_map
+
+
 def _extract_mime_from_data_url(data_url: str) -> str:
     """Extract MIME type from a data URL like 'data:image/png;base64,...'."""
     if data_url.startswith("data:"):
@@ -2816,6 +2868,10 @@ class NymeriaAgent:
             state = self._default_graph.get_state({"configurable": {"thread_id": thread_id}})
             messages = state.values.get("messages", [])
 
+            # Build per-message timestamp map from checkpoint history
+            target_ids = {msg.id for msg in messages if msg.id}
+            timestamp_map = _build_message_timestamp_map(self._default_graph, thread_id, target_ids)
+
             # Filter out internal messages unless explicitly requested
             # Internal messages are system-generated (autonomous wake-ups, compaction prompts)
             #
@@ -2936,8 +2992,10 @@ class NymeriaAgent:
                         raw_content = str(msg.content)
                         attachments = []
 
-                    # Extract timestamp from [Time: ...] prefix before stripping
-                    timestamp_iso = _extract_timestamp(raw_content)
+                    # Extract timestamp: prefer checkpoint map, fall back to [Time: ...] prefix
+                    timestamp_iso = timestamp_map.get(msg.id) if msg.id else None
+                    if not timestamp_iso:
+                        timestamp_iso = _extract_timestamp(raw_content)
 
                     # Strip injected time context prefix for display
                     entry["content"] = _CONTEXT_PREFIX_PATTERN.sub('', raw_content)
@@ -2970,6 +3028,9 @@ class NymeriaAgent:
                                 "content": "",
                                 "steps": [],  # Ordered list of thinking + tool_call steps
                             }
+                            turn_ts = timestamp_map.get(msg.id) if msg.id else None
+                            if turn_ts:
+                                current_turn["timestamp"] = turn_ts
 
                         # FIRST: Add thinking step if there's content (before tool calls)
                         if raw_content:
@@ -2998,6 +3059,12 @@ class NymeriaAgent:
                             # Complete the current turn with this content
                             current_turn["content"] = raw_content
 
+                            # Backfill timestamp if turn-start had no ID
+                            if "timestamp" not in current_turn:
+                                backfill_ts = timestamp_map.get(msg.id) if msg.id else None
+                                if backfill_ts:
+                                    current_turn["timestamp"] = backfill_ts
+
                             # Compute legacy fields for backward compatibility
                             current_turn["intermediate_content"] = "\n".join(
                                 s["content"] for s in current_turn["steps"] if s["type"] == "thinking"
@@ -3016,6 +3083,9 @@ class NymeriaAgent:
                                 "role": "assistant",
                                 "content": raw_content,
                             }
+                            standalone_ts = timestamp_map.get(msg.id) if msg.id else None
+                            if standalone_ts:
+                                entry["timestamp"] = standalone_ts
                             history.append(entry)
 
                 elif isinstance(msg, SystemMessage):
