@@ -13,7 +13,6 @@
 
   const hasConfig = $derived(threadConfig?.hasCustomizations ?? false);
   const isCallable = $derived(threadConfig?.callable ?? false);
-  const callableLabel = $derived(threadConfig?.callableName ?? null);
 
   const modelLabel = $derived(() => {
     if (threadConfig?.llmConfig?.model) {
@@ -37,9 +36,9 @@
 
     <div class="header-badges">
       {#if isCallable}
-        <span class="badge callable-badge" title="Callable thread{callableLabel ? `: ${callableLabel}` : ''}">
+        <span class="badge callable-badge" title="Callable thread">
           <span class="callable-chevron">&lt;</span>
-          {callableLabel ?? 'Callable'}
+          Callable
         </span>
       {/if}
       {#if modelLabel()}

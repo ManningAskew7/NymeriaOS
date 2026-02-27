@@ -290,6 +290,8 @@
           threadId: string;
           contextStats?: ContextStats;
           model?: string;
+          title?: string;
+          title_source?: string;
         };
 
         // Reclassify any trailing thinking as response (if no tool calls followed it)
@@ -301,6 +303,11 @@
         }
         if (data.model) {
           chatStore.setActiveModel(data.model);
+        }
+
+        // Apply backend-generated title (auto-title from first message)
+        if (data.title && data.threadId) {
+          threadsStore.applyBackendTitle(data.threadId, data.title);
         }
 
         // Clear queued state

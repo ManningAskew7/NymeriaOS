@@ -136,6 +136,18 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                 detail="Failed to create trigger. Check source_type and config.",
             )
 
+        # Create thread metadata for the trigger thread
+        try:
+            agent = get_agent_fn()
+            agent.thread_metadata_manager.upsert_thread(
+                user_id, trigger.thread_id,
+                title=f"Trigger: {body.name}",
+                title_source="platform",
+                platform="trigger",
+            )
+        except Exception:
+            pass  # Non-critical — metadata will be created lazily if needed
+
         return TriggerResponse.from_definition(trigger)
 
     @router.get("/{trigger_id}", response_model=TriggerResponse)

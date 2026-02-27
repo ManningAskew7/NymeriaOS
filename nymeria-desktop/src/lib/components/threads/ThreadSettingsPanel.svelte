@@ -251,6 +251,12 @@
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
+      // Sync sidebar title to callable name (backend already updated metadata,
+      // so this is local-only to avoid stale title until next full sync)
+      if (isCallable && callableName.trim()) {
+        threadsStore.applyBackendTitle(thread.id, callableName.trim());
+      }
+
       onSaved(result);
 
       // Refresh context stats so status bar shows new model + correct percentage

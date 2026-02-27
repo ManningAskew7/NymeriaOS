@@ -744,6 +744,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         'context_stats': context_stats,
                         'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
                     }
+
+                    # Auto-title the thread from the user's message if untitled
+                    try:
+                        new_title = agent.thread_metadata_manager.auto_title(
+                            user_id, thread_id, request.message
+                        )
+                        if new_title:
+                            done_data['title'] = new_title
+                            done_data['title_source'] = 'auto'
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-title thread {thread_id}: {e}")
+
                     yield f"data: {json.dumps(done_data)}\n\n"
 
             except Exception as e:
@@ -883,18 +895,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             return "telegram"
         if thread_id.startswith("slack_"):
             return "slack"
+        if thread_id.startswith("agent-"):
+            return "callable"
         return "desktop"
 
-    @app.get("/threads", tags=["Threads"])
-    async def list_threads(
-        _: bool = Depends(verify_api_key),
-    ):
-        """
-        List all thread IDs known to the backend with platform classification.
-
-        Queries distinct thread IDs from the checkpoint database so the frontend
-        can validate which threads actually exist and what platform they belong to.
-        """
+    def _get_checkpoint_thread_ids() -> list[str]:
+        """Query distinct thread IDs from the checkpoint database."""
         settings = get_settings()
         thread_ids: list[str] = []
 
@@ -921,12 +927,196 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             except Exception as e:
                 logger.warning(f"Failed to query thread IDs from PostgreSQL: {e}")
 
-        threads = [
-            {"thread_id": tid, "platform": _classify_thread_platform(tid)}
-            for tid in thread_ids
-        ]
+        return thread_ids
+
+    @app.get("/threads", tags=["Threads"])
+    async def list_threads(
+        user_id: str = Query(default="default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        List all threads with metadata (titles, pins, platform info).
+
+        Merges thread IDs from the checkpoint database with stored metadata
+        so all surfaces see the same thread list.
+        """
+        agent = get_agent()
+        checkpoint_ids = _get_checkpoint_thread_ids()
+        checkpoint_set = set(checkpoint_ids)
+
+        # Get stored metadata
+        store = agent.thread_metadata_manager.get_store(user_id)
+
+        threads = []
+
+        # 1. Threads in checkpoints (with metadata if available)
+        for tid in checkpoint_ids:
+            meta = store.threads.get(tid)
+            if meta:
+                threads.append(meta.model_dump(mode="json"))
+            else:
+                # Thread exists in checkpoints but has no metadata yet
+                threads.append({
+                    "thread_id": tid,
+                    "title": "New Chat",
+                    "pinned": False,
+                    "platform": _classify_thread_platform(tid),
+                    "platform_meta": None,
+                    "created_at": None,
+                    "updated_at": None,
+                    "title_source": "default",
+                })
+
+        # 2. Metadata-only threads (created by frontend but no checkpoint yet)
+        for tid, meta in store.threads.items():
+            if tid not in checkpoint_set:
+                threads.append(meta.model_dump(mode="json"))
 
         return {"threads": threads, "total": len(threads)}
+
+    # -- Thread metadata endpoints --
+
+    class ThreadMetadataUpdateRequest(BaseModel):
+        title: Optional[str] = Field(default=None, max_length=200)
+        pinned: Optional[bool] = None
+
+    @app.patch("/threads/{thread_id}/metadata", tags=["Threads"])
+    async def update_thread_metadata(
+        thread_id: str,
+        request: ThreadMetadataUpdateRequest,
+        user_id: str = Query(default="default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Update thread metadata (title, pin status)."""
+        agent = get_agent()
+        fields: Dict[str, Any] = {}
+        title_source = None
+
+        if request.title is not None:
+            fields["title"] = request.title.strip()
+            title_source = "user"
+        if request.pinned is not None:
+            fields["pinned"] = request.pinned
+
+        if title_source:
+            fields["title_source"] = title_source
+
+        # If renaming a callable thread, sync title → callable_name
+        if request.title is not None:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            if tc and tc.callable:
+                new_name = request.title.strip()
+                # Validate: no collision with core tools or other callables
+                from ..tools import ALL_TOOLS
+                core_tool_names = {t.name for t in ALL_TOOLS}
+                collision = new_name in core_tool_names
+                if not collision:
+                    existing = agent.thread_config_manager.get_callable_thread_by_name(new_name)
+                    collision = existing is not None and existing.thread_id != thread_id
+                if not collision and new_name:
+                    tc.callable_name = new_name
+                    agent.thread_config_manager.save_config(tc)
+                    agent.invalidate_thread_config_cache(thread_id)
+                    agent.sync_agent_tools()
+                    # Override title_source to "callable" for callable threads
+                    fields["title_source"] = "callable"
+
+        meta = agent.thread_metadata_manager.upsert_thread(
+            user_id, thread_id, **fields
+        )
+        return meta.model_dump(mode="json")
+
+    class ThreadMetadataMigrateRequest(BaseModel):
+        threads: List[dict] = Field(default_factory=list)
+
+    @app.post("/threads/metadata/migrate", tags=["Threads"])
+    async def migrate_thread_metadata(
+        request: ThreadMetadataMigrateRequest,
+        user_id: str = Query(default="default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        One-time migration: import thread metadata from frontend localStorage.
+
+        Accepts the frontend's Thread[] format and imports into the backend
+        metadata store. Only imports threads that don't already have metadata.
+        """
+        agent = get_agent()
+        count = agent.thread_metadata_manager.migrate_from_frontend(
+            user_id, request.threads
+        )
+        return {"migrated_threads": count}
+
+    @app.delete("/threads/{thread_id}", tags=["Threads"])
+    async def delete_thread(
+        thread_id: str,
+        user_id: str = Query(default="default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Fully delete a thread: metadata, checkpoints, and config.
+
+        This is the proper way to remove a thread from all surfaces.
+        """
+        agent = get_agent()
+        settings = get_settings()
+
+        # 1. Delete metadata
+        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+
+        # 2. Delete checkpoints
+        if settings.database_backend == "sqlite":
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(str(settings.db_path))
+                conn.execute(
+                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+                )
+                # Also clean checkpoint_writes if the table exists
+                try:
+                    conn.execute(
+                        "DELETE FROM checkpoint_writes WHERE thread_id = ?",
+                        (thread_id,),
+                    )
+                except Exception:
+                    pass  # Table may not exist
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
+        elif settings.database_backend == "postgres":
+            import psycopg  # type: ignore[import-untyped]
+            try:
+                with psycopg.connect(settings.postgres_uri) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM checkpoints WHERE thread_id = %s",
+                            (thread_id,),
+                        )
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoint_writes WHERE thread_id = %s",
+                                (thread_id,),
+                            )
+                        except Exception:
+                            pass
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
+
+        # 3. Delete thread config (if any)
+        try:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            was_callable = tc.callable if tc else False
+            agent.thread_config_manager.delete_config(thread_id)
+            agent.invalidate_thread_config_cache(thread_id)
+            if was_callable:
+                agent.sync_agent_tools()
+        except Exception as e:
+            logger.warning(f"Failed to delete thread config for {thread_id}: {e}")
+
+        logger.info(f"Thread {thread_id} fully deleted")
+        return {"status": "ok", "thread_id": thread_id}
 
     # =========================================================================
     # Thread Configuration
@@ -1070,6 +1260,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # If this is an agent thread config change, rebuild agent tools
         if request.callable is not None or request.callable_name is not None or request.callable_description is not None:
             agent.sync_agent_tools()
+
+        # Sync callable thread metadata (title = callable_name)
+        if tc.callable and tc.callable_name:
+            agent.thread_metadata_manager.upsert_thread(
+                "default", thread_id,
+                title=tc.callable_name,
+                title_source="callable",
+                platform="callable",
+            )
 
         result = tc.model_dump(mode="json")
         result["has_customizations"] = tc.has_customizations()
@@ -2507,6 +2706,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to create agent thread")
+
+        # Create thread metadata with callable_name as title
+        agent.thread_metadata_manager.upsert_thread(
+            "default", thread_id,
+            title=request.callable_name,
+            title_source="callable",
+            platform="callable",
+        )
 
         # Rebuild agent tools to include the new callable thread
         agent.sync_agent_tools()

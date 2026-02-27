@@ -488,6 +488,19 @@ def create_webhook_router(get_agent_fn, get_settings_fn) -> APIRouter:
         thread_id = f"{platform}_{incoming.channel_id}"
         user_id = f"{platform}_{incoming.sender_id}"
 
+        # Ensure thread metadata exists for this platform channel
+        try:
+            agent = get_agent_fn()
+            platform_title = f"{platform.capitalize()}: {incoming.channel_id}"
+            agent.thread_metadata_manager.upsert_thread(
+                user_id, thread_id,
+                title=platform_title,
+                title_source="platform",
+                platform=platform,
+            )
+        except Exception:
+            pass  # Non-critical
+
         # Publish webhook_message event so the desktop app can show activity
         try:
             from ..core.event_bus import publish_autonomous_event

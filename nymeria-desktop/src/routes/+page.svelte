@@ -90,6 +90,10 @@
 
     // Connect if configured (setupCompleted is redundant now but kept for safety)
     if (configStore.isConfigured) {
+      // Sync thread metadata from backend (server is authoritative for titles/pins).
+      // Runs in background — localStorage provides instant render, backend updates after.
+      threadsStore.syncFromBackend();
+
       // Restore last thread's chat history if one was saved
       const initialThreadId = threadsStore.currentThreadId;
       if (initialThreadId) {

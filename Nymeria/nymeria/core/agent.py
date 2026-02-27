@@ -39,6 +39,7 @@ from .prompts import INTERACTIVE_MODE_RULES, AUTONOMOUS_MODE_RULES, get_time_con
 from .migration import migrate_old_scheduled_tasks
 from .memory_index import MemoryIndex
 from .thread_config import ThreadConfigManager
+from .thread_metadata import ThreadMetadataManager
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,9 @@ class NymeriaAgent:
 
         # Initialize per-thread config manager
         self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
+
+        # Initialize thread metadata manager (server-side titles, pins, platform info)
+        self.thread_metadata_manager = ThreadMetadataManager(self.settings.data_dir)
 
         # Memory indexes cache for RAG (user_id -> MemoryIndex)
         # Lazily initialized per-user to avoid loading all indexes on startup
