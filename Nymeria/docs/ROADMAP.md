@@ -20,18 +20,18 @@ Storage: JSON files in `data/custom_tools/`
 
 ---
 
-### Sub-Agent System (Implemented)
+### Callable Threads (Implemented, replaces Sub-Agent System)
 
-Specialized sub-agents with custom prompts, tool subsets, and behaviors. Sub-agents appear as **directly callable tools** in the main agent's tool list via `agents/tool_factory.py`.
+Any thread with `callable=True` becomes a directly invocable tool. Replaces the old sub-agent registry with a thread-based approach where each callable thread has its own system prompt, LLM overrides, and tool configuration.
 
-**Built-in agents:** BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent
+**Built-in callable threads:** BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent
 
 **Features:**
-- CRUD via desktop UI (Settings > Sub-Agents) or REST API (`/agents`)
-- Direct tool invocation: `BrowserAgent(task="...")` — no wrapper needed
-- Context isolation via `SubAgentExecutor`
-- Auto-loaded at startup by `NymeriaAgent._ensure_agent_tools()`
-- Hot-reload via `reload_all` tool or agent CRUD endpoints
+- Configure via thread settings UI or `PATCH /threads/{id}/config`
+- Direct tool invocation: `ResearchAgent(task="...")` — no wrapper needed
+- Live SSE streaming of callable thread activity to frontend
+- Cascading abort support (parent→child)
+- Thread title always equals callable_name — renaming syncs both
 
 ---
 
@@ -50,6 +50,21 @@ Trigger system that fires agent prompts or actions in response to events.
 Each thread can have custom instructions, disabled/enabled tools, and LLM settings overrides.
 
 **Component:** `core/thread_config.py`, UI in ThreadSettingsPanel
+
+---
+
+### Server-Side Thread Metadata (Implemented)
+
+Thread metadata (titles, pins, platform) is now server-authoritative instead of frontend-only localStorage. All surfaces (desktop, Discord, Telegram, Slack, webhooks) share the same view.
+
+**Key features:**
+- `thread_metadata.py`: Per-user JSON storage with thread-safe locks
+- Auto-title generation from first message (mirrors frontend logic)
+- Title sources: `auto`, `user` (manual rename), `callable` (synced from callable_name)
+- Platform field stored in metadata instead of inferred from ID prefixes
+- All trigger sources create metadata on first message
+- `PATCH /threads/{id}/metadata` syncs renames back to callable_name and rebuilds tool registry
+- Frontend syncs from backend metadata on startup via `GET /threads`
 
 ---
 
