@@ -1715,6 +1715,13 @@ class NymeriaAgent:
                 # Legacy path: use registry-based filtering
                 tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
 
+            # Always include callable thread tools (they live in the registry,
+            # not in ALL_TOOLS/OPTIONAL_TOOLS, so custom defaults would drop them)
+            existing_names = {t.name for t in tools}
+            for t in self.tool_registry.get_all_tools():
+                if t.name not in existing_names and t.name in self._callable_tool_thread_map:
+                    tools.append(t)
+
         # Apply per-thread tool filtering (remove disabled, add enabled)
         if tc:
             if tc.disabled_tools:
@@ -1778,6 +1785,13 @@ class NymeriaAgent:
             else:
                 # Legacy path: use registry-based filtering
                 tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+            # Always include callable thread tools (they live in the registry,
+            # not in ALL_TOOLS/OPTIONAL_TOOLS, so custom defaults would drop them)
+            existing_names = {t.name for t in tools}
+            for t in self.tool_registry.get_all_tools():
+                if t.name not in existing_names and t.name in self._callable_tool_thread_map:
+                    tools.append(t)
 
         # Apply per-thread tool filtering (remove disabled, add enabled)
         if tc:
