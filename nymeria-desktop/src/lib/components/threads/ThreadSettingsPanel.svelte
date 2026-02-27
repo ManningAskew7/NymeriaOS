@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, OptionalTool } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -9,6 +9,8 @@
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
+  import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { ToolCountWarning } from '$lib/components/tools';
 
   interface Props {
     thread: Thread;
@@ -24,12 +26,49 @@
 
   // Form state — initialized from threadConfig
   let instructions = $state(threadConfig?.instructions ?? '');
-  let disabledTools = $state<Set<string>>(new Set(threadConfig?.disabledTools ?? []));
-  let enabledTools = $state<Set<string>>(new Set(threadConfig?.enabledTools ?? []));
 
-  // Optional tools (fetched from backend)
-  let optionalTools = $state<OptionalTool[]>([]);
-  let optionalToolsLoading = $state(false);
+  // Derive initial tool state: if no per-thread config exists and global defaults
+  // are customized, compute disabled/enabled from the default tool set so the UI
+  // reflects what the agent will actually receive.
+  function computeInitialToolState(): { disabled: Set<string>; enabled: Set<string> } {
+    if (threadConfig?.hasCustomizations) {
+      // Thread has its own customized config — use it directly
+      return {
+        disabled: new Set(threadConfig.disabledTools ?? []),
+        enabled: new Set(threadConfig.enabledTools ?? []),
+      };
+    }
+    if (defaultToolsStore.mode === 'custom' && defaultToolsStore.loaded) {
+      const defaultSet = new Set(defaultToolsStore.defaultToolNames);
+      const disabled = new Set<string>();
+      const enabled = new Set<string>();
+      for (const tool of defaultToolsStore.tools) {
+        if (!tool.is_optional && !defaultSet.has(tool.name)) {
+          // Core tool not in defaults → disabled
+          disabled.add(tool.name);
+        } else if (tool.is_optional && defaultSet.has(tool.name)) {
+          // Optional tool in defaults → enabled
+          enabled.add(tool.name);
+        }
+      }
+      return { disabled, enabled };
+    }
+    // Legacy mode or store not loaded yet — empty sets (all core on, no optional)
+    return { disabled: new Set(), enabled: new Set() };
+  }
+
+  const initialToolState = computeInitialToolState();
+  let disabledTools = $state<Set<string>>(initialToolState.disabled);
+  let enabledTools = $state<Set<string>>(initialToolState.enabled);
+
+  // Optional tools (derived from defaultToolsStore — tools NOT in the user's core set)
+  const optionalTools = $derived(() => {
+    if (!defaultToolsStore.loaded) return [];
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    return defaultToolsStore.tools
+      .filter(t => !coreSet.has(t.name))
+      .map(t => ({ name: t.name, description: t.description }));
+  });
 
   // LLM form state
   let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
@@ -72,6 +111,27 @@
   let toolSearch = $state('');
   let saving = $state(false);
   let error = $state('');
+  let showToolWarning = $state(false);
+
+  // Effective tool count for this thread (core tools minus disabled, plus optional enabled)
+  const effectiveToolCount = $derived(() => {
+    const coreTools = unifiedToolsStore.tools.filter(t => t.toolType === 'builtin');
+    const activeCore = coreTools.filter(t => !disabledTools.has(t.name)).length;
+    return activeCore + enabledTools.size;
+  });
+
+  // Track whether the user has manually changed tools (prevents overwriting on store load)
+  let userChangedTools = $state(false);
+
+  // When defaultToolsStore finishes loading for a new thread with no config,
+  // update the tool toggles to reflect the custom defaults.
+  $effect(() => {
+    if (!threadConfig?.hasCustomizations && !userChangedTools && defaultToolsStore.loaded && defaultToolsStore.mode === 'custom') {
+      const state = computeInitialToolState();
+      disabledTools = state.disabled;
+      enabledTools = state.enabled;
+    }
+  });
 
   // Ensure tools, triggers, and model metadata are loaded
   $effect(() => {
@@ -84,13 +144,8 @@
     if (!modelsStore.loaded && !modelsStore.loading) {
       modelsStore.loadModels();
     }
-    if (optionalTools.length === 0 && !optionalToolsLoading) {
-      optionalToolsLoading = true;
-      api.getOptionalTools().then((tools) => {
-        optionalTools = tools;
-      }).finally(() => {
-        optionalToolsLoading = false;
-      });
+    if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
+      defaultToolsStore.load();
     }
   });
 
@@ -111,6 +166,7 @@
   const enabledToolCount = $derived(enabledTools.size);
 
   function toggleOptionalTool(toolName: string) {
+    userChangedTools = true;
     const next = new Set(enabledTools);
     if (next.has(toolName)) {
       next.delete(toolName);
@@ -121,6 +177,7 @@
   }
 
   function toggleTool(toolName: string) {
+    userChangedTools = true;
     const next = new Set(disabledTools);
     if (next.has(toolName)) {
       next.delete(toolName);
@@ -176,6 +233,17 @@
     if (showAutonomousPrompts !== origShowAutonomous) return true;
 
     return false;
+  }
+
+  function checkToolCountAndSave() {
+    const toolCount = effectiveToolCount();
+    const callableCount = defaultToolsStore.callableThreadCount;
+    if (toolCount + callableCount > 25 && !showToolWarning) {
+      showToolWarning = true;
+      return;
+    }
+    showToolWarning = false;
+    handleSave();
   }
 
   async function handleSave() {
@@ -645,7 +713,7 @@
             </div>
           {/if}
 
-          {#if optionalTools.length > 0}
+          {#if optionalTools().length > 0}
             <div class="optional-tools-section">
               <span class="field-label">
                 Optional Tools
@@ -654,10 +722,10 @@
                 {/if}
               </span>
               <p class="field-hint">
-                These tools are not loaded by default. Enable them for this thread to give the agent direct access (e.g. Outlook email tools instead of going through OutlookAgent).
+                These tools are not in your core set. Enable them for this thread only.
               </p>
               <div class="tools-list">
-                {#each optionalTools as tool (tool.name)}
+                {#each optionalTools() as tool (tool.name)}
                   <div
                     class="tool-row"
                     class:optional-enabled={enabledTools.has(tool.name)}
@@ -705,7 +773,7 @@
         </button>
         <button
           class="btn btn-primary"
-          onclick={handleSave}
+          onclick={checkToolCountAndSave}
           disabled={saving || !hasChanges()}
           type="button"
         >
@@ -715,6 +783,15 @@
     </div>
   </div>
 </div>
+
+{#if showToolWarning}
+  <ToolCountWarning
+    toolCount={effectiveToolCount()}
+    callableCount={defaultToolsStore.callableThreadCount}
+    onContinue={() => { showToolWarning = false; handleSave(); }}
+    onGoBack={() => { showToolWarning = false; }}
+  />
+{/if}
 
 <style>
   .modal-backdrop {

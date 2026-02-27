@@ -1701,20 +1701,33 @@ class NymeriaAgent:
         if tc and tc.callable and tc.callable_name:
             tools = self._get_callable_thread_tools(tc)
         else:
-            # Use per-user tool filtering
-            tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+            # Check if user has custom default tools configured
+            profile = self.profile_manager.get_profile(user_id)
+            default_tools = profile.tool_preferences.default_thread_tools
 
-        # Apply per-thread tool filtering (remove disabled, add enabled optional)
+            if default_tools is not None:
+                # Custom defaults: build tool list from the explicit default set
+                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+                all_tools_dict = {t.name: t for t in ALL_TOOLS}
+                all_tools_dict.update(OPTIONAL_TOOLS)
+                tools = [all_tools_dict[name] for name in default_tools if name in all_tools_dict]
+            else:
+                # Legacy path: use registry-based filtering
+                tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+        # Apply per-thread tool filtering (remove disabled, add enabled)
         if tc:
             if tc.disabled_tools:
                 disabled = set(tc.disabled_tools)
                 tools = [t for t in tools if t.name not in disabled]
             if tc.enabled_tools:
-                from ..tools import OPTIONAL_TOOLS
+                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+                all_tools_dict = {t.name: t for t in ALL_TOOLS}
+                all_tools_dict.update(OPTIONAL_TOOLS)
                 existing = {t.name for t in tools}
                 for name in tc.enabled_tools:
-                    if name in OPTIONAL_TOOLS and name not in existing:
-                        tools.append(OPTIONAL_TOOLS[name])
+                    if name in all_tools_dict and name not in existing:
+                        tools.append(all_tools_dict[name])
 
         return create_graph(
             config=config,
@@ -1752,20 +1765,33 @@ class NymeriaAgent:
         if tc and tc.callable and tc.callable_name:
             tools = self._get_callable_thread_tools(tc)
         else:
-            # Use per-user tool filtering
-            tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+            # Check if user has custom default tools configured
+            profile = self.profile_manager.get_profile(user_id)
+            default_tools = profile.tool_preferences.default_thread_tools
 
-        # Apply per-thread tool filtering (remove disabled, add enabled optional)
+            if default_tools is not None:
+                # Custom defaults: build tool list from the explicit default set
+                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+                all_tools_dict = {t.name: t for t in ALL_TOOLS}
+                all_tools_dict.update(OPTIONAL_TOOLS)
+                tools = [all_tools_dict[name] for name in default_tools if name in all_tools_dict]
+            else:
+                # Legacy path: use registry-based filtering
+                tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+
+        # Apply per-thread tool filtering (remove disabled, add enabled)
         if tc:
             if tc.disabled_tools:
                 disabled = set(tc.disabled_tools)
                 tools = [t for t in tools if t.name not in disabled]
             if tc.enabled_tools:
-                from ..tools import OPTIONAL_TOOLS
+                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+                all_tools_dict = {t.name: t for t in ALL_TOOLS}
+                all_tools_dict.update(OPTIONAL_TOOLS)
                 existing = {t.name for t in tools}
                 for name in tc.enabled_tools:
-                    if name in OPTIONAL_TOOLS and name not in existing:
-                        tools.append(OPTIONAL_TOOLS[name])
+                    if name in all_tools_dict and name not in existing:
+                        tools.append(all_tools_dict[name])
 
         return create_graph(
             config=config,

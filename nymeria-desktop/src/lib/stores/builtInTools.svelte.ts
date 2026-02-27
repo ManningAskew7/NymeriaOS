@@ -38,6 +38,26 @@ const CATEGORY_INFO: Record<ToolCategory, { name: string; icon: string; descript
     icon: 'list',
     description: 'Task management and scheduling tools'
   },
+  trigger: {
+    name: 'Triggers',
+    icon: 'zap',
+    description: 'Event-driven trigger management tools'
+  },
+  email: {
+    name: 'Email',
+    icon: 'mail',
+    description: 'Outlook email tools for reading, sending, and managing mail'
+  },
+  browser: {
+    name: 'Browser',
+    icon: 'globe',
+    description: 'Playwright browser automation tools for web interaction'
+  },
+  calendar: {
+    name: 'Calendar',
+    icon: 'calendar',
+    description: 'Google Calendar tools for managing events and schedules'
+  },
   custom: {
     name: 'Custom',
     icon: 'puzzle',

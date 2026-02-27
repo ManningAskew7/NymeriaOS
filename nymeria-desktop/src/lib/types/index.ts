@@ -165,6 +165,22 @@ export interface OptionalTool {
   description: string;
 }
 
+export interface DefaultToolInfo {
+  name: string;
+  description: string;
+  category: string;
+  security_level: string;
+  is_optional: boolean;
+  is_default: boolean;
+}
+
+export interface DefaultToolsResponse {
+  mode: 'legacy' | 'custom';
+  default_tools: string[];
+  available_tools: DefaultToolInfo[];
+  callable_thread_count: number;
+}
+
 export interface ThreadHistory {
   threadId: string;
   messages: Message[];
@@ -585,7 +601,7 @@ export interface CustomToolTestResponse {
 // Built-in Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'custom';
+export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'calendar' | 'custom';
 export type ToolType = 'builtin' | 'custom';
 
 export interface BuiltInTool {

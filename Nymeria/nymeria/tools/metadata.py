@@ -18,6 +18,9 @@ class ToolCategory(str, Enum):
     TODO = "todo"           # todo, todo_delete, todo_list
     SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
     TRIGGER = "trigger"     # trigger_create, trigger_list, trigger_update, trigger_delete
+    EMAIL = "email"         # Outlook auth + email tools (optional)
+    BROWSER = "browser"     # Playwright browser automation tools (optional)
+    CALENDAR = "calendar"   # Google Calendar auth + API tools (optional)
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
 
 
@@ -247,6 +250,276 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.TRIGGER,
         security_level=SecurityLevel.MODERATE,
         description="Delete a trigger",
+    ),
+
+    # Test tool
+    "hello_test": ToolMetadata(
+        name="hello_test",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.SAFE,
+        description="Test tool for verifying agent functionality",
+    ),
+
+    # Outlook authentication tools (optional)
+    "outlook_auth_start": ToolMetadata(
+        name="outlook_auth_start",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Start Microsoft account authentication using device code flow",
+        default_enabled=False,
+    ),
+    "outlook_auth_complete": ToolMetadata(
+        name="outlook_auth_complete",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Complete Microsoft authentication after user has signed in",
+        default_enabled=False,
+    ),
+    "outlook_list_authenticated_accounts": ToolMetadata(
+        name="outlook_list_authenticated_accounts",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="List all authenticated Microsoft accounts",
+        default_enabled=False,
+    ),
+
+    # Outlook email tools (optional)
+    "outlook_list_emails": ToolMetadata(
+        name="outlook_list_emails",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="List recent emails from Outlook",
+        default_enabled=False,
+    ),
+    "outlook_get_email": ToolMetadata(
+        name="outlook_get_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="Get full details of a specific email",
+        default_enabled=False,
+    ),
+    "outlook_search_emails": ToolMetadata(
+        name="outlook_search_emails",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="Search emails by keywords",
+        default_enabled=False,
+    ),
+    "outlook_send_email": ToolMetadata(
+        name="outlook_send_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Send a new email",
+        default_enabled=False,
+    ),
+    "outlook_reply_email": ToolMetadata(
+        name="outlook_reply_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Reply to an email",
+        default_enabled=False,
+    ),
+    "outlook_create_draft": ToolMetadata(
+        name="outlook_create_draft",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Create an email draft",
+        default_enabled=False,
+    ),
+    "outlook_delete_email": ToolMetadata(
+        name="outlook_delete_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Delete an email",
+        default_enabled=False,
+    ),
+    "outlook_mark_email": ToolMetadata(
+        name="outlook_mark_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="Mark email as read or unread",
+        default_enabled=False,
+    ),
+    "outlook_move_email": ToolMetadata(
+        name="outlook_move_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Move email to a different folder",
+        default_enabled=False,
+    ),
+    "outlook_forward_email": ToolMetadata(
+        name="outlook_forward_email",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Forward an email to another recipient",
+        default_enabled=False,
+    ),
+
+    # Browser automation tools (optional)
+    "browser_navigate": ToolMetadata(
+        name="browser_navigate",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.MODERATE,
+        description="Navigate browser to a URL",
+        default_enabled=False,
+    ),
+    "browser_click": ToolMetadata(
+        name="browser_click",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.MODERATE,
+        description="Click an element on the page",
+        default_enabled=False,
+    ),
+    "browser_type": ToolMetadata(
+        name="browser_type",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.MODERATE,
+        description="Type text into an input field",
+        default_enabled=False,
+    ),
+    "browser_get_content": ToolMetadata(
+        name="browser_get_content",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.SAFE,
+        description="Get text content of current page",
+        default_enabled=False,
+    ),
+    "browser_screenshot": ToolMetadata(
+        name="browser_screenshot",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.SAFE,
+        description="Take screenshot of current page",
+        default_enabled=False,
+    ),
+    "browser_scroll": ToolMetadata(
+        name="browser_scroll",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.SAFE,
+        description="Scroll page up or down",
+        default_enabled=False,
+    ),
+    "browser_close": ToolMetadata(
+        name="browser_close",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.SAFE,
+        description="Close the browser",
+        default_enabled=False,
+    ),
+    "browser_press_key": ToolMetadata(
+        name="browser_press_key",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.MODERATE,
+        description="Press a keyboard key in the browser",
+        default_enabled=False,
+    ),
+    "browser_status": ToolMetadata(
+        name="browser_status",
+        category=ToolCategory.BROWSER,
+        security_level=SecurityLevel.SAFE,
+        description="Check browser status and Playwright availability",
+        default_enabled=False,
+    ),
+
+    # Google Calendar authentication tools (optional)
+    "calendar_auth_start": ToolMetadata(
+        name="calendar_auth_start",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Start Google Calendar OAuth authentication",
+        default_enabled=False,
+    ),
+    "calendar_auth_complete": ToolMetadata(
+        name="calendar_auth_complete",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Complete Google Calendar authentication",
+        default_enabled=False,
+    ),
+    "calendar_list_authenticated_accounts": ToolMetadata(
+        name="calendar_list_authenticated_accounts",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="List authenticated Google accounts",
+        default_enabled=False,
+    ),
+
+    # Google Calendar API tools (optional)
+    "calendar_list_calendars": ToolMetadata(
+        name="calendar_list_calendars",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="List all available Google calendars",
+        default_enabled=False,
+    ),
+    "calendar_list_events": ToolMetadata(
+        name="calendar_list_events",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="List events from a calendar",
+        default_enabled=False,
+    ),
+    "calendar_get_event": ToolMetadata(
+        name="calendar_get_event",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="Get detailed information about a calendar event",
+        default_enabled=False,
+    ),
+    "calendar_search_events": ToolMetadata(
+        name="calendar_search_events",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="Search events by text query",
+        default_enabled=False,
+    ),
+    "calendar_create_event": ToolMetadata(
+        name="calendar_create_event",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a new calendar event",
+        default_enabled=False,
+    ),
+    "calendar_update_event": ToolMetadata(
+        name="calendar_update_event",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Update an existing calendar event",
+        default_enabled=False,
+    ),
+    "calendar_delete_event": ToolMetadata(
+        name="calendar_delete_event",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Delete a calendar event",
+        default_enabled=False,
+    ),
+    "calendar_respond_to_event": ToolMetadata(
+        name="calendar_respond_to_event",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Respond to a calendar event invitation",
+        default_enabled=False,
+    ),
+    "calendar_get_freebusy": ToolMetadata(
+        name="calendar_get_freebusy",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="Get free/busy information for calendars",
+        default_enabled=False,
+    ),
+    "calendar_get_current_time": ToolMetadata(
+        name="calendar_get_current_time",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="Get current time in ISO 8601 format",
+        default_enabled=False,
+    ),
+    "calendar_list_colors": ToolMetadata(
+        name="calendar_list_colors",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.SAFE,
+        description="List available calendar and event colors",
+        default_enabled=False,
     ),
 
 }

@@ -1724,6 +1724,37 @@ export class NymeriaAPI {
     return data.tools ?? [];
   }
 
+  async getDefaultTools(userId: string = 'default'): Promise<import('$lib/types').DefaultToolsResponse> {
+    const params = new URLSearchParams({ user_id: userId });
+    const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) throw new Error(`Failed to load default tools: ${response.status}`);
+    return response.json();
+  }
+
+  async setDefaultTools(toolNames: string[], userId: string = 'default'): Promise<void> {
+    const params = new URLSearchParams({ user_id: userId });
+    const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ tool_names: toolNames })
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || `Failed to save default tools: ${response.status}`);
+    }
+  }
+
+  async resetDefaultTools(userId: string = 'default'): Promise<void> {
+    const params = new URLSearchParams({ user_id: userId });
+    const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
+      method: 'DELETE',
+      headers: this.getHeaders()
+    });
+    if (!response.ok) throw new Error(`Failed to reset default tools: ${response.status}`);
+  }
+
   async deleteThreadConfig(threadId: string): Promise<void> {
     const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/config`, {
       method: 'DELETE',
