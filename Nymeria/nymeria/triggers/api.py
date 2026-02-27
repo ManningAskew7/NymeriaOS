@@ -1395,16 +1395,162 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         return {"tools": tools}
 
     @app.get("/tools/optional", tags=["Tools"])
-    async def list_optional_tools(_: bool = Depends(verify_api_key)):
-        """List tools available for per-thread enabling (not loaded by default)."""
-        from ..tools import OPTIONAL_TOOLS
+    async def list_optional_tools(
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """List tools available for per-thread enabling (not in the user's core set).
+
+        If the user has custom default_thread_tools, returns all known tools
+        minus their core set. Otherwise returns hardcoded OPTIONAL_TOOLS.
+        """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        default_tools = profile.tool_preferences.default_thread_tools
+
+        if default_tools is not None:
+            # Custom mode: everything NOT in the user's core set is optional
+            core_set = set(default_tools)
+            result = []
+            seen = set()
+            for t in ALL_TOOLS:
+                if t.name not in core_set and t.name not in seen:
+                    result.append({"name": t.name, "description": t.description})
+                    seen.add(t.name)
+            for name, tool in OPTIONAL_TOOLS.items():
+                if name not in core_set and name not in seen:
+                    result.append({"name": name, "description": tool.description})
+                    seen.add(name)
+            return {"tools": result}
+        else:
+            # Legacy mode: return hardcoded optional tools
+            return {
+                "tools": [
+                    {"name": name, "description": tool.description}
+                    for name, tool in OPTIONAL_TOOLS.items()
+                ]
+            }
+
+    @app.get("/tools/defaults", tags=["Tools"])
+    async def get_default_tools(
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get the default tool set for new threads.
+
+        Returns all available tools (core + optional) with is_default flags,
+        current mode (legacy/custom), and callable thread count.
+        """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools.metadata import get_tool_metadata
+
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        prefs = profile.tool_preferences
+
+        # Determine which tools are defaults
+        if prefs.default_thread_tools is not None:
+            default_set = set(prefs.default_thread_tools)
+            mode = "custom"
+        else:
+            # Legacy: ALL_TOOLS filtered by user preferences
+            default_set = set()
+            for t in ALL_TOOLS:
+                meta = get_tool_metadata(t.name)
+                if meta:
+                    if prefs.is_tool_enabled(t.name, meta.category.value, meta.default_enabled):
+                        default_set.add(t.name)
+                else:
+                    default_set.add(t.name)
+            mode = "legacy"
+
+        # Build unified tool list
+        tools_out = []
+        seen = set()
+        for t in ALL_TOOLS:
+            meta = get_tool_metadata(t.name)
+            tools_out.append({
+                "name": t.name,
+                "description": t.description,
+                "category": meta.category.value if meta else "core",
+                "security_level": meta.security_level.value if meta else "moderate",
+                "is_optional": False,
+                "is_default": t.name in default_set,
+            })
+            seen.add(t.name)
+        for name, t in OPTIONAL_TOOLS.items():
+            if name not in seen:
+                meta = get_tool_metadata(name)
+                tools_out.append({
+                    "name": name,
+                    "description": t.description,
+                    "category": meta.category.value if meta else "unknown",
+                    "security_level": meta.security_level.value if meta else "moderate",
+                    "is_optional": True,
+                    "is_default": name in default_set,
+                })
+                seen.add(name)
+
+        callable_count = len(agent.thread_config_manager.list_callable_threads())
 
         return {
-            "tools": [
-                {"name": name, "description": tool.description}
-                for name, tool in OPTIONAL_TOOLS.items()
-            ]
+            "mode": mode,
+            "default_tools": sorted(default_set),
+            "available_tools": tools_out,
+            "callable_thread_count": callable_count,
         }
+
+    class DefaultToolsUpdateRequest(BaseModel):
+        tool_names: list = Field(..., description="Tool names to enable by default for new threads")
+
+    @app.put("/tools/defaults", tags=["Tools"])
+    async def set_default_tools(
+        request: DefaultToolsUpdateRequest,
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Set which tools new threads inherit by default."""
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+
+        # Validate tool names
+        known = {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys())
+        unknown = set(request.tool_names) - known
+        if unknown:
+            raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
+
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        profile.tool_preferences.default_thread_tools = list(request.tool_names)
+        agent.profile_manager.save_profile(profile)
+
+        # Clear graph caches so new threads pick up the change
+        agent._user_graphs.clear()
+        agent._async_user_graphs.clear()
+
+        return {
+            "status": "ok",
+            "default_tools": sorted(request.tool_names),
+            "count": len(request.tool_names),
+        }
+
+    @app.delete("/tools/defaults", tags=["Tools"])
+    async def reset_default_tools(
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Reset default tools to legacy behavior (all core tools)."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        profile.tool_preferences.default_thread_tools = None
+        agent.profile_manager.save_profile(profile)
+
+        # Clear graph caches
+        agent._user_graphs.clear()
+        agent._async_user_graphs.clear()
+
+        return {"status": "ok", "mode": "legacy"}
 
     @app.get("/settings", response_model=ServerSettingsResponse, tags=["Settings"])
     async def get_server_settings(

@@ -1,94 +1,173 @@
 <script lang="ts">
   import { toolsStore } from '$lib/stores/tools.svelte';
-  import { builtInToolsStore } from '$lib/stores/builtInTools.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
-  import type { CustomTool, CustomToolCreateRequest, BuiltInTool, ToolCategory, UnifiedTool } from '$lib/types';
+  import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
+  import ToolCountWarning from './ToolCountWarning.svelte';
 
-  // UI State
+  // --- Default tools state (absorbed from DefaultToolsPanel) ---
+  let selectedTools = $state<Set<string>>(new Set());
+  let initialized = $state(false);
+  let searchQuery = $state('');
+  let showWarning = $state(false);
+  let saveMessage = $state('');
+  let saveStatus = $state<'idle' | 'success' | 'error'>('idle');
+
+  // Category display info
+  const CATEGORY_INFO: Record<string, { name: string; icon: string }> = {
+    core: { name: 'Core', icon: 'terminal' },
+    memory: { name: 'Memory', icon: 'brain' },
+    todo: { name: 'TODOs', icon: 'list' },
+    self_modify: { name: 'Self-Modify', icon: 'code' },
+    subagent: { name: 'Utilities', icon: 'refresh' },
+    trigger: { name: 'Triggers', icon: 'zap' },
+    email: { name: 'Outlook Email', icon: 'mail' },
+    browser: { name: 'Browser', icon: 'globe' },
+    calendar: { name: 'Google Calendar', icon: 'calendar' },
+    custom: { name: 'Custom', icon: 'puzzle' },
+  };
+
+  const CATEGORY_ORDER = ['core', 'memory', 'todo', 'trigger', 'email', 'browser', 'calendar', 'self_modify', 'subagent', 'custom'];
+
+  // --- Custom tools state ---
   let showCreateForm = $state(false);
   let editingTool = $state<CustomTool | null>(null);
   let testingTool = $state<CustomTool | null>(null);
-  let filter = $state<'all' | 'http' | 'mcp'>('all');
-  let searchQuery = $state('');
-  let activeTab = $state<'builtin' | 'custom'>('builtin');
-  let expandedCategories = $state<Set<string>>(new Set(['core', 'memory', 'todo']));
+  let customFilter = $state<'all' | 'http' | 'mcp'>('all');
 
-  // Unified view state
-  let useUnifiedView = $state(true);
-  let categoryFilter = $state<string | null>(null);
-
-  // Tool editing state (for description and config)
+  // Description/config editing
   let editingDescriptionTool = $state<UnifiedTool | null>(null);
   let editingConfigTool = $state<UnifiedTool | null>(null);
   let descriptionInput = $state('');
   let configInputs = $state<Record<string, unknown>>({});
 
-  // Load tools on mount
+  // Load stores on mount
   $effect(() => {
-    if (useUnifiedView) {
-      if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
-        unifiedToolsStore.loadTools();
-      }
-    } else {
-      if (!toolsStore.loaded && !toolsStore.loading) {
-        toolsStore.loadTools();
-      }
-      if (!builtInToolsStore.loaded && !builtInToolsStore.loading) {
-        builtInToolsStore.loadTools();
-      }
+    if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
+      defaultToolsStore.load();
+    }
+    if (!toolsStore.loaded && !toolsStore.loading) {
+      toolsStore.loadTools();
+    }
+    if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
+      unifiedToolsStore.loadTools();
     }
   });
 
-  // Filtered unified tools
-  const filteredUnifiedTools = $derived(() => {
-    let result = unifiedToolsStore.tools;
-
-    // Filter by category
-    if (categoryFilter) {
-      result = result.filter((t) => t.category === categoryFilter);
+  // Initialize selection from loaded data
+  $effect(() => {
+    if (defaultToolsStore.loaded && !initialized) {
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      initialized = true;
     }
-
-    // Filter by search
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (t) =>
-          t.name.toLowerCase().includes(q) ||
-          t.description.toLowerCase().includes(q) ||
-          t.id.toLowerCase().includes(q)
-      );
-    }
-
-    return result;
   });
 
-  // Group unified tools by category
-  const unifiedToolsByCategory = $derived(() => {
-    const result: Record<string, UnifiedTool[]> = {};
-    for (const tool of filteredUnifiedTools()) {
-      const cat = tool.category;
-      if (!result[cat]) {
-        result[cat] = [];
-      }
-      result[cat].push(tool);
-    }
-    return result;
-  });
-
-  // Filtered custom tools
+  // Filtered tools by search
   const filteredTools = $derived(() => {
-    let result = toolsStore.tools;
+    if (!searchQuery.trim()) return defaultToolsStore.tools;
+    const q = searchQuery.toLowerCase();
+    return defaultToolsStore.tools.filter(
+      (t: DefaultToolInfo) =>
+        t.name.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.category.toLowerCase().includes(q)
+    );
+  });
 
-    // Filter by type
-    if (filter !== 'all') {
-      result = result.filter((t) => t.implementationType === filter);
+  // Split into core (selected) and available (not selected), grouped by category
+  const coreToolsByCategory = $derived(() => {
+    const result: Record<string, DefaultToolInfo[]> = {};
+    for (const tool of filteredTools()) {
+      if (selectedTools.has(tool.name)) {
+        if (!result[tool.category]) result[tool.category] = [];
+        result[tool.category].push(tool);
+      }
     }
+    return result;
+  });
 
-    // Filter by search
+  const availableToolsByCategory = $derived(() => {
+    const result: Record<string, DefaultToolInfo[]> = {};
+    for (const tool of filteredTools()) {
+      if (!selectedTools.has(tool.name)) {
+        if (!result[tool.category]) result[tool.category] = [];
+        result[tool.category].push(tool);
+      }
+    }
+    return result;
+  });
+
+  const coreCount = $derived(selectedTools.size);
+  const availableCount = $derived(defaultToolsStore.tools.length - selectedTools.size);
+  const totalWithCallable = $derived(selectedTools.size + defaultToolsStore.callableThreadCount);
+
+  const hasChanges = $derived(() => {
+    const saved = new Set(defaultToolsStore.defaultToolNames);
+    if (selectedTools.size !== saved.size) return true;
+    for (const t of selectedTools) {
+      if (!saved.has(t)) return true;
+    }
+    return false;
+  });
+
+  function toggleTool(name: string) {
+    const next = new Set(selectedTools);
+    if (next.has(name)) {
+      next.delete(name);
+    } else {
+      next.add(name);
+    }
+    selectedTools = next;
+  }
+
+  function handleSave() {
+    if (totalWithCallable > 25) {
+      showWarning = true;
+    } else {
+      doSave();
+    }
+  }
+
+  async function doSave() {
+    showWarning = false;
+    const ok = await defaultToolsStore.save([...selectedTools]);
+    if (ok) {
+      saveStatus = 'success';
+      saveMessage = 'Core tool set saved!';
+    } else {
+      saveStatus = 'error';
+      saveMessage = defaultToolsStore.error || 'Failed to save';
+    }
+    setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
+  }
+
+  async function handleReset() {
+    const ok = await defaultToolsStore.reset();
+    if (ok) {
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      saveStatus = 'success';
+      saveMessage = 'Reset to Nymeria defaults';
+    } else {
+      saveStatus = 'error';
+      saveMessage = defaultToolsStore.error || 'Failed to reset';
+    }
+    setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
+  }
+
+  function getCategoryInfo(category: string) {
+    return CATEGORY_INFO[category] || { name: category, icon: 'tool' };
+  }
+
+  // --- Custom tools handlers ---
+  const filteredCustomTools = $derived(() => {
+    let result = toolsStore.tools;
+    if (customFilter !== 'all') {
+      result = result.filter((t) => t.implementationType === customFilter);
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(
@@ -98,33 +177,8 @@
           t.id.toLowerCase().includes(q)
       );
     }
-
     return result;
   });
-
-  // Filtered built-in tools
-  const filteredBuiltInTools = $derived(() => {
-    if (!searchQuery) return builtInToolsStore.byCategory;
-
-    const q = searchQuery.toLowerCase();
-    const filtered: Record<string, BuiltInTool[]> = {};
-
-    for (const [category, categoryTools] of Object.entries(builtInToolsStore.byCategory)) {
-      const matching = categoryTools.filter(
-        (t) =>
-          t.name.toLowerCase().includes(q) ||
-          t.description.toLowerCase().includes(q)
-      );
-      if (matching.length > 0) {
-        filtered[category] = matching;
-      }
-    }
-
-    return filtered as Record<ToolCategory, BuiltInTool[]>;
-  });
-
-  // Category order for display
-  const categoryOrder: ToolCategory[] = ['core', 'memory', 'todo', 'self_modify'];
 
   async function handleCreate(request: CustomToolCreateRequest) {
     const tool = await toolsStore.createTool(request);
@@ -150,33 +204,6 @@
     await toolsStore.toggleToolEnabled(tool.id);
   }
 
-  async function handleBuiltInToggle(tool: BuiltInTool) {
-    await builtInToolsStore.setToolEnabled(tool.name, !tool.enabled);
-  }
-
-  async function handleCategoryToggle(category: string, currentlyEnabled: boolean) {
-    await builtInToolsStore.setCategoryEnabled(category, !currentlyEnabled);
-  }
-
-  function toggleCategory(category: string) {
-    const newExpanded = new Set(expandedCategories);
-    if (newExpanded.has(category)) {
-      newExpanded.delete(category);
-    } else {
-      newExpanded.add(category);
-    }
-    expandedCategories = newExpanded;
-  }
-
-  function isCategoryEnabled(category: string): boolean {
-    const tools = builtInToolsStore.byCategory[category as ToolCategory] || [];
-    if (tools.length === 0) return true;
-    // Category is enabled if not in disabled list
-    const prefs = builtInToolsStore.preferences;
-    if (!prefs) return true;
-    return !prefs.disabledCategories.includes(category);
-  }
-
   function formatDate(date: Date): string {
     return new Intl.DateTimeFormat('en-US', {
       month: 'short',
@@ -185,47 +212,7 @@
     }).format(date);
   }
 
-  function getSecurityBadge(level: string): { text: string; class: string } {
-    switch (level) {
-      case 'sensitive':
-        return { text: 'SENSITIVE', class: 'badge-sensitive' };
-      case 'moderate':
-        return { text: 'MODERATE', class: 'badge-moderate' };
-      default:
-        return { text: 'SAFE', class: 'badge-safe' };
-    }
-  }
-
-  async function handleResetToDefaults() {
-    if (confirm('Reset all tool preferences to defaults? This will clear all customizations.')) {
-      await builtInToolsStore.resetToDefaults();
-    }
-  }
-
-  // Unified tool handlers
-  async function handleUnifiedToggle(tool: UnifiedTool) {
-    await unifiedToolsStore.setToolEnabled(tool.id, !tool.enabled);
-  }
-
-  async function handleUnifiedDelete(tool: UnifiedTool) {
-    if (!tool.editable) return;
-    if (confirm(`Are you sure you want to delete "${tool.name}"?`)) {
-      await unifiedToolsStore.deleteCustomTool(tool.id);
-    }
-  }
-
-  function getToolTypeBadge(tool: UnifiedTool): { text: string; class: string } {
-    if (tool.toolType === 'builtin') {
-      return { text: 'SYSTEM', class: 'badge-system' };
-    } else if (tool.implementationType === 'http') {
-      return { text: 'HTTP', class: 'badge-http' };
-    } else if (tool.implementationType === 'mcp') {
-      return { text: 'MCP', class: 'badge-mcp' };
-    }
-    return { text: 'CUSTOM', class: 'badge-custom' };
-  }
-
-  // Description editing handlers
+  // Description editing
   function openDescriptionEditor(tool: UnifiedTool) {
     editingDescriptionTool = tool;
     descriptionInput = tool.customDescription || tool.defaultDescription;
@@ -233,12 +220,9 @@
 
   async function saveDescription() {
     if (!editingDescriptionTool) return;
-
-    // If input is same as default, clear custom description
     const newDescription = descriptionInput.trim() === editingDescriptionTool.defaultDescription
       ? null
       : descriptionInput.trim();
-
     await unifiedToolsStore.setToolDescription(editingDescriptionTool.id, newDescription);
     editingDescriptionTool = null;
     descriptionInput = '';
@@ -250,7 +234,7 @@
     }
   }
 
-  // Config editing handlers
+  // Config editing
   function openConfigEditor(tool: UnifiedTool) {
     editingConfigTool = tool;
     configInputs = { ...tool.userConfig };
@@ -266,480 +250,325 @@
   function updateConfigValue(key: string, value: unknown) {
     configInputs = { ...configInputs, [key]: value };
   }
-
-  // Category order for unified view
-  const unifiedCategoryOrder = ['core', 'memory', 'todo', 'self_modify', 'custom'];
 </script>
 
 <div class="tool-management">
-  {#if useUnifiedView}
-    <!-- Unified Tools View -->
-    <div class="unified-header">
-      <div class="header-info">
-        <h3>All Tools</h3>
-        <p class="header-description">
-          Manage all tools in one place. System tools are built-in, custom tools are user-created.
-        </p>
-      </div>
-      <div class="header-actions">
-        <Button variant="ghost" onclick={handleResetToDefaults}>
-          Reset to Defaults
-        </Button>
-        <Button variant="primary" onclick={() => (showCreateForm = true)}>
-          + New Tool
-        </Button>
-      </div>
-    </div>
-
-    <!-- Search and filters -->
-    <div class="unified-filters">
-      <div class="search">
-        <input
-          type="text"
-          placeholder="Search all tools..."
-          bind:value={searchQuery}
-        />
-      </div>
-      <div class="category-filters">
-        <button
-          class="category-chip"
-          class:active={categoryFilter === null}
-          onclick={() => (categoryFilter = null)}
-        >
-          All ({unifiedToolsStore.tools.length})
-        </button>
-        {#each unifiedCategoryOrder as cat}
-          {@const catTools = unifiedToolsStore.toolsByCategory[cat] || []}
-          {#if catTools.length > 0}
-            {@const info = unifiedToolsStore.getCategoryInfo(cat)}
-            <button
-              class="category-chip"
-              class:active={categoryFilter === cat}
-              onclick={() => (categoryFilter = categoryFilter === cat ? null : cat)}
-            >
-              {info.name} ({catTools.length})
-            </button>
-          {/if}
-        {/each}
+  {#if defaultToolsStore.loading}
+    <div class="loading">Loading tools...</div>
+  {:else if !defaultToolsStore.loaded}
+    <div class="loading">Connect to the API to configure tools.</div>
+  {:else}
+    <!-- Summary bar -->
+    <div class="summary-bar">
+      <div class="summary-left">
+        <span class="summary-count">
+          <strong>{coreCount}</strong> core tools for new threads
+        </span>
+        {#if defaultToolsStore.callableThreadCount > 0}
+          <span class="summary-callable">
+            + {defaultToolsStore.callableThreadCount} callable threads
+          </span>
+        {/if}
+        {#if defaultToolsStore.mode === 'custom'}
+          <span class="mode-badge custom">Custom</span>
+        {:else}
+          <span class="mode-badge legacy">Default</span>
+        {/if}
       </div>
     </div>
 
-    <!-- Stats row -->
-    <div class="stats-row">
-      <span class="stat">
-        <strong>{unifiedToolsStore.builtinCount}</strong> system tools
-      </span>
-      <span class="stat">
-        <strong>{unifiedToolsStore.customCount}</strong> custom tools
-      </span>
-      <span class="stat">
-        <strong>{unifiedToolsStore.enabledTools.length}</strong> enabled
-      </span>
-    </div>
-
-    <!-- Error message -->
-    {#if unifiedToolsStore.error}
-      <div class="error-message">
-        <Icon name="error" size={16} />
-        {unifiedToolsStore.error}
-        <button onclick={() => unifiedToolsStore.clearError()}>Dismiss</button>
+    {#if totalWithCallable > 25}
+      <div class="inline-warning">
+        {totalWithCallable} tools total (including callable threads) — high tool counts can degrade model performance
       </div>
     {/if}
 
-    <!-- Loading state -->
-    {#if unifiedToolsStore.loading && !unifiedToolsStore.loaded}
-      <div class="loading">Loading tools...</div>
-    {:else if filteredUnifiedTools().length === 0}
-      <div class="empty-state">
-        {#if searchQuery || categoryFilter}
-          <p class="empty-message">No tools match your filters.</p>
-          <button class="clear-filters" onclick={() => { searchQuery = ''; categoryFilter = null; }}>
-            Clear filters
-          </button>
-        {:else}
-          <div class="empty-icon">+</div>
-          <h4>No Tools Found</h4>
-          <p class="empty-message">Create custom tools to extend your assistant's capabilities.</p>
-          <Button variant="primary" onclick={() => (showCreateForm = true)}>
-            + Create Your First Tool
-          </Button>
-        {/if}
-      </div>
-    {:else}
-      <!-- Tools by category -->
-      <div class="unified-categories">
-        {#each unifiedCategoryOrder as category}
-          {@const categoryTools = unifiedToolsByCategory()[category] || []}
-          {@const info = unifiedToolsStore.getCategoryInfo(category)}
-          {@const isExpanded = expandedCategories.has(category)}
+    <!-- Search -->
+    <div class="search-bar">
+      <input
+        type="text"
+        class="search-input"
+        bind:value={searchQuery}
+        placeholder="Search tools..."
+      />
+    </div>
 
-          {#if categoryTools.length > 0}
-            <div class="category">
-              <button
-                class="category-header"
-                onclick={() => toggleCategory(category)}
-              >
-                <div class="category-info">
-                  <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={16} />
+    <!-- Core Tools Section -->
+    {#if coreCount > 0}
+      <div class="section-group">
+        <div class="section-header">
+          <span class="section-title">Core Tools</span>
+          <span class="section-count">{coreCount}</span>
+        </div>
+        <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
+        <div class="tools-list">
+          {#each CATEGORY_ORDER as category}
+            {#if coreToolsByCategory()[category]?.length}
+              {@const info = getCategoryInfo(category)}
+              {@const categoryTools = coreToolsByCategory()[category]}
+              <div class="category-group">
+                <div class="category-label">
                   <span class="category-name">{info.name}</span>
-                  <span class="category-count">({categoryTools.length})</span>
+                  <span class="category-count">{categoryTools.length}</span>
                 </div>
-              </button>
-
-              {#if isExpanded}
-                <div class="category-description">{info.description}</div>
-                <div class="tool-list">
-                  {#each categoryTools as tool (tool.id)}
-                    {@const badge = getSecurityBadge(tool.securityLevel)}
-                    {@const typeBadge = getToolTypeBadge(tool)}
-                    <div class="unified-tool-item" class:disabled={!tool.enabled}>
+                <div class="category-tools">
+                  {#each categoryTools as tool (tool.name)}
+                    <div class="tool-row selected">
                       <div class="tool-info">
-                        <div class="tool-header">
-                          <span class="tool-name">{tool.name}</span>
-                          <span class="type-badge {typeBadge.class}">{typeBadge.text}</span>
-                          <span class="security-badge {badge.class}">{badge.text}</span>
-                          {#if tool.customDescription}
-                            <span class="custom-badge">Custom Description</span>
-                          {/if}
-                        </div>
-                        <p class="tool-description">{tool.description}</p>
-                        {#if tool.enabledReason !== 'default'}
-                          <span class="enabled-reason">
-                            {#if tool.enabledReason === 'user_override'}
-                              User override
-                            {:else if tool.enabledReason === 'category_disabled'}
-                              Category disabled
-                            {/if}
-                          </span>
-                        {/if}
+                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-desc">{tool.description}</span>
                       </div>
-                      <div class="tool-actions">
-                        <!-- Edit description button (available for all tools) -->
-                        <button
-                          class="action-btn edit-desc"
-                          title="Edit description"
-                          onclick={() => openDescriptionEditor(tool)}
-                        >
-                          <Icon name="textEdit" size={16} />
-                        </button>
-                        <!-- Configure button (only for configurable tools) -->
-                        {#if tool.configurable && tool.configSchema}
-                          <button
-                            class="action-btn configure"
-                            title="Configure"
-                            onclick={() => openConfigEditor(tool)}
-                          >
-                            <Icon name="cog" size={16} />
-                          </button>
-                        {/if}
-                        {#if tool.editable}
-                          <button
-                            class="action-btn"
-                            title="Edit tool"
-                            onclick={() => {
-                              // Convert to CustomTool for editing
-                              editingTool = {
-                                id: tool.id,
-                                name: tool.name,
-                                description: tool.description,
-                                implementationType: tool.implementationType || 'http',
-                                parameters: tool.parameters ? Object.values(tool.parameters) : [],
-                                http: tool.httpConfig,
-                                mcp: tool.mcpConfig,
-                                tags: tool.tags,
-                                enabled: tool.enabled,
-                                createdAt: tool.createdAt ? new Date(tool.createdAt) : new Date(),
-                                updatedAt: tool.updatedAt ? new Date(tool.updatedAt) : new Date()
-                              } as unknown as CustomTool;
-                            }}
-                          >
-                            <Icon name="edit" size={16} />
-                          </button>
-                          <button
-                            class="action-btn delete"
-                            title="Delete tool"
-                            onclick={() => handleUnifiedDelete(tool)}
-                          >
-                            <Icon name="trash" size={16} />
-                          </button>
-                        {/if}
-                        <label class="toggle-switch">
-                          <input
-                            type="checkbox"
-                            checked={tool.enabled}
-                            onchange={() => handleUnifiedToggle(tool)}
-                            disabled={unifiedToolsStore.loading}
-                          />
-                          <span class="toggle-slider"></span>
-                        </label>
-                      </div>
+                      <button
+                        class="tool-toggle"
+                        onclick={() => toggleTool(tool.name)}
+                        type="button"
+                        title="Remove from core"
+                      >
+                        <span class="toggle-track">
+                          <span class="toggle-thumb"></span>
+                        </span>
+                      </button>
                     </div>
                   {/each}
                 </div>
-              {/if}
-            </div>
-          {/if}
-        {/each}
-      </div>
-    {/if}
+              </div>
+            {/if}
+          {/each}
 
-  {:else}
-    <!-- Legacy Tab View (kept for backwards compatibility) -->
-    <!-- Tab switcher -->
-    <div class="tabs">
-      <button
-        class="tab"
-        class:active={activeTab === 'builtin'}
-        onclick={() => (activeTab = 'builtin')}
-      >
-        Built-in Tools
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'custom'}
-        onclick={() => (activeTab = 'custom')}
-      >
-        Custom Tools
-      </button>
-    </div>
-  {/if}
-
-  {#if activeTab === 'builtin'}
-    <!-- Built-in Tools Section -->
-    <div class="section">
-      <div class="header">
-        <div class="header-info">
-          <p class="header-description">
-            Enable or disable built-in tools.
-          </p>
-        </div>
-        <div class="header-actions">
-          <Button variant="ghost" onclick={handleResetToDefaults}>
-            Reset to Defaults
-          </Button>
-        </div>
-      </div>
-
-      <!-- Search -->
-      <div class="search">
-        <input
-          type="text"
-          placeholder="Search built-in tools..."
-          bind:value={searchQuery}
-        />
-      </div>
-
-      <!-- Error message -->
-      {#if builtInToolsStore.error}
-        <div class="error-message">
-          <Icon name="error" size={16} />
-          {builtInToolsStore.error}
-          <button onclick={() => builtInToolsStore.clearError()}>Dismiss</button>
-        </div>
-      {/if}
-
-      <!-- Loading state -->
-      {#if builtInToolsStore.loading && !builtInToolsStore.loaded}
-        <div class="loading">Loading built-in tools...</div>
-      {:else}
-        <!-- Categories -->
-        <div class="categories">
-          {#each categoryOrder as category}
-            {@const categoryTools = filteredBuiltInTools()[category] || []}
-            {@const info = builtInToolsStore.getCategoryInfo(category)}
-            {@const isExpanded = expandedCategories.has(category)}
-            {@const categoryEnabled = isCategoryEnabled(category)}
-
-            {#if categoryTools.length > 0}
-              <div class="category" class:disabled={!categoryEnabled}>
-                <button
-                  class="category-header"
-                  onclick={() => toggleCategory(category)}
-                >
-                  <div class="category-info">
-                    <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={16} />
-                    <span class="category-name">{info.name}</span>
-                    <span class="category-count">({categoryTools.length})</span>
-                  </div>
-                  <div class="category-actions">
-                    {#if category !== 'self_modify'}
-                      <button
-                        class="category-toggle"
-                        class:enabled={categoryEnabled}
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          handleCategoryToggle(category, categoryEnabled);
-                        }}
-                        title={categoryEnabled ? 'Disable category' : 'Enable category'}
-                      >
-                        {categoryEnabled ? 'Enabled' : 'Disabled'}
-                      </button>
-                    {/if}
-                  </div>
-                </button>
-
-                {#if isExpanded}
-                  <div class="category-description">{info.description}</div>
-                  <div class="tool-list">
-                    {#each categoryTools as tool (tool.name)}
-                      {@const badge = getSecurityBadge(tool.securityLevel)}
-                      <div class="builtin-tool-item" class:disabled={!tool.enabled}>
-                        <div class="tool-info">
-                          <div class="tool-header">
-                            <span class="tool-name">{tool.name}</span>
-                            <span class="security-badge {badge.class}">{badge.text}</span>
-                          </div>
-                          <p class="tool-description">{tool.description}</p>
-                          {#if tool.enabledReason !== 'default'}
-                            <span class="enabled-reason">
-                              {#if tool.enabledReason === 'user_override'}
-                                User override
-                              {:else if tool.enabledReason === 'category_disabled'}
-                                Category disabled
-                              {/if}
-                            </span>
-                          {/if}
-                        </div>
-                        <div class="tool-actions">
-                          <label class="toggle-switch">
-                            <input
-                              type="checkbox"
-                              checked={tool.enabled}
-                              onchange={() => handleBuiltInToggle(tool)}
-                              disabled={builtInToolsStore.loading}
-                            />
-                            <span class="toggle-slider"></span>
-                          </label>
-                        </div>
+          <!-- Categories not in CATEGORY_ORDER -->
+          {#each Object.keys(coreToolsByCategory()) as category}
+            {#if !CATEGORY_ORDER.includes(category) && coreToolsByCategory()[category]?.length}
+              {@const info = getCategoryInfo(category)}
+              {@const categoryTools = coreToolsByCategory()[category]}
+              <div class="category-group">
+                <div class="category-label">
+                  <span class="category-name">{info.name}</span>
+                  <span class="category-count">{categoryTools.length}</span>
+                </div>
+                <div class="category-tools">
+                  {#each categoryTools as tool (tool.name)}
+                    <div class="tool-row selected">
+                      <div class="tool-info">
+                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-desc">{tool.description}</span>
                       </div>
-                    {/each}
-                  </div>
-                {/if}
+                      <button
+                        class="tool-toggle"
+                        onclick={() => toggleTool(tool.name)}
+                        type="button"
+                        title="Remove from core"
+                      >
+                        <span class="toggle-track">
+                          <span class="toggle-thumb"></span>
+                        </span>
+                      </button>
+                    </div>
+                  {/each}
+                </div>
               </div>
             {/if}
           {/each}
         </div>
-      {/if}
-    </div>
-
-  {:else}
-    <!-- Custom Tools Section -->
-    <div class="section">
-      <div class="header">
-        <div class="header-actions">
-          <Button variant="primary" onclick={() => (showCreateForm = true)}>
-            + New Tool
-          </Button>
-        </div>
       </div>
+    {/if}
 
-      <!-- Filters -->
-      <div class="filters">
-        <div class="search">
-          <input
-            type="text"
-            placeholder="Search tools..."
-            bind:value={searchQuery}
-          />
+    <!-- Available Tools Section -->
+    {#if availableCount > 0}
+      <div class="section-group available-section">
+        <div class="section-header">
+          <span class="section-title">Available Tools</span>
+          <span class="section-count">{availableCount}</span>
         </div>
-        <div class="filter-buttons">
-          <button class:active={filter === 'all'} onclick={() => (filter = 'all')}>
-            All
-          </button>
-          <button class:active={filter === 'http'} onclick={() => (filter = 'http')}>
-            HTTP
-          </button>
-          <button class:active={filter === 'mcp'} onclick={() => (filter = 'mcp')}>
-            MCP
-          </button>
-        </div>
-      </div>
-
-      <!-- Error message -->
-      {#if toolsStore.error}
-        <div class="error-message">
-          <Icon name="error" size={16} />
-          {toolsStore.error}
-          <button onclick={() => toolsStore.clearError()}>Dismiss</button>
-        </div>
-      {/if}
-
-      <!-- Loading state -->
-      {#if toolsStore.loading}
-        <div class="loading">Loading tools...</div>
-      {:else if filteredTools().length === 0}
-        <div class="empty-state">
-          {#if searchQuery || filter !== 'all'}
-            <p class="empty-message">No tools match your filters.</p>
-            <button class="clear-filters" onclick={() => { searchQuery = ''; filter = 'all'; }}>
-              Clear filters
-            </button>
-          {:else}
-            <div class="empty-icon">+</div>
-            <h4>No Custom Tools Yet</h4>
-            <p class="empty-message">
-              Create HTTP or MCP tools to extend your assistant's capabilities.
-            </p>
-            <Button variant="primary" onclick={() => (showCreateForm = true)}>
-              + Create Your First Tool
-            </Button>
-          {/if}
-        </div>
-      {:else}
-        <!-- Tool list -->
-        <div class="tool-list">
-          {#each filteredTools() as tool (tool.id)}
-            <div class="tool-item" class:disabled={!tool.enabled}>
-              <div class="tool-info">
-                <div class="tool-header">
-                  <span class="tool-name">{tool.name}</span>
-                  <span class="tool-type" class:http={tool.implementationType === 'http'}>
-                    {tool.implementationType.toUpperCase()}
-                  </span>
+        <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
+        <div class="tools-list">
+          {#each CATEGORY_ORDER as category}
+            {#if availableToolsByCategory()[category]?.length}
+              {@const info = getCategoryInfo(category)}
+              {@const categoryTools = availableToolsByCategory()[category]}
+              <div class="category-group">
+                <div class="category-label">
+                  <span class="category-name">{info.name}</span>
+                  <span class="category-count">{categoryTools.length}</span>
                 </div>
-                <p class="tool-description">{tool.description}</p>
-                <div class="tool-meta">
-                  <span class="tool-id">ID: {tool.id}</span>
-                  <span class="tool-date">Updated {formatDate(tool.updatedAt)}</span>
+                <div class="category-tools">
+                  {#each categoryTools as tool (tool.name)}
+                    <div class="tool-row" class:optional={tool.is_optional}>
+                      <div class="tool-info">
+                        <span class="tool-name">
+                          {tool.name}
+                          {#if tool.is_optional}
+                            <span class="optional-badge">optional</span>
+                          {/if}
+                        </span>
+                        <span class="tool-desc">{tool.description}</span>
+                      </div>
+                      <button
+                        class="tool-toggle off"
+                        onclick={() => toggleTool(tool.name)}
+                        type="button"
+                        title="Add to core"
+                      >
+                        <span class="toggle-track">
+                          <span class="toggle-thumb"></span>
+                        </span>
+                      </button>
+                    </div>
+                  {/each}
                 </div>
               </div>
-              <div class="tool-actions">
-                <button
-                  class="action-btn"
-                  title="Test tool"
-                  onclick={() => (testingTool = tool)}
-                >
-                  <Icon name="play" size={16} />
-                </button>
-                <button
-                  class="action-btn"
-                  title="Edit tool"
-                  onclick={() => (editingTool = tool)}
-                >
-                  <Icon name="edit" size={16} />
-                </button>
-                <button
-                  class="action-btn"
-                  class:enabled={tool.enabled}
-                  title={tool.enabled ? 'Disable' : 'Enable'}
-                  onclick={() => handleToggleEnabled(tool)}
-                >
-                  <Icon name={tool.enabled ? 'visible' : 'hidden'} size={16} />
-                </button>
-                <button
-                  class="action-btn delete"
-                  title="Delete tool"
-                  onclick={() => handleDelete(tool)}
-                >
-                  <Icon name="trash" size={16} />
-                </button>
+            {/if}
+          {/each}
+
+          <!-- Categories not in CATEGORY_ORDER -->
+          {#each Object.keys(availableToolsByCategory()) as category}
+            {#if !CATEGORY_ORDER.includes(category) && availableToolsByCategory()[category]?.length}
+              {@const info = getCategoryInfo(category)}
+              {@const categoryTools = availableToolsByCategory()[category]}
+              <div class="category-group">
+                <div class="category-label">
+                  <span class="category-name">{info.name}</span>
+                  <span class="category-count">{categoryTools.length}</span>
+                </div>
+                <div class="category-tools">
+                  {#each categoryTools as tool (tool.name)}
+                    <div class="tool-row">
+                      <div class="tool-info">
+                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-desc">{tool.description}</span>
+                      </div>
+                      <button
+                        class="tool-toggle off"
+                        onclick={() => toggleTool(tool.name)}
+                        type="button"
+                        title="Add to core"
+                      >
+                        <span class="toggle-track">
+                          <span class="toggle-thumb"></span>
+                        </span>
+                      </button>
+                    </div>
+                  {/each}
+                </div>
               </div>
-            </div>
+            {/if}
           {/each}
         </div>
-      {/if}
+      </div>
+    {/if}
+
+    <!-- Footer -->
+    <div class="panel-footer">
+      <button
+        class="btn btn-ghost"
+        onclick={handleReset}
+        disabled={defaultToolsStore.saving}
+        type="button"
+      >
+        Reset to Nymeria Defaults
+      </button>
+      <button
+        class="btn btn-primary"
+        onclick={handleSave}
+        disabled={defaultToolsStore.saving || !hasChanges()}
+        type="button"
+      >
+        {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}
+      </button>
     </div>
+
+    {#if saveMessage}
+      <div class="save-message" class:success={saveStatus === 'success'} class:error={saveStatus === 'error'}>
+        {saveMessage}
+      </div>
+    {/if}
   {/if}
+
+  <!-- Custom Tools Section -->
+  <div class="custom-tools-divider">
+    <span>Custom Tools</span>
+  </div>
+
+  <div class="custom-tools-section">
+    <div class="custom-tools-header">
+      <p class="header-description">
+        User-created HTTP and MCP tools that extend the agent's capabilities.
+      </p>
+      <Button variant="primary" onclick={() => (showCreateForm = true)}>
+        + New Tool
+      </Button>
+    </div>
+
+    {#if toolsStore.error}
+      <div class="error-message">
+        <Icon name="error" size={16} />
+        {toolsStore.error}
+        <button onclick={() => toolsStore.clearError()}>Dismiss</button>
+      </div>
+    {/if}
+
+    {#if toolsStore.loading}
+      <div class="loading">Loading custom tools...</div>
+    {:else if filteredCustomTools().length === 0}
+      <div class="empty-state">
+        <div class="empty-icon">+</div>
+        <h4>No Custom Tools Yet</h4>
+        <p class="empty-message">
+          Create HTTP or MCP tools to extend your assistant's capabilities.
+        </p>
+      </div>
+    {:else}
+      <div class="tool-list">
+        {#each filteredCustomTools() as tool (tool.id)}
+          <div class="tool-item" class:disabled={!tool.enabled}>
+            <div class="tool-info">
+              <div class="tool-header">
+                <span class="tool-name">{tool.name}</span>
+                <span class="tool-type" class:http={tool.implementationType === 'http'}>
+                  {tool.implementationType.toUpperCase()}
+                </span>
+              </div>
+              <p class="tool-description">{tool.description}</p>
+              <div class="tool-meta">
+                <span class="tool-id">ID: {tool.id}</span>
+                <span class="tool-date">Updated {formatDate(tool.updatedAt)}</span>
+              </div>
+            </div>
+            <div class="tool-actions">
+              <button
+                class="action-btn"
+                title="Test tool"
+                onclick={() => (testingTool = tool)}
+              >
+                <Icon name="play" size={16} />
+              </button>
+              <button
+                class="action-btn"
+                title="Edit tool"
+                onclick={() => (editingTool = tool)}
+              >
+                <Icon name="edit" size={16} />
+              </button>
+              <button
+                class="action-btn"
+                class:enabled={tool.enabled}
+                title={tool.enabled ? 'Disable' : 'Enable'}
+                onclick={() => handleToggleEnabled(tool)}
+              >
+                <Icon name={tool.enabled ? 'visible' : 'hidden'} size={16} />
+              </button>
+              <button
+                class="action-btn delete"
+                title="Delete tool"
+                onclick={() => handleDelete(tool)}
+              >
+                <Icon name="trash" size={16} />
+              </button>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
 
   <!-- Create form modal -->
   {#if showCreateForm}
@@ -807,7 +636,7 @@
           </button>
         </div>
         <div class="modal-body">
-          <p>Customize how this tool is described to the AI. This helps the AI understand when and how to use this tool.</p>
+          <p>Customize how this tool is described to the AI.</p>
 
           <div class="form-group">
             <label for="description-input">Description</label>
@@ -855,7 +684,7 @@
           </button>
         </div>
         <div class="modal-body">
-          <p>Configure settings for this tool. Changes will be saved to your profile.</p>
+          <p>Configure settings for this tool.</p>
 
           <div class="config-form">
             {#each Object.entries(editingConfigTool.configSchema) as [key, schema]}
@@ -926,8 +755,16 @@
       </div>
     </div>
   {/if}
-
 </div>
+
+{#if showWarning}
+  <ToolCountWarning
+    toolCount={coreCount}
+    callableCount={defaultToolsStore.callableThreadCount}
+    onContinue={doSave}
+    onGoBack={() => (showWarning = false)}
+  />
+{/if}
 
 <style>
   .tool-management {
@@ -936,225 +773,367 @@
     gap: var(--spacing-md);
   }
 
-  /* Unified view styles */
-  .unified-header {
+  .loading {
+    padding: var(--spacing-lg);
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* Summary bar */
+  .summary-bar {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: flex-start;
-    gap: var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated-2);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
   }
 
-  .unified-header h3 {
-    margin: 0;
-    color: var(--text-primary);
-  }
-
-  .unified-filters {
+  .summary-left {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: var(--spacing-sm);
   }
 
-  .category-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-xs);
-  }
-
-  .category-chip {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-full);
+  .summary-count {
     color: var(--text-secondary);
+  }
+
+  .summary-callable {
+    color: var(--text-muted);
     font-size: var(--font-size-xs);
-    cursor: pointer;
-    transition: all 0.15s ease;
   }
 
-  .category-chip:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+  .mode-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
 
-  .category-chip.active {
-    background: var(--accent-primary);
-    color: var(--bg-primary);
-    border-color: var(--accent-primary);
+  .mode-badge.custom {
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    color: var(--accent-primary);
   }
 
-  .stats-row {
-    display: flex;
-    gap: var(--spacing-lg);
-    padding: var(--spacing-sm) 0;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .stat {
-    font-size: var(--font-size-sm);
+  .mode-badge.legacy {
+    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
     color: var(--text-muted);
   }
 
-  .stat strong {
+  .inline-warning {
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    color: var(--warning, #f59e0b);
+  }
+
+  /* Search */
+  .search-bar {
+    padding: 0;
+  }
+
+  .search-input {
+    width: 100%;
+    padding: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+    transition: border-color var(--transition-fast);
+  }
+
+  .search-input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+  }
+
+  .search-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  /* Section groups (Core / Available) */
+  .section-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 0 var(--spacing-xs);
+  }
+
+  .section-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
     color: var(--text-primary);
   }
 
-  .unified-categories {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .unified-tool-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-md);
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .unified-tool-item:last-child {
-    border-bottom: none;
-  }
-
-  .unified-tool-item.disabled {
-    opacity: 0.6;
-  }
-
-  .type-badge {
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
+  .section-count {
     font-size: var(--font-size-xs);
-    font-weight: 500;
-  }
-
-  .badge-system {
-    background: rgba(99, 102, 241, 0.15);
-    color: rgb(129, 140, 248);
-  }
-
-  .badge-http {
-    background: rgba(34, 211, 238, 0.15);
+    font-weight: 600;
+    padding: 0 6px;
+    min-width: 20px;
+    text-align: center;
+    border-radius: var(--radius-full);
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
     color: var(--accent-primary);
   }
 
-  .badge-mcp {
-    background: rgba(168, 85, 247, 0.15);
-    color: rgb(192, 132, 252);
+  .section-hint {
+    margin: 0;
+    padding: 0 var(--spacing-xs);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 
-  .badge-custom {
-    background: rgba(251, 191, 36, 0.15);
-    color: var(--warning);
+  .available-section {
+    margin-top: var(--spacing-sm);
   }
 
-  .tabs {
+  .available-section .section-count {
+    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+    color: var(--text-muted);
+  }
+
+  /* Tools list */
+  .tools-list {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+  }
+
+  .category-group {
+    border-bottom: 1px solid var(--border-default);
+  }
+
+  .category-group:last-child {
+    border-bottom: none;
+  }
+
+  .category-label {
     display: flex;
-    gap: var(--spacing-xs);
-    border-bottom: 1px solid var(--border-subtle);
-    padding-bottom: var(--spacing-sm);
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-xs) var(--spacing-md);
+    background: var(--bg-elevated-2);
+    font-size: var(--font-size-xs);
   }
 
-  .tab {
-    padding: var(--spacing-sm) var(--spacing-md);
+  .category-label .category-name {
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .category-label .category-count {
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  .tool-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 6px var(--spacing-md) 6px calc(var(--spacing-md) + 8px);
+    border-bottom: 1px solid var(--border-subtle, var(--border-default));
+    transition: opacity var(--transition-fast);
+  }
+
+  .tool-row:last-child {
+    border-bottom: none;
+  }
+
+  .tool-row:not(.selected) {
+    opacity: 0.6;
+  }
+
+  .tool-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .tool-name {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+
+  .optional-badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent-secondary, #818cf8) 15%, transparent);
+    color: var(--accent-secondary, #818cf8);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .tool-desc {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Toggle switch */
+  .tool-toggle {
+    flex-shrink: 0;
+    padding: 0;
     background: none;
     border: none;
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
     cursor: pointer;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-    transition: all 0.15s ease;
   }
 
-  .tab:hover {
+  .toggle-track {
+    display: block;
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--accent-primary);
+    position: relative;
+    transition: background var(--transition-fast);
+  }
+
+  .tool-toggle.off .toggle-track {
+    background: var(--text-muted);
+  }
+
+  .toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 16px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: white;
+    transition: left var(--transition-fast);
+  }
+
+  .tool-toggle.off .toggle-thumb {
+    left: 2px;
+  }
+
+  /* Footer */
+  .panel-footer {
+    display: flex;
+    justify-content: space-between;
+    padding-top: var(--spacing-sm);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .btn {
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-ghost {
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border-default);
+  }
+
+  .btn-ghost:hover:not(:disabled) {
     color: var(--text-primary);
     background: var(--bg-hover);
   }
 
-  .tab.active {
-    color: var(--accent-primary);
-    border-bottom: 2px solid var(--accent-primary);
-    margin-bottom: -1px;
+  .btn-primary {
+    color: white;
+    background: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
   }
 
-  .section {
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+
+  .save-message {
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    text-align: center;
+  }
+
+  .save-message.success {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--success);
+  }
+
+  .save-message.error {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--error);
+  }
+
+  /* Custom tools divider */
+  .custom-tools-divider {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    margin-top: var(--spacing-md);
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+  }
+
+  .custom-tools-divider::before,
+  .custom-tools-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-default);
+  }
+
+  .custom-tools-section {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
   }
 
-  .header {
+  .custom-tools-header {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--spacing-md);
-  }
-
-  .header-info {
-    flex: 1;
   }
 
   .header-description {
     margin: 0;
     font-size: var(--font-size-sm);
     color: var(--text-muted);
-  }
-
-  .header h3 {
-    margin: 0;
-    color: var(--text-primary);
-  }
-
-  .filters {
-    display: flex;
-    gap: var(--spacing-md);
-    align-items: center;
-  }
-
-  .search {
-    flex: 1;
-  }
-
-  .search input {
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    color: var(--text-primary);
-    font-size: var(--font-size-sm);
-  }
-
-  .search input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-  }
-
-  .filter-buttons {
-    display: flex;
-    gap: var(--spacing-xs);
-  }
-
-  .filter-buttons button {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .filter-buttons button:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
-
-  .filter-buttons button.active {
-    background: var(--accent-primary);
-    color: var(--bg-primary);
-    border-color: var(--accent-primary);
   }
 
   .error-message {
@@ -1177,207 +1156,21 @@
     text-decoration: underline;
   }
 
-  .loading {
-    text-align: center;
-    padding: var(--spacing-xl);
-    color: var(--text-muted);
-  }
-
-  /* Categories */
-  .categories {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .category {
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-  }
-
-  .category.disabled {
-    opacity: 0.6;
-  }
-
-  .category-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
-    padding: var(--spacing-md);
-    background: none;
-    border: none;
-    cursor: pointer;
-    text-align: left;
-    color: var(--text-primary);
-  }
-
-  .category-header:hover {
-    background: var(--bg-hover);
-  }
-
-  .category-info {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-  }
-
-  .category-name {
-    font-weight: 500;
-  }
-
-  .category-count {
-    color: var(--text-muted);
-    font-size: var(--font-size-sm);
-  }
-
-  .category-toggle {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    font-size: var(--font-size-xs);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    background: var(--bg-elevated-3);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-muted);
-  }
-
-  .category-toggle.enabled {
-    background: rgba(74, 222, 128, 0.15);
-    color: var(--success);
-    border-color: var(--success);
-  }
-
-  .category-description {
-    padding: 0 var(--spacing-md) var(--spacing-sm);
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
-  }
-
-  .category > .tool-list {
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  /* Built-in tool items */
-  .builtin-tool-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-md);
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .builtin-tool-item:last-child {
-    border-bottom: none;
-  }
-
-  .builtin-tool-item.disabled {
-    opacity: 0.6;
-  }
-
-  /* Toggle switch */
-  .toggle-switch {
-    position: relative;
-    display: inline-block;
-    width: 44px;
-    height: 24px;
-  }
-
-  .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .toggle-slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: var(--bg-elevated-3);
-    border: 1px solid var(--border-subtle);
-    border-radius: 24px;
-    transition: 0.15s;
-  }
-
-  .toggle-slider:before {
-    position: absolute;
-    content: "";
-    height: 18px;
-    width: 18px;
-    left: 2px;
-    bottom: 2px;
-    background-color: var(--text-muted);
-    border-radius: 50%;
-    transition: 0.15s;
-  }
-
-  .toggle-switch input:checked + .toggle-slider {
-    background-color: var(--accent-primary);
-    border-color: var(--accent-primary);
-  }
-
-  .toggle-switch input:checked + .toggle-slider:before {
-    transform: translateX(20px);
-    background-color: white;
-  }
-
-  .toggle-switch input:disabled + .toggle-slider {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  /* Security badges */
-  .security-badge {
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-  }
-
-  .badge-safe {
-    background: rgba(74, 222, 128, 0.15);
-    color: var(--success);
-  }
-
-  .badge-moderate {
-    background: rgba(251, 191, 36, 0.15);
-    color: var(--warning);
-  }
-
-  .badge-sensitive {
-    background: rgba(248, 113, 113, 0.15);
-    color: var(--error);
-  }
-
-  .enabled-reason {
-    display: inline-block;
-    margin-top: var(--spacing-xs);
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    font-style: italic;
-  }
-
   .empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: var(--spacing-xl) var(--spacing-md);
+    padding: var(--spacing-lg) var(--spacing-md);
     text-align: center;
-    min-height: 200px;
   }
 
   .empty-icon {
-    font-size: 48px;
-    margin-bottom: var(--spacing-md);
+    font-size: 36px;
+    margin-bottom: var(--spacing-sm);
     opacity: 0.6;
-    width: 64px;
-    height: 64px;
+    width: 48px;
+    height: 48px;
     border: 2px dashed var(--border-subtle);
     border-radius: 50%;
     display: flex;
@@ -1387,9 +1180,9 @@
   }
 
   .empty-state h4 {
-    margin: 0 0 var(--spacing-sm);
+    margin: 0 0 var(--spacing-xs);
     color: var(--text-primary);
-    font-size: var(--font-size-md);
+    font-size: var(--font-size-sm);
   }
 
   .empty-message {
@@ -1399,22 +1192,7 @@
     max-width: 300px;
   }
 
-  .clear-filters {
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    padding: var(--spacing-sm) var(--spacing-md);
-    color: var(--text-secondary);
-    cursor: pointer;
-    font-size: var(--font-size-sm);
-    transition: all 0.15s ease;
-  }
-
-  .clear-filters:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
-
+  /* Custom tool items */
   .tool-list {
     display: flex;
     flex-direction: column;
@@ -1440,7 +1218,7 @@
     opacity: 0.6;
   }
 
-  .tool-info {
+  .tool-item .tool-info {
     flex: 1;
     min-width: 0;
   }
@@ -1450,11 +1228,6 @@
     align-items: center;
     gap: var(--spacing-sm);
     margin-bottom: var(--spacing-xs);
-  }
-
-  .tool-name {
-    font-weight: 500;
-    color: var(--text-primary);
   }
 
   .tool-type {
@@ -1526,28 +1299,6 @@
     border-color: var(--error);
   }
 
-  .action-btn.edit-desc {
-    color: var(--text-secondary);
-    border-color: var(--border-default);
-  }
-
-  .action-btn.edit-desc:hover {
-    background: rgba(139, 92, 246, 0.15);
-    color: rgb(167, 139, 250);
-    border-color: rgb(139, 92, 246);
-  }
-
-  .action-btn.configure {
-    color: var(--text-secondary);
-    border-color: var(--border-default);
-  }
-
-  .action-btn.configure:hover {
-    background: rgba(34, 211, 238, 0.15);
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-  }
-
   /* Modal styles */
   .modal-overlay {
     position: fixed;
@@ -1604,22 +1355,6 @@
     margin-top: var(--spacing-lg);
   }
 
-  .warning-box {
-    display: flex;
-    gap: var(--spacing-md);
-    padding: var(--spacing-md);
-    background: rgba(248, 113, 113, 0.1);
-    border: 1px solid rgba(248, 113, 113, 0.3);
-    border-radius: var(--radius-md);
-    color: var(--error);
-  }
-
-  .warning-box code {
-    background: rgba(0, 0, 0, 0.2);
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
-  }
-
   .close-btn {
     width: 32px;
     height: 32px;
@@ -1638,16 +1373,6 @@
   .close-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
-  }
-
-  /* Custom description badge */
-  .custom-badge {
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    background: rgba(139, 92, 246, 0.15);
-    color: rgb(167, 139, 250);
   }
 
   /* Form elements */

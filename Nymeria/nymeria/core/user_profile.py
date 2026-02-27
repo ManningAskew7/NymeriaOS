@@ -46,6 +46,15 @@ class ToolPreferences(BaseModel):
         default_factory=dict,
         description="Custom tool descriptions (tool_name -> description override)"
     )
+    default_thread_tools: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Tool names that new threads inherit by default. "
+            "None = legacy behavior (ALL_TOOLS filtered by enabled_overrides). "
+            "Empty list = no tools. "
+            "Can include both core and optional tool names."
+        )
+    )
 
     def is_tool_enabled(
         self,
