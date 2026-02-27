@@ -486,6 +486,87 @@ export class NymeriaAPI {
     return data.threads || [];
   }
 
+  /**
+   * List all threads with full metadata (titles, pins, platform info).
+   * This is the primary method for syncing thread state from the backend.
+   */
+  async listThreadsWithMetadata(): Promise<{
+    threads: Array<{
+      thread_id: string;
+      title: string;
+      pinned: boolean;
+      platform: string;
+      platform_meta: Record<string, string> | null;
+      created_at: string | null;
+      updated_at: string | null;
+      title_source: string;
+    }>;
+    total: number;
+  }> {
+    const response = await fetch(`${this.getBaseUrl()}/threads`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Update thread metadata (title, pin status).
+   */
+  async updateThreadMetadata(
+    threadId: string,
+    updates: { title?: string; pinned?: boolean }
+  ): Promise<void> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/metadata`,
+      {
+        method: 'PATCH',
+        headers: this.getHeaders(),
+        body: JSON.stringify(updates),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+  }
+
+  /**
+   * One-time migration: send frontend localStorage thread data to backend.
+   */
+  async migrateThreadMetadata(
+    threads: Array<{ id: string; title: string; pinned?: boolean; platform?: string; createdAt: Date; updatedAt: Date }>
+  ): Promise<{ migrated_threads: number }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/metadata/migrate`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({ threads }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  async deleteThread(threadId: string): Promise<void> {
+    await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}`,
+      {
+        method: 'DELETE',
+        headers: this.getHeaders(),
+      }
+    );
+  }
+
   async getThreadHistory(threadId: string): Promise<ThreadHistory> {
     const response = await fetch(
       `${this.getBaseUrl()}/threads/${threadId}/history`,

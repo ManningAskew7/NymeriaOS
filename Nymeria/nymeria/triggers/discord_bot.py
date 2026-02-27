@@ -587,6 +587,27 @@ class NymeriaDiscordBot(discord.Client):
         thread_id = make_thread_id(guild_id, message.channel.id)
         user_id = make_user_id(message.author.id)
 
+        # Ensure thread metadata exists for this Discord channel
+        try:
+            if is_dm:
+                title = "Discord: DM"
+                pmeta = None
+            else:
+                channel_name = getattr(message.channel, "name", str(message.channel.id))
+                guild_name = message.guild.name if message.guild else ""
+                title = f"Discord: #{channel_name}"
+                pmeta = {"guild_name": guild_name, "channel_name": channel_name}
+
+            self.agent.thread_metadata_manager.upsert_thread(
+                user_id, thread_id,
+                title=title,
+                title_source="platform",
+                platform="discord",
+                platform_meta=pmeta,
+            )
+        except Exception:
+            pass  # Non-critical
+
         # Fetch recent channel messages as context (before the triggering message)
         context = await fetch_channel_context(message.channel, before=message)
         content_with_context = f"{context}{content}" if context else content

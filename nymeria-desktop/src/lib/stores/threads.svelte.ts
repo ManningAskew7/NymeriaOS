@@ -1,9 +1,13 @@
 import type { Thread, ThreadPlatform, ThreadFolder, SortMode } from '$lib/types';
+import { api } from '$lib/services/api.svelte';
 
 const STORAGE_KEY = 'nymeria-threads';
 const CURRENT_THREAD_KEY = 'nymeria-current-thread';
 const FOLDERS_KEY = 'nymeria-thread-folders';
 const SORT_MODE_KEY = 'nymeria-thread-sort-mode';
+
+// Guard against concurrent sync calls (e.g. Vite dev mode double-mount)
+let syncInProgress = false;
 
 function loadCurrentThreadId(threads: Thread[]): string | null {
   if (typeof localStorage === 'undefined') return null;
@@ -16,25 +20,7 @@ function loadCurrentThreadId(threads: Thread[]): string | null {
   return null;
 }
 
-function saveCurrentThreadId(id: string | null): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    if (id) {
-      // Don't persist non-desktop thread IDs (trigger, discord, telegram, slack)
-      // so they won't be restored on app restart. The in-memory currentThreadId
-      // still updates normally for within-session navigation.
-      if (detectPlatform(id) !== 'desktop') {
-        localStorage.removeItem(CURRENT_THREAD_KEY);
-        return;
-      }
-      localStorage.setItem(CURRENT_THREAD_KEY, id);
-    } else {
-      localStorage.removeItem(CURRENT_THREAD_KEY);
-    }
-  } catch (e) {
-    console.error('Failed to save current thread ID:', e);
-  }
-}
+// Moved into createThreadsStore() closure — see saveCurrentThreadId() inside the store
 
 function loadThreads(): Thread[] {
   if (typeof localStorage === 'undefined') return [];
@@ -120,6 +106,7 @@ function detectPlatform(threadId: string): ThreadPlatform {
   if (threadId.startsWith('telegram_')) return 'telegram';
   if (threadId.startsWith('slack_')) return 'slack';
   if (threadId.startsWith('trigger-')) return 'trigger';
+  if (threadId.startsWith('agent-')) return 'callable';
   return 'desktop';
 }
 
@@ -153,6 +140,27 @@ function createThreadsStore() {
   let activeThreadTasks = $state<Set<string>>(new Set());
   let folders = $state<ThreadFolder[]>(loadFolders());
   let sortMode = $state<SortMode>(loadSortMode());
+
+  function saveCurrentThreadId(id: string | null): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      if (id) {
+        // Use metadata platform if available, fall back to ID-prefix detection
+        const thread = threads.find(t => t.id === id);
+        const platform = thread?.platform || detectPlatform(id);
+        // Only persist desktop and callable threads — not trigger/discord/telegram/slack
+        if (platform !== 'desktop' && platform !== 'callable') {
+          localStorage.removeItem(CURRENT_THREAD_KEY);
+          return;
+        }
+        localStorage.setItem(CURRENT_THREAD_KEY, id);
+      } else {
+        localStorage.removeItem(CURRENT_THREAD_KEY);
+      }
+    } catch (e) {
+      console.error('Failed to save current thread ID:', e);
+    }
+  }
 
   return {
     get threads() {
@@ -353,6 +361,11 @@ function createThreadsStore() {
         saveFolders(folders);
       }
       saveThreads(threads);
+
+      // Write-through: delete metadata, checkpoints, and config on backend
+      api.deleteThread(id).catch((err) => {
+        console.warn('[Threads] Failed to delete thread on backend:', err);
+      });
     },
 
     setThreadFromApi(id: string, title: string) {
@@ -414,7 +427,20 @@ function createThreadsStore() {
     },
 
     /**
-     * Manually rename a thread (user-initiated)
+     * Update a thread's title from backend data (e.g. auto-title in SSE done event).
+     * Local-only — no write-through since the title originates from the server.
+     */
+    applyBackendTitle(id: string, title: string) {
+      if (!title) return;
+      threads = threads.map((t) =>
+        t.id === id ? { ...t, title, updatedAt: new Date() } : t
+      );
+      saveThreads(threads);
+    },
+
+    /**
+     * Manually rename a thread (user-initiated).
+     * Optimistically updates localStorage, then writes through to backend.
      */
     renameThread(id: string, newTitle: string) {
       const trimmed = newTitle.trim();
@@ -424,11 +450,103 @@ function createThreadsStore() {
         t.id === id ? { ...t, title: trimmed, updatedAt: new Date() } : t
       );
       saveThreads(threads);
+
+      // Write-through to backend
+      api.updateThreadMetadata(id, { title: trimmed }).catch((err) => {
+        console.warn('[Threads] Failed to sync rename to backend:', err);
+      });
     },
 
     clearCurrent() {
       currentThreadId = null;
       saveCurrentThreadId(null);
+    },
+
+    /**
+     * Sync the local thread list with the backend (server-side metadata).
+     *
+     * Backend is authoritative for titles and pins. On first sync (migration),
+     * local data is pushed to the backend so existing titles/pins are preserved.
+     * Subsequent syncs merge backend data into localStorage.
+     */
+    async syncFromBackend() {
+      if (syncInProgress) return;
+      syncInProgress = true;
+      try {
+        const response = await api.listThreadsWithMetadata();
+        const backendThreads = response.threads;
+
+        // Detect if migration is needed: backend has threads but none are titled,
+        // while localStorage has titled threads
+        const hasBackendTitles = backendThreads.some(
+          (t) => t.title_source !== 'default'
+        );
+        const hasLocalTitles = threads.some(
+          (t) => t.title !== 'New Chat'
+        );
+
+        if (!hasBackendTitles && hasLocalTitles && threads.length > 0) {
+          // One-time migration: push local data to backend
+          console.log('[Threads] Migrating local metadata to backend...');
+          try {
+            await api.migrateThreadMetadata(threads);
+            // Re-fetch to get the merged data
+            const refreshed = await api.listThreadsWithMetadata();
+            this._applyBackendThreads(refreshed.threads);
+            return;
+          } catch (err) {
+            console.warn('[Threads] Migration failed, using backend data as-is:', err);
+          }
+        }
+
+        this._applyBackendThreads(backendThreads);
+      } catch (e) {
+        console.warn('[Threads] Backend sync failed:', e);
+      } finally {
+        syncInProgress = false;
+      }
+    },
+
+    /**
+     * Apply backend thread data to the local store.
+     * Backend is authoritative — local data is replaced.
+     */
+    _applyBackendThreads(backendThreads: Array<{
+      thread_id: string;
+      title: string;
+      pinned: boolean;
+      platform: string;
+      platform_meta: Record<string, string> | null;
+      created_at: string | null;
+      updated_at: string | null;
+      title_source: string;
+    }>) {
+      // Build a map of local threads for preserving UI-only state
+      const localMap = new Map(threads.map((t) => [t.id, t]));
+
+      const merged: Thread[] = backendThreads.map((bt) => {
+        const local = localMap.get(bt.thread_id);
+        return {
+          id: bt.thread_id,
+          title: bt.title || local?.title || 'New Chat',
+          pinned: bt.pinned ?? local?.pinned ?? false,
+          platform: (bt.platform as ThreadPlatform) || detectPlatform(bt.thread_id),
+          platformMeta: bt.platform_meta ? {
+            guildName: bt.platform_meta.guild_name,
+            channelName: bt.platform_meta.channel_name,
+            guildId: bt.platform_meta.guild_id,
+            channelId: bt.platform_meta.channel_id,
+          } : local?.platformMeta,
+          createdAt: bt.created_at ? new Date(bt.created_at) : local?.createdAt ?? new Date(),
+          updatedAt: bt.updated_at ? new Date(bt.updated_at) : local?.updatedAt ?? new Date(),
+          messageCount: local?.messageCount ?? 0,
+          hasCustomConfig: local?.hasCustomConfig,
+        };
+      });
+
+      threads = merged;
+      saveThreads(threads);
+      console.log('[Threads] Synced from backend:', backendThreads.length, 'threads');
     },
 
     // Thread task badge support
@@ -517,10 +635,17 @@ function createThreadsStore() {
 
     // Pin methods
     togglePinThread(id: string) {
+      const thread = threads.find(t => t.id === id);
+      const newPinned = !(thread?.pinned);
       threads = threads.map(t =>
-        t.id === id ? { ...t, pinned: !t.pinned } : t
+        t.id === id ? { ...t, pinned: newPinned } : t
       );
       saveThreads(threads);
+
+      // Write-through to backend
+      api.updateThreadMetadata(id, { pinned: newPinned }).catch((err) => {
+        console.warn('[Threads] Failed to sync pin to backend:', err);
+      });
     },
 
     togglePinFolder(id: string) {
