@@ -487,6 +487,89 @@ Returns cached OpenRouter model metadata. The backend fetches model data from th
 
 ---
 
+### List Threads
+
+```http
+GET /threads?user_id=default
+Authorization: Bearer <token>
+```
+
+Returns all threads with server-authoritative metadata (titles, pins, platform).
+
+**Response:**
+```json
+{
+  "threads": [
+    {
+      "id": "abc123",
+      "title": "Research Python tutorials",
+      "title_source": "auto",
+      "pinned": false,
+      "platform": "desktop",
+      "created_at": "2026-02-27T10:00:00Z",
+      "updated_at": "2026-02-27T10:30:00Z"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `title` | Server-authoritative display title |
+| `title_source` | `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name) |
+| `pinned` | Whether thread is pinned to top |
+| `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"webhook"` |
+
+---
+
+### Update Thread Metadata
+
+```http
+PATCH /threads/{thread_id}/metadata?user_id=default
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+**Request Body:** (all fields optional)
+```json
+{
+  "title": "New title",
+  "pinned": true
+}
+```
+
+Updates the thread's server-side metadata. If the thread is callable, renaming also updates its `callable_name` in thread config and rebuilds the tool registry (so the LLM sees the new tool name). Name collisions with core tools or other callables are silently skipped.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "thread_id": "abc123",
+  "updated_fields": ["title", "title_source"]
+}
+```
+
+---
+
+### Stop Thread
+
+```http
+POST /threads/{thread_id}/stop
+Authorization: Bearer <token>
+```
+
+Aborts a running stream on the thread. Cascades to any active callable child threads.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "message": "Abort signal sent for thread abc123"
+}
+```
+
+---
+
 ## TODO Management API
 
 Manage TODO items with optional scheduling for autonomous execution.
@@ -902,28 +985,26 @@ Import tools from a JSON array.
 
 ---
 
-## Sub-Agents API
+## Callable Threads API
 
-Manage specialized sub-agents programmatically.
+Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool visible to other threads.
 
-### List Sub-Agents
+### List Callable Threads
 
 ```http
-GET /agents
+GET /agents/threads
 Authorization: Bearer <token>
 ```
 
 **Response:**
 ```json
 {
-  "agents": [
+  "callable_threads": [
     {
-      "name": "code_reviewer",
-      "description": "Reviews code for bugs and style issues",
-      "system_prompt": "You are a code review specialist...",
-      "tools": ["file_read", "bash_execute"],
-      "context_turns": 5,
-      "enabled": true
+      "thread_id": "research-abc",
+      "callable_name": "ResearchAgent",
+      "description": "Research assistant for web queries",
+      "callable": true
     }
   ]
 }
@@ -931,121 +1012,43 @@ Authorization: Bearer <token>
 
 ---
 
-### Create Sub-Agent
+### Thread Config (Per-Thread Settings)
 
 ```http
-POST /agents
+GET /threads/{thread_id}/config
+Authorization: Bearer <token>
+```
+
+Returns per-thread configuration including callable settings, custom instructions, LLM overrides, and tool enablement.
+
+```http
+PATCH /threads/{thread_id}/config
 Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:**
-```json
-{
-  "name": "code_reviewer",
-  "description": "Reviews code for bugs and style issues",
-  "system_prompt": "You are a code review specialist. Analyze code for:\n- Bugs and logic errors\n- Security vulnerabilities\n- Style and readability issues\n\nProvide specific line numbers and suggested fixes.",
-  "tools": ["file_read", "bash_execute"],
-  "context_turns": 5
-}
-```
+Updates thread config. Key fields for callable threads:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | Unique identifier (lowercase, underscores) |
-| `description` | string | Yes | Brief description |
-| `system_prompt` | string | Yes | Instructions for the agent |
-| `tools` | array | No | Allowed tool names (empty = all) |
-| `context_turns` | int | No | Conversation history (default: 5) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `callable` | bool | Whether this thread is callable as a tool |
+| `callable_name` | string | Tool name visible to the LLM (must be unique) |
+| `callable_description` | string | Tool description shown to the LLM |
+| `custom_instructions` | string | System prompt for this thread |
+| `disabled_tools` | array | Tool names to exclude |
+| `enabled_tools` | array | Optional tool names to include |
+| `llm_provider` | string | Override LLM provider |
+| `llm_model` | string | Override model |
+| `llm_temperature` | float | Override temperature |
 
-**Response:** The created agent object
-
----
-
-### Get Sub-Agent
+**Callable thread naming:** The thread's sidebar title always equals `callable_name`. Renaming the thread via `PATCH /threads/{id}/metadata` automatically updates `callable_name` and rebuilds the tool registry.
 
 ```http
-GET /agents/{agent_name}
+DELETE /threads/{thread_id}/config
 Authorization: Bearer <token>
 ```
 
-**Response:** Single agent object
-
----
-
-### Update Sub-Agent
-
-```http
-PUT /agents/{agent_name}
-Content-Type: application/json
-Authorization: Bearer <token>
-```
-
-**Request Body:** Same as create (all fields optional)
-
-**Response:** Updated agent object
-
----
-
-### Delete Sub-Agent
-
-```http
-DELETE /agents/{agent_name}
-Authorization: Bearer <token>
-```
-
-**Response:**
-```json
-{
-  "message": "Agent 'code_reviewer' deleted"
-}
-```
-
----
-
-### Test Sub-Agent
-
-```http
-POST /agents/{agent_name}/test
-Content-Type: application/json
-Authorization: Bearer <token>
-```
-
-**Request Body:**
-```json
-{
-  "instruction": "Review this function for potential bugs"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "response": "I've analyzed the function and found...",
-  "tools_used": ["file_read"],
-  "execution_time_ms": 1523
-}
-```
-
----
-
-### Export/Import Sub-Agents
-
-```http
-GET /agents/export
-Authorization: Bearer <token>
-```
-
-Returns all agents as a JSON array.
-
-```http
-POST /agents/import
-Content-Type: application/json
-Authorization: Bearer <token>
-```
-
-Import agents from a JSON array.
+Resets thread config to defaults.
 
 ---
 
