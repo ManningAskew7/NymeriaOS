@@ -403,7 +403,7 @@ class TriggerManager:
                 },
             )
 
-            response_parts, _thinking_parts = self._stream_live(
+            response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
                 agent, batch_prompt, thread_id, user_id, task_id
             )
             response = "".join(response_parts)
@@ -414,13 +414,15 @@ class TriggerManager:
                 user_id=user_id,
                 response=response,
                 event_count=len(events),
+                partial=iteration_limit_hit,
             )
 
             _elapsed = _time.monotonic() - _start
             logger.info(
                 f"[TRIGGER] === END === thread={thread_id}, "
                 f"trigger={trigger.name}, batched={len(events)}, "
-                f"response_len={len(response)}, elapsed={_elapsed:.1f}s"
+                f"response_len={len(response)}, partial={iteration_limit_hit}, "
+                f"elapsed={_elapsed:.1f}s"
             )
         except Exception as e:
             logger.error(
@@ -469,7 +471,7 @@ class TriggerManager:
             },
         )
 
-        response_parts, _thinking_parts = self._stream_live(
+        response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
             agent, prompt, thread_id, user_id, task_id
         )
         response = "".join(response_parts)
@@ -480,12 +482,14 @@ class TriggerManager:
             user_id=user_id,
             response=response,
             event_count=1,
+            partial=iteration_limit_hit,
         )
 
         _elapsed = _time.monotonic() - _start
         logger.info(
             f"[TRIGGER] === END === thread={thread_id}, "
-            f"trigger={trigger.name}, response_len={len(response)}, elapsed={_elapsed:.1f}s"
+            f"trigger={trigger.name}, response_len={len(response)}, "
+            f"partial={iteration_limit_hit}, elapsed={_elapsed:.1f}s"
         )
 
     def _stream_live(
@@ -495,16 +499,17 @@ class TriggerManager:
         thread_id: str,
         user_id: str,
         task_id: str,
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], bool]:
         """Stream through the agent, publishing each event live.
 
-        Returns (response_parts, thinking_parts).
+        Returns (response_parts, thinking_parts, iteration_limit_hit).
         """
         from .event_bus import publish_autonomous_event
 
         response_parts: List[str] = []
         thinking_parts: List[str] = []
         chunk_count = 0
+        iteration_limit_hit = False
 
         for chunk in agent.stream(
             message=prompt,
@@ -575,6 +580,7 @@ class TriggerManager:
                 )
 
             elif chunk_type == "iteration_limit":
+                iteration_limit_hit = True
                 logger.warning(
                     f"[TRIGGER] Iteration limit on thread {thread_id}: "
                     f"scope={chunk.get('scope')}, "
@@ -586,7 +592,7 @@ class TriggerManager:
         if not response_parts and thinking_parts:
             response_parts = thinking_parts
 
-        return response_parts, thinking_parts
+        return response_parts, thinking_parts, iteration_limit_hit
 
     def _publish_trigger_completion(
         self,
@@ -595,6 +601,7 @@ class TriggerManager:
         user_id: str,
         response: str,
         event_count: int = 1,
+        partial: bool = False,
     ) -> None:
         """Publish task_completed and log to activity feed."""
         from .activity_log import ActivityType, log_activity
@@ -602,27 +609,36 @@ class TriggerManager:
 
         task_id = f"trigger-{trigger.id}"
 
+        completed_data = {
+            "content": response,
+            "trigger_id": trigger.id,
+            "trigger_name": trigger.name,
+        }
+        if partial:
+            completed_data["partial"] = True
+
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=thread_id,
             user_id=user_id,
             task_id=task_id,
-            data={
-                "content": response,
-                "trigger_id": trigger.id,
-                "trigger_name": trigger.name,
-            },
+            data=completed_data,
         )
+
+        activity_msg = f"{trigger.name}: processed {event_count} event(s)"
+        if partial:
+            activity_msg += " (partial — hit iteration limit)"
 
         log_activity(
             ActivityType.TRIGGER_COMPLETED,
-            f"{trigger.name}: processed {event_count} event(s)",
+            activity_msg,
             user_id=user_id,
             thread_id=thread_id,
             metadata={
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
                 "event_count": event_count,
+                "partial": partial,
             },
         )
 

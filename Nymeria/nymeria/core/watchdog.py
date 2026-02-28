@@ -349,6 +349,7 @@ class Watchdog:
         response_parts: list = []
         thinking_parts: list = []
         nudge_failed = False
+        iteration_limit_hit = False
 
         try:
             # Publish task_started so frontend enters streaming mode
@@ -431,6 +432,7 @@ class Watchdog:
                     )
 
                 elif chunk_type == "iteration_limit":
+                    iteration_limit_hit = True
                     logger.warning(
                         f"[WATCHDOG] Iteration limit during nudge for thread "
                         f"{thread_id}: scope={chunk.get('scope')}. "
@@ -473,21 +475,29 @@ class Watchdog:
                         self._nudged_todos[key] = now
 
                 # Log activity on the real thread
+                activity_msg = (
+                    f"Watchdog alert: {len(stale_todos)} stale TODO(s) need attention"
+                )
+                if iteration_limit_hit:
+                    activity_msg += " (partial — hit iteration limit)"
+
                 log_activity(
                     ActivityType.WATCHDOG_NUDGE,
-                    f"Watchdog alert: {len(stale_todos)} stale TODO(s) need attention",
+                    activity_msg,
                     user_id=user_id,
                     thread_id=thread_id,
                     metadata={
                         "stale_todo_ids": [t.id for t in stale_todos],
                         "staleness_minutes": self.staleness_minutes,
+                        "partial": iteration_limit_hit,
                     },
                 )
 
                 _elapsed = _time.monotonic() - _nudge_start
                 logger.info(
                     f"[WATCHDOG] === END === thread={thread_id}, "
-                    f"chunks={chunk_count}, response_len={len(response_text)}, elapsed={_elapsed:.1f}s"
+                    f"chunks={chunk_count}, response_len={len(response_text)}, "
+                    f"partial={iteration_limit_hit}, elapsed={_elapsed:.1f}s"
                 )
 
         except Exception as e:
@@ -507,6 +517,8 @@ class Watchdog:
             }
             if nudge_failed:
                 completed_data["error"] = True
+            if iteration_limit_hit:
+                completed_data["partial"] = True
             publish_autonomous_event(
                 event_type="task_completed",
                 thread_id=thread_id,
