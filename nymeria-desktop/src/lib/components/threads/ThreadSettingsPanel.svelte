@@ -39,19 +39,10 @@
       };
     }
     if (defaultToolsStore.mode === 'custom' && defaultToolsStore.loaded) {
-      const defaultSet = new Set(defaultToolsStore.defaultToolNames);
-      const disabled = new Set<string>();
-      const enabled = new Set<string>();
-      for (const tool of defaultToolsStore.tools) {
-        if (!tool.is_optional && !defaultSet.has(tool.name)) {
-          // Core tool not in defaults → disabled
-          disabled.add(tool.name);
-        } else if (tool.is_optional && defaultSet.has(tool.name)) {
-          // Optional tool in defaults → enabled
-          enabled.add(tool.name);
-        }
-      }
-      return { disabled, enabled };
+      // No per-thread overrides for uncustomized threads.
+      // The default tool set already defines what's loaded — no need to
+      // express "not in defaults" as "disabled".
+      return { disabled: new Set(), enabled: new Set() };
     }
     // Legacy mode or store not loaded yet — empty sets (all core on, no optional)
     return { disabled: new Set(), enabled: new Set() };
@@ -120,19 +111,6 @@
     return activeCore + enabledTools.size;
   });
 
-  // Track whether the user has manually changed tools (prevents overwriting on store load)
-  let userChangedTools = $state(false);
-
-  // When defaultToolsStore finishes loading for a new thread with no config,
-  // update the tool toggles to reflect the custom defaults.
-  $effect(() => {
-    if (!threadConfig?.hasCustomizations && !userChangedTools && defaultToolsStore.loaded && defaultToolsStore.mode === 'custom') {
-      const state = computeInitialToolState();
-      disabledTools = state.disabled;
-      enabledTools = state.enabled;
-    }
-  });
-
   // Ensure tools, triggers, and model metadata are loaded
   $effect(() => {
     if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
@@ -150,7 +128,12 @@
   });
 
   const filteredTools = $derived(() => {
-    const allTools = unifiedToolsStore.tools;
+    let allTools = unifiedToolsStore.tools;
+    // Show only tools in the user's current default set (core tools for this thread)
+    if (defaultToolsStore.loaded && defaultToolsStore.defaultToolNames.length > 0) {
+      const coreSet = new Set(defaultToolsStore.defaultToolNames);
+      allTools = allTools.filter(t => coreSet.has(t.name));
+    }
     if (!toolSearch.trim()) return allTools;
     const q = toolSearch.toLowerCase();
     return allTools.filter(
@@ -166,7 +149,6 @@
   const enabledToolCount = $derived(enabledTools.size);
 
   function toggleOptionalTool(toolName: string) {
-    userChangedTools = true;
     const next = new Set(enabledTools);
     if (next.has(toolName)) {
       next.delete(toolName);
@@ -177,7 +159,6 @@
   }
 
   function toggleTool(toolName: string) {
-    userChangedTools = true;
     const next = new Set(disabledTools);
     if (next.has(toolName)) {
       next.delete(toolName);
@@ -260,9 +241,11 @@
         updates.clear_instructions = true;
       }
 
-      // Disabled tools
-      if (disabledTools.size > 0) {
-        updates.disabled_tools = Array.from(disabledTools);
+      // Disabled tools — only persist tools that are actually in the default set
+      const coreSet = new Set(defaultToolsStore.defaultToolNames);
+      const effectiveDisabled = [...disabledTools].filter(t => coreSet.has(t));
+      if (effectiveDisabled.length > 0) {
+        updates.disabled_tools = effectiveDisabled;
       } else {
         updates.clear_disabled_tools = true;
       }
@@ -281,14 +264,14 @@
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
-        if (llmProvider) llm.provider = llmProvider;
-        if (llmModel) llm.model = llmModel;
-        if (llmTemperature) llm.temperature = parseFloat(llmTemperature);
-        if (llmMaxTokens) llm.max_tokens = parseInt(llmMaxTokens, 10);
+        llm.provider = llmProvider || null;
+        llm.model = llmModel || null;
+        llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
+        llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
         if (llmExtendedThinking !== 'default') {
           llm.extended_thinking = llmExtendedThinking === 'true';
         }
-        if (llmReasoningEffort) llm.reasoning_effort = llmReasoningEffort;
+        llm.reasoning_effort = llmReasoningEffort || null;
         if (llmUseModelDefaults !== 'default') {
           llm.use_model_defaults = llmUseModelDefaults === 'true';
         } else {
