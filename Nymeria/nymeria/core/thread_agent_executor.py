@@ -90,6 +90,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
         thinking_parts = []
         chunk_count = 0
         tool_call_count = 0
+        iteration_limit_hit = False
 
         for chunk in agent.stream(
             message=task,
@@ -160,6 +161,14 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
                 logger.warning(f"[CALLABLE] {callable_name}: stream error: {content}")
                 raise RuntimeError(content or f"{callable_name} encountered a stream error")
 
+            elif chunk_type == "iteration_limit":
+                iteration_limit_hit = True
+                logger.warning(
+                    f"[CALLABLE] {callable_name}: hit iteration limit "
+                    f"(scope={chunk.get('scope')}, "
+                    f"max_iterations={chunk.get('max_iterations')})"
+                )
+
         # Compute final response text
         if response_parts:
             response_text = "".join(response_parts)
@@ -169,23 +178,41 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
         else:
             response_text = ""
 
+        # Annotate response if iteration limit was hit so the parent LLM
+        # knows the callable's work may be incomplete
+        if iteration_limit_hit and response_text:
+            response_text += (
+                f"\n\n[Note: This response may be incomplete — "
+                f"{callable_name} was stopped after reaching its iteration limit.]"
+            )
+        elif iteration_limit_hit and not response_text:
+            response_text = (
+                f"[{callable_name} hit its iteration limit without producing "
+                f"a response. The task may require manual follow-up.]"
+            )
+
         _elapsed = _time.monotonic() - _start
         logger.info(
             f"[CALLABLE] === END === name={callable_name}, thread={thread_id}, "
             f"task_id={task_id}, chunks={chunk_count}, tools={tool_call_count}, "
-            f"response_len={len(response_text)}, elapsed={_elapsed:.1f}s"
+            f"response_len={len(response_text)}, partial={iteration_limit_hit}, "
+            f"elapsed={_elapsed:.1f}s"
         )
 
         # Publish task_completed with final response
+        completed_data = {
+            "content": response_text,
+            "callable_name": callable_name,
+        }
+        if iteration_limit_hit:
+            completed_data["partial"] = True
+
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=thread_id,
             user_id=caller_user_id,
             task_id=task_id,
-            data={
-                "content": response_text,
-                "callable_name": callable_name,
-            },
+            data=completed_data,
         )
 
         return response_text
