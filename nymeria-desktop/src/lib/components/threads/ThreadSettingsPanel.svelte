@@ -97,6 +97,7 @@
 
   // Visibility
   let showAutonomousPrompts = $state(threadConfig?.showAutonomousPrompts ?? false);
+  let showPromptMetadata = $state(threadConfig?.showPromptMetadata ?? false);
 
   // Search
   let toolSearch = $state('');
@@ -213,6 +214,9 @@
     const origShowAutonomous = threadConfig?.showAutonomousPrompts ?? false;
     if (showAutonomousPrompts !== origShowAutonomous) return true;
 
+    const origShowPromptMeta = threadConfig?.showPromptMetadata ?? false;
+    if (showPromptMetadata !== origShowPromptMeta) return true;
+
     return false;
   }
 
@@ -299,6 +303,7 @@
 
       // Visibility
       updates.show_autonomous_prompts = showAutonomousPrompts;
+      updates.show_prompt_metadata = showPromptMetadata;
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
@@ -347,6 +352,7 @@
       callableName = '';
       callableDescription = '';
       showAutonomousPrompts = false;
+      showPromptMetadata = false;
       onSaved({
         threadId: thread.id,
         instructions: null,
@@ -358,6 +364,7 @@
         callableName: null,
         callableDescription: null,
         showAutonomousPrompts: false,
+        showPromptMetadata: false,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -393,8 +400,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="modal-backdrop" onclick={handleBackdropClick}>
+<div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
   <div class="modal-panel">
     <div class="modal-header">
       <h2>Thread Settings</h2>
@@ -484,6 +490,15 @@
             <p class="field-hint">
               Show the prompts sent by the scheduler, watchdog, and triggers as
               messages in the chat. Useful for debugging autonomous behavior.
+            </p>
+
+            <label class="toggle-row">
+              <input type="checkbox" bind:checked={showPromptMetadata} />
+              <span class="toggle-label">Show prompt metadata</span>
+            </label>
+            <p class="field-hint">
+              Show the time context and trigger type prepended to each message.
+              Useful for debugging prompt flow and callable thread routing.
             </p>
           </div>
         </div>

@@ -219,6 +219,36 @@ def _classify_autonomous_source(text: str) -> str:
     return "trigger"
 
 
+def _extract_content_parts(content) -> tuple:
+    """Extract text and thinking from AIMessage.content.
+
+    Handles both string content (OpenAI/OpenRouter) and Anthropic's
+    content block format (list of typed dicts).
+
+    Returns:
+        (text_content, thinking_blocks) where text_content is a string
+        and thinking_blocks is a list of thinking text strings.
+    """
+    if isinstance(content, str):
+        return content, []
+    if isinstance(content, list):
+        text_parts = []
+        thinking_parts = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block_type == "thinking":
+                    thinking_parts.append(block.get("thinking", ""))
+                # Skip tool_use (handled via msg.tool_calls),
+                # redacted_thinking, signature, etc.
+            elif isinstance(block, str):
+                text_parts.append(block)
+        return "\n".join(text_parts), thinking_parts
+    return str(content), []
+
+
 # Global reference to the current agent instance (for tools that need to trigger reload)
 _current_agent: Optional["NymeriaAgent"] = None
 
@@ -2215,6 +2245,10 @@ class NymeriaAgent:
         This re-imports all tools (picking up any new files) and rebuilds the agent's
         graphs so new tools become available on the NEXT message turn.
 
+        New core tools (added to ALL_TOOLS) are automatically registered in each
+        user's default_thread_tools so they appear as enabled by default.  Removed
+        core tools are cleaned out of the list as well.
+
         NOTE: Due to how LangGraph works, newly created tools are NOT available
         in the same conversation turn. The current turn's graph was captured at
         the start of the turn. New tools will work on the next user message.
@@ -2227,6 +2261,11 @@ class NymeriaAgent:
         from .. import tools as tools_module
 
         logger.info("Reloading tools module...")
+
+        # Snapshot current ALL_TOOLS before reload (for diff)
+        old_core_names = {
+            t.name for t in getattr(tools_module, 'ALL_TOOLS', [])
+        }
 
         # Get all submodule names (including newly created files)
         tools_path = Path(tools_module.__file__).parent
@@ -2257,7 +2296,11 @@ class NymeriaAgent:
         # Get ALL_TOOLS directly from the reloaded module object
         # (using 'from ..tools import ALL_TOOLS' could get cached references)
         ALL_TOOLS = getattr(tools_module, 'ALL_TOOLS', [])
-        logger.info(f"ALL_TOOLS after reload: {[t.name for t in ALL_TOOLS]}")
+        new_core_names = {t.name for t in ALL_TOOLS}
+        logger.info(f"ALL_TOOLS after reload: {list(new_core_names)}")
+
+        # Auto-sync default_thread_tools for all users
+        self._sync_default_thread_tools(old_core_names, new_core_names)
 
         # Get callable thread tools
         from ..agents.tool_factory import get_callable_thread_tools
@@ -2282,6 +2325,46 @@ class NymeriaAgent:
         tool_names = [t["name"] for t in tool_list]
         logger.info(f"Tools reloaded successfully. Available ({len(tool_names)}): {tool_names}")
         return tool_names
+
+    def _sync_default_thread_tools(
+        self, old_core: set, new_core: set
+    ) -> None:
+        """Sync each user's default_thread_tools after a core tool change.
+
+        - Newly added core tools are appended so they're enabled by default.
+        - Removed core tools are cleaned out to avoid stale entries.
+        - Users whose default_thread_tools is None (legacy mode) are skipped.
+        """
+        added = new_core - old_core
+        removed = old_core - new_core
+        if not added and not removed:
+            return
+
+        if added:
+            logger.info(f"New core tools detected: {added}")
+        if removed:
+            logger.info(f"Removed core tools detected: {removed}")
+
+        for user_id in self.profile_manager.list_users():
+            try:
+                profile = self.profile_manager.get_profile(user_id)
+                dt = profile.tool_preferences.default_thread_tools
+                if dt is None:
+                    continue  # legacy mode — no explicit list to update
+
+                current = set(dt)
+                updated = (current | added) - removed
+                if updated != current:
+                    with self.profile_manager.atomic_update(user_id) as p:
+                        p.tool_preferences.default_thread_tools = sorted(updated)
+                    logger.info(
+                        f"Updated default_thread_tools for user {user_id}: "
+                        f"+{added & updated} -{removed & current}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to sync default_thread_tools for {user_id}: {e}"
+                )
 
     def chat(
         self,
@@ -2567,29 +2650,80 @@ class NymeriaAgent:
 
                         for msg in messages:
                             if isinstance(msg, AIMessage):
-                                # FIRST: Emit preamble content BEFORE tool calls
-                                # This ensures text like "Found it - I'll remove it now"
-                                # appears before the tool call in the UI
-                                if msg.content and msg.tool_calls:
-                                    yield {"type": "response", "content": msg.content}
-
-                                # SECOND: Process and emit tool calls
-                                if msg.tool_calls:
+                                # Emit content and tool calls in order
+                                # (preserves interleaved thinking between tool calls)
+                                if msg.content and msg.tool_calls and isinstance(msg.content, list):
+                                    for block in msg.content:
+                                        if not isinstance(block, dict):
+                                            if isinstance(block, str) and block:
+                                                yield {"type": "thinking", "content": block}
+                                            continue
+                                        block_type = block.get("type")
+                                        if block_type == "thinking":
+                                            text = block.get("thinking", "")
+                                            if text:
+                                                yield {"type": "thinking", "content": text}
+                                        elif block_type == "text":
+                                            text = block.get("text", "")
+                                            if text:
+                                                yield {"type": "response", "content": text}
+                                        elif block_type == "tool_use":
+                                            tool_id = block.get("id", "")
+                                            tool_name = block.get("name", "")
+                                            tool_args = block.get("input", {})
+                                            if tool_name and tool_id:
+                                                pending_tool_calls[tool_id] = {
+                                                    "name": tool_name,
+                                                    "args": tool_args,
+                                                }
+                                                if tool_id not in emitted_tool_calls:
+                                                    emitted_tool_calls.add(tool_id)
+                                                    logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
+                                                    yield {
+                                                        "type": "tool_call",
+                                                        "id": tool_id,
+                                                        "name": tool_name,
+                                                        "args": tool_args,
+                                                    }
+                                elif msg.content and msg.tool_calls:
+                                    # String content: emit preamble first, then tool calls
+                                    preamble_text, preamble_thinking = _extract_content_parts(msg.content)
+                                    for thinking_text in preamble_thinking:
+                                        if thinking_text:
+                                            yield {"type": "thinking", "content": thinking_text}
+                                    if preamble_text:
+                                        yield {"type": "response", "content": preamble_text}
                                     for tool_call in msg.tool_calls:
                                         tool_id = tool_call.get("id")
                                         tool_name = tool_call.get("name")
                                         tool_args = tool_call.get("args", {})
-
                                         logger.debug(f"[STREAM] Tool call from agent node: id={tool_id}, name={tool_name}, args={tool_args}")
-
                                         if tool_name and tool_id:
-                                            # Store the complete tool call with args
                                             pending_tool_calls[tool_id] = {
                                                 "name": tool_name,
                                                 "args": tool_args,
                                             }
-
-                                            # Emit tool_call event immediately (args are complete)
+                                            if tool_id not in emitted_tool_calls:
+                                                emitted_tool_calls.add(tool_id)
+                                                logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
+                                                yield {
+                                                    "type": "tool_call",
+                                                    "id": tool_id,
+                                                    "name": tool_name,
+                                                    "args": tool_args,
+                                                }
+                                elif msg.tool_calls:
+                                    # Tool calls without content
+                                    for tool_call in msg.tool_calls:
+                                        tool_id = tool_call.get("id")
+                                        tool_name = tool_call.get("name")
+                                        tool_args = tool_call.get("args", {})
+                                        logger.debug(f"[STREAM] Tool call from agent node: id={tool_id}, name={tool_name}, args={tool_args}")
+                                        if tool_name and tool_id:
+                                            pending_tool_calls[tool_id] = {
+                                                "name": tool_name,
+                                                "args": tool_args,
+                                            }
                                             if tool_id not in emitted_tool_calls:
                                                 emitted_tool_calls.add(tool_id)
                                                 logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
@@ -2602,8 +2736,13 @@ class NymeriaAgent:
 
                                 # THIRD: Emit response content (only if NO tool calls)
                                 if msg.content and not msg.tool_calls:
-                                    final_response_parts.append(msg.content)
-                                    yield {"type": "response", "content": msg.content}
+                                    resp_text, resp_thinking = _extract_content_parts(msg.content)
+                                    for thinking_text in resp_thinking:
+                                        if thinking_text:
+                                            yield {"type": "thinking", "content": thinking_text}
+                                    if resp_text:
+                                        final_response_parts.append(resp_text)
+                                        yield {"type": "response", "content": resp_text}
 
                             elif isinstance(msg, ToolMessage):
                                 # Emit tool_result
@@ -3145,6 +3284,7 @@ class NymeriaAgent:
         thread_id: str,
         include_internal: bool = False,
         show_autonomous_prompts: bool = False,
+        show_prompt_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Get the conversation history for a thread.
@@ -3299,8 +3439,11 @@ class NymeriaAgent:
                     if not timestamp_iso:
                         timestamp_iso = _extract_timestamp(raw_content)
 
-                    # Strip injected time context prefix for display
-                    entry["content"] = _CONTEXT_PREFIX_PATTERN.sub('', raw_content)
+                    # Strip injected time context prefix for display (unless user opted in)
+                    if show_prompt_metadata:
+                        entry["content"] = raw_content
+                    else:
+                        entry["content"] = _CONTEXT_PREFIX_PATTERN.sub('', raw_content)
                     if attachments:
                         entry["attachments"] = attachments
                     if timestamp_iso:
@@ -3317,7 +3460,7 @@ class NymeriaAgent:
                     history.append(entry)
 
                 elif isinstance(msg, AIMessage):
-                    raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    text_content, thinking_blocks = _extract_content_parts(msg.content)
                     has_tool_calls = bool(msg.tool_calls)
 
                     if has_tool_calls:
@@ -3334,32 +3477,86 @@ class NymeriaAgent:
                             if turn_ts:
                                 current_turn["timestamp"] = turn_ts
 
-                        # FIRST: Add thinking step if there's content (before tool calls)
-                        if raw_content:
-                            current_turn["steps"].append({
-                                "type": "thinking",
-                                "content": raw_content,
-                            })
-
-                        # SECOND: Add tool call steps with results
-                        for tc in msg.tool_calls:
-                            tool_call_id = tc.get("id", "")
-                            step = {
-                                "type": "tool_call",
-                                "id": tool_call_id,
-                                "name": tc.get("name", ""),
-                                "arguments": tc.get("args", {}),
-                                "status": "success",
-                            }
-                            if tool_call_id in tool_results:
-                                step["result"] = tool_results[tool_call_id]
-                            current_turn["steps"].append(step)
+                        # Build steps preserving content block order
+                        # (supports interleaved thinking between tool calls)
+                        if isinstance(msg.content, list):
+                            for block in msg.content:
+                                if not isinstance(block, dict):
+                                    if isinstance(block, str) and block:
+                                        current_turn["steps"].append({
+                                            "type": "thinking",
+                                            "content": block,
+                                        })
+                                    continue
+                                block_type = block.get("type")
+                                if block_type == "thinking":
+                                    thinking_text = block.get("thinking", "")
+                                    if thinking_text:
+                                        current_turn["steps"].append({
+                                            "type": "thinking",
+                                            "content": thinking_text,
+                                        })
+                                elif block_type == "text":
+                                    text = block.get("text", "")
+                                    if text:
+                                        current_turn["steps"].append({
+                                            "type": "response",
+                                            "content": text,
+                                        })
+                                elif block_type == "tool_use":
+                                    tool_call_id = block.get("id", "")
+                                    step = {
+                                        "type": "tool_call",
+                                        "id": tool_call_id,
+                                        "name": block.get("name", ""),
+                                        "arguments": block.get("input", {}),
+                                        "status": "success",
+                                    }
+                                    if tool_call_id in tool_results:
+                                        step["result"] = tool_results[tool_call_id]
+                                    current_turn["steps"].append(step)
+                        else:
+                            # String content (OpenAI/OpenRouter): no interleaving
+                            if text_content:
+                                current_turn["steps"].append({
+                                    "type": "response",
+                                    "content": text_content,
+                                })
+                            for tc in msg.tool_calls:
+                                tool_call_id = tc.get("id", "")
+                                step = {
+                                    "type": "tool_call",
+                                    "id": tool_call_id,
+                                    "name": tc.get("name", ""),
+                                    "arguments": tc.get("args", {}),
+                                    "status": "success",
+                                }
+                                if tool_call_id in tool_results:
+                                    step["result"] = tool_results[tool_call_id]
+                                current_turn["steps"].append(step)
 
                     else:
                         # AIMessage without tool_calls -> complete turn or standalone
                         if current_turn is not None:
-                            # Complete the current turn with this content
-                            current_turn["content"] = raw_content
+                            # Add any thinking blocks from this final message
+                            for thinking_text in thinking_blocks:
+                                if thinking_text:
+                                    current_turn["steps"].append({
+                                        "type": "thinking",
+                                        "content": thinking_text,
+                                    })
+
+                            # Add final response text as a step so it renders
+                            # in the step loop (preamble response steps cause
+                            # hasResponseSteps=true which suppresses content)
+                            if text_content:
+                                current_turn["steps"].append({
+                                    "type": "response",
+                                    "content": text_content,
+                                })
+
+                            # Complete the current turn with text content
+                            current_turn["content"] = text_content
 
                             # Backfill timestamp if turn-start had no ID
                             if "timestamp" not in current_turn:
@@ -3383,8 +3580,14 @@ class NymeriaAgent:
                             entry = {
                                 "id": f"{thread_id}-{msg_counter}",
                                 "role": "assistant",
-                                "content": raw_content,
+                                "content": text_content,
                             }
+                            # Add thinking as steps if present
+                            if thinking_blocks:
+                                entry["steps"] = [
+                                    {"type": "thinking", "content": t}
+                                    for t in thinking_blocks if t
+                                ]
                             standalone_ts = timestamp_map.get(msg.id) if msg.id else None
                             if standalone_ts:
                                 entry["timestamp"] = standalone_ts

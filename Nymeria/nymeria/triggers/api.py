@@ -817,17 +817,22 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         agent = get_agent()
 
-        # Check per-thread config for autonomous prompt visibility
+        # Check per-thread config for visibility flags
         show_autonomous = False
+        show_prompt_metadata = False
         if not include_internal:
             tc = agent.thread_config_manager.get_config(thread_id)
-            if tc and tc.show_autonomous_prompts:
-                show_autonomous = True
+            if tc:
+                if tc.show_autonomous_prompts:
+                    show_autonomous = True
+                if tc.show_prompt_metadata:
+                    show_prompt_metadata = True
 
         history = agent.get_conversation_history(
             thread_id,
             include_internal=include_internal,
             show_autonomous_prompts=show_autonomous,
+            show_prompt_metadata=show_prompt_metadata,
         )
         return ThreadHistoryResponse(thread_id=thread_id, messages=history)
 
@@ -1141,6 +1146,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable_name: Optional[str] = Field(default=None, max_length=64)
         callable_description: Optional[str] = Field(default=None, max_length=500)
         show_autonomous_prompts: Optional[bool] = None
+        show_prompt_metadata: Optional[bool] = None
         clear_instructions: bool = False
         clear_disabled_tools: bool = False
         clear_enabled_tools: bool = False
@@ -1171,6 +1177,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "callable_name": None,
             "callable_description": None,
             "show_autonomous_prompts": False,
+            "show_prompt_metadata": False,
             "created_at": None,
             "updated_at": None,
             "has_customizations": False,
@@ -1251,6 +1258,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.callable_description = request.callable_description
         if request.show_autonomous_prompts is not None:
             tc.show_autonomous_prompts = request.show_autonomous_prompts
+        if request.show_prompt_metadata is not None:
+            tc.show_prompt_metadata = request.show_prompt_metadata
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")
