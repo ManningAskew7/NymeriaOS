@@ -58,6 +58,8 @@ class ThreadConfig(BaseModel):
     )
     # Debug: show autonomous wakeup prompts (triggers, scheduler, watchdog) in chat
     show_autonomous_prompts: bool = False
+    # Debug: show the [Time: ...] [Trigger: ...] metadata prepended to each message
+    show_prompt_metadata: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -98,6 +100,8 @@ class ThreadConfig(BaseModel):
         if self.callable:
             return True
         if self.show_autonomous_prompts:
+            return True
+        if self.show_prompt_metadata:
             return True
         return False
 
