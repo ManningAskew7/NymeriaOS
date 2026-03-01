@@ -3,6 +3,8 @@
   import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
+  import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ImageModal from './ImageModal.svelte';
@@ -64,8 +66,12 @@
       return { text: '', contextSummary: null, hidden: true };
     }
 
-    // Strip time context prefix if present (for normal user messages)
-    text = text.replace(TIME_CONTEXT_PATTERN, '');
+    // Strip time context prefix unless user opted to show metadata
+    const tid = threadsStore.currentThreadId;
+    const showMeta = tid ? threadConfigStore.getConfig(tid)?.showPromptMetadata : false;
+    if (!showMeta) {
+      text = text.replace(TIME_CONTEXT_PATTERN, '');
+    }
 
     // Check for auto-compact message format
     const autoCompactMatch = text.match(AUTO_COMPACT_PATTERN);
