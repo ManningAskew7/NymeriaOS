@@ -1632,6 +1632,7 @@ export class NymeriaAPI {
       callableName: data.callable_name ?? null,
       callableDescription: data.callable_description ?? null,
       showAutonomousPrompts: data.show_autonomous_prompts ?? false,
+      showPromptMetadata: data.show_prompt_metadata ?? false,
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
       hasCustomizations: data.has_customizations ?? false,
