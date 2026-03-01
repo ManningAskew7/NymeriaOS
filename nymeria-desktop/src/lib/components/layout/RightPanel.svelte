@@ -109,8 +109,9 @@
   .panel-header h2 {
     margin: 0;
     font-size: var(--font-size-lg);
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
 
   .tab-buttons {

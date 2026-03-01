@@ -223,6 +223,12 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
         "api_key": api_key,
     }
 
+    if config.base_url:
+        kwargs["anthropic_api_url"] = config.base_url
+        # Tell the proxy to skip cloaking (system prompt injection, fake user ID)
+        # so Nymeria's own system prompt is preserved unchanged
+        kwargs["default_headers"] = {"User-Agent": "claude-cli/nymeria"}
+
     if config.temperature is not None:
         kwargs["temperature"] = config.temperature
 

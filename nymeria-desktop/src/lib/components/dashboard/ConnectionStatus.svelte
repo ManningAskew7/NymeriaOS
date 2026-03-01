@@ -111,6 +111,7 @@
   .dot.disconnected {
     background: var(--error);
     box-shadow: 0 0 6px var(--error);
+    animation: disconnectedPulse 3s ease-in-out infinite;
   }
 
   .dot.checking {
@@ -167,6 +168,16 @@
     }
     50% {
       opacity: 0.5;
+    }
+  }
+
+  @keyframes disconnectedPulse {
+    0%, 100% {
+      box-shadow: 0 0 6px var(--error);
+    }
+    50% {
+      box-shadow: 0 0 2px var(--error);
+      opacity: 0.7;
     }
   }
 </style>

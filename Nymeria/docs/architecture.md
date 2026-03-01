@@ -416,6 +416,18 @@ LangGraph's `stream_mode="messages"` doesn't include tool arguments in streaming
 
 This enables the desktop UI to display tool call arguments in real-time for both interactive and autonomous modes.
 
+**Content Block Classification**
+
+Anthropic models produce typed content blocks: `thinking` (internal reasoning), `text` (preamble/response), `tool_use`, `redacted_thinking`, and `signature`. Both `stream()` and `astream()` iterate content blocks in order and emit correctly typed SSE events:
+
+- `thinking` blocks → `type: "thinking"` events (rendered as collapsible ThinkingBlock)
+- `text` blocks → `type: "response"` events (rendered as inline markdown)
+- `tool_use` blocks → `type: "tool_call"` events (rendered as ToolCallCard)
+
+For OpenRouter/OpenAI models (string content, no typed blocks), all text is emitted as `type: "response"` events.
+
+The `get_conversation_history()` method (used for page refresh/checkpoint rebuild) applies the same classification: it iterates through stored content blocks in order, preserving interleaved thinking between tool calls.
+
 **Callable Thread Streaming**
 
 Callable thread invocations stream SSE events (thinking, tool_call, tool_result, response) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Parent→child invocations are tracked for cascading abort support.

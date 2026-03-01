@@ -80,6 +80,10 @@
   --glass-blur-strong: blur(20px);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 
+  /* Accent derived */
+  --accent-primary-rgb: 34, 211, 238;
+  --accent-primary-alpha: rgba(34, 211, 238, 0.15);
+
   /* Accent glow variants */
   --accent-glow-sm: 0 0 12px rgba(34, 211, 238, 0.15);
   --accent-glow-md: 0 0 20px rgba(34, 211, 238, 0.2);

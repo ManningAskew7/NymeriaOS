@@ -28,7 +28,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking) |
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
-| `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for `openrouter` or `openai` providers (e.g., `http://localhost:8317/v1` for a local proxy). Leave unset to use the provider's standard URL. |
+| `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for `openrouter`, `openai`, or `anthropic` providers (e.g., `http://localhost:8317` for a local proxy). For `anthropic`, omit the `/v1` suffix — `ChatAnthropic` appends `/v1/messages` automatically. Leave unset to use the provider's standard URL. |
 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
@@ -275,18 +275,37 @@ Most OpenRouter models work with Nymeria's agent harness, including tool calling
 
 ### Local Proxy (e.g., CLIProxyAPI)
 
-Route requests through a local OpenAI-compatible proxy to use a subscription plan instead of per-API-call billing. Uses the `openai` provider with `LLM_BASE_URL` override.
+Route requests through a local proxy to use a subscription plan (e.g., Claude Max) instead of per-API-call billing. Two approaches:
+
+#### Native Anthropic (Recommended)
+
+Uses `ChatAnthropic` with native `/v1/messages` format. No format translation — tool calling, streaming, and extended thinking work identically to direct API usage. Requires CLIProxyAPI with Claude OAuth login (`-claude-login`).
+
+```bash
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-opus-4-6-20250612    # Must match a model in proxy's Claude registry
+LLM_BASE_URL=http://localhost:8317    # No /v1 suffix — ChatAnthropic appends /v1/messages
+ANTHROPIC_API_KEY=nymeria-local-dev-key  # Proxy auth key (matches api-keys in proxy config)
+```
+
+When `LLM_BASE_URL` is set for the `anthropic` provider, `ChatAnthropic` is configured with:
+- `anthropic_api_url` pointed at the proxy
+- A `User-Agent: claude-cli/nymeria` header that tells CLIProxyAPI to skip system prompt cloaking (so Nymeria's own `soul.md` is preserved)
+
+#### OpenAI-Compatible (Legacy)
+
+Uses `ChatOpenAI` pointed at the proxy's OpenAI-compatible endpoint. Works for non-Claude models routed through the proxy.
 
 ```bash
 LLM_PROVIDER=openai
 LLM_MODEL=claude-sonnet-4-6           # Model name from the proxy's /v1/models
 OPENAI_API_KEY=not-required            # Proxy ignores this, but validation requires it
-LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint
+LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint (with /v1 suffix)
 ```
 
 **Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy.
 
-**Known limitation**: CLIProxyAPI has an [open issue](https://github.com/router-for-me/CLIProxyAPI/issues/1165) where tool calling can fail through the proxy (tool names get a `proxy_` prefix). Workaround: set callable threads that rely on tool calling (e.g., OutlookAgent, CalendarAgent) to `provider=openrouter` so they bypass the proxy.
+**CLIProxyAPI tool name prefixing**: CLIProxyAPI can add a `proxy_` prefix to tool names with OAuth tokens. To disable this, add `"tool_prefix_disabled": true` to the Claude OAuth token file in the auth directory (e.g., `~/.cli-proxy-api/claude-<email>.json`).
 
 ---
 

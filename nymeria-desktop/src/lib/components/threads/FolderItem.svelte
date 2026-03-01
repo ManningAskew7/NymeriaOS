@@ -110,10 +110,12 @@
 </script>
 
 <div class="folder-item">
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
     class="folder-header"
+    role="button"
+    tabindex="0"
     onclick={handleHeaderClick}
+    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleHeaderClick(); } }}
     oncontextmenu={handleContextMenu}
   >
     <span class="folder-chevron" class:collapsed={folder.collapsed}>
@@ -170,8 +172,7 @@
 </div>
 
 {#if contextMenu}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="context-backdrop" onclick={dismissContextMenu}></div>
+  <div class="context-backdrop" onclick={dismissContextMenu} onkeydown={(e) => e.key === 'Escape' && dismissContextMenu()} role="presentation" tabindex="-1"></div>
   <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
     {#if onTogglePin}
       <button class="context-item" onclick={handleContextPin} type="button">

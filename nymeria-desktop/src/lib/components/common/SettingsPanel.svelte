@@ -268,7 +268,7 @@
   {#if activeTab === 'appearance'}
     <div class="tab-content">
       <div class="field">
-        <label>Theme</label>
+        <span class="field-label">Theme</span>
         <p class="hint">Choose a color scheme for the interface</p>
         <div class="theme-grid">
           {#each themeList as theme}
@@ -763,7 +763,8 @@
     margin-left: auto;
   }
 
-  label {
+  label,
+  .field-label {
     font-weight: 500;
     color: var(--text-primary);
     font-size: var(--font-size-sm);

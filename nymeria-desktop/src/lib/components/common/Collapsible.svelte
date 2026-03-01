@@ -13,6 +13,7 @@
 
   let { title, defaultOpen = false, chevronIcon = 'chevronRight', chevronSize = 16, header, children }: Props = $props();
 
+  // svelte-ignore state_referenced_locally — intentional one-time initialization
   let isOpen = $state(defaultOpen);
 
   function toggle() {
