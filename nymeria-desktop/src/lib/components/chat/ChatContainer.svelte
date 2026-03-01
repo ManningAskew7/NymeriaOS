@@ -85,12 +85,14 @@
     height: 100%;
     text-align: center;
     color: var(--text-secondary);
+    animation: fadeIn 600ms ease-out;
   }
 
   .empty-icon {
     color: var(--accent-primary);
-    opacity: 0.5;
+    opacity: 0.4;
     margin-bottom: var(--spacing-lg);
+    filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.15));
   }
 
   .empty-state h2 {
@@ -98,11 +100,18 @@
     font-size: var(--font-size-xl);
     font-weight: 600;
     color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
 
   .empty-state p {
     margin: 0;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   .messages {

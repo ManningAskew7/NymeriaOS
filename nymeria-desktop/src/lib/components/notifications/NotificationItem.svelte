@@ -50,14 +50,16 @@
     </div>
   </div>
   {#if !notification.read}
-    <button
+    <span
       class="dismiss-btn"
-      type="button"
+      role="button"
+      tabindex="0"
       onclick={handleDismiss}
+      onkeydown={(e) => e.key === 'Enter' && handleDismiss(e as unknown as MouseEvent)}
       title="Mark as read"
     >
       <Icon name="x" size={14} />
-    </button>
+    </span>
   {/if}
 </button>
 

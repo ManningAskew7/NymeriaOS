@@ -196,7 +196,12 @@
   }
 
   .error-state {
-    color: var(--error);
+    color: color-mix(in srgb, var(--error) 80%, var(--text-muted));
+    font-size: var(--font-size-sm);
+  }
+
+  .error-state p {
+    margin: 0;
   }
 
   .loading-text {

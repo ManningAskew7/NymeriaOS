@@ -126,6 +126,12 @@
     cursor: not-allowed;
   }
 
+  .content {
+    display: inline-flex;
+    align-items: center;
+    gap: inherit;
+  }
+
   .content.loading {
     opacity: 0;
   }

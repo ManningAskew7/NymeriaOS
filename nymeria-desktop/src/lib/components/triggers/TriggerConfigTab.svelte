@@ -331,7 +331,7 @@
 {:else}
   <!-- Create / Edit Form -->
   <div class="form-header">
-    <button class="icon-btn" onclick={closeForm} title="Back to list" type="button">
+    <button class="icon-btn" onclick={closeForm} title="Back to list" type="button" aria-label="Back to list">
       <Icon name="chevronRight" size={16} class="back-icon" />
     </button>
     <span class="form-title">{view === 'create' ? 'New Trigger' : 'Edit Trigger'}</span>
@@ -388,6 +388,7 @@
                 class:off={!formSourceConfig[key]}
                 onclick={() => handleSourceConfigChange(key, !formSourceConfig[key])}
                 type="button"
+                aria-label={fieldLabel(key)}
               >
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>

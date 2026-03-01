@@ -176,6 +176,7 @@
   .settings-btn:hover {
     color: var(--accent-primary);
     background: var(--bg-hover);
+    transform: rotate(30deg);
   }
 
   .settings-btn.active {

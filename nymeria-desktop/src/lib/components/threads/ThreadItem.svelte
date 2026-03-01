@@ -160,6 +160,7 @@
 
   <div class="thread-content">
     {#if isEditing}
+      <!-- svelte-ignore a11y_autofocus -->
       <input
         type="text"
         class="edit-input"
@@ -209,8 +210,7 @@
 </div>
 
 {#if contextMenu}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="context-backdrop" onclick={dismissContextMenu}>
+  <div class="context-backdrop" onclick={dismissContextMenu} onkeydown={(e) => e.key === 'Escape' && dismissContextMenu()} role="presentation" tabindex="-1">
   </div>
   <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
     {#if onTogglePin}
@@ -273,6 +273,7 @@
 
   .thread-item.active {
     background: var(--bg-active);
+    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.06);
   }
 
   .thread-item.selected {

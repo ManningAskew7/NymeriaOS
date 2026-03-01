@@ -630,10 +630,13 @@ function createChatStore() {
     },
 
     /**
-     * Reclassify trailing thinking steps as response steps (in-place).
-     * Thinking steps after the last tool call become type: 'response' so they
-     * render as normal text instead of italic thinking text.
-     * Also computes message.content from all response steps for history/search.
+     * Finalize the last assistant message after streaming completes.
+     * Computes message.content from response steps (for history/search)
+     * and intermediateContent from thinking steps (legacy compatibility).
+     *
+     * Note: thinking steps are NOT reclassified — the backend already
+     * distinguishes actual thinking (type: "thinking") from preamble/
+     * response text (type: "response") at the SSE level.
      */
     reclassifyThinkingAsResponse() {
       if (messages.length === 0) return;
@@ -644,39 +647,19 @@ function createChatStore() {
       if (lastMessage.role === 'assistant' && lastMessage.steps) {
         const steps = lastMessage.steps;
 
-        // Find last tool call index
-        let lastToolCallIndex = -1;
-        for (let i = steps.length - 1; i >= 0; i--) {
-          if (steps[i].type === 'tool_call') {
-            lastToolCallIndex = i;
-            break;
-          }
-        }
-
-        // Reclassify thinking steps after last tool call as response steps
-        let changed = false;
-        const newSteps = steps.map((step, i) => {
-          if (i > lastToolCallIndex && step.type === 'thinking') {
-            changed = true;
-            return { ...step, type: 'response' as const };
-          }
-          return step;
-        });
-
         // Compute message.content from all response steps (for history/search)
-        const responseContent = newSteps
+        const responseContent = steps
           .filter((s) => s.type === 'response')
           .map((s) => s.content || '')
           .join('');
 
-        if (changed || responseContent) {
+        if (responseContent) {
           messages = [
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
-              steps: newSteps,
               content: responseContent,
-              intermediateContent: this._computeIntermediateContent(newSteps)
+              intermediateContent: this._computeIntermediateContent(steps)
             }
           ];
         }

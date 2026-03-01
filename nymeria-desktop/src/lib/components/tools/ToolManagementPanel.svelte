@@ -250,6 +250,16 @@
   function updateConfigValue(key: string, value: unknown) {
     configInputs = { ...configInputs, [key]: value };
   }
+
+  function handleModalKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      if (showCreateForm) { showCreateForm = false; }
+      else if (editingTool) { editingTool = null; }
+      else if (testingTool) { testingTool = null; }
+      else if (editingDescriptionTool) { editingDescriptionTool = null; }
+      else if (editingConfigTool) { editingConfigTool = null; }
+    }
+  }
 </script>
 
 <div class="tool-management">
@@ -572,8 +582,9 @@
 
   <!-- Create form modal -->
   {#if showCreateForm}
-    <div class="modal-overlay" onclick={() => (showCreateForm = false)}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showCreateForm = false; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal">
         <div class="modal-header">
           <h3>Create Custom Tool</h3>
           <button class="close-btn" onclick={() => (showCreateForm = false)}>
@@ -590,8 +601,9 @@
 
   <!-- Edit form modal -->
   {#if editingTool}
-    <div class="modal-overlay" onclick={() => (editingTool = null)}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal">
         <div class="modal-header">
           <h3>Edit Tool: {editingTool.name}</h3>
           <button class="close-btn" onclick={() => (editingTool = null)}>
@@ -609,8 +621,9 @@
 
   <!-- Test panel modal -->
   {#if testingTool}
-    <div class="modal-overlay" onclick={() => (testingTool = null)}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) testingTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal">
         <div class="modal-header">
           <h3>Test Tool: {testingTool.name}</h3>
           <button class="close-btn" onclick={() => (testingTool = null)}>
@@ -627,8 +640,9 @@
 
   <!-- Edit description modal -->
   {#if editingDescriptionTool}
-    <div class="modal-overlay" onclick={() => (editingDescriptionTool = null)}>
-      <div class="modal modal-sm" onclick={(e) => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingDescriptionTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal modal-sm">
         <div class="modal-header">
           <h3>Edit Description: {editingDescriptionTool.name}</h3>
           <button class="close-btn" onclick={() => (editingDescriptionTool = null)}>
@@ -675,8 +689,9 @@
 
   <!-- Configure tool modal -->
   {#if editingConfigTool && editingConfigTool.configSchema}
-    <div class="modal-overlay" onclick={() => (editingConfigTool = null)}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingConfigTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal">
         <div class="modal-header">
           <h3>Configure: {editingConfigTool.name}</h3>
           <button class="close-btn" onclick={() => (editingConfigTool = null)}>
@@ -1253,6 +1268,7 @@
     text-overflow: ellipsis;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
   }
 

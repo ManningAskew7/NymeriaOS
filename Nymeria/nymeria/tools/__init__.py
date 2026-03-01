@@ -45,6 +45,7 @@ from .triggers import (
     TRIGGER_TOOLS,
 )
 from .hello_test import hello_test
+from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -82,6 +83,8 @@ ALL_TOOLS = [
     todo,
     todo_delete,
     todo_list,
+    # Sticky note checklist
+    sticky_note,
     # Unified notification tool
     notify,
     # Test tool
@@ -126,6 +129,8 @@ __all__ = [
     "ALL_TOOLS",
     "get_all_tools_with_agents",
     "hello_test",
+    "sticky_note",
+    "STICKY_NOTE_TOOLS",
 ]
 
 

@@ -50,7 +50,7 @@
       <h1 class="logo">Nymeria</h1>
       <Button variant="primary" size="sm" onclick={handleNewChat}>
         <Icon name="plus" size={16} />
-        New Chat
+        New Thread
       </Button>
     {:else}
       <button
@@ -153,9 +153,11 @@
 
   .logo {
     font-size: var(--font-size-xl);
-    font-weight: 600;
+    font-weight: 700;
     color: var(--accent-primary);
     margin: 0;
+    letter-spacing: -0.02em;
+    text-shadow: 0 0 20px rgba(34, 211, 238, 0.2);
   }
 
   .threads-container {

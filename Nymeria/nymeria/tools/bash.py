@@ -1,7 +1,9 @@
 """Bash/shell execution tool for Nymeria."""
 
 import logging
+import os
 import subprocess
+import sys
 from typing import Optional
 
 from langchain_core.tools import tool
@@ -14,6 +16,7 @@ def bash_execute(
     command: str,
     working_directory: Optional[str] = None,
     timeout_seconds: int = 120,
+    run_in_background: bool = False,
 ) -> str:
     """
     Execute a shell command and return the output.
@@ -24,14 +27,46 @@ def bash_execute(
     Args:
         command: The shell command to execute
         working_directory: Optional directory to run the command in
-        timeout_seconds: Maximum time to wait for command (default 120s)
+        timeout_seconds: Maximum time to wait for command (default 120s).
+            Set lower (e.g. 5) for commands that might hang.
+        run_in_background: If True, launch the command as a detached
+            background process and return immediately with the PID.
+            Use this for GUI apps, servers, or long-running processes
+            that should keep running after the tool returns.
 
     Returns:
-        Command output (stdout + stderr) or error message
+        Command output (stdout + stderr) or error message.
+        If run_in_background=True, returns the PID of the background process.
     """
     logger.info(f"Executing command: {command[:100]}...")
 
     try:
+        if run_in_background:
+            # Launch detached — the process keeps running independently
+            kwargs = {
+                "shell": True,
+                "cwd": working_directory,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "stdin": subprocess.DEVNULL,
+            }
+            # On Windows, fully detach from the parent process tree
+            if sys.platform == "win32":
+                kwargs["creationflags"] = (
+                    subprocess.DETACHED_PROCESS
+                    | subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                kwargs["start_new_session"] = True
+
+            proc = subprocess.Popen(command, **kwargs)
+            logger.info(
+                f"Background process started: PID={proc.pid}, "
+                f"command={command[:80]}"
+            )
+            return f"Process started in background (PID: {proc.pid})"
+
+        # Normal (blocking) execution
         result = subprocess.run(
             command,
             shell=True,

@@ -23,8 +23,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="warning-backdrop" onclick={handleBackdropClick}>
+<div class="warning-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
   <div class="warning-panel">
     <div class="warning-icon">!</div>
     <h3>High Tool Count</h3>

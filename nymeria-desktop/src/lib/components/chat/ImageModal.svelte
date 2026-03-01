@@ -26,12 +26,15 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if image}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="modal-backdrop"
     role="dialog"
     aria-modal="true"
     aria-label="Image preview"
+    tabindex="-1"
     onclick={handleBackdropClick}
+    onkeydown={handleKeydown}
   >
     <div class="modal-content">
       <div class="modal-header">

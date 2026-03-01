@@ -193,7 +193,8 @@
   }
 
   .error-state {
-    color: var(--error);
+    color: color-mix(in srgb, var(--error) 80%, var(--text-muted));
+    font-size: var(--font-size-sm);
   }
 
   .error-state p {
@@ -203,17 +204,18 @@
   .retry-btn {
     padding: var(--spacing-xs) var(--spacing-md);
     background: transparent;
-    border: 1px solid var(--error);
+    border: 1px solid color-mix(in srgb, var(--error) 50%, transparent);
     border-radius: var(--radius-md);
-    color: var(--error);
-    font-size: var(--font-size-sm);
+    color: color-mix(in srgb, var(--error) 80%, var(--text-muted));
+    font-size: var(--font-size-xs);
     cursor: pointer;
     transition: all var(--transition-fast);
   }
 
   .retry-btn:hover {
-    background: var(--error);
-    color: var(--bg-base);
+    background: color-mix(in srgb, var(--error) 15%, transparent);
+    border-color: var(--error);
+    color: var(--error);
   }
 
   .loading-text {

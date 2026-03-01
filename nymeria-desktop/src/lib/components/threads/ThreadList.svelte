@@ -251,8 +251,7 @@
   </div>
 
   {#if showSortDropdown}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="sort-backdrop" onclick={() => (showSortDropdown = false)}></div>
+    <div class="sort-backdrop" onclick={() => (showSortDropdown = false)} onkeydown={(e) => e.key === 'Escape' && (showSortDropdown = false)} role="presentation" tabindex="-1"></div>
     <div class="sort-dropdown">
       {#each sortOptions as opt}
         <button
@@ -567,7 +566,7 @@
   /* Folders divider */
   .folders-divider {
     height: 1px;
-    background: var(--border-subtle);
+    background: linear-gradient(90deg, transparent, var(--border-default), transparent);
     margin: var(--spacing-sm) var(--spacing-md);
   }
 

@@ -10,7 +10,8 @@
 
   let { tool, onSubmit, onCancel }: Props = $props();
 
-  // Form state
+  // Form state — intentionally captures initial prop values for form editing
+  // svelte-ignore state_referenced_locally
   let id = $state(tool?.id || '');
   let name = $state(tool?.name || '');
   let description = $state(tool?.description || '');
@@ -480,8 +481,7 @@
     font-size: var(--font-size-xs);
   }
 
-  textarea.error,
-  input.error {
+  textarea.error {
     border-color: var(--error);
   }
 

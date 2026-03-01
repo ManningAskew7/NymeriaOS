@@ -4,6 +4,7 @@
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
   import ToolCallCard from './ToolCallCard.svelte';
+  import ThinkingBlock from './ThinkingBlock.svelte';
   import ImageModal from './ImageModal.svelte';
 
   interface Props {
@@ -243,11 +244,10 @@
         <!-- New: Render steps in order (thinking and tool_calls interleaved) -->
         {#each message.steps || [] as step, i (i)}
           {#if step.type === 'thinking' && step.content}
-            <div class="intermediate-content">
-              <div class="markdown-content">
-                {@html i === streamingLastStepIndex ? renderMarkdownStreaming(step.content) : renderMarkdown(step.content)}
-              </div>
-            </div>
+            <ThinkingBlock
+              content={step.content}
+              isActivelyStreaming={i === streamingLastStepIndex}
+            />
           {:else if step.type === 'tool_call'}
             <div class="tool-calls">
               <ToolCallCard toolCall={{

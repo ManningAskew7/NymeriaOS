@@ -271,8 +271,12 @@ export function applyTheme(themeName: ThemeName): void {
     ? '0 8px 32px rgba(0, 0, 0, 0.1)'
     : '0 8px 32px rgba(0, 0, 0, 0.3)');
 
-  // Accent glow — derived from theme accent
+  // Accent derived — RGB triplet and alpha variant used by many components
   const accent = hexToRgb(colors.accentPrimary);
+  root.style.setProperty('--accent-primary-rgb', `${accent.r}, ${accent.g}, ${accent.b}`);
+  root.style.setProperty('--accent-primary-alpha', `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
+
+  // Accent glow — derived from theme accent
   root.style.setProperty('--accent-glow-sm', `0 0 12px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
   root.style.setProperty('--accent-glow-md', `0 0 20px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.2)`);
 }
