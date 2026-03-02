@@ -73,6 +73,66 @@ def _sanitize_unicode(text: str) -> str:
     # Strip any remaining non-ASCII characters
     return re.sub(r'[^\x00-\x7F]+', '', text)
 
+
+def _render_tool_line(
+    pending_calls: dict, chunk: dict
+) -> None:
+    """Print a compact tool one-liner to the console on tool_result."""
+    call_id = chunk.get("id", "")
+    result = chunk.get("result", "")
+
+    # Match result to its call
+    call = pending_calls.pop(call_id, None)
+    if call is None:
+        result_name = chunk.get("name", "")
+        for cid, c in list(pending_calls.items()):
+            if c["name"] == result_name:
+                call = pending_calls.pop(cid)
+                break
+
+    name = call["name"] if call else chunk.get("name", "tool")
+    args = call.get("args", {}) if call else {}
+
+    # Args preview
+    args_preview = ""
+    if args:
+        if len(args) == 1:
+            val = str(next(iter(args.values())))
+            args_preview = (val[:80] + "...") if len(val) > 80 else val
+        else:
+            pairs = []
+            for k, v in args.items():
+                vs = str(v)
+                if len(vs) > 40:
+                    vs = vs[:37] + "..."
+                pairs.append(f"{k}={vs}")
+            joined = ", ".join(pairs)
+            args_preview = (joined[:100] + "...") if len(joined) > 100 else joined
+
+    # Result preview
+    result_str = str(result).replace("\n", " ").strip()
+    result_preview = (result_str[:120] + "...") if len(result_str) > 120 else result_str
+
+    is_error = "Error:" in result_str
+    result_style = "red" if is_error else "dim"
+
+    # Sanitize dynamic content for Windows console
+    name = _sanitize_unicode(name)
+    args_preview = _sanitize_unicode(args_preview)
+    result_preview = _sanitize_unicode(result_preview)
+
+    parts = [f"  [yellow]>[/yellow] [yellow]{name}[/yellow]"]
+    if args_preview:
+        parts.append(f"[dim]{args_preview}[/dim]")
+    if result_preview:
+        parts.append(f"[dim]->[/dim] [{result_style}]{result_preview}[/{result_style}]")
+
+    try:
+        _console.print(" ".join(parts))
+    except Exception:
+        pass
+
+
 # Global ticker instance
 _ticker: Optional["Ticker"] = None
 
@@ -390,6 +450,10 @@ class Ticker:
 
             response_parts = []
             thinking_parts = []
+            pending_calls = {}  # call_id → {name, args} for console rendering
+            response_buffer = ""  # for inline console rendering
+            printed_header = False  # "Nymeria:" label
+            had_tool_calls = False
             chunk_count = 0
             iteration_limit_hit = False
             for chunk in self.agent.stream(
@@ -406,6 +470,24 @@ class Ticker:
 
                 # Publish each event live as it arrives
                 if chunk_type == "tool_call":
+                    # Flush buffered preamble text before tool one-liners
+                    if response_buffer.strip():
+                        try:
+                            if not printed_header:
+                                _console.print()
+                                _console.print("[bold green]Nymeria:[/bold green]")
+                                printed_header = True
+                            elif had_tool_calls:
+                                _console.print()
+                            _console.print(Markdown(_sanitize_unicode(response_buffer.strip())))
+                        except Exception:
+                            pass
+                        response_buffer = ""
+
+                    pending_calls[chunk.get("id", "")] = {
+                        "name": chunk.get("name", "unknown"),
+                        "args": chunk.get("args", {}),
+                    }
                     publish_autonomous_event(
                         event_type="tool_call",
                         thread_id=thread_id,
@@ -418,6 +500,8 @@ class Ticker:
                         },
                     )
                 elif chunk_type == "tool_result":
+                    _render_tool_line(pending_calls, chunk)
+                    had_tool_calls = True
                     publish_autonomous_event(
                         event_type="tool_result",
                         thread_id=thread_id,
@@ -444,6 +528,7 @@ class Ticker:
                     content = chunk.get("content", "")
                     if content:
                         response_parts.append(content)
+                        response_buffer += content
                         publish_autonomous_event(
                             event_type="response",
                             thread_id=thread_id,
@@ -500,6 +585,24 @@ class Ticker:
                     chunk_type = chunk.get("type")
 
                     if chunk_type == "tool_call":
+                        # Flush buffered preamble text
+                        if response_buffer.strip():
+                            try:
+                                if not printed_header:
+                                    _console.print()
+                                    _console.print("[bold green]Nymeria:[/bold green]")
+                                    printed_header = True
+                                elif had_tool_calls:
+                                    _console.print()
+                                _console.print(Markdown(_sanitize_unicode(response_buffer.strip())))
+                            except Exception:
+                                pass
+                            response_buffer = ""
+
+                        pending_calls[chunk.get("id", "")] = {
+                            "name": chunk.get("name", "unknown"),
+                            "args": chunk.get("args", {}),
+                        }
                         publish_autonomous_event(
                             event_type="tool_call",
                             thread_id=thread_id,
@@ -512,6 +615,8 @@ class Ticker:
                             },
                         )
                     elif chunk_type == "tool_result":
+                        _render_tool_line(pending_calls, chunk)
+                        had_tool_calls = True
                         publish_autonomous_event(
                             event_type="tool_result",
                             thread_id=thread_id,
@@ -538,6 +643,7 @@ class Ticker:
                         content = chunk.get("content", "")
                         if content:
                             response_parts.append(content)
+                            response_buffer += content
                             publish_autonomous_event(
                                 event_type="response",
                                 thread_id=thread_id,
@@ -690,12 +796,16 @@ class Ticker:
                 metadata={"todo_id": todo.id, "notify": response.notify},
             )
 
-            # Show response in console (non-fatal — task already succeeded)
+            # Show remaining response in console (non-fatal — task already succeeded)
             try:
-                sanitized_content = _sanitize_unicode(response.content)
-                _console.print()
-                _console.print("[bold green]Nymeria:[/bold green]")
-                _console.print(Markdown(sanitized_content))
+                remaining = response_buffer.strip()
+                if remaining:
+                    if not printed_header:
+                        _console.print()
+                        _console.print("[bold green]Nymeria:[/bold green]")
+                    elif had_tool_calls:
+                        _console.print()  # separator after tool one-liners
+                    _console.print(Markdown(_sanitize_unicode(remaining)))
             except Exception as console_err:
                 logger.warning(f"Console print failed (non-fatal): {console_err}")
 

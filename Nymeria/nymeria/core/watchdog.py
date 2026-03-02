@@ -17,6 +17,7 @@ from .activity_log import ActivityType, log_activity
 from .event_bus import publish_autonomous_event
 from .notifications import create_notification
 from .response_handler import create_response
+from .ticker import _render_tool_line
 from .todo_manager import TodoItem, TodoManager
 
 if TYPE_CHECKING:
@@ -348,6 +349,7 @@ class Watchdog:
         task_id = f"watchdog-{thread_id}"
         response_parts: list = []
         thinking_parts: list = []
+        pending_calls: dict = {}
         nudge_failed = False
         iteration_limit_hit = False
 
@@ -373,6 +375,10 @@ class Watchdog:
                 logger.debug(f"[WATCHDOG] thread={thread_id}: chunk #{chunk_count} type={chunk_type}")
 
                 if chunk_type == "tool_call":
+                    pending_calls[chunk.get("id", "")] = {
+                        "name": chunk.get("name", "unknown"),
+                        "args": chunk.get("args", {}),
+                    }
                     publish_autonomous_event(
                         event_type="tool_call",
                         thread_id=thread_id,
@@ -385,6 +391,7 @@ class Watchdog:
                         },
                     )
                 elif chunk_type == "tool_result":
+                    _render_tool_line(pending_calls, chunk)
                     publish_autonomous_event(
                         event_type="tool_result",
                         thread_id=thread_id,

@@ -138,8 +138,10 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
 
 def run_cli(args: argparse.Namespace) -> None:
     """Run the CLI interface."""
-    # Suppress verbose logging for cleaner CLI experience
-    logging.getLogger("nymeria").setLevel(logging.WARNING)
+    # Suppress logging for clean CLI experience — errors like missing API keys
+    # (e.g. RAG embedding) are expected in local dev and shouldn't clutter the REPL.
+    # Fatal issues still surface via stream error events rendered by StreamRenderer.
+    logging.getLogger("nymeria").setLevel(logging.CRITICAL)
 
     from nymeria import NymeriaAgent
     from nymeria.tools import get_all_tools_with_agents

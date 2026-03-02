@@ -242,18 +242,30 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     if config.top_k is not None:
         kwargs["top_k"] = config.top_k
 
-    # Anthropic doesn't support frequency_penalty/presence_penalty directly
-    # but does support extended thinking via model_kwargs for compatible models
+    # Extended thinking: use ChatAnthropic's first-class `thinking` parameter
+    # (passing via model_kwargs triggers a deprecation warning)
     if config.extended_thinking or config.reasoning_effort is not None:
-        # Map reasoning_effort to Anthropic's thinking budget tokens
-        thinking_budget_map = {
-            "low": 1024,
-            "medium": 4096,
-            "high": 16384,
-        }
-        effort = config.reasoning_effort or "medium"
-        budget = thinking_budget_map.get(effort, 4096)
-        kwargs["model_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+        # Claude 4.6 models use adaptive thinking (type=enabled is deprecated)
+        # Older models (4.5, 3.7, etc.) still require type=enabled with budget_tokens
+        model_name = (config.model or "").lower()
+        is_46_model = "opus-4-6" in model_name or "sonnet-4-6" in model_name
+
+        if is_46_model:
+            # Adaptive: Claude decides when/how much to think
+            # effort defaults to "high" when omitted
+            kwargs["thinking"] = {"type": "adaptive"}
+            if config.reasoning_effort is not None:
+                kwargs["model_kwargs"] = {"output_config": {"effort": config.reasoning_effort}}
+        else:
+            # Legacy: explicit budget_tokens for older models
+            thinking_budget_map = {
+                "low": 1024,
+                "medium": 4096,
+                "high": 16384,
+            }
+            effort = config.reasoning_effort or "medium"
+            budget = thinking_budget_map.get(effort, 4096)
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
     return ChatAnthropic(**kwargs)
 
