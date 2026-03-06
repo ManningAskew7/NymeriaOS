@@ -13,7 +13,8 @@ class ToolCategory(str, Enum):
     """Categories for grouping related tools."""
 
     CORE = "core"           # bash_execute, file_read, file_write, web_search, claude_code
-    MEMORY = "memory"       # memory_save, memory_forget, memory_list, personality_set, rag_search
+    PROFILE = "profile"     # profile_save, profile_forget, profile_list, personality_set, rag_search
+    NOTEPAD = "notepad"     # notepad_write, notepad_read, notepad_clear
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # todo, todo_delete, todo_list
     SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
@@ -21,6 +22,7 @@ class ToolCategory(str, Enum):
     EMAIL = "email"         # Outlook auth + email tools (optional)
     BROWSER = "browser"     # Playwright browser automation tools (optional)
     CALENDAR = "calendar"   # Google Calendar auth + API tools (optional)
+    GOOGLE_DOCS = "google_docs"  # Google Docs tools (optional)
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
 
 
@@ -109,39 +111,57 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Send notifications via Telegram, Discord, or Slack",
     ),
 
-    # Memory tools - user data management
-    "memory_save": ToolMetadata(
-        name="memory_save",
-        category=ToolCategory.MEMORY,
+    # Profile tools - user data management
+    "profile_save": ToolMetadata(
+        name="profile_save",
+        category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
         description="Save information about the user",
     ),
-    "memory_forget": ToolMetadata(
-        name="memory_forget",
-        category=ToolCategory.MEMORY,
+    "profile_forget": ToolMetadata(
+        name="profile_forget",
+        category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
         description="Remove saved information",
     ),
-    "memory_list": ToolMetadata(
-        name="memory_list",
-        category=ToolCategory.MEMORY,
+    "profile_list": ToolMetadata(
+        name="profile_list",
+        category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
         description="List all saved memories and personality preferences",
     ),
-    # memory_clear_all: Removed — dangerous, cheap models could hallucinate and wipe all memories
     "personality_set": ToolMetadata(
         name="personality_set",
-        category=ToolCategory.MEMORY,
+        category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
         description="Set personality preferences",
     ),
     "rag_search": ToolMetadata(
         name="rag_search",
-        category=ToolCategory.MEMORY,
+        category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
         description="Search conversation history",
     ),
-    # rag_settings removed - configure via UI settings
+
+    # Notepad tools - per-thread persistent notes
+    "notepad_write": ToolMetadata(
+        name="notepad_write",
+        category=ToolCategory.NOTEPAD,
+        security_level=SecurityLevel.SAFE,
+        description="Write to thread's persistent notepad",
+    ),
+    "notepad_read": ToolMetadata(
+        name="notepad_read",
+        category=ToolCategory.NOTEPAD,
+        security_level=SecurityLevel.SAFE,
+        description="Read thread's notepad content",
+    ),
+    "notepad_clear": ToolMetadata(
+        name="notepad_clear",
+        category=ToolCategory.NOTEPAD,
+        security_level=SecurityLevel.SAFE,
+        description="Clear thread's notepad",
+    ),
 
     # Self-modification tools — SENSITIVE (can write arbitrary Python code)
     "self_modify_instructions": ToolMetadata(
@@ -519,6 +539,87 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.CALENDAR,
         security_level=SecurityLevel.SAFE,
         description="List available calendar and event colors",
+        default_enabled=False,
+    ),
+
+    # Google Docs authentication tools (optional)
+    "google_docs_auth_start": ToolMetadata(
+        name="google_docs_auth_start",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Start Google Docs OAuth authentication",
+        default_enabled=False,
+    ),
+    "google_docs_auth_complete": ToolMetadata(
+        name="google_docs_auth_complete",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Complete Google Docs authentication",
+        default_enabled=False,
+    ),
+    "google_docs_list_accounts": ToolMetadata(
+        name="google_docs_list_accounts",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.SAFE,
+        description="List authenticated Google accounts for Docs",
+        default_enabled=False,
+    ),
+
+    # Google Docs API tools (optional)
+    "google_docs_read": ToolMetadata(
+        name="google_docs_read",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.SAFE,
+        description="Read a Google Docs document",
+        default_enabled=False,
+    ),
+    "google_docs_append_text": ToolMetadata(
+        name="google_docs_append_text",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Append text to end of a document",
+        default_enabled=False,
+    ),
+    "google_docs_insert_text": ToolMetadata(
+        name="google_docs_insert_text",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Insert text at a specific position",
+        default_enabled=False,
+    ),
+    "google_docs_delete_range": ToolMetadata(
+        name="google_docs_delete_range",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Delete content by index range",
+        default_enabled=False,
+    ),
+    "google_docs_apply_text_style": ToolMetadata(
+        name="google_docs_apply_text_style",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Apply styling (bold, italic, color, links) to text",
+        default_enabled=False,
+    ),
+    "google_docs_insert_table": ToolMetadata(
+        name="google_docs_insert_table",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Insert a table into a document",
+        default_enabled=False,
+    ),
+    "google_docs_insert_page_break": ToolMetadata(
+        name="google_docs_insert_page_break",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Insert a page break",
+        default_enabled=False,
+    ),
+    "google_docs_replace_text": ToolMetadata(
+        name="google_docs_replace_text",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Find and replace text in a document",
         default_enabled=False,
     ),
 

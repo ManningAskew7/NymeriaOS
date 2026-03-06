@@ -1,0 +1,351 @@
+/**
+ * Autonomous Store (Mobile)
+ *
+ * Connects to /autonomous/stream SSE endpoint using fetch + ReadableStream
+ * instead of EventSource (which has Android WebView issues).
+ */
+
+import { configStore } from './config.svelte';
+import { chatStore } from './chat.svelte';
+import { threadsStore } from './threads.svelte';
+import { activityStore } from './activity.svelte';
+import { todosStore } from './todos.svelte';
+import { threadConfigStore } from './threadConfig.svelte';
+import { api } from '$lib/services/api.svelte';
+
+interface AutonomousEvent {
+  type: string;
+  thread_id: string;
+  task_id: string;
+  timestamp: string;
+  [key: string]: unknown;
+}
+
+function classifyAutonomousSource(event: AutonomousEvent): string {
+  if (event.todo_id) return 'scheduler';
+  if (event.source === 'watchdog') return 'watchdog';
+  if (event.trigger_id || event.trigger_name) return 'trigger';
+  return 'autonomous';
+}
+
+function createAutonomousStore() {
+  let connected = $state(false);
+  let abortController: AbortController | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempts = $state(0);
+  let activeTaskId = $state<string | null>(null);
+  let activeMessageId = $state<string | null>(null);
+
+  // Multi-thread task tracking
+  let activeTasksByThread = $state<Map<string, string>>(new Map());
+  let activeMessagesByThread = $state<Map<string, string>>(new Map());
+
+  // Buffer events during thread switch gap
+  let _pendingEvents = new Map<string, AutonomousEvent[]>();
+
+  const MAX_RECONNECT_ATTEMPTS = 10;
+  const RECONNECT_DELAY_MS = 3000;
+
+  function getStreamUrl(): string {
+    const baseUrl = configStore.apiUrl.replace(/\/$/, '');
+    return `${baseUrl}/autonomous/stream?user_id=default&api_key=${configStore.apiKey}`;
+  }
+
+  async function connect() {
+    if (abortController) return;
+
+    if (!configStore.isConfigured) {
+      scheduleReconnect();
+      return;
+    }
+
+    const url = getStreamUrl();
+    console.log('[Autonomous] Connecting via fetch:', url);
+
+    abortController = new AbortController();
+
+    try {
+      const response = await fetch(url, {
+        signal: abortController.signal,
+        headers: {
+          'Accept': 'text/event-stream',
+          'Authorization': `Bearer ${configStore.apiKey}`
+        }
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      connected = true;
+      reconnectAttempts = 0;
+      console.log('[Autonomous] Stream connected');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE lines
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(':')) continue;
+
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            try {
+              const event: AutonomousEvent = JSON.parse(data);
+              handleEvent(event);
+            } catch (e) {
+              console.error('[Autonomous] Parse error:', e, data);
+            }
+          }
+        }
+      }
+
+      // Stream ended cleanly
+      connected = false;
+      abortController = null;
+      scheduleReconnect();
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        return; // Intentional disconnect
+      }
+      console.error('[Autonomous] Stream error:', e);
+      connected = false;
+      abortController = null;
+      scheduleReconnect();
+    }
+  }
+
+  function disconnect() {
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+    connected = false;
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error('[Autonomous] Max reconnect attempts reached');
+      return;
+    }
+
+    reconnectAttempts++;
+    const delay = RECONNECT_DELAY_MS * reconnectAttempts;
+    console.log(`[Autonomous] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+
+    reconnectTimer = setTimeout(() => {
+      connect();
+    }, delay);
+  }
+
+  async function refreshThreadTaskCounts() {
+    try {
+      const counts = await api.getThreadTaskCounts();
+      threadsStore.setThreadTaskCounts(counts);
+    } catch (e) {
+      console.warn('[Autonomous] Failed to refresh thread task counts:', e);
+    }
+  }
+
+  function handleEvent(event: AutonomousEvent) {
+    console.log('[Autonomous] Event:', event.type, event);
+
+    const currentThreadId = threadsStore.currentThreadId;
+    const isCurrentThread = event.thread_id === currentThreadId;
+    const isOurTask = activeTaskId === event.task_id ||
+      activeTasksByThread.get(event.thread_id) === event.task_id;
+
+    switch (event.type) {
+      case 'task_started':
+        todosStore.fetch();
+        activityStore.fetch();
+
+        if (event.trigger_name) {
+          threadsStore.ensureThread(event.thread_id, event.trigger_name as string);
+        }
+
+        activeTasksByThread = new Map(activeTasksByThread).set(
+          event.thread_id, event.task_id as string
+        );
+        _pendingEvents.delete(event.thread_id);
+        threadsStore.setThreadActive(event.thread_id, true);
+
+        if (isCurrentThread && !chatStore.isStreaming) {
+          activeTaskId = event.task_id;
+
+          const threadCfg = threadConfigStore.getConfig(event.thread_id);
+          if (threadCfg?.showAutonomousPrompts && event.prompt && !event.callable_name) {
+            const sourceLabel = classifyAutonomousSource(event);
+            chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
+          }
+
+          activeMessageId = chatStore.addAssistantMessage();
+          activeMessagesByThread = new Map(activeMessagesByThread).set(
+            event.thread_id, activeMessageId!
+          );
+          chatStore.setStreaming(true);
+          chatStore.setIntermediateContent('Autonomous task started...');
+        }
+        break;
+
+      case 'thinking':
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          chatStore.addThinkingStep(event.content as string || 'Thinking...');
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
+        }
+        break;
+
+      case 'tool_call':
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
+          chatStore.addToolCallStep(
+            toolId,
+            event.name as string,
+            (event.args as Record<string, unknown>) || {}
+          );
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
+        }
+        if ((event.name as string)?.startsWith('todo')) {
+          todosStore.onTodoToolCompleted();
+        }
+        break;
+
+      case 'tool_result':
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          chatStore.updateToolCallStepResult(
+            event.id as string,
+            event.result as string || '',
+            'success'
+          );
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
+        }
+        if ((event.name as string)?.startsWith('todo')) {
+          todosStore.onTodoToolCompleted();
+          activityStore.fetch();
+        }
+        break;
+
+      case 'response':
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          chatStore.addResponseStep(event.content as string || '');
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
+        }
+        break;
+
+      case 'task_completed':
+        todosStore.fetch();
+        activityStore.fetch();
+        refreshThreadTaskCounts();
+
+        {
+          const nextTasks = new Map(activeTasksByThread);
+          nextTasks.delete(event.thread_id);
+          activeTasksByThread = nextTasks;
+          const nextMsgs = new Map(activeMessagesByThread);
+          nextMsgs.delete(event.thread_id);
+          activeMessagesByThread = nextMsgs;
+          _pendingEvents.delete(event.thread_id);
+        }
+        threadsStore.setThreadActive(event.thread_id, false);
+
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          chatStore.setStreaming(false);
+
+          if (event.error) {
+            const errorMsg = (event.error_message as string) || (event.content as string) || 'Task failed';
+            chatStore.setLastMessageError(errorMsg);
+            chatStore.clearActiveToolCalls();
+            activeTaskId = null;
+            activeMessageId = null;
+            break;
+          }
+
+          chatStore.reclassifyThinkingAsResponse();
+
+          const parsedContent = event.content as string;
+          const lastMsg = chatStore.messages[chatStore.messages.length - 1];
+          const hasResponseSteps = lastMsg?.steps?.some(s => s.type === 'response');
+          if (parsedContent && lastMsg?.role === 'assistant' && !hasResponseSteps) {
+            chatStore.addResponseStep(parsedContent);
+          }
+          chatStore.setLastMessageComplete();
+          chatStore.clearActiveToolCalls();
+          activeTaskId = null;
+          activeMessageId = null;
+        }
+
+        if (isOurTask) {
+          activeTaskId = null;
+          activeMessageId = null;
+        }
+
+        if (isCurrentThread) {
+          api.getThreadHistory(event.thread_id).then((history) => {
+            if (threadsStore.currentThreadId === event.thread_id && !chatStore.isStreaming) {
+              chatStore.setMessages(history.messages);
+            }
+          }).catch(() => {});
+        }
+        break;
+
+      case 'webhook_message':
+        if (event.thread_id) {
+          threadsStore.setThreadActive(event.thread_id, true);
+          setTimeout(() => {
+            threadsStore.setThreadActive(event.thread_id, false);
+          }, 3000);
+        }
+        break;
+    }
+  }
+
+  return {
+    get connected() { return connected; },
+    get reconnectAttempts() { return reconnectAttempts; },
+    get activeTaskId() { return activeTaskId; },
+    get isAutonomousStreaming() { return activeTaskId !== null; },
+    connect,
+    disconnect,
+    hasActiveTask(threadId: string): boolean {
+      return activeTasksByThread.has(threadId);
+    },
+    getActiveTaskId(threadId: string): string | undefined {
+      return activeTasksByThread.get(threadId);
+    },
+    resumeStreamingForThread(threadId: string) {
+      const taskId = activeTasksByThread.get(threadId);
+      if (taskId) activeTaskId = taskId;
+      const pending = _pendingEvents.get(threadId);
+      if (pending && pending.length > 0) {
+        _pendingEvents.delete(threadId);
+        for (const evt of pending) handleEvent(evt);
+      }
+    }
+  };
+}
+
+export const autonomousStore = createAutonomousStore();

@@ -38,13 +38,8 @@
         enabled: new Set(threadConfig.enabledTools ?? []),
       };
     }
-    if (defaultToolsStore.mode === 'custom' && defaultToolsStore.loaded) {
-      // No per-thread overrides for uncustomized threads.
-      // The default tool set already defines what's loaded — no need to
-      // express "not in defaults" as "disabled".
-      return { disabled: new Set(), enabled: new Set() };
-    }
-    // Legacy mode or store not loaded yet — empty sets (all core on, no optional)
+    // No per-thread overrides for uncustomized threads.
+    // The default tool set already defines what's loaded.
     return { disabled: new Set(), enabled: new Set() };
   }
 
@@ -105,10 +100,10 @@
   let error = $state('');
   let showToolWarning = $state(false);
 
-  // Effective tool count for this thread (core tools minus disabled, plus optional enabled)
+  // Effective tool count for this thread (default tools minus disabled, plus optional enabled)
   const effectiveToolCount = $derived(() => {
-    const coreTools = unifiedToolsStore.tools.filter(t => t.toolType === 'builtin');
-    const activeCore = coreTools.filter(t => !disabledTools.has(t.name)).length;
+    const coreNames = defaultToolsStore.defaultToolNames;
+    const activeCore = coreNames.filter(n => !disabledTools.has(n)).length;
     return activeCore + enabledTools.size;
   });
 

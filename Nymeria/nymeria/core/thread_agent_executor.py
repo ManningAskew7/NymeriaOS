@@ -32,7 +32,8 @@ def _build_error_result(code: str, message: str, **metadata) -> str:
     return f"{marker}\n[Error]: {message}"
 
 
-def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -> str:
+def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
+           trigger_override: str = None) -> str:
     """Delegate a task to a callable thread via NymeriaAgent.stream().
 
     Streams events in real-time to the event bus so the frontend can display
@@ -43,6 +44,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
         task: The task description to send
         caller_user_id: The user_id of the caller (for profile access)
         callable_name: Display name for error messages
+        trigger_override: If provided, use as the trigger label in time context metadata
 
     Returns:
         The thread's response string
@@ -97,6 +99,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str) -
             thread_id=thread_id,
             user_id=caller_user_id,
             _is_self_invoke=False,
+            _trigger_override=trigger_override,
         ):
             chunk_type = chunk.get("type")
             chunk_count += 1

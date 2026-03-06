@@ -110,11 +110,11 @@ async def nymeria_chat(
 
 
 # =============================================================================
-# Memory Tools
+# Profile Tools (formerly Memory)
 # =============================================================================
 
 @mcp.tool()
-async def nymeria_memory_save(
+async def nymeria_profile_save(
     key: str,
     value: str,
     user_id: str = "default",
@@ -156,7 +156,7 @@ async def nymeria_memory_save(
 
 
 @mcp.tool()
-async def nymeria_memory_list(
+async def nymeria_profile_list(
     user_id: str = "default",
 ) -> str:
     """
@@ -197,7 +197,7 @@ async def nymeria_memory_list(
 
 
 @mcp.tool()
-async def nymeria_memory_forget(
+async def nymeria_profile_forget(
     key: str,
     user_id: str = "default",
 ) -> str:

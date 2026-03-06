@@ -14,12 +14,18 @@ from .web import web_search
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
-    memory_save,
-    memory_forget,
-    memory_list,
+    profile_save,
+    profile_forget,
+    profile_list,
     personality_set,
     rag_search,
-    MEMORY_TOOLS,
+    PROFILE_TOOLS,
+)
+from .thread_notes import (
+    notepad_write,
+    notepad_read,
+    notepad_clear,
+    NOTEPAD_TOOLS,
 )
 from .todo import (
     todo,
@@ -46,6 +52,7 @@ from .triggers import (
 )
 from .hello_test import hello_test
 from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
+from .google_docs import GOOGLE_DOCS_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -56,12 +63,14 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
 OPTIONAL_TOOLS = {t.name: t for t in (
-    OUTLOOK_TOOLS
+    [claude_code, sticky_note, hello_test]
+    + OUTLOOK_TOOLS
     + TRIGGER_TOOLS
     + BROWSER_TOOLS
     + CALENDAR_TOOLS
     + SELF_AGENT_TOOLS
     + SUBAGENT_TOOLS
+    + GOOGLE_DOCS_TOOLS
 )}
 
 # All available tools
@@ -72,23 +81,22 @@ ALL_TOOLS = [
     file_write,
     web_search,
     consult,
-    claude_code,
-    # Memory tools
-    memory_save,
-    memory_forget,
-    memory_list,
+    # Profile tools (user memories & preferences)
+    profile_save,
+    profile_forget,
+    profile_list,
     personality_set,
     rag_search,
+    # Notepad tools (per-thread notes)
+    notepad_write,
+    notepad_read,
+    notepad_clear,
     # TODO tools
     todo,
     todo_delete,
     todo_list,
-    # Sticky note checklist
-    sticky_note,
     # Unified notification tool
     notify,
-    # Test tool
-    hello_test,
 ]
 
 __all__ = [
@@ -99,12 +107,16 @@ __all__ = [
     "consult",
     "CONSULT_TOOLS",
     "claude_code",
-    "memory_save",
-    "memory_forget",
-    "memory_list",
+    "profile_save",
+    "profile_forget",
+    "profile_list",
     "personality_set",
     "rag_search",
-    "MEMORY_TOOLS",
+    "PROFILE_TOOLS",
+    "notepad_write",
+    "notepad_read",
+    "notepad_clear",
+    "NOTEPAD_TOOLS",
     "todo",
     "todo_delete",
     "todo_list",
@@ -131,6 +143,7 @@ __all__ = [
     "hello_test",
     "sticky_note",
     "STICKY_NOTE_TOOLS",
+    "GOOGLE_DOCS_TOOLS",
 ]
 
 

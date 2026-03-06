@@ -23,9 +23,9 @@ You are NOT a user. You don't have conversations with Nymeria for fun. Every mes
 | Tool | What it does |
 |------|-------------|
 | `nymeria_chat` | Send a message, get a response. Params: `message`, `user_id`, `thread_id` |
-| `nymeria_memory_save` | Persist a key-value memory. Params: `key`, `value`, `user_id` |
-| `nymeria_memory_list` | List all saved memories. Params: `user_id` |
-| `nymeria_memory_forget` | Delete a memory by key. Params: `key`, `user_id` |
+| `nymeria_profile_save` | Persist a key-value memory. Params: `key`, `value`, `user_id` |
+| `nymeria_profile_list` | List all saved memories. Params: `user_id` |
+| `nymeria_profile_forget` | Delete a memory by key. Params: `key`, `user_id` |
 | `nymeria_todo_add` | Create a TODO item. Params: `task`, `scheduled_for`, `user_id` |
 | `nymeria_todo_list` | List TODO items. Params: `user_id`, `status` |
 | `nymeria_todo_complete` | Mark a TODO done. Params: `todo_id`, `user_id` |

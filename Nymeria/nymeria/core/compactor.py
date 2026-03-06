@@ -34,10 +34,16 @@ The conversation is getting long and needs to be summarized. After your response
    - Config files referenced
    - Any notes or checklists created during this session
 
-4. **Save persistent facts** - Use `memory_save` for anything that should be remembered across ALL future conversations:
+4. **Save persistent facts** - Use `profile_save` for anything that should be remembered across ALL future conversations:
    - User's name, role, occupation
    - Project names and key technical details
    - Strong preferences or constraints
+
+5. **Save thread context** - Use `notepad_write` for thread-specific context that should survive compaction:
+   - Current project state, file paths being worked on
+   - Decisions made and their reasoning
+   - Key findings or intermediate results
+   - Anything you'll need to continue this specific thread's work
 
 **Keep it concise but complete** - this summary will be my only context for continuing the conversation.
 
@@ -45,7 +51,7 @@ The conversation is getting long and needs to be summarized. After your response
 - Routine greetings or small talk
 - Failed attempts that were later corrected
 - Verbose tool outputs (just summarize outcomes)
-- Information already saved to memory"""
+- Information already saved to memory or notepad"""
 
 # Message injected for auto-compact (agent continues immediately)
 # Format is designed to be parseable by frontend for collapsible display

@@ -20,7 +20,8 @@
   // Category display info
   const CATEGORY_INFO: Record<string, { name: string; icon: string }> = {
     core: { name: 'Core', icon: 'terminal' },
-    memory: { name: 'Memory', icon: 'brain' },
+    profile: { name: 'Profile', icon: 'brain' },
+    notepad: { name: 'Notepad', icon: 'sticky-note' },
     todo: { name: 'TODOs', icon: 'list' },
     self_modify: { name: 'Self-Modify', icon: 'code' },
     subagent: { name: 'Utilities', icon: 'refresh' },
@@ -31,7 +32,7 @@
     custom: { name: 'Custom', icon: 'puzzle' },
   };
 
-  const CATEGORY_ORDER = ['core', 'memory', 'todo', 'trigger', 'email', 'browser', 'calendar', 'self_modify', 'subagent', 'custom'];
+  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'self_modify', 'subagent', 'custom'];
 
   // --- Custom tools state ---
   let showCreateForm = $state(false);
@@ -279,11 +280,7 @@
             + {defaultToolsStore.callableThreadCount} callable threads
           </span>
         {/if}
-        {#if defaultToolsStore.mode === 'custom'}
-          <span class="mode-badge custom">Custom</span>
-        {:else}
-          <span class="mode-badge legacy">Default</span>
-        {/if}
+        <span class="mode-badge custom">Custom</span>
       </div>
     </div>
 
@@ -833,11 +830,6 @@
   .mode-badge.custom {
     background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
     color: var(--accent-primary);
-  }
-
-  .mode-badge.legacy {
-    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
-    color: var(--text-muted);
   }
 
   .inline-warning {

@@ -1120,6 +1120,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to delete thread config for {thread_id}: {e}")
 
+        # 4. Delete thread notepad (if any)
+        try:
+            from ..tools.thread_notes import delete_notepad
+            delete_notepad(thread_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete notepad for {thread_id}: {e}")
+
         logger.info(f"Thread {thread_id} fully deleted")
         return {"status": "ok", "thread_id": thread_id}
 
@@ -1408,39 +1415,25 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str = Query("default"),
         _: bool = Depends(verify_api_key),
     ):
-        """List tools available for per-thread enabling (not in the user's core set).
-
-        If the user has custom default_thread_tools, returns all known tools
-        minus their core set. Otherwise returns hardcoded OPTIONAL_TOOLS.
-        """
+        """List tools available for per-thread enabling (not in the user's core set)."""
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
 
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
         default_tools = profile.tool_preferences.default_thread_tools
 
-        if default_tools is not None:
-            # Custom mode: everything NOT in the user's core set is optional
-            core_set = set(default_tools)
-            result = []
-            seen = set()
-            for t in ALL_TOOLS:
-                if t.name not in core_set and t.name not in seen:
-                    result.append({"name": t.name, "description": t.description})
-                    seen.add(t.name)
-            for name, tool in OPTIONAL_TOOLS.items():
-                if name not in core_set and name not in seen:
-                    result.append({"name": name, "description": tool.description})
-                    seen.add(name)
-            return {"tools": result}
-        else:
-            # Legacy mode: return hardcoded optional tools
-            return {
-                "tools": [
-                    {"name": name, "description": tool.description}
-                    for name, tool in OPTIONAL_TOOLS.items()
-                ]
-            }
+        core_set = set(default_tools) if default_tools is not None else {t.name for t in ALL_TOOLS}
+        result = []
+        seen = set()
+        for t in ALL_TOOLS:
+            if t.name not in core_set and t.name not in seen:
+                result.append({"name": t.name, "description": t.description})
+                seen.add(t.name)
+        for name, tool in OPTIONAL_TOOLS.items():
+            if name not in core_set and name not in seen:
+                result.append({"name": name, "description": tool.description})
+                seen.add(name)
+        return {"tools": result}
 
     @app.get("/tools/defaults", tags=["Tools"])
     async def get_default_tools(
@@ -1449,8 +1442,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     ):
         """Get the default tool set for new threads.
 
-        Returns all available tools (core + optional) with is_default flags,
-        current mode (legacy/custom), and callable thread count.
+        Returns all available tools (core + optional) with is_default flags
+        and callable thread count. Always uses default_thread_tools as source of truth.
         """
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
         from ..tools.metadata import get_tool_metadata
@@ -1459,21 +1452,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         profile = agent.profile_manager.get_profile(user_id)
         prefs = profile.tool_preferences
 
-        # Determine which tools are defaults
+        # default_thread_tools is the single source of truth
         if prefs.default_thread_tools is not None:
             default_set = set(prefs.default_thread_tools)
-            mode = "custom"
         else:
-            # Legacy: ALL_TOOLS filtered by user preferences
-            default_set = set()
-            for t in ALL_TOOLS:
-                meta = get_tool_metadata(t.name)
-                if meta:
-                    if prefs.is_tool_enabled(t.name, meta.category.value, meta.default_enabled):
-                        default_set.add(t.name)
-                else:
-                    default_set.add(t.name)
-            mode = "legacy"
+            # Not yet initialized — treat ALL_TOOLS as default
+            default_set = {t.name for t in ALL_TOOLS}
 
         # Build unified tool list
         tools_out = []
@@ -1505,7 +1489,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable_count = len(agent.thread_config_manager.list_callable_threads())
 
         return {
-            "mode": mode,
+            "mode": "custom",
             "default_tools": sorted(default_set),
             "available_tools": tools_out,
             "callable_thread_count": callable_count,
@@ -1534,9 +1518,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         profile.tool_preferences.default_thread_tools = list(request.tool_names)
         agent.profile_manager.save_profile(profile)
 
-        # Clear graph caches so new threads pick up the change
+        # Clear graph caches and rebuild defaults so new threads pick up the change
         agent._user_graphs.clear()
         agent._async_user_graphs.clear()
+        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
+        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
 
         return {
             "status": "ok",
@@ -1549,17 +1535,25 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str = Query("default"),
         _: bool = Depends(verify_api_key),
     ):
-        """Reset default tools to legacy behavior (all core tools)."""
+        """Reset default tools to all core tools."""
+        from ..tools import ALL_TOOLS
+
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = None
+        profile.tool_preferences.default_thread_tools = [t.name for t in ALL_TOOLS]
         agent.profile_manager.save_profile(profile)
 
-        # Clear graph caches
+        # Clear graph caches and rebuild defaults
         agent._user_graphs.clear()
         agent._async_user_graphs.clear()
+        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
+        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
 
-        return {"status": "ok", "mode": "legacy"}
+        return {
+            "status": "ok",
+            "mode": "custom",
+            "default_tools": sorted(profile.tool_preferences.default_thread_tools),
+        }
 
     @app.get("/settings", response_model=ServerSettingsResponse, tags=["Settings"])
     async def get_server_settings(
@@ -3082,22 +3076,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # User Tool Preferences Endpoints
     # ========================================================================
 
-    class ToolEnableRequest(BaseModel):
-        """Request model for enabling/disabling a tool."""
-        enabled: bool = Field(..., description="Whether to enable the tool")
-
-    class CategoryEnableRequest(BaseModel):
-        """Request model for enabling/disabling a tool category."""
-        enabled: bool = Field(..., description="Whether to enable the category")
-
     class ToolConfigRequest(BaseModel):
         """Request model for updating tool configuration."""
         config: Dict[str, Any] = Field(..., description="Tool configuration")
 
     class ToolPreferencesResponse(BaseModel):
         """Response model for tool preferences."""
-        enabled_overrides: Dict[str, bool] = {}
-        disabled_categories: List[str] = []
+        default_thread_tools: Optional[List[str]] = None
         tool_configs: Dict[str, Dict[str, Any]] = {}
 
     @app.get("/users/{user_id}/tools", tags=["User Tools"])
@@ -3108,16 +3093,50 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         List all tools with their enabled state for a specific user.
 
-        Returns tools grouped by category with user-specific status.
+        Enabled state is derived from default_thread_tools membership.
         """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools.metadata import get_tool_metadata
+
         agent = get_agent()
-        tools = agent.tool_registry.get_tools_with_user_status(
-            user_id, agent.profile_manager
-        )
+        profile = agent.profile_manager.get_profile(user_id)
+        dtt = profile.tool_preferences.default_thread_tools
+        dtt_set = set(dtt) if dtt is not None else {t.name for t in ALL_TOOLS}
+
+        tools_list = []
+        for t in ALL_TOOLS:
+            meta = get_tool_metadata(t.name)
+            tools_list.append({
+                "name": t.name,
+                "description": t.description,
+                "category": meta.category.value if meta else "core",
+                "security_level": meta.security_level.value if meta else "safe",
+                "enabled": t.name in dtt_set,
+                "enabled_reason": "default_thread_tools",
+                "default_enabled": True,
+                "config_schema": meta.config_schema if meta else None,
+                "user_config": profile.tool_preferences.get_tool_config(t.name),
+                "globally_disabled": False,
+            })
+
+        for name, t in OPTIONAL_TOOLS.items():
+            meta = get_tool_metadata(name)
+            tools_list.append({
+                "name": name,
+                "description": t.description,
+                "category": meta.category.value if meta else "unknown",
+                "security_level": meta.security_level.value if meta else "moderate",
+                "enabled": name in dtt_set,
+                "enabled_reason": "default_thread_tools",
+                "default_enabled": False,
+                "config_schema": meta.config_schema if meta else None,
+                "user_config": profile.tool_preferences.get_tool_config(name),
+                "globally_disabled": False,
+            })
 
         # Group by category
         by_category: Dict[str, List[dict]] = {}
-        for tool in tools:
+        for tool in tools_list:
             category = tool.get("category", "unknown")
             if category not in by_category:
                 by_category[category] = []
@@ -3125,9 +3144,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         return {
             "user_id": user_id,
-            "tools": tools,
+            "tools": tools_list,
             "by_category": by_category,
-            "total": len(tools),
+            "total": len(tools_list),
         }
 
     @app.get("/users/{user_id}/tools/preferences", response_model=ToolPreferencesResponse, tags=["User Tools"])
@@ -3140,91 +3159,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         profile = agent.profile_manager.get_profile(user_id)
 
         return ToolPreferencesResponse(
-            enabled_overrides=profile.tool_preferences.enabled_overrides,
-            disabled_categories=profile.tool_preferences.disabled_categories,
+            default_thread_tools=profile.tool_preferences.default_thread_tools,
             tool_configs=profile.tool_preferences.tool_configs,
         )
-
-    @app.put("/users/{user_id}/tools/{tool_name}/enable", tags=["User Tools"])
-    async def set_tool_enabled(
-        user_id: str,
-        tool_name: str,
-        request: ToolEnableRequest,
-        _: bool = Depends(verify_api_key),
-    ):
-        """Enable or disable a specific tool for a user."""
-        agent = get_agent()
-
-        # Check if tool exists
-        tool = agent.tool_registry.get_tool(tool_name)
-        if not tool:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tool '{tool_name}' not found"
-            )
-
-        with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.set_tool_enabled(tool_name, request.enabled)
-            profile.updated_at = datetime.utcnow()
-
-        return {
-            "status": "ok",
-            "tool_name": tool_name,
-            "enabled": request.enabled,
-        }
-
-    @app.delete("/users/{user_id}/tools/{tool_name}/enable", tags=["User Tools"])
-    async def clear_tool_override(
-        user_id: str,
-        tool_name: str,
-        _: bool = Depends(verify_api_key),
-    ):
-        """Clear tool-specific override, returning to default behavior."""
-        agent = get_agent()
-
-        with agent.profile_manager.atomic_update(user_id) as profile:
-            cleared = profile.tool_preferences.clear_tool_override(tool_name)
-            if cleared:
-                profile.updated_at = datetime.utcnow()
-
-        return {
-            "status": "ok",
-            "tool_name": tool_name,
-            "cleared": cleared,
-        }
-
-    @app.put("/users/{user_id}/tools/categories/{category}/enable", tags=["User Tools"])
-    async def set_category_enabled(
-        user_id: str,
-        category: str,
-        request: CategoryEnableRequest,
-        _: bool = Depends(verify_api_key),
-    ):
-        """
-        Enable or disable an entire tool category.
-
-        Categories: core, memory, self_modify, todo, subagent, trigger
-        """
-        from ..tools.metadata import get_all_categories
-
-        valid_categories = get_all_categories()
-        if category not in valid_categories:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid category '{category}'. Valid categories: {', '.join(valid_categories)}"
-            )
-
-        agent = get_agent()
-
-        with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.set_category_enabled(category, request.enabled)
-            profile.updated_at = datetime.utcnow()
-
-        return {
-            "status": "ok",
-            "category": category,
-            "enabled": request.enabled,
-        }
 
     @app.put("/users/{user_id}/tools/{tool_name}/config", tags=["User Tools"])
     async def set_tool_config(
@@ -3278,12 +3215,22 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str,
         _: bool = Depends(verify_api_key),
     ):
-        """Reset all tool preferences to defaults."""
+        """Reset all tool preferences to defaults (all core tools enabled)."""
+        from ..tools import ALL_TOOLS
+
         agent = get_agent()
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.reset_to_defaults()
+            profile.tool_preferences.default_thread_tools = [t.name for t in ALL_TOOLS]
+            profile.tool_preferences.tool_configs.clear()
+            profile.tool_preferences.custom_descriptions.clear()
             profile.updated_at = datetime.utcnow()
+
+        # Clear graph caches and rebuild defaults
+        agent._user_graphs.clear()
+        agent._async_user_graphs.clear()
+        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
+        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
 
         return {
             "status": "ok",
@@ -3424,8 +3371,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         List all tools (built-in and custom) in a unified format.
 
         Returns tools with consistent structure regardless of type,
-        including enable status per user.
+        including enable status per user derived from default_thread_tools.
         """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools.metadata import get_tool_metadata
+
         agent = get_agent()
         loader = get_custom_tool_loader()
 
@@ -3433,26 +3383,60 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         profile = agent.profile_manager.get_profile(user_id)
         tool_prefs = profile.tool_preferences
 
+        # Build default_thread_tools set for enabled check
+        dtt = tool_prefs.default_thread_tools
+        if dtt is None:
+            dtt_set = {t.name for t in ALL_TOOLS}
+        else:
+            dtt_set = set(dtt)
+
         unified_tools = []
 
-        # Get built-in tools with user status (using agent's registry, not global)
-        builtin_tools = agent.tool_registry.get_tools_with_user_status(user_id, agent.profile_manager)
-        for tool_info in builtin_tools:
+        # Built-in tools: derive enabled from default_thread_tools membership
+        seen = set()
+        for t in ALL_TOOLS:
+            meta = get_tool_metadata(t.name)
+            enabled = t.name in dtt_set
+            tool_info = {
+                "name": t.name,
+                "description": t.description,
+                "category": meta.category.value if meta else "core",
+                "security_level": meta.security_level.value if meta else "safe",
+                "enabled": enabled,
+                "enabled_reason": "default_thread_tools",
+                "config_schema": meta.config_schema if meta else None,
+                "user_config": tool_prefs.get_tool_config(t.name),
+                "globally_disabled": False,
+                "default_enabled": True,
+            }
             unified_tools.append(_builtin_to_unified(tool_info, user_id, tool_prefs))
+            seen.add(t.name)
 
-        # Get custom tools
+        for name, t in OPTIONAL_TOOLS.items():
+            if name in seen:
+                continue
+            meta = get_tool_metadata(name)
+            enabled = name in dtt_set
+            tool_info = {
+                "name": name,
+                "description": t.description,
+                "category": meta.category.value if meta else "unknown",
+                "security_level": meta.security_level.value if meta else "moderate",
+                "enabled": enabled,
+                "enabled_reason": "default_thread_tools",
+                "config_schema": meta.config_schema if meta else None,
+                "user_config": tool_prefs.get_tool_config(name),
+                "globally_disabled": False,
+                "default_enabled": False,
+            }
+            unified_tools.append(_builtin_to_unified(tool_info, user_id, tool_prefs))
+            seen.add(name)
+
+        # Custom tools: always available (managed per-thread, not via global toggle)
         custom_definitions = loader.get_all_definitions()
         for defn in custom_definitions:
-            # Determine enabled status
-            if defn.id in tool_prefs.enabled_overrides:
-                enabled = tool_prefs.enabled_overrides[defn.id]
-                enabled_reason = "user_override"
-            else:
-                enabled = True  # Custom tools enabled by default
-                enabled_reason = "default"
-
             user_config = tool_prefs.get_tool_config(defn.id)
-            unified_tools.append(_custom_to_unified(defn, enabled, enabled_reason, user_config, tool_prefs))
+            unified_tools.append(_custom_to_unified(defn, True, "default", user_config, tool_prefs))
 
         # Sort: built-in first, then custom, alphabetically within each
         unified_tools.sort(key=lambda t: (0 if t.tool_type == "builtin" else 1, t.name))
@@ -3475,34 +3459,50 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         _: bool = Depends(verify_api_key),
     ):
         """
-        Enable or disable any tool (built-in or custom) for a user.
-
-        Works for both built-in and custom tools.
+        Enable or disable a built-in tool for a user by adding/removing it
+        from default_thread_tools. Custom tools are not affected (they are
+        always available and managed per-thread via enabled_tools).
         """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
-        loader = get_custom_tool_loader()
 
-        # Check if tool exists (built-in or custom)
+        # Check if tool exists as built-in
         builtin_meta = get_tool_metadata(tool_id)
-        custom_defn = loader.get_definition(tool_id)
-
-        if not builtin_meta and not custom_defn:
+        if not builtin_meta:
             raise HTTPException(
                 status_code=404,
-                detail=f"Tool '{tool_id}' not found",
+                detail=f"Built-in tool '{tool_id}' not found",
             )
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.enabled_overrides[tool_id] = request.enabled
+            dtt = profile.tool_preferences.default_thread_tools
+            if dtt is None:
+                # Initialize from ALL_TOOLS if not yet set
+                dtt = [t.name for t in ALL_TOOLS]
+
+            if request.enabled:
+                if tool_id not in dtt:
+                    dtt.append(tool_id)
+            else:
+                if tool_id in dtt:
+                    dtt.remove(tool_id)
+
+            profile.tool_preferences.default_thread_tools = dtt
             profile.updated_at = datetime.utcnow()
+
+        # Clear graph caches and rebuild defaults so changes take effect
+        agent._user_graphs.clear()
+        agent._async_user_graphs.clear()
+        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
+        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
 
         return {
             "status": "ok",
             "tool_id": tool_id,
             "enabled": request.enabled,
-            "tool_type": "builtin" if builtin_meta else "custom",
+            "tool_type": "builtin",
         }
 
     @app.put("/users/{user_id}/tools/unified/{tool_id}/description", tags=["Unified Tools"])

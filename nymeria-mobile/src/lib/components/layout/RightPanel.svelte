@@ -1,0 +1,232 @@
+<script lang="ts">
+  import Icon from '$lib/components/common/Icon.svelte';
+  import Collapsible from '$lib/components/common/Collapsible.svelte';
+  import { ActivityFeed } from '$lib/components/dashboard';
+  import { TodoFeed } from '$lib/components/dashboard';
+  import { uiStore } from '$lib/stores/ui.svelte';
+  import { activityStore } from '$lib/stores/activity.svelte';
+  import { todosStore } from '$lib/stores/todos.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
+  import { switchToThread } from '$lib/stores/navigation.svelte';
+
+  let activeTab = $state<'thread' | 'global'>('thread');
+  let currentThreadId = $derived(threadsStore.currentThreadId);
+
+  // Auto-switch to Global tab when no thread is selected
+  $effect(() => {
+    if (activeTab === 'thread' && !currentThreadId) {
+      activeTab = 'global';
+    }
+  });
+
+  // Build thread title lookup for global view
+  let threadTitleMap = $derived(
+    Object.fromEntries(threadsStore.threads.map(t => [t.id, t.title]))
+  );
+
+  // Navigate to a thread (for clicking activity/todo items in global view)
+  async function navigateToThread(threadId: string) {
+    activeTab = 'thread';
+    const title = threadTitleMap[threadId] || threadId;
+    await switchToThread(threadId, { ensureTitle: title });
+  }
+
+  function handleRefresh() {
+    const tid = activeTab === 'thread' && currentThreadId ? currentThreadId : undefined;
+    activityStore.fetch(50, tid);
+    todosStore.fetch(undefined, tid);
+  }
+</script>
+
+<div class="right-panel">
+  <div class="panel-header">
+    <button
+      class="back-btn"
+      onclick={() => uiStore.goToChat()}
+      title="Back to chat"
+    >
+      <Icon name="chevronLeft" size={22} />
+    </button>
+    <h2>Dashboard</h2>
+    <button
+      class="refresh-btn"
+      onclick={handleRefresh}
+      title="Refresh"
+    >
+      <Icon name="refresh" size={20} />
+    </button>
+  </div>
+
+  <!-- Tab Toggle -->
+  <div class="tab-bar">
+    <button
+      class="tab-btn"
+      class:active={activeTab === 'thread'}
+      onclick={() => (activeTab = 'thread')}
+      type="button"
+    >
+      This Thread
+    </button>
+    <button
+      class="tab-btn"
+      class:active={activeTab === 'global'}
+      onclick={() => (activeTab = 'global')}
+      type="button"
+    >
+      Global
+    </button>
+  </div>
+
+  <div class="panel-body">
+    <!-- Tasks Section -->
+    <Collapsible title="Tasks" defaultOpen={true}>
+      {#snippet header()}
+        <span class="section-title">Tasks</span>
+        {#if todosStore.activeCount > 0}
+          <span class="section-count">{todosStore.activeCount}</span>
+        {/if}
+      {/snippet}
+      {#if activeTab === 'thread' && currentThreadId}
+        <TodoFeed threadId={currentThreadId} />
+      {:else}
+        <TodoFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
+      {/if}
+    </Collapsible>
+
+    <!-- Activity Section -->
+    <div class="section-divider"></div>
+    <div class="activity-section">
+      <div class="activity-header">
+        <Icon name="bolt" size={16} />
+        <span class="section-title">Activity</span>
+      </div>
+      {#if activeTab === 'thread' && currentThreadId}
+        <ActivityFeed threadId={currentThreadId} />
+      {:else}
+        <ActivityFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
+      {/if}
+    </div>
+  </div>
+</div>
+
+<style>
+  .right-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--bg-elevated);
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 0 var(--spacing-md);
+    height: var(--header-height);
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+
+  .back-btn,
+  .refresh-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+  }
+
+  .back-btn:active,
+  .refresh-btn:active {
+    background: var(--bg-hover);
+    color: var(--accent-primary);
+  }
+
+  .panel-header h2 {
+    flex: 1;
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+  }
+
+  /* Tab Toggle */
+  .tab-bar {
+    display: flex;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    min-height: 36px;
+    transition: all var(--transition-fast);
+  }
+
+  .tab-btn:active {
+    background: var(--bg-hover);
+  }
+
+  .tab-btn.active {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: var(--accent-primary-alpha);
+  }
+
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+  }
+
+  /* Section styling */
+  .section-title {
+    flex: 1;
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+  }
+
+  .section-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    background: var(--accent-primary);
+    color: var(--bg-base);
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+
+  .section-divider {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: var(--spacing-xs) var(--spacing-md);
+  }
+
+  .activity-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .activity-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    color: var(--text-secondary);
+  }
+</style>

@@ -4,7 +4,7 @@ Nymeria has a three-tier tool system: **16 core tools** always loaded, **dynamic
 
 ## Summary Table
 
-### Core Tools (18)
+### Core Tools (21)
 
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
@@ -14,18 +14,21 @@ Nymeria has a three-tier tool system: **16 core tools** always loaded, **dynamic
 | 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `claude_code` | Core | MODERATE | On | Invoke Claude Code CLI for coding tasks |
-| 7 | `memory_save` | Memory | SAFE | On | Save a user memory |
-| 8 | `memory_forget` | Memory | SAFE | On | Remove a memory by key |
-| 9 | `memory_list` | Memory | SAFE | On | List all saved memories and preferences |
-| 10 | `personality_set` | Memory | SAFE | On | Set communication preferences |
-| 11 | `rag_search` | Memory | SAFE | On | Semantic search over past conversations |
+| 7 | `profile_save` | Profile | SAFE | On | Save a user memory |
+| 8 | `profile_forget` | Profile | SAFE | On | Remove a memory by key |
+| 9 | `profile_list` | Profile | SAFE | On | List all saved memories and preferences |
+| 10 | `personality_set` | Profile | SAFE | On | Set communication preferences |
+| 11 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
 | 12 | `todo` | TODO | SAFE | On | Create or update a TODO item |
 | 13 | `todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
 | 14 | `todo_list` | TODO | SAFE | On | List TODO items |
-| 15 | `clear_agent_context` | Subagent | SAFE | On | Clear sub-agent conversation context |
-| 16 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
-| 17 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
-| 18 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 15 | `notepad_write` | Notepad | SAFE | On | Write to thread's persistent notepad |
+| 16 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
+| 17 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
+| 18 | `clear_agent_context` | Subagent | SAFE | On | Clear sub-agent conversation context |
+| 19 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
+| 20 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
+| 21 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
 
 ### Optional: Trigger Tools (4)
 
@@ -197,18 +200,18 @@ claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet
 
 ---
 
-## Memory Tools
+## Profile Tools
 
-Memories are **automatically injected** into Nymeria's system prompt. The `memory_list` tool provides an explicit way for models to retrieve exact keys before updating or deleting.
+Profile memories are **automatically injected** into Nymeria's system prompt. The `profile_list` tool provides an explicit way for models to retrieve exact keys before updating or deleting.
 
-> **Implementation note:** `memory_save`, `memory_forget`, `memory_list`, `personality_set`, and `rag_search` all accept a `config: Annotated[RunnableConfig, InjectedToolArg]` parameter that is automatically injected by LangGraph. The LLM never passes this parameter.
+> **Implementation note:** `profile_save`, `profile_forget`, `profile_list`, `personality_set`, and `rag_search` all accept a `config: Annotated[RunnableConfig, InjectedToolArg]` parameter that is automatically injected by LangGraph. The LLM never passes this parameter.
 
-### memory_save
+### profile_save
 
 Save a memory about the user to persistent storage.
 
 ```python
-memory_save(key: str, value: str)
+profile_save(key: str, value: str)
 ```
 
 **Parameters:**
@@ -225,12 +228,12 @@ memory_save(key: str, value: str)
 
 ---
 
-### memory_forget
+### profile_forget
 
 Remove a memory or personality preference by key.
 
 ```python
-memory_forget(key: str)
+profile_forget(key: str)
 ```
 
 **Parameters:**
@@ -238,29 +241,29 @@ memory_forget(key: str)
 
 **Returns:** Confirmation, or error with list of available keys (memories + personality traits) if not found.
 
-**Behavior:** Tries memories first, then personality preferences. Use `memory_list` to see exact keys before calling.
+**Behavior:** Tries memories first, then personality preferences. Use `profile_list` to see exact keys before calling.
 
 ---
 
-### memory_list
+### profile_list
 
 List all saved memories and personality preferences for the current user.
 
 ```python
-memory_list()
+profile_list()
 ```
 
 **Returns:** Formatted list of all memories (key: value) and personality preferences (trait: value), or a message indicating no memories are stored.
 
 **Notes:**
-- Use this before `memory_forget` to get exact key names.
+- Use this before `profile_forget` to get exact key names.
 - Memories are also auto-injected into the system prompt, but weaker models may struggle to extract exact keys from long prompts.
 
 ---
 
 ### ~~memory_clear_all~~ (removed)
 
-Removed — a cheap model could hallucinate this call and wipe all user memories irreversibly. Delete memories individually with `memory_forget` instead.
+Removed — a cheap model could hallucinate this call and wipe all user memories irreversibly. Delete memories individually with `profile_forget` instead.
 
 ---
 
@@ -295,6 +298,56 @@ rag_search(query: str, max_results: int = 5)
 **Returns:** Formatted results with content type, relevance score, and content. Results filtered by user's RAG preferences (`include_conversations`, `include_memories`, `include_todos`).
 
 **Requires:** RAG must be enabled for the user (`opt_in.rag_enabled`).
+
+---
+
+## Notepad Tools
+
+Per-thread persistent notes that survive context compaction. Unlike profile memories (which are global and injected into the system prompt), notepad content is thread-specific and only re-injected after compaction events.
+
+Storage: `data/thread_notes/{thread_id}.md`
+
+> **Implementation note:** All notepad tools accept a `config: Annotated[RunnableConfig, InjectedToolArg]` parameter automatically injected by LangGraph. The `thread_id` is extracted from this config.
+
+### notepad_write
+
+Write to the thread's persistent notepad.
+
+```python
+notepad_write(content: str, mode: str = "append")
+```
+
+**Parameters:**
+- `content` (`str`): Text to write
+- `mode` (`str`): `"append"` (default) adds with `\n\n` separator, `"replace"` overwrites entirely
+
+**Returns:** Confirmation with byte count.
+
+**Limits:** 50KB max per notepad.
+
+---
+
+### notepad_read
+
+Read the thread's notepad content.
+
+```python
+notepad_read()
+```
+
+**Returns:** Current notepad content, or `"[empty]"` if nothing saved.
+
+---
+
+### notepad_clear
+
+Clear the thread's notepad entirely.
+
+```python
+notepad_clear()
+```
+
+**Returns:** Confirmation message.
 
 ---
 
@@ -872,7 +925,7 @@ Tool metadata is defined in `tools/metadata.py`. Each tool has a category, secur
 
 ### Tools by Security Level
 
-**SAFE:** `file_read`, `web_search`, `consult`, `memory_save`, `memory_forget`, `memory_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `clear_agent_context`
+**SAFE:** `file_read`, `web_search`, `consult`, `profile_save`, `profile_forget`, `profile_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `notepad_write`, `notepad_read`, `notepad_clear`, `clear_agent_context`
 
 **MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, `reload_all`
 

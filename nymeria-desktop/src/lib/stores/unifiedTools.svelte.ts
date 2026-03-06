@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { defaultToolsStore } from './defaultTools.svelte';
 import type { UnifiedTool, ToolCategory, ToolType } from '$lib/types';
 
 // State
@@ -23,10 +24,15 @@ const CATEGORY_INFO: Record<string, { name: string; icon: string; description: s
     icon: 'terminal',
     description: 'Essential system tools like bash, file operations, and web search'
   },
-  memory: {
-    name: 'Memory',
+  profile: {
+    name: 'Profile',
     icon: 'brain',
     description: 'Tools for saving and retrieving user memories and preferences'
+  },
+  notepad: {
+    name: 'Notepad',
+    icon: 'sticky-note',
+    description: 'Per-thread persistent notes that survive context compaction'
   },
   self_modify: {
     name: 'Self-Modify',
@@ -57,6 +63,11 @@ const CATEGORY_INFO: Record<string, { name: string; icon: string; description: s
     name: 'Calendar',
     icon: 'calendar',
     description: 'Google Calendar tools for managing events and schedules'
+  },
+  google_docs: {
+    name: 'Google Docs',
+    icon: 'file-text',
+    description: 'Google Docs tools for reading, writing, and formatting documents'
   },
   custom: {
     name: 'Custom',
@@ -166,6 +177,8 @@ async function setToolEnabled(
     await api.setUnifiedToolEnabled(userId, toolId, enabled);
     // Reload to get updated state
     await loadTools(userId);
+    // Sync defaultToolsStore so both stores reflect the change
+    defaultToolsStore.resetLoaded();
     return true;
   } catch (e) {
     error = e instanceof Error ? e.message : 'Failed to update tool';

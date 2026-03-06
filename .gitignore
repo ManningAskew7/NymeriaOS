@@ -29,6 +29,15 @@ node_modules/
 target/
 gen/schemas
 
+# === Capacitor / Android ===
+nymeria-mobile/android/app/build/
+nymeria-mobile/android/build/
+nymeria-mobile/android/.gradle/
+nymeria-mobile/android/app/src/main/assets/public/
+nymeria-mobile/android/app/src/main/assets/capacitor.config.json
+*.keystore
+!debug.keystore
+
 # === IDE & OS ===
 .vscode/
 .idea/

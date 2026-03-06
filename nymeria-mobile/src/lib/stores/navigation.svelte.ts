@@ -1,0 +1,65 @@
+import { threadsStore } from './threads.svelte';
+import { chatStore } from './chat.svelte';
+import { api, hasActiveStreamForThread } from '$lib/services/api.svelte';
+import { uiStore } from './ui.svelte';
+
+export type SwitchResult =
+  | { success: true }
+  | { success: false; error: string };
+
+/**
+ * Shared thread-switch pipeline for mobile.
+ * Navigates to the chat panel after switching.
+ */
+export async function switchToThread(
+  threadId: string,
+  options?: { ensureTitle?: string }
+): Promise<SwitchResult> {
+  if (threadId === threadsStore.currentThreadId) {
+    uiStore.goToChat();
+    return { success: true };
+  }
+
+  if (options?.ensureTitle) {
+    threadsStore.ensureThread(threadId, options.ensureTitle);
+  }
+  threadsStore.selectThread(threadId);
+  chatStore.prepareForThreadSwitch();
+
+  // Navigate to chat panel immediately
+  uiStore.goToChat();
+
+  try {
+    const [history, stats] = await Promise.all([
+      api.getThreadHistory(threadId),
+      api.getThreadContextStats(threadId),
+    ]);
+
+    // Stale navigation guard
+    if (threadsStore.currentThreadId !== threadId) return { success: true };
+
+    chatStore.setMessages(history.messages);
+    chatStore.setContextStats(stats);
+    chatStore.setActiveModel(stats?.model ?? null);
+
+    // Stream recovery for active interactive streams
+    const hasInteractiveStream = hasActiveStreamForThread(threadId);
+    if (hasInteractiveStream) {
+      const lastMsg = chatStore.messages[chatStore.messages.length - 1];
+      if (lastMsg?.role !== 'assistant') {
+        chatStore.addAssistantMessage();
+      } else {
+        chatStore.setLastMessageStreaming();
+      }
+      chatStore.setStreaming(true);
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to load thread history:', error);
+    if (threadsStore.currentThreadId !== threadId) return { success: true };
+    chatStore.clearMessages();
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}

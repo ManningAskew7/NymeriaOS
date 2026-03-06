@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Nymeria</string>
+    <string name="title_activity_main">Nymeria</string>
+    <string name="package_name">com.nymeria.mobile</string>
+    <string name="custom_url_scheme">com.nymeria.mobile</string>
+</resources>

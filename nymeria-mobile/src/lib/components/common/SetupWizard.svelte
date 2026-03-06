@@ -1,0 +1,392 @@
+<script lang="ts">
+  import { configStore } from '$lib/stores/config.svelte';
+  import { api } from '$lib/services/api.svelte';
+  import Icon from './Icon.svelte';
+  import Button from './Button.svelte';
+  import Spinner from './Spinner.svelte';
+
+  let step = $state(0);
+  let apiUrl = $state('');
+  let apiKey = $state('');
+  let testing = $state(false);
+  let testResult = $state<'success' | 'error' | null>(null);
+  let testMessage = $state('');
+
+  function canProceed(): boolean {
+    switch (step) {
+      case 0: return true;
+      case 1: return apiUrl.trim().length > 0;
+      case 2: return testResult === 'success';
+      default: return true;
+    }
+  }
+
+  function next() {
+    if (canProceed() && step < 3) step += 1;
+  }
+
+  function back() {
+    if (step > 0) step -= 1;
+  }
+
+  async function testConnection() {
+    testing = true;
+    testResult = null;
+    testMessage = '';
+
+    // Temporarily set config for the API client
+    const prevUrl = configStore.apiUrl;
+    const prevKey = configStore.apiKey;
+    configStore.apiUrl = apiUrl.trim().replace(/\/$/, '');
+    configStore.apiKey = apiKey.trim();
+
+    try {
+      const healthy = await api.healthCheck();
+      if (healthy) {
+        const settings = await api.getServerSettings();
+        testResult = 'success';
+        testMessage = `Connected! Provider: ${settings.llm_provider}, Model: ${settings.llm_model}`;
+      } else {
+        testResult = 'error';
+        testMessage = 'Server returned unhealthy response';
+      }
+    } catch (e) {
+      testResult = 'error';
+      testMessage = `Connection failed: ${e instanceof Error ? e.message : 'Unknown error'}`;
+      // Restore previous config on failure
+      configStore.apiUrl = prevUrl;
+      configStore.apiKey = prevKey;
+    } finally {
+      testing = false;
+    }
+  }
+
+  function completeSetup() {
+    configStore.apiUrl = apiUrl.trim().replace(/\/$/, '');
+    configStore.apiKey = apiKey.trim();
+    configStore.completeSetup();
+  }
+</script>
+
+<div class="setup-wizard">
+  <!-- Progress dots -->
+  <div class="progress">
+    {#each [0, 1, 2, 3] as i}
+      <div class="progress-dot" class:active={i === step} class:completed={i < step}></div>
+      {#if i < 3}
+        <div class="progress-line" class:completed={i < step}></div>
+      {/if}
+    {/each}
+  </div>
+
+  <!-- Step content -->
+  <div class="step-content">
+    {#if step === 0}
+      <div class="step">
+        <div class="step-icon">
+          <Icon name="chat" size={40} />
+        </div>
+        <h2>Welcome to Nymeria</h2>
+        <p>Let's connect your mobile app to your Nymeria backend.</p>
+        <div class="checklist">
+          <div class="check-item">
+            <Icon name="check" size={18} />
+            <span>Nymeria backend running on your network</span>
+          </div>
+          <div class="check-item">
+            <Icon name="check" size={18} />
+            <span>.env configured with API keys</span>
+          </div>
+          <div class="check-item">
+            <Icon name="check" size={18} />
+            <span>Phone connected to same WiFi</span>
+          </div>
+        </div>
+      </div>
+
+    {:else if step === 1}
+      <div class="step">
+        <h2>Backend URL</h2>
+        <p>Enter the network address of your Nymeria backend. Find it by checking your computer's local IP address.</p>
+        <div class="input-group">
+          <label for="api-url">API URL</label>
+          <input
+            id="api-url"
+            type="url"
+            bind:value={apiUrl}
+            placeholder="http://192.168.1.100:8000"
+          />
+          <span class="input-hint">Example: http://192.168.1.100:8000</span>
+        </div>
+      </div>
+
+    {:else if step === 2}
+      <div class="step">
+        <h2>API Key</h2>
+        <p>Enter your NYMERIA_API_KEY from the .env file.</p>
+        <div class="input-group">
+          <label for="api-key">API Key</label>
+          <input
+            id="api-key"
+            type="password"
+            bind:value={apiKey}
+            placeholder="your-api-key"
+          />
+        </div>
+
+        <div class="test-section">
+          <Button
+            variant="secondary"
+            onclick={testConnection}
+            disabled={!apiUrl.trim() || !apiKey.trim() || testing}
+            loading={testing}
+          >
+            {#if testing}
+              Testing...
+            {:else}
+              Test Connection
+            {/if}
+          </Button>
+
+          {#if testResult === 'success'}
+            <div class="test-result success">
+              <Icon name="success" size={16} />
+              <span>{testMessage}</span>
+            </div>
+          {:else if testResult === 'error'}
+            <div class="test-result error">
+              <Icon name="error" size={16} />
+              <span>{testMessage}</span>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+    {:else if step === 3}
+      <div class="step">
+        <div class="step-icon success-icon">
+          <Icon name="success" size={48} />
+        </div>
+        <h2>You're all set!</h2>
+        <p>Your mobile app is connected to Nymeria.</p>
+        <div class="tips">
+          <h3>Quick tips:</h3>
+          <ul>
+            <li>Swipe left/right to navigate panels</li>
+            <li>Tap Enter to send messages</li>
+            <li>Shift+Enter for new lines</li>
+          </ul>
+        </div>
+      </div>
+    {/if}
+  </div>
+
+  <!-- Navigation buttons -->
+  <div class="nav-buttons">
+    {#if step > 0 && step < 3}
+      <Button variant="ghost" onclick={back}>Back</Button>
+    {:else}
+      <div></div>
+    {/if}
+
+    {#if step < 3}
+      <Button variant="primary" onclick={next} disabled={!canProceed()}>
+        {step === 0 ? 'Get Started' : 'Next'}
+      </Button>
+    {:else}
+      <Button variant="primary" onclick={completeSetup}>Start Chatting</Button>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .setup-wizard {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    padding: var(--spacing-lg);
+    padding-top: calc(var(--spacing-xl) + var(--safe-area-top));
+    background: var(--bg-base);
+  }
+
+  .progress {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin-bottom: var(--spacing-xl);
+  }
+
+  .progress-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--border-default);
+    transition: all var(--transition-fast);
+  }
+
+  .progress-dot.active {
+    background: var(--accent-primary);
+    transform: scale(1.2);
+  }
+
+  .progress-dot.completed {
+    background: var(--accent-primary);
+  }
+
+  .progress-line {
+    width: 40px;
+    height: 2px;
+    background: var(--border-default);
+    transition: background var(--transition-fast);
+  }
+
+  .progress-line.completed {
+    background: var(--accent-primary);
+  }
+
+  .step-content {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .step {
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+  }
+
+  .step-icon {
+    color: var(--accent-primary);
+    margin-bottom: var(--spacing-lg);
+  }
+
+  .success-icon {
+    color: var(--success);
+  }
+
+  .step h2 {
+    font-size: var(--font-size-xl);
+    font-weight: 700;
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .step p {
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-lg);
+  }
+
+  .checklist {
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .check-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    color: var(--text-secondary);
+  }
+
+  .check-item :global(.icon) {
+    color: var(--accent-primary);
+  }
+
+  .input-group {
+    text-align: left;
+    margin-bottom: var(--spacing-md);
+  }
+
+  .input-group label {
+    display: block;
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .input-group input {
+    width: 100%;
+    font-size: 16px;
+    padding: var(--spacing-md);
+    min-height: var(--touch-target-min);
+  }
+
+  .input-hint {
+    display: block;
+    margin-top: var(--spacing-xs);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  .test-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-md);
+    margin-top: var(--spacing-md);
+  }
+
+  .test-result {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    width: 100%;
+    text-align: left;
+  }
+
+  .test-result.success {
+    background: rgba(52, 211, 153, 0.1);
+    color: var(--success);
+  }
+
+  .test-result.error {
+    background: rgba(248, 113, 113, 0.1);
+    color: var(--error);
+  }
+
+  .tips {
+    text-align: left;
+    margin-top: var(--spacing-md);
+  }
+
+  .tips h3 {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .tips ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .tips li {
+    padding: var(--spacing-xs) 0;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+  }
+
+  .tips li::before {
+    content: '→ ';
+    color: var(--accent-primary);
+  }
+
+  .nav-buttons {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+</style>

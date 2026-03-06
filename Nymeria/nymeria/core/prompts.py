@@ -15,12 +15,14 @@ INTERACTIVE_MODE_RULES = ''
 AUTONOMOUS_MODE_RULES = ''
 
 
-def get_time_context(is_autonomous: bool = False) -> str:
+def get_time_context(is_autonomous: bool = False, trigger_override: str = None) -> str:
     """
     Get current time context in the user's configured timezone.
 
     Args:
         is_autonomous: If True, this is an autonomous scheduled wake-up
+        trigger_override: If provided, use this as the trigger label instead of
+                          the default "User Message" / "Scheduled TODO"
 
     Returns:
         Formatted time context string to prepend to messages
@@ -30,7 +32,12 @@ def get_time_context(is_autonomous: bool = False) -> str:
     user_tz = get_user_tz()
     now = datetime.now(user_tz)
 
-    trigger = "Scheduled TODO" if is_autonomous else "User Message"
+    if trigger_override:
+        trigger = trigger_override
+    elif is_autonomous:
+        trigger = "Scheduled TODO"
+    else:
+        trigger = "User Message"
 
     return (
         f"[Time: {now.strftime('%A, %B %d, %Y at %I:%M %p')} ({user_tz.key})]\n"
@@ -41,6 +48,7 @@ def get_time_context(is_autonomous: bool = False) -> str:
 def get_full_context_metadata(
     is_autonomous: bool = False,
     rag_context: list = None,
+    trigger_override: str = None,
 ) -> str:
     """
     Build full hidden metadata including time, trigger, and RAG context.
@@ -51,6 +59,7 @@ def get_full_context_metadata(
     Args:
         is_autonomous: If True, this is an autonomous scheduled wake-up
         rag_context: Optional list of ChunkResult objects from RAG search
+        trigger_override: If provided, use this as the trigger label
 
     Returns:
         Full context metadata string to prepend to messages
@@ -59,7 +68,7 @@ def get_full_context_metadata(
     parts = []
 
     # Existing time context
-    parts.append(get_time_context(is_autonomous))
+    parts.append(get_time_context(is_autonomous, trigger_override=trigger_override))
 
     # RAG context (if enabled and results found)
     if rag_context:
