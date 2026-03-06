@@ -350,6 +350,8 @@ class NymeriaAgent:
         self._compactor = ConversationCompactor(self.settings)
         # Pending summaries from manual /compact - attached to next user message
         self._pending_summaries: Dict[str, str] = {}
+        # Pending notepads from manual /compact - attached alongside summary
+        self._pending_notepads: Dict[str, str] = {}
 
         # Initialize schedule database for TODO scheduling
         self._schedule_db = TodoScheduleDB(
@@ -401,6 +403,9 @@ class NymeriaAgent:
         # Build default graph (for users with no memories)
         self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
         self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+
+        # Auto-migrate: populate default_thread_tools if not yet initialized
+        self._migrate_tool_preferences()
 
         # Register as current agent (for tools that need to trigger reload)
         set_current_agent(self)
@@ -640,10 +645,7 @@ class NymeriaAgent:
 
         # Include tool preferences in the hash (so graph is rebuilt when tools change)
         tool_prefs = profile.tool_preferences
-        tool_prefs_str = (
-            f"overrides:{sorted(tool_prefs.enabled_overrides.items())}|"
-            f"cats:{sorted(tool_prefs.disabled_categories)}"
-        )
+        tool_prefs_str = f"dtt:{sorted(tool_prefs.default_thread_tools or [])}"
 
         # Include thread config in the hash (so graph is rebuilt when config changes)
         thread_config_str = ""
@@ -708,9 +710,9 @@ class NymeriaAgent:
 
         return prompt
 
-    def _get_time_context(self, is_autonomous: bool = False) -> str:
+    def _get_time_context(self, is_autonomous: bool = False, trigger_override: str = None) -> str:
         """Get current time context. Delegates to prompts.get_time_context()."""
-        return get_time_context(is_autonomous)
+        return get_time_context(is_autonomous, trigger_override=trigger_override)
 
     def _get_memory_index(self, user_id: str) -> Optional[MemoryIndex]:
         """
@@ -856,7 +858,7 @@ class NymeriaAgent:
             current_turn_messages.append(msg)
 
         return sum(
-            1 for msg in current_turn_messages
+            len(msg.tool_calls) for msg in current_turn_messages
             if isinstance(msg, AIMessage) and msg.tool_calls
         )
 
@@ -1113,7 +1115,7 @@ class NymeriaAgent:
         Generate a summary of the conversation.
 
         Injects a summarization prompt and runs the agent (which sees full
-        context and can call memory_save for persistent facts).
+        context and can call profile_save for persistent facts).
 
         Args:
             thread_id: Thread identifier
@@ -1222,6 +1224,20 @@ class NymeriaAgent:
         logger.info(f"Thread {thread_id}: Clear and reset complete")
         return True
 
+    def _read_thread_notepad(self, thread_id: str) -> Optional[str]:
+        """Read per-thread notepad content (if any) for re-injection after compaction."""
+        try:
+            from ..tools.thread_notes import read_notepad
+            return read_notepad(thread_id)
+        except Exception as e:
+            logger.warning(f"Failed to read notepad for thread {thread_id}: {e}")
+            return None
+
+    @staticmethod
+    def _format_notepad_section(notepad: str) -> str:
+        """Format notepad content for injection into a message."""
+        return f"\n\n---\n*Thread Notepad (persistent notes):*\n\n{notepad}\n\n---"
+
     async def _do_auto_compact(
         self,
         thread_id: str,
@@ -1271,6 +1287,12 @@ class NymeriaAgent:
         # Inject resume prompt and let agent continue (marked as internal)
         graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
         resume_prompt = self._compactor.format_auto_resume(summary)
+
+        # Append notepad content so thread context survives compaction
+        notepad = self._read_thread_notepad(thread_id)
+        if notepad:
+            resume_prompt += self._format_notepad_section(notepad)
+
         input_state = {"messages": [_create_human_message(
             resume_prompt,
             internal=True,
@@ -1352,6 +1374,11 @@ class NymeriaAgent:
 
         # Store as pending — picked up by get_pending_summary() in stream()/chat()
         self._pending_summaries[thread_id] = summary
+
+        # Store notepad content to re-inject alongside summary
+        notepad = self._read_thread_notepad(thread_id)
+        if notepad:
+            self._pending_notepads[thread_id] = notepad
 
         logger.info(f"Thread {thread_id}: Sync auto-compact complete, summary pending")
         return {
@@ -1491,6 +1518,11 @@ class NymeriaAgent:
 
         # Store summary to attach to next user message
         self._pending_summaries[thread_id] = summary
+
+        # Store notepad content to re-inject alongside summary
+        notepad = self._read_thread_notepad(thread_id)
+        if notepad:
+            self._pending_notepads[thread_id] = notepad
 
         logger.info(f"Thread {thread_id}: Manual compact complete, summary pending")
 
@@ -1690,14 +1722,25 @@ class NymeriaAgent:
         Gives the standard tool set but excludes all callable thread tools
         to prevent self-invocation loops.
         """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+
         callable_names = {
             t2.callable_name
             for t2 in self.thread_config_manager.list_callable_threads()
             if t2.callable_name
         }
+
+        # Use default_thread_tools as the base set, excluding callable tools
+        profile = self.profile_manager.get_profile("default")
+        default_tools = profile.tool_preferences.default_thread_tools
+
+        all_tools_dict = {t.name: t for t in ALL_TOOLS}
+        all_tools_dict.update(OPTIONAL_TOOLS)
+
+        core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
         return [
-            t for t in self.tool_registry.get_tools_for_user("default", self.profile_manager)
-            if t.name not in callable_names
+            all_tools_dict[name] for name in core_names
+            if name in all_tools_dict and name not in callable_names
         ]
 
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
@@ -1731,22 +1774,19 @@ class NymeriaAgent:
         if tc and tc.callable and tc.callable_name:
             tools = self._get_callable_thread_tools(tc)
         else:
-            # Check if user has custom default tools configured
+            # Build tool list from default_thread_tools (single source of truth)
             profile = self.profile_manager.get_profile(user_id)
             default_tools = profile.tool_preferences.default_thread_tools
 
-            if default_tools is not None:
-                # Custom defaults: build tool list from the explicit default set
-                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
-                all_tools_dict = {t.name: t for t in ALL_TOOLS}
-                all_tools_dict.update(OPTIONAL_TOOLS)
-                tools = [all_tools_dict[name] for name in default_tools if name in all_tools_dict]
-            else:
-                # Legacy path: use registry-based filtering
-                tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+            all_tools_dict = {t.name: t for t in ALL_TOOLS}
+            all_tools_dict.update(OPTIONAL_TOOLS)
+
+            core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+            tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
             # Always include callable thread tools (they live in the registry,
-            # not in ALL_TOOLS/OPTIONAL_TOOLS, so custom defaults would drop them)
+            # not in ALL_TOOLS/OPTIONAL_TOOLS, so default_thread_tools would drop them)
             existing_names = {t.name for t in tools}
             for t in self.tool_registry.get_all_tools():
                 if t.name not in existing_names and t.name in self._callable_tool_thread_map:
@@ -1802,22 +1842,19 @@ class NymeriaAgent:
         if tc and tc.callable and tc.callable_name:
             tools = self._get_callable_thread_tools(tc)
         else:
-            # Check if user has custom default tools configured
+            # Build tool list from default_thread_tools (single source of truth)
             profile = self.profile_manager.get_profile(user_id)
             default_tools = profile.tool_preferences.default_thread_tools
 
-            if default_tools is not None:
-                # Custom defaults: build tool list from the explicit default set
-                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
-                all_tools_dict = {t.name: t for t in ALL_TOOLS}
-                all_tools_dict.update(OPTIONAL_TOOLS)
-                tools = [all_tools_dict[name] for name in default_tools if name in all_tools_dict]
-            else:
-                # Legacy path: use registry-based filtering
-                tools = self.tool_registry.get_tools_for_user(user_id, self.profile_manager)
+            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+            all_tools_dict = {t.name: t for t in ALL_TOOLS}
+            all_tools_dict.update(OPTIONAL_TOOLS)
+
+            core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+            tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
             # Always include callable thread tools (they live in the registry,
-            # not in ALL_TOOLS/OPTIONAL_TOOLS, so custom defaults would drop them)
+            # not in ALL_TOOLS/OPTIONAL_TOOLS, so default_thread_tools would drop them)
             existing_names = {t.name for t in tools}
             for t in self.tool_registry.get_all_tools():
                 if t.name not in existing_names and t.name in self._callable_tool_thread_map:
@@ -1884,10 +1921,7 @@ class NymeriaAgent:
             todo_list.get_active_todos_for_thread(thread_id) if thread_id
             else todo_list.get_active_todos()
         )
-        has_tool_prefs = (
-            profile.tool_preferences.enabled_overrides or
-            profile.tool_preferences.disabled_categories
-        )
+        has_tool_prefs = profile.tool_preferences.default_thread_tools is not None
         has_thread_config = bool(
             thread_id and self.thread_config_manager.get_config(thread_id)
         )
@@ -1939,10 +1973,7 @@ class NymeriaAgent:
             todo_list.get_active_todos_for_thread(thread_id) if thread_id
             else todo_list.get_active_todos()
         )
-        has_tool_prefs = (
-            profile.tool_preferences.enabled_overrides or
-            profile.tool_preferences.disabled_categories
-        )
+        has_tool_prefs = profile.tool_preferences.default_thread_tools is not None
         has_thread_config = bool(
             thread_id and self.thread_config_manager.get_config(thread_id)
         )
@@ -2372,6 +2403,7 @@ class NymeriaAgent:
         thread_id: str = "default",
         user_id: str = "default",
         _is_self_invoke: bool = False,
+        _trigger_override: str = None,
     ) -> str:
         """
         Send a message and get a response (non-streaming).
@@ -2381,6 +2413,7 @@ class NymeriaAgent:
             thread_id: Conversation thread ID for persistence
             user_id: User ID for profile/memory access
             _is_self_invoke: Internal flag, True when called by scheduler (skips auto-cancel)
+            _trigger_override: If provided, use as the trigger label (e.g. for callable thread invocations)
 
         Returns:
             Agent's response as a string
@@ -2410,7 +2443,7 @@ class NymeriaAgent:
             )
 
             # Inject time context into the message (includes trigger type for autonomous wake-ups)
-            time_context = self._get_time_context(is_autonomous=_is_self_invoke)
+            time_context = self._get_time_context(is_autonomous=_is_self_invoke, trigger_override=_trigger_override)
             message_with_context = f"{time_context}\n\n{message}"
 
             # Pre-flight auto-compact (sync path)
@@ -2426,6 +2459,12 @@ class NymeriaAgent:
                     message_with_context, pending_summary
                 )
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message (chat)")
+
+            # Attach pending notepad content (from compaction)
+            pending_notepad = self._pending_notepads.pop(thread_id, None)
+            if pending_notepad:
+                message_with_context += self._format_notepad_section(pending_notepad)
+                logger.info(f"Thread {thread_id}: Attached pending notepad to user message (chat)")
 
             # Pass user_id through config for tools to access
             # callbacks=[] prevents LLM events from leaking into a parent
@@ -2455,7 +2494,7 @@ class NymeriaAgent:
                 response = "No response generated."
                 for msg in reversed(messages):
                     if isinstance(msg, AIMessage) and msg.content:
-                        response = msg.content
+                        response, _ = _extract_content_parts(msg.content)
                         break
 
                 # Index conversation turn in RAG (if enabled)
@@ -2484,6 +2523,9 @@ class NymeriaAgent:
                         "My task may be incomplete — you can ask me to continue where I left off."
                     )
 
+                # Store tool call count from this turn for callers that need metadata
+                self._last_chat_tool_calls = self._count_current_turn_tool_calls(messages)
+
                 # Context management: sliding window trim (auto-compact handled pre-flight)
                 if self.settings.context_management == "sliding_window":
                     self.trim_context_window(thread_id, user_id=user_id)
@@ -2504,6 +2546,7 @@ class NymeriaAgent:
         thread_id: str = "default",
         user_id: str = "default",
         _is_self_invoke: bool = False,
+        _trigger_override: str = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         Send a message and stream the response.
@@ -2513,6 +2556,7 @@ class NymeriaAgent:
             thread_id: Conversation thread ID for persistence
             user_id: User ID for profile/memory access
             _is_self_invoke: Internal flag, True when called by scheduler
+            _trigger_override: If provided, use as the trigger label (e.g. for callable thread invocations)
 
         Yields:
             Dict with event type and content:
@@ -2560,7 +2604,7 @@ class NymeriaAgent:
             )
 
             # Inject time context into the message (includes trigger type for autonomous wake-ups)
-            time_context = self._get_time_context(is_autonomous=_is_self_invoke)
+            time_context = self._get_time_context(is_autonomous=_is_self_invoke, trigger_override=_trigger_override)
             message_with_context = f"{time_context}\n\n{message}"
 
             # Pre-flight auto-compact (sync path)
@@ -2577,6 +2621,12 @@ class NymeriaAgent:
                     message_with_context, pending_summary
                 )
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message (stream)")
+
+            # Attach pending notepad content (from compaction)
+            pending_notepad = self._pending_notepads.pop(thread_id, None)
+            if pending_notepad:
+                message_with_context += self._format_notepad_section(pending_notepad)
+                logger.info(f"Thread {thread_id}: Attached pending notepad to user message (stream)")
 
             # Pass user_id through config for tools to access
             config = {
@@ -2938,6 +2988,12 @@ class NymeriaAgent:
                 )
                 context_summary_for_ui = pending_summary
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message")
+
+            # Attach pending notepad content (from compaction)
+            pending_notepad = self._pending_notepads.pop(thread_id, None)
+            if pending_notepad:
+                message_with_context += self._format_notepad_section(pending_notepad)
+                logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
 
             # Pass user_id through config for tools to access
             config = {
@@ -3871,3 +3927,42 @@ class NymeriaAgent:
         """Migrate TODOs that lack a thread_id to 'legacy'. Idempotent."""
         for user_id in self.todo_manager.get_all_users_with_todos():
             self.todo_manager.migrate_unscoped_todos(user_id)
+
+    def _migrate_tool_preferences(self) -> None:
+        """Auto-migrate: populate default_thread_tools from ALL_TOOLS if not yet set.
+
+        For users with existing enabled_overrides (old system), incorporate them
+        into the default_thread_tools list, then the old fields are ignored via
+        extra='ignore' on ToolPreferences.
+        """
+        from ..tools import ALL_TOOLS
+
+        for user_id in self.profile_manager.list_users():
+            profile = self.profile_manager.get_profile(user_id)
+            if profile.tool_preferences.default_thread_tools is not None:
+                continue  # Already migrated
+
+            # Start with all core tools
+            default_names = [t.name for t in ALL_TOOLS]
+
+            # Check raw data for old enabled_overrides to incorporate
+            profile_path = self.profile_manager._get_profile_path(user_id)
+            if profile_path.exists():
+                try:
+                    import json
+                    with open(profile_path, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+                    old_overrides = raw.get("tool_preferences", {}).get("enabled_overrides", {})
+                    if old_overrides:
+                        for tool_name, enabled in old_overrides.items():
+                            if not enabled and tool_name in default_names:
+                                default_names.remove(tool_name)
+                            elif enabled and tool_name not in default_names:
+                                default_names.append(tool_name)
+                        logger.info(f"Migrated enabled_overrides for user {user_id} into default_thread_tools")
+                except Exception:
+                    pass  # Best-effort migration
+
+            profile.tool_preferences.default_thread_tools = default_names
+            self.profile_manager.save_profile(profile)
+            logger.info(f"Initialized default_thread_tools for user {user_id} ({len(default_names)} tools)")

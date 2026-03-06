@@ -57,7 +57,7 @@ def _get_memory_index(user_id: str) -> Optional[MemoryIndex]:
 
 
 @tool
-def memory_save(
+def profile_save(
     key: str,
     value: str,
     *,
@@ -70,7 +70,7 @@ def memory_save(
         key: Category identifier (e.g., "user_name", "occupation")
         value: Information to remember (max 1000 chars)
     """
-    logger.info(f"memory_save called: key={key}")
+    logger.info(f"profile_save called: key={key}")
 
     user_id = get_user_id(config)
     manager = _get_profile_manager()
@@ -96,11 +96,11 @@ def memory_save(
 
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
         else:
-            return f"[Error]: Memory limit reached ({profile.MAX_MEMORIES} memories). Use memory_forget to remove old ones first."
+            return f"[Error]: Memory limit reached ({profile.MAX_MEMORIES} memories). Use profile_forget to remove old ones first."
 
 
 @tool
-def memory_forget(
+def profile_forget(
     key: str,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -111,7 +111,7 @@ def memory_forget(
     Args:
         key: The memory key or personality trait to delete
     """
-    logger.info(f"memory_forget called: key={key}")
+    logger.info(f"profile_forget called: key={key}")
 
     user_id = get_user_id(config)
     manager = _get_profile_manager()
@@ -136,7 +136,7 @@ def memory_forget(
 
 
 @tool
-def memory_list(
+def profile_list(
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -148,14 +148,14 @@ def memory_list(
     Returns:
         List of all stored memories with their values
     """
-    logger.info("memory_list called")
+    logger.info("profile_list called")
 
     user_id = get_user_id(config)
     manager = _get_profile_manager()
     profile = manager.get_profile(user_id)
 
     if not profile.memories:
-        return "[Info]: No memories stored yet. Use memory_save to remember things about the user."
+        return "[Info]: No memories stored yet. Use profile_save to remember things about the user."
 
     lines = [f"Stored memories ({len(profile.memories)} total):"]
     for mem in sorted(profile.memories, key=lambda m: m.key):
@@ -395,10 +395,10 @@ def rag_settings(
 # Export memory tools
 # memory_clear_all removed - dangerous, cheap models could hallucinate and wipe all memories
 # rag_settings removed - should be configured via UI settings
-MEMORY_TOOLS = [
-    memory_save,
-    memory_forget,
-    memory_list,
+PROFILE_TOOLS = [
+    profile_save,
+    profile_forget,
+    profile_list,
     personality_set,
     rag_search,
 ]

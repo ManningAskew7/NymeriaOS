@@ -66,6 +66,30 @@ description and it will execute autonomously.
         if _agent and parent_thread_id:
             _agent.register_callable_invocation(parent_thread_id, _thread_id)
 
+        # Resolve parent thread name for trigger metadata
+        trigger_override = None
+        if _agent and parent_thread_id:
+            parent_name = None
+            # Try thread title first
+            try:
+                parent_meta = _agent.thread_metadata_manager.get_thread(user_id, parent_thread_id)
+                if parent_meta and parent_meta.title:
+                    parent_name = parent_meta.title
+            except Exception:
+                pass
+            # Fall back to callable_name if parent is itself a callable thread
+            if not parent_name:
+                try:
+                    parent_tc = _agent.thread_config_manager.get_config(parent_thread_id)
+                    if parent_tc and parent_tc.callable_name:
+                        parent_name = parent_tc.callable_name
+                except Exception:
+                    pass
+            # Last resort: raw thread ID
+            if not parent_name:
+                parent_name = parent_thread_id
+            trigger_override = f'Thread("{parent_thread_id}", "{parent_name}")'
+
         # Break the LangChain callback/tracing inheritance chain so the inner
         # graph.invoke() doesn't propagate LLM token events back to the
         # parent's astream_events() — prevents stream leakage.
@@ -73,7 +97,7 @@ description and it will execute autonomously.
         callback_token = tracing_v2_callback_var.set(None)
         collector_token = run_collector_var.set(None)
         try:
-            return thread_invoke(_thread_id, task, user_id, _name)
+            return thread_invoke(_thread_id, task, user_id, _name, trigger_override=trigger_override)
         except Exception as e:
             logger.error(f"{_name} callable thread failed: {e}", exc_info=True)
             return f"[Error]: {_name} invocation failed: {str(e)}"

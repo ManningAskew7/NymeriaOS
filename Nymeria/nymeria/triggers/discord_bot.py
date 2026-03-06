@@ -122,6 +122,7 @@ async def fetch_channel_context(
     channel: Any,
     limit: int = CONTEXT_MESSAGE_COUNT,
     before: Any = None,
+    bot_user_id: Optional[int] = None,
 ) -> str:
     """
     Fetch recent messages from a Discord channel and format them as context.
@@ -130,6 +131,7 @@ async def fetch_channel_context(
         channel: The Discord channel to fetch from.
         limit: Number of recent messages to include.
         before: Fetch messages before this message (to exclude the triggering message).
+        bot_user_id: The bot's own user ID — messages from this user are excluded.
 
     Returns:
         Formatted string with recent channel messages, or empty string if none.
@@ -137,6 +139,9 @@ async def fetch_channel_context(
     try:
         messages: List[discord.Message] = []
         async for msg in channel.history(limit=limit, before=before):
+            # Skip the bot's own messages to avoid duplicating checkpointed context
+            if bot_user_id and msg.author.id == bot_user_id:
+                continue
             messages.append(msg)
 
         if not messages:
@@ -225,6 +230,7 @@ class NymeriaDiscordBot(discord.Client):
         self.api_url = api_url.rstrip("/") if api_url else None
         self.tree = app_commands.CommandTree(self)
         self._start_time = time.time()
+        self._context_enabled: Dict[int, bool] = {}  # channel_id -> enabled
 
         # Register slash commands
         self._register_commands()
@@ -241,13 +247,21 @@ class NymeriaDiscordBot(discord.Client):
             )
             user_id = make_user_id(interaction.user.id)
 
-            # Fetch recent channel messages as context
-            context = await fetch_channel_context(interaction.channel)
+            # Fetch recent channel messages as context (if enabled for this channel)
+            context = ""
+            if self._context_enabled.get(interaction.channel_id, True):
+                bot_id = self.user.id if self.user else None
+                context = await fetch_channel_context(
+                    interaction.channel, bot_user_id=bot_id
+                )
             message_with_context = f"{context}{message}" if context else message
 
             response = await asyncio.to_thread(
                 self.agent.chat, message_with_context, thread_id, user_id
             )
+            tool_calls = getattr(self.agent, "_last_chat_tool_calls", 0)
+            if tool_calls:
+                response += f"\n\n-# Tool calls: {tool_calls}"
             chunks = split_message(response)
             await interaction.followup.send(chunks[0])
             for chunk in chunks[1:]:
@@ -278,7 +292,7 @@ class NymeriaDiscordBot(discord.Client):
                     saver.conn.commit()
                     cleared = True
                 if cleared:
-                    self.agent._token_tracker.clear(thread_id)
+                    self.agent._token_tracker.clear_thread(thread_id)
                     await interaction.followup.send(
                         "Conversation history cleared for this channel.",
                         ephemeral=True,
@@ -488,6 +502,19 @@ class NymeriaDiscordBot(discord.Client):
                 ephemeral=True,
             )
 
+        @self.tree.command(name="channel-context", description="Toggle whether Nymeria reads recent channel messages")
+        async def cmd_channel_context(interaction: discord.Interaction):
+            channel_id = interaction.channel_id
+            currently_enabled = self._context_enabled.get(channel_id, True)
+            new_state = not currently_enabled
+            self._context_enabled[channel_id] = new_state
+            state_str = "enabled" if new_state else "disabled"
+            await interaction.response.send_message(
+                f"Channel context is now **{state_str}** for this channel.\n"
+                f"{'Nymeria will include recent user messages from this channel with each prompt.' if new_state else 'Nymeria will only see messages sent directly to her.'}",
+                ephemeral=True,
+            )
+
         @self.tree.command(name="help", description="Show Nymeria bot commands")
         async def cmd_help(interaction: discord.Interaction):
             embed = discord.Embed(
@@ -523,6 +550,11 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(
                 name="/status",
                 value="Show system status (model, uptime, tools)",
+                inline=False,
+            )
+            embed.add_field(
+                name="/channel-context",
+                value="Toggle whether Nymeria reads recent channel messages",
                 inline=False,
             )
             embed.add_field(
@@ -608,8 +640,13 @@ class NymeriaDiscordBot(discord.Client):
         except Exception:
             pass  # Non-critical
 
-        # Fetch recent channel messages as context (before the triggering message)
-        context = await fetch_channel_context(message.channel, before=message)
+        # Fetch recent channel messages as context (if enabled for this channel)
+        context = ""
+        if self._context_enabled.get(message.channel.id, True):
+            bot_id = self.user.id if self.user else None
+            context = await fetch_channel_context(
+                message.channel, before=message, bot_user_id=bot_id
+            )
         content_with_context = f"{context}{content}" if context else content
 
         # Show typing indicator while processing
@@ -618,6 +655,9 @@ class NymeriaDiscordBot(discord.Client):
                 response = await asyncio.to_thread(
                     self.agent.chat, content_with_context, thread_id, user_id
                 )
+                tool_calls = getattr(self.agent, "_last_chat_tool_calls", 0)
+                if tool_calls:
+                    response += f"\n\n-# Tool calls: {tool_calls}"
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
                 response = f"Sorry, I encountered an error: {e}"

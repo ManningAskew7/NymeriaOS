@@ -3,18 +3,10 @@ Tool Registry for Dynamic Tool Management
 
 Allows frameworks to register, discover, and manage tools dynamically.
 Supports multiple registration patterns for flexibility.
-
-Supports per-user tool filtering based on:
-- Tool-level enable/disable overrides
-- Category-level disabling
-- Sensitive tool opt-in requirements
 """
 
-from typing import Callable, List, Optional, Dict, Any, TYPE_CHECKING
+from typing import Callable, List, Optional, Dict, Any
 from langchain_core.tools import BaseTool, tool as tool_decorator
-
-if TYPE_CHECKING:
-    from ...core.user_profile import UserProfileManager
 
 
 class ToolRegistry:
@@ -121,143 +113,6 @@ class ToolRegistry:
     def get_enabled_tools(self) -> List[BaseTool]:
         """Get only enabled tools (what the agent will use)."""
         return [t for name, t in self._tools.items() if name not in self._disabled]
-
-    def get_tools_for_user(
-        self,
-        user_id: str,
-        profile_manager: "UserProfileManager",
-    ) -> List[BaseTool]:
-        """
-        Get tools filtered by user preferences.
-
-        This method filters the enabled tools based on:
-        1. Tool-specific overrides in enabled_overrides
-        2. Category disabled_categories
-        3. Default from TOOL_METADATA
-
-        Args:
-            user_id: The user identifier
-            profile_manager: UserProfileManager instance to fetch user profile
-
-        Returns:
-            List of tools available for this user
-        """
-        from ...tools.metadata import get_tool_metadata
-
-        profile = profile_manager.get_profile(user_id)
-        tool_prefs = profile.tool_preferences
-
-        filtered_tools = []
-        for name, tool in self._tools.items():
-            # Skip globally disabled tools
-            if name in self._disabled:
-                continue
-
-            # Get tool metadata
-            metadata = get_tool_metadata(name)
-
-            if metadata:
-                # Check if tool is enabled based on user preferences
-                is_enabled = tool_prefs.is_tool_enabled(
-                    tool_name=name,
-                    category=metadata.category.value,
-                    default_enabled=metadata.default_enabled,
-                )
-                if is_enabled:
-                    filtered_tools.append(tool)
-            else:
-                # Unknown tool (custom tool) - include by default unless explicitly disabled
-                is_enabled = tool_prefs.is_tool_enabled(
-                    tool_name=name,
-                    category=None,
-                    default_enabled=True,
-                )
-                if is_enabled:
-                    filtered_tools.append(tool)
-
-        return filtered_tools
-
-    def get_tools_with_user_status(
-        self,
-        user_id: str,
-        profile_manager: "UserProfileManager",
-    ) -> List[Dict[str, Any]]:
-        """
-        Get all tools with their enabled status for a specific user.
-
-        Returns detailed information about each tool including:
-        - Whether it's enabled for this user
-        - Category and security level
-        - Configuration options
-
-        Args:
-            user_id: The user identifier
-            profile_manager: UserProfileManager instance
-
-        Returns:
-            List of dicts with tool info and user-specific status
-        """
-        from ...tools.metadata import get_tool_metadata
-
-        profile = profile_manager.get_profile(user_id)
-        tool_prefs = profile.tool_preferences
-
-        result = []
-        for name, tool in self._tools.items():
-            metadata = get_tool_metadata(name)
-
-            entry = {
-                "name": name,
-                "description": tool.description,
-                "globally_disabled": name in self._disabled,
-            }
-
-            if metadata:
-                entry.update({
-                    "category": metadata.category.value,
-                    "security_level": metadata.security_level.value,
-                    "default_enabled": metadata.default_enabled,
-                    "config_schema": metadata.config_schema,
-                })
-
-                # Determine user-specific enabled state
-                if name in self._disabled:
-                    entry["enabled"] = False
-                    entry["enabled_reason"] = "globally_disabled"
-                elif name in tool_prefs.enabled_overrides:
-                    entry["enabled"] = tool_prefs.enabled_overrides[name]
-                    entry["enabled_reason"] = "user_override"
-                elif metadata.category.value in tool_prefs.disabled_categories:
-                    entry["enabled"] = False
-                    entry["enabled_reason"] = "category_disabled"
-                else:
-                    entry["enabled"] = metadata.default_enabled
-                    entry["enabled_reason"] = "default"
-            else:
-                # Custom/unknown tool
-                entry.update({
-                    "category": "custom",
-                    "security_level": "moderate",
-                    "default_enabled": True,
-                    "config_schema": None,
-                })
-
-                if name in self._disabled:
-                    entry["enabled"] = False
-                    entry["enabled_reason"] = "globally_disabled"
-                elif name in tool_prefs.enabled_overrides:
-                    entry["enabled"] = tool_prefs.enabled_overrides[name]
-                    entry["enabled_reason"] = "user_override"
-                else:
-                    entry["enabled"] = True
-                    entry["enabled_reason"] = "default"
-
-            # Add user-specific config
-            entry["user_config"] = tool_prefs.get_tool_config(name)
-
-            result.append(entry)
-
-        return result
 
     def list_tools(self) -> List[Dict[str, Any]]:
         """List all tools with their status."""

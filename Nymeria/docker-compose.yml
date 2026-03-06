@@ -72,6 +72,11 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-20250514}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-1.0}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
+      LLM_EXTENDED_THINKING: ${LLM_EXTENDED_THINKING:-false}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
+      LLM_USE_MODEL_DEFAULTS: ${LLM_USE_MODEL_DEFAULTS:-false}
       # Database
       DATABASE_BACKEND: postgres
       POSTGRES_URI: postgresql://${POSTGRES_USER:-nymeria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nymeria}
@@ -83,8 +88,28 @@ services:
       NYMERIA_WORKSPACE_DIR: /workspace
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      # Optional
+      # User preferences
+      USER_TIMEZONE: ${USER_TIMEZONE:-Australia/Sydney}
+      # Context management
+      CONTEXT_MANAGEMENT: ${CONTEXT_MANAGEMENT:-auto_compact}
+      COMPACT_THRESHOLD: ${COMPACT_THRESHOLD:-0.8}
+      COMPACT_KEEP_MESSAGES: ${COMPACT_KEEP_MESSAGES:-4}
+      COMPACT_MODEL: ${COMPACT_MODEL:-}
+      # Scheduler & autonomy
+      TICKER_POLL_INTERVAL: ${TICKER_POLL_INTERVAL:-5}
+      MAX_CONCURRENT_AUTONOMOUS: ${MAX_CONCURRENT_AUTONOMOUS:-5}
+      MAX_SELF_INVOKES_PER_HOUR: ${MAX_SELF_INVOKES_PER_HOUR:-50}
+      WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}
+      WATCHDOG_INTERVAL_MINUTES: ${WATCHDOG_INTERVAL_MINUTES:-30}
+      TODO_STALENESS_MINUTES: ${TODO_STALENESS_MINUTES:-20}
+      ACTIVITY_RETENTION_HOURS: ${ACTIVITY_RETENTION_HOURS:-12}
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_PROFILES: ${LOG_PROFILES:-}
+      LOG_MODULES: ${LOG_MODULES:-}
+      # Optional integrations
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      PERPLEXITY_SEARCH_MODEL: ${PERPLEXITY_SEARCH_MODEL:-sonar-pro}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
@@ -122,29 +147,9 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     command: ["python", "run.py", "worker"]
-    environment: &worker-env
-      NYMERIA_API_KEY: ${NYMERIA_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
-      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-20250514}
-      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-1.0}
-      DATABASE_BACKEND: postgres
-      POSTGRES_URI: postgresql://${POSTGRES_USER:-nymeria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nymeria}
-      REDIS_ENABLED: "true"
-      REDIS_URL: redis://redis:6379
-      NYMERIA_DATA_DIR: /data
-      NYMERIA_WORKSPACE_DIR: /workspace
+    environment:
+      <<: *api-env
       WORKER_MODE: "true"
-      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
-      TICKER_POLL_INTERVAL: ${TICKER_POLL_INTERVAL:-5}
-      WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}
-      WATCHDOG_INTERVAL_MINUTES: ${WATCHDOG_INTERVAL_MINUTES:-30}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
-      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
@@ -179,7 +184,7 @@ services:
     profiles:
       - discord  # Only starts when explicitly enabled: docker compose --profile discord up -d
     environment:
-      <<: *worker-env
+      <<: *api-env
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?DISCORD_BOT_TOKEN is required for discord-bot service}
       DISCORD_MODE: ${DISCORD_MODE:-gateway}
       DISCORD_RESPOND_MODE: ${DISCORD_RESPOND_MODE:-mention}

@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +30,8 @@ class Memory(BaseModel):
 class ToolPreferences(BaseModel):
     """User preferences for tool availability and configuration."""
 
-    enabled_overrides: Dict[str, bool] = Field(
-        default_factory=dict,
-        description="Tool-specific enable/disable overrides (tool_name -> enabled)"
-    )
-    disabled_categories: List[str] = Field(
-        default_factory=list,
-        description="List of disabled tool categories"
-    )
+    model_config = ConfigDict(extra="ignore")
+
     tool_configs: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict,
         description="Per-tool configuration (tool_name -> config dict)"
@@ -50,64 +44,11 @@ class ToolPreferences(BaseModel):
         default=None,
         description=(
             "Tool names that new threads inherit by default. "
-            "None = legacy behavior (ALL_TOOLS filtered by enabled_overrides). "
+            "None = not yet initialized (will be populated from ALL_TOOLS on first use). "
             "Empty list = no tools. "
             "Can include both core and optional tool names."
         )
     )
-
-    def is_tool_enabled(
-        self,
-        tool_name: str,
-        category: Optional[str] = None,
-        default_enabled: bool = True,
-    ) -> bool:
-        """
-        Determine if a tool is enabled for this user.
-
-        Priority order:
-        1. Tool-specific overrides in enabled_overrides
-        2. Category disabled_categories
-        3. Default from metadata
-
-        Args:
-            tool_name: The tool name
-            category: The tool's category (for category-level disable)
-            default_enabled: Default enabled state if no overrides
-
-        Returns:
-            True if the tool should be available to this user
-        """
-        # 1. Check tool-specific override
-        if tool_name in self.enabled_overrides:
-            return self.enabled_overrides[tool_name]
-
-        # 2. Check if category is disabled
-        if category and category in self.disabled_categories:
-            return False
-
-        # 3. Default
-        return default_enabled
-
-    def set_tool_enabled(self, tool_name: str, enabled: bool) -> None:
-        """Set tool-specific enabled state."""
-        self.enabled_overrides[tool_name] = enabled
-
-    def clear_tool_override(self, tool_name: str) -> bool:
-        """Clear tool-specific override, returning to default."""
-        if tool_name in self.enabled_overrides:
-            del self.enabled_overrides[tool_name]
-            return True
-        return False
-
-    def set_category_enabled(self, category: str, enabled: bool) -> None:
-        """Enable or disable an entire category."""
-        if enabled:
-            if category in self.disabled_categories:
-                self.disabled_categories.remove(category)
-        else:
-            if category not in self.disabled_categories:
-                self.disabled_categories.append(category)
 
     def set_tool_config(self, tool_name: str, config: Dict[str, Any]) -> None:
         """Set configuration for a specific tool."""
@@ -133,9 +74,8 @@ class ToolPreferences(BaseModel):
         return False
 
     def reset_to_defaults(self) -> None:
-        """Reset all tool preferences to defaults."""
-        self.enabled_overrides.clear()
-        self.disabled_categories.clear()
+        """Reset all tool preferences to defaults (re-init from ALL_TOOLS)."""
+        self.default_thread_tools = None
         self.tool_configs.clear()
         self.custom_descriptions.clear()
 
