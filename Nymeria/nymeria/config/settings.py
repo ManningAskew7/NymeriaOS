@@ -113,6 +113,22 @@ class Settings(BaseSettings):
         description="Guild behavior: mention (only @Nymeria) or all (every message)"
     )
 
+    # Messaging Platform Credentials - Twitch
+    twitch_client_id: Optional[str] = Field(default=None, description="Twitch application Client ID")
+    twitch_client_secret: Optional[str] = Field(default=None, description="Twitch application Client Secret")
+    twitch_bot_access_token: Optional[str] = Field(default=None, description="Twitch bot user access token")
+    twitch_bot_refresh_token: Optional[str] = Field(default=None, description="Twitch bot refresh token")
+    twitch_bot_user_id: Optional[str] = Field(default=None, description="Twitch bot numeric user ID")
+    twitch_broadcaster_token: Optional[str] = Field(default=None, description="Broadcaster's OAuth token (channel:bot scope)")
+    twitch_broadcaster_refresh_token: Optional[str] = Field(default=None, description="Broadcaster's refresh token")
+    twitch_channel: str = Field(default="silk", description="Twitch channel to join")
+    twitch_buffer_size: int = Field(default=500, ge=50, le=5000, description="Chat message ring buffer size")
+    twitch_pulse_enabled: bool = Field(default=True, description="Enable periodic chat pulse")
+    twitch_pulse_interval: int = Field(default=300, ge=60, le=3600, description="Seconds between pulse checks")
+    twitch_pulse_message_count: int = Field(default=100, ge=10, le=500, description="Messages to include in pulse context")
+    twitch_command_context_count: int = Field(default=50, ge=5, le=200, description="Messages to include with !ask context")
+    twitch_respond_mode: str = Field(default="command", description="Response mode: command (only !commands)")
+
     # Messaging Platform Credentials - Slack
     slack_webhook_url: Optional[str] = Field(
         default=None,
@@ -473,6 +489,13 @@ class Settings(BaseSettings):
             errors.append(
                 "DATABASE_BACKEND is 'postgres' but POSTGRES_URI is not set.\n"
                 "  Either set POSTGRES_URI or change DATABASE_BACKEND to 'sqlite'."
+            )
+
+        # Twitch bot warning
+        if self.twitch_bot_access_token and not provider_key:
+            warnings.append(
+                "TWITCH_BOT_ACCESS_TOKEN is set but no LLM API key configured.\n"
+                "  The Twitch bot will not be able to process messages."
             )
 
         # Discord bot warning

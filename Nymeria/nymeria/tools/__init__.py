@@ -53,6 +53,7 @@ from .triggers import (
 from .hello_test import hello_test
 from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
 from .google_docs import GOOGLE_DOCS_TOOLS
+from .twitch import TWITCH_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -71,6 +72,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SELF_AGENT_TOOLS
     + SUBAGENT_TOOLS
     + GOOGLE_DOCS_TOOLS
+    + TWITCH_TOOLS
 )}
 
 # All available tools
@@ -144,6 +146,7 @@ __all__ = [
     "sticky_note",
     "STICKY_NOTE_TOOLS",
     "GOOGLE_DOCS_TOOLS",
+    "TWITCH_TOOLS",
 ]
 
 

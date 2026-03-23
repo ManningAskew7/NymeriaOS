@@ -770,12 +770,13 @@ Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** an
 
 Optional tools are NOT loaded by default. They're available for per-thread enabling via the thread config UI.
 
-**Currently available (~50 tools):**
+**Currently available (~55 tools):**
 - 13 Outlook email tools (3 auth + 10 email)
 - 4 trigger tools (create/list/update/delete)
 - 9 browser tools (navigate, click, type, content, screenshot, scroll, key, close, status)
 - 14 calendar tools (3 auth + 11 event)
 - 7 self-modify tools (file read/write/list/delete, test import, reload, invoke)
+- 5 Twitch tools (send, timeout, ban, unban, announce) — see `docs/twitch-bot.md`
 - 2 utility tools (self_modify_rollback, consult)
 
 **How it works:**
