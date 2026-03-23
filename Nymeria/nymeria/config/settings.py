@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +37,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def empty_strings_to_none(cls, values):
+        """Convert empty string env vars to None for Optional fields."""
+        if isinstance(values, dict):
+            for key, value in values.items():
+                if value == "":
+                    values[key] = None
+        return values
 
     # API Authentication (required for security)
     nymeria_api_key: Optional[str] = Field(default=None, description="API key for authentication")
