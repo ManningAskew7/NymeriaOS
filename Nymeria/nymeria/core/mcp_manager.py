@@ -129,9 +129,12 @@ class MCPServerManager:
                 del self._connections[key]
 
     def _get_config_key(self, config: MCPToolConfig) -> str:
-        """Generate a unique key for a config to identify connections."""
-        # Use command + args + tool_name as the key
-        return f"{config.server_command}|{':'.join(config.server_args)}|{config.tool_name}"
+        """Generate a unique key for a config to identify connections.
+
+        Keys by server_command + args only (not tool_name) so all tools
+        from the same server share one subprocess connection.
+        """
+        return f"{config.server_command}|{':'.join(config.server_args)}"
 
     def _get_or_create_connection(self, config: MCPToolConfig) -> MCPConnection:
         """Get an existing connection or create a new one.

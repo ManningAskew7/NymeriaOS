@@ -27,7 +27,8 @@ const CATEGORY_INFO: Record<string, { name: string; icon: string; description: s
   browser: { name: 'Browser', icon: 'globe', description: 'Browser automation tools' },
   calendar: { name: 'Calendar', icon: 'calendar', description: 'Calendar tools' },
   google_docs: { name: 'Google Docs', icon: 'file-text', description: 'Google Docs tools' },
-  custom: { name: 'Custom', icon: 'puzzle', description: 'User-created custom tools' }
+  custom: { name: 'Custom', icon: 'puzzle', description: 'User-created custom tools' },
+  mcp_server: { name: 'MCP Servers', icon: 'server', description: 'Tools from MCP servers' }
 };
 
 function getBuiltinTools(): UnifiedTool[] {

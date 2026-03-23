@@ -12,6 +12,9 @@
   import Button from '$lib/components/common/Button.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
+  import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
+  import MCPServerForm from '$lib/components/tools/MCPServerForm.svelte';
+  import type { MCPServerCreateRequest } from '$lib/types';
   import { untrack } from 'svelte';
 
   interface Props {
@@ -69,14 +72,78 @@
     return activeCore + enabledTools.size;
   });
 
-  // Optional tools (not in core set)
+  // Optional tools (not in core set), excluding MCP tools
   const optionalTools = $derived(() => {
     if (!defaultToolsStore.loaded) return [];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
-      .filter(t => !coreSet.has(t.name))
+      .filter(t => !coreSet.has(t.name) && !t.name.startsWith('mcp__'))
       .map(t => ({ name: t.name, description: t.description }));
   });
+
+  // MCP tools grouped by server ID (optional, not in core set)
+  const mcpToolsByServer = $derived(() => {
+    if (!defaultToolsStore.loaded) return {} as Record<string, { name: string; description: string }[]>;
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const mcpTools = defaultToolsStore.tools.filter(t => t.name.startsWith('mcp__') && !coreSet.has(t.name));
+    const grouped: Record<string, { name: string; description: string }[]> = {};
+    for (const t of mcpTools) {
+      const parts = t.name.split('__');
+      const serverId = parts[1] ?? 'unknown';
+      if (!grouped[serverId]) grouped[serverId] = [];
+      grouped[serverId].push({ name: t.name, description: t.description });
+    }
+    return grouped;
+  });
+
+  // MCP UI state
+  let showMcpAddForm = $state(false);
+  let mcpAddLoading = $state(false);
+  let mcpAddError = $state<string | null>(null);
+  let expandedMcpServer = $state<string | null>(null);
+
+  function getServerName(serverId: string): string {
+    const server = mcpServersStore.servers.find(s => s.id === serverId);
+    return server?.name ?? serverId;
+  }
+
+  function toggleAllMcpTools(tools: { name: string }[], enable: boolean) {
+    const next = new Set(enabledTools);
+    for (const t of tools) {
+      if (enable) next.add(t.name);
+      else next.delete(t.name);
+    }
+    enabledTools = next;
+  }
+
+  function areMcpToolsAllEnabled(tools: { name: string }[]): boolean {
+    return tools.every(t => enabledTools.has(t.name));
+  }
+
+  async function handleMcpAdd(data: MCPServerCreateRequest) {
+    mcpAddLoading = true;
+    mcpAddError = null;
+    try {
+      const result = await mcpServersStore.create(data, threadId);
+      if (result.discoveryError) {
+        mcpAddError = `Server added but discovery failed: ${result.discoveryError}`;
+      } else {
+        showMcpAddForm = false;
+        mcpAddError = null;
+        defaultToolsStore.resetLoaded();
+        await defaultToolsStore.load();
+        const next = new Set(enabledTools);
+        for (const tool of result.server.discoveredTools) {
+          next.add(`mcp__${result.server.id}__${tool.name}`);
+        }
+        enabledTools = next;
+      }
+    } catch (e) {
+      mcpAddError = e instanceof Error ? e.message : 'Failed to add server';
+    } finally {
+      mcpAddLoading = false;
+    }
+  }
 
   // Filtered core tools
   const filteredTools = $derived(() => {
@@ -117,6 +184,7 @@
         if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
         if (!modelsStore.loaded && !modelsStore.loading) modelsStore.loadModels();
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
+        if (!mcpServersStore.loaded && !mcpServersStore.loading) mcpServersStore.load();
         if (Object.keys(triggersStore.sources).length === 0) triggersStore.loadSources();
       });
     }
@@ -617,6 +685,72 @@
               {/each}
             </div>
           {/if}
+
+          <!-- MCP Servers subsection -->
+          {#if Object.keys(mcpToolsByServer()).length > 0 || mcpServersStore.servers.length > 0}
+            <div class="section-divider">
+              <span class="section-title">
+                <Icon name="terminal" size={14} />
+                MCP Servers
+              </span>
+              <p class="hint">Tools from MCP servers. Enable for this thread.</p>
+            </div>
+
+            {#each Object.entries(mcpToolsByServer()) as [serverId, tools]}
+              <div class="mcp-server-group">
+                <div class="mcp-server-header-row">
+                  <button
+                    class="mcp-server-header"
+                    onclick={() => expandedMcpServer = expandedMcpServer === serverId ? null : serverId}
+                  >
+                    <span class="mcp-server-name">{getServerName(serverId)}</span>
+                    <span class="mcp-tool-count">{tools.filter(t => enabledTools.has(t.name)).length}/{tools.length}</span>
+                  </button>
+                  <button
+                    class="mcp-bulk-btn"
+                    type="button"
+                    onclick={() => toggleAllMcpTools(tools, !areMcpToolsAllEnabled(tools))}
+                  >
+                    {areMcpToolsAllEnabled(tools) ? 'Disable all' : 'Enable all'}
+                  </button>
+                </div>
+                {#if expandedMcpServer === serverId}
+                  <div class="mcp-tool-list">
+                    {#each tools as tool (tool.name)}
+                      <div class="tool-row" class:tool-enabled={enabledTools.has(tool.name)}>
+                        <div class="tool-info">
+                          <span class="tool-name">{tool.name.split('__').pop()}</span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <button
+                          class="toggle-btn"
+                          class:off={!enabledTools.has(tool.name)}
+                          onclick={() => toggleOptionalTool(tool.name)}
+                          type="button"
+                        >
+                          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+
+            {#if showMcpAddForm}
+              <MCPServerForm
+                mode="add"
+                loading={mcpAddLoading}
+                error={mcpAddError}
+                onSubmit={handleMcpAdd}
+                onCancel={() => { showMcpAddForm = false; mcpAddError = null; }}
+              />
+            {:else}
+              <button class="mcp-add-btn" onclick={() => showMcpAddForm = true}>
+                <Icon name="plus" size={14} /> Add MCP Server
+              </button>
+            {/if}
+          {/if}
         {/if}
 
       {:else if activeTab === 'triggers'}
@@ -1053,5 +1187,72 @@
 
   input[type="number"] {
     -moz-appearance: textfield;
+  }
+
+  /* MCP Servers in tools tab */
+  .mcp-server-group {
+    border: 1px solid var(--border-subtle, var(--border-color));
+    border-radius: 6px;
+    margin-bottom: 0.3rem;
+    overflow: hidden;
+  }
+
+  .mcp-server-header-row {
+    display: flex;
+    align-items: center;
+    background: var(--bg-elevated, var(--surface-secondary));
+  }
+
+  .mcp-server-header {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    min-height: 44px;
+  }
+
+  .mcp-server-name {
+    flex: 1;
+    text-align: left;
+    font-weight: 500;
+  }
+
+  .mcp-tool-count {
+    font-size: 0.75rem;
+    color: var(--text-secondary, var(--text-muted));
+  }
+
+  .mcp-bulk-btn {
+    font-size: 0.75rem;
+    color: var(--accent-primary, var(--accent));
+    background: none;
+    border: none;
+    padding: 0.3rem 0.5rem;
+    min-height: 44px;
+  }
+
+  .mcp-tool-list {
+    border-top: 1px solid var(--border-subtle, var(--border-color));
+  }
+
+  .mcp-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    padding: 0.5rem;
+    margin-top: 0.4rem;
+    border: 1px dashed var(--border-color);
+    border-radius: 6px;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    width: 100%;
+    min-height: 44px;
   }
 </style>

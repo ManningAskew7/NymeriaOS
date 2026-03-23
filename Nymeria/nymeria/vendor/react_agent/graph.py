@@ -517,5 +517,13 @@ class ReactAgent:
 
 
 # === DEFAULT GRAPH INSTANCE ===
-# For backward compatibility and LangGraph Studio
-graph = get_graph_with_memory()
+# Lazy-initialized to avoid crashing on import when env vars aren't set.
+graph = None
+
+
+def _get_default_graph():
+    """Lazily initialize the default graph on first use."""
+    global graph
+    if graph is None:
+        graph = get_graph_with_memory()
+    return graph

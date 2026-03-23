@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..core.user_profile import ToolPreferences
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
@@ -166,6 +166,18 @@ class ServerSettingsResponse(BaseModel):
     watchdog_interval_minutes: int
     todo_staleness_minutes: int
     activity_retention_hours: int
+    # Voice settings
+    tts_provider: str = "none"
+    tts_base_url: Optional[str] = None
+    tts_model: str = "tts-1-hd"
+    tts_voice: str = "nova"
+    tts_output_format: str = "mp3"
+    tts_speed: float = 1.0
+    stt_provider: str = "none"
+    stt_base_url: Optional[str] = None
+    stt_model: str = "gpt-4o-mini-transcribe"
+    stt_language: Optional[str] = None
+    voice_default_thread_id: Optional[str] = None
 
 
 class ServerSettingsUpdate(BaseModel):
@@ -195,6 +207,18 @@ class ServerSettingsUpdate(BaseModel):
     watchdog_interval_minutes: Optional[int] = None
     todo_staleness_minutes: Optional[int] = None
     activity_retention_hours: Optional[int] = None
+    # Voice settings
+    tts_provider: Optional[str] = None
+    tts_base_url: Optional[str] = None
+    tts_model: Optional[str] = None
+    tts_voice: Optional[str] = None
+    tts_output_format: Optional[str] = None
+    tts_speed: Optional[float] = None
+    stt_provider: Optional[str] = None
+    stt_base_url: Optional[str] = None
+    stt_model: Optional[str] = None
+    stt_language: Optional[str] = None
+    voice_default_thread_id: Optional[str] = None
 
 
 class OpenRouterKeyDiagnostics(BaseModel):
@@ -434,7 +458,7 @@ class UnifiedToolResponse(BaseModel):
     security_level: str
     enabled: bool
     enabled_reason: str
-    tool_type: Literal["builtin", "custom"]
+    tool_type: Literal["builtin", "custom", "mcp_server"]
     implementation_type: Optional[str] = None  # "http" or "mcp" for custom tools
     config_schema: Optional[Dict[str, Any]] = None
     user_config: Dict[str, Any] = {}
@@ -1486,6 +1510,20 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 })
                 seen.add(name)
 
+        # Include MCP server tools
+        from ..tools.metadata import MCP_SERVER_TOOL_METADATA
+        for name, meta in MCP_SERVER_TOOL_METADATA.items():
+            if name not in seen:
+                tools_out.append({
+                    "name": name,
+                    "description": meta.description,
+                    "category": "mcp_server",
+                    "security_level": "moderate",
+                    "is_optional": True,
+                    "is_default": name in default_set,
+                })
+                seen.add(name)
+
         callable_count = len(agent.thread_config_manager.list_callable_threads())
 
         return {
@@ -1506,9 +1544,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     ):
         """Set which tools new threads inherit by default."""
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools.metadata import MCP_SERVER_TOOL_METADATA
 
-        # Validate tool names
-        known = {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys())
+        # Validate tool names (allow built-in, optional, and MCP server tools)
+        known = {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys()) | set(MCP_SERVER_TOOL_METADATA.keys())
         unknown = set(request.tool_names) - known
         if unknown:
             raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
@@ -1585,6 +1624,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             watchdog_interval_minutes=settings.watchdog_interval_minutes,
             todo_staleness_minutes=settings.todo_staleness_minutes,
             activity_retention_hours=settings.activity_retention_hours,
+            # Voice settings
+            tts_provider=settings.tts_provider,
+            tts_base_url=settings.tts_base_url,
+            tts_model=settings.tts_model,
+            tts_voice=settings.tts_voice,
+            tts_output_format=settings.tts_output_format,
+            tts_speed=settings.tts_speed,
+            stt_provider=settings.stt_provider,
+            stt_base_url=settings.stt_base_url,
+            stt_model=settings.stt_model,
+            stt_language=settings.stt_language,
+            voice_default_thread_id=settings.voice_default_thread_id,
         )
 
     @app.get("/settings/llm/runtime", response_model=LLMRuntimeDiagnosticsResponse, tags=["Settings"])
@@ -1715,6 +1766,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "watchdog_interval_minutes": "WATCHDOG_INTERVAL_MINUTES",
             "todo_staleness_minutes": "TODO_STALENESS_MINUTES",
             "activity_retention_hours": "ACTIVITY_RETENTION_HOURS",
+            # Voice settings
+            "tts_provider": "TTS_PROVIDER",
+            "tts_base_url": "TTS_BASE_URL",
+            "tts_model": "TTS_MODEL",
+            "tts_voice": "TTS_VOICE",
+            "tts_output_format": "TTS_OUTPUT_FORMAT",
+            "tts_speed": "TTS_SPEED",
+            "stt_provider": "STT_PROVIDER",
+            "stt_base_url": "STT_BASE_URL",
+            "stt_model": "STT_MODEL",
+            "stt_language": "STT_LANGUAGE",
+            "voice_default_thread_id": "VOICE_DEFAULT_THREAD_ID",
         }
 
         # Get updates as dict, excluding None values
@@ -1755,18 +1818,23 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Write back to .env
         env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-        # Hot-reload: update os.environ so Pydantic picks up new values
-        for setting_name, value in updates_dict.items():
-            env_var = env_mapping.get(setting_name)
-            if env_var:
-                if isinstance(value, bool):
-                    os.environ[env_var] = str(value).lower()
-                else:
-                    os.environ[env_var] = str(value)
+        # Hot-reload: sync ALL mapped env vars from the .env file we just wrote,
+        # not just the ones in this update. This ensures Pydantic Settings
+        # (which prioritizes os.environ over .env files) sees the correct values
+        # even for settings that weren't part of this PATCH request.
+        for line in new_lines:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, _, val = line.partition('=')
+                key = key.strip()
+                # Only update env vars that are in our mapping
+                if key in {v for v in env_mapping.values()}:
+                    os.environ[key] = val
 
         # Clear cached settings and create fresh instance
         get_settings.cache_clear()
         new_settings = get_settings()
+        logger.info(f"[SETTINGS] After hot-reload: TTS_PROVIDER={new_settings.tts_provider}, STT_PROVIDER={new_settings.stt_provider}, env TTS_PROVIDER={os.environ.get('TTS_PROVIDER')}")
 
         # Update agent's settings reference and rebuild graphs
         agent = get_agent()
@@ -2772,6 +2840,230 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         }
 
     # ========================================================================
+    # MCP Server Endpoints
+    # ========================================================================
+
+    class MCPServerCreateRequest(BaseModel):
+        """Request model for creating an MCP server."""
+        id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+        name: str = Field(..., min_length=1, max_length=128)
+        description: str = ""
+        server_command: str = Field(..., min_length=1)
+        server_args: List[str] = []
+        env_vars: Dict[str, str] = {}
+        working_directory: Optional[str] = None
+        idle_timeout_seconds: int = 300
+        startup_timeout_seconds: int = 30
+        enabled: bool = True
+
+    class MCPServerUpdateRequest(BaseModel):
+        """Request model for updating an MCP server."""
+        name: Optional[str] = None
+        description: Optional[str] = None
+        server_command: Optional[str] = None
+        server_args: Optional[List[str]] = None
+        env_vars: Optional[Dict[str, str]] = None
+        working_directory: Optional[str] = None
+        idle_timeout_seconds: Optional[int] = None
+        startup_timeout_seconds: Optional[int] = None
+        enabled: Optional[bool] = None
+
+    @app.get("/mcp-servers", tags=["MCP Servers"])
+    async def list_mcp_servers(_: bool = Depends(verify_api_key)):
+        """List all MCP server definitions with discovered tools."""
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        servers = registry.get_all_servers()
+        return {
+            "servers": [s.model_dump() for s in servers],
+            "total": len(servers),
+        }
+
+    @app.post("/mcp-servers", tags=["MCP Servers"])
+    async def create_mcp_server(
+        request: MCPServerCreateRequest,
+        thread_id: Optional[str] = Query(None, description="Auto-enable tools for this thread"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Add a new MCP server. Saves config and triggers tool discovery."""
+        from ..core.mcp_servers import get_mcp_server_registry
+        from ..tools.definitions.schema import MCPServerDefinition
+
+        registry = get_mcp_server_registry()
+
+        # Check for duplicate ID
+        if registry.get_server(request.id):
+            raise HTTPException(400, detail=f"MCP server '{request.id}' already exists")
+
+        defn = MCPServerDefinition(
+            id=request.id,
+            name=request.name,
+            description=request.description,
+            server_command=request.server_command,
+            server_args=request.server_args,
+            env_vars=request.env_vars,
+            working_directory=request.working_directory,
+            idle_timeout_seconds=request.idle_timeout_seconds,
+            startup_timeout_seconds=request.startup_timeout_seconds,
+            enabled=request.enabled,
+        )
+        registry.save_server(defn)
+
+        # Discover tools
+        discovered = []
+        discovery_error = None
+        try:
+            discovered = registry.discover_tools(request.id)
+        except Exception as e:
+            discovery_error = str(e)
+            logger.warning(f"Tool discovery failed for MCP server '{request.id}': {e}")
+
+        # Reload agent tools so new MCP tools are available
+        agent = get_agent()
+        agent.reload_mcp_server_tools()
+
+        # If thread_id provided, auto-enable all discovered tools for that thread
+        if thread_id and discovered:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
+            for dt in discovered:
+                tool_name = f"mcp__{request.id}__{dt.name}"
+                if tool_name not in enabled_tools:
+                    enabled_tools.append(tool_name)
+            agent.thread_config_manager.update_config(thread_id, enabled_tools=enabled_tools)
+            agent.invalidate_thread_config_cache(thread_id)
+
+        result = {
+            "status": "ok",
+            "server": registry.get_server(request.id).model_dump(),
+            "discovered_tools": len(discovered),
+        }
+        if discovery_error:
+            result["discovery_error"] = discovery_error
+        if thread_id:
+            result["thread_id"] = thread_id
+
+        return result
+
+    @app.get("/mcp-servers/{server_id}", tags=["MCP Servers"])
+    async def get_mcp_server(
+        server_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Get a specific MCP server definition."""
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        defn = registry.get_server(server_id)
+        if not defn:
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
+        return defn.model_dump()
+
+    @app.put("/mcp-servers/{server_id}", tags=["MCP Servers"])
+    async def update_mcp_server(
+        server_id: str,
+        request: MCPServerUpdateRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Update an MCP server config. Re-discovers tools after update."""
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        defn = registry.get_server(server_id)
+        if not defn:
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
+
+        # Apply updates
+        update_data = request.model_dump(exclude_none=True)
+        for key, value in update_data.items():
+            setattr(defn, key, value)
+
+        registry.save_server(defn)
+
+        # Re-discover tools
+        discovered = []
+        discovery_error = None
+        try:
+            discovered = registry.discover_tools(server_id)
+        except Exception as e:
+            discovery_error = str(e)
+
+        # Reload agent tools
+        agent = get_agent()
+        agent.reload_mcp_server_tools()
+
+        result = {
+            "status": "ok",
+            "server": registry.get_server(server_id).model_dump(),
+            "discovered_tools": len(discovered),
+        }
+        if discovery_error:
+            result["discovery_error"] = discovery_error
+        return result
+
+    @app.delete("/mcp-servers/{server_id}", tags=["MCP Servers"])
+    async def delete_mcp_server(
+        server_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Remove an MCP server and all its tools."""
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        if not registry.delete_server(server_id):
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
+
+        # Reload agent tools to remove deleted MCP tools
+        agent = get_agent()
+        agent.reload_mcp_server_tools()
+
+        return {"status": "ok", "deleted": server_id}
+
+    @app.post("/mcp-servers/{server_id}/discover", tags=["MCP Servers"])
+    async def discover_mcp_server_tools(
+        server_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Force re-discover tools from an MCP server."""
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        if not registry.get_server(server_id):
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
+
+        try:
+            discovered = registry.discover_tools(server_id)
+        except Exception as e:
+            raise HTTPException(500, detail=f"Discovery failed: {str(e)}")
+
+        # Reload agent tools
+        agent = get_agent()
+        agent.reload_mcp_server_tools()
+
+        return {
+            "status": "ok",
+            "server_id": server_id,
+            "discovered_tools": [dt.model_dump() for dt in discovered],
+            "count": len(discovered),
+        }
+
+    @app.post("/mcp-servers/{server_id}/test", tags=["MCP Servers"])
+    async def test_mcp_server(
+        server_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Test connectivity to an MCP server."""
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        if not registry.get_server(server_id):
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
+
+        result = registry.test_connection(server_id)
+        return result
+
+    # ========================================================================
     # Agent Thread Endpoints
     # ========================================================================
 
@@ -3438,8 +3730,39 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             user_config = tool_prefs.get_tool_config(defn.id)
             unified_tools.append(_custom_to_unified(defn, True, "default", user_config, tool_prefs))
 
-        # Sort: built-in first, then custom, alphabetically within each
-        unified_tools.sort(key=lambda t: (0 if t.tool_type == "builtin" else 1, t.name))
+        # MCP server tools: appear with category "mcp_server"
+        from ..tools.metadata import MCP_SERVER_TOOL_METADATA
+        for tool_name, meta in MCP_SERVER_TOOL_METADATA.items():
+            if tool_name not in seen:
+                enabled = tool_name in dtt_set
+                unified_tools.append(UnifiedToolResponse(
+                    id=tool_name,
+                    name=tool_name,
+                    description=meta.description,
+                    default_description=meta.description,
+                    custom_description=None,
+                    category="mcp_server",
+                    security_level="moderate",
+                    enabled=enabled,
+                    enabled_reason="default_thread_tools",
+                    tool_type="mcp_server",
+                    implementation_type="mcp",
+                    config_schema=None,
+                    user_config={},
+                    parameters=None,
+                    http_config=None,
+                    mcp_config=None,
+                    tags=[],
+                    editable=False,
+                    configurable=False,
+                    created_at=None,
+                    updated_at=None,
+                ))
+                seen.add(tool_name)
+
+        # Sort: built-in first, then mcp_server, then custom, alphabetically within each
+        type_order = {"builtin": 0, "mcp_server": 1, "custom": 2}
+        unified_tools.sort(key=lambda t: (type_order.get(t.tool_type, 9), t.name))
 
         builtin_count = sum(1 for t in unified_tools if t.tool_type == "builtin")
         custom_count = sum(1 for t in unified_tools if t.tool_type == "custom")
@@ -3459,21 +3782,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         _: bool = Depends(verify_api_key),
     ):
         """
-        Enable or disable a built-in tool for a user by adding/removing it
+        Enable or disable a built-in or MCP server tool for a user by adding/removing it
         from default_thread_tools. Custom tools are not affected (they are
         always available and managed per-thread via enabled_tools).
         """
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
-        from ..tools.metadata import get_tool_metadata
+        from ..tools.metadata import get_tool_metadata, get_all_tool_metadata
 
         agent = get_agent()
 
-        # Check if tool exists as built-in
-        builtin_meta = get_tool_metadata(tool_id)
-        if not builtin_meta:
+        # Check if tool exists as built-in or MCP server tool
+        tool_meta = get_all_tool_metadata(tool_id)
+        if not tool_meta:
             raise HTTPException(
                 status_code=404,
-                detail=f"Built-in tool '{tool_id}' not found",
+                detail=f"Tool '{tool_id}' not found",
             )
 
         with agent.profile_manager.atomic_update(user_id) as profile:
@@ -3502,7 +3825,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "status": "ok",
             "tool_id": tool_id,
             "enabled": request.enabled,
-            "tool_type": "builtin",
+            "tool_type": tool_meta.category.value if tool_meta.category.value == "mcp_server" else "builtin",
         }
 
     @app.put("/users/{user_id}/tools/unified/{tool_id}/description", tags=["Unified Tools"])
@@ -3738,6 +4061,137 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "status": "ok",
             "deleted": tool_id,
         }
+
+    # ========================================================================
+    # Voice Endpoints
+    # ========================================================================
+
+    @app.post("/voice/chat", tags=["Voice"])
+    async def voice_chat(
+        audio: UploadFile = File(..., description="Audio file (WAV, MP3, AAC, etc.)"),
+        thread_id: Optional[str] = Form(default=None),
+        user_id: str = Form(default="default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Voice conversation: audio in, audio out.
+
+        Accepts an audio file, transcribes it (STT), sends the text through
+        the Nymeria agent, then synthesizes the response (TTS) and returns audio.
+        """
+        from ..core.voice import get_stt_service, get_tts_service, VoiceServiceError
+
+        settings = get_settings()
+
+        try:
+            stt = get_stt_service(settings)
+            tts = get_tts_service(settings)
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        # Read uploaded audio
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        # STT: audio -> text
+        try:
+            transcription = await stt.transcribe(
+                audio_bytes,
+                filename=audio.filename or "recording.wav",
+                content_type=audio.content_type or "audio/wav",
+            )
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=502, detail=f"STT failed: {e}")
+
+        if not transcription:
+            raise HTTPException(status_code=422, detail="Could not transcribe audio (empty result)")
+
+        logger.info(f"[VOICE] STT transcription: {transcription[:100]}...")
+
+        # Agent: text -> response
+        agent = get_agent()
+        tid = thread_id or settings.voice_default_thread_id or "watch-default"
+        try:
+            response_text = agent.chat(
+                transcription,
+                thread_id=tid,
+                user_id=user_id,
+                _trigger_override="Smartwatch — respond concisely, your reply will be spoken aloud",
+            )
+        except Exception as e:
+            logger.error(f"[VOICE] Agent error: {e}")
+            raise HTTPException(status_code=500, detail=f"Agent error: {e}")
+
+        if not response_text:
+            response_text = "I received your message but had no response."
+
+        # TTS: text -> audio
+        try:
+            audio_out, content_type = await tts.synthesize(response_text)
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
+
+        return Response(content=audio_out, media_type=content_type)
+
+    @app.post("/voice/tts", tags=["Voice"])
+    async def voice_tts(
+        request: Request,
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Text-to-Speech: accepts JSON {text: string}, returns audio bytes.
+        """
+        from ..core.voice import get_tts_service, VoiceServiceError
+
+        body = await request.json()
+        text = body.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="'text' field is required")
+
+        settings = get_settings()
+        try:
+            tts = get_tts_service(settings)
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        try:
+            audio_bytes, content_type = await tts.synthesize(text)
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
+
+        return Response(content=audio_bytes, media_type=content_type)
+
+    @app.post("/voice/stt", tags=["Voice"])
+    async def voice_stt(
+        audio: UploadFile = File(..., description="Audio file to transcribe"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Speech-to-Text: accepts audio file upload, returns JSON {text: string}.
+        """
+        from ..core.voice import get_stt_service, VoiceServiceError
+
+        settings = get_settings()
+        try:
+            stt = get_stt_service(settings)
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        try:
+            text = await stt.transcribe(
+                audio_bytes,
+                filename=audio.filename or "recording.wav",
+                content_type=audio.content_type or "audio/wav",
+            )
+        except VoiceServiceError as e:
+            raise HTTPException(status_code=502, detail=f"STT failed: {e}")
+
+        return {"text": text}
 
     return app
 

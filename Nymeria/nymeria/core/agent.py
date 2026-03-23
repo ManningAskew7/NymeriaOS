@@ -381,6 +381,9 @@ class NymeriaAgent:
         self._custom_tool_loader = None
         self._load_custom_tools()
 
+        # Load MCP server tools
+        self._load_mcp_server_tools()
+
         # Per-thread locking to prevent concurrent access (ticker vs API)
         self._thread_locks = ThreadLockManager()
         # Maps callable tool names to their thread IDs (for auto-abort on timeout)
@@ -1719,18 +1722,16 @@ class NymeriaAgent:
     def _get_callable_thread_tools(self, tc) -> List[BaseTool]:
         """Get tools for a callable thread.
 
-        Gives the standard tool set but excludes all callable thread tools
-        to prevent self-invocation loops.
+        Gives the standard tool set plus other callable thread tools,
+        excluding only this thread's own callable tool to prevent
+        self-invocation loops.
         """
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
 
-        callable_names = {
-            t2.callable_name
-            for t2 in self.thread_config_manager.list_callable_threads()
-            if t2.callable_name
-        }
+        # Only exclude this thread's own callable tool (prevent self-invocation)
+        own_callable_name = tc.callable_name
 
-        # Use default_thread_tools as the base set, excluding callable tools
+        # Use default_thread_tools as the base set
         profile = self.profile_manager.get_profile("default")
         default_tools = profile.tool_preferences.default_thread_tools
 
@@ -1738,10 +1739,20 @@ class NymeriaAgent:
         all_tools_dict.update(OPTIONAL_TOOLS)
 
         core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
-        return [
+        tools = [
             all_tools_dict[name] for name in core_names
-            if name in all_tools_dict and name not in callable_names
+            if name in all_tools_dict
         ]
+
+        # Include other callable thread tools (excluding self to prevent loops)
+        existing_names = {t.name for t in tools}
+        for t in self.tool_registry.get_all_tools():
+            if (t.name not in existing_names
+                    and t.name in self._callable_tool_thread_map
+                    and t.name != own_callable_name):
+                tools.append(t)
+
+        return tools
 
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a LangGraph execution graph with a specific system prompt.
@@ -1792,6 +1803,15 @@ class NymeriaAgent:
                 if t.name not in existing_names and t.name in self._callable_tool_thread_map:
                     tools.append(t)
 
+            # Include MCP server tools that are in default_thread_tools
+            if default_tools is not None:
+                existing_names = {t.name for t in tools}
+                for name in core_names:
+                    if name.startswith("mcp__") and name not in existing_names:
+                        reg_tool = self.tool_registry.get_tool(name)
+                        if reg_tool:
+                            tools.append(reg_tool)
+
         # Apply per-thread tool filtering (remove disabled, add enabled)
         if tc:
             if tc.disabled_tools:
@@ -1803,8 +1823,14 @@ class NymeriaAgent:
                 all_tools_dict.update(OPTIONAL_TOOLS)
                 existing = {t.name for t in tools}
                 for name in tc.enabled_tools:
-                    if name in all_tools_dict and name not in existing:
-                        tools.append(all_tools_dict[name])
+                    if name not in existing:
+                        if name in all_tools_dict:
+                            tools.append(all_tools_dict[name])
+                        else:
+                            # Fall back to tool_registry (MCP server tools, custom tools)
+                            reg_tool = self.tool_registry.get_tool(name)
+                            if reg_tool:
+                                tools.append(reg_tool)
 
         return create_graph(
             config=config,
@@ -1860,6 +1886,15 @@ class NymeriaAgent:
                 if t.name not in existing_names and t.name in self._callable_tool_thread_map:
                     tools.append(t)
 
+            # Include MCP server tools that are in default_thread_tools
+            if default_tools is not None:
+                existing_names = {t.name for t in tools}
+                for name in core_names:
+                    if name.startswith("mcp__") and name not in existing_names:
+                        reg_tool = self.tool_registry.get_tool(name)
+                        if reg_tool:
+                            tools.append(reg_tool)
+
         # Apply per-thread tool filtering (remove disabled, add enabled)
         if tc:
             if tc.disabled_tools:
@@ -1871,8 +1906,14 @@ class NymeriaAgent:
                 all_tools_dict.update(OPTIONAL_TOOLS)
                 existing = {t.name for t in tools}
                 for name in tc.enabled_tools:
-                    if name in all_tools_dict and name not in existing:
-                        tools.append(all_tools_dict[name])
+                    if name not in existing:
+                        if name in all_tools_dict:
+                            tools.append(all_tools_dict[name])
+                        else:
+                            # Fall back to tool_registry (MCP server tools, custom tools)
+                            reg_tool = self.tool_registry.get_tool(name)
+                            if reg_tool:
+                                tools.append(reg_tool)
 
         return create_graph(
             config=config,
@@ -2032,6 +2073,30 @@ class NymeriaAgent:
                 self._active_callable_invocations[parent_thread_id].discard(child_thread_id)
                 if not self._active_callable_invocations[parent_thread_id]:
                     del self._active_callable_invocations[parent_thread_id]
+
+    def is_ancestor_invocation(self, child_thread_id: str, target_thread_id: str) -> bool:
+        """Check if target_thread_id is an ancestor of child_thread_id in the active call chain.
+
+        Returns True if invoking target from child would create a circular call
+        (i.e. target is waiting — directly or transitively — for child's output).
+        """
+        with self._invocations_lock:
+            # Walk up the invocation tree: find all threads that have child_thread_id
+            # as an active child, then check their parents, etc.
+            visited = set()
+            queue = [child_thread_id]
+            while queue:
+                current = queue.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                # Find all parents that spawned 'current'
+                for parent, children in self._active_callable_invocations.items():
+                    if current in children:
+                        if parent == target_thread_id:
+                            return True
+                        queue.append(parent)
+        return False
 
     def abort_with_cascade(self, thread_id: str):
         """Signal abort on a thread and recursively on all its active callable children."""
@@ -2194,6 +2259,9 @@ class NymeriaAgent:
         # Re-register custom tools
         self._load_custom_tools()
 
+        # Re-register MCP server tools
+        self._load_mcp_server_tools()
+
         # Clear all cached graphs so new graphs include updated tools
         self._user_graphs.clear()
         self._async_user_graphs.clear()
@@ -2235,6 +2303,74 @@ class NymeriaAgent:
         except Exception as e:
             logger.error(f"Failed to load custom tools: {e}", exc_info=True)
             return 0
+
+    def _load_mcp_server_tools(self) -> int:
+        """Load MCP server tools from the mcp_servers directory.
+
+        Returns:
+            Number of MCP server tools loaded.
+        """
+        try:
+            from .mcp_servers import get_mcp_server_registry
+            from ..tools.metadata import (
+                clear_mcp_server_tool_metadata,
+                register_mcp_server_tool_metadata,
+            )
+
+            registry = get_mcp_server_registry()
+            mcp_tools = registry.get_all_tools()
+
+            # Register metadata for each tool
+            clear_mcp_server_tool_metadata()
+            for tool in mcp_tools:
+                register_mcp_server_tool_metadata(tool.name, tool.description)
+
+            if mcp_tools:
+                self.tool_registry.register_all(mcp_tools)
+                logger.info(f"Loaded {len(mcp_tools)} MCP server tool(s)")
+
+            return len(mcp_tools)
+        except Exception as e:
+            logger.error(f"Failed to load MCP server tools: {e}", exc_info=True)
+            return 0
+
+    def reload_mcp_server_tools(self) -> List[str]:
+        """Reload MCP server tools and rebuild graphs.
+
+        Returns:
+            List of MCP server tool names loaded.
+        """
+        try:
+            from .mcp_servers import reload_mcp_server_registry
+            from ..tools.metadata import (
+                clear_mcp_server_tool_metadata,
+                register_mcp_server_tool_metadata,
+            )
+
+            registry = reload_mcp_server_registry()
+            mcp_tools = registry.get_all_tools()
+
+            # Re-register metadata
+            clear_mcp_server_tool_metadata()
+            for tool in mcp_tools:
+                register_mcp_server_tool_metadata(tool.name, tool.description)
+
+            # Re-register tools
+            if mcp_tools:
+                self.tool_registry.register_all(mcp_tools)
+
+            # Clear cached graphs and rebuild defaults
+            self._user_graphs.clear()
+            self._async_user_graphs.clear()
+            self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
+            self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+
+            tool_names = [t.name for t in mcp_tools]
+            logger.info(f"MCP server tools reloaded: {tool_names}")
+            return tool_names
+        except Exception as e:
+            logger.error(f"Failed to reload MCP server tools: {e}", exc_info=True)
+            return []
 
     def reload_custom_tools(self) -> List[str]:
         """Reload only custom tools.

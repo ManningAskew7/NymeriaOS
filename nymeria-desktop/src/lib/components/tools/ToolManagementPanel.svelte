@@ -8,6 +8,7 @@
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
   import ToolCountWarning from './ToolCountWarning.svelte';
+  import MCPServerPanel from './MCPServerPanel.svelte';
 
   // --- Default tools state (absorbed from DefaultToolsPanel) ---
   let selectedTools = $state<Set<string>>(new Set());
@@ -30,9 +31,10 @@
     browser: { name: 'Browser', icon: 'globe' },
     calendar: { name: 'Google Calendar', icon: 'calendar' },
     custom: { name: 'Custom', icon: 'puzzle' },
+    mcp_server: { name: 'MCP Servers', icon: 'server' },
   };
 
-  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'self_modify', 'subagent', 'custom'];
+  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'self_modify', 'subagent', 'mcp_server', 'custom'];
 
   // --- Custom tools state ---
   let showCreateForm = $state(false);
@@ -489,6 +491,12 @@
       </div>
     {/if}
   {/if}
+
+  <!-- MCP Servers Section -->
+  <div class="custom-tools-divider">
+    <span>MCP Servers</span>
+  </div>
+  <MCPServerPanel />
 
   <!-- Custom Tools Section -->
   <div class="custom-tools-divider">

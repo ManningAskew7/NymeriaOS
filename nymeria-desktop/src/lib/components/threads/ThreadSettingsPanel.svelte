@@ -10,7 +10,10 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
+  import MCPServerForm from '$lib/components/tools/MCPServerForm.svelte';
+  import type { MCPServerCreateRequest } from '$lib/types';
 
   interface Props {
     thread: Thread;
@@ -48,13 +51,95 @@
   let enabledTools = $state<Set<string>>(initialToolState.enabled);
 
   // Optional tools (derived from defaultToolsStore — tools NOT in the user's core set)
+  // Split into non-MCP and MCP tools
   const optionalTools = $derived(() => {
     if (!defaultToolsStore.loaded) return [];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
-      .filter(t => !coreSet.has(t.name))
+      .filter(t => !coreSet.has(t.name) && !t.name.startsWith('mcp__'))
       .map(t => ({ name: t.name, description: t.description }));
   });
+
+  // MCP tools grouped by server ID
+  const mcpToolsByServer = $derived(() => {
+    if (!defaultToolsStore.loaded) return {} as Record<string, { name: string; description: string }[]>;
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const mcpTools = defaultToolsStore.tools.filter(t => t.name.startsWith('mcp__') && !coreSet.has(t.name));
+    const grouped: Record<string, { name: string; description: string }[]> = {};
+    for (const t of mcpTools) {
+      const parts = t.name.split('__');
+      const serverId = parts[1] ?? 'unknown';
+      if (!grouped[serverId]) grouped[serverId] = [];
+      grouped[serverId].push({ name: t.name, description: t.description });
+    }
+    return grouped;
+  });
+
+  // Also include MCP tools that ARE in the core set (for the core tools section display)
+  const mcpCoreToolsByServer = $derived(() => {
+    if (!defaultToolsStore.loaded) return {} as Record<string, { name: string; description: string }[]>;
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const mcpTools = defaultToolsStore.tools.filter(t => t.name.startsWith('mcp__') && coreSet.has(t.name));
+    const grouped: Record<string, { name: string; description: string }[]> = {};
+    for (const t of mcpTools) {
+      const parts = t.name.split('__');
+      const serverId = parts[1] ?? 'unknown';
+      if (!grouped[serverId]) grouped[serverId] = [];
+      grouped[serverId].push({ name: t.name, description: t.description });
+    }
+    return grouped;
+  });
+
+  // MCP server add form state
+  let showMcpAddForm = $state(false);
+  let mcpAddLoading = $state(false);
+  let mcpAddError = $state<string | null>(null);
+  let expandedMcpServer = $state<string | null>(null);
+
+  function getServerName(serverId: string): string {
+    const server = mcpServersStore.servers.find(s => s.id === serverId);
+    return server?.name ?? serverId;
+  }
+
+  function toggleAllMcpTools(serverId: string, tools: { name: string }[], enable: boolean) {
+    const next = new Set(enabledTools);
+    for (const t of tools) {
+      if (enable) next.add(t.name);
+      else next.delete(t.name);
+    }
+    enabledTools = next;
+  }
+
+  function areMcpToolsAllEnabled(tools: { name: string }[]): boolean {
+    return tools.every(t => enabledTools.has(t.name));
+  }
+
+  async function handleMcpAdd(data: MCPServerCreateRequest) {
+    mcpAddLoading = true;
+    mcpAddError = null;
+    try {
+      const result = await mcpServersStore.create(data, thread.id);
+      if (result.discoveryError) {
+        mcpAddError = `Server added but discovery failed: ${result.discoveryError}`;
+      } else {
+        showMcpAddForm = false;
+        mcpAddError = null;
+        // Reload default tools to see new MCP tools
+        defaultToolsStore.resetLoaded();
+        await defaultToolsStore.load();
+        // Auto-enable all discovered tools for this thread
+        const next = new Set(enabledTools);
+        for (const tool of result.server.discoveredTools) {
+          next.add(`mcp__${result.server.id}__${tool.name}`);
+        }
+        enabledTools = next;
+      }
+    } catch (e) {
+      mcpAddError = e instanceof Error ? e.message : 'Failed to add server';
+    } finally {
+      mcpAddLoading = false;
+    }
+  }
 
   // LLM form state
   let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
@@ -120,6 +205,9 @@
     }
     if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
       defaultToolsStore.load();
+    }
+    if (!mcpServersStore.loaded && !mcpServersStore.loading) {
+      mcpServersStore.load();
     }
   });
 
@@ -743,6 +831,80 @@
               </div>
             </div>
           {/if}
+
+          <!-- MCP Servers subsection -->
+          {#if Object.keys(mcpToolsByServer()).length > 0 || mcpServersStore.servers.length > 0}
+            <div class="optional-tools-section">
+              <span class="field-label">
+                <Icon name="terminal" size={14} />
+                MCP Servers
+              </span>
+              <p class="field-hint">
+                Tools from MCP servers. Enable them for this thread.
+              </p>
+
+              {#each Object.entries(mcpToolsByServer()) as [serverId, tools]}
+                <div class="mcp-server-group">
+                  <div class="mcp-server-header-row">
+                  <button
+                    class="mcp-server-header"
+                    onclick={() => expandedMcpServer = expandedMcpServer === serverId ? null : serverId}
+                  >
+                    <span class="mcp-server-name">{getServerName(serverId)}</span>
+                    <span class="mcp-tool-count">{tools.filter(t => enabledTools.has(t.name)).length}/{tools.length}</span>
+                  </button>
+                  <button
+                    class="mcp-bulk-toggle"
+                    type="button"
+                    onclick={() => toggleAllMcpTools(serverId, tools, !areMcpToolsAllEnabled(tools))}
+                    title={areMcpToolsAllEnabled(tools) ? 'Disable all' : 'Enable all'}
+                  >
+                    {areMcpToolsAllEnabled(tools) ? 'Disable all' : 'Enable all'}
+                  </button>
+                </div>
+                  {#if expandedMcpServer === serverId}
+                    <div class="mcp-tool-list">
+                      {#each tools as tool (tool.name)}
+                        <div
+                          class="tool-row"
+                          class:optional-enabled={enabledTools.has(tool.name)}
+                        >
+                          <div class="tool-info">
+                            <span class="tool-name">{tool.name.split('__').pop()}</span>
+                            <span class="tool-desc">{tool.description}</span>
+                          </div>
+                          <button
+                            class="tool-toggle"
+                            class:off={!enabledTools.has(tool.name)}
+                            onclick={() => toggleOptionalTool(tool.name)}
+                            type="button"
+                          >
+                            <span class="toggle-track">
+                              <span class="toggle-thumb"></span>
+                            </span>
+                          </button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+
+              {#if showMcpAddForm}
+                <MCPServerForm
+                  mode="add"
+                  loading={mcpAddLoading}
+                  error={mcpAddError}
+                  onSubmit={handleMcpAdd}
+                  onCancel={() => { showMcpAddForm = false; mcpAddError = null; }}
+                />
+              {:else}
+                <button class="mcp-add-btn" onclick={() => showMcpAddForm = true}>
+                  <Icon name="plus" size={14} /> Add MCP Server
+                </button>
+              {/if}
+            </div>
+          {/if}
         </div>
 
       {:else if activeTab === 'triggers'}
@@ -1220,5 +1382,86 @@
     background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
     font-size: var(--font-size-sm);
+  }
+
+  /* MCP Servers in tools tab */
+  .mcp-server-group {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--spacing-xs);
+    overflow: hidden;
+  }
+
+  .mcp-server-header-row {
+    display: flex;
+    align-items: center;
+    background: var(--bg-elevated-2);
+  }
+
+  .mcp-server-header {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .mcp-server-header:hover {
+    background: var(--bg-hover);
+  }
+
+  .mcp-server-name {
+    flex: 1;
+    text-align: left;
+    font-weight: 500;
+  }
+
+  .mcp-tool-count {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  .mcp-bulk-toggle {
+    font-size: var(--font-size-xs);
+    color: var(--accent-primary);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius-sm);
+  }
+
+  .mcp-bulk-toggle:hover {
+    background: var(--bg-hover);
+  }
+
+  .mcp-tool-list {
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .mcp-add-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    margin-top: var(--spacing-sm);
+    border: 1px dashed var(--border-default);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .mcp-add-btn:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 </style>

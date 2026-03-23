@@ -73,6 +73,11 @@ const CATEGORY_INFO: Record<string, { name: string; icon: string; description: s
     name: 'Custom',
     icon: 'puzzle',
     description: 'User-created custom tools (HTTP, MCP, etc.)'
+  },
+  mcp_server: {
+    name: 'MCP Servers',
+    icon: 'server',
+    description: 'Tools auto-discovered from MCP servers'
   }
 };
 

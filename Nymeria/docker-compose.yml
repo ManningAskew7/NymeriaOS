@@ -117,6 +117,19 @@ services:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      # Voice (TTS/STT)
+      TTS_PROVIDER: ${TTS_PROVIDER:-none}
+      TTS_BASE_URL: ${TTS_BASE_URL:-http://qwen3-tts:8000/v1}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      TTS_MODEL: ${TTS_MODEL:-Qwen3-TTS-0.6B}
+      TTS_VOICE: ${TTS_VOICE:-default}
+      TTS_OUTPUT_FORMAT: ${TTS_OUTPUT_FORMAT:-mp3}
+      TTS_SPEED: ${TTS_SPEED:-1.0}
+      STT_PROVIDER: ${STT_PROVIDER:-none}
+      STT_BASE_URL: ${STT_BASE_URL:-http://faster-whisper:8000/v1}
+      STT_API_KEY: ${STT_API_KEY:-}
+      STT_MODEL: ${STT_MODEL:-large-v3-turbo}
+      STT_LANGUAGE: ${STT_LANGUAGE:-}
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
@@ -243,6 +256,69 @@ services:
     networks:
       - nymeria-network
 
+  # ============================================================================
+  # Voice Services (optional, GPU required)
+  # Start with: docker compose --env-file .env.docker --profile voice up -d
+  # ============================================================================
+
+  # Qwen3-TTS — Local text-to-speech with OpenAI-compatible API
+  qwen3-tts:
+    image: ghcr.io/groxaxo/qwen3-tts-openai-fastapi:latest
+    container_name: nymeria-qwen3-tts
+    restart: unless-stopped
+    profiles:
+      - voice
+    ports:
+      - "${TTS_PORT:-8880}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      MODEL_NAME: ${TTS_MODEL:-Qwen3-TTS-0.6B}
+    volumes:
+      - qwen3_tts_models:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    networks:
+      - nymeria-network
+
+  # Faster-Whisper — Local speech-to-text with OpenAI-compatible API
+  faster-whisper:
+    image: fedirz/faster-whisper-server:latest
+    container_name: nymeria-faster-whisper
+    restart: unless-stopped
+    profiles:
+      - voice
+    ports:
+      - "${STT_PORT:-8003}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      WHISPER__MODEL: ${STT_MODEL:-large-v3-turbo}
+    volumes:
+      - whisper_models:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    networks:
+      - nymeria-network
+
 # ============================================================================
 # Volumes
 # ============================================================================
@@ -255,6 +331,10 @@ volumes:
   nymeria_data:
     driver: local
   nymeria_workspace:
+    driver: local
+  qwen3_tts_models:
+    driver: local
+  whisper_models:
     driver: local
 
 # ============================================================================

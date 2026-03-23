@@ -2,6 +2,7 @@
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
+  import MCPServerPanel from './MCPServerPanel.svelte';
   import { onMount } from 'svelte';
 
   interface Props {
@@ -68,6 +69,8 @@
           <Spinner size="md" />
         </div>
       {:else}
+        <MCPServerPanel />
+
         {#each Object.entries(filteredCategories) as [category, tools]}
           {@const info = unifiedToolsStore.getCategoryInfo(category)}
           <div class="category">

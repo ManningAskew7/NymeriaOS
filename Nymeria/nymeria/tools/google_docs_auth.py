@@ -37,6 +37,8 @@ TOKEN_CACHE_PATH = Path.home() / ".google_docs_token_cache.json"
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
@@ -294,12 +296,19 @@ def google_docs_auth_start() -> str:
         first = next(iter(accounts.values()))
         email = first.get("email", "unknown")
         has_refresh = bool(first.get("refresh_token"))
-        if has_refresh:
+        saved_scopes = set(first.get("scopes", []))
+        required_scopes = set(GOOGLE_SCOPES)
+        scopes_match = saved_scopes >= required_scopes
+        if has_refresh and scopes_match:
             return (
                 f"[Info]: Already authenticated as **{first.get('name', 'Unknown')}** ({email}). "
                 "Tokens will auto-refresh. To add another account or re-authenticate, "
                 "delete the token cache at ~/.google_docs_token_cache.json first."
             )
+        elif has_refresh and not scopes_match:
+            missing = required_scopes - saved_scopes
+            logger.info(f"Scope change detected. Missing scopes: {missing}. Proceeding with re-auth.")
+            # Fall through to start new auth flow
 
     with _auth_state_lock:
         thread = _auth_state.get("server_thread")

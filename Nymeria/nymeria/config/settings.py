@@ -1,5 +1,7 @@
 """Nymeria settings management using Pydantic."""
 
+import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
@@ -7,7 +9,24 @@ from typing import List, Literal, Optional, Tuple
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+def _get_project_root() -> Path:
+    """Get project root, supporting PyInstaller frozen builds.
+
+    Resolution order:
+    1. NYMERIA_PROJECT_ROOT env var (set by Tauri launcher)
+    2. PyInstaller frozen exe: directory containing the exe
+    3. Normal Python: three levels up from this file
+    """
+    env_root = os.environ.get("NYMERIA_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent
+
+
+PROJECT_ROOT = _get_project_root()
 
 
 class Settings(BaseSettings):
@@ -297,6 +316,44 @@ class Settings(BaseSettings):
         description="Number of backup log files to keep"
     )
 
+    # Voice / TTS Configuration
+    tts_provider: Literal["none", "openai", "qwen3"] = Field(
+        default="none", description="TTS provider: none, openai, qwen3"
+    )
+    tts_base_url: Optional[str] = Field(
+        default=None,
+        description="TTS API base URL (e.g., https://api.openai.com/v1 or http://localhost:8880/v1)"
+    )
+    tts_api_key: Optional[str] = Field(
+        default=None, description="TTS API key (falls back to OPENAI_API_KEY if not set)"
+    )
+    tts_model: str = Field(default="tts-1-hd", description="TTS model name")
+    tts_voice: str = Field(default="nova", description="TTS voice identifier")
+    tts_output_format: str = Field(default="mp3", description="TTS output format: mp3, wav, opus, aac")
+    tts_speed: float = Field(default=1.0, ge=0.25, le=4.0, description="TTS playback speed")
+
+    # Voice / STT Configuration
+    stt_provider: Literal["none", "openai", "faster-whisper"] = Field(
+        default="none", description="STT provider: none, openai, faster-whisper"
+    )
+    stt_base_url: Optional[str] = Field(
+        default=None,
+        description="STT API base URL (e.g., https://api.openai.com/v1 or http://localhost:8003/v1)"
+    )
+    stt_api_key: Optional[str] = Field(
+        default=None, description="STT API key (falls back to OPENAI_API_KEY if not set)"
+    )
+    stt_model: str = Field(default="gpt-4o-mini-transcribe", description="STT model name")
+    stt_language: Optional[str] = Field(
+        default=None, description="STT language hint (ISO 639-1, e.g., 'en')"
+    )
+
+    # Voice default thread
+    voice_default_thread_id: Optional[str] = Field(
+        default=None,
+        description="Default thread ID for voice/watch interactions (uses 'watch-default' if not set)"
+    )
+
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
     audit_log_enabled: bool = Field(default=True)
@@ -305,7 +362,7 @@ class Settings(BaseSettings):
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""
-        return Path(__file__).parent.parent.parent
+        return PROJECT_ROOT
 
     @property
     def data_dir(self) -> Path:
@@ -322,7 +379,7 @@ class Settings(BaseSettings):
     @property
     def soul_path(self) -> Path:
         """Get the path to the soul.md system prompt."""
-        return Path(__file__).parent / "soul.md"
+        return PROJECT_ROOT / "nymeria" / "config" / "soul.md"
 
     @property
     def logs_dir(self) -> Path:
@@ -343,6 +400,11 @@ class Settings(BaseSettings):
     def custom_tools_dir(self) -> Path:
         """Get the custom tools directory."""
         return self.data_dir / "custom_tools"
+
+    @property
+    def mcp_servers_dir(self) -> Path:
+        """Get the MCP servers configuration directory."""
+        return self.data_dir / "mcp_servers"
 
     @property
     def cors_origins_list(self) -> List[str]:

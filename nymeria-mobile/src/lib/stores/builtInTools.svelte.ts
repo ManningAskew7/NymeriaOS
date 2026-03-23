@@ -25,7 +25,9 @@ const CATEGORY_INFO: Record<ToolCategory, { name: string; icon: string; descript
   email: { name: 'Email', icon: 'mail', description: 'Outlook email tools for reading, sending, and managing mail' },
   browser: { name: 'Browser', icon: 'globe', description: 'Playwright browser automation tools for web interaction' },
   calendar: { name: 'Calendar', icon: 'calendar', description: 'Google Calendar tools for managing events and schedules' },
-  custom: { name: 'Custom', icon: 'puzzle', description: 'User-created custom tools (HTTP, MCP, etc.)' }
+  google_docs: { name: 'Google Docs', icon: 'file-text', description: 'Google Docs tools for creating, reading, and writing documents' },
+  custom: { name: 'Custom', icon: 'puzzle', description: 'User-created custom tools (HTTP, MCP, etc.)' },
+  mcp_server: { name: 'MCP Servers', icon: 'server', description: 'Tools auto-discovered from MCP servers' }
 };
 
 function getToolByName(name: string): BuiltInTool | undefined {

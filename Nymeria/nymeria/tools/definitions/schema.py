@@ -16,6 +16,32 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
+class MCPDiscoveredTool(BaseModel):
+    """A tool discovered from an MCP server via tools/list."""
+
+    name: str
+    description: str = ""
+    input_schema: Dict[str, Any] = {}
+
+
+class MCPServerDefinition(BaseModel):
+    """Definition of an MCP server and its discovered tools."""
+
+    id: str
+    name: str
+    description: str = ""
+    server_command: str
+    server_args: List[str] = []
+    env_vars: Dict[str, str] = {}
+    working_directory: Optional[str] = None
+    idle_timeout_seconds: int = 300
+    startup_timeout_seconds: int = 30
+    enabled: bool = True
+    discovered_tools: List[MCPDiscoveredTool] = []
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ToolParameter(BaseModel):
     """Definition of a single tool parameter."""
 

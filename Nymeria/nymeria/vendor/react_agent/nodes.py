@@ -340,16 +340,25 @@ class NodeFactory:
 
 # === BACKWARD COMPATIBILITY ===
 # These maintain compatibility with the old interface
+# Lazy-initialized to avoid crashing on import when env vars aren't set for the
+# vendored defaults (Nymeria creates its own config via agent.py).
 
 from .tools import TOOLS
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Create default nodes using default config
-_default_factory = NodeFactory(default_config, TOOLS)
-
-# Legacy exports (use NodeFactory for new code)
-agent_node = _default_factory.create_agent_node()
-tools_node = _default_factory.create_tools_node()
 should_continue = simple_should_continue  # Use simple version for backward compat
+
+_default_factory = None
+agent_node = None
+tools_node = None
+
+
+def _init_defaults():
+    """Lazily initialize default nodes on first use."""
+    global _default_factory, agent_node, tools_node
+    if _default_factory is None:
+        _default_factory = NodeFactory(default_config, TOOLS)
+        agent_node = _default_factory.create_agent_node()
+        tools_node = _default_factory.create_tools_node()

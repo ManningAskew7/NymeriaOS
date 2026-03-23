@@ -10,6 +10,9 @@
   import { activityStore } from '$lib/stores/activity.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { triggersStore } from '$lib/stores/triggers.svelte';
   import { api } from '$lib/services/api.svelte';
   import { untrack } from 'svelte';
   import type {
@@ -25,6 +28,17 @@
   let attachmentValidationResult = $state<AttachmentValidationResult | null>(null);
   let warningSuppressChecked = $state(false);
   let pendingSend = $state<{ message: string; attachments?: FileAttachment[] } | null>(null);
+
+  // Load global stores for thread header badges
+  $effect(() => {
+    if (configStore.isConfigured) {
+      untrack(() => {
+        if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
+        if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
+        if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
+      });
+    }
+  });
 
   // Load thread config when thread changes
   $effect(() => {
