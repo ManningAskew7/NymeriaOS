@@ -63,6 +63,8 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     environment: &api-env
+      # System timezone (matches USER_TIMEZONE for consistent bash/OS time)
+      TZ: ${USER_TIMEZONE:-UTC}
       # Required
       NYMERIA_API_KEY: ${NYMERIA_API_KEY:?NYMERIA_API_KEY is required}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

@@ -202,6 +202,41 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     return ChatOpenAI(**kwargs)
 
 
+def _patch_langchain_anthropic_proxy_compat():
+    """Patch langchain-anthropic to handle CLIProxyAPI response format.
+
+    CLIProxyAPI returns `context_management` as a plain dict, but
+    langchain-anthropic expects a Pydantic model with .model_dump().
+    """
+    try:
+        from langchain_anthropic import chat_models
+
+        original = chat_models.ChatAnthropic._make_message_chunk_from_anthropic_event
+
+        def patched(self, event, **kwargs):
+            # Wrap dict context_management so .model_dump() works
+            if hasattr(event, "context_management") and isinstance(
+                event.context_management, dict
+            ):
+
+                class _DictWrapper:
+                    def __init__(self, d):
+                        self._d = d
+
+                    def model_dump(self, **kw):
+                        return self._d
+
+                event.context_management = _DictWrapper(event.context_management)
+            return original(self, event, **kwargs)
+
+        chat_models.ChatAnthropic._make_message_chunk_from_anthropic_event = patched
+    except Exception:
+        pass
+
+
+_patch_langchain_anthropic_proxy_compat()
+
+
 def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     """Create Anthropic Claude LLM."""
     try:
@@ -225,9 +260,6 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 
     if config.base_url:
         kwargs["anthropic_api_url"] = config.base_url
-        # Tell the proxy to skip cloaking (system prompt injection, fake user ID)
-        # so Nymeria's own system prompt is preserved unchanged
-        kwargs["default_headers"] = {"User-Agent": "claude-cli/nymeria"}
 
     if config.temperature is not None:
         kwargs["temperature"] = config.temperature
