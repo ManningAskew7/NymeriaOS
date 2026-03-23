@@ -1,0 +1,554 @@
+"""Twitch bot trigger for Nymeria.
+
+Connects to a Twitch channel via TwitchIO v3, buffers chat messages,
+responds to !commands, and periodically evaluates chat ("pulse").
+Follows the same architectural pattern as discord_bot.py.
+
+TwitchIO v3 uses EventSub WebSocket for chat events. Tokens are
+provided via environment variables and auto-refreshed by TwitchIO.
+"""
+
+import asyncio
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+import twitchio
+from twitchio.ext import commands
+
+if TYPE_CHECKING:
+    from ..core.agent import NymeriaAgent
+
+logger = logging.getLogger(__name__)
+
+# Default system prompt for auto-setup on first start
+DEFAULT_TWITCH_PROMPT = (
+    "You are a chat bot in a Twitch stream. You communicate ONLY by calling "
+    "the twitch_send tool — your final text output is never shown to chat. "
+    "When someone asks you a question via !ask, use twitch_send to reply. "
+    "You can send multiple messages by calling twitch_send multiple times. "
+    "You can also moderate chat using your tools (timeout, ban, unban, announce). "
+    "During periodic chat pulses, you'll see recent messages — use twitch_send "
+    "to comment if something is interesting, or do nothing if chat is boring. "
+    "Keep messages short and natural — Twitch chat moves fast. Max 400 chars per message. "
+    "Do not use markdown formatting — Twitch chat is plain text only."
+)
+
+# Tools to auto-enable on the Twitch thread
+DEFAULT_TWITCH_TOOLS = [
+    "twitch_send",
+    "twitch_timeout",
+    "twitch_ban",
+    "twitch_unban",
+    "twitch_announce",
+]
+
+
+# =============================================================================
+# Data Structures
+# =============================================================================
+
+
+@dataclass
+class ChatMessage:
+    """A buffered Twitch chat message."""
+
+    username: str
+    display_name: str
+    message: str
+    timestamp: datetime
+    user_id: str
+    badges: List[str] = field(default_factory=list)
+
+
+class ChatBuffer:
+    """Thread-safe ring buffer for recent chat messages."""
+
+    def __init__(self, maxlen: int = 500):
+        self._buffer: deque[ChatMessage] = deque(maxlen=maxlen)
+
+    def append(self, msg: ChatMessage) -> None:
+        self._buffer.append(msg)
+
+    def get_recent(self, count: int) -> List[ChatMessage]:
+        """Get the most recent N messages."""
+        items = list(self._buffer)
+        return items[-count:] if count < len(items) else items
+
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+
+def format_chat_context(messages: List[ChatMessage]) -> str:
+    """Format buffered messages as readable context for the agent."""
+    if not messages:
+        return ""
+    lines = []
+    for msg in messages:
+        ts = msg.timestamp.strftime("%H:%M")
+        lines.append(f"[{ts}] {msg.display_name}: {msg.message}")
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Message Splitting (Twitch 500 char limit)
+# =============================================================================
+
+
+def split_message(content: str, max_length: int = 490) -> List[str]:
+    """Split a message into chunks that fit Twitch's 500-char limit.
+
+    Uses simple sentence/word boundary splitting — no code block
+    handling needed for Twitch chat.
+    """
+    if len(content) <= max_length:
+        return [content]
+
+    chunks: List[str] = []
+    remaining = content
+
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+
+        # Try sentence boundary (". ")
+        split_at = remaining.rfind(". ", 0, max_length)
+        if split_at > max_length * 0.3:
+            split_at += 2  # Include the ". "
+        else:
+            # Try word boundary (space)
+            split_at = remaining.rfind(" ", 0, max_length)
+            if split_at > max_length * 0.3:
+                split_at += 1  # Include the space
+            else:
+                # Hard split
+                split_at = max_length
+
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+
+    return [c for c in chunks if c.strip()]
+
+
+# =============================================================================
+# Main Bot Class
+# =============================================================================
+
+
+class NymeriaTwitchBot(commands.Bot):
+    """TwitchIO v3 bot for Nymeria integration.
+
+    Receives all chat messages, buffers them, responds to !commands,
+    and optionally runs a periodic "pulse" that evaluates recent chat.
+    """
+
+    def __init__(
+        self,
+        agent: "NymeriaAgent",
+        client_id: str,
+        client_secret: Optional[str],
+        bot_user_id: Optional[str],
+        access_token: Optional[str],
+        refresh_token: Optional[str],
+        channel: str,
+        broadcaster_token: Optional[str] = None,
+        broadcaster_refresh_token: Optional[str] = None,
+        buffer_size: int = 500,
+        pulse_enabled: bool = True,
+        pulse_interval: int = 300,
+        pulse_message_count: int = 100,
+        command_context_count: int = 50,
+    ):
+        super().__init__(
+            client_id=client_id,
+            client_secret=client_secret,
+            bot_id=bot_user_id,
+            prefix="!",
+        )
+
+        self.agent = agent
+        self._channel_name = channel
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+        self._broadcaster_token = broadcaster_token
+        self._broadcaster_refresh_token = broadcaster_refresh_token
+        self._bot_user_id = bot_user_id
+        self._broadcaster_id: Optional[str] = None  # Resolved on ready
+
+        # Chat buffer
+        self._buffer = ChatBuffer(maxlen=buffer_size)
+
+        # Pulse config
+        self._pulse_enabled = pulse_enabled
+        self._pulse_interval = pulse_interval
+        self._pulse_message_count = pulse_message_count
+        self._command_context_count = command_context_count
+
+        # Thread/user IDs for the agent
+        self._thread_id = f"twitch_{channel}"
+        self._user_id = f"twitch_{channel}_bot"
+
+        # State
+        self._start_time = time.time()
+        self._pulse_task: Optional[asyncio.Task] = None
+        self._user_id_cache: Dict[str, str] = {}  # username -> numeric ID
+        self._last_pulse_buffer_len: int = 0  # track buffer size at last pulse
+
+        # Register commands explicitly (TwitchIO v3 doesn't auto-discover from subclass methods)
+        bot_self = self
+
+        @commands.command(name="ask")
+        @commands.cooldown(rate=1, per=30, key=commands.BucketType.chatter)   # 30s per user
+        @commands.cooldown(rate=1, per=10, key=commands.BucketType.channel)   # 10s global
+        async def cmd_ask(ctx: commands.Context) -> None:
+            # Restrict to subs, VIPs, mods, and broadcaster
+            chatter = ctx.chatter
+            if chatter and not (
+                getattr(chatter, "subscriber", False)
+                or getattr(chatter, "vip", False)
+                or getattr(chatter, "moderator", False)
+                or getattr(chatter, "broadcaster", False)
+            ):
+                return  # Silently ignore non-privileged users
+            await bot_self._handle_ask(ctx)
+
+        @commands.command(name="status")
+        async def cmd_status(ctx: commands.Context) -> None:
+            await bot_self._handle_status(ctx)
+
+        @commands.command(name="clear")
+        async def cmd_clear(ctx: commands.Context) -> None:
+            await bot_self._handle_clear(ctx)
+
+        self.add_command(cmd_ask)
+        self.add_command(cmd_status)
+        self.add_command(cmd_clear)
+
+    # -----------------------------------------------------------------
+    # Setup Hook — runs before connecting, used to add tokens
+    # -----------------------------------------------------------------
+
+    async def setup_hook(self) -> None:
+        """Called before the bot connects. Add OAuth tokens and subscribe to events."""
+        # Capture the event loop for tools that need to schedule coroutines from sync threads
+        self.loop = asyncio.get_running_loop()
+        # Add the bot's user token for authentication
+        if self._access_token:
+            await self.add_token(self._access_token, self._refresh_token)
+            logger.info("Added bot access token")
+        else:
+            logger.warning("No access token provided — bot may not be able to authenticate")
+
+        # Add the broadcaster's token (needed for channel:bot scope)
+        if self._broadcaster_token:
+            await self.add_token(self._broadcaster_token, self._broadcaster_refresh_token)
+            logger.info("Added broadcaster token")
+
+
+        # Subscribe to chat messages for the target channel via EventSub WebSocket
+        if self._broadcaster_id:
+            subscription = twitchio.ChatMessageSubscription(
+                broadcaster_user_id=self._broadcaster_id,
+                user_id=self._bot_user_id,
+            )
+            await self.subscribe_websocket(subscription)
+            logger.info(f"Subscribed to chat messages for broadcaster {self._broadcaster_id}")
+
+    # -----------------------------------------------------------------
+    # TwitchIO Event Handlers
+    # -----------------------------------------------------------------
+
+    async def event_ready(self) -> None:
+        """Called when the bot is connected and ready."""
+        logger.info(f"Twitch bot connected as bot_id={self._bot_user_id}")
+        logger.info(f"Watching channel: #{self._channel_name}")
+
+        # Resolve broadcaster ID and subscribe to chat events
+        await self._resolve_broadcaster_id()
+
+        if self._broadcaster_id:
+            try:
+                subscription = twitchio.eventsub.ChatMessageSubscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                    user_id=self._bot_user_id,
+                )
+                await self.subscribe_websocket(
+                    subscription,
+                    token_for=self._bot_user_id,
+                )
+                logger.info(f"Subscribed to chat messages for #{self._channel_name}")
+            except Exception as e:
+                logger.error(f"Failed to subscribe to chat events: {e}", exc_info=True)
+
+        # Upsert thread metadata
+        try:
+            self.agent.thread_metadata_manager.upsert_thread(
+                self._user_id,
+                self._thread_id,
+                title=f"Twitch: #{self._channel_name}",
+                title_source="platform",
+                platform="twitch",
+                platform_meta={"channel": self._channel_name},
+            )
+        except Exception:
+            pass  # Non-critical
+
+        # Auto-setup: configure thread if no system prompt set yet
+        await self._auto_setup_thread()
+
+        # Start pulse background task
+        if self._pulse_enabled:
+            self._pulse_task = asyncio.create_task(self._pulse_loop())
+            logger.info(
+                f"Chat pulse enabled: every {self._pulse_interval}s, "
+                f"last {self._pulse_message_count} messages"
+            )
+
+        print(f"\nTwitch bot ready! Watching #{self._channel_name}")
+        print(f"  Buffer size: {self._buffer._buffer.maxlen}")
+        print(f"  Pulse: {'enabled' if self._pulse_enabled else 'disabled'}")
+
+    async def event_message(self, payload: twitchio.ChatMessage) -> None:
+        """Called for every chat message in the channel."""
+        # Skip messages from the bot itself
+        if payload.chatter and self._bot_user_id and str(payload.chatter.id) == str(self._bot_user_id):
+            return
+
+        # Buffer the message
+        chatter = payload.chatter
+        msg = ChatMessage(
+            username=chatter.name if chatter else "unknown",
+            display_name=getattr(chatter, "display_name", chatter.name) if chatter else "unknown",
+            message=payload.text or "",
+            timestamp=getattr(payload, "timestamp", None) or datetime.now(timezone.utc),
+            user_id=str(chatter.id) if chatter else "0",
+            badges=[str(b) for b in (payload.badges or [])],
+        )
+        self._buffer.append(msg)
+
+        # Let TwitchIO command framework process !commands
+        await self.process_commands(payload)
+
+    async def event_command_error(self, payload: commands.CommandErrorPayload) -> None:
+        """Handle command errors gracefully."""
+        # Ignore "command not found" for unknown !commands
+        if isinstance(payload.exception, commands.CommandNotFound):
+            return
+        # User-friendly cooldown message
+        if isinstance(payload.exception, commands.CommandOnCooldown):
+            ctx = payload.context
+            if ctx:
+                retry = getattr(payload.exception, "retry_after", 0)
+                await ctx.send(f"Cooldown! Try again in {int(retry)}s")
+            return
+        logger.error(f"Command error: {type(payload.exception).__name__}: {payload.exception}", exc_info=payload.exception)
+
+    # -----------------------------------------------------------------
+    # Commands
+    # -----------------------------------------------------------------
+
+    async def _handle_ask(self, ctx: commands.Context) -> None:
+        """Ask the AI a question with recent chat context."""
+        # Extract question (everything after "!ask ")
+        question = ctx.message.text or ""
+        if question.lower().startswith("!ask"):
+            question = question[4:].strip()
+
+        if not question:
+            await ctx.send("Usage: !ask <your question>")
+            return
+
+        # Get recent chat context
+        recent = self._buffer.get_recent(self._command_context_count)
+        context = format_chat_context(recent)
+
+        # Build prompt with context
+        chatter_name = ctx.chatter.name if ctx.chatter else "someone"
+        if context:
+            prompt = (
+                f"[Twitch Chat Context — last {len(recent)} messages]\n"
+                f"{context}\n"
+                f"[End Context]\n\n"
+                f"Question from {chatter_name}: {question}"
+            )
+        else:
+            prompt = f"Question from {chatter_name}: {question}"
+
+        # Call agent — it decides what to send via twitch_send tool
+        try:
+            await asyncio.to_thread(
+                self.agent.chat, prompt, self._thread_id, self._user_id
+            )
+        except Exception as e:
+            logger.error(f"Error processing !ask: {e}", exc_info=True)
+            await ctx.send(f"Sorry, something went wrong: {str(e)[:100]}")
+
+    async def _handle_status(self, ctx: commands.Context) -> None:
+        """Show bot status."""
+        uptime = int(time.time() - self._start_time)
+        hours, remainder = divmod(uptime, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{hours}h {minutes}m {seconds}s"
+
+        model = self.agent.settings.llm_model
+        buf_count = len(self._buffer)
+        pulse = "on" if self._pulse_enabled else "off"
+
+        await ctx.send(
+            f"Model: {model} | Uptime: {uptime_str} | "
+            f"Buffer: {buf_count} msgs | Pulse: {pulse}"
+        )
+
+    async def _handle_clear(self, ctx: commands.Context) -> None:
+        """Clear conversation history (mod/broadcaster only)."""
+        # Check permissions via chatter object
+        chatter = ctx.chatter
+        is_privileged = False
+        if chatter:
+            is_privileged = (
+                getattr(chatter, "moderator", False)
+                or getattr(chatter, "broadcaster", False)
+            )
+
+        if not is_privileged:
+            await ctx.send("Only mods and the broadcaster can clear conversation history.")
+            return
+
+        try:
+            # Clear the agent's thread history
+            checkpointer = self.agent._default_graph.checkpointer
+            if hasattr(checkpointer, "delete_thread"):
+                await asyncio.to_thread(checkpointer.delete_thread, self._thread_id)
+            await ctx.send("Conversation history cleared.")
+        except Exception as e:
+            logger.error(f"Error clearing history: {e}", exc_info=True)
+            await ctx.send("Error clearing history.")
+
+    # -----------------------------------------------------------------
+    # Chat Pulse
+    # -----------------------------------------------------------------
+
+    async def _pulse_loop(self) -> None:
+        """Background task: periodically evaluate chat and optionally comment."""
+        logger.info("Pulse loop started")
+        while True:
+            try:
+                await asyncio.sleep(self._pulse_interval)
+
+                # Skip if not enough new messages since last pulse
+                current_len = len(self._buffer)
+                new_messages = current_len - self._last_pulse_buffer_len
+                if new_messages < 10:
+                    logger.debug(f"Pulse skip: only {new_messages} new messages since last pulse")
+                    continue
+
+                self._last_pulse_buffer_len = current_len
+                messages = self._buffer.get_recent(self._pulse_message_count)
+
+                context = format_chat_context(messages)
+                prompt = (
+                    f"[Twitch Chat Pulse — #{self._channel_name}]\n"
+                    f"Below are the last {len(messages)} messages from Twitch chat.\n"
+                    f"If there's something interesting, funny, or worth commenting on, "
+                    f"use twitch_send to post a message (max 400 chars). "
+                    f"If nothing stands out, do nothing.\n\n"
+                    f"{context}"
+                )
+
+                await asyncio.to_thread(
+                    self.agent.chat, prompt, self._thread_id, self._user_id
+                )
+
+            except asyncio.CancelledError:
+                logger.info("Pulse loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Pulse error: {e}", exc_info=True)
+                # Continue running despite errors
+                await asyncio.sleep(10)
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+
+    async def _send_to_channel(self, message: str) -> None:
+        """Send a message to the target channel using the Helix API."""
+        try:
+            if self._broadcaster_id and self._bot_user_id:
+                broadcaster = self.create_partialuser(int(self._broadcaster_id))
+                bot_user = self.create_partialuser(int(self._bot_user_id))
+                await broadcaster.send_message(sender=bot_user, message=message)
+            else:
+                logger.warning("Cannot send message: broadcaster_id or bot_user_id not set")
+        except Exception as e:
+            logger.error(f"Error sending message to channel: {e}", exc_info=True)
+
+    async def resolve_user_id(self, username: str) -> Optional[str]:
+        """Resolve a Twitch username to numeric user ID, with caching."""
+        username_lower = username.lower()
+        if username_lower in self._user_id_cache:
+            return self._user_id_cache[username_lower]
+
+        try:
+            users = await self.fetch_users(logins=[username_lower])
+            if users:
+                uid = str(users[0].id)
+                self._user_id_cache[username_lower] = uid
+                return uid
+        except Exception as e:
+            logger.error(f"Error resolving user '{username}': {e}")
+
+        return None
+
+    async def _resolve_broadcaster_id(self) -> None:
+        """Resolve the channel's broadcaster user ID."""
+        try:
+            users = await self.fetch_users(logins=[self._channel_name.lower()])
+            if users:
+                self._broadcaster_id = str(users[0].id)
+                logger.info(f"Broadcaster ID for #{self._channel_name}: {self._broadcaster_id}")
+            else:
+                logger.warning(f"Could not resolve broadcaster ID for #{self._channel_name}")
+        except Exception as e:
+            logger.error(f"Error resolving broadcaster: {e}")
+
+    async def _auto_setup_thread(self) -> None:
+        """Auto-configure the thread with default prompt and tools on first start."""
+        try:
+            from ..core.thread_config import ThreadConfig, ThreadConfigManager
+
+            config_mgr = ThreadConfigManager(self.agent.settings.data_dir)
+            existing = config_mgr.get_config(self._thread_id)
+
+            if existing and existing.system_prompt and existing.system_prompt == DEFAULT_TWITCH_PROMPT:
+                logger.info(f"Thread {self._thread_id} already configured, skipping auto-setup")
+                return
+
+            # Create/update config with default system prompt and Twitch tools enabled
+            config = ThreadConfig(
+                thread_id=self._thread_id,
+                system_prompt=DEFAULT_TWITCH_PROMPT,
+                enabled_tools=DEFAULT_TWITCH_TOOLS,
+            )
+            config_mgr.save_config(config)
+            logger.info(f"Auto-configured thread {self._thread_id} with default Twitch prompt and tools")
+            print(f"  Auto-setup: configured thread '{self._thread_id}' with default prompt")
+
+        except Exception as e:
+            logger.error(f"Auto-setup failed: {e}", exc_info=True)
+
+    async def close(self) -> None:
+        """Clean shutdown."""
+        if self._pulse_task and not self._pulse_task.done():
+            self._pulse_task.cancel()
+            try:
+                await self._pulse_task
+            except asyncio.CancelledError:
+                pass
+        await super().close()

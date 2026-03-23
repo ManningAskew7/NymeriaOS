@@ -81,6 +81,20 @@ Set the API key for your chosen provider:
 | `DISCORD_RESPOND_MODE` | `mention` | Guild behavior: `mention` (only @Nymeria) or `all` |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook URL for notifications |
 | `SLACK_BOT_TOKEN` | - | Slack bot token for two-way communication |
+| `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
+| `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
+| `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
+| `TWITCH_BOT_REFRESH_TOKEN` | - | Bot's OAuth refresh token |
+| `TWITCH_BOT_USER_ID` | - | Bot's numeric Twitch user ID |
+| `TWITCH_BROADCASTER_TOKEN` | - | Broadcaster's OAuth token (channel:bot scope) |
+| `TWITCH_BROADCASTER_REFRESH_TOKEN` | - | Broadcaster's refresh token |
+| `TWITCH_CHANNEL` | `silk` | Twitch channel to join |
+| `TWITCH_BUFFER_SIZE` | `500` | Chat message ring buffer size (50-5000) |
+| `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat evaluation |
+| `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks (60-3600) |
+| `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Messages to include in pulse context |
+| `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
+| `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
 | `WEBHOOK_SECRET` | - | Secret for validating incoming webhooks |
 
 ### Logging

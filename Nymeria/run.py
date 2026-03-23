@@ -8,6 +8,7 @@ Usage:
     python run.py api --port 8080  # Start API on custom port
     python run.py worker           # Start worker (ticker only, for Docker)
     python run.py discord-bot     # Start Discord bot (gateway mode)
+    python run.py twitch-bot      # Start Twitch chat bot
     python run.py mcp              # Start MCP server (stdio mode)
     python run.py mcp --http       # Start MCP server (HTTP mode)
     python run.py mcp --port 8001  # MCP HTTP mode on custom port
@@ -384,6 +385,84 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     bot.run(settings.discord_bot_token, log_handler=None)
 
 
+def run_twitch_bot(args: argparse.Namespace) -> None:
+    """
+    Run the Twitch bot.
+
+    Connects to a Twitch channel via TwitchIO v3 and responds to !commands.
+    Chat messages are buffered in memory and optionally evaluated periodically
+    ("pulse"). Moderation tools are available via the thread's tool config.
+    """
+    from nymeria import NymeriaAgent
+    from nymeria.tools import get_all_tools_with_agents
+    from nymeria.config import get_settings
+    from nymeria.triggers.twitch_bot import NymeriaTwitchBot
+    from nymeria.tools.twitch import set_bot_ref
+
+    settings = get_settings()
+
+    if not settings.twitch_client_id:
+        print("\n[Error] Twitch credentials not configured.")
+        print("  Required environment variables:")
+        print("    TWITCH_CLIENT_ID     — from Twitch Developer Console")
+        print("    TWITCH_CLIENT_SECRET — from Twitch Developer Console")
+        print("    TWITCH_BOT_USER_ID   — numeric ID of the bot's Twitch account")
+        print("\n  1. Create an app at https://dev.twitch.tv/console/apps")
+        print("  2. Add credentials to .env or .env.docker")
+        print("  3. Run again: python run.py twitch-bot")
+        sys.exit(1)
+
+    print("Starting Nymeria Twitch Bot...")
+    print(f"  - Channel: #{settings.twitch_channel}")
+    print(f"  - Buffer size: {settings.twitch_buffer_size}")
+    print(f"  - Pulse: {'enabled' if settings.twitch_pulse_enabled else 'disabled'}")
+    print(f"  - Model: {settings.llm_model}")
+
+    # Initialize Redis event bus if configured
+    if settings.redis_enabled and settings.redis_url:
+        from nymeria.core.event_bus import create_event_bus, set_event_bus
+        event_bus = create_event_bus(settings)
+        set_event_bus(event_bus)
+        print(f"  - Redis event bus: {settings.redis_url}")
+
+    # Create agent without ticker (ticker runs in worker/api, not bot)
+    agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=False)
+    agent.sync_agent_tools()
+
+    # Create bot
+    bot = NymeriaTwitchBot(
+        agent=agent,
+        client_id=settings.twitch_client_id,
+        client_secret=settings.twitch_client_secret,
+        bot_user_id=settings.twitch_bot_user_id,
+        access_token=settings.twitch_bot_access_token,
+        refresh_token=settings.twitch_bot_refresh_token,
+        broadcaster_token=settings.twitch_broadcaster_token,
+        broadcaster_refresh_token=settings.twitch_broadcaster_refresh_token,
+        channel=settings.twitch_channel,
+        buffer_size=settings.twitch_buffer_size,
+        pulse_enabled=settings.twitch_pulse_enabled,
+        pulse_interval=settings.twitch_pulse_interval,
+        pulse_message_count=settings.twitch_pulse_message_count,
+        command_context_count=settings.twitch_command_context_count,
+    )
+
+    # Set bot reference for moderation tools
+    set_bot_ref(bot)
+
+    # Handle shutdown signals
+    def signal_handler(signum, frame):
+        print("\nShutdown signal received, stopping Twitch bot...")
+        import os
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    print("\nConnecting to Twitch...")
+    bot.run()
+
+
 def run_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server."""
     from nymeria.mcp_server import run_stdio, run_http
@@ -515,6 +594,12 @@ Examples:
              "when running the bot and API as separate local processes.",
     )
 
+    # Twitch bot subcommand
+    subparsers.add_parser(
+        "twitch-bot",
+        help="Start Twitch chat bot"
+    )
+
     # MCP subcommand
     mcp_parser = subparsers.add_parser("mcp", help="Start MCP server for agent-to-agent communication")
     mcp_parser.add_argument(
@@ -565,7 +650,7 @@ Actions:
 
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
-    if args.command in ("cli", "api", "mcp", "worker", "discord-bot"):
+    if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "twitch-bot"):
         validate_config()
     elif args.command == "service" and args.action in ("install", "run"):
         validate_config()
@@ -582,6 +667,8 @@ Actions:
         run_worker(args)
     elif args.command == "discord-bot":
         run_discord_bot(args)
+    elif args.command == "twitch-bot":
+        run_twitch_bot(args)
     elif args.command == "mcp":
         run_mcp(args)
     elif args.command == "service":

@@ -223,6 +223,55 @@ services:
     networks:
       - nymeria-network
 
+  # Twitch Bot for chat integration
+  twitch-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.full
+    container_name: nymeria-twitch-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command: ["python", "run.py", "twitch-bot"]
+    profiles:
+      - twitch  # Only starts when explicitly enabled: docker compose --profile twitch up -d
+    environment:
+      <<: *api-env
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
+      TWITCH_BOT_ACCESS_TOKEN: ${TWITCH_BOT_ACCESS_TOKEN:-}
+      TWITCH_BOT_REFRESH_TOKEN: ${TWITCH_BOT_REFRESH_TOKEN:-}
+      TWITCH_BOT_USER_ID: ${TWITCH_BOT_USER_ID:-}
+      TWITCH_BROADCASTER_TOKEN: ${TWITCH_BROADCASTER_TOKEN:-}
+      TWITCH_BROADCASTER_REFRESH_TOKEN: ${TWITCH_BROADCASTER_REFRESH_TOKEN:-}
+      TWITCH_CHANNEL: ${TWITCH_CHANNEL:-silk}
+      TWITCH_BUFFER_SIZE: ${TWITCH_BUFFER_SIZE:-500}
+      TWITCH_PULSE_ENABLED: ${TWITCH_PULSE_ENABLED:-true}
+      TWITCH_PULSE_INTERVAL: ${TWITCH_PULSE_INTERVAL:-300}
+      TWITCH_PULSE_MESSAGE_COUNT: ${TWITCH_PULSE_MESSAGE_COUNT:-100}
+      TWITCH_COMMAND_CONTEXT_COUNT: ${TWITCH_COMMAND_CONTEXT_COUNT:-50}
+      TWITCH_RESPOND_MODE: ${TWITCH_RESPOND_MODE:-command}
+    volumes:
+      - nymeria_data:/data
+      - nymeria_workspace:/workspace
+      - ./nymeria:/app/nymeria
+      - ./run.py:/app/run.py
+      - ./.env.docker:/app/.env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "run.py twitch-bot"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - nymeria-network
+
   # MCP Server for agent-to-agent communication
   mcp:
     build:
