@@ -2,7 +2,9 @@
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import { healthStore } from '$lib/stores/health.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
+  import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
   import type { ServerSettings, LLMProvider, LogLevel } from '$lib/types';
@@ -17,7 +19,7 @@
 
   let { open, onClose }: Props = $props();
 
-  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools';
+  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice';
   let activeTab = $state<Tab>('connection');
 
   // Connection settings
@@ -55,6 +57,19 @@
   let watchdogIntervalMinutes = $state(5);
   let todoStalenessMinutes = $state(20);
 
+  // Voice settings
+  let ttsProvider = $state<string>('none');
+  let ttsBaseUrl = $state('');
+  let ttsModel = $state('tts-1-hd');
+  let ttsVoice = $state('nova');
+  let ttsOutputFormat = $state('mp3');
+  let ttsSpeed = $state(1.0);
+  let sttProvider = $state<string>('none');
+  let sttBaseUrl = $state('');
+  let sttModel = $state('gpt-4o-mini-transcribe');
+  let sttLanguage = $state('');
+  let voiceDefaultThreadId = $state('');
+
   // Theme
   let selectedTheme = $state<ThemeName>(configStore.theme);
   const themeList = getThemeList();
@@ -89,6 +104,18 @@
       watchdogEnabled = serverSettings.watchdog_enabled;
       watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
       todoStalenessMinutes = serverSettings.todo_staleness_minutes;
+      // Voice
+      ttsProvider = serverSettings.tts_provider ?? 'none';
+      ttsBaseUrl = serverSettings.tts_base_url ?? '';
+      ttsModel = serverSettings.tts_model ?? 'tts-1-hd';
+      ttsVoice = serverSettings.tts_voice ?? 'nova';
+      ttsOutputFormat = serverSettings.tts_output_format ?? 'mp3';
+      ttsSpeed = serverSettings.tts_speed ?? 1.0;
+      sttProvider = serverSettings.stt_provider ?? 'none';
+      sttBaseUrl = serverSettings.stt_base_url ?? '';
+      sttModel = serverSettings.stt_model ?? 'gpt-4o-mini-transcribe';
+      sttLanguage = serverSettings.stt_language ?? '';
+      voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
       if (serverSettings.llm_provider === 'openrouter') {
         modelsStore.loadModels();
       }
@@ -165,12 +192,25 @@
         log_level: logLevel,
         watchdog_enabled: watchdogEnabled,
         watchdog_interval_minutes: watchdogIntervalMinutes,
-        todo_staleness_minutes: todoStalenessMinutes
+        todo_staleness_minutes: todoStalenessMinutes,
+        // Voice
+        tts_provider: ttsProvider,
+        tts_base_url: ttsBaseUrl || null,
+        tts_model: ttsModel,
+        tts_voice: ttsVoice,
+        tts_output_format: ttsOutputFormat,
+        tts_speed: ttsSpeed,
+        stt_provider: sttProvider,
+        stt_base_url: sttBaseUrl || null,
+        stt_model: sttModel,
+        stt_language: sttLanguage || null,
+        voice_default_thread_id: voiceDefaultThreadId || null,
       });
       testStatus = 'success';
       testMessage = result.restart_required
         ? 'Saved! Restart server for some changes.'
         : 'Settings saved and applied!';
+      serverSettingsStore.refresh();
     } catch (e) {
       testStatus = 'error';
       testMessage = e instanceof Error ? e.message : 'Failed to save';
@@ -200,7 +240,8 @@
         { id: 'appearance', label: 'Theme', disabled: false },
         { id: 'llm', label: 'LLM', disabled: !serverSettings },
         { id: 'agent', label: 'Agent', disabled: !serverSettings },
-        { id: 'tools', label: 'Tools', disabled: !serverSettings }
+        { id: 'tools', label: 'Tools', disabled: !serverSettings },
+        { id: 'voice', label: 'Voice', disabled: !serverSettings }
       ] as tab}
         <button
           class="tab-btn"
@@ -582,6 +623,163 @@
       <!-- Tools Tab -->
       {:else if activeTab === 'tools'}
         <ToolManagementPanel open={true} onClose={onClose} />
+
+      {:else if activeTab === 'voice'}
+        {#if loadingSettings}
+          <div class="loading-state">Loading settings...</div>
+        {:else}
+          <h3 class="section-heading">Text-to-Speech (TTS)</h3>
+
+          <div class="setting-group">
+            <label class="setting-label">TTS Provider</label>
+            <select class="setting-input" bind:value={ttsProvider}>
+              <option value="none">None (disabled)</option>
+              <option value="openai">OpenAI</option>
+              <option value="qwen3">Qwen3-TTS (Local)</option>
+            </select>
+            <p class="hint">
+              {#if ttsProvider === 'openai'}
+                Uses OpenAI TTS API (tts-1, tts-1-hd)
+              {:else if ttsProvider === 'qwen3'}
+                Local Qwen3-TTS via OpenAI-compatible server
+              {:else}
+                TTS disabled — voice endpoints will not return audio
+              {/if}
+            </p>
+          </div>
+
+          {#if ttsProvider !== 'none'}
+            <div class="setting-group">
+              <label class="setting-label">Base URL</label>
+              <input
+                type="text"
+                class="setting-input"
+                bind:value={ttsBaseUrl}
+                placeholder={ttsProvider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:8880/v1'}
+              />
+              <p class="hint">Leave empty for default ({ttsProvider === 'openai' ? 'api.openai.com' : 'localhost:8880'})</p>
+            </div>
+
+            <div class="setting-group">
+              <label class="setting-label">Model</label>
+              <input
+                type="text"
+                class="setting-input"
+                bind:value={ttsModel}
+                placeholder={ttsProvider === 'openai' ? 'tts-1-hd' : 'Qwen3-TTS-0.6B'}
+              />
+            </div>
+
+            <div class="setting-group">
+              <label class="setting-label">Voice</label>
+              <input
+                type="text"
+                class="setting-input"
+                bind:value={ttsVoice}
+                placeholder={ttsProvider === 'openai' ? 'nova' : 'default'}
+              />
+              <p class="hint">
+                {#if ttsProvider === 'openai'}
+                  Options: alloy, echo, fable, onyx, nova, shimmer
+                {:else}
+                  Voice ID or reference audio path for Qwen3-TTS
+                {/if}
+              </p>
+            </div>
+
+            <div class="setting-group">
+              <label class="setting-label">Output Format</label>
+              <select class="setting-input" bind:value={ttsOutputFormat}>
+                <option value="mp3">MP3</option>
+                <option value="wav">WAV</option>
+                <option value="opus">Opus</option>
+                <option value="aac">AAC</option>
+              </select>
+            </div>
+
+            <div class="setting-group">
+              <label class="setting-label">Speed: {ttsSpeed.toFixed(2)}x</label>
+              <input
+                type="range"
+                min="0.25"
+                max="4.0"
+                step="0.25"
+                bind:value={ttsSpeed}
+              />
+            </div>
+          {/if}
+
+          <h3 class="section-heading">Speech-to-Text (STT)</h3>
+
+          <div class="setting-group">
+            <label class="setting-label">STT Provider</label>
+            <select class="setting-input" bind:value={sttProvider}>
+              <option value="none">None (disabled)</option>
+              <option value="openai">OpenAI</option>
+              <option value="faster-whisper">Faster-Whisper (Local)</option>
+            </select>
+            <p class="hint">
+              {#if sttProvider === 'openai'}
+                Uses OpenAI transcription API (gpt-4o-mini-transcribe)
+              {:else if sttProvider === 'faster-whisper'}
+                Local faster-whisper via OpenAI-compatible server
+              {:else}
+                STT disabled — voice endpoints will not accept audio
+              {/if}
+            </p>
+          </div>
+
+          {#if sttProvider !== 'none'}
+            <div class="setting-group">
+              <label class="setting-label">Base URL</label>
+              <input
+                type="text"
+                class="setting-input"
+                bind:value={sttBaseUrl}
+                placeholder={sttProvider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:8003/v1'}
+              />
+              <p class="hint">Leave empty for default ({sttProvider === 'openai' ? 'api.openai.com' : 'localhost:8003'})</p>
+            </div>
+
+            <div class="setting-group">
+              <label class="setting-label">Model</label>
+              <input
+                type="text"
+                class="setting-input"
+                bind:value={sttModel}
+                placeholder={sttProvider === 'openai' ? 'gpt-4o-mini-transcribe' : 'large-v3-turbo'}
+              />
+            </div>
+
+            <div class="setting-group">
+              <label class="setting-label">Language Hint</label>
+              <input
+                type="text"
+                class="setting-input setting-input-sm"
+                bind:value={sttLanguage}
+                placeholder="en"
+              />
+              <p class="hint">Optional ISO 639-1 code (e.g., en, es, de). Improves accuracy.</p>
+            </div>
+          {/if}
+
+          <h3 class="section-heading">Watch / Default Thread</h3>
+
+          <div class="setting-group">
+            <label class="setting-label">Voice Thread</label>
+            <select class="setting-input" bind:value={voiceDefaultThreadId}>
+              <option value="">watch-default (auto-created)</option>
+              {#each threadsStore.threads as thread}
+                <option value={thread.id}>{thread.title || thread.id}</option>
+              {/each}
+            </select>
+            <p class="hint">Thread used by the watch app and /voice/chat endpoint when no thread is specified</p>
+          </div>
+
+          <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
+            {savingSettings ? 'Saving...' : 'Save Voice Settings'}
+          </Button>
+        {/if}
       {/if}
     </div>
 
@@ -681,6 +879,15 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
+  }
+
+  .section-heading {
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: var(--spacing-sm) 0 0 0;
+    padding-bottom: var(--spacing-xs);
+    border-bottom: 1px solid var(--border-subtle);
   }
 
   .setting-label {

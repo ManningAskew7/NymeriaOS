@@ -38,6 +38,12 @@ nymeria-mobile/android/app/src/main/assets/capacitor.config.json
 *.keystore
 !debug.keystore
 
+# === WearOS Watch App ===
+nymeria-watch/.gradle/
+nymeria-watch/app/build/
+nymeria-watch/build/
+nymeria-watch/local.properties
+
 # === IDE & OS ===
 .vscode/
 .idea/

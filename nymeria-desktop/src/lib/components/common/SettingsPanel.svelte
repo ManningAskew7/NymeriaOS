@@ -1,13 +1,17 @@
 <script lang="ts">
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
   import type { ServerSettings, LLMProvider, LogLevel, ThemeName } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { modelsStore } from '$lib/stores/models.svelte';
+  import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import { ToolManagementPanel } from '../tools';
+  import CLIProxyPanel from './CLIProxyPanel.svelte';
+  import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
 
   // Connection settings
   let apiUrl = $state(configStore.apiUrl);
@@ -39,6 +43,19 @@
   let watchdogIntervalMinutes = $state(5);
   let todoStalenessMinutes = $state(20);
 
+  // Voice settings
+  let ttsProvider = $state<string>('none');
+  let ttsBaseUrl = $state('');
+  let ttsModel = $state('tts-1-hd');
+  let ttsVoice = $state('nova');
+  let ttsOutputFormat = $state('mp3');
+  let ttsSpeed = $state(1.0);
+  let sttProvider = $state<string>('none');
+  let sttBaseUrl = $state('');
+  let sttModel = $state('gpt-4o-mini-transcribe');
+  let sttLanguage = $state('');
+  let voiceDefaultThreadId = $state('');
+
   // Theme settings
   let selectedTheme = $state<ThemeName>(configStore.theme);
   const themeList = getThemeList();
@@ -49,7 +66,8 @@
   );
 
   // UI state
-  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools'>('connection');
+  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy'>('connection');
+  let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
   let loadingSettings = $state(false);
@@ -85,6 +103,18 @@
       watchdogEnabled = serverSettings.watchdog_enabled;
       watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
       todoStalenessMinutes = serverSettings.todo_staleness_minutes;
+      // Voice
+      ttsProvider = serverSettings.tts_provider ?? 'none';
+      ttsBaseUrl = serverSettings.tts_base_url ?? '';
+      ttsModel = serverSettings.tts_model ?? 'tts-1-hd';
+      ttsVoice = serverSettings.tts_voice ?? 'nova';
+      ttsOutputFormat = serverSettings.tts_output_format ?? 'mp3';
+      ttsSpeed = serverSettings.tts_speed ?? 1.0;
+      sttProvider = serverSettings.stt_provider ?? 'none';
+      sttBaseUrl = serverSettings.stt_base_url ?? '';
+      sttModel = serverSettings.stt_model ?? 'gpt-4o-mini-transcribe';
+      sttLanguage = serverSettings.stt_language ?? '';
+      voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
     } catch (e) {
       console.error('Failed to load server settings:', e);
     } finally {
@@ -164,13 +194,26 @@
         log_level: logLevel,
         watchdog_enabled: watchdogEnabled,
         watchdog_interval_minutes: watchdogIntervalMinutes,
-        todo_staleness_minutes: todoStalenessMinutes
+        todo_staleness_minutes: todoStalenessMinutes,
+        // Voice
+        tts_provider: ttsProvider,
+        tts_base_url: ttsBaseUrl || null,
+        tts_model: ttsModel,
+        tts_voice: ttsVoice,
+        tts_output_format: ttsOutputFormat,
+        tts_speed: ttsSpeed,
+        stt_provider: sttProvider,
+        stt_base_url: sttBaseUrl || null,
+        stt_model: sttModel,
+        stt_language: sttLanguage || null,
+        voice_default_thread_id: voiceDefaultThreadId || null,
       });
 
       testStatus = 'success';
       testMessage = result.restart_required
         ? 'Settings saved! Restart the server for changes to take effect.'
         : 'Settings saved and applied!';
+      serverSettingsStore.refresh();
     } catch (e) {
       testStatus = 'error';
       testMessage = e instanceof Error ? e.message : 'Failed to save settings';
@@ -226,42 +269,76 @@
     >
       Tools
     </button>
+    <button
+      class="tab"
+      class:active={activeTab === 'voice'}
+      onclick={() => (activeTab = 'voice')}
+      disabled={!serverSettings}
+    >
+      Voice
+    </button>
+    {#if backendProcessStore.isTauri}
+      <button
+        class="tab"
+        class:active={activeTab === 'proxy'}
+        onclick={() => (activeTab = 'proxy')}
+      >
+        Proxy
+      </button>
+    {/if}
   </div>
 
   <!-- Connection Tab -->
   {#if activeTab === 'connection'}
     <div class="tab-content">
-      <div class="field">
-        <label for="api-url">API URL</label>
-        <input
-          id="api-url"
-          type="text"
-          bind:value={apiUrl}
-          placeholder="http://localhost:8000"
-        />
-        <p class="hint">The URL of your Nymeria API server</p>
-      </div>
+      {#if backendProcessStore.isTauri}
+        <div class="auto-config-notice">
+          <span class="status-dot connected"></span>
+          <span>Backend is auto-managed. Connection is configured automatically.</span>
+        </div>
+        <button class="advanced-toggle" onclick={() => (showConnectionAdvanced = !showConnectionAdvanced)}>
+          {showConnectionAdvanced ? 'Hide' : 'Show'} Advanced Connection Settings
+        </button>
+      {/if}
 
-      <div class="field">
-        <label for="api-key">API Key</label>
-        <input
-          id="api-key"
-          type="password"
-          bind:value={apiKey}
-          placeholder="Enter your API key"
-        />
-        <p class="hint">Found in your Nymeria .env file as NYMERIA_API_KEY</p>
-      </div>
+      {#if showConnectionAdvanced}
+        <div class="field">
+          <label for="api-url">API URL</label>
+          <input
+            id="api-url"
+            type="text"
+            bind:value={apiUrl}
+            placeholder="http://localhost:8000"
+          />
+          <p class="hint">The URL of your Nymeria API server</p>
+        </div>
 
-      <div class="actions">
-        <Button variant="secondary" onclick={handleTestConnection} disabled={testStatus === 'testing'}>
-          {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
-        </Button>
-        <Button variant="primary" onclick={handleSaveConnection}>
-          Save
-        </Button>
-      </div>
+        <div class="field">
+          <label for="api-key">API Key</label>
+          <input
+            id="api-key"
+            type="password"
+            bind:value={apiKey}
+            placeholder="Enter your API key"
+          />
+          <p class="hint">Found in your Nymeria .env file as NYMERIA_API_KEY</p>
+        </div>
+
+        <div class="actions">
+          <Button variant="secondary" onclick={handleTestConnection} disabled={testStatus === 'testing'}>
+            {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
+          </Button>
+          <Button variant="primary" onclick={handleSaveConnection}>
+            Save
+          </Button>
+        </div>
+      {/if}
     </div>
+  {/if}
+
+  <!-- Proxy Tab (CLIProxy management, Tauri only) -->
+  {#if activeTab === 'proxy'}
+    <CLIProxyPanel />
   {/if}
 
   <!-- Appearance Tab -->
@@ -676,6 +753,169 @@
     </div>
   {/if}
 
+  <!-- Voice Tab -->
+  {#if activeTab === 'voice'}
+    <div class="tab-content">
+      {#if loadingSettings}
+        <p class="loading">Loading settings...</p>
+      {:else}
+        <h3 class="section-heading">Text-to-Speech (TTS)</h3>
+
+        <div class="field">
+          <label for="tts-provider">TTS Provider</label>
+          <select id="tts-provider" bind:value={ttsProvider}>
+            <option value="none">None (disabled)</option>
+            <option value="openai">OpenAI</option>
+            <option value="qwen3">Qwen3-TTS (Local)</option>
+          </select>
+          <p class="hint">
+            {#if ttsProvider === 'openai'}
+              Uses OpenAI TTS API (tts-1, tts-1-hd)
+            {:else if ttsProvider === 'qwen3'}
+              Local Qwen3-TTS via OpenAI-compatible server
+            {:else}
+              TTS disabled — voice endpoints will not return audio
+            {/if}
+          </p>
+        </div>
+
+        {#if ttsProvider !== 'none'}
+          <div class="field">
+            <label for="tts-base-url">Base URL</label>
+            <input
+              id="tts-base-url"
+              type="text"
+              bind:value={ttsBaseUrl}
+              placeholder={ttsProvider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:8880/v1'}
+            />
+            <p class="hint">Leave empty for default ({ttsProvider === 'openai' ? 'api.openai.com' : 'localhost:8880'})</p>
+          </div>
+
+          <div class="field">
+            <label for="tts-model">Model</label>
+            <input
+              id="tts-model"
+              type="text"
+              bind:value={ttsModel}
+              placeholder={ttsProvider === 'openai' ? 'tts-1-hd' : 'Qwen3-TTS-0.6B'}
+            />
+          </div>
+
+          <div class="field">
+            <label for="tts-voice">Voice</label>
+            <input
+              id="tts-voice"
+              type="text"
+              bind:value={ttsVoice}
+              placeholder={ttsProvider === 'openai' ? 'nova' : 'default'}
+            />
+            <p class="hint">
+              {#if ttsProvider === 'openai'}
+                Options: alloy, echo, fable, onyx, nova, shimmer
+              {:else}
+                Voice ID or reference audio path for Qwen3-TTS
+              {/if}
+            </p>
+          </div>
+
+          <div class="field">
+            <label for="tts-format">Output Format</label>
+            <select id="tts-format" bind:value={ttsOutputFormat}>
+              <option value="mp3">MP3</option>
+              <option value="wav">WAV</option>
+              <option value="opus">Opus</option>
+              <option value="aac">AAC</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="tts-speed">Speed: {ttsSpeed.toFixed(2)}x</label>
+            <input
+              id="tts-speed"
+              type="range"
+              min="0.25"
+              max="4.0"
+              step="0.25"
+              bind:value={ttsSpeed}
+            />
+          </div>
+        {/if}
+
+        <h3 class="section-heading">Speech-to-Text (STT)</h3>
+
+        <div class="field">
+          <label for="stt-provider">STT Provider</label>
+          <select id="stt-provider" bind:value={sttProvider}>
+            <option value="none">None (disabled)</option>
+            <option value="openai">OpenAI</option>
+            <option value="faster-whisper">Faster-Whisper (Local)</option>
+          </select>
+          <p class="hint">
+            {#if sttProvider === 'openai'}
+              Uses OpenAI transcription API (gpt-4o-mini-transcribe)
+            {:else if sttProvider === 'faster-whisper'}
+              Local faster-whisper via OpenAI-compatible server
+            {:else}
+              STT disabled — voice endpoints will not accept audio
+            {/if}
+          </p>
+        </div>
+
+        {#if sttProvider !== 'none'}
+          <div class="field">
+            <label for="stt-base-url">Base URL</label>
+            <input
+              id="stt-base-url"
+              type="text"
+              bind:value={sttBaseUrl}
+              placeholder={sttProvider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:8003/v1'}
+            />
+            <p class="hint">Leave empty for default ({sttProvider === 'openai' ? 'api.openai.com' : 'localhost:8003'})</p>
+          </div>
+
+          <div class="field">
+            <label for="stt-model">Model</label>
+            <input
+              id="stt-model"
+              type="text"
+              bind:value={sttModel}
+              placeholder={sttProvider === 'openai' ? 'gpt-4o-mini-transcribe' : 'large-v3-turbo'}
+            />
+          </div>
+
+          <div class="field">
+            <label for="stt-language">Language Hint</label>
+            <input
+              id="stt-language"
+              type="text"
+              bind:value={sttLanguage}
+              placeholder="en"
+              style="max-width: 120px;"
+            />
+            <p class="hint">Optional ISO 639-1 code (e.g., en, es, de). Improves accuracy.</p>
+          </div>
+        {/if}
+
+        <h3 class="section-heading">Watch / Default Thread</h3>
+
+        <div class="field">
+          <label for="voice-thread">Voice Thread</label>
+          <select id="voice-thread" bind:value={voiceDefaultThreadId}>
+            <option value="">watch-default (auto-created)</option>
+            {#each threadsStore.threads as thread}
+              <option value={thread.id}>{thread.title || thread.id}</option>
+            {/each}
+          </select>
+          <p class="hint">Thread used by the watch app and /voice/chat endpoint when no thread is specified</p>
+        </div>
+
+        <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
+          {savingSettings ? 'Saving...' : 'Save Voice Settings'}
+        </Button>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Status message -->
   {#if testMessage}
     <div class="message" class:success={testStatus === 'success'} class:error={testStatus === 'error'}>
@@ -747,6 +987,15 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
+  }
+
+  .section-heading {
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: var(--spacing-sm) 0 0 0;
+    padding-bottom: var(--spacing-xs);
+    border-bottom: 1px solid var(--border-subtle);
   }
 
   .checkbox-field {
@@ -1125,5 +1374,41 @@
 
   input[type='number']::placeholder {
     color: var(--text-muted);
+  }
+
+  .auto-config-notice {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+  }
+
+  .status-dot.connected {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success, #22c55e);
+    box-shadow: 0 0 6px var(--success, #22c55e);
+    flex-shrink: 0;
+  }
+
+  .advanced-toggle {
+    background: none;
+    border: none;
+    color: var(--accent-primary);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    padding: 0;
+    margin-bottom: 1rem;
+  }
+
+  .advanced-toggle:hover {
+    text-decoration: underline;
   }
 </style>

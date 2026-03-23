@@ -23,6 +23,11 @@
         "dragDropEnabled": false
       }
     ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "tooltip": "Nymeria"
+    },
     "security": {
       "csp": null
     }

@@ -3,7 +3,9 @@
   import { onMount } from 'svelte';
   import { AppShell, Sidebar, MainPanel, RightPanel } from '$lib/components/layout';
   import { SetupWizard } from '$lib/components/common';
+  import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { autonomousStore } from '$lib/stores/autonomous.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -17,6 +19,23 @@
   if (configStore.isConfigured && !configStore.setupCompleted) {
     console.log('[Page] Config valid but setupCompleted=false, auto-completing setup');
     configStore.setupCompleted = true;
+  }
+
+  // Auto-configure from Tauri on first run
+  async function autoConfigFromTauri() {
+    if (typeof window === 'undefined' || !('__TAURI__' in window)) return;
+    if (configStore.isConfigured) return;
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const config = await invoke<{ api_url: string; api_key: string }>('get_auto_config');
+      console.log('[Page] Auto-configuring from Tauri');
+      configStore.apiUrl = config.api_url;
+      configStore.apiKey = config.api_key;
+      configStore.completeSetup();
+    } catch (e) {
+      console.warn('[Page] Tauri auto-config failed, falling back to manual setup:', e);
+    }
   }
 
   /**
@@ -88,6 +107,19 @@
   onMount(() => {
     console.log('[Page] onMount - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
 
+    // Try auto-config from Tauri, then initialize
+    autoConfigFromTauri().then(() => {
+      initializeApp();
+    });
+
+    // Return cleanup — SSE disconnect happens via autonomousStore
+    return () => {
+      console.log('[Page] Cleanup - disconnecting SSE');
+      autonomousStore.disconnect();
+    };
+  });
+
+  function initializeApp() {
     // Connect if configured (setupCompleted is redundant now but kept for safety)
     if (configStore.isConfigured) {
       // Sync thread metadata from backend (server is authoritative for titles/pins).
@@ -102,23 +134,19 @@
       }
 
       console.log('[Page] Config ready, connecting to SSE in 500ms');
-      const timer = setTimeout(() => {
+      setTimeout(() => {
         console.log('[Page] Calling autonomousStore.connect()');
         autonomousStore.connect();
       }, 500);
-
-      return () => {
-        console.log('[Page] Cleanup - disconnecting SSE');
-        clearTimeout(timer);
-        autonomousStore.disconnect();
-      };
     } else {
       console.log('[Page] Config NOT ready (no apiUrl or apiKey), SSE will connect when configured');
     }
-  });
+  }
 </script>
 
-{#if configStore.isFirstRun}
+{#if !backendProcessStore.isReady && backendProcessStore.isTauri}
+  <StartupOverlay />
+{:else if configStore.isFirstRun}
   <SetupWizard />
 {:else}
   <AppShell>

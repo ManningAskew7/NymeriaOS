@@ -51,8 +51,7 @@ description and it will execute autonomously.
             task: A clear description of what you want this thread to do. Be specific about the goal and any constraints.
         """
         from langchain_core.runnables.config import var_child_runnable_config
-        from langchain_core.callbacks.manager import tracing_v2_callback_var
-        from langchain_core.tracers.context import run_collector_var
+        from langchain_core.tracers.context import tracing_v2_callback_var, run_collector_var
         from ..core.thread_agent_executor import invoke as thread_invoke
 
         user_id = config.get("configurable", {}).get("user_id", "default") if config else "default"
@@ -63,6 +62,21 @@ description and it will execute autonomously.
         # Register parent→child relationship for cascading abort
         from ..core.agent import get_current_agent
         _agent = get_current_agent()
+
+        # Detect circular calls: if the target thread is an ancestor waiting
+        # for this thread's output, invoking it would deadlock.
+        if _agent and parent_thread_id:
+            if _agent.is_ancestor_invocation(parent_thread_id, _thread_id):
+                logger.warning(
+                    f"{_name} circular call blocked: thread {parent_thread_id} "
+                    f"tried to call {_thread_id} which is waiting for its response"
+                )
+                return (
+                    f"[Error]: {_name} is currently waiting for YOUR response. "
+                    f"Do not call a thread that invoked you — just return your "
+                    f"final answer directly to complete your turn."
+                )
+
         if _agent and parent_thread_id:
             _agent.register_callable_invocation(parent_thread_id, _thread_id)
 

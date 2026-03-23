@@ -24,6 +24,7 @@ class ToolCategory(str, Enum):
     CALENDAR = "calendar"   # Google Calendar auth + API tools (optional)
     GOOGLE_DOCS = "google_docs"  # Google Docs tools (optional)
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
+    MCP_SERVER = "mcp_server"  # Tools auto-discovered from MCP servers
 
 
 class SecurityLevel(str, Enum):
@@ -623,6 +624,43 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         default_enabled=False,
     ),
 
+    # Google Docs new tools (Phase 2-4)
+    "google_docs_create": ToolMetadata(
+        name="google_docs_create",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a new Google Docs document",
+        default_enabled=False,
+    ),
+    "google_docs_delete": ToolMetadata(
+        name="google_docs_delete",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Delete (trash) a Google Docs document",
+        default_enabled=False,
+    ),
+    "google_docs_list": ToolMetadata(
+        name="google_docs_list",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.SAFE,
+        description="List or search Google Docs documents in Drive",
+        default_enabled=False,
+    ),
+    "google_docs_write": ToolMetadata(
+        name="google_docs_write",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Write markdown-formatted content to a Google Doc",
+        default_enabled=False,
+    ),
+    "google_docs_update_paragraph_style": ToolMetadata(
+        name="google_docs_update_paragraph_style",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Update paragraph styling (headings, alignment)",
+        default_enabled=False,
+    ),
+
 }
 
 
@@ -668,6 +706,39 @@ def get_category_tools_summary() -> Dict[str, List[str]]:
         if tools:
             summary[category.value] = tools
     return summary
+
+
+# MCP server tool metadata registry
+MCP_SERVER_TOOL_METADATA: Dict[str, ToolMetadata] = {}
+
+
+def register_mcp_server_tool_metadata(
+    tool_name: str,
+    description: str,
+) -> ToolMetadata:
+    """Register metadata for an MCP server tool (default_enabled=False)."""
+    metadata = ToolMetadata(
+        name=tool_name,
+        category=ToolCategory.MCP_SERVER,
+        security_level=SecurityLevel.MODERATE,
+        description=description,
+        default_enabled=False,
+    )
+    MCP_SERVER_TOOL_METADATA[tool_name] = metadata
+    return metadata
+
+
+def unregister_mcp_server_tool_metadata(tool_name: str) -> bool:
+    """Unregister metadata for an MCP server tool."""
+    if tool_name in MCP_SERVER_TOOL_METADATA:
+        del MCP_SERVER_TOOL_METADATA[tool_name]
+        return True
+    return False
+
+
+def clear_mcp_server_tool_metadata() -> None:
+    """Clear all MCP server tool metadata (for reload)."""
+    MCP_SERVER_TOOL_METADATA.clear()
 
 
 # Custom tool metadata registry (separate from built-in)
@@ -718,7 +789,7 @@ def unregister_custom_tool_metadata(tool_id: str) -> bool:
 
 def get_all_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
     """
-    Get metadata for any tool (built-in or custom).
+    Get metadata for any tool (built-in, MCP server, or custom).
 
     Args:
         tool_name: Name/ID of the tool
@@ -729,5 +800,8 @@ def get_all_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
     # Check built-in first
     if tool_name in TOOL_METADATA:
         return TOOL_METADATA[tool_name]
-    # Then check custom
+    # Then MCP server tools
+    if tool_name in MCP_SERVER_TOOL_METADATA:
+        return MCP_SERVER_TOOL_METADATA[tool_name]
+    # Then custom
     return CUSTOM_TOOL_METADATA.get(tool_name)

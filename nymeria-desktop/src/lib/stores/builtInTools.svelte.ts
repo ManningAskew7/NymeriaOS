@@ -58,6 +58,16 @@ const CATEGORY_INFO: Record<ToolCategory, { name: string; icon: string; descript
     icon: 'calendar',
     description: 'Google Calendar tools for managing events and schedules'
   },
+  google_docs: {
+    name: 'Google Docs',
+    icon: 'file-text',
+    description: 'Google Docs tools for creating, reading, and writing documents'
+  },
+  mcp_server: {
+    name: 'MCP Servers',
+    icon: 'server',
+    description: 'Tools auto-discovered from MCP servers'
+  },
   custom: {
     name: 'Custom',
     icon: 'puzzle',

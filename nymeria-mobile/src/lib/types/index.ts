@@ -465,6 +465,18 @@ export interface ServerSettings {
   watchdog_interval_minutes: number;
   todo_staleness_minutes: number;
   activity_retention_hours: number;
+  // Voice settings
+  tts_provider: string;
+  tts_base_url: string | null;
+  tts_model: string;
+  tts_voice: string;
+  tts_output_format: string;
+  tts_speed: number;
+  stt_provider: string;
+  stt_base_url: string | null;
+  stt_model: string;
+  stt_language: string | null;
+  voice_default_thread_id: string | null;
 }
 
 export interface ServerSettingsUpdate {
@@ -491,6 +503,18 @@ export interface ServerSettingsUpdate {
   watchdog_interval_minutes?: number;
   todo_staleness_minutes?: number;
   activity_retention_hours?: number;
+  // Voice settings
+  tts_provider?: string;
+  tts_base_url?: string | null;
+  tts_model?: string;
+  tts_voice?: string;
+  tts_output_format?: string;
+  tts_speed?: number;
+  stt_provider?: string;
+  stt_base_url?: string | null;
+  stt_model?: string;
+  stt_language?: string | null;
+  voice_default_thread_id?: string | null;
 }
 
 // Custom Tool Types
@@ -603,8 +627,8 @@ export interface CustomToolTestResponse {
 // Built-in Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'calendar' | 'custom';
-export type ToolType = 'builtin' | 'custom';
+export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'calendar' | 'google_docs' | 'custom' | 'mcp_server';
+export type ToolType = 'builtin' | 'custom' | 'mcp_server';
 
 export interface BuiltInTool {
   name: string;
@@ -677,6 +701,60 @@ export interface UnifiedToolListResponse {
   total: number;
   builtinCount: number;
   customCount: number;
+}
+
+// MCP Server Types
+
+export interface MCPDiscoveredTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface MCPServer {
+  id: string;
+  name: string;
+  description: string;
+  serverCommand: string;
+  serverArgs: string[];
+  envVars: Record<string, string>;
+  workingDirectory?: string;
+  idleTimeoutSeconds: number;
+  startupTimeoutSeconds: number;
+  enabled: boolean;
+  discoveredTools: MCPDiscoveredTool[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MCPServerCreateRequest {
+  id: string;
+  name: string;
+  description?: string;
+  server_command: string;
+  server_args?: string[];
+  env_vars?: Record<string, string>;
+  working_directory?: string;
+  idle_timeout_seconds?: number;
+  startup_timeout_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface MCPServerUpdateRequest {
+  name?: string;
+  description?: string;
+  server_command?: string;
+  server_args?: string[];
+  env_vars?: Record<string, string>;
+  working_directory?: string;
+  idle_timeout_seconds?: number;
+  startup_timeout_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface MCPServerListResponse {
+  servers: MCPServer[];
+  total: number;
 }
 
 // Trigger Types

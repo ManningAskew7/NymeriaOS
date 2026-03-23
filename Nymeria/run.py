@@ -25,15 +25,22 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-# Add project to path
-sys.path.insert(0, str(Path(__file__).parent))
+import os
+
+# Add project to path — for PyInstaller frozen builds, the bundled modules are
+# already on sys.path, but we still need the project root for .env resolution.
+if getattr(sys, "frozen", False):
+    _project_root = Path(os.environ.get("NYMERIA_PROJECT_ROOT", Path(sys.executable).resolve().parent))
+else:
+    _project_root = Path(__file__).resolve().parent
+sys.path.insert(0, str(_project_root))
 
 from dotenv import load_dotenv
 
 
 def _load_environment() -> None:
     """Load environment files relative to project root, overriding inherited values."""
-    project_root = Path(__file__).resolve().parent
+    project_root = _project_root
 
     # Load base config first, then docker overrides if present.
     # override=True ensures restarts pick up latest .env values even when
@@ -69,7 +76,7 @@ def validate_config(skip_api_key: bool = False) -> None:
         print("\n[Configuration Warnings]")
         print("-" * 50)
         for warning in warnings:
-            print(f"  ⚠ {warning}")
+            print(f"  [!] {warning}")
         print()
 
     # Print errors and exit if any critical issues
@@ -78,7 +85,7 @@ def validate_config(skip_api_key: bool = False) -> None:
         print("-" * 50)
         print("Nymeria cannot start due to missing configuration:\n")
         for error in errors:
-            print(f"  ✗ {error}\n")
+            print(f"  [X] {error}\n")
         print("-" * 50)
         print("\nQuick Setup:")
         print("  1. Copy .env.minimal to .env (or use .env.example for all options)")

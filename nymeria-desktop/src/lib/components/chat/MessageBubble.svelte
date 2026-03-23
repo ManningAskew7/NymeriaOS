@@ -19,6 +19,9 @@
   // Format: [Current Time: ...]\n[Trigger: ...]\n\n{actual message}
   const TIME_CONTEXT_PATTERN = /^\[(?:Current )?Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n/;
 
+  // Pattern to detect smartwatch trigger source
+  const SMARTWATCH_TRIGGER_PATTERN = /\[Trigger: Smartwatch[^\]]*\]/;
+
   // Pattern to detect autonomous wake-up messages (internal system triggers - should be hidden)
   // Format: [Current Time: ...]\n[Trigger: Autonomous Wake-up...]\n\nWork on TODO ...
   const AUTONOMOUS_WAKEUP_PATTERN = /^\[(?:Current )?Time:[^\]]+\]\n\[Trigger: Autonomous Wake-up[^\]]*\]\n\n/;
@@ -52,18 +55,21 @@
   ];
 
   // Parse user message to extract actual content, context summary, and hidden flag
-  function parseUserMessage(content: string): { text: string; contextSummary: string | null; hidden: boolean } {
+  function parseUserMessage(content: string): { text: string; contextSummary: string | null; hidden: boolean; isSmartwatch: boolean } {
     let text = content;
     let contextSummary: string | null = null;
 
+    // Detect smartwatch trigger before stripping metadata
+    const isSmartwatch = SMARTWATCH_TRIGGER_PATTERN.test(text);
+
     // Check if this is an autonomous wake-up message (should be hidden entirely)
     if (AUTONOMOUS_WAKEUP_PATTERN.test(text)) {
-      return { text: '', contextSummary: null, hidden: true };
+      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false };
     }
 
     // Check if this is a compaction system request (should be hidden entirely)
     if (COMPACTION_REQUEST_PATTERN.test(text)) {
-      return { text: '', contextSummary: null, hidden: true };
+      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false };
     }
 
     // Strip time context prefix unless user opted to show metadata
@@ -78,7 +84,7 @@
     if (autoCompactMatch) {
       contextSummary = autoCompactMatch[1].trim();
       text = '[Auto-compact: Conversation summarized]';
-      return { text, contextSummary, hidden: false };
+      return { text, contextSummary, hidden: false, isSmartwatch };
     }
 
     // Check for manual /compact summary suffix
@@ -88,7 +94,7 @@
       text = text.replace(MANUAL_COMPACT_PATTERN, '').trim();
     }
 
-    return { text, contextSummary, hidden: false };
+    return { text, contextSummary, hidden: false, isSmartwatch };
   }
 
   // Parse assistant message to detect if it should be hidden (compaction summary response)
@@ -117,7 +123,7 @@
   let parsedUserContent = $derived(
     message.role === 'user'
       ? parseUserMessage(message.content)
-      : { text: message.content, contextSummary: null, hidden: false }
+      : { text: message.content, contextSummary: null, hidden: false, isSmartwatch: false }
   );
 
   // Computed: parsed assistant message (checks if it should be hidden)
@@ -217,7 +223,11 @@
           {/each}
         </div>
       {/if}
-      {#if message.autonomousSource}
+      {#if parsedUserContent.isSmartwatch}
+        <div class="autonomous-badge smartwatch-badge">
+          <span class="autonomous-source-label">⌚ Smartwatch</span>
+        </div>
+      {:else if message.autonomousSource}
         <div class="autonomous-badge">
           <span class="autonomous-source-label">
             {#if message.autonomousSource === 'scheduler'}
@@ -381,6 +391,14 @@
     color: var(--accent-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+
+  .smartwatch-badge .autonomous-source-label {
+    color: var(--accent-primary);
+  }
+
+  .smartwatch-badge {
+    border-bottom-color: color-mix(in srgb, var(--accent-primary) 25%, transparent);
   }
 
   .assistant .bubble-content {
