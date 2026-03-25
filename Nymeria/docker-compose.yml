@@ -238,6 +238,7 @@ services:
       - twitch  # Only starts when explicitly enabled: docker compose --profile twitch up -d
     environment:
       <<: *api-env
+      COMPACT_THRESHOLD: ${TWITCH_COMPACT_THRESHOLD:-0.2}
       TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
       TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
       TWITCH_BOT_ACCESS_TOKEN: ${TWITCH_BOT_ACCESS_TOKEN:-}
