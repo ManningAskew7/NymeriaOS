@@ -3030,6 +3030,7 @@ class NymeriaAgent:
         attachments: Optional[List[Dict[str, str]]] = None,
         images: Optional[List[Dict[str, str]]] = None,
         force_unsupported_attachments: bool = False,
+        _trigger_override: str = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -3110,7 +3111,7 @@ class NymeriaAgent:
                     logger.warning(f"[ASTREAM] Could not fetch existing state: {e}")
 
             # Inject time context into the message
-            time_context = self._get_time_context(is_autonomous=False)
+            time_context = self._get_time_context(is_autonomous=False, trigger_override=_trigger_override)
             message_with_context = f"{time_context}\n\n{message}"
 
             # Check for pending summary from manual /compact

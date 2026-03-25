@@ -112,19 +112,71 @@ The bot periodically evaluates recent chat and may comment if something interest
 
 The pulse only fires when there's new activity, so it won't waste tokens when the stream is offline or chat is dead.
 
-## Moderation Tools
+## Tools (21 total)
 
-These are registered as optional tools and auto-enabled on the Twitch thread:
+All tools are registered as OPTIONAL_TOOLS and enabled per-thread via thread config. Tools marked with **[auto]** are auto-enabled on first start; others need manual enabling.
 
-| Tool | Description |
-|------|-------------|
-| `twitch_send` | Send a message to chat (max 500 chars) |
-| `twitch_timeout` | Timeout a user (1-1800 seconds) |
-| `twitch_ban` | Permanently ban a user |
-| `twitch_unban` | Lift a ban or timeout |
-| `twitch_announce` | Send a highlighted announcement |
+### Chat Tools
 
-All moderation tools accept usernames (not numeric IDs) and resolve them automatically via the Helix API.
+| Tool | Token | Auto | Description |
+|------|-------|------|-------------|
+| `twitch_send` | Bot | **[auto]** | Send a message to chat (max 500 chars) |
+| `twitch_announce` | Bot | **[auto]** | Send a highlighted announcement (color options) |
+| `twitch_delete_message` | Bot | | Delete a specific message by ID, or clear all chat |
+
+### Moderation Tools
+
+| Tool | Token | Auto | Description |
+|------|-------|------|-------------|
+| `twitch_timeout` | Bot | **[auto]** | Timeout a user (1-1800 seconds) |
+| `twitch_ban` | Bot | **[auto]** | Permanently ban a user |
+| `twitch_unban` | Bot | **[auto]** | Lift a ban or timeout |
+| `twitch_warn` | Bot | **[auto]** | Issue an official warning popup to a user |
+| `twitch_automod_review` | Bot | | Approve or deny an AutoMod-held message |
+| `twitch_shoutout` | Bot | | Shoutout another channel (2-min cooldown per target) |
+
+### Channel & Stream Info
+
+| Tool | Token | Auto | Description |
+|------|-------|------|-------------|
+| `twitch_get_stream` | Bot | **[auto]** | Live status, viewer count, game, title, uptime |
+| `twitch_get_channel` | Bot | **[auto]** | Channel title, game, tags, language |
+| `twitch_get_chatters` | Bot | **[auto]** | List users currently in chat + count |
+| `twitch_get_banned` | Bot | | List banned users with reasons |
+| `twitch_get_schedule` | Bot | **[auto]** | Upcoming stream schedule |
+| `twitch_clip` | Bot | | Clip last ~30 seconds of live stream |
+
+### Broadcaster Actions (require broadcaster token)
+
+| Tool | Token | Auto | Description |
+|------|-------|------|-------------|
+| `twitch_create_poll` | Broadcaster | | Create a chat poll (2-5 choices) |
+| `twitch_end_poll` | Broadcaster | | End or archive an active poll |
+| `twitch_create_prediction` | Broadcaster | | Create a channel points prediction |
+| `twitch_resolve_prediction` | Broadcaster | | Resolve, cancel, or lock a prediction |
+| `twitch_set_channel_info` | Broadcaster | | Change stream title, game, or tags |
+| `twitch_get_subs` | Broadcaster | | Check sub count or if a user is subscribed |
+
+All tools that accept usernames resolve them automatically via the Helix API.
+
+### OAuth Scopes Required
+
+**Bot account** (13 scopes):
+```
+user:read:chat user:write:chat user:bot channel:bot
+moderator:manage:banned_users moderator:manage:chat_messages
+moderator:manage:announcements moderator:manage:shoutouts
+moderator:manage:warnings moderator:manage:automod
+moderator:read:chatters moderator:read:banned_users clips:edit
+```
+
+**Broadcaster account** (5 scopes):
+```
+channel:bot channel:manage:polls channel:manage:predictions
+channel:manage:broadcast channel:read:subscriptions
+```
+
+Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.py url`
 
 ## Configuration Reference
 
@@ -161,10 +213,11 @@ curl -X PUT "http://localhost:8000/threads/twitch_silk/config" \
 | File | Purpose |
 |------|---------|
 | `nymeria/triggers/twitch_bot.py` | Main bot class, commands, pulse loop |
-| `nymeria/tools/twitch.py` | Moderation tools (OPTIONAL_TOOLS) |
+| `nymeria/tools/twitch.py` | All 21 Twitch tools (OPTIONAL_TOOLS) |
 | `nymeria/config/settings.py` | Twitch settings fields |
 | `run.py` | `twitch-bot` subcommand entry point |
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) |
+| `tools/twitch_auth.py` | OAuth helper — URL generation, code exchange, token validation |
 
 ## Debugging
 

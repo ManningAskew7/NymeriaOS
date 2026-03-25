@@ -4089,12 +4089,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except VoiceServiceError as e:
             raise HTTPException(status_code=503, detail=str(e))
 
+        import time as _time
+
         # Read uploaded audio
         audio_bytes = await audio.read()
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Empty audio file")
 
         # STT: audio -> text
+        t0 = _time.monotonic()
         try:
             transcription = await stt.transcribe(
                 audio_bytes,
@@ -4103,34 +4106,47 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             )
         except VoiceServiceError as e:
             raise HTTPException(status_code=502, detail=f"STT failed: {e}")
+        stt_elapsed = _time.monotonic() - t0
 
         if not transcription:
             raise HTTPException(status_code=422, detail="Could not transcribe audio (empty result)")
 
-        logger.info(f"[VOICE] STT transcription: {transcription[:100]}...")
+        logger.info(f"[VOICE] STT ({stt_elapsed:.1f}s): {transcription[:100]}...")
 
-        # Agent: text -> response
+        # Agent: text -> response (use async streaming path for speed)
         agent = get_agent()
         tid = thread_id or settings.voice_default_thread_id or "watch-default"
+        t1 = _time.monotonic()
         try:
-            response_text = agent.chat(
-                transcription,
-                thread_id=tid,
-                user_id=user_id,
+            response_text = ""
+            async for event in agent.astream(
+                transcription, thread_id=tid, user_id=user_id,
                 _trigger_override="Smartwatch — respond concisely, your reply will be spoken aloud",
-            )
+            ):
+                if event.get("type") == "response":
+                    response_text += event.get("content", "")
+                elif event.get("type") == "error":
+                    raise Exception(event.get("content", "Unknown agent error"))
         except Exception as e:
             logger.error(f"[VOICE] Agent error: {e}")
             raise HTTPException(status_code=500, detail=f"Agent error: {e}")
+        agent_elapsed = _time.monotonic() - t1
 
         if not response_text:
             response_text = "I received your message but had no response."
 
+        logger.info(f"[VOICE] Agent ({agent_elapsed:.1f}s): {response_text[:100]}...")
+
         # TTS: text -> audio
+        t2 = _time.monotonic()
         try:
             audio_out, content_type = await tts.synthesize(response_text)
         except VoiceServiceError as e:
             raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
+        tts_elapsed = _time.monotonic() - t2
+
+        logger.info(f"[VOICE] TTS ({tts_elapsed:.1f}s): {len(audio_out)} bytes")
+        logger.info(f"[VOICE] Total pipeline: STT={stt_elapsed:.1f}s + Agent={agent_elapsed:.1f}s + TTS={tts_elapsed:.1f}s = {stt_elapsed+agent_elapsed+tts_elapsed:.1f}s")
 
         import io
         return StreamingResponse(

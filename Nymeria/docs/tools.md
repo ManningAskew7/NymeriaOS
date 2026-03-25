@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **16 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~50 optional tools** (13 Outlook + 4 trigger + 9 browser + 14 calendar + 7 self-modify + 2 utility) available for per-thread enabling.
+Nymeria has a three-tier tool system: **16 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~66 optional tools** (13 Outlook + 4 trigger + 9 browser + 14 calendar + 7 self-modify + 2 utility + 21 Twitch) available for per-thread enabling.
 
 ## Summary Table
 
@@ -776,7 +776,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - 9 browser tools (navigate, click, type, content, screenshot, scroll, key, close, status)
 - 14 calendar tools (3 auth + 11 event)
 - 7 self-modify tools (file read/write/list/delete, test import, reload, invoke)
-- 5 Twitch tools (send, timeout, ban, unban, announce) — see `docs/twitch-bot.md`
+- 21 Twitch tools (chat, moderation, stream info, broadcaster actions) — see `docs/twitch-bot.md`
 - 2 utility tools (self_modify_rollback, consult)
 
 **How it works:**
