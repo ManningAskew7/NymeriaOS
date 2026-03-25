@@ -4132,7 +4132,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except VoiceServiceError as e:
             raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
 
-        return Response(content=audio_out, media_type=content_type)
+        import io
+        return StreamingResponse(
+            io.BytesIO(audio_out),
+            media_type=content_type,
+            headers={"Cache-Control": "no-transform"},
+        )
 
     @app.post("/voice/tts", tags=["Voice"])
     async def voice_tts(
