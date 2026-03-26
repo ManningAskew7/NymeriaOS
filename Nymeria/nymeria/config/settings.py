@@ -380,6 +380,12 @@ class Settings(BaseSettings):
         description="Default thread ID for voice/watch interactions (uses 'watch-default' if not set)"
     )
 
+    # FCM Push Notifications
+    fcm_enabled: bool = Field(default=False, description="Enable FCM push notifications to registered devices")
+    fcm_credentials_json: Optional[str] = Field(
+        default=None, description="Path to Firebase service account JSON file"
+    )
+
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
     audit_log_enabled: bool = Field(default=True)

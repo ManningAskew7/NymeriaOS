@@ -571,6 +571,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             enable_ticker=not disable_ticker,
         )
 
+    # Initialize FCM if enabled
+    if settings.fcm_enabled and settings.fcm_credentials_json:
+        from ..core.fcm import _init_firebase
+        _init_firebase(settings.fcm_credentials_json)
+
     # Create FastAPI app
     app = FastAPI(
         title="Nymeria API",
@@ -4061,6 +4066,51 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "status": "ok",
             "deleted": tool_id,
         }
+
+    # ========================================================================
+    # Device Registration (FCM Push Notifications)
+    # ========================================================================
+
+    @app.post("/devices/register", tags=["Devices"])
+    async def register_device(
+        request: Request,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Register a device for FCM push notifications."""
+        from ..core.fcm import register_token
+
+        body = await request.json()
+        token = body.get("token", "").strip()
+        platform = body.get("platform", "unknown")
+        user_id = body.get("user_id", "default")
+
+        if not token:
+            raise HTTPException(status_code=400, detail="Token is required")
+
+        settings = get_settings()
+        data_dir = str(settings.data_dir)
+
+        is_new = register_token(data_dir, token, platform, user_id)
+        return {
+            "status": "registered" if is_new else "updated",
+            "platform": platform,
+        }
+
+    @app.delete("/devices/{token}", tags=["Devices"])
+    async def unregister_device(
+        token: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Unregister a device from FCM push notifications."""
+        from ..core.fcm import unregister_token
+
+        settings = get_settings()
+        data_dir = str(settings.data_dir)
+
+        removed = unregister_token(data_dir, token)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Token not found")
+        return {"status": "unregistered"}
 
     # ========================================================================
     # Voice Endpoints

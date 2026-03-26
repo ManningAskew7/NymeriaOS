@@ -778,6 +778,22 @@ class Ticker:
                 },
             )
 
+            # Send FCM push to registered devices
+            if response.content and self.agent.settings.fcm_enabled:
+                try:
+                    from .fcm import send_to_all_devices
+                    data_dir = str(self.agent.settings.data_dir)
+                    send_to_all_devices(
+                        data_dir=data_dir,
+                        text=response.content,
+                        thread_id=thread_id,
+                        task_id=todo.id,
+                        summary=response.summary or "",
+                        user_id=entry.user_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"[TICKER] FCM push failed: {e}")
+
             # Index TODO completion in RAG (if enabled)
             self._index_todo_completion(
                 user_id=entry.user_id,
