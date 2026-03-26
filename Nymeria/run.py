@@ -290,6 +290,12 @@ def run_worker(args: argparse.Namespace) -> None:
         set_event_bus(event_bus)
         print(f"  - Redis event bus: {settings.redis_url}")
 
+    # Initialize FCM if enabled
+    if settings.fcm_enabled and settings.fcm_credentials_json:
+        from nymeria.core.fcm import _init_firebase
+        if _init_firebase(settings.fcm_credentials_json):
+            print(f"  - FCM push notifications: enabled")
+
     # Create agent with all tools (this starts the ticker)
     agent = NymeriaAgent(tools=get_all_tools_with_agents())
 
