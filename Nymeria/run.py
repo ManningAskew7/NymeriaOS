@@ -449,7 +449,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         buffer_size=settings.twitch_buffer_size,
         pulse_enabled=settings.twitch_pulse_enabled,
         pulse_interval=settings.twitch_pulse_interval,
-        pulse_message_count=settings.twitch_pulse_message_count,
+        pulse_min_messages=settings.twitch_pulse_min_messages,
         command_context_count=settings.twitch_command_context_count,
     )
 

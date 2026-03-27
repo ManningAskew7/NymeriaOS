@@ -138,6 +138,7 @@ services:
       - ./nymeria:/app/nymeria        # Bind mount: live code sync
       - ./run.py:/app/run.py          # Bind mount: live entry point
       - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,6 +172,7 @@ services:
       - ./nymeria:/app/nymeria        # Bind mount: live code sync
       - ./run.py:/app/run.py          # Bind mount: live entry point
       - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
     depends_on:
       postgres:
         condition: service_healthy

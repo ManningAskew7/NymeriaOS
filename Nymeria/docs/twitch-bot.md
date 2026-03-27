@@ -53,7 +53,7 @@ https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=YOUR_CLIENT_I
 
 **Broadcaster token** — log in as the channel owner and visit:
 ```
-https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000&scope=channel:bot
+https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000&scope=channel:bot+channel:manage:polls+channel:manage:predictions+channel:manage:broadcast+channel:read:subscriptions+channel:moderate
 ```
 
 For both: the page won't load (nothing listens on localhost:3000). Copy the `code` parameter from the URL bar and exchange it:
@@ -101,16 +101,34 @@ docker logs nymeria-twitch-bot --tail 20
 | `!ask <question>` | Subs, VIPs, Mods, Broadcaster | 30s/user, 10s/global | Ask the AI a question with recent chat context |
 | `!status` | Everyone | None | Show model, uptime, buffer count, pulse status |
 | `!clear` | Mods, Broadcaster | None | Clear conversation history |
+| `!pulse on/off/<seconds>/min <count>` | Mods, Broadcaster | None | Control pulse (enable/disable/interval/min messages) |
+| `!context` | Mods, Broadcaster | None | Show context window token usage and compaction count |
+| `!stop` / `!start` | Mods, Broadcaster | None | Kill switch — disable/re-enable all agent responses |
+| `!help` | Everyone | None | List available commands (shows mod commands to mods) |
 
 ## Chat Pulse
 
 The bot periodically evaluates recent chat and may comment if something interesting is happening.
 
-- **Interval**: configurable via `TWITCH_PULSE_INTERVAL` (default 180s / 3 minutes)
-- **Minimum activity**: requires 10+ new messages since last pulse to fire
-- **Behavior**: the agent receives recent messages and decides whether to call `twitch_send` or stay silent
+- **Interval**: configurable via `TWITCH_PULSE_INTERVAL` (default 300s, live via `!pulse <seconds>`)
+- **Minimum activity**: configurable via `TWITCH_PULSE_MIN_MESSAGES` (default 10, live via `!pulse min <count>`)
+- **Behavior**: the agent receives only **unseen** messages and decides whether to call `twitch_send` or stay silent
+
+The pulse and `!ask` share a delivery cursor — messages are only sent to the agent once across both paths. If a pulse is skipped (too few messages), those messages carry over to the next delivery. This eliminates duplicate token spend from repeated context.
 
 The pulse only fires when there's new activity, so it won't waste tokens when the stream is offline or chat is dead.
+
+## Moderation Event Awareness
+
+The bot subscribes to Twitch EventSub moderation events so it can see mod actions in its chat context:
+
+- **Bans and timeouts** (`channel.ban`) — requires `channel:moderate` scope on broadcaster token
+- **Unbans** (`channel.unban`) — requires `channel:moderate` scope on broadcaster token
+- **Message deletions** (`channel.chat.message_delete`) — requires `user:read:chat` scope on bot token
+
+Mod events appear in the chat buffer as system messages formatted as `[MOD] moderator_name banned/timed out/unbanned user_name`. This gives the agent awareness of ongoing moderation so it doesn't duplicate mod actions or miss context.
+
+The bot also attempts the unified `channel.moderate` v2 subscription (covers all mod actions including warns) but this requires many `moderator:read:*` scopes. See the OAuth Scopes section for details.
 
 ## Tools (21 total)
 
@@ -170,10 +188,10 @@ moderator:manage:warnings moderator:manage:automod
 moderator:read:chatters moderator:read:banned_users clips:edit
 ```
 
-**Broadcaster account** (5 scopes):
+**Broadcaster account** (6 scopes):
 ```
 channel:bot channel:manage:polls channel:manage:predictions
-channel:manage:broadcast channel:read:subscriptions
+channel:manage:broadcast channel:read:subscriptions channel:moderate
 ```
 
 Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.py url`
@@ -193,7 +211,7 @@ Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.
 | `TWITCH_BUFFER_SIZE` | `500` | Max messages in ring buffer |
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat pulse |
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
-| `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Messages to include in pulse context |
+| `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum new messages before pulse fires |
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
 | `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
 

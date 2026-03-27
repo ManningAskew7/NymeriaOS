@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     twitch_buffer_size: int = Field(default=500, ge=50, le=5000, description="Chat message ring buffer size")
     twitch_pulse_enabled: bool = Field(default=True, description="Enable periodic chat pulse")
     twitch_pulse_interval: int = Field(default=300, ge=60, le=3600, description="Seconds between pulse checks")
+    twitch_pulse_min_messages: int = Field(default=10, ge=1, le=100, description="Minimum new messages before pulse fires")
     twitch_pulse_message_count: int = Field(default=100, ge=10, le=500, description="Messages to include in pulse context")
     twitch_command_context_count: int = Field(default=50, ge=5, le=200, description="Messages to include with !ask context")
     twitch_respond_mode: str = Field(default="command", description="Response mode: command (only !commands)")
