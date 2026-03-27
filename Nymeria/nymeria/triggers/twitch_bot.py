@@ -103,21 +103,42 @@ class ChatMessage:
     user_id: str
     message_id: str = ""
     badges: List[str] = field(default_factory=list)
+    is_system: bool = False  # True for mod actions, bans, deletions etc.
 
 
 class ChatBuffer:
-    """Thread-safe ring buffer for recent chat messages."""
+    """Thread-safe ring buffer for recent chat messages.
+
+    Tracks a monotonic append counter so consumers can request only
+    messages they haven't seen yet via ``get_since()``.
+    """
 
     def __init__(self, maxlen: int = 500):
         self._buffer: deque[ChatMessage] = deque(maxlen=maxlen)
+        self._total_appended: int = 0  # monotonic counter
 
     def append(self, msg: ChatMessage) -> None:
         self._buffer.append(msg)
+        self._total_appended += 1
+
+    @property
+    def total_appended(self) -> int:
+        """Total number of messages ever appended (monotonically increasing)."""
+        return self._total_appended
 
     def get_recent(self, count: int) -> List[ChatMessage]:
-        """Get the most recent N messages."""
+        """Get the most recent *count* messages (may include already-seen ones)."""
         items = list(self._buffer)
         return items[-count:] if count < len(items) else items
+
+    def get_since(self, last_seen: int) -> List[ChatMessage]:
+        """Return only messages appended after *last_seen* counter value."""
+        new_count = self._total_appended - last_seen
+        if new_count <= 0:
+            return []
+        # new_count may exceed buffer length if old messages were evicted
+        items = list(self._buffer)
+        return items[-new_count:] if new_count < len(items) else items
 
     def __len__(self) -> int:
         return len(self._buffer)
@@ -146,12 +167,16 @@ def format_chat_context(messages: List[ChatMessage]) -> str:
     lines = []
     for msg in messages:
         ts = msg.timestamp.strftime("%H:%M")
-        badge_str = _format_badges(msg.badges)
-        prefix = f"[{ts}]"
-        if badge_str:
-            prefix += f" ({badge_str})"
-        mid = f" [msg:{msg.message_id}]" if msg.message_id else ""
-        lines.append(f"{prefix} {msg.display_name}{mid}: {msg.message}")
+        if msg.is_system:
+            # Mod actions render as: [08:52] [MOD] fuzzyoce banned scrappypad
+            lines.append(f"[{ts}] [MOD] {msg.message}")
+        else:
+            badge_str = _format_badges(msg.badges)
+            prefix = f"[{ts}]"
+            if badge_str:
+                prefix += f" ({badge_str})"
+            mid = f" [msg:{msg.message_id}]" if msg.message_id else ""
+            lines.append(f"{prefix} {msg.display_name}{mid}: {msg.message}")
     return "\n".join(lines)
 
 
@@ -222,7 +247,7 @@ class NymeriaTwitchBot(commands.Bot):
         buffer_size: int = 500,
         pulse_enabled: bool = True,
         pulse_interval: int = 300,
-        pulse_message_count: int = 100,
+        pulse_min_messages: int = 10,
         command_context_count: int = 50,
     ):
         super().__init__(
@@ -249,7 +274,6 @@ class NymeriaTwitchBot(commands.Bot):
         # Pulse config
         self._pulse_enabled = pulse_enabled
         self._pulse_interval = pulse_interval
-        self._pulse_message_count = pulse_message_count
         self._command_context_count = command_context_count
 
         # Thread/user IDs for the agent
@@ -261,8 +285,8 @@ class NymeriaTwitchBot(commands.Bot):
         self._stopped = False  # Kill switch — disables all agent responses
         self._pulse_task: Optional[asyncio.Task] = None
         self._user_id_cache: Dict[str, str] = {}  # username -> numeric ID
-        self._last_pulse_buffer_len: int = 0  # track buffer size at last pulse
-        self._pulse_min_messages: int = 10  # minimum new messages to trigger pulse
+        self._last_delivered: int = 0  # shared cursor — tracks last message delivered to agent
+        self._pulse_min_messages: int = pulse_min_messages  # minimum new messages to trigger pulse
 
         # Register commands explicitly (TwitchIO v3 doesn't auto-discover from subclass methods)
         bot_self = self
@@ -363,6 +387,7 @@ class NymeriaTwitchBot(commands.Bot):
         await self._resolve_broadcaster_id()
 
         if self._broadcaster_id:
+            # Chat messages
             try:
                 subscription = twitchio.eventsub.ChatMessageSubscription(
                     broadcaster_user_id=self._broadcaster_id,
@@ -375,6 +400,9 @@ class NymeriaTwitchBot(commands.Bot):
                 logger.info(f"Subscribed to chat messages for #{self._channel_name}")
             except Exception as e:
                 logger.error(f"Failed to subscribe to chat events: {e}", exc_info=True)
+
+            # Moderation events (bans, timeouts, message deletions, warns, etc.)
+            await self._subscribe_moderation_events()
 
         # Upsert thread metadata
         try:
@@ -397,7 +425,7 @@ class NymeriaTwitchBot(commands.Bot):
             self._pulse_task = asyncio.create_task(self._pulse_loop())
             logger.info(
                 f"Chat pulse enabled: every {self._pulse_interval}s, "
-                f"last {self._pulse_message_count} messages"
+                f"min {self._pulse_min_messages} new messages to fire"
             )
 
         print(f"\nTwitch bot ready! Watching #{self._channel_name}")
@@ -441,6 +469,157 @@ class NymeriaTwitchBot(commands.Bot):
         logger.error(f"Command error: {type(payload.exception).__name__}: {payload.exception}", exc_info=payload.exception)
 
     # -----------------------------------------------------------------
+    # Moderation EventSub
+    # -----------------------------------------------------------------
+
+    async def _subscribe_moderation_events(self) -> None:
+        """Subscribe to moderation EventSub events (bans, message deletes, etc.).
+
+        Uses ChannelModerateV2Subscription which covers all mod actions in one
+        subscription.  Falls back to individual subscriptions if V2 fails
+        (e.g. missing scopes).  Failures are logged but non-fatal — the bot
+        still works, it just won't see mod actions in the buffer.
+        """
+        subscribed_v2 = False
+
+        # Try the unified channel.moderate v2 subscription first
+        # Try with broadcaster token (has broader scopes), then bot token
+        v2_token_options = []
+        if self._broadcaster_token:
+            v2_token_options.append(("broadcaster", self._broadcaster_id))
+        v2_token_options.append(("bot", self._bot_user_id))
+
+        for label, token_for in v2_token_options:
+            try:
+                sub = twitchio.eventsub.ChannelModerateV2Subscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                    moderator_user_id=self._bot_user_id,
+                )
+                await self.subscribe_websocket(sub, token_for=token_for)
+                logger.info(f"Subscribed to channel.moderate v2 for #{self._channel_name} (using {label} token)")
+                subscribed_v2 = True
+                break
+            except Exception as e:
+                logger.warning(f"channel.moderate v2 subscription failed with {label} token: {e}")
+
+        if not subscribed_v2:
+            # Fallback: subscribe to individual event types
+            # Ban/unban need channel:moderate scope — try broadcaster token first, then bot token
+            ban_token = self._broadcaster_id if self._broadcaster_token else self._bot_user_id
+            fallback_subs = [
+                ("channel.ban", ban_token, lambda: twitchio.eventsub.ChannelBanSubscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                )),
+                ("channel.unban", ban_token, lambda: twitchio.eventsub.ChannelUnbanSubscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                )),
+                ("channel.chat.message_delete", self._bot_user_id, lambda: twitchio.eventsub.ChatMessageDeleteSubscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                    user_id=self._bot_user_id,
+                )),
+            ]
+            for name, token_for, factory in fallback_subs:
+                try:
+                    await self.subscribe_websocket(factory(), token_for=token_for)
+                    logger.info(f"Subscribed to {name} for #{self._channel_name}")
+                except Exception as e:
+                    logger.warning(f"{name} subscription failed: {e}")
+
+    def _buffer_mod_event(self, message: str) -> None:
+        """Insert a system message into the chat buffer for a moderation event."""
+        self._buffer.append(ChatMessage(
+            username="system",
+            display_name="system",
+            message=message,
+            timestamp=datetime.now(timezone.utc),
+            user_id="0",
+            is_system=True,
+        ))
+
+    # --- Unified channel.moderate handler (V2) ---
+
+    async def event_mod_action(self, payload) -> None:
+        """Handle channel.moderate v2 events — bans, timeouts, unbans, deletes, warns, etc."""
+        action = getattr(payload, "action", None)
+        mod_name = payload.moderator.display_name or payload.moderator.name if payload.moderator else "unknown"
+
+        if action == "ban" and payload.ban:
+            user_name = payload.ban.user.display_name or payload.ban.user.name
+            reason = f" (reason: {payload.ban.reason})" if payload.ban.reason else ""
+            self._buffer_mod_event(f"{mod_name} banned {user_name}{reason}")
+
+        elif action == "timeout" and payload.timeout:
+            user_name = payload.timeout.user.display_name or payload.timeout.user.name
+            expires = payload.timeout.expires_at
+            if expires:
+                now = datetime.now(timezone.utc)
+                # Ensure both are tz-aware before subtracting
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                duration = int((expires - now).total_seconds())
+                duration_str = f" for {duration}s" if duration > 0 else ""
+            else:
+                duration_str = ""
+            reason = f" (reason: {payload.timeout.reason})" if payload.timeout.reason else ""
+            self._buffer_mod_event(f"{mod_name} timed out {user_name}{duration_str}{reason}")
+
+        elif action == "unban" and payload.unban:
+            user_name = payload.unban.display_name or payload.unban.name
+            self._buffer_mod_event(f"{mod_name} unbanned {user_name}")
+
+        elif action == "untimeout" and payload.untimeout:
+            user_name = payload.untimeout.display_name or payload.untimeout.name
+            self._buffer_mod_event(f"{mod_name} removed timeout for {user_name}")
+
+        elif action == "delete" and payload.delete:
+            user_name = payload.delete.user.display_name or payload.delete.user.name
+            deleted_text = payload.delete.text
+            preview = (deleted_text[:80] + "...") if len(deleted_text) > 80 else deleted_text
+            self._buffer_mod_event(f"{mod_name} deleted message from {user_name}: \"{preview}\"")
+
+        elif action == "warn" and getattr(payload, "warn", None):
+            user_name = payload.warn.user.display_name or payload.warn.user.name
+            reason = f" (reason: {payload.warn.reason})" if payload.warn.reason else ""
+            self._buffer_mod_event(f"{mod_name} warned {user_name}{reason}")
+
+        else:
+            # Log other actions at debug level (emote-only, slow mode, etc.)
+            logger.debug(f"Mod action '{action}' by {mod_name} (not buffered)")
+
+    # --- Fallback individual event handlers ---
+
+    async def event_ban(self, payload) -> None:
+        """Handle channel.ban events (fallback if V2 unavailable)."""
+        user_name = payload.user.display_name or payload.user.name
+        mod_name = payload.moderator.display_name or payload.moderator.name if payload.moderator else "unknown"
+        reason = f" (reason: {payload.reason})" if payload.reason else ""
+
+        if payload.permanent:
+            self._buffer_mod_event(f"{mod_name} banned {user_name}{reason}")
+        else:
+            ends = payload.ends_at
+            if ends:
+                now = datetime.now(timezone.utc)
+                if ends.tzinfo is None:
+                    ends = ends.replace(tzinfo=timezone.utc)
+                duration = int((ends - now).total_seconds())
+                duration_str = f" for {duration}s" if duration > 0 else ""
+            else:
+                duration_str = ""
+            self._buffer_mod_event(f"{mod_name} timed out {user_name}{duration_str}{reason}")
+
+    async def event_unban(self, payload) -> None:
+        """Handle channel.unban events (fallback if V2 unavailable)."""
+        user_name = payload.user.display_name or payload.user.name
+        mod_name = payload.moderator.display_name or payload.moderator.name if payload.moderator else "unknown"
+        self._buffer_mod_event(f"{mod_name} unbanned {user_name}")
+
+    async def event_message_delete(self, payload) -> None:
+        """Handle channel.chat.message_delete events (fallback if V2 unavailable)."""
+        user_name = payload.user.display_name or payload.user.name
+        self._buffer_mod_event(f"Message deleted from {user_name}")
+
+    # -----------------------------------------------------------------
     # Commands
     # -----------------------------------------------------------------
 
@@ -458,16 +637,16 @@ class NymeriaTwitchBot(commands.Bot):
             await ctx.send("Usage: !ask <your question>")
             return
 
-        # Get recent chat context
-        recent = self._buffer.get_recent(self._command_context_count)
-        context = format_chat_context(recent)
+        # Get only unseen chat messages (advance shared cursor)
+        new_messages = self._buffer.get_since(self._last_delivered)
+        self._last_delivered = self._buffer.total_appended
+        context = format_chat_context(new_messages)
 
         # Build prompt with context
         chatter_name = ctx.chatter.name if ctx.chatter else "someone"
-        total_buffered = len(self._buffer)
         if context:
             prompt = (
-                f"[New chat messages since last check — {len(recent)} of {total_buffered} buffered]\n"
+                f"[{len(new_messages)} new chat messages since last check]\n"
                 f"{context}\n"
                 f"[End new messages]\n\n"
                 f"Question from {chatter_name}: {question}"
@@ -684,15 +863,15 @@ class NymeriaTwitchBot(commands.Bot):
                 if self._stopped:
                     continue
 
-                # Skip if not enough new messages since last pulse
-                current_len = len(self._buffer)
-                new_messages = current_len - self._last_pulse_buffer_len
-                if new_messages < self._pulse_min_messages:
-                    logger.debug(f"Pulse skip: only {new_messages} new messages (need {self._pulse_min_messages})")
+                # Skip if not enough new messages since last delivery
+                pending = self._buffer.total_appended - self._last_delivered
+                if pending < self._pulse_min_messages:
+                    logger.debug(f"Pulse skip: only {pending} new messages (need {self._pulse_min_messages})")
                     continue
 
-                self._last_pulse_buffer_len = current_len
-                messages = self._buffer.get_recent(self._pulse_message_count)
+                # Get only unseen messages and advance shared cursor
+                messages = self._buffer.get_since(self._last_delivered)
+                self._last_delivered = self._buffer.total_appended
 
                 context = format_chat_context(messages)
                 prompt = (

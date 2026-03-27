@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.docker.example
+firebase-service-account.json
 
 # === Databases & User Data ===
 *.db

@@ -3301,6 +3301,7 @@ class NymeriaAgent:
                             emitted_tool_starts.add(run_id)
                             tool_name = event.get("name", "")
                             tool_input = event.get("data", {}).get("input", {})
+                            logger.debug(f"[ASTREAM] tool_start: name={tool_name}, input={tool_input}, raw_data_keys={list(event.get('data', {}).keys()) if isinstance(event.get('data'), dict) else type(event.get('data'))}")
                             yield {
                                 "type": "tool_call",
                                 "id": run_id,
@@ -3673,6 +3674,14 @@ class NymeriaAgent:
                         # Build steps preserving content block order
                         # (supports interleaved thinking between tool calls)
                         if isinstance(msg.content, list):
+                            # Build lookup from msg.tool_calls for args (content blocks
+                            # may have empty input fields, e.g. with CLIProxyAPI)
+                            tc_args_by_id = {}
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                for tc in msg.tool_calls:
+                                    tc_id = tc.get("id", "")
+                                    if tc_id:
+                                        tc_args_by_id[tc_id] = tc.get("args", {})
                             for block in msg.content:
                                 if not isinstance(block, dict):
                                     if isinstance(block, str) and block:
@@ -3698,11 +3707,15 @@ class NymeriaAgent:
                                         })
                                 elif block_type == "tool_use":
                                     tool_call_id = block.get("id", "")
+                                    # Prefer content block input, fall back to tool_calls args
+                                    block_input = block.get("input", {})
+                                    if not block_input and tool_call_id in tc_args_by_id:
+                                        block_input = tc_args_by_id[tool_call_id]
                                     step = {
                                         "type": "tool_call",
                                         "id": tool_call_id,
                                         "name": block.get("name", ""),
-                                        "arguments": block.get("input", {}),
+                                        "arguments": block_input,
                                         "status": "success",
                                     }
                                     if tool_call_id in tool_results:
