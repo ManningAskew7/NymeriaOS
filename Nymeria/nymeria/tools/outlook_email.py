@@ -41,7 +41,10 @@ def save_token_cache(cache: dict) -> None:
 
 
 def get_account(account_id: Optional[str] = None) -> Optional[dict]:
-    """Get account info from cache."""
+    """Get account info from cache.
+
+    Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first account.
+    """
     cache = load_token_cache()
     accounts = cache.get("accounts", {})
 
@@ -51,7 +54,16 @@ def get_account(account_id: Optional[str] = None) -> Optional[dict]:
     if account_id:
         return accounts.get(account_id)
 
-    # Return first account if no ID specified
+    # Check for configured default account
+    try:
+        from ..config import get_settings
+        default_id = get_settings().outlook_default_account_id
+        if default_id and default_id in accounts:
+            return accounts[default_id]
+    except Exception:
+        pass
+
+    # Fallback to first account
     return next(iter(accounts.values()), None)
 
 
@@ -157,13 +169,21 @@ def get_access_token(account_id: Optional[str] = None) -> Optional[str]:
         if not accounts:
             return None
 
-    # Find the account
+    # Find the account: explicit > configured default > first
     if account_id:
         account = accounts.get(account_id)
         aid = account_id
     else:
-        # Use first account
-        aid, account = next(iter(accounts.items()), (None, None))
+        aid, account = None, None
+        try:
+            from ..config import get_settings
+            default_id = get_settings().outlook_default_account_id
+            if default_id and default_id in accounts:
+                aid, account = default_id, accounts[default_id]
+        except Exception:
+            pass
+        if not account:
+            aid, account = next(iter(accounts.items()), (None, None))
 
     if not account:
         return None
@@ -252,17 +272,26 @@ def graph_request(
         return False, f"Request failed: {str(e)}"
 
 
+def _clean_sender(sender: dict) -> str:
+    """Format sender, handling Exchange DN addresses gracefully."""
+    name = sender.get("name", "")
+    address = sender.get("address", "")
+    if address.startswith("/O=") or address.startswith("/o="):
+        return name if name else "(internal sender)"
+    return f"{name} <{address}>" if name else address
+
+
 def format_email_summary(msg: dict) -> str:
     """Format an email message as a summary string."""
     subject = msg.get("subject", "(no subject)")
     sender = msg.get("from", {}).get("emailAddress", {})
-    sender_str = f"{sender.get('name', '')} <{sender.get('address', 'unknown')}>"
+    sender_str = _clean_sender(sender)
     date = msg.get("receivedDateTime", "")[:16].replace("T", " ")
     is_read = "✓" if msg.get("isRead") else "•"
     has_attach = "📎" if msg.get("hasAttachments") else ""
-    msg_id = msg.get("id", "")[:8]
+    msg_id = msg.get("id", "")
 
-    return f"{is_read} [{date}] {sender_str}\n   {subject} {has_attach}\n   ID: {msg_id}..."
+    return f"{is_read} [{date}] {sender_str}\n   {subject} {has_attach}\n   ID: {msg_id}"
 
 
 @tool
@@ -361,7 +390,7 @@ def outlook_get_email(
 
     subject = result.get("subject", "(no subject)")
     sender = result.get("from", {}).get("emailAddress", {})
-    sender_str = f"{sender.get('name', '')} <{sender.get('address', '')}>"
+    sender_str = _clean_sender(sender)
     date = result.get("receivedDateTime", "")[:19].replace("T", " ")
 
     to_list = [r.get("emailAddress", {}).get("address", "") for r in result.get("toRecipients", [])]
@@ -545,6 +574,8 @@ def outlook_create_draft(
     body: str,
     account_id: Optional[str] = None,
     cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    is_html: bool = False,
 ) -> str:
     """
     Create an email draft without sending it.
@@ -552,12 +583,16 @@ def outlook_create_draft(
     Args:
         to: Recipient email address(es), comma-separated
         subject: Email subject line
-        body: Email body content
+        body: Email body content (plain text or HTML depending on is_html)
         account_id: Microsoft account ID (optional)
         cc: CC recipients, comma-separated (optional)
+        bcc: BCC recipients, comma-separated (optional). Recipients in BCC
+             cannot see each other — use this for supplier RFQs where suppliers
+             should not see who else was contacted.
+        is_html: Set to True if body contains HTML content (default False)
 
     Returns:
-        Success message with draft ID.
+        Success message with draft ID and recipient counts.
     """
     def parse_recipients(addr_str: str) -> List[dict]:
         addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
@@ -566,7 +601,7 @@ def outlook_create_draft(
     message = {
         "subject": subject,
         "body": {
-            "contentType": "Text",
+            "contentType": "HTML" if is_html else "Text",
             "content": body,
         },
         "toRecipients": parse_recipients(to),
@@ -574,6 +609,12 @@ def outlook_create_draft(
 
     if cc:
         message["ccRecipients"] = parse_recipients(cc)
+
+    bcc_count = 0
+    if bcc:
+        bcc_recipients = parse_recipients(bcc)
+        bcc_count = len(bcc_recipients)
+        message["bccRecipients"] = bcc_recipients
 
     success, result = graph_request(
         "POST",
@@ -585,8 +626,9 @@ def outlook_create_draft(
     if not success:
         return f"[Error]: {result}"
 
-    draft_id = result.get("id", "")[:8]
-    return f"[Success]: Draft created (ID: {draft_id}...)"
+    draft_id = result.get("id", "")
+    bcc_note = f" with {bcc_count} BCC recipient(s)" if bcc_count else ""
+    return f"[Success]: Draft created{bcc_note} (ID: {draft_id})"
 
 
 @tool

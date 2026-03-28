@@ -29,6 +29,7 @@ SCOPES = [
     "Mail.Send",
     "Calendars.ReadWrite",
     "Contacts.Read",
+    "ChannelMessage.Send",
 ]
 
 # Token cache location (same as microsoft-mcp uses)

@@ -126,6 +126,58 @@ def notepad_read(
 
 
 @tool
+def notepad_edit(
+    old_text: str,
+    new_text: str = "",
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """
+    Edit the notepad by replacing specific text. Use this to update, correct,
+    or remove sections without rewriting the entire notepad.
+
+    To remove text, set new_text to empty string.
+    To update text, provide both old_text and new_text.
+
+    Args:
+        old_text: The exact text to find and replace (must match exactly)
+        new_text: The replacement text (empty string to delete the matched text)
+    """
+    thread_id = get_thread_id(config)
+    path = _notepad_path(thread_id)
+
+    if not path.exists():
+        return "[Error]: Notepad is empty — nothing to edit."
+
+    content = path.read_text(encoding="utf-8")
+
+    if old_text not in content:
+        return f"[Error]: Could not find the specified text in notepad. Make sure it matches exactly."
+
+    count = content.count(old_text)
+    updated = content.replace(old_text, new_text, 1)
+
+    # Clean up double blank lines from deletions
+    while "\n\n\n" in updated:
+        updated = updated.replace("\n\n\n", "\n\n")
+    updated = updated.strip() + "\n"
+
+    if len(updated.encode("utf-8")) > MAX_NOTEPAD_SIZE:
+        return f"[Error]: Edit would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit."
+
+    path.write_text(updated, encoding="utf-8")
+    size = len(updated.encode("utf-8"))
+
+    if new_text:
+        action = "replaced"
+    else:
+        action = "removed"
+    extra = f" ({count} occurrences found, first one {action})" if count > 1 else ""
+    logger.info(f"Notepad edited for thread {thread_id}: {action} text, {size} bytes")
+    return f"[Saved]: Text {action}{extra}. Notepad is now {size} bytes."
+
+
+@tool
 def notepad_clear(
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -144,4 +196,4 @@ def notepad_clear(
 
 
 # Export
-NOTEPAD_TOOLS = [notepad_write, notepad_read, notepad_clear]
+NOTEPAD_TOOLS = [notepad_write, notepad_read, notepad_edit, notepad_clear]

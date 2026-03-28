@@ -166,6 +166,14 @@ class OutlookEmailSource(BaseTriggerSource):
         }
         folder_name = folder_map.get(folder.lower(), folder)
 
+        # Resolve custom folder display names to folder IDs.
+        # Well-known names (inbox, drafts, etc.) work directly in the URL,
+        # but custom folders like "AI Reply" need their actual folder ID.
+        if folder.lower() not in folder_map:
+            folder_name = self._resolve_folder_id(
+                folder_name, token, state
+            )
+
         params = {
             "$top": max_emails,
             "$orderby": "receivedDateTime asc",
@@ -221,7 +229,7 @@ class OutlookEmailSource(BaseTriggerSource):
             ]
             flag_status = msg.get("flag", {}).get("flagStatus", "notFlagged")
 
-            events.append({
+            event: Dict[str, Any] = {
                 "email_id": msg.get("id", ""),
                 "conversation_id": msg.get("conversationId", ""),
                 "subject": msg.get("subject", "(no subject)"),
@@ -234,7 +242,17 @@ class OutlookEmailSource(BaseTriggerSource):
                 "has_attachments": msg.get("hasAttachments", False),
                 "is_flagged": flag_status == "flagged",
                 "web_link": msg.get("webLink", ""),
-            })
+            }
+
+            # Download attachments so the LLM can see them inline
+            if msg.get("hasAttachments"):
+                attachments = self._download_attachments(
+                    msg.get("id", ""), account_id
+                )
+                if attachments:
+                    event["attachments"] = attachments
+
+            events.append(event)
 
             seen_ids.add(msg["id"])
 
@@ -287,6 +305,123 @@ class OutlookEmailSource(BaseTriggerSource):
                     f"outlook_email source: failed to tag email "
                     f"'{subject}' ({msg_id[:20]}...): {err}"
                 )
+
+    @staticmethod
+    def _resolve_folder_id(
+        display_name: str,
+        token: str,
+        state: dict,
+    ) -> str:
+        """Resolve a custom folder display name to a Graph API folder ID.
+
+        Caches the resolved ID in ``state`` so subsequent polls skip the
+        lookup. Falls back to the raw display_name if resolution fails
+        (the caller already used it before, so it might be a folder ID).
+        """
+        cache_key = f"_folder_id_{display_name}"
+        cached = state.get(cache_key)
+        if cached:
+            return cached
+
+        import httpx
+        from nymeria.tools.outlook_email import GRAPH_BASE
+
+        safe_name = display_name.replace("'", "''")
+        url = f"{GRAPH_BASE}/me/mailFolders"
+        params = {"$filter": f"displayName eq '{safe_name}'", "$top": "1"}
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            resp = httpx.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code == 200:
+                folders = resp.json().get("value", [])
+                if folders:
+                    folder_id = folders[0].get("id", display_name)
+                    state[cache_key] = folder_id
+                    logger.info(
+                        f"outlook_email source: resolved folder "
+                        f"'{display_name}' → {folder_id[:20]}..."
+                    )
+                    return folder_id
+            logger.warning(
+                f"outlook_email source: could not resolve folder "
+                f"'{display_name}' (status {resp.status_code}), "
+                f"using raw value"
+            )
+        except Exception as e:
+            logger.warning(
+                f"outlook_email source: folder lookup failed for "
+                f"'{display_name}': {e}"
+            )
+
+        return display_name
+
+    @staticmethod
+    def _download_attachments(
+        email_id: str,
+        account_id: str | None,
+    ) -> List[Dict[str, str]]:
+        """Download email attachments and convert to FileData format.
+
+        Returns a list of dicts compatible with the frontend's attachment
+        format so they can be passed through the multimodal pipeline:
+        ``{"file_type": "document"|"image", "data_url": "data:...", ...}``
+        """
+        from nymeria.tools.outlook_email import graph_request
+
+        ok, result = graph_request(
+            "GET",
+            f"/me/messages/{email_id}/attachments",
+            account_id=account_id,
+        )
+        if not ok:
+            logger.warning(f"outlook_email source: failed to fetch attachments: {result}")
+            return []
+
+        attachments = []
+        for att in result.get("value", []):
+            # Only handle file attachments (skip item attachments, reference attachments)
+            if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                continue
+
+            content_bytes = att.get("contentBytes", "")
+            if not content_bytes:
+                continue
+
+            mime_type = att.get("contentType", "application/octet-stream")
+            file_name = att.get("name", "attachment")
+            size = att.get("size", 0)
+
+            # Skip very large attachments (>10MB base64 ≈ 7.5MB file)
+            if size > 10_000_000:
+                logger.info(
+                    f"outlook_email source: skipping large attachment "
+                    f"'{file_name}' ({size} bytes)"
+                )
+                continue
+
+            # Classify as image or document
+            if mime_type.startswith("image/"):
+                file_type = "image"
+            else:
+                file_type = "document"
+
+            data_url = f"data:{mime_type};base64,{content_bytes}"
+
+            attachments.append({
+                "file_type": file_type,
+                "data_url": data_url,
+                "mime_type": mime_type,
+                "file_name": file_name,
+            })
+
+        if attachments:
+            logger.info(
+                f"outlook_email source: downloaded {len(attachments)} "
+                f"attachment(s) for email {email_id[:20]}..."
+            )
+
+        return attachments
 
     def validate_config(self, config: dict) -> Tuple[bool, str]:
         """Config validation with extra checks on top of base schema validation."""

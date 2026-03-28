@@ -377,12 +377,20 @@ class TriggerManager:
             + "\n\n---\nProcess all items above."
         )
 
+        # Collect attachments from all events in the batch
+        all_attachments: List[Dict[str, str]] = []
+        for event in events:
+            event_atts = event.get("attachments")
+            if event_atts:
+                all_attachments.extend(event_atts)
+
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
         import time as _time
         _start = _time.monotonic()
+        att_note = f", attachments={len(all_attachments)}" if all_attachments else ""
         logger.info(
             f"[TRIGGER] === START === thread={thread_id}, user={user_id}, "
-            f"trigger={trigger.name} ({trigger.id}), batched={len(events)} events"
+            f"trigger={trigger.name} ({trigger.id}), batched={len(events)} events{att_note}"
         )
 
         try:
@@ -404,7 +412,8 @@ class TriggerManager:
             )
 
             response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
-                agent, batch_prompt, thread_id, user_id, task_id
+                agent, batch_prompt, thread_id, user_id, task_id,
+                attachments=all_attachments or None,
             )
             response = "".join(response_parts)
 
@@ -451,11 +460,15 @@ class TriggerManager:
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
         task_id = f"trigger-{trigger.id}"
 
+        # Extract attachments from event data (e.g. email attachments from Outlook trigger)
+        event_attachments = template_vars.get("attachments")
+
         import time as _time
         _start = _time.monotonic()
+        att_note = f", attachments={len(event_attachments)}" if event_attachments else ""
         logger.info(
             f"[TRIGGER] === START === thread={thread_id}, user={user_id}, "
-            f"trigger={trigger.name} ({trigger.id}), prompt={prompt[:100]}..."
+            f"trigger={trigger.name} ({trigger.id}){att_note}, prompt={prompt[:100]}..."
         )
 
         # Publish task_started immediately so frontend enters streaming mode
@@ -472,7 +485,8 @@ class TriggerManager:
         )
 
         response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
-            agent, prompt, thread_id, user_id, task_id
+            agent, prompt, thread_id, user_id, task_id,
+            attachments=event_attachments,
         )
         response = "".join(response_parts)
 
@@ -499,6 +513,7 @@ class TriggerManager:
         thread_id: str,
         user_id: str,
         task_id: str,
+        attachments: Optional[List[Dict[str, str]]] = None,
     ) -> Tuple[List[str], List[str], bool]:
         """Stream through the agent, publishing each event live.
 
@@ -516,6 +531,7 @@ class TriggerManager:
             thread_id=thread_id,
             user_id=user_id,
             _is_self_invoke=True,
+            attachments=attachments,
         ):
             chunk_type = chunk.get("type")
             chunk_count += 1

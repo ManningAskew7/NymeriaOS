@@ -140,6 +140,24 @@ class Settings(BaseSettings):
         description="Slack bot token for two-way communication"
     )
 
+    # Microsoft Teams notifications (uses Outlook OAuth token + Graph API)
+    teams_team_id: Optional[str] = Field(
+        default=None,
+        description="Microsoft Teams team ID for notifications"
+    )
+    teams_channel_id: Optional[str] = Field(
+        default=None,
+        description="Microsoft Teams channel ID for notifications"
+    )
+    teams_account_id: Optional[str] = Field(
+        default=None,
+        description="Outlook account ID to use for Teams (must have ChannelMessage.Send scope)"
+    )
+    outlook_default_account_id: Optional[str] = Field(
+        default=None,
+        description="Default Outlook account ID for email tools (used when agent doesn't specify one)"
+    )
+
     # LLM Configuration
     llm_provider: Literal["openrouter", "openai", "anthropic"] = Field(
         default="anthropic", description="LLM provider"

@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **16 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~66 optional tools** (13 Outlook + 4 trigger + 9 browser + 14 calendar + 7 self-modify + 2 utility + 21 Twitch) available for per-thread enabling.
+Nymeria has a three-tier tool system: **22 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~97 optional tools** (13 Outlook + 4 trigger + 6 _PRV_A + 9 browser + 14 calendar + 7 self-modify + 2 utility + 21 Twitch + Google Docs) available for per-thread enabling.
 
 ## Summary Table
 
@@ -24,11 +24,12 @@ Nymeria has a three-tier tool system: **16 core tools** always loaded, **dynamic
 | 14 | `todo_list` | TODO | SAFE | On | List TODO items |
 | 15 | `notepad_write` | Notepad | SAFE | On | Write to thread's persistent notepad |
 | 16 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
-| 17 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
+| 17 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
+| 18 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
 | 18 | `clear_agent_context` | Subagent | SAFE | On | Clear sub-agent conversation context |
 | 19 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
 | 20 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
-| 21 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 22 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack/Teams) |
 
 ### Optional: Trigger Tools (4)
 
@@ -40,6 +41,21 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 2 | `trigger_list` | Trigger | SAFE | List triggers |
 | 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
 | 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
+
+### Optional: _PRV_A Tools (6)
+
+Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching.
+
+| # | Tool | Security | Description |
+|---|------|----------|-------------|
+| 1 | `google_sheets_search` | SAFE | Generic search for any Google Sheet by ID |
+| 2 | `_prv_a_supplier_lookup` | SAFE | Find overseas suppliers by brand from Y/N matrix (includes emails/websites) |
+| 3 | `_prv_a_vendor_info` | SAFE | Vendor quality ratings, contacts, and notes from past dealings |
+| 4 | `_prv_a_product_search` | SAFE | Search the master _PRV_A product catalog |
+| 5 | `_prv_a_acme_lifecycle` | SAFE | Acme part lifecycle status (Active/Mature/Discontinued/Obsolete) with migration paths |
+| 6 | `_prv_a_acme_pricelist` | SAFE | Acme Electric part details and list pricing (ex-GST) |
+
+See `docs/_prv_a/setup-guide.md` for full setup instructions, Google Sheet IDs, and configuration.
 
 ### Callable Thread Tools (Dynamic)
 

@@ -81,6 +81,13 @@ Set the API key for your chosen provider:
 | `DISCORD_RESPOND_MODE` | `mention` | Guild behavior: `mention` (only @Nymeria) or `all` |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook URL for notifications |
 | `SLACK_BOT_TOKEN` | - | Slack bot token for two-way communication |
+| `TEAMS_TEAM_ID` | - | Microsoft Teams team ID for notifications |
+| `TEAMS_CHANNEL_ID` | - | Microsoft Teams channel ID for notifications |
+| `TEAMS_ACCOUNT_ID` | - | Outlook account ID for Teams (must have ChannelMessage.Send) |
+| `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
+| `MICROSOFT_MCP_CLIENT_ID` | `8ad36cab...` | Azure AD app client ID for Outlook/Teams OAuth |
+| `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth credentials JSON file |
+| `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

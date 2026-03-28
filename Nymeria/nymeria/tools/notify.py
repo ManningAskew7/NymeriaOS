@@ -91,10 +91,61 @@ def _send_slack(message: str, settings) -> str:
         return f"Slack error: {str(e)}"
 
 
+def _send_teams(message: str, settings) -> str:
+    """Send notification to Microsoft Teams channel via Graph API.
+
+    Uses the same Outlook OAuth token (requires ChannelMessage.Send scope).
+    """
+    team_id = settings.teams_team_id
+    channel_id = settings.teams_channel_id
+    if not team_id or not channel_id:
+        return None  # Not configured
+
+    # Get access token from Outlook auth — use the dedicated Teams account if configured
+    try:
+        from .outlook_email import get_access_token, GRAPH_BASE
+    except ImportError:
+        return None
+
+    teams_account = settings.teams_account_id
+    token = get_access_token(teams_account)
+    if not token:
+        return "Teams error: No authenticated Microsoft account"
+
+    url = f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "body": {
+            "contentType": "text",
+            "content": message,
+        }
+    }
+
+    try:
+        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
+            response = client.post(url, headers=headers, json=payload)
+
+        if response.status_code == 201:
+            msg_id = response.json().get("id", "")[:20]
+            logger.info(f"Teams notification sent: {msg_id}")
+            return f"Sent to Teams"
+        try:
+            err = response.json().get("error", {}).get("message", response.text[:200])
+        except Exception:
+            err = response.text[:200]
+        return f"Teams HTTP error {response.status_code}: {err}"
+    except Exception as e:
+        logger.error(f"Teams notification failed: {e}")
+        return f"Teams error: {str(e)}"
+
+
 @tool
 def notify(
     message: str,
-    platform: Literal["auto", "telegram", "discord", "slack"] = "auto",
+    platform: Literal["auto", "telegram", "discord", "slack", "teams"] = "auto",
 ) -> str:
     """
     Send a notification to the user via messaging platform.
@@ -105,7 +156,7 @@ def notify(
     Args:
         message: The message text to send.
         platform: Target platform. "auto" tries all configured platforms.
-                  Options: "auto", "telegram", "discord", "slack"
+                  Options: "auto", "telegram", "discord", "slack", "teams"
 
     Returns:
         Success message or error description.
@@ -118,6 +169,7 @@ def notify(
         "telegram": _send_telegram,
         "discord": _send_discord,
         "slack": _send_slack,
+        "teams": _send_teams,
     }
 
     if platform != "auto":
@@ -153,7 +205,8 @@ def notify(
     else:
         return (
             "[Error]: No notification platforms configured. "
-            "Set TELEGRAM_BOT_TOKEN, DISCORD_WEBHOOK_URL, or SLACK_WEBHOOK_URL in .env"
+            "Set TELEGRAM_BOT_TOKEN, DISCORD_WEBHOOK_URL, SLACK_WEBHOOK_URL, or "
+            "TEAMS_TEAM_ID + TEAMS_CHANNEL_ID in .env"
         )
 
 
