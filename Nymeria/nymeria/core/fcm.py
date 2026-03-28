@@ -39,13 +39,28 @@ def send_push(
     task_id: str = "",
     summary: str = "",
 ) -> bool:
-    """Send a data-only FCM message to a single device.
+    """Send an FCM message with both notification (guaranteed display) and data payload (TTS if app alive).
+
+    The notification ensures the user sees the message even if the app process is dead.
+    The data payload allows the app to do TTS + audio playback if it's running.
 
     Returns True if sent successfully.
     """
     try:
         from firebase_admin import messaging
+
+        # Truncate display text for notification body (keep it readable)
+        display_text = summary if summary else text
+        if len(display_text) > 200:
+            display_text = display_text[:197] + "..."
+
         message = messaging.Message(
+            # Notification payload: system displays this even if app is dead
+            notification=messaging.Notification(
+                title="Nymeria",
+                body=display_text,
+            ),
+            # Data payload: app uses this for TTS if it's alive
             data={
                 "text": text,
                 "thread_id": thread_id,
@@ -53,7 +68,13 @@ def send_push(
                 "summary": summary,
             },
             token=token,
-            android=messaging.AndroidConfig(priority="high"),
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    channel_id="nymeria_autonomous",
+                    priority="high",
+                ),
+            ),
         )
         response = messaging.send(message)
         logger.info(f"[FCM] Sent push to {token[:20]}...: {response}")
