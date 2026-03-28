@@ -24,6 +24,7 @@ from .memory import (
 from .thread_notes import (
     notepad_write,
     notepad_read,
+    notepad_edit,
     notepad_clear,
     NOTEPAD_TOOLS,
 )
@@ -53,10 +54,26 @@ from .triggers import (
 from .hello_test import hello_test
 from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
 from .google_docs import GOOGLE_DOCS_TOOLS
+from .google_sheets import GOOGLE_SHEETS_TOOLS
+from ._prv_a_supplier import _PRV_TOOLS_A1
+from ._prv_a_vendor import _PRV_TOOLS_A2
+from ._prv_a_products import _PRV_TOOLS_A3
+from ._prv_a_acme import _PRV_TOOLS_A4
+from ._prv_a_acme import _PRV_TOOLS_A5
 from .twitch import TWITCH_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
+
+# Combined _PRV_A tools list (all Google Sheets-based _PRV_A tools)
+_PRV_TOOLS_A = (
+    GOOGLE_SHEETS_TOOLS
+    + _PRV_TOOLS_A1
+    + _PRV_TOOLS_A2
+    + _PRV_TOOLS_A3
+    + _PRV_TOOLS_A4
+    + _PRV_TOOLS_A5
+)
 
 # Self-modify tools (from core/self_agent.py)
 from ..core.self_agent import SELF_AGENT_TOOLS
@@ -72,6 +89,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SELF_AGENT_TOOLS
     + SUBAGENT_TOOLS
     + GOOGLE_DOCS_TOOLS
+    + _PRV_TOOLS_A
     + TWITCH_TOOLS
 )}
 
@@ -92,6 +110,7 @@ ALL_TOOLS = [
     # Notepad tools (per-thread notes)
     notepad_write,
     notepad_read,
+    notepad_edit,
     notepad_clear,
     # TODO tools
     todo,
@@ -117,6 +136,7 @@ __all__ = [
     "PROFILE_TOOLS",
     "notepad_write",
     "notepad_read",
+    "notepad_edit",
     "notepad_clear",
     "NOTEPAD_TOOLS",
     "todo",
@@ -146,6 +166,13 @@ __all__ = [
     "sticky_note",
     "STICKY_NOTE_TOOLS",
     "GOOGLE_DOCS_TOOLS",
+    "GOOGLE_SHEETS_TOOLS",
+    "_PRV_TOOLS_A1",
+    "_PRV_TOOLS_A2",
+    "_PRV_TOOLS_A3",
+    "_PRV_TOOLS_A4",
+    "_PRV_TOOLS_A5",
+    "_PRV_TOOLS_A",
     "TWITCH_TOOLS",
 ]
 

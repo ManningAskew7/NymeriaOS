@@ -4,6 +4,9 @@
 !.env.example
 !.env.docker.example
 firebase-service-account.json
+google_credentials.json
+**/google_credentials.json
+CLIProxyAPI*/
 
 # === Databases & User Data ===
 *.db

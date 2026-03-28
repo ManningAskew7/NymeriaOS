@@ -2683,6 +2683,7 @@ class NymeriaAgent:
         user_id: str = "default",
         _is_self_invoke: bool = False,
         _trigger_override: str = None,
+        attachments: Optional[List[Dict[str, str]]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         Send a message and stream the response.
@@ -2693,6 +2694,7 @@ class NymeriaAgent:
             user_id: User ID for profile/memory access
             _is_self_invoke: Internal flag, True when called by scheduler
             _trigger_override: If provided, use as the trigger label (e.g. for callable thread invocations)
+            attachments: Optional file attachments (same format as astream)
 
         Yields:
             Dict with event type and content:
@@ -2770,15 +2772,77 @@ class NymeriaAgent:
                 "configurable": {"thread_id": thread_id, "user_id": user_id},
             }
 
+            # Build message content -- multimodal if attachments provided
+            msg_content: Any = message_with_context
+            if attachments:
+                try:
+                    from ..config.model_capabilities import (
+                        infer_mime_type,
+                        normalize_attachment_file_type,
+                    )
+                    import base64 as b64
+
+                    content_blocks: list = [{"type": "text", "text": message_with_context}]
+                    for att in attachments:
+                        mime_type = infer_mime_type(
+                            att.get("mime_type", ""), att.get("file_name", "")
+                        )
+                        file_type = normalize_attachment_file_type(
+                            att.get("file_type", ""), mime_type, att.get("file_name", ""),
+                        )
+                        data_url = att.get("data_url", "")
+                        base64_data = (
+                            data_url.split(",", 1)[1] if "," in data_url else data_url
+                        )
+
+                        if file_type == "image":
+                            content_blocks.append({
+                                "type": "image_url",
+                                "image_url": {"url": data_url},
+                            })
+                        elif mime_type == "application/pdf":
+                            content_blocks.append({
+                                "type": "file",
+                                "source_type": "base64",
+                                "mime_type": mime_type,
+                                "data": base64_data,
+                            })
+                        elif mime_type in ("text/plain", "text/markdown", "text/csv"):
+                            try:
+                                text_content = b64.b64decode(base64_data).decode("utf-8")
+                                label = att.get("file_name", mime_type.split("/")[-1].upper())
+                                content_blocks.append({
+                                    "type": "text",
+                                    "text": (
+                                        f"\n\n--- Attached file: {label} ---\n"
+                                        f"{text_content}\n--- End of file ---\n"
+                                    ),
+                                })
+                            except Exception as e:
+                                logger.warning(f"Failed to decode text attachment: {e}")
+                        else:
+                            logger.info(f"Skipping unsupported attachment type: {mime_type}")
+
+                    msg_content = content_blocks
+                    logger.info(
+                        f"Thread {thread_id}: Built multimodal message with "
+                        f"{len(attachments)} attachment(s) (stream)"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: Failed to process attachments "
+                        f"in stream(): {e}"
+                    )
+
             # Create message - mark autonomous wake-ups as internal so they're filtered from user history
             if _is_self_invoke:
                 human_msg = _create_human_message(
-                    message_with_context,
+                    msg_content,
                     internal=True,
                     internal_type="autonomous_wakeup",
                 )
             else:
-                human_msg = HumanMessage(content=message_with_context)
+                human_msg = HumanMessage(content=msg_content)
             input_state = {"messages": [human_msg]}
 
             # Track tool calls: id -> {name, args} (only emit when args are populated)
@@ -3461,11 +3525,12 @@ class NymeriaAgent:
             # Patch dangling tool_calls in finally so it runs even when the
             # async generator is force-closed (GeneratorExit from SSE disconnect).
             # Must use the SYNC patch — await is forbidden during GeneratorExit.
+            # Always attempt patching — not just on abort, but also after errors
+            # where tool_use blocks may be saved without matching tool_result blocks.
             try:
-                if abort_event.is_set():
-                    patched = self._patch_dangling_tool_calls(graph, config)
-                    if patched:
-                        logger.info(f"[ASTREAM] Thread {thread_id}: Patched {patched} dangling tool call(s) in finally")
+                patched = self._patch_dangling_tool_calls(graph, config)
+                if patched:
+                    logger.info(f"[ASTREAM] Thread {thread_id}: Patched {patched} dangling tool call(s) in finally")
             except (NameError, UnboundLocalError):
                 pass  # abort_event/graph/config not yet assigned (early exit)
             except Exception as e:

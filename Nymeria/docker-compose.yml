@@ -57,6 +57,17 @@ services:
       dockerfile: Dockerfile.full
     container_name: nymeria-api
     restart: unless-stopped
+    # Symlink OAuth token caches to /data so they survive container rebuilds
+    command: >-
+      bash -c "
+        mkdir -p /data/auth_tokens &&
+        for f in .microsoft_mcp_token_cache.json .google_docs_token_cache.json .google_calendar_token_cache.json; do
+          [ ! -f /data/auth_tokens/$$f ] && [ ! -L /root/$$f ] && [ -f /root/$$f ] && mv /root/$$f /data/auth_tokens/$$f;
+          [ ! -f /data/auth_tokens/$$f ] && echo '{}' > /data/auth_tokens/$$f;
+          ln -sf /data/auth_tokens/$$f /root/$$f;
+        done &&
+        exec python run.py api
+      "
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -70,6 +81,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-}
       # LLM Configuration
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-20250514}
@@ -119,6 +131,13 @@ services:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      # Google OAuth
+      GOOGLE_OAUTH_CREDENTIALS: ${GOOGLE_OAUTH_CREDENTIALS:-}
+      # Microsoft Teams notifications
+      TEAMS_TEAM_ID: ${TEAMS_TEAM_ID:-}
+      TEAMS_CHANNEL_ID: ${TEAMS_CHANNEL_ID:-}
+      TEAMS_ACCOUNT_ID: ${TEAMS_ACCOUNT_ID:-}
+      OUTLOOK_DEFAULT_ACCOUNT_ID: ${OUTLOOK_DEFAULT_ACCOUNT_ID:-}
       # Voice (TTS/STT)
       TTS_PROVIDER: ${TTS_PROVIDER:-none}
       TTS_BASE_URL: ${TTS_BASE_URL:-http://qwen3-tts:8000/v1}
@@ -139,6 +158,7 @@ services:
       - ./run.py:/app/run.py          # Bind mount: live entry point
       - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+      - ./google_credentials.json:/app/google_credentials.json:ro  # Google OAuth creds
     depends_on:
       postgres:
         condition: service_healthy
@@ -162,7 +182,16 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
-    command: ["python", "run.py", "worker"]
+    command: >-
+      bash -c "
+        mkdir -p /data/auth_tokens &&
+        for f in .microsoft_mcp_token_cache.json .google_docs_token_cache.json .google_calendar_token_cache.json; do
+          [ ! -f /data/auth_tokens/$$f ] && [ ! -L /root/$$f ] && [ -f /root/$$f ] && mv /root/$$f /data/auth_tokens/$$f;
+          [ ! -f /data/auth_tokens/$$f ] && echo '{}' > /data/auth_tokens/$$f;
+          ln -sf /data/auth_tokens/$$f /root/$$f;
+        done &&
+        exec python run.py worker
+      "
     environment:
       <<: *api-env
       WORKER_MODE: "true"
