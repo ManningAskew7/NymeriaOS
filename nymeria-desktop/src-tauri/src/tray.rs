@@ -29,9 +29,11 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "exit" => {
-                    // Shut down all managed processes
+                    // Shut down all managed processes (if running in self-contained mode)
                     if let Some(state) = app.try_state::<AppState>() {
-                        state.process_manager.shutdown_all();
+                        if let Some(ref pm) = state.process_manager {
+                            pm.shutdown_all();
+                        }
                     }
                     app.exit(0);
                 }

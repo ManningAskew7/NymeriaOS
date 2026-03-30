@@ -8,9 +8,9 @@
   let currentStep = $state(1);
   let totalSteps = 4;
 
-  // Form values
-  let apiUrl = $state('http://localhost:8000');
-  let apiKey = $state('');
+  // Form values (use build-time defaults if available)
+  let apiUrl = $state(import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000');
+  let apiKey = $state(import.meta.env.VITE_DEFAULT_API_KEY || '');
 
   // Status
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -129,15 +129,16 @@
           <ul class="checklist">
             <li>
               <Icon name="success" size={18} />
-              <span>Nymeria backend running (python run.py api)</span>
+              <span>A connection to the company network</span>
             </li>
             <li>
               <Icon name="success" size={18} />
-              <span>Configured your .env file with API keys</span>
+              <span>The backend server URL and API key from your administrator</span>
             </li>
           </ul>
           <div class="info-box">
-            <strong>Need help?</strong> See docs/QUICKSTART.md for step-by-step instructions.
+            <strong>Note:</strong> If the app was pre-configured, you may already be connected.
+            Check Settings if you need to change the server.
           </div>
         </div>
       {:else if currentStep === 2}

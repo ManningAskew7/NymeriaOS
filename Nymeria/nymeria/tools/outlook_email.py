@@ -319,8 +319,22 @@ def format_email_summary(msg: dict) -> str:
     is_read = "✓" if msg.get("isRead") else "•"
     has_attach = "📎" if msg.get("hasAttachments") else ""
     msg_id = msg.get("id", "")
+    conv_id = msg.get("conversationId", "")
 
-    return f"{is_read} [{date}] {sender_str}\n   {subject} {has_attach}\n   ID: {msg_id}"
+    # Body preview — truncate to 120 chars
+    preview = msg.get("bodyPreview", "").strip()
+    if preview:
+        preview = preview.replace("\r\n", " ").replace("\n", " ")
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+
+    lines = [f"{is_read} [{date}] {sender_str}", f"   {subject} {has_attach}"]
+    if preview:
+        lines.append(f"   Preview: {preview}")
+    lines.append(f"   ID: {msg_id}")
+    if conv_id:
+        lines.append(f"   Thread: {conv_id}")
+    return "\n".join(lines)
 
 
 @tool
@@ -351,7 +365,7 @@ def outlook_list_emails(
 
     params = {
         "$top": limit,
-        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
+        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
         "$orderby": "receivedDateTime desc",
     }
     if filters:
@@ -523,27 +537,94 @@ def outlook_get_email(
     return "\n\n".join(sections)
 
 
+def _build_search_kql(
+    query: str,
+    sender: str = "",
+    recipient: str = "",
+    subject: str = "",
+    has_attachments: bool = False,
+) -> str:
+    """Build a KQL search string from structured parameters."""
+    parts = []
+    if query.strip():
+        parts.append(query.strip())
+    if sender.strip():
+        parts.append(f"from:{sender.strip()}")
+    if recipient.strip():
+        parts.append(f"to:{recipient.strip()}")
+    if subject.strip():
+        parts.append(f"subject:{subject.strip()}")
+    if has_attachments:
+        parts.append("hasattachment:true")
+    return " ".join(parts)
+
+
 def _search_single_query(
     query: str,
     account_id: Optional[str],
     limit: int,
+    folder: str = "",
+    days_back: int = 0,
 ) -> str:
     """Execute a single email search and return formatted results."""
-    params = {
-        "$search": f'"{query}"',
+    params: dict = {
         "$top": limit,
-        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
+        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
     }
+
+    # Build endpoint — folder-scoped or global
+    folder_map = {
+        "inbox": "inbox",
+        "sent": "sentitems",
+        "sentitems": "sentitems",
+        "drafts": "drafts",
+        "deleted": "deleteditems",
+        "deleteditems": "deleteditems",
+        "junk": "junkemail",
+        "archive": "archive",
+    }
+    if folder.strip():
+        folder_name = folder_map.get(folder.lower().strip(), folder.strip())
+        endpoint = f"/me/mailFolders/{folder_name}/messages"
+    else:
+        endpoint = "/me/messages"
+
+    # Date filtering via $filter (works alongside $search)
+    if days_back > 0:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
+        params["$filter"] = f"receivedDateTime ge {cutoff}"
+        params["$orderby"] = "receivedDateTime desc"
+
+    # Set search query if provided
+    if query.strip():
+        params["$search"] = f'"{query}"'
+    elif "$filter" not in params:
+        return "[Error]: No search criteria provided."
 
     success, result = graph_request(
         "GET",
-        "/me/messages",
+        endpoint,
         account_id=account_id,
         params=params,
     )
 
     if not success:
-        return f"[Error]: {result}"
+        # If $filter + $search fails, retry without $filter
+        if "$filter" in params and "$search" in params:
+            del params["$filter"]
+            if "$orderby" in params:
+                del params["$orderby"]
+            success, result = graph_request(
+                "GET",
+                endpoint,
+                account_id=account_id,
+                params=params,
+            )
+            if not success:
+                return f"[Error]: {result}"
+        else:
+            return f"[Error]: {result}"
 
     messages = result.get("value", [])
     if not messages:
@@ -561,26 +642,99 @@ def _search_single_query(
 def outlook_search_emails(
     query: str = "",
     queries: str = "",
+    sender: str = "",
+    to: str = "",
+    subject: str = "",
+    folder: str = "",
+    days_back: int = 0,
+    has_attachments: bool = False,
+    thread_id: str = "",
+    kql: str = "",
     account_id: Optional[str] = None,
     limit: int = 10,
 ) -> str:
     """
-    Search emails using keywords.
+    Search emails in Outlook with optional filters.
+
+    All filter parameters are combined to narrow results. Use just `query` for
+    a simple keyword search, or add filters to be more precise.
+
+    IMPORTANT: Without `days_back`, results are ranked by relevance (not date),
+    so old emails may appear first. Always set `days_back` when you want recent
+    emails (e.g. days_back=30 for the last month).
+
+    Results include a body preview (120 chars) and thread ID for conversation
+    grouping. Use thread_id to pull all messages in an email chain.
 
     Args:
-        query: Single search query (searches subject, body, sender)
-        queries: Multiple search queries separated by " | " (pipe with spaces).
-                 Takes precedence over query. Each query is searched independently.
-                 e.g. "Acme j.smith | 1783-CMS10P | RFQ-20260330"
+        query: Keywords to search across subject, body, and sender names.
+               e.g. "1783-CMS10P" or "Acme RFQ"
+        queries: Multiple searches separated by " | " (pipe with spaces).
+                 Takes precedence over query. Each is searched independently.
+                 Filters (sender, folder, etc.) apply to ALL queries.
+                 e.g. "1783-CMS10P | 5069-RTB64 | 1783-SFP1GLX"
                  Max 10 queries per call.
+        sender: Filter by sender email or name. e.g. "j.smith" or "acme"
+        to: Filter by recipient email or name. Useful for finding sent emails
+            to a specific supplier/customer. e.g. "supplier@email.com"
+        subject: Filter by subject line keywords. e.g. "RFQ" or "quote"
+        folder: Search within a specific folder instead of all mail.
+                Options: inbox, sent, drafts, deleted, junk, archive.
+                No folder = searches all mail across all folders.
+        days_back: Only return emails from the last N days. e.g. 7 for past week,
+                   30 for past month. 0 means no date filter (default).
+                   Strongly recommended to avoid old irrelevant results.
+        has_attachments: If True, only return emails that have attachments.
+        thread_id: Get all emails in a conversation thread. Pass a thread ID
+                   from a previous search result to reconstruct the full email
+                   chain in chronological order. Bypasses all other filters.
+        kql: Raw KQL (Keyword Query Language) query for advanced searches.
+             Bypasses query, sender, to, subject, and has_attachments filters.
+             Still respects folder and days_back.
+             Syntax: from:name to:name subject:keyword hasattachment:true
+             e.g. "from:j.smith subject:RFQ hasattachment:true"
+             e.g. "from:acme OR from:acme"
+             Only use this if the structured parameters above can't express
+             what you need (e.g. OR logic, body-only search).
         account_id: Microsoft account ID (optional)
-        limit: Maximum results per query (default 10)
+        limit: Maximum results per query (default 10, max 25)
 
     Returns:
-        List of matching emails.
+        List of matching emails with sender, subject, date, preview, thread ID.
         In batch mode, results are grouped per query with === delimiters.
     """
     limit = min(max(1, limit), 25)
+
+    # Thread lookup mode — get all messages in a conversation
+    if thread_id.strip():
+        tid = thread_id.strip()
+        params: dict = {
+            "$top": min(limit, 25),
+            "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
+            "$filter": f"conversationId eq '{tid}'",
+        }
+        success, result = graph_request(
+            "GET", "/me/messages", account_id=account_id, params=params,
+        )
+        if not success:
+            return f"[Error]: {result}"
+        messages = result.get("value", [])
+        if not messages:
+            return f"[Info]: No emails found for thread '{tid[:20]}...'."
+        # Sort chronologically client-side (Graph can't combine this filter with $orderby)
+        messages.sort(key=lambda m: m.get("receivedDateTime", ""))
+        lines = [f"[Success]: {len(messages)} email(s) in thread (chronological):\n"]
+        for msg in messages:
+            lines.append(format_email_summary(msg))
+            lines.append("")
+        return "\n".join(lines)
+
+    # Raw KQL mode — bypass structured filters
+    if kql.strip():
+        return _search_single_query(kql.strip(), account_id, limit, folder=folder, days_back=days_back)
+
+    # Build KQL from structured filters
+    kql_suffix = _build_search_kql("", sender=sender, recipient=to, subject=subject, has_attachments=has_attachments)
 
     # Parse queries
     if queries.strip():
@@ -588,19 +742,31 @@ def outlook_search_emails(
         query_list = query_list[:10]
     elif query.strip():
         query_list = [query.strip()]
+    elif kql_suffix or days_back > 0:
+        # No keyword query but have filters — search with filters only
+        # Use kql_suffix as the query itself (don't append it again later)
+        return _search_single_query(
+            kql_suffix, account_id, limit, folder=folder, days_back=days_back,
+        )
     else:
-        return "[Error]: Provide a query or pipe-separated queries."
+        return "[Error]: Provide a query, filters, or both."
 
-    # Single query — return directly (identical to previous behavior)
-    if len(query_list) == 1:
-        return _search_single_query(query_list[0], account_id, limit)
+    # Append KQL filters to each query keyword
+    final_queries = []
+    for q in query_list:
+        combined = f"{q} {kql_suffix}".strip() if kql_suffix else q
+        final_queries.append(combined)
+
+    # Single query — return directly
+    if len(final_queries) == 1:
+        return _search_single_query(final_queries[0], account_id, limit, folder=folder, days_back=days_back)
 
     # Batch mode
-    total = len(query_list)
+    total = len(final_queries)
     sections = []
-    for i, q in enumerate(query_list, 1):
-        header = f"=== Search {i}/{total}: {q} ==="
-        result = _search_single_query(q, account_id, limit)
+    for i, (orig_q, full_q) in enumerate(zip(query_list, final_queries), 1):
+        header = f"=== Search {i}/{total}: {orig_q} ==="
+        result = _search_single_query(full_q, account_id, limit, folder=folder, days_back=days_back)
         sections.append(f"{header}\n{result}")
 
     return "\n\n".join(sections)
