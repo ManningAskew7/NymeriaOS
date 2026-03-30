@@ -397,7 +397,8 @@ def _format_single_email(result: dict) -> str:
     ])
 
     if result.get("hasAttachments"):
-        lines.append(f"\n**Attachments:** Yes (use outlook_get_attachments to list)")
+        email_id_val = result.get("id", "")
+        lines.append(f'\n**Attachments:** Yes — use outlook_get_attachments(email_id="{email_id_val}") to read attachment contents')
 
     return "\n".join(lines)
 
