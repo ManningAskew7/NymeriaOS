@@ -291,4 +291,72 @@ def google_sheets_search(
     )
 
 
-GOOGLE_SHEETS_TOOLS = [google_sheets_search]
+@tool
+def google_sheets_append(
+    spreadsheet_id: str,
+    data: str,
+    sheet_name: str = "",
+) -> str:
+    """
+    Append one or more rows to a Google Sheet.
+
+    Use this to log RFQ tracking data, add records, or update reference sheets.
+
+    Args:
+        spreadsheet_id: The Google Sheets document ID (from the URL)
+        data: Row data as comma-separated values. For multiple rows, separate
+              with " | " (pipe with spaces).
+              Single row: "RFQ-20260330-7K4P, Acme, 2026-03-30, Acme parts, Drafted"
+              Multiple rows: "Header1, Header2 | Value1, Value2 | Value3, Value4"
+        sheet_name: Target sheet/tab name (optional, defaults to first sheet)
+
+    Returns:
+        Confirmation with number of rows appended and range.
+    """
+    if not spreadsheet_id.strip():
+        return "[Error]: spreadsheet_id is required."
+    if not data.strip():
+        return "[Error]: data is required."
+
+    service = _get_sheets_service()
+    if not service:
+        return "[Error]: Google Sheets API not available. Run google_docs_auth_start."
+
+    # Parse rows
+    rows = []
+    for row_str in data.split(" | "):
+        cells = [c.strip() for c in row_str.split(",")]
+        rows.append(cells)
+
+    range_spec = f"'{sheet_name}'!A:ZZ" if sheet_name else "A:ZZ"
+
+    try:
+        result = service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id.strip(),
+            range=range_spec,
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": rows},
+        ).execute()
+
+        updated = result.get("updates", {})
+        updated_range = updated.get("updatedRange", "unknown")
+        updated_rows = updated.get("updatedRows", len(rows))
+
+        return (
+            f"[Success]: {updated_rows} row(s) appended to sheet.\n"
+            f"  Range: {updated_range}"
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        if "PERMISSION_DENIED" in error_msg or "403" in error_msg:
+            return (
+                "[Error]: Permission denied — the Google account may only have "
+                "read-only access. Run google_docs_auth_start to re-authenticate "
+                "with write permissions."
+            )
+        return f"[Error]: Failed to append to sheet: {e}"
+
+
+GOOGLE_SHEETS_TOOLS = [google_sheets_search, google_sheets_append]

@@ -6,6 +6,7 @@ Uses tokens saved by outlook_auth tools.
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional, List
@@ -17,6 +18,34 @@ logger = logging.getLogger(__name__)
 
 # Graph API base URL
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+
+def _html_to_text(html: str) -> str:
+    """Convert HTML email body to readable plain text.
+
+    Preserves line breaks from block elements so part lists
+    and tables don't get concatenated into a single line.
+    """
+    text = html
+    # Convert block-level closing tags to newlines
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</(?:p|div|tr|li|h[1-6]|blockquote)>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<hr\s*/?>', '\n---\n', text, flags=re.IGNORECASE)
+    # Table cell separators
+    text = re.sub(r'</t[dh]>', ' | ', text, flags=re.IGNORECASE)
+    # Decode common HTML entities
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    text = text.replace('&#39;', "'")
+    text = text.replace('&apos;', "'")
+    # Strip remaining tags
+    text = re.sub(r'<[^>]+>', '', text)
+    # Collapse excessive newlines (3+ → 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 # Token cache location (same as outlook_auth.py)
 TOKEN_CACHE_PATH = Path.home() / ".microsoft_mcp_token_cache.json"
@@ -376,11 +405,9 @@ def _format_single_email(result: dict) -> str:
     body = result.get("body", {})
     body_content = body.get("content", "")
 
-    # Strip HTML if needed (basic)
+    # Convert HTML to readable text
     if body.get("contentType") == "html":
-        import re
-        body_content = re.sub(r'<[^>]+>', '', body_content)
-        body_content = body_content.strip()[:2000]  # Limit length
+        body_content = _html_to_text(body_content)[:2000]
 
     lines = [
         f"**From:** {sender_str}",
@@ -673,6 +700,80 @@ def outlook_reply_email(
 
 
 @tool
+def outlook_draft_reply(
+    email_id: str,
+    body: str,
+    reply_all: bool = False,
+    is_html: bool = False,
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Create a draft reply to an email (does NOT send it).
+
+    Creates an unsent reply that preserves the email thread. The draft
+    appears in the Drafts folder with recipients pre-populated from the
+    original email. Staff can review and send manually.
+
+    Use this for customer acknowledgments and quote responses that should
+    stay in the original email conversation thread.
+
+    Args:
+        email_id: ID of the email to reply to
+        body: Reply body content
+        reply_all: If True, reply to all recipients (default False)
+        is_html: If True, body is HTML formatted (default False, plain text)
+        account_id: Microsoft account ID (optional)
+
+    Returns:
+        Draft ID and subject for confirmation.
+    """
+    # Step 1: Create the reply draft (pre-populates recipients and thread headers)
+    endpoint = f"/me/messages/{email_id}/createReplyAll" if reply_all else f"/me/messages/{email_id}/createReply"
+
+    success, result = graph_request(
+        "POST",
+        endpoint,
+        account_id=account_id,
+    )
+
+    if not success:
+        return f"[Error]: Failed to create reply draft: {result}"
+
+    draft_id = result.get("id")
+    subject = result.get("subject", "(no subject)")
+
+    if not draft_id:
+        return "[Error]: Reply draft created but no ID returned."
+
+    # Step 2: Update the draft body with the agent's content
+    content_type = "html" if is_html else "text"
+    success, patch_result = graph_request(
+        "PATCH",
+        f"/me/messages/{draft_id}",
+        account_id=account_id,
+        json_data={
+            "body": {
+                "contentType": content_type,
+                "content": body,
+            },
+        },
+    )
+
+    if not success:
+        return f"[Warning]: Reply draft created (ID: {draft_id}) but failed to update body: {patch_result}"
+
+    to_list = [r.get("emailAddress", {}).get("address", "") for r in result.get("toRecipients", [])]
+    reply_type = "reply-all" if reply_all else "reply"
+
+    return (
+        f"[Success]: Draft {reply_type} created for '{subject}'\n"
+        f"  To: {', '.join(to_list)}\n"
+        f"  Draft ID: {draft_id}\n"
+        f"  Status: In Drafts folder, ready for review and send."
+    )
+
+
+@tool
 def outlook_create_draft(
     to: str,
     subject: str,
@@ -898,6 +999,7 @@ EMAIL_TOOLS = [
     outlook_search_emails,
     outlook_send_email,
     outlook_reply_email,
+    outlook_draft_reply,
     outlook_create_draft,
     outlook_delete_email,
     outlook_mark_email,
