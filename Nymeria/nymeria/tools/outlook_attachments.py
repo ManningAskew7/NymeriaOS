@@ -270,6 +270,7 @@ def _extract_attachment(att: dict) -> str:
 @tool
 def outlook_get_attachments(
     email_id: str,
+    skip: str = "",
 ) -> str:
     """
     Download and extract text content from all attachments on an email.
@@ -284,18 +285,42 @@ def outlook_get_attachments(
 
     Args:
         email_id: The email ID (from outlook_get_email or outlook_list_emails)
+        skip: Comma-separated list of attachment filenames to skip.
+              Use this to avoid extracting irrelevant attachments you already
+              know about (e.g. "logo.png, terms.pdf, disclaimer.html").
+              Matching is case-insensitive and supports partial names.
 
     Returns:
         Extracted text content from all attachments, grouped by filename.
     """
+    # Parse skip list
+    skip_names = [s.strip().lower() for s in skip.split(",") if s.strip()] if skip.strip() else []
+
     try:
         attachments, skipped = _download_attachments(email_id)
     except RuntimeError as e:
         return f"[Error]: {e}"
 
+    # Filter out user-skipped attachments
+    user_skipped = 0
+    if skip_names:
+        filtered = []
+        for att in attachments:
+            att_name_lower = att["name"].lower()
+            if any(sn in att_name_lower for sn in skip_names):
+                user_skipped += 1
+                continue
+            filtered.append(att)
+        attachments = filtered
+
     if not attachments:
+        parts = []
         if skipped:
-            return f"[Info]: No document attachments. {skipped} inline signature image(s) skipped."
+            parts.append(f"{skipped} inline signature image(s) skipped")
+        if user_skipped:
+            parts.append(f"{user_skipped} attachment(s) skipped by request")
+        if parts:
+            return f"[Info]: No attachments to extract. {'; '.join(parts)}."
         return "[Info]: This email has no file attachments."
 
     total = len(attachments)
