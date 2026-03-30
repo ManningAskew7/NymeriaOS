@@ -34,7 +34,16 @@
       configStore.apiKey = config.api_key;
       configStore.completeSetup();
     } catch (e) {
-      console.warn('[Page] Tauri auto-config failed, falling back to manual setup:', e);
+      console.warn('[Page] Tauri auto-config failed, checking build-time defaults:', e);
+      // In client-only mode, use baked-in defaults if available
+      const envUrl = import.meta.env.VITE_DEFAULT_API_URL;
+      const envKey = import.meta.env.VITE_DEFAULT_API_KEY;
+      if (envUrl && envKey && !configStore.isConfigured) {
+        console.log('[Page] Auto-configuring from build-time defaults');
+        configStore.apiUrl = envUrl;
+        configStore.apiKey = envKey;
+        configStore.completeSetup();
+      }
     }
   }
 

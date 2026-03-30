@@ -8,21 +8,25 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 pub struct AppState {
-    pub process_manager: Arc<ProcessManager>,
+    pub process_manager: Option<Arc<ProcessManager>>,
     pub api_key: String,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Detect project root
-    let project_root = ProcessManager::detect_project_root()
-        .expect("Could not find NymeriaOS root directory");
-
-    // Auto-configure .env and get API key
-    let api_key = auto_config::ensure_env_file(&project_root)
-        .expect("Failed to configure .env file");
-
-    let pm = Arc::new(ProcessManager::new(project_root));
+    // Detect project root — if not found, run in client-only mode
+    let (pm, api_key) = match ProcessManager::detect_project_root() {
+        Ok(project_root) => {
+            let key = auto_config::ensure_env_file(&project_root)
+                .unwrap_or_default();
+            let manager = Arc::new(ProcessManager::new(project_root));
+            (Some(manager), key)
+        }
+        Err(_) => {
+            // Client-only mode: no local backend, frontend connects to remote
+            (None, String::new())
+        }
+    };
 
     let state = AppState {
         process_manager: pm.clone(),
@@ -36,40 +40,41 @@ pub fn run() {
             // Setup system tray
             tray::setup_tray(app)?;
 
-            // Spawn backend processes in a background thread
-            let pm_clone = pm.clone();
             let app_handle = app.handle().clone();
 
-            std::thread::spawn(move || {
-                // Emit starting status
-                let _ = app_handle.emit("backend-status", "starting");
+            if let Some(pm_clone) = pm.clone() {
+                // Self-contained mode: spawn backend processes in a background thread
+                std::thread::spawn(move || {
+                    let _ = app_handle.emit("backend-status", "starting");
 
-                // Start API
-                match pm_clone.start_api() {
-                    Ok(()) => {}
-                    Err(e) => {
-                        let msg = format!("failed:{}", e);
-                        let _ = app_handle.emit("backend-status", &msg);
-                        return;
-                    }
-                }
-
-                // Wait for API to be ready (up to 60 seconds — PyInstaller can be slow on first run)
-                match pm_clone.wait_for_api_ready(60) {
-                    Ok(()) => {
-                        let _ = app_handle.emit("backend-status", "ready");
-
-                        // Start worker after API is healthy
-                        if let Err(e) = pm_clone.start_worker() {
-                            eprintln!("Worker failed to start: {}", e);
+                    match pm_clone.start_api() {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let msg = format!("failed:{}", e);
+                            let _ = app_handle.emit("backend-status", &msg);
+                            return;
                         }
                     }
-                    Err(e) => {
-                        let msg = format!("failed:{}", e);
-                        let _ = app_handle.emit("backend-status", &msg);
+
+                    // Wait for API to be ready (up to 60 seconds — PyInstaller can be slow on first run)
+                    match pm_clone.wait_for_api_ready(60) {
+                        Ok(()) => {
+                            let _ = app_handle.emit("backend-status", "ready");
+
+                            if let Err(e) = pm_clone.start_worker() {
+                                eprintln!("Worker failed to start: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("failed:{}", e);
+                            let _ = app_handle.emit("backend-status", &msg);
+                        }
                     }
-                }
-            });
+                });
+            } else {
+                // Client-only mode: no local backend to manage, signal ready immediately
+                let _ = app_handle.emit("backend-status", "ready");
+            }
 
             Ok(())
         })

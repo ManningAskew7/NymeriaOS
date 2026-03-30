@@ -3,11 +3,15 @@ import { applyTheme } from '$lib/themes';
 
 const STORAGE_KEY = 'nymeria-config';
 
+// Build-time defaults (set via VITE_DEFAULT_API_URL / VITE_DEFAULT_API_KEY env vars)
+const DEFAULT_API_URL = import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000';
+const DEFAULT_API_KEY = import.meta.env.VITE_DEFAULT_API_KEY || '';
+
 function loadConfig(): AppConfig {
   if (typeof localStorage === 'undefined') {
     return {
-      apiUrl: 'http://localhost:8000',
-      apiKey: '',
+      apiUrl: DEFAULT_API_URL,
+      apiKey: DEFAULT_API_KEY,
       theme: 'midnight',
       suppressAttachmentWarnings: false,
     };
@@ -31,8 +35,8 @@ function loadConfig(): AppConfig {
   }
 
   return {
-    apiUrl: 'http://localhost:8000',
-    apiKey: '',
+    apiUrl: DEFAULT_API_URL,
+    apiKey: DEFAULT_API_KEY,
     theme: 'midnight',
     suppressAttachmentWarnings: false,
   };
@@ -118,8 +122,8 @@ function createConfigStore() {
       saveCurrentConfig();
     },
     reset() {
-      apiUrl = 'http://localhost:8000';
-      apiKey = '';
+      apiUrl = DEFAULT_API_URL;
+      apiKey = DEFAULT_API_KEY;
       setupCompleted = false;
       theme = 'midnight';
       suppressAttachmentWarnings = false;

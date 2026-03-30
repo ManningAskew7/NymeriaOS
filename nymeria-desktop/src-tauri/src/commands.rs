@@ -34,6 +34,9 @@ pub struct CLIProxySession {
 /// Get the auto-generated API configuration for the frontend.
 #[tauri::command]
 pub fn get_auto_config(state: tauri::State<'_, AppState>) -> Result<AutoConfig, String> {
+    if state.process_manager.is_none() {
+        return Err("Client-only mode — configure backend URL in settings".to_string());
+    }
     Ok(AutoConfig {
         api_url: "http://localhost:8000".to_string(),
         api_key: state.api_key.clone(),
@@ -43,17 +46,22 @@ pub fn get_auto_config(state: tauri::State<'_, AppState>) -> Result<AutoConfig, 
 /// Get the current backend process status.
 #[tauri::command]
 pub fn get_backend_status(state: tauri::State<'_, AppState>) -> BackendStatus {
-    let pm = &state.process_manager;
-    BackendStatus {
-        api: if pm.is_api_running() {
-            "running".to_string()
-        } else {
-            "stopped".to_string()
+    match &state.process_manager {
+        Some(pm) => BackendStatus {
+            api: if pm.is_api_running() {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            },
+            worker: if pm.is_worker_running() {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            },
         },
-        worker: if pm.is_worker_running() {
-            "running".to_string()
-        } else {
-            "stopped".to_string()
+        None => BackendStatus {
+            api: "external".to_string(),
+            worker: "external".to_string(),
         },
     }
 }
@@ -61,19 +69,25 @@ pub fn get_backend_status(state: tauri::State<'_, AppState>) -> BackendStatus {
 /// Start the CLIProxy process.
 #[tauri::command]
 pub fn start_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.process_manager.start_cliproxy()
+    state.process_manager.as_ref()
+        .ok_or_else(|| "Not available in client-only mode".to_string())?
+        .start_cliproxy()
 }
 
 /// Stop the CLIProxy process.
 #[tauri::command]
 pub fn stop_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.process_manager.stop_cliproxy()
+    state.process_manager.as_ref()
+        .ok_or_else(|| "Not available in client-only mode".to_string())?
+        .stop_cliproxy()
 }
 
 /// Get CLIProxy status and active OAuth sessions.
 #[tauri::command]
 pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus {
-    let running = state.process_manager.is_cliproxy_running();
+    let running = state.process_manager.as_ref()
+        .map(|pm| pm.is_cliproxy_running())
+        .unwrap_or(false);
 
     if !running {
         return CLIProxyStatus {
@@ -82,7 +96,6 @@ pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus 
         };
     }
 
-    // Query the CLIProxy management API for sessions
     let sessions = match query_cliproxy_sessions() {
         Ok(s) => s,
         Err(_) => vec![],
@@ -94,7 +107,9 @@ pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus 
 /// Initiate OAuth login for a provider (opens browser).
 #[tauri::command]
 pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
-    let project_root = state.process_manager.project_root();
+    let pm = state.process_manager.as_ref()
+        .ok_or_else(|| "Not available in client-only mode".to_string())?;
+    let project_root = pm.project_root();
     let cliproxy_dir = project_root.join("CLIProxyAPI-main");
     let cliproxy_exe = cliproxy_dir.join("cliproxy.exe");
 
@@ -110,8 +125,6 @@ pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Re
 
     let config_path = cliproxy_dir.join("config.yaml");
 
-    // Spawn the login process (it opens a browser for OAuth)
-    // This process exits after login completes
     Command::new(&cliproxy_exe)
         .arg(flag)
         .arg("-config")
@@ -127,6 +140,10 @@ pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Re
 /// Apply CLIProxy as the LLM base URL in the backend settings.
 #[tauri::command]
 pub fn apply_cliproxy_base_url(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if state.process_manager.is_none() {
+        return Err("Not available in client-only mode".to_string());
+    }
+
     let client = reqwest::blocking::Client::new();
 
     let api_key = &state.api_key;
@@ -151,6 +168,10 @@ pub fn apply_cliproxy_base_url(state: tauri::State<'_, AppState>) -> Result<(), 
 /// Remove the CLIProxy base URL override from backend settings.
 #[tauri::command]
 pub fn remove_cliproxy_base_url(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if state.process_manager.is_none() {
+        return Err("Not available in client-only mode".to_string());
+    }
+
     let client = reqwest::blocking::Client::new();
 
     let api_key = &state.api_key;
@@ -188,7 +209,6 @@ fn query_cliproxy_sessions() -> Result<Vec<CLIProxySession>, String> {
         return Ok(vec![]);
     }
 
-    // Parse the response — the management API returns session info
     let body: serde_json::Value = resp.json().map_err(|e| format!("{}", e))?;
 
     let mut sessions = vec![];
