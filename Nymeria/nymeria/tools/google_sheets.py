@@ -21,6 +21,13 @@ _sheet_cache: Dict[str, Tuple[float, List[str], List[List[str]]]] = {}
 _CACHE_TTL = 300  # seconds
 
 
+def _invalidate_cache(spreadsheet_id: str) -> None:
+    """Remove all cached entries for a spreadsheet after a write operation."""
+    keys_to_remove = [k for k in _sheet_cache if k.startswith(f"{spreadsheet_id}::")]
+    for k in keys_to_remove:
+        del _sheet_cache[k]
+
+
 def _get_sheets_service():
     """Build a Google Sheets API v4 service using existing Google auth."""
     try:
@@ -343,6 +350,8 @@ def google_sheets_append(
         updated_range = updated.get("updatedRange", "unknown")
         updated_rows = updated.get("updatedRows", len(rows))
 
+        _invalidate_cache(spreadsheet_id.strip())
+
         return (
             f"[Success]: {updated_rows} row(s) appended to sheet.\n"
             f"  Range: {updated_range}"
@@ -359,4 +368,152 @@ def google_sheets_append(
         return f"[Error]: Failed to append to sheet: {e}"
 
 
-GOOGLE_SHEETS_TOOLS = [google_sheets_search, google_sheets_append]
+@tool
+def google_sheets_update(
+    spreadsheet_id: str,
+    search_value: str,
+    column_updates: str,
+    search_column: str = "A",
+    sheet_name: str = "",
+) -> str:
+    """
+    Update cells in an existing row by finding it first via a search value.
+
+    Finds the first row where search_column contains search_value, then
+    updates specific columns in that row. Use this to update RFQ status,
+    add quote values, or modify any existing row.
+
+    Args:
+        spreadsheet_id: The Google Sheets document ID
+        search_value: Value to search for to find the target row
+                      (e.g. "RFQ-20260330-7K4P" to find by reference ID)
+        column_updates: Columns to update as "column=value" pairs separated
+                        by " | ". Column can be a letter (A-Z) or header name.
+                        e.g. "H=Quoted | I=12500 | J=Supplier responded 30/03"
+                        e.g. "Status=Quoted | Quote Value=12500"
+        search_column: Column to search in (default "A"). Can be a letter or header name.
+        sheet_name: Target sheet/tab name (optional, defaults to first sheet)
+
+    Returns:
+        Confirmation of what was updated.
+    """
+    if not spreadsheet_id.strip():
+        return "[Error]: spreadsheet_id is required."
+    if not search_value.strip():
+        return "[Error]: search_value is required."
+    if not column_updates.strip():
+        return "[Error]: column_updates is required."
+
+    service = _get_sheets_service()
+    if not service:
+        return "[Error]: Google Sheets API not available. Run google_docs_auth_start."
+
+    try:
+        # Read the sheet to find the row
+        range_spec = f"'{sheet_name}'!A:ZZ" if sheet_name else "A:ZZ"
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id.strip(),
+            range=range_spec,
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute()
+
+        values = result.get("values", [])
+        if not values:
+            return "[Error]: Sheet is empty."
+
+        headers = values[0] if values else []
+
+        def _col_letter_to_index(col: str) -> int:
+            """Convert column letter (A, B, ..., Z, AA) or header name to 0-based index."""
+            col = col.strip()
+            # Try as column letter first
+            if len(col) <= 2 and col.isalpha():
+                col_upper = col.upper()
+                idx = 0
+                for c in col_upper:
+                    idx = idx * 26 + (ord(c) - ord('A') + 1)
+                return idx - 1
+            # Try as header name (case-insensitive)
+            col_lower = col.lower()
+            for i, h in enumerate(headers):
+                if h.lower() == col_lower:
+                    return i
+            return -1
+
+        # Resolve search column
+        search_col_idx = _col_letter_to_index(search_column)
+        if search_col_idx < 0:
+            return f"[Error]: Search column '{search_column}' not found. Headers: {', '.join(headers)}"
+
+        # Find the target row
+        target_row_idx = None
+        search_lower = search_value.strip().lower()
+        for i, row in enumerate(values[1:], start=1):  # skip header
+            if search_col_idx < len(row):
+                if search_lower in row[search_col_idx].lower():
+                    target_row_idx = i
+                    break
+
+        if target_row_idx is None:
+            return f"[Info]: No row found with '{search_value}' in column {search_column}."
+
+        # Parse column updates
+        updates = []
+        for pair in column_updates.split(" | "):
+            if "=" not in pair:
+                continue
+            col_part, val_part = pair.split("=", 1)
+            col_idx = _col_letter_to_index(col_part)
+            if col_idx < 0:
+                return f"[Error]: Column '{col_part.strip()}' not found. Headers: {', '.join(headers)}"
+            updates.append((col_idx, val_part.strip()))
+
+        if not updates:
+            return "[Error]: No valid column=value pairs found in column_updates."
+
+        # Apply updates as individual cell writes (batch)
+        sheet_prefix = f"'{sheet_name}'!" if sheet_name else ""
+        row_num = target_row_idx + 1  # 1-based for Sheets API
+
+        batch_data = []
+        update_summary = []
+        for col_idx, value in updates:
+            col_letter = ""
+            idx = col_idx
+            while idx >= 0:
+                col_letter = chr(ord('A') + idx % 26) + col_letter
+                idx = idx // 26 - 1
+            cell_ref = f"{sheet_prefix}{col_letter}{row_num}"
+            batch_data.append({
+                "range": cell_ref,
+                "values": [[value]],
+            })
+            col_name = headers[col_idx] if col_idx < len(headers) else col_letter
+            update_summary.append(f"  {col_name}: {value}")
+
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id.strip(),
+            body={
+                "valueInputOption": "USER_ENTERED",
+                "data": batch_data,
+            },
+        ).execute()
+
+        _invalidate_cache(spreadsheet_id.strip())
+
+        return (
+            f"[Success]: Updated row {row_num} (matched '{search_value}'):\n"
+            + "\n".join(update_summary)
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        if "PERMISSION_DENIED" in error_msg or "403" in error_msg:
+            return (
+                "[Error]: Permission denied — run google_docs_auth_start to "
+                "re-authenticate with write permissions."
+            )
+        return f"[Error]: Failed to update sheet: {e}"
+
+
+GOOGLE_SHEETS_TOOLS = [google_sheets_search, google_sheets_append, google_sheets_update]
