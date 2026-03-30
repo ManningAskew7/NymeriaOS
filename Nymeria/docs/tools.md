@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **22 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~97 optional tools** (13 Outlook + 4 trigger + 6 _PRV_A + 9 browser + 14 calendar + 7 self-modify + 2 utility + 21 Twitch + Google Docs) available for per-thread enabling.
+Nymeria has a three-tier tool system: **22 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~100+ optional tools** (16 Outlook + 4 trigger + 9 _PRV_A + 9 browser + 14 calendar + 7 self-modify + 2 utility + 21 Twitch + Google Docs) available for per-thread enabling.
 
 ## Summary Table
 
@@ -42,18 +42,21 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
 | 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
 
-### Optional: _PRV_A Tools (6)
+### Optional: _PRV_A Tools (9)
 
-Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching.
+Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching (auto-invalidated after writes).
 
 | # | Tool | Security | Description |
 |---|------|----------|-------------|
 | 1 | `google_sheets_search` | SAFE | Generic search for any Google Sheet by ID |
-| 2 | `_prv_a_supplier_lookup` | SAFE | Find overseas suppliers by brand from Y/N matrix (includes emails/websites) |
-| 3 | `_prv_a_vendor_info` | SAFE | Vendor quality ratings, contacts, and notes from past dealings |
-| 4 | `_prv_a_product_search` | SAFE | Search the master _PRV_A product catalog |
-| 5 | `_prv_a_acme_lifecycle` | SAFE | Acme part lifecycle status (Active/Mature/Discontinued/Obsolete) with migration paths |
-| 6 | `_prv_a_acme_pricelist` | SAFE | Acme Electric part details and list pricing (ex-GST) |
+| 2 | `google_sheets_append` | MODERATE | Append rows to a Google Sheet (for RFQ tracking) |
+| 3 | `google_sheets_update` | MODERATE | Find and update existing rows by search value |
+| 4 | `_prv_a_supplier_lookup` | SAFE | Find overseas suppliers by brand(s) from Y/N matrix. Supports multi-brand lookup with coverage indicators. Includes emails, websites, and inline vendor quality ratings. |
+| 5 | `_prv_a_vendor_info` | SAFE | Vendor quality ratings, contacts, and notes from past dealings |
+| 6 | `_prv_a_product_search` | SAFE | Search the master _PRV_A product catalog. Supports batch part numbers. |
+| 7 | `_prv_a_acme_lifecycle` | SAFE | Acme part lifecycle status (Active/Mature/Discontinued/Obsolete) with migration paths. Supports batch part numbers. |
+| 8 | `_prv_a_acme_pricelist` | SAFE | Acme Electric part details and list pricing (ex-GST). Supports batch part numbers. |
+| 9 | `outlook_get_attachments` | SAFE | Extract text from email attachments (PDF/DOCX via Gemini, Excel via openpyxl, CSV/TXT direct) |
 
 See `docs/_prv_a/setup-guide.md` for full setup instructions, Google Sheet IDs, and configuration.
 
@@ -715,19 +718,24 @@ Used internally by OutlookAgent. Also available as **optional tools** for per-th
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
-| `outlook_list_emails` | `(account_id?, limit=10, folder="inbox", unread_only=False)` | List recent emails. Limit max 50. |
-| `outlook_get_email` | `(email_id, account_id?)` | Get full email details including body. |
-| `outlook_search_emails` | `(query, account_id?, limit=10)` | Search emails by keyword. Limit max 25. |
+| `outlook_list_emails` | `(account_id?, limit=10, folder="inbox", unread_only=False)` | List recent emails with preview and thread ID. Limit max 50. |
+| `outlook_get_email` | `(email_id?, email_ids?, account_id?)` | Get full email details including body and attachment metadata. Batch via comma-separated IDs. |
+| `outlook_search_emails` | `(query?, queries?, sender?, to?, subject?, folder?, category?, days_back=0, has_attachments=False, thread_id?, kql?, account_id?, limit=10)` | Search emails with filters. Results include body preview (120 chars) and thread ID. Without `days_back`, results ranked by relevance not date. Use `thread_id` to pull full conversation chain. Use `kql` for raw KQL queries (OR logic, etc). Use `category` to find tagged emails. |
 | `outlook_send_email` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Send a new email. |
-| `outlook_reply_email` | `(email_id, body, account_id?, reply_all=False)` | Reply to an email. |
-| `outlook_create_draft` | `(to, subject, body, account_id?, cc?)` | Create a draft without sending. |
+| `outlook_reply_email` | `(email_id, body, account_id?, reply_all=False)` | Reply to an email (sends immediately). |
+| `outlook_draft_reply` | `(email_id, body, reply_all=False, is_html=False, account_id?)` | Create an unsent reply draft that preserves the email thread. Staff reviews and sends manually. |
+| `outlook_create_draft` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Create a standalone draft without sending. |
+| `outlook_edit_draft` | `(draft_id, body?, subject?, to?, cc?, bcc?, is_html=False, account_id?)` | Edit an existing draft. Only provided fields are updated. Works on drafts from create_draft or draft_reply. |
 | `outlook_delete_email` | `(email_id, account_id?, permanent=False)` | Move to trash or permanently delete. |
 | `outlook_mark_email` | `(email_id, is_read, account_id?)` | Mark email as read or unread. |
 | `outlook_move_email` | `(email_id, folder, account_id?)` | Move email to a folder. |
 | `outlook_forward_email` | `(email_id, to, comment?, account_id?)` | Forward an email. |
+| `outlook_set_category` | `(email_id, category, action="add", account_id?)` | Add or remove a category tag on an email. Use to tag emails for processing ("Nymeria") and clear after done. |
+| `outlook_get_attachments` | `(email_id, skip?)` | Download and extract text from all email attachments. CSV/TXT decoded directly, Excel via openpyxl, PDF/DOCX/images via Gemini AI. Optional `skip` to ignore irrelevant attachments by name. |
 
 **Folder names** (case-insensitive):
 - `outlook_list_emails` accepts: `inbox`, `sent`/`sentitems`, `drafts`, `deleted`/`deleteditems`, `junk`/`junkemail`, `archive`
+- `outlook_search_emails` accepts same folders, or omit for all mail
 - `outlook_move_email` additionally accepts: `trash` (→ deleteditems), `spam` (→ junkemail)
 
 ---

@@ -565,6 +565,7 @@ def _search_single_query(
     limit: int,
     folder: str = "",
     days_back: int = 0,
+    category: str = "",
 ) -> str:
     """Execute a single email search and return formatted results."""
     params: dict = {
@@ -589,12 +590,20 @@ def _search_single_query(
     else:
         endpoint = "/me/messages"
 
-    # Date filtering via $filter (works alongside $search)
+    # Build $filter clauses
+    filter_parts = []
     if days_back > 0:
         from datetime import datetime, timedelta, timezone
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
-        params["$filter"] = f"receivedDateTime ge {cutoff}"
-        params["$orderby"] = "receivedDateTime desc"
+        filter_parts.append(f"receivedDateTime ge {cutoff}")
+    if category.strip():
+        cat = category.strip().replace("'", "''")
+        filter_parts.append(f"categories/any(c:c eq '{cat}')")
+
+    if filter_parts:
+        params["$filter"] = " and ".join(filter_parts)
+        if not category.strip():
+            params["$orderby"] = "receivedDateTime desc"
 
     # Set search query if provided
     if query.strip():
@@ -610,11 +619,18 @@ def _search_single_query(
     )
 
     if not success:
-        # If $filter + $search fails, retry without $filter
+        # If $filter + $search fails, retry with category-only filter or no filter
         if "$filter" in params and "$search" in params:
-            del params["$filter"]
-            if "$orderby" in params:
-                del params["$orderby"]
+            if category.strip():
+                # Keep category filter, drop date filter
+                cat = category.strip().replace("'", "''")
+                params["$filter"] = f"categories/any(c:c eq '{cat}')"
+                if "$orderby" in params:
+                    del params["$orderby"]
+            else:
+                del params["$filter"]
+                if "$orderby" in params:
+                    del params["$orderby"]
             success, result = graph_request(
                 "GET",
                 endpoint,
@@ -646,6 +662,7 @@ def outlook_search_emails(
     to: str = "",
     subject: str = "",
     folder: str = "",
+    category: str = "",
     days_back: int = 0,
     has_attachments: bool = False,
     thread_id: str = "",
@@ -681,6 +698,9 @@ def outlook_search_emails(
         folder: Search within a specific folder instead of all mail.
                 Options: inbox, sent, drafts, deleted, junk, archive.
                 No folder = searches all mail across all folders.
+        category: Filter by Outlook category name. e.g. "Nymeria" to find
+                  emails tagged for processing. Use outlook_set_category to
+                  add or remove categories from emails.
         days_back: Only return emails from the last N days. e.g. 7 for past week,
                    30 for past month. 0 means no date filter (default).
                    Strongly recommended to avoid old irrelevant results.
@@ -690,7 +710,7 @@ def outlook_search_emails(
                    chain in chronological order. Bypasses all other filters.
         kql: Raw KQL (Keyword Query Language) query for advanced searches.
              Bypasses query, sender, to, subject, and has_attachments filters.
-             Still respects folder and days_back.
+             Still respects folder, category, and days_back.
              Syntax: from:name to:name subject:keyword hasattachment:true
              e.g. "from:j.smith subject:RFQ hasattachment:true"
              e.g. "from:acme OR from:acme"
@@ -731,7 +751,7 @@ def outlook_search_emails(
 
     # Raw KQL mode — bypass structured filters
     if kql.strip():
-        return _search_single_query(kql.strip(), account_id, limit, folder=folder, days_back=days_back)
+        return _search_single_query(kql.strip(), account_id, limit, folder=folder, days_back=days_back, category=category)
 
     # Build KQL from structured filters
     kql_suffix = _build_search_kql("", sender=sender, recipient=to, subject=subject, has_attachments=has_attachments)
@@ -742,11 +762,11 @@ def outlook_search_emails(
         query_list = query_list[:10]
     elif query.strip():
         query_list = [query.strip()]
-    elif kql_suffix or days_back > 0:
+    elif kql_suffix or days_back > 0 or category.strip():
         # No keyword query but have filters — search with filters only
         # Use kql_suffix as the query itself (don't append it again later)
         return _search_single_query(
-            kql_suffix, account_id, limit, folder=folder, days_back=days_back,
+            kql_suffix, account_id, limit, folder=folder, days_back=days_back, category=category,
         )
     else:
         return "[Error]: Provide a query, filters, or both."
@@ -759,14 +779,14 @@ def outlook_search_emails(
 
     # Single query — return directly
     if len(final_queries) == 1:
-        return _search_single_query(final_queries[0], account_id, limit, folder=folder, days_back=days_back)
+        return _search_single_query(final_queries[0], account_id, limit, folder=folder, days_back=days_back, category=category)
 
     # Batch mode
     total = len(final_queries)
     sections = []
     for i, (orig_q, full_q) in enumerate(zip(query_list, final_queries), 1):
         header = f"=== Search {i}/{total}: {orig_q} ==="
-        result = _search_single_query(full_q, account_id, limit, folder=folder, days_back=days_back)
+        result = _search_single_query(full_q, account_id, limit, folder=folder, days_back=days_back, category=category)
         sections.append(f"{header}\n{result}")
 
     return "\n\n".join(sections)
@@ -1004,6 +1024,73 @@ def outlook_create_draft(
 
 
 @tool
+def outlook_edit_draft(
+    draft_id: str,
+    body: str = "",
+    subject: str = "",
+    to: str = "",
+    cc: str = "",
+    bcc: str = "",
+    is_html: bool = False,
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Edit an existing email draft. Only provided fields are updated.
+
+    Use this to revise a draft after feedback — e.g. the user says
+    "change the greeting" or "add these parts to the quote".
+    Works on drafts created by outlook_create_draft or outlook_draft_reply.
+
+    Args:
+        draft_id: ID of the draft to edit (from the create/draft_reply response)
+        body: New body content (replaces the entire body). Leave empty to keep current body.
+        subject: New subject line. Leave empty to keep current.
+        to: New recipient(s), comma-separated. Leave empty to keep current.
+        cc: New CC recipients, comma-separated. Leave empty to keep current.
+        bcc: New BCC recipients, comma-separated. Leave empty to keep current.
+        is_html: Set to True if body contains HTML (default False)
+        account_id: Microsoft account ID (optional)
+
+    Returns:
+        Success message confirming the update.
+    """
+    def parse_recipients(addr_str: str) -> List[dict]:
+        addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
+        return [{"emailAddress": {"address": a}} for a in addresses]
+
+    updates: dict = {}
+    if body:
+        updates["body"] = {
+            "contentType": "HTML" if is_html else "Text",
+            "content": body,
+        }
+    if subject:
+        updates["subject"] = subject
+    if to:
+        updates["toRecipients"] = parse_recipients(to)
+    if cc:
+        updates["ccRecipients"] = parse_recipients(cc)
+    if bcc:
+        updates["bccRecipients"] = parse_recipients(bcc)
+
+    if not updates:
+        return "[Error]: No fields to update. Provide at least one of: body, subject, to, cc, bcc."
+
+    success, result = graph_request(
+        "PATCH",
+        f"/me/messages/{draft_id}",
+        account_id=account_id,
+        json_data=updates,
+    )
+
+    if not success:
+        return f"[Error]: {result}"
+
+    updated_fields = ", ".join(updates.keys())
+    return f"[Success]: Draft updated ({updated_fields}). ID: {draft_id}"
+
+
+@tool
 def outlook_delete_email(
     email_id: str,
     account_id: Optional[str] = None,
@@ -1158,6 +1245,72 @@ def outlook_forward_email(
     return f"[Success]: Email forwarded to {to}"
 
 
+@tool
+def outlook_set_category(
+    email_id: str,
+    category: str,
+    action: str = "add",
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Add or remove a category tag on an email.
+
+    Use this to tag emails for processing (e.g. category="Nymeria") or to
+    clear the tag after you've finished processing them. Categories are
+    visible in Outlook as colored labels — staff can also add them manually.
+
+    Args:
+        email_id: The email ID to modify
+        category: Category name. e.g. "Nymeria", "Processed", "Urgent"
+        action: "add" to apply the category, "remove" to clear it (default "add")
+        account_id: Microsoft account ID (optional)
+
+    Returns:
+        Success or error message.
+    """
+    if action not in ("add", "remove"):
+        return "[Error]: action must be 'add' or 'remove'."
+
+    if not category.strip():
+        return "[Error]: category name is required."
+
+    # First get current categories on the email
+    success, result = graph_request(
+        "GET",
+        f"/me/messages/{email_id}",
+        account_id=account_id,
+        params={"$select": "categories"},
+    )
+
+    if not success:
+        return f"[Error]: {result}"
+
+    current = result.get("categories", [])
+    cat = category.strip()
+
+    if action == "add":
+        if cat in current:
+            return f"[Info]: Email already has category '{cat}'."
+        updated = current + [cat]
+    else:
+        if cat not in current:
+            return f"[Info]: Email does not have category '{cat}'."
+        updated = [c for c in current if c != cat]
+
+    success, result = graph_request(
+        "PATCH",
+        f"/me/messages/{email_id}",
+        account_id=account_id,
+        json_data={"categories": updated},
+    )
+
+    if not success:
+        return f"[Error]: {result}"
+
+    verb = "added to" if action == "add" else "removed from"
+    return f"[Success]: Category '{cat}' {verb} email."
+
+
 # Export tools
 EMAIL_TOOLS = [
     outlook_list_emails,
@@ -1167,8 +1320,10 @@ EMAIL_TOOLS = [
     outlook_reply_email,
     outlook_draft_reply,
     outlook_create_draft,
+    outlook_edit_draft,
     outlook_delete_email,
     outlook_mark_email,
     outlook_move_email,
     outlook_forward_email,
+    outlook_set_category,
 ]
