@@ -398,7 +398,36 @@ def _format_single_email(result: dict) -> str:
 
     if result.get("hasAttachments"):
         email_id_val = result.get("id", "")
-        lines.append(f'\n**Attachments:** Yes — use outlook_get_attachments(email_id="{email_id_val}") to read attachment contents')
+        # Build attachment summary from embedded attachment data if available
+        att_list = result.get("attachments", [])
+        if att_list:
+            real_atts = []
+            inline_count = 0
+            for att in att_list:
+                if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                    continue
+                is_inline = att.get("isInline", False)
+                name = att.get("name", "unnamed")
+                mime = att.get("contentType", "")
+                size = att.get("size", 0)
+                # Skip small inline images (signature logos)
+                if is_inline and mime.startswith("image/") and size < 50000:
+                    inline_count += 1
+                    continue
+                size_str = f"{size // 1024}KB" if size >= 1024 else f"{size}B"
+                real_atts.append(f"  - {name} ({mime}, {size_str})")
+            if real_atts:
+                lines.append(f"\n**Attachments ({len(real_atts)}):**")
+                lines.extend(real_atts)
+                if inline_count:
+                    lines.append(f"  ({inline_count} inline signature image(s) hidden)")
+                lines.append(f'Use outlook_get_attachments(email_id="{email_id_val}") to extract text content')
+            elif inline_count:
+                lines.append(f"\n**Attachments:** {inline_count} inline signature image(s) only — no documents to extract")
+            else:
+                lines.append(f'\n**Attachments:** Yes — use outlook_get_attachments(email_id="{email_id_val}") to read contents')
+        else:
+            lines.append(f'\n**Attachments:** Yes — use outlook_get_attachments(email_id="{email_id_val}") to read contents')
 
     return "\n".join(lines)
 
@@ -431,7 +460,9 @@ def outlook_get_email(
     else:
         return "[Error]: Provide an email_id or comma-separated email_ids."
 
-    _SELECT = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,attachments,isRead"
+    _SELECT = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,isRead"
+    # Expand attachments to get metadata (name, size, contentType, isInline) without content bytes
+    _EXPAND = "attachments($select=id,name,contentType,size,isInline)"
 
     # Single email — return directly (identical to previous behavior)
     if len(ids) == 1:
@@ -439,7 +470,7 @@ def outlook_get_email(
             "GET",
             f"/me/messages/{ids[0]}",
             account_id=account_id,
-            params={"$select": _SELECT},
+            params={"$select": _SELECT, "$expand": _EXPAND},
         )
         if not success:
             return f"[Error]: {result}"
@@ -453,7 +484,7 @@ def outlook_get_email(
             "GET",
             f"/me/messages/{eid}",
             account_id=account_id,
-            params={"$select": _SELECT},
+            params={"$select": _SELECT, "$expand": _EXPAND},
         )
         subject_hint = result.get("subject", eid[:20]) if success else eid[:20]
         header = f"=== Email {i}/{total}: {subject_hint} ==="

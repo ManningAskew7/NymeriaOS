@@ -53,10 +53,10 @@ Return the extracted content as plain text. For tables, use markdown table forma
 Do not summarize or interpret — extract verbatim."""
 
 
-def _download_attachments(email_id: str, account_id: Optional[str] = None) -> list[dict]:
+def _download_attachments(email_id: str, account_id: Optional[str] = None) -> tuple[list[dict], int]:
     """Download attachments from an email via Graph API.
 
-    Returns list of {name, mime_type, data_b64, size}.
+    Returns (list of {name, mime_type, data_b64, size}, skipped_inline_count).
     """
     from .outlook_email import graph_request
 
@@ -71,6 +71,7 @@ def _download_attachments(email_id: str, account_id: Optional[str] = None) -> li
         raise RuntimeError(f"Failed to fetch attachments: {result}")
 
     attachments = []
+    skipped_inline = 0
     for att in result.get("value", []):
         # Only process file attachments (skip item/reference attachments)
         if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
@@ -80,6 +81,14 @@ def _download_attachments(email_id: str, account_id: Optional[str] = None) -> li
         size = len(content_b64)  # base64 size
         name = att.get("name", "unnamed")
         mime_type = att.get("contentType", "application/octet-stream")
+        is_inline = att.get("isInline", False)
+
+        # Skip inline signature images (company logos, social icons, etc.)
+        # These are small images embedded in HTML email bodies via cid: references
+        if is_inline and mime_type.startswith("image/") and size < 50000:
+            skipped_inline += 1
+            logger.debug(f"Skipping inline signature image '{name}' ({size} bytes)")
+            continue
 
         if size > _MAX_ATTACHMENT_SIZE:
             logger.warning(f"Skipping attachment '{name}' ({size} bytes) — exceeds size limit")
@@ -100,7 +109,7 @@ def _download_attachments(email_id: str, account_id: Optional[str] = None) -> li
             "skipped": False,
         })
 
-    return attachments
+    return attachments, skipped_inline
 
 
 def _extract_text_plain(data_b64: str) -> str:
@@ -280,20 +289,23 @@ def outlook_get_attachments(
         Extracted text content from all attachments, grouped by filename.
     """
     try:
-        attachments = _download_attachments(email_id)
+        attachments, skipped = _download_attachments(email_id)
     except RuntimeError as e:
         return f"[Error]: {e}"
 
     if not attachments:
+        if skipped:
+            return f"[Info]: No document attachments. {skipped} inline signature image(s) skipped."
         return "[Info]: This email has no file attachments."
 
     total = len(attachments)
+    skip_note = f"\n({skipped} inline signature image(s) skipped)" if skipped else ""
 
     # Single attachment — return directly without wrapper
     if total == 1:
         att = attachments[0]
         content = _extract_attachment(att)
-        return f"[Attachment: {att['name']} ({att['mime_type']})]\n\n{content}"
+        return f"[Attachment: {att['name']} ({att['mime_type']})]\n\n{content}{skip_note}"
 
     # Multiple attachments — use delimiters
     sections = []
@@ -302,7 +314,10 @@ def outlook_get_attachments(
         content = _extract_attachment(att)
         sections.append(f"{header}\n{content}")
 
-    return "\n\n".join(sections)
+    result = "\n\n".join(sections)
+    if skip_note:
+        result += f"\n{skip_note}"
+    return result
 
 
 OUTLOOK_ATTACHMENT_TOOLS = [outlook_get_attachments]
