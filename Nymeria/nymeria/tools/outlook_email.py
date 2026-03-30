@@ -363,31 +363,8 @@ def outlook_list_emails(
     return "\n".join(lines)
 
 
-@tool
-def outlook_get_email(
-    email_id: str,
-    account_id: Optional[str] = None,
-) -> str:
-    """
-    Get full details of a specific email by ID.
-
-    Args:
-        email_id: The email ID (from outlook_list_emails or outlook_search_emails)
-        account_id: Microsoft account ID (optional)
-
-    Returns:
-        Full email details including body content.
-    """
-    success, result = graph_request(
-        "GET",
-        f"/me/messages/{email_id}",
-        account_id=account_id,
-        params={"$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,attachments,isRead"},
-    )
-
-    if not success:
-        return f"[Error]: {result}"
-
+def _format_single_email(result: dict) -> str:
+    """Format a single email result dict into readable text."""
     subject = result.get("subject", "(no subject)")
     sender = result.get("from", {}).get("emailAddress", {})
     sender_str = _clean_sender(sender)
@@ -406,8 +383,6 @@ def outlook_get_email(
         body_content = body_content.strip()[:2000]  # Limit length
 
     lines = [
-        f"[Success]: Email details",
-        f"",
         f"**From:** {sender_str}",
         f"**To:** {', '.join(to_list)}",
     ]
@@ -428,24 +403,73 @@ def outlook_get_email(
 
 
 @tool
-def outlook_search_emails(
-    query: str,
+def outlook_get_email(
+    email_id: str = "",
+    email_ids: str = "",
     account_id: Optional[str] = None,
-    limit: int = 10,
 ) -> str:
     """
-    Search emails using keywords.
+    Get full details of email(s) by ID.
 
     Args:
-        query: Search query (searches subject, body, sender)
+        email_id: Single email ID (from outlook_list_emails or outlook_search_emails)
+        email_ids: Comma-separated email IDs for batch retrieval. Takes precedence
+                   over email_id. Max 10 emails per call.
         account_id: Microsoft account ID (optional)
-        limit: Maximum results (default 10)
 
     Returns:
-        List of matching emails.
+        Full email details including body content.
+        In batch mode, results are grouped per email with === delimiters.
     """
-    limit = min(max(1, limit), 25)
+    # Parse IDs
+    if email_ids.strip():
+        ids = [eid.strip() for eid in email_ids.split(",") if eid.strip()]
+        ids = ids[:10]  # cap at 10
+    elif email_id.strip():
+        ids = [email_id.strip()]
+    else:
+        return "[Error]: Provide an email_id or comma-separated email_ids."
 
+    _SELECT = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,attachments,isRead"
+
+    # Single email — return directly (identical to previous behavior)
+    if len(ids) == 1:
+        success, result = graph_request(
+            "GET",
+            f"/me/messages/{ids[0]}",
+            account_id=account_id,
+            params={"$select": _SELECT},
+        )
+        if not success:
+            return f"[Error]: {result}"
+        return f"[Success]: Email details\n\n{_format_single_email(result)}"
+
+    # Batch mode
+    total = len(ids)
+    sections = []
+    for i, eid in enumerate(ids, 1):
+        success, result = graph_request(
+            "GET",
+            f"/me/messages/{eid}",
+            account_id=account_id,
+            params={"$select": _SELECT},
+        )
+        subject_hint = result.get("subject", eid[:20]) if success else eid[:20]
+        header = f"=== Email {i}/{total}: {subject_hint} ==="
+        if not success:
+            sections.append(f"{header}\n[Error]: {result}")
+        else:
+            sections.append(f"{header}\n{_format_single_email(result)}")
+
+    return "\n\n".join(sections)
+
+
+def _search_single_query(
+    query: str,
+    account_id: Optional[str],
+    limit: int,
+) -> str:
+    """Execute a single email search and return formatted results."""
     params = {
         "$search": f'"{query}"',
         "$top": limit,
@@ -472,6 +496,55 @@ def outlook_search_emails(
         lines.append("")
 
     return "\n".join(lines)
+
+
+@tool
+def outlook_search_emails(
+    query: str = "",
+    queries: str = "",
+    account_id: Optional[str] = None,
+    limit: int = 10,
+) -> str:
+    """
+    Search emails using keywords.
+
+    Args:
+        query: Single search query (searches subject, body, sender)
+        queries: Multiple search queries separated by " | " (pipe with spaces).
+                 Takes precedence over query. Each query is searched independently.
+                 e.g. "Acme j.smith | 1783-CMS10P | RFQ-20260330"
+                 Max 10 queries per call.
+        account_id: Microsoft account ID (optional)
+        limit: Maximum results per query (default 10)
+
+    Returns:
+        List of matching emails.
+        In batch mode, results are grouped per query with === delimiters.
+    """
+    limit = min(max(1, limit), 25)
+
+    # Parse queries
+    if queries.strip():
+        query_list = [q.strip() for q in queries.split(" | ") if q.strip()]
+        query_list = query_list[:10]
+    elif query.strip():
+        query_list = [query.strip()]
+    else:
+        return "[Error]: Provide a query or pipe-separated queries."
+
+    # Single query — return directly (identical to previous behavior)
+    if len(query_list) == 1:
+        return _search_single_query(query_list[0], account_id, limit)
+
+    # Batch mode
+    total = len(query_list)
+    sections = []
+    for i, q in enumerate(query_list, 1):
+        header = f"=== Search {i}/{total}: {q} ==="
+        result = _search_single_query(q, account_id, limit)
+        sections.append(f"{header}\n{result}")
+
+    return "\n\n".join(sections)
 
 
 @tool
