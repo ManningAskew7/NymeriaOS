@@ -14,6 +14,8 @@ SEARCH_DEPTH_MODELS = {
     "deep": "sonar-deep-research",
 }
 
+_MAX_BATCH_QUERIES = 10
+
 
 def _get_perplexity_api_key() -> Optional[str]:
     """Get Perplexity API key from settings or environment."""
@@ -23,9 +25,74 @@ def _get_perplexity_api_key() -> Optional[str]:
     return settings.perplexity_api_key or os.environ.get("PERPLEXITY_API_KEY")
 
 
+def _search_single(
+    query: str,
+    model: str,
+    max_sources: int,
+    timeout: float,
+    max_tokens: int,
+    api_key: str,
+) -> str:
+    """Execute a single Perplexity search and return formatted result."""
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a helpful search assistant. Provide accurate, factual information with sources when available.",
+            },
+            {
+                "role": "user",
+                "content": query,
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+
+        citations = data.get("citations", [])
+        if citations:
+            content += "\n\n**Sources:**\n"
+            for i, citation in enumerate(citations[:max_sources], 1):
+                content += f"{i}. {citation}\n"
+
+        logger.debug(f"Search returned {len(content)} characters (model={model})")
+        return content
+
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Perplexity API error: {e.response.status_code}"
+        logger.error(error_msg)
+        return f"[Error]: {error_msg}"
+
+    except Exception as e:
+        error_msg = f"Web search failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return f"[Error]: {error_msg}"
+
+
 @tool
 def web_search(
-    query: str,
+    query: str = "",
+    queries: str = "",
     search_depth: Optional[str] = None,
     max_sources: Optional[int] = None,
 ) -> str:
@@ -37,14 +104,31 @@ def web_search(
     not be in your training data.
 
     Args:
-        query: The search query
-        search_depth: "quick" (sonar), "standard" (sonar-pro), or "deep" (sonar-deep-research)
-        max_sources: Maximum number of sources to return (1-10, default 5)
+        query: Single search query or prompt for Perplexity.
+        queries: Multiple search queries separated by " | " (pipe with spaces).
+                 Takes precedence over query. Each query is searched independently.
+                 e.g. "Acme 440N-Z21S26H datasheet | 1783-CMS10P lifecycle status"
+                 Max 10 queries per call.
+        search_depth: "quick" (sonar), "standard" (sonar-pro), or "deep" (sonar-deep-research).
+                      Applies to all queries in batch mode.
+        max_sources: Maximum number of sources per query (1-10, default 5)
 
     Returns:
-        Search results with relevant information
+        Search results with relevant information.
+        In batch mode, results are grouped per query with === delimiters.
     """
-    logger.info(f"Web search: {query} (depth={search_depth})")
+    # Parse queries
+    if queries.strip():
+        query_list = [q.strip() for q in queries.split(" | ")]
+        query_list = [q for q in query_list if q]
+        if len(query_list) > _MAX_BATCH_QUERIES:
+            query_list = query_list[:_MAX_BATCH_QUERIES]
+    elif query.strip():
+        query_list = [query.strip()]
+    else:
+        return "[Error]: Provide a query or pipe-separated queries."
+
+    logger.info(f"Web search: {len(query_list)} query(ies) (depth={search_depth})")
 
     api_key = _get_perplexity_api_key()
     if not api_key:
@@ -68,57 +152,16 @@ def web_search(
     else:
         max_sources = 5
 
-    try:
-        import httpx
+    # Single query — return directly (identical to previous behavior)
+    if len(query_list) == 1:
+        return _search_single(query_list[0], model, max_sources, timeout, max_tokens, api_key)
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+    # Batch mode
+    total = len(query_list)
+    sections = []
+    for i, q in enumerate(query_list, 1):
+        header = f"=== Query {i}/{total}: {q} ==="
+        result = _search_single(q, model, max_sources, timeout, max_tokens, api_key)
+        sections.append(f"{header}\n{result}")
 
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a helpful search assistant. Provide accurate, factual information with sources when available.",
-                },
-                {
-                    "role": "user",
-                    "content": query,
-                },
-            ],
-            "temperature": 0.2,
-            "max_tokens": max_tokens,
-        }
-
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-
-        # Add citations if available (limited by max_sources)
-        citations = data.get("citations", [])
-        if citations:
-            content += "\n\n**Sources:**\n"
-            for i, citation in enumerate(citations[:max_sources], 1):
-                content += f"{i}. {citation}\n"
-
-        logger.debug(f"Search returned {len(content)} characters (model={model})")
-        return content
-
-    except httpx.HTTPStatusError as e:
-        error_msg = f"Perplexity API error: {e.response.status_code}"
-        logger.error(error_msg)
-        return f"[Error]: {error_msg}"
-
-    except Exception as e:
-        error_msg = f"Web search failed: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        return f"[Error]: {error_msg}"
+    return "\n\n".join(sections)
