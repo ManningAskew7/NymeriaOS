@@ -205,6 +205,10 @@ class Settings(BaseSettings):
     perplexity_api_key: Optional[str] = Field(default=None)
     perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")
 
+    # Gemini (document extraction for email attachments)
+    gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")
+    gemini_extraction_model: str = Field(default="gemini-3-flash-preview", description="Gemini model for attachment text extraction")
+
     # Database - SQLite by default, PostgreSQL optional for power users
     database_backend: Literal["sqlite", "postgres", "memory"] = Field(
         default="sqlite", description="Database backend: sqlite (default), postgres, or memory"

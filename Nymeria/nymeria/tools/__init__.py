@@ -60,6 +60,7 @@ from ._prv_a_vendor import _PRV_TOOLS_A2
 from ._prv_a_products import _PRV_TOOLS_A3
 from ._prv_a_acme import _PRV_TOOLS_A4
 from ._prv_a_acme import _PRV_TOOLS_A5
+from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 
 # Combined Outlook tools list
@@ -83,6 +84,7 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 OPTIONAL_TOOLS = {t.name: t for t in (
     [claude_code, sticky_note, hello_test]
     + OUTLOOK_TOOLS
+    + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
     + BROWSER_TOOLS
     + CALENDAR_TOOLS
