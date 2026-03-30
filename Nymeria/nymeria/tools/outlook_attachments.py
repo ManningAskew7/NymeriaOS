@@ -22,7 +22,7 @@ _MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
 _MAX_ATTACHMENTS = 20
 
 # MIME types routed to each extractor
-_TEXT_MIMES = {"text/plain", "text/csv", "text/markdown", "text/tab-separated-values"}
+_TEXT_MIMES = {"text/plain", "text/csv", "text/markdown", "text/tab-separated-values", "text/html"}
 _XLSX_MIMES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
@@ -32,6 +32,14 @@ _GEMINI_MIMES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/msword",
 }
+
+_SYSTEM_INSTRUCTION = (
+    "You are a document extraction specialist. Your job is to extract text "
+    "content from documents with 100% accuracy. You never summarize, interpret, "
+    "or omit content. You preserve exact formatting of part numbers, model numbers, "
+    "and catalog numbers including all hyphens, slashes, spaces, and special characters. "
+    "For tables, you always use markdown table format with proper column alignment."
+)
 
 _EXTRACTION_PROMPT = """Extract ALL text content from this document accurately.
 Pay special attention to:
@@ -187,6 +195,9 @@ def _extract_with_gemini(data_b64: str, mime_type: str, filename: str) -> str:
 
         response = client.models.generate_content(
             model=model,
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_INSTRUCTION,
+            ),
             contents=[
                 types.Part.from_bytes(
                     data=file_bytes,
@@ -232,7 +243,7 @@ def _extract_attachment(att: dict) -> str:
 
     # Check by file extension as fallback
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    if ext in ("csv", "txt", "md", "tsv"):
+    if ext in ("csv", "txt", "md", "tsv", "html", "htm"):
         return _extract_text_plain(data_b64)
     if ext in ("xlsx", "xls"):
         return _extract_xlsx(data_b64, name)
