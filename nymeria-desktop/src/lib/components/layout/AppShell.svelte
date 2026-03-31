@@ -12,6 +12,21 @@
 
   let { sidebar, main, rightPanel }: Props = $props();
 
+  // In Outlook mode, only allow one panel open at a time
+  function outlookToggleSidebar() {
+    if (outlookStore.isOutlookMode && uiStore.sidebarCollapsed && !uiStore.rightPanelCollapsed) {
+      uiStore.toggleRightPanel(); // close right panel first
+    }
+    uiStore.toggleSidebar();
+  }
+
+  function outlookToggleRightPanel() {
+    if (outlookStore.isOutlookMode && uiStore.rightPanelCollapsed && !uiStore.sidebarCollapsed) {
+      uiStore.toggleSidebar(); // close sidebar first
+    }
+    uiStore.toggleRightPanel();
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     // Don't intercept shortcuts while typing in inputs
     const tag = (e.target as HTMLElement)?.tagName;
@@ -43,7 +58,7 @@
     <button
       type="button"
       class="panel-toggle sidebar-toggle"
-      onclick={() => uiStore.toggleSidebar()}
+      onclick={() => outlookToggleSidebar()}
       aria-label={uiStore.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       aria-expanded={!uiStore.sidebarCollapsed}
       title={uiStore.sidebarCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)'}
@@ -66,7 +81,7 @@
     <button
       type="button"
       class="panel-toggle right-panel-toggle"
-      onclick={() => uiStore.toggleRightPanel()}
+      onclick={() => outlookToggleRightPanel()}
       aria-label={uiStore.rightPanelCollapsed ? 'Expand dashboard' : 'Collapse dashboard'}
       aria-expanded={!uiStore.rightPanelCollapsed}
       title={uiStore.rightPanelCollapsed ? 'Expand dashboard (Ctrl+Shift+B)' : 'Collapse dashboard (Ctrl+Shift+B)'}
@@ -199,4 +214,5 @@
   .right-panel-toggle {
     left: -44px;
   }
+
 </style>

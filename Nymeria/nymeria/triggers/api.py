@@ -619,8 +619,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Serve SvelteKit's _app/ assets and other static files
         app.mount("/_app", StaticFiles(directory=os.path.join(_frontend_dir, "_app")), name="frontend-assets")
 
-        # Serve static assets from frontend root (icons, favicon, etc.)
-        for _icon_name in ["favicon.png", "icon-16.png", "icon-32.png", "icon-80.png"]:
+        # Serve static assets from frontend root (icons, favicon, manifest, etc.)
+        for _icon_name in ["favicon.png", "icon-16.png", "icon-32.png", "icon-80.png", "manifest.xml"]:
             _icon_path = os.path.join(_frontend_dir, _icon_name)
             if os.path.isfile(_icon_path):
                 def _make_icon_handler(p: str):
@@ -909,7 +909,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Returns token usage, context limit, and compaction history.
         """
         agent = get_agent()
-        return agent.get_context_stats(thread_id)
+        stats = agent.get_context_stats(thread_id)
+        # Include thread processing status so frontends can poll for completion
+        lock_info = agent._thread_locks.get_lock_info(thread_id)
+        if isinstance(stats, dict):
+            stats["processing"] = lock_info is not None
+        return stats
 
     @app.get("/threads/{thread_id}/metadata", tags=["Threads"])
     async def get_thread_metadata(

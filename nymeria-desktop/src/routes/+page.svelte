@@ -52,8 +52,18 @@
    * Load history for a thread ID, guarding against stale applies.
    * Only updates chat state if the user hasn't navigated away.
    */
+  let processingPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopProcessingPoll() {
+    if (processingPollTimer) {
+      clearInterval(processingPollTimer);
+      processingPollTimer = null;
+    }
+  }
+
   function loadThreadHistory(threadId: string) {
     chatStore.clearMessages();
+    stopProcessingPoll();
     Promise.all([
       api.getThreadHistory(threadId),
       api.getThreadContextStats(threadId),
@@ -63,6 +73,32 @@
         chatStore.setMessages(history.messages);
         chatStore.setContextStats(stats);
         chatStore.setActiveModel(stats?.model ?? null);
+
+        // If the agent is still processing this thread (we reconnected mid-stream),
+        // poll history every 3 seconds until it finishes
+        if (stats?.processing && !chatStore.isStreaming) {
+          console.log('[Page] Thread is still processing, starting poll for updates');
+          processingPollTimer = setInterval(() => {
+            if (threadsStore.currentThreadId !== threadId) {
+              stopProcessingPoll();
+              return;
+            }
+            Promise.all([
+              api.getThreadHistory(threadId),
+              api.getThreadContextStats(threadId),
+            ]).then(([h, s]) => {
+              if (threadsStore.currentThreadId === threadId && !chatStore.isStreaming) {
+                chatStore.setMessages(h.messages);
+                chatStore.setContextStats(s);
+                chatStore.setActiveModel(s?.model ?? null);
+                if (!s?.processing) {
+                  console.log('[Page] Thread processing complete, stopping poll');
+                  stopProcessingPoll();
+                }
+              }
+            }).catch(() => {});
+          }, 3000);
+        }
       }
     }).catch((err) => {
       console.error('[Page] Failed to load thread history:', err);
@@ -128,6 +164,7 @@
     // Return cleanup — SSE disconnect happens via autonomousStore
     return () => {
       console.log('[Page] Cleanup - disconnecting SSE');
+      stopProcessingPoll();
       autonomousStore.disconnect();
     };
   });

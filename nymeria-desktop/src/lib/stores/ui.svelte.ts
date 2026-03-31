@@ -38,8 +38,13 @@ function saveUIState(state: UIState): void {
 
 function createUIStore() {
   const initial = loadUIState();
-  let sidebarCollapsed = $state(initial.sidebarCollapsed);
-  let rightPanelCollapsed = $state(initial.rightPanelCollapsed);
+
+  // In Outlook mode, auto-collapse both panels for maximum chat space
+  const isOutlookMode = typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('outlook') === '1';
+
+  let sidebarCollapsed = $state(isOutlookMode ? true : initial.sidebarCollapsed);
+  let rightPanelCollapsed = $state(isOutlookMode ? true : initial.rightPanelCollapsed);
 
   function save() {
     saveUIState({ sidebarCollapsed, rightPanelCollapsed });
