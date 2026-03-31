@@ -36,28 +36,44 @@
   }
 </script>
 
-{#if outlookStore.hasEmail}
+{#if outlookStore.isOutlook}
   <div class="quick-actions">
-    <div class="qa-label">
-      {outlookStore.currentEmailSubject
-        ? `Selected: ${outlookStore.currentEmailSubject.length > 40
-            ? outlookStore.currentEmailSubject.slice(0, 37) + '...'
-            : outlookStore.currentEmailSubject}`
-        : 'Email selected'}
-    </div>
-    <div class="qa-buttons">
-      {#each actions as action}
-        <button
-          class="qa-btn"
-          onclick={() => handleClick(action.prompt)}
-          disabled={disabled}
-          title={action.label}
-        >
-          <span class="qa-icon">{action.icon}</span>
-          <span class="qa-text">{action.label}</span>
-        </button>
-      {/each}
-    </div>
+    {#if outlookStore.hasEmail}
+      <div class="qa-label">
+        {outlookStore.currentEmailSubject
+          ? `Selected: ${outlookStore.currentEmailSubject.length > 40
+              ? outlookStore.currentEmailSubject.slice(0, 37) + '...'
+              : outlookStore.currentEmailSubject}`
+          : 'Email selected'}
+      </div>
+      <div class="qa-buttons">
+        {#each actions as action}
+          <button
+            class="qa-btn"
+            onclick={() => handleClick(action.prompt)}
+            disabled={disabled}
+            title={action.label}
+          >
+            <span class="qa-icon">{action.icon}</span>
+            <span class="qa-text">{action.label}</span>
+          </button>
+        {/each}
+      </div>
+    {:else}
+      <div class="qa-hint">Select an email to use quick actions</div>
+      <div class="qa-buttons">
+        {#each actions as action}
+          <button
+            class="qa-btn"
+            disabled
+            title="Select an email first"
+          >
+            <span class="qa-icon">{action.icon}</span>
+            <span class="qa-text">{action.label}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -112,5 +128,12 @@
   .qa-icon {
     font-weight: 700;
     font-size: var(--font-size-sm);
+  }
+
+  .qa-hint {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    margin-bottom: var(--spacing-xs);
+    font-style: italic;
   }
 </style>
