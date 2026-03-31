@@ -12,31 +12,31 @@
     {
       label: 'Process RFQ',
       icon: '>>',
-      prompt: (id: string) =>
-        `Process RFQ from email ID: ${id}. Follow the full pipeline.`,
+      prompt: (ctx: string) =>
+        `Process RFQ from the email I'm currently viewing. Find it using the details below, then follow the full pipeline.\n\n${ctx}`,
     },
     {
       label: 'Analyse Response',
       icon: '$',
-      prompt: (id: string) =>
-        `Analyse supplier response from email ID: ${id}. Match to original RFQ, extract pricing and lead times, compare with other responses if available.`,
+      prompt: (ctx: string) =>
+        `Analyse supplier response from the email I'm currently viewing. Find it using the details below, then match to original RFQ, extract pricing and lead times, compare with other responses if available.\n\n${ctx}`,
     },
     {
       label: 'Check Parts',
       icon: '?',
-      prompt: (id: string) =>
-        `Quick parts check on email ID: ${id}. Validate part numbers and check lifecycle status only. No supplier RFQ needed, no tracker logging.`,
+      prompt: (ctx: string) =>
+        `Quick parts check on the email I'm currently viewing. Find it using the details below, then validate part numbers and check lifecycle status only. No supplier RFQ needed, no tracker logging.\n\n${ctx}`,
     },
   ];
 
-  function handleClick(promptFn: (id: string) => string) {
-    const emailId = outlookStore.currentEmailId;
-    if (!emailId) return;
-    onAction(promptFn(emailId));
+  function handleClick(promptFn: (ctx: string) => string) {
+    if (!outlookStore.hasEmail) return;
+    const ctx = outlookStore.getEmailContext();
+    onAction(promptFn(ctx));
   }
 </script>
 
-{#if outlookStore.currentEmailId}
+{#if outlookStore.hasEmail}
   <div class="quick-actions">
     <div class="qa-label">
       {outlookStore.currentEmailSubject

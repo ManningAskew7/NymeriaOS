@@ -1,10 +1,14 @@
 /**
  * Office.js bridge for Outlook add-in integration.
- * Reads the current email's ID when running inside Outlook's taskpane.
+ * Reads the current email's metadata when running inside Outlook's taskpane.
  * No-ops gracefully when running in a regular browser or Tauri.
  *
  * Office.js is loaded dynamically AFTER SvelteKit boots to avoid
  * interfering with the router (Office.js overwrites history API).
+ *
+ * Note: EWS item IDs from Office.js do NOT match Graph API message IDs,
+ * so we capture email metadata (subject, sender, date) for the agent to
+ * search with instead of passing raw IDs.
  */
 
 declare const Office: any;
@@ -19,6 +23,8 @@ function createOutlookStore() {
   let isOutlook = $state(false);
   let currentEmailId = $state<string | null>(null);
   let currentEmailSubject = $state<string | null>(null);
+  let currentEmailSender = $state<string | null>(null);
+  let currentEmailDate = $state<string | null>(null);
   let initialized = $state(false);
 
   function readCurrentItem() {
@@ -27,31 +33,53 @@ function createOutlookStore() {
       if (!item) {
         currentEmailId = null;
         currentEmailSubject = null;
+        currentEmailSender = null;
+        currentEmailDate = null;
         return;
       }
 
-      // Convert EWS ID to REST/Graph format
+      // Capture the EWS ID (may not work with Graph API, but include as fallback)
       const ewsId = item.itemId;
       if (ewsId && Office.context.mailbox.convertToRestId) {
-        currentEmailId = Office.context.mailbox.convertToRestId(
-          ewsId,
-          Office.MailboxEnums.RestVersion.v2_0
-        );
+        try {
+          currentEmailId = Office.context.mailbox.convertToRestId(
+            ewsId,
+            Office.MailboxEnums.RestVersion.v2_0
+          );
+        } catch {
+          currentEmailId = ewsId || null;
+        }
       } else {
         currentEmailId = ewsId || null;
       }
 
       currentEmailSubject = item.subject || null;
+
+      // Get sender
+      if (item.from) {
+        currentEmailSender = item.from.emailAddress || item.from.displayName || null;
+      } else {
+        currentEmailSender = null;
+      }
+
+      // Get date
+      if (item.dateTimeCreated) {
+        const d = item.dateTimeCreated;
+        currentEmailDate = d instanceof Date ? d.toISOString().slice(0, 10) : null;
+      } else {
+        currentEmailDate = null;
+      }
     } catch (e) {
       console.warn('[Outlook] Failed to read current item:', e);
       currentEmailId = null;
       currentEmailSubject = null;
+      currentEmailSender = null;
+      currentEmailDate = null;
     }
   }
 
   function loadOfficeJs(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Already loaded?
       if (typeof Office !== 'undefined' && Office.onReady) {
         resolve();
         return;
@@ -86,7 +114,6 @@ function createOutlookStore() {
         isOutlook = true;
         readCurrentItem();
 
-        // Listen for email selection changes
         try {
           Office.context.mailbox.addHandlerAsync(
             Office.EventType.ItemChanged,
@@ -101,11 +128,29 @@ function createOutlookStore() {
     });
   }
 
+  /**
+   * Build a context string the agent can use to find this email.
+   * Includes subject, sender, and date — the agent uses outlook_search_emails
+   * to locate the exact email rather than relying on potentially mismatched IDs.
+   */
+  function getEmailContext(): string {
+    const parts: string[] = [];
+    if (currentEmailSubject) parts.push(`Subject: "${currentEmailSubject}"`);
+    if (currentEmailSender) parts.push(`From: ${currentEmailSender}`);
+    if (currentEmailDate) parts.push(`Date: ${currentEmailDate}`);
+    if (currentEmailId) parts.push(`Email ID (may need search fallback): ${currentEmailId}`);
+    return parts.join('\n');
+  }
+
   return {
     get isOutlook() { return isOutlook; },
     get isOutlookMode() { return outlookParam; },
     get currentEmailId() { return currentEmailId; },
     get currentEmailSubject() { return currentEmailSubject; },
+    get currentEmailSender() { return currentEmailSender; },
+    get currentEmailDate() { return currentEmailDate; },
+    get hasEmail() { return !!(currentEmailSubject || currentEmailId); },
+    getEmailContext,
     initialize,
   };
 }

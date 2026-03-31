@@ -769,6 +769,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 if request.images:
                     images = [{"data_url": img.data_url, "mime_type": img.mime_type} for img in request.images]
 
+                client_disconnected = False
                 async for chunk in agent.astream(
                     request.message,
                     thread_id=thread_id,
@@ -777,17 +778,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     images=images,
                     force_unsupported_attachments=request.force_unsupported_attachments,
                 ):
-                    # Check if client disconnected (user clicked stop)
+                    # If client disconnected, stop yielding SSE events but keep
+                    # consuming the generator so the agent finishes its work.
+                    # Results are saved to thread history and available on reconnect.
+                    # Explicit cancellation uses POST /threads/{id}/stop instead.
                     if await http_request.is_disconnected():
-                        logger.info(f"Client disconnected for thread {thread_id}, signalling abort")
-                        agent.abort_with_cascade(thread_id)
-                        break
+                        if not client_disconnected:
+                            client_disconnected = True
+                            logger.info(f"Client disconnected for thread {thread_id}, agent will continue in background")
+                        continue
 
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
                     yield f"data: {event_data}\n\n"
 
-                # Only send done event if not disconnected
-                if not await http_request.is_disconnected():
+                # Only send done event if client is still connected
+                if not client_disconnected and not await http_request.is_disconnected():
                     # Get context stats and model info for UI
                     try:
                         context_stats = agent.get_context_stats(thread_id)
