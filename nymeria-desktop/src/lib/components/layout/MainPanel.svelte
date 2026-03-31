@@ -2,6 +2,7 @@
   import ChatContainer from '$lib/components/chat/ChatContainer.svelte';
   import InputBar from '$lib/components/chat/InputBar.svelte';
   import ContextStatusBar from '$lib/components/chat/ContextStatusBar.svelte';
+  import QuickActions from '$lib/components/outlook/QuickActions.svelte';
   import { ThreadHeader, ThreadSettingsPanel } from '$lib/components/threads';
   import { Button, Modal } from '$lib/components/common';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -10,6 +11,7 @@
   import { activityStore } from '$lib/stores/activity.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { outlookStore } from '$lib/stores/outlook.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
@@ -402,6 +404,13 @@
       thread={threadsStore.currentThread}
       threadConfig={currentThreadConfig}
       onOpenSettings={() => (showThreadSettings = true)}
+    />
+  {/if}
+
+  {#if outlookStore.isOutlook}
+    <QuickActions
+      onAction={(msg) => handleSendMessage(msg)}
+      disabled={chatStore.isStreaming}
     />
   {/if}
 
