@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { onMount } from 'svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
+  import { outlookStore } from '$lib/stores/outlook.svelte';
 
   interface Props {
     sidebar: Snippet;
@@ -37,7 +38,7 @@
 </script>
 
 <div class="app-shell">
-  <aside class="sidebar" class:collapsed={uiStore.sidebarCollapsed}>
+  <aside class="sidebar" class:collapsed={uiStore.sidebarCollapsed} class:outlook-hide={outlookStore.isOutlookMode && uiStore.sidebarCollapsed}>
     {@render sidebar()}
     <button
       type="button"
@@ -108,6 +109,16 @@
   .sidebar.collapsed {
     width: var(--sidebar-width-collapsed);
     min-width: var(--sidebar-width-collapsed);
+  }
+
+  .sidebar.outlook-hide {
+    width: 0;
+    min-width: 0;
+    border-right-color: transparent;
+  }
+
+  .sidebar.outlook-hide > :global(:not(.panel-toggle)) {
+    display: none;
   }
 
   .main-panel {
