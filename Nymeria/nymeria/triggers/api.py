@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
@@ -606,6 +607,33 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
+
+    # ========================================================================
+    # Frontend static hosting (Outlook add-in / web UI)
+    # ========================================================================
+
+    _frontend_dir = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
+    if os.path.isdir(_frontend_dir):
+        logger.info(f"Serving frontend from {_frontend_dir}")
+
+        # Serve SvelteKit's _app/ assets and other static files
+        app.mount("/_app", StaticFiles(directory=os.path.join(_frontend_dir, "_app")), name="frontend-assets")
+
+        # Serve static assets from frontend root (icons, favicon, etc.)
+        for _icon_name in ["favicon.png", "icon-16.png", "icon-32.png", "icon-80.png"]:
+            _icon_path = os.path.join(_frontend_dir, _icon_name)
+            if os.path.isfile(_icon_path):
+                def _make_icon_handler(p: str):
+                    async def handler():
+                        return FileResponse(p)
+                    return handler
+                app.get(f"/{_icon_name}", include_in_schema=False)(_make_icon_handler(_icon_path))
+
+        # SPA entry point — serves index.html at root
+        # This must be registered AFTER all API routes so it doesn't shadow them
+        @app.get("/", include_in_schema=False)
+        async def serve_spa_root():
+            return FileResponse(os.path.join(_frontend_dir, "index.html"))
 
     # ========================================================================
     # Endpoints

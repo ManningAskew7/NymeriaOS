@@ -6,6 +6,7 @@
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
+  import { outlookStore } from '$lib/stores/outlook.svelte';
   import { autonomousStore } from '$lib/stores/autonomous.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -115,6 +116,9 @@
   // Connect to autonomous event stream on mount
   onMount(() => {
     console.log('[Page] onMount - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
+
+    // Initialize Outlook bridge (no-ops if not in Outlook)
+    outlookStore.initialize();
 
     // Try auto-config from Tauri, then initialize
     autoConfigFromTauri().then(() => {

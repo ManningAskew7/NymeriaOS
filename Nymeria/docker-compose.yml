@@ -161,6 +161,7 @@ services:
       - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
       - ./google_credentials.json:/app/google_credentials.json:ro  # Google OAuth creds
+      - ../nymeria-desktop/build:/app/frontend:ro  # Outlook add-in / web UI frontend
     depends_on:
       postgres:
         condition: service_healthy
