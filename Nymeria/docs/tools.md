@@ -67,7 +67,7 @@ Any thread with `callable=True` becomes a tool. Built-in callable threads:
 | Tool | LLM | Internal Tools |
 |------|-----|----------------|
 | `BrowserAgent` | `google/gemini-3-flash-preview` (OpenRouter) | 9 browser tools |
-| `OutlookAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 13 Outlook tools |
+| `OutlookAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 16 Outlook tools |
 | `CalendarAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 14 calendar tools |
 | `SelfModifyAgent` | `anthropic/claude-opus-4.5` (OpenRouter) | 7 self-modify tools |
 
