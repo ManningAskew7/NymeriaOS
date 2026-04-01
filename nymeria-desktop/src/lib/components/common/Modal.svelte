@@ -64,7 +64,7 @@
     border-radius: var(--radius-lg);
     border: 1px solid var(--glass-border);
     box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
-    min-width: 400px;
+    min-width: min(400px, 90vw);
     max-width: 90vw;
     max-height: 90vh;
     overflow: hidden;

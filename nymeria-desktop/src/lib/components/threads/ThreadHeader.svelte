@@ -4,6 +4,7 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { outlookStore } from '$lib/stores/outlook.svelte';
 
   interface Props {
     thread: Thread;
@@ -14,6 +15,21 @@
   let { thread, threadConfig, onOpenSettings }: Props = $props();
 
   const isCallable = $derived(threadConfig?.callable ?? false);
+
+  function openInBrowser() {
+    const url = window.location.origin + window.location.pathname;
+    // In Outlook, use Office.js to open in the system default browser
+    if (typeof Office !== 'undefined' && Office.context?.ui?.openBrowserWindow) {
+      Office.context.ui.openBrowserWindow(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+
+  function popOut() {
+    const url = window.location.origin + window.location.pathname;
+    window.open(url, 'nymeria-popout', 'width=900,height=700,resizable=yes,scrollbars=yes');
+  }
 
   function shortModelName(modelId: string): string {
     const parts = modelId.split('/');
@@ -108,15 +124,43 @@
     </div>
   </div>
 
-  <button
-    class="settings-btn"
-    class:active={threadConfig?.hasCustomizations ?? false}
-    onclick={onOpenSettings}
-    title="Thread settings"
-    type="button"
-  >
-    <Icon name="cog" size={16} />
-  </button>
+  <div class="header-actions">
+    {#if outlookStore.isOutlookMode}
+      <button
+        class="action-btn"
+        onclick={popOut}
+        title="Pop out to resizable window"
+        type="button"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 3 21 3 21 9" />
+          <line x1="10" y1="14" x2="21" y2="3" />
+          <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+        </svg>
+      </button>
+      <button
+        class="action-btn"
+        onclick={openInBrowser}
+        title="Open in full browser"
+        type="button"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="2" y1="12" x2="22" y2="12" />
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </svg>
+      </button>
+    {/if}
+    <button
+      class="settings-btn"
+      class:active={threadConfig?.hasCustomizations ?? false}
+      onclick={onOpenSettings}
+      title="Thread settings"
+      type="button"
+    >
+      <Icon name="cog" size={16} />
+    </button>
+  </div>
 </div>
 
 <style>
@@ -221,6 +265,27 @@
     font-size: 11px;
     margin-right: 2px;
     line-height: 1;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+
+  .action-btn {
+    padding: 6px;
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .action-btn:hover {
+    background: var(--bg-hover);
+    color: var(--accent-primary);
   }
 
   .settings-btn {
