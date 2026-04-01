@@ -62,16 +62,14 @@ See `docs/_prv_a/setup-guide.md` for full setup instructions, Google Sheet IDs, 
 
 ### Callable Thread Tools (Dynamic)
 
-Any thread with `callable=True` becomes a tool. Built-in callable threads:
+Any thread with `callable=True` in its thread config becomes a tool that other threads can invoke. There are no hardcoded agents — callable threads are fully configurable via the UI:
 
-| Tool | LLM | Internal Tools |
-|------|-----|----------------|
-| `BrowserAgent` | `google/gemini-3-flash-preview` (OpenRouter) | 9 browser tools |
-| `OutlookAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 16 Outlook tools |
-| `CalendarAgent` | `x-ai/grok-4.1-fast` (OpenRouter) | 14 calendar tools |
-| `SelfModifyAgent` | `anthropic/claude-opus-4.5` (OpenRouter) | 7 self-modify tools |
+- **Model**: Set per-thread via `llm_config.model` in thread settings (inherits global default if not set)
+- **Tools**: Enable/disable any optional tools per-thread
+- **System prompt**: Custom `system_prompt` or `instructions` per-thread
+- **Name**: The tool name equals the thread's sidebar title (synced via `callable_name` in thread config)
 
-**Naming:** The tool name equals the thread's sidebar title (synced via `callable_name` in thread config). Renaming a callable thread updates the tool name.
+Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The thread becomes available as a tool to all other threads after `sync_agent_tools()` runs.
 
 ---
 
