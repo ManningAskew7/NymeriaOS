@@ -7,11 +7,13 @@
   import ThreadItem from './ThreadItem.svelte';
   import FolderItem from './FolderItem.svelte';
   import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
-  import { Icon } from '$lib/components/common';
+  import { Icon, Modal, Button } from '$lib/components/common';
   import type { Thread, ThreadConfig, SortMode } from '$lib/types';
 
   let loadError = $state<string | null>(null);
   let configureThread = $state<Thread | null>(null);
+  let deleteConfirmThreadId = $state<string | null>(null);
+  let deleteConfirmTitle = $state('');
 
   // Multi-select state
   let selectedIds = $state<Set<string>>(new Set());
@@ -129,20 +131,35 @@
   }
 
   function handleDeleteThread(threadId: string) {
-    if (confirm('Are you sure you want to delete this thread?')) {
-      threadsStore.deleteThread(threadId);
-      if (threadsStore.currentThreadId === threadId) {
-        chatStore.clearMessages();
-      }
-      // Remove from selection if selected
-      if (selectedIds.has(threadId)) {
-        const next = new Set(selectedIds);
-        next.delete(threadId);
-        selectedIds = next;
-      }
-      // Delete backend thread config (also removes callable thread tools via sync_agent_tools)
-      api.deleteThreadConfig(threadId).catch(() => {});
+    const thread = threadsStore.threads.find(t => t.id === threadId);
+    deleteConfirmTitle = thread?.title || 'this thread';
+    deleteConfirmThreadId = threadId;
+  }
+
+  function confirmDelete() {
+    const threadId = deleteConfirmThreadId;
+    if (!threadId) return;
+    deleteConfirmThreadId = null;
+
+    if (threadId === '__bulk__') {
+      executeBulkDelete();
+      return;
     }
+
+    threadsStore.deleteThread(threadId);
+    if (threadsStore.currentThreadId === threadId) {
+      chatStore.clearMessages();
+    }
+    if (selectedIds.has(threadId)) {
+      const next = new Set(selectedIds);
+      next.delete(threadId);
+      selectedIds = next;
+    }
+    api.deleteThreadConfig(threadId).catch(() => {});
+  }
+
+  function cancelDelete() {
+    deleteConfirmThreadId = null;
   }
 
   function handleRenameThread(threadId: string, newTitle: string) {
@@ -167,20 +184,21 @@
   // Bulk actions
   function handleBulkDelete() {
     const count = selectedIds.size;
-    if (confirm(`Delete ${count} thread${count > 1 ? 's' : ''}? This cannot be undone.`)) {
-      // Check if current thread is in selection before deleting (deleteThread changes currentThreadId)
-      const needsClear = threadsStore.currentThreadId !== null && selectedIds.has(threadsStore.currentThreadId);
-      for (const id of selectedIds) {
-        threadsStore.deleteThread(id);
-        // Delete backend thread config (also removes callable thread tools via sync_agent_tools)
-        api.deleteThreadConfig(id).catch(() => {});
-      }
-      if (needsClear) {
-        chatStore.clearMessages();
-      }
-      selectedIds = new Set();
-      lastClickedId = null;
+    deleteConfirmTitle = `${count} thread${count > 1 ? 's' : ''}`;
+    deleteConfirmThreadId = '__bulk__';
+  }
+
+  function executeBulkDelete() {
+    const needsClear = threadsStore.currentThreadId !== null && selectedIds.has(threadsStore.currentThreadId);
+    for (const id of selectedIds) {
+      threadsStore.deleteThread(id);
+      api.deleteThreadConfig(id).catch(() => {});
     }
+    if (needsClear) {
+      chatStore.clearMessages();
+    }
+    selectedIds = new Set();
+    lastClickedId = null;
   }
 
   function handleBulkGroup() {
@@ -426,7 +444,30 @@
   />
 {/if}
 
+<Modal
+  title="Delete Thread"
+  isOpen={deleteConfirmThreadId !== null}
+  onClose={cancelDelete}
+>
+  <p class="delete-confirm-text">Are you sure you want to delete <strong>{deleteConfirmTitle}</strong>? This cannot be undone.</p>
+  <div class="delete-confirm-actions">
+    <Button variant="secondary" onclick={cancelDelete}>Cancel</Button>
+    <Button variant="primary" onclick={confirmDelete}>Delete</Button>
+  </div>
+</Modal>
+
 <style>
+  .delete-confirm-text {
+    color: var(--text-secondary);
+    margin: 0 0 var(--spacing-lg);
+  }
+
+  .delete-confirm-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    justify-content: flex-end;
+  }
+
   .thread-list {
     padding: var(--spacing-sm);
     position: relative;
