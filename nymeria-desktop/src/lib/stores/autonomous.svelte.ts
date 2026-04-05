@@ -49,9 +49,6 @@ function createAutonomousStore() {
   let activeTasksByThread = $state<Map<string, string>>(new Map()); // thread_id -> task_id
   let activeMessagesByThread = $state<Map<string, string>>(new Map()); // thread_id -> message_id
 
-  // Track interactive sync streams from other clients
-  let interactiveSyncThreads = $state<Set<string>>(new Set()); // thread_ids being synced
-
   // Buffer events that arrive during thread switch gap (between prepareForThreadSwitch
   // clearing isStreaming and the post-history-load recovery re-entering streaming)
   let _pendingEvents = new Map<string, AutonomousEvent[]>();
@@ -382,131 +379,13 @@ function createAutonomousStore() {
       // ================================================================
 
       case 'message_added':
-        // Another client sent a user message
-        if (isCurrentThread) {
-          // Check if we already have this message (avoid duplicates)
-          const existingMsg = chatStore.messages.find(
-            m => m.role === 'user' && m.content === (event.content as string)
-              && Date.now() - new Date(m.timestamp).getTime() < 5000
-          );
-          if (!existingMsg) {
-            chatStore.addUserMessage(event.content as string);
-          }
-        } else if (event.thread_id) {
+        // Another client sent a user message — just touch the thread
+        // so it moves to top of sidebar. The polling loop will pick up
+        // the actual message content from thread history.
+        if (event.thread_id) {
           threadsStore.touchThread(event.thread_id);
         }
         break;
-
-      case 'interactive_thinking':
-        if (isCurrentThread && !chatStore.isStreaming) {
-          // Another client started an interactive chat — create placeholder
-          const syncSet = new Set(interactiveSyncThreads);
-          if (!syncSet.has(event.thread_id)) {
-            syncSet.add(event.thread_id);
-            interactiveSyncThreads = syncSet;
-            chatStore.addAssistantMessage();
-            chatStore.setStreaming(true);
-          }
-        }
-        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
-          chatStore.addThinkingStep(event.content as string || 'Thinking...');
-        }
-        break;
-
-      case 'interactive_tool_call':
-        if (isCurrentThread && !chatStore.isStreaming) {
-          // Late join — start streaming from this point
-          const syncSet = new Set(interactiveSyncThreads);
-          if (!syncSet.has(event.thread_id)) {
-            syncSet.add(event.thread_id);
-            interactiveSyncThreads = syncSet;
-            chatStore.addAssistantMessage();
-            chatStore.setStreaming(true);
-          }
-        }
-        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
-          const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
-          chatStore.addToolCallStep(
-            toolId,
-            event.name as string,
-            (event.args as Record<string, unknown>) || {}
-          );
-        }
-        break;
-
-      case 'interactive_tool_result':
-        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
-          const toolId = event.id as string;
-          chatStore.updateToolCallStepResult(
-            toolId,
-            event.result as string || '',
-            'success'
-          );
-        }
-        break;
-
-      case 'interactive_response':
-        if (isCurrentThread && !chatStore.isStreaming) {
-          // Late join — start streaming from this point
-          const syncSet = new Set(interactiveSyncThreads);
-          if (!syncSet.has(event.thread_id)) {
-            syncSet.add(event.thread_id);
-            interactiveSyncThreads = syncSet;
-            chatStore.addAssistantMessage();
-            chatStore.setStreaming(true);
-          }
-        }
-        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
-          chatStore.addResponseStep(event.content as string || '');
-        }
-        break;
-
-      case 'interactive_done': {
-        // Another client's interactive chat finished
-        const wasSyncing = interactiveSyncThreads.has(event.thread_id);
-
-        if (isCurrentThread && wasSyncing && chatStore.isStreaming) {
-          chatStore.reclassifyThinkingAsResponse();
-          chatStore.setLastMessageComplete();
-          chatStore.clearActiveToolCalls();
-          chatStore.setStreaming(false);
-        }
-
-        // Clean up sync tracking
-        if (wasSyncing) {
-          const syncSet = new Set(interactiveSyncThreads);
-          syncSet.delete(event.thread_id);
-          interactiveSyncThreads = syncSet;
-        }
-
-        // Update context stats if available
-        if (isCurrentThread && event.context_stats) {
-          chatStore.setContextStats(event.context_stats as import('$lib/types').ContextStats);
-        }
-
-        // Apply title if provided
-        if (event.title) {
-          threadsStore.applyBackendTitle(event.thread_id, event.title as string);
-        }
-
-        // Ensure the thread exists in sidebar (for new threads)
-        if (event.thread_id) {
-          threadsStore.ensureThread(
-            event.thread_id,
-            (event.title as string) || 'New Chat'
-          );
-        }
-
-        // Reload canonical history to get the complete conversation
-        if (isCurrentThread) {
-          api.getThreadHistory(event.thread_id).then((history) => {
-            if (threadsStore.currentThreadId === event.thread_id && !chatStore.isStreaming) {
-              chatStore.setMessages(history.messages);
-            }
-          }).catch(() => {});
-        }
-        break;
-      }
 
       case 'thread_updated':
         // Another client renamed or pinned a thread

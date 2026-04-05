@@ -1,6 +1,7 @@
 import { threadsStore } from './threads.svelte';
 import { chatStore } from './chat.svelte';
 import { autonomousStore } from './autonomous.svelte';
+import { startSyncPoll } from './syncPoll.svelte';
 import { api, hasActiveStreamForThread } from '$lib/services/api.svelte';
 
 export type SwitchResult =
@@ -38,6 +39,9 @@ export async function switchToThread(
     chatStore.setMessages(history.messages);
     chatStore.setContextStats(stats);
     chatStore.setActiveModel(stats?.model ?? null);
+
+    // Start cross-client sync poller
+    startSyncPoll(threadId, history.messages.length);
 
     // Stream recovery — resume if thread has an active task or interactive stream
     const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);

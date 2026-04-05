@@ -16,6 +16,7 @@
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { updateMessageCount } from '$lib/stores/syncPoll.svelte';
   import { untrack } from 'svelte';
   import type {
     SSEEvent,
@@ -27,6 +28,7 @@
 
   let showThreadSettings = $state(false);
   let showAttachmentWarningModal = $state(false);
+  let pendingInsertText = $state('');
   let attachmentValidationResult = $state<AttachmentValidationResult | null>(null);
   let warningSuppressChecked = $state(false);
   let pendingSend = $state<{ message: string; attachments?: FileAttachment[] } | null>(null);
@@ -117,6 +119,8 @@
         chatStore.setStreaming(false);
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();
+        // Update sync poll baseline so it doesn't re-fetch what we just streamed
+        updateMessageCount(chatStore.messages.length);
       }
     }
   }
@@ -410,6 +414,7 @@
   {#if outlookStore.isOutlook}
     <QuickActions
       onAction={(msg) => handleSendMessage(msg)}
+      onInsert={(text) => { pendingInsertText = text; }}
       disabled={chatStore.isStreaming}
     />
   {/if}
@@ -424,6 +429,8 @@
     <InputBar
       onSend={handleSendMessage}
       disabled={chatStore.isStreaming}
+      insertText={pendingInsertText}
+      onInsertConsumed={() => { pendingInsertText = ''; }}
       placeholder={chatStore.isQueued
         ? 'Waiting for autonomous task to finish...'
         : chatStore.isStreaming
