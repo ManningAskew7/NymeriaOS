@@ -1,9 +1,10 @@
 /**
  * Cross-client sync poller.
  *
- * Polls the current thread's history every few seconds to detect messages
- * from other clients (Outlook, browser, desktop app). Only refreshes when
- * the message count changes, keeping overhead minimal.
+ * Polls the current thread's history every few seconds to detect changes
+ * from other clients (Outlook, browser, desktop app). Refreshes when:
+ *  - Message count changes (new message added)
+ *  - Thread is still processing (assistant message being built)
  *
  * Skips polling while the current client is actively streaming (it already
  * has the latest data from its own SSE connection).
@@ -17,10 +18,12 @@ const SYNC_POLL_INTERVAL = 5000; // 5 seconds
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let lastKnownMessageCount = 0;
+let wasProcessing = false;
 
 export function startSyncPoll(threadId: string, initialMessageCount?: number) {
   stopSyncPoll();
   lastKnownMessageCount = initialMessageCount ?? chatStore.messages.length;
+  wasProcessing = false;
 
   pollTimer = setInterval(() => {
     // Stop if thread changed
@@ -31,19 +34,33 @@ export function startSyncPoll(threadId: string, initialMessageCount?: number) {
     // Skip if actively streaming — our own SSE has the latest
     if (chatStore.isStreaming) return;
 
-    api.getThreadHistory(threadId).then((history) => {
+    // Fetch both history and context stats in parallel
+    Promise.all([
+      api.getThreadHistory(threadId),
+      api.getThreadContextStats(threadId),
+    ]).then(([history, stats]) => {
       if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
-      if (history.messages.length !== lastKnownMessageCount) {
-        console.log(`[Sync] Messages changed (${lastKnownMessageCount} → ${history.messages.length}), refreshing`);
+
+      const messageCountChanged = history.messages.length !== lastKnownMessageCount;
+      const isProcessing = !!(stats as Record<string, unknown>)?.processing;
+      const processingJustFinished = wasProcessing && !isProcessing;
+
+      // Refresh if: new messages, thread is processing, or processing just finished
+      if (messageCountChanged || isProcessing || processingJustFinished) {
+        if (messageCountChanged) {
+          console.log(`[Sync] Messages changed (${lastKnownMessageCount} → ${history.messages.length}), refreshing`);
+        } else if (isProcessing) {
+          console.log('[Sync] Thread still processing, refreshing');
+        } else {
+          console.log('[Sync] Processing just finished, final refresh');
+        }
         lastKnownMessageCount = history.messages.length;
         chatStore.setMessages(history.messages);
-        api.getThreadContextStats(threadId).then((stats) => {
-          if (threadsStore.currentThreadId === threadId) {
-            chatStore.setContextStats(stats);
-            chatStore.setActiveModel(stats?.model ?? null);
-          }
-        }).catch(() => {});
+        chatStore.setContextStats(stats);
+        chatStore.setActiveModel(stats?.model ?? null);
       }
+
+      wasProcessing = isProcessing;
     }).catch(() => {});
   }, SYNC_POLL_INTERVAL);
 }
