@@ -134,6 +134,17 @@ class HealthResponse(BaseModel):
     version: str = "1.0.0"
 
 
+class ReportRequest(BaseModel):
+    """Request model for error report endpoint."""
+
+    thread_id: Optional[str] = None
+    message_id: str = ""
+    description: str = ""
+    messages: List[dict] = Field(default_factory=list)
+    timestamp: str = ""
+    client_info: dict = Field(default_factory=dict)
+
+
 class ThreadHistoryResponse(BaseModel):
     """Response model for conversation history."""
 
@@ -695,6 +706,67 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         asyncio.create_task(_do_restart())
         return {"message": "Server restarting..."}
+
+    @app.post("/report", tags=["System"])
+    async def report_problem(
+        request: ReportRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Send an error report email to support with debug context."""
+        from html import escape as html_escape
+        from ..tools.outlook_email import outlook_send_email
+
+        sections = ['<h2>Nymeria Error Report</h2>']
+        sections.append(f'<p><strong>Timestamp:</strong> {html_escape(request.timestamp)}</p>')
+
+        if request.thread_id:
+            sections.append(f'<p><strong>Thread ID:</strong> {html_escape(request.thread_id)}</p>')
+        if request.message_id:
+            sections.append(f'<p><strong>Message ID:</strong> {html_escape(request.message_id)}</p>')
+
+        if request.description:
+            sections.append(f'<h3>Description</h3><p>{html_escape(request.description)}</p>')
+
+        if request.client_info:
+            items = ''.join(
+                f'<li><strong>{html_escape(str(k))}:</strong> {html_escape(str(v))}</li>'
+                for k, v in request.client_info.items()
+            )
+            sections.append(f'<h3>Client Info</h3><ul>{items}</ul>')
+
+        if request.messages:
+            rows = ''
+            for m in request.messages[-10:]:
+                role = html_escape(m.get('role', '?'))
+                content = html_escape((m.get('content', '') or '')[:500])
+                ts = html_escape(m.get('timestamp', ''))
+                rows += f'<tr><td style="white-space:nowrap">{ts}</td><td><strong>{role}</strong></td><td><pre style="margin:0;white-space:pre-wrap;max-width:400px">{content}</pre></td></tr>'
+            sections.append(
+                '<h3>Recent Messages</h3>'
+                '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:13px">'
+                '<tr><th>Time</th><th>Role</th><th>Content</th></tr>'
+                f'{rows}</table>'
+            )
+
+        body = '\n'.join(sections)
+        date_str = request.timestamp[:10] if request.timestamp else 'unknown'
+        subject = f'Nymeria Error Report - {date_str}'
+
+        try:
+            result = outlook_send_email.invoke({
+                'to': 'reports@example.com',
+                'subject': subject,
+                'body': body,
+                'is_html': True,
+            })
+            if '[Error]' in str(result):
+                raise HTTPException(status_code=502, detail=str(result))
+            return {'status': 'sent', 'detail': str(result)}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f'Failed to send error report: {e}')
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/chat", tags=["Chat"])
     async def chat_streaming(

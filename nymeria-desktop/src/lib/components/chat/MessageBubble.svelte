@@ -1,10 +1,13 @@
 <script lang="ts">
   import type { Message, FileAttachment } from '$lib/types';
-  import { Icon, ThinkingIndicator } from '$lib/components/common';
+  import { Icon, ThinkingIndicator, Modal } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
+  import { messageToMarkdown } from '$lib/utils/messageToMarkdown';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { chatStore } from '$lib/stores/chat.svelte';
+  import { api } from '$lib/services/api.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ImageModal from './ImageModal.svelte';
@@ -192,6 +195,66 @@
       ? message.steps.length - 1
       : -1
   );
+
+  // Action buttons (copy + report) — only on completed assistant messages
+  let showActions = $derived(!isUser && !isStreaming && !isHiddenMessage);
+
+  // Copy as Markdown
+  let copyIcon = $state<'copy' | 'check'>('copy');
+
+  async function handleCopy() {
+    const md = messageToMarkdown(message);
+    await navigator.clipboard.writeText(md);
+    copyIcon = 'check';
+    setTimeout(() => { copyIcon = 'copy'; }, 2000);
+  }
+
+  // Report Error
+  let reportModalOpen = $state(false);
+  let reportDescription = $state('');
+  let reportSending = $state(false);
+  let reportSent = $state(false);
+
+  function openReportModal() {
+    reportDescription = '';
+    reportSent = false;
+    reportModalOpen = true;
+  }
+
+  function closeReportModal() {
+    reportModalOpen = false;
+  }
+
+  async function submitReport() {
+    reportSending = true;
+    try {
+      const recentMessages = chatStore.messages.slice(-10).map(m => ({
+        role: m.role,
+        content: (m.content || '').substring(0, 500),
+        timestamp: m.timestamp.toISOString(),
+        id: m.id
+      }));
+
+      await api.reportProblem({
+        thread_id: threadsStore.currentThreadId,
+        message_id: message.id,
+        description: reportDescription,
+        messages: recentMessages,
+        timestamp: new Date().toISOString(),
+        client_info: {
+          platform: typeof window !== 'undefined' && '__TAURI__' in window ? 'desktop' : 'browser',
+          userAgent: navigator.userAgent,
+          url: window.location.href
+        }
+      });
+      reportSent = true;
+    } catch (err) {
+      console.error('Failed to send report:', err);
+      reportSent = false;
+    } finally {
+      reportSending = false;
+    }
+  }
 </script>
 
 {#if !isHiddenMessage}
@@ -332,6 +395,17 @@
     {/if}
   </div>
 
+  {#if showActions}
+    <div class="message-actions">
+      <button type="button" class="action-btn" title="Copy as Markdown" onclick={handleCopy}>
+        <Icon name={copyIcon} size={14} />
+      </button>
+      <button type="button" class="action-btn" title="Report problem" onclick={openReportModal}>
+        <Icon name="warning" size={14} />
+      </button>
+    </div>
+  {/if}
+
   <time class="timestamp">
     {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
   </time>
@@ -339,6 +413,34 @@
 {/if}
 
 <ImageModal image={modalFile} onClose={closeModal} />
+
+<Modal title="Report Problem" isOpen={reportModalOpen} onClose={closeReportModal}>
+  {#snippet children()}
+    {#if reportSent}
+      <div class="report-success">
+        <Icon name="check" size={24} />
+        <p>Report sent successfully!</p>
+      </div>
+    {:else}
+      <p class="report-info">This will send debug info to the support team.</p>
+      <p class="report-detail">Includes: thread ID, last 10 messages, timestamp, browser info.</p>
+      <textarea
+        class="report-textarea"
+        placeholder="Describe the problem (optional)..."
+        bind:value={reportDescription}
+        rows="4"
+      ></textarea>
+      <button
+        type="button"
+        class="report-submit"
+        onclick={submitReport}
+        disabled={reportSending}
+      >
+        {reportSending ? 'Sending...' : 'Send Report'}
+      </button>
+    {/if}
+  {/snippet}
+</Modal>
 
 <style>
   .message-bubble {
@@ -744,5 +846,100 @@
   .context-summary-content :global(ol) {
     margin: var(--spacing-xs) 0;
     padding-left: var(--spacing-lg);
+  }
+
+  /* Action buttons (copy, report) */
+  .message-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+    padding: 0 var(--spacing-xs);
+  }
+
+  .action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    opacity: 0.4;
+  }
+
+  .action-btn:hover {
+    opacity: 1;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  }
+
+  /* Report modal */
+  .report-info {
+    margin: 0 0 var(--spacing-xs) 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
+  .report-detail {
+    margin: 0 0 var(--spacing-md) 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  .report-textarea {
+    width: 100%;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    resize: vertical;
+    margin-bottom: var(--spacing-md);
+    box-sizing: border-box;
+  }
+
+  .report-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+  }
+
+  .report-submit {
+    width: 100%;
+    padding: var(--spacing-sm);
+    background: var(--accent-primary);
+    color: white;
+    border: none;
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: opacity var(--transition-fast);
+  }
+
+  .report-submit:hover {
+    opacity: 0.9;
+  }
+
+  .report-submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .report-success {
+    text-align: center;
+    padding: var(--spacing-lg);
+    color: var(--accent-primary);
+  }
+
+  .report-success p {
+    margin: var(--spacing-sm) 0 0 0;
+    color: var(--text-secondary);
   }
 </style>
