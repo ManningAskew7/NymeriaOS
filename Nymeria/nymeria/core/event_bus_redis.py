@@ -106,7 +106,7 @@ class RedisEventBus(EventBus):
                                 event_type=data["event_type"],
                                 thread_id=data["thread_id"],
                                 user_id=data["user_id"],
-                                task_id=data["task_id"],
+                                task_id=data.get("task_id", ""),
                                 data=data["data"],
                                 timestamp=datetime.fromisoformat(data["timestamp"]),
                             )

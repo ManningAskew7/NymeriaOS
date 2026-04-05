@@ -1,5 +1,6 @@
 """FastAPI REST API trigger with SSE streaming for Nymeria."""
 
+import asyncio
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ from pydantic import BaseModel, Field
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, log_activity
-from ..core.event_bus import get_event_bus, AutonomousEvent
+from ..core.event_bus import get_event_bus, AutonomousEvent, publish_sync_event
 from ..core.notifications import NotificationStore, Notification
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
@@ -748,6 +749,40 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 }
             )
 
+        # Read client ID from header for sync event origin filtering
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+
+        # Publish user message to event bus so other clients see it
+        publish_sync_event(
+            event_type="message_added",
+            thread_id=thread_id,
+            user_id=user_id,
+            data={"role": "user", "content": request.message},
+            origin_client_id=client_id,
+        )
+
+        # Thinking token batcher: accumulates thinking chunks and publishes
+        # to the event bus periodically to avoid queue overflow
+        _thinking_buffer = []
+        _thinking_buffer_lock = asyncio.Lock()
+        _last_thinking_flush = [asyncio.get_event_loop().time()]
+        THINKING_BATCH_INTERVAL = 0.2  # seconds
+
+        async def _flush_thinking_buffer():
+            """Flush accumulated thinking tokens to event bus as a single event."""
+            async with _thinking_buffer_lock:
+                if not _thinking_buffer:
+                    return
+                combined = "".join(_thinking_buffer)
+                _thinking_buffer.clear()
+            publish_sync_event(
+                event_type="interactive_thinking",
+                thread_id=thread_id,
+                user_id=user_id,
+                data={"content": combined},
+                origin_client_id=client_id,
+            )
+
         async def event_generator():
             """Generate SSE events from agent stream."""
             try:
@@ -786,38 +821,100 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         if not client_disconnected:
                             client_disconnected = True
                             logger.info(f"Client disconnected for thread {thread_id}, agent will continue in background")
+                        # Still publish sync events even when originator disconnected,
+                        # so other connected clients continue receiving the stream
+                        chunk_type = chunk.get("type", "")
+                        if chunk_type == "thinking":
+                            async with _thinking_buffer_lock:
+                                _thinking_buffer.append(chunk.get("content", ""))
+                            now = asyncio.get_event_loop().time()
+                            if now - _last_thinking_flush[0] >= THINKING_BATCH_INTERVAL:
+                                await _flush_thinking_buffer()
+                                _last_thinking_flush[0] = now
+                        elif chunk_type in ("tool_call", "tool_result", "response"):
+                            await _flush_thinking_buffer()
+                            publish_sync_event(
+                                event_type=f"interactive_{chunk_type}",
+                                thread_id=thread_id,
+                                user_id=user_id,
+                                data=chunk,
+                                origin_client_id=client_id,
+                            )
                         continue
 
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
                     yield f"data: {event_data}\n\n"
 
-                # Only send done event if client is still connected
-                if not client_disconnected and not await http_request.is_disconnected():
-                    # Get context stats and model info for UI
-                    try:
-                        context_stats = agent.get_context_stats(thread_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to get context stats: {e}")
-                        context_stats = None
-
-                    done_data = {
-                        'type': 'done',
-                        'thread_id': thread_id,
-                        'context_stats': context_stats,
-                        'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
-                    }
-
-                    # Auto-title the thread from the user's message if untitled
-                    try:
-                        new_title = agent.thread_metadata_manager.auto_title(
-                            user_id, thread_id, request.message
+                    # Publish sync events for other clients
+                    chunk_type = chunk.get("type", "")
+                    if chunk_type == "thinking":
+                        # Batch thinking tokens to reduce event bus traffic
+                        async with _thinking_buffer_lock:
+                            _thinking_buffer.append(chunk.get("content", ""))
+                        now = asyncio.get_event_loop().time()
+                        if now - _last_thinking_flush[0] >= THINKING_BATCH_INTERVAL:
+                            await _flush_thinking_buffer()
+                            _last_thinking_flush[0] = now
+                    elif chunk_type in ("tool_call", "tool_result", "response"):
+                        # Flush any pending thinking first
+                        await _flush_thinking_buffer()
+                        publish_sync_event(
+                            event_type=f"interactive_{chunk_type}",
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            data=chunk,
+                            origin_client_id=client_id,
                         )
-                        if new_title:
-                            done_data['title'] = new_title
-                            done_data['title_source'] = 'auto'
-                    except Exception as e:
-                        logger.warning(f"Failed to auto-title thread {thread_id}: {e}")
 
+                # Flush any remaining thinking tokens
+                await _flush_thinking_buffer()
+
+                # Build done data (needed for both sync event and direct SSE)
+                try:
+                    context_stats = agent.get_context_stats(thread_id)
+                except Exception as e:
+                    logger.warning(f"Failed to get context stats: {e}")
+                    context_stats = None
+
+                done_data = {
+                    'type': 'done',
+                    'thread_id': thread_id,
+                    'context_stats': context_stats,
+                    'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
+                }
+
+                # Auto-title the thread from the user's message if untitled
+                try:
+                    new_title = agent.thread_metadata_manager.auto_title(
+                        user_id, thread_id, request.message
+                    )
+                    if new_title:
+                        done_data['title'] = new_title
+                        done_data['title_source'] = 'auto'
+                except Exception as e:
+                    logger.warning(f"Failed to auto-title thread {thread_id}: {e}")
+
+                # Always publish interactive_done to event bus for other clients
+                publish_sync_event(
+                    event_type="interactive_done",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    data=done_data,
+                    origin_client_id=client_id,
+                )
+
+                # Also publish thread_updated if auto-title was set
+                if done_data.get('title'):
+                    publish_sync_event(
+                        event_type="thread_updated",
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        data={"title": done_data['title'], "title_source": done_data['title_source']},
+                        origin_client_id=client_id,
+                    )
+
+                # Only send done event to originator if still connected
+                if not client_disconnected and not await http_request.is_disconnected():
                     yield f"data: {json.dumps(done_data)}\n\n"
 
             except Exception as e:
@@ -1054,6 +1151,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.patch("/threads/{thread_id}/metadata", tags=["Threads"])
     async def update_thread_metadata(
+        http_request: Request,
         thread_id: str,
         request: ThreadMetadataUpdateRequest,
         user_id: str = Query(default="default"),
@@ -1096,6 +1194,24 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         meta = agent.thread_metadata_manager.upsert_thread(
             user_id, thread_id, **fields
         )
+
+        # Publish sync event so other clients see the metadata change
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        sync_data: Dict[str, Any] = {}
+        if request.title is not None:
+            sync_data["title"] = fields.get("title", request.title.strip())
+            sync_data["title_source"] = fields.get("title_source", "user")
+        if request.pinned is not None:
+            sync_data["pinned"] = request.pinned
+        if sync_data:
+            publish_sync_event(
+                event_type="thread_updated",
+                thread_id=thread_id,
+                user_id=user_id,
+                data=sync_data,
+                origin_client_id=client_id,
+            )
+
         return meta.model_dump(mode="json")
 
     class ThreadMetadataMigrateRequest(BaseModel):
@@ -1121,6 +1237,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.delete("/threads/{thread_id}", tags=["Threads"])
     async def delete_thread(
+        http_request: Request,
         thread_id: str,
         user_id: str = Query(default="default"),
         _: bool = Depends(verify_api_key),
@@ -1195,6 +1312,17 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             logger.warning(f"Failed to delete notepad for {thread_id}: {e}")
 
         logger.info(f"Thread {thread_id} fully deleted")
+
+        # Publish sync event so other clients remove the thread
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        publish_sync_event(
+            event_type="thread_deleted",
+            thread_id=thread_id,
+            user_id=user_id,
+            data={},
+            origin_client_id=client_id,
+        )
+
         return {"status": "ok", "thread_id": thread_id}
 
     # =========================================================================
@@ -2483,18 +2611,23 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         request: Request,
         user_id: str = Query(default="default", description="User ID to filter events"),
         api_key: Optional[str] = Query(default=None, description="API key (for SSE which doesn't support headers)"),
+        client_id: Optional[str] = Query(default=None, description="Client ID for origin filtering (prevents seeing own sync events)"),
         settings: Settings = Depends(get_settings),
     ):
         # Verify API key from query param (SSE doesn't support custom headers)
         if api_key != settings.nymeria_api_key:
             raise HTTPException(status_code=401, detail="Invalid API key")
         """
-        Stream autonomous task events via Server-Sent Events.
+        Stream autonomous task events and cross-client sync events via Server-Sent Events.
 
-        Emits events when Nymeria executes scheduled tasks autonomously.
-        Events include: task_started, thinking, tool_call, tool_result, response, task_completed
+        Emits events when Nymeria executes scheduled tasks autonomously, when other
+        clients send interactive chat messages, or when thread metadata changes.
 
-        Connect to this endpoint to receive real-time updates about autonomous activity.
+        Events include: task_started, thinking, tool_call, tool_result, response, task_completed,
+        interactive_thinking, interactive_tool_call, interactive_tool_result, interactive_response,
+        interactive_done, message_added, thread_updated, thread_created, thread_deleted
+
+        Connect to this endpoint to receive real-time updates about all activity.
         """
         import asyncio
         from queue import Empty
@@ -2502,7 +2635,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         subscriber_id = str(uuid.uuid4())
         event_bus = get_event_bus()
         queue = event_bus.subscribe(subscriber_id)
-        logger.info(f"[AUTONOMOUS SSE] Client connected for user={user_id}, subscriber={subscriber_id[:8]}...")
+        logger.info(f"[AUTONOMOUS SSE] Client connected for user={user_id}, subscriber={subscriber_id[:8]}..., client_id={client_id[:8] if client_id else 'none'}...")
 
         async def event_generator():
             """Generate SSE events from the event bus."""
@@ -2521,13 +2654,19 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         if user_id != "default" and event.user_id != user_id:
                             continue
 
-                        # Format as SSE event
+                        # Skip events that originated from this client (dedup)
+                        origin = event.data.get("_origin_client_id")
+                        if origin and client_id and origin == client_id:
+                            continue
+
+                        # Build SSE payload, stripping internal fields
+                        payload = {k: v for k, v in event.data.items() if not k.startswith("_")}
                         event_data = {
                             "type": event.event_type,
                             "thread_id": event.thread_id,
                             "task_id": event.task_id,
                             "timestamp": event.timestamp.isoformat(),
-                            **event.data,
+                            **payload,
                         }
                         yield f"data: {json.dumps(event_data)}\n\n"
 
@@ -3139,6 +3278,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.post("/agents/threads", tags=["Agent Threads"])
     async def create_agent_thread(
+        http_request: Request,
         request: AgentThreadCreateRequest,
         _: bool = Depends(verify_api_key),
     ):
@@ -3201,6 +3341,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         # Rebuild agent tools to include the new callable thread
         agent.sync_agent_tools()
+
+        # Publish sync event so other clients see the new thread
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        publish_sync_event(
+            event_type="thread_created",
+            thread_id=thread_id,
+            user_id="default",
+            data={"title": request.callable_name, "title_source": "callable", "platform": "callable"},
+            origin_client_id=client_id,
+        )
 
         result = tc.model_dump(mode="json")
         result["has_customizations"] = tc.has_customizations()
