@@ -59,3 +59,36 @@ export function messageToMarkdown(message: Message): string {
 
   return sections.length > 0 ? sections.join('\n\n---\n\n') : '(empty message)';
 }
+
+/**
+ * Extract only the final response text from a Message — the response
+ * steps that come after the last thinking/tool_call step. Skips
+ * interleaved preamble text between tool calls.
+ */
+export function messageToResponseText(message: Message): string {
+  if (message.steps && message.steps.length > 0) {
+    // Find the last non-response step index
+    let lastNonResponseIdx = -1;
+    for (let i = message.steps.length - 1; i >= 0; i--) {
+      if (message.steps[i].type !== 'response') {
+        lastNonResponseIdx = i;
+        break;
+      }
+    }
+
+    // Collect only response steps after the last thinking/tool_call
+    const parts: string[] = [];
+    for (let i = lastNonResponseIdx + 1; i < message.steps.length; i++) {
+      const step = message.steps[i];
+      if (step.type === 'response' && step.content) {
+        parts.push(step.content);
+      }
+    }
+
+    if (parts.length > 0) return parts.join('\n\n');
+  }
+
+  // Legacy fallback or no trailing response steps
+  if (message.content) return message.content;
+  return '(empty message)';
+}
