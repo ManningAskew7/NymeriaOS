@@ -75,9 +75,12 @@
         chatStore.setActiveModel(stats?.model ?? null);
 
         // If the agent is still processing this thread (we reconnected mid-stream),
-        // poll history every 3 seconds until it finishes
+        // poll history periodically until it finishes.
+        // Use shorter interval when SSE is disconnected (primary catch-up),
+        // longer when connected (safety net — sync events handle most updates).
         if (stats?.processing && !chatStore.isStreaming) {
-          console.log('[Page] Thread is still processing, starting poll for updates');
+          const pollInterval = autonomousStore.connected ? 10000 : 3000;
+          console.log(`[Page] Thread is still processing, polling every ${pollInterval / 1000}s (SSE ${autonomousStore.connected ? 'connected' : 'disconnected'})`);
           processingPollTimer = setInterval(() => {
             if (threadsStore.currentThreadId !== threadId) {
               stopProcessingPoll();
@@ -97,7 +100,7 @@
                 }
               }
             }).catch(() => {});
-          }, 3000);
+          }, pollInterval);
         }
       }
     }).catch((err) => {

@@ -16,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AutonomousEvent:
-    """Event for autonomous task output."""
+    """Event for autonomous task output and cross-client sync."""
 
-    event_type: str  # "task_started", "thinking", "tool_call", "tool_result", "response", "task_completed"
+    event_type: str  # Autonomous: "task_started", "thinking", "tool_call", "tool_result", "response", "task_completed"
+                     # Interactive sync: "interactive_thinking", "interactive_tool_call", "interactive_tool_result",
+                     #   "interactive_response", "interactive_done", "message_added"
+                     # Metadata sync: "thread_updated", "thread_created", "thread_deleted"
     thread_id: str
     user_id: str
-    task_id: str
-    data: Dict[str, Any]
+    task_id: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -82,10 +85,11 @@ class EventBus:
             subscriber_count = len(self._subscribers)
             if subscriber_count == 0:
                 # Log when important events are dropped due to no subscribers
-                if event.event_type in ("task_started", "task_completed", "response"):
+                if event.event_type in ("task_started", "task_completed", "response",
+                                        "interactive_done", "thread_updated", "thread_deleted"):
                     logger.warning(
                         f"[EVENT BUS] No subscribers! Dropping {event.event_type} event "
-                        f"(thread={event.thread_id}, task={event.task_id}). "
+                        f"(thread={event.thread_id}). "
                         f"Frontend may not be connected to /autonomous/stream"
                     )
                 return
@@ -171,6 +175,38 @@ def publish_autonomous_event(
         thread_id=thread_id,
         user_id=user_id,
         task_id=task_id,
+        data=data,
+    )
+    get_event_bus().publish(event)
+
+
+def publish_sync_event(
+    event_type: str,
+    thread_id: str,
+    user_id: str,
+    data: Dict[str, Any],
+    origin_client_id: str = "",
+) -> None:
+    """
+    Publish a sync event for cross-client state synchronization.
+
+    Used for interactive chat events, thread metadata changes, etc.
+    The origin_client_id is included so the autonomous SSE generator
+    can skip events that originated from the same client.
+
+    Args:
+        event_type: Type of sync event (e.g. "interactive_response", "thread_updated")
+        thread_id: Thread ID
+        user_id: User ID
+        data: Event data payload
+        origin_client_id: Client ID of the originating frontend (for dedup)
+    """
+    if origin_client_id:
+        data = {**data, "_origin_client_id": origin_client_id}
+    event = AutonomousEvent(
+        event_type=event_type,
+        thread_id=thread_id,
+        user_id=user_id,
         data=data,
     )
     get_event_bus().publish(event)

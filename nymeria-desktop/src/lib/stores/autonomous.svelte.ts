@@ -6,6 +6,7 @@
  */
 
 import { configStore } from './config.svelte';
+import { clientId } from './clientId.svelte';
 import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
@@ -48,6 +49,9 @@ function createAutonomousStore() {
   let activeTasksByThread = $state<Map<string, string>>(new Map()); // thread_id -> task_id
   let activeMessagesByThread = $state<Map<string, string>>(new Map()); // thread_id -> message_id
 
+  // Track interactive sync streams from other clients
+  let interactiveSyncThreads = $state<Set<string>>(new Set()); // thread_ids being synced
+
   // Buffer events that arrive during thread switch gap (between prepareForThreadSwitch
   // clearing isStreaming and the post-history-load recovery re-entering streaming)
   let _pendingEvents = new Map<string, AutonomousEvent[]>();
@@ -57,7 +61,7 @@ function createAutonomousStore() {
 
   function getStreamUrl(): string {
     const baseUrl = configStore.apiUrl.replace(/\/$/, '');
-    return `${baseUrl}/autonomous/stream?user_id=default`;
+    return `${baseUrl}/autonomous/stream?user_id=default&client_id=${clientId}`;
   }
 
   function connect() {
@@ -92,8 +96,31 @@ function createAutonomousStore() {
 
     eventSource.onopen = () => {
       console.log('[Autonomous] SSE connection established successfully');
+      const wasDisconnected = !connected;
       connected = true;
       reconnectAttempts = 0;
+
+      // On reconnect (not initial connect), catch up on missed events
+      // by fetching current thread history and refreshing thread list
+      if (wasDisconnected) {
+        const currentThread = threadsStore.currentThreadId;
+        if (currentThread && !chatStore.isStreaming) {
+          console.log('[Autonomous] Reconnected — catching up on thread', currentThread);
+          api.getThreadHistory(currentThread).then((history) => {
+            if (threadsStore.currentThreadId === currentThread && !chatStore.isStreaming) {
+              chatStore.setMessages(history.messages);
+            }
+          }).catch(() => {});
+          // Also refresh context stats
+          api.getThreadContextStats(currentThread).then((stats) => {
+            if (threadsStore.currentThreadId === currentThread) {
+              chatStore.setContextStats(stats);
+            }
+          }).catch(() => {});
+        }
+        // Refresh thread list to catch metadata changes during disconnect
+        threadsStore.syncFromBackend();
+      }
     };
 
     eventSource.onmessage = (event) => {
@@ -348,6 +375,161 @@ function createAutonomousStore() {
             threadsStore.setThreadActive(event.thread_id, false);
           }, 3000);
         }
+        break;
+
+      // ================================================================
+      // Cross-client sync events (from other frontend instances)
+      // ================================================================
+
+      case 'message_added':
+        // Another client sent a user message
+        if (isCurrentThread) {
+          // Check if we already have this message (avoid duplicates)
+          const existingMsg = chatStore.messages.find(
+            m => m.role === 'user' && m.content === (event.content as string)
+              && Date.now() - new Date(m.timestamp).getTime() < 5000
+          );
+          if (!existingMsg) {
+            chatStore.addUserMessage(event.content as string);
+          }
+        } else if (event.thread_id) {
+          threadsStore.touchThread(event.thread_id);
+        }
+        break;
+
+      case 'interactive_thinking':
+        if (isCurrentThread && !chatStore.isStreaming) {
+          // Another client started an interactive chat — create placeholder
+          const syncSet = new Set(interactiveSyncThreads);
+          if (!syncSet.has(event.thread_id)) {
+            syncSet.add(event.thread_id);
+            interactiveSyncThreads = syncSet;
+            chatStore.addAssistantMessage();
+            chatStore.setStreaming(true);
+          }
+        }
+        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
+          chatStore.addThinkingStep(event.content as string || 'Thinking...');
+        }
+        break;
+
+      case 'interactive_tool_call':
+        if (isCurrentThread && !chatStore.isStreaming) {
+          // Late join — start streaming from this point
+          const syncSet = new Set(interactiveSyncThreads);
+          if (!syncSet.has(event.thread_id)) {
+            syncSet.add(event.thread_id);
+            interactiveSyncThreads = syncSet;
+            chatStore.addAssistantMessage();
+            chatStore.setStreaming(true);
+          }
+        }
+        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
+          const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
+          chatStore.addToolCallStep(
+            toolId,
+            event.name as string,
+            (event.args as Record<string, unknown>) || {}
+          );
+        }
+        break;
+
+      case 'interactive_tool_result':
+        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
+          const toolId = event.id as string;
+          chatStore.updateToolCallStepResult(
+            toolId,
+            event.result as string || '',
+            'success'
+          );
+        }
+        break;
+
+      case 'interactive_response':
+        if (isCurrentThread && !chatStore.isStreaming) {
+          // Late join — start streaming from this point
+          const syncSet = new Set(interactiveSyncThreads);
+          if (!syncSet.has(event.thread_id)) {
+            syncSet.add(event.thread_id);
+            interactiveSyncThreads = syncSet;
+            chatStore.addAssistantMessage();
+            chatStore.setStreaming(true);
+          }
+        }
+        if (isCurrentThread && chatStore.isStreaming && interactiveSyncThreads.has(event.thread_id)) {
+          chatStore.addResponseStep(event.content as string || '');
+        }
+        break;
+
+      case 'interactive_done': {
+        // Another client's interactive chat finished
+        const wasSyncing = interactiveSyncThreads.has(event.thread_id);
+
+        if (isCurrentThread && wasSyncing && chatStore.isStreaming) {
+          chatStore.reclassifyThinkingAsResponse();
+          chatStore.setLastMessageComplete();
+          chatStore.clearActiveToolCalls();
+          chatStore.setStreaming(false);
+        }
+
+        // Clean up sync tracking
+        if (wasSyncing) {
+          const syncSet = new Set(interactiveSyncThreads);
+          syncSet.delete(event.thread_id);
+          interactiveSyncThreads = syncSet;
+        }
+
+        // Update context stats if available
+        if (isCurrentThread && event.context_stats) {
+          chatStore.setContextStats(event.context_stats as import('$lib/types').ContextStats);
+        }
+
+        // Apply title if provided
+        if (event.title) {
+          threadsStore.applyBackendTitle(event.thread_id, event.title as string);
+        }
+
+        // Ensure the thread exists in sidebar (for new threads)
+        if (event.thread_id) {
+          threadsStore.ensureThread(
+            event.thread_id,
+            (event.title as string) || 'New Chat'
+          );
+        }
+
+        // Reload canonical history to get the complete conversation
+        if (isCurrentThread) {
+          api.getThreadHistory(event.thread_id).then((history) => {
+            if (threadsStore.currentThreadId === event.thread_id && !chatStore.isStreaming) {
+              chatStore.setMessages(history.messages);
+            }
+          }).catch(() => {});
+        }
+        break;
+      }
+
+      case 'thread_updated':
+        // Another client renamed or pinned a thread
+        {
+          const updates: Partial<{ title: string; pinned: boolean }> = {};
+          if (event.title !== undefined) updates.title = event.title as string;
+          if (event.pinned !== undefined) updates.pinned = event.pinned as boolean;
+          threadsStore.updateThreadFromSync(event.thread_id, updates);
+        }
+        break;
+
+      case 'thread_created':
+        // Another client created a new thread
+        threadsStore.addThreadFromSync(
+          event.thread_id,
+          (event.title as string) || 'New Chat',
+          event.platform as import('$lib/types').ThreadPlatform | undefined,
+        );
+        break;
+
+      case 'thread_deleted':
+        // Another client deleted a thread
+        threadsStore.deleteThreadLocal(event.thread_id);
         break;
 
       default:

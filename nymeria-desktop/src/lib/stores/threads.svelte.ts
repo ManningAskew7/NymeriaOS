@@ -662,6 +662,77 @@ function createThreadsStore() {
     isFolderPinned(id: string): boolean {
       return folders.find(f => f.id === id)?.pinned ?? false;
     },
+
+    // ====================================================================
+    // Cross-client sync methods (local-only, no backend write-through)
+    // Used when another client changed state and the event arrived via SSE.
+    // ====================================================================
+
+    /**
+     * Update a thread's metadata from a sync event (no backend write-through).
+     * Used when another client renamed/pinned a thread.
+     */
+    updateThreadFromSync(id: string, updates: Partial<Pick<Thread, 'title' | 'pinned'>>) {
+      const existing = threads.find(t => t.id === id);
+      if (!existing) return;
+      threads = threads.map(t =>
+        t.id === id ? { ...t, ...updates, updatedAt: new Date() } : t
+      );
+      saveThreads(threads);
+    },
+
+    /**
+     * Remove a thread from the local store (no backend write-through).
+     * Used when another client deleted a thread.
+     */
+    deleteThreadLocal(id: string) {
+      threads = threads.filter(t => t.id !== id);
+      if (currentThreadId === id) {
+        currentThreadId = threads.length > 0 ? threads[0].id : null;
+        saveCurrentThreadId(currentThreadId);
+      }
+      // Remove from any folder
+      const folderWithThread = folders.find(f => f.threadIds.includes(id));
+      if (folderWithThread) {
+        folders = folders.map(f =>
+          f.id === folderWithThread.id
+            ? { ...f, threadIds: f.threadIds.filter(tid => tid !== id) }
+            : f
+        );
+        saveFolders(folders);
+      }
+      saveThreads(threads);
+    },
+
+    /**
+     * Add a new thread from a sync event (no backend write-through).
+     * Used when another client created a callable thread or new thread.
+     */
+    addThreadFromSync(id: string, title: string, platform?: ThreadPlatform) {
+      if (threads.some(t => t.id === id)) return; // already exists
+      const thread: Thread = {
+        id,
+        title,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        messageCount: 0,
+        platform: platform || detectPlatform(id),
+      };
+      threads = [thread, ...threads];
+      saveThreads(threads);
+    },
+
+    /**
+     * Bump a thread's updatedAt timestamp (e.g. when activity happens on another thread).
+     */
+    touchThread(id: string) {
+      const existing = threads.find(t => t.id === id);
+      if (!existing) return;
+      threads = threads.map(t =>
+        t.id === id ? { ...t, updatedAt: new Date() } : t
+      );
+      saveThreads(threads);
+    },
   };
 }
 

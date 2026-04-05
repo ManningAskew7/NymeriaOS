@@ -1,4 +1,5 @@
 import { configStore } from '$lib/stores/config.svelte';
+import { clientId } from '$lib/stores/clientId.svelte';
 import type {
   SSEEvent,
   SSEEventType,
@@ -73,7 +74,8 @@ export class NymeriaAPI {
   private getHeaders(): HeadersInit {
     return {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${configStore.apiKey}`
+      Authorization: `Bearer ${configStore.apiKey}`,
+      'X-Nymeria-Client-Id': clientId
     };
   }
 
