@@ -3,7 +3,7 @@
   import { Icon, ThinkingIndicator, Modal } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
-  import { messageToMarkdown } from '$lib/utils/messageToMarkdown';
+  import { messageToMarkdown, messageToResponseText } from '$lib/utils/messageToMarkdown';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -199,14 +199,24 @@
   // Action buttons (copy + report) — only on completed assistant messages
   let showActions = $derived(!isUser && !isStreaming && !isHiddenMessage);
 
-  // Copy as Markdown
-  let copyIcon = $state<'copy' | 'check'>('copy');
+  // Copy response only
+  let copyResponseIcon = $state<'copy' | 'check'>('copy');
 
-  async function handleCopy() {
+  async function handleCopyResponse() {
+    const text = messageToResponseText(message);
+    await navigator.clipboard.writeText(text);
+    copyResponseIcon = 'check';
+    setTimeout(() => { copyResponseIcon = 'copy'; }, 2000);
+  }
+
+  // Copy full markdown (thinking + tool calls + response)
+  let copyFullIcon = $state<'fileText' | 'check'>('fileText');
+
+  async function handleCopyFull() {
     const md = messageToMarkdown(message);
     await navigator.clipboard.writeText(md);
-    copyIcon = 'check';
-    setTimeout(() => { copyIcon = 'copy'; }, 2000);
+    copyFullIcon = 'check';
+    setTimeout(() => { copyFullIcon = 'fileText'; }, 2000);
   }
 
   // Report Error
@@ -397,8 +407,11 @@
 
   {#if showActions}
     <div class="message-actions">
-      <button type="button" class="action-btn" title="Copy as Markdown" onclick={handleCopy}>
-        <Icon name={copyIcon} size={14} />
+      <button type="button" class="action-btn" title="Copy response" onclick={handleCopyResponse}>
+        <Icon name={copyResponseIcon} size={14} />
+      </button>
+      <button type="button" class="action-btn" title="Copy full (thinking + tools + response)" onclick={handleCopyFull}>
+        <Icon name={copyFullIcon} size={14} />
       </button>
       <button type="button" class="action-btn" title="Report problem" onclick={openReportModal}>
         <Icon name="warning" size={14} />

@@ -20,13 +20,17 @@
     disabled?: boolean;
     placeholder?: string;
     filesEnabled?: boolean;
+    insertText?: string;
+    onInsertConsumed?: () => void;
   }
 
   let {
     onSend,
     disabled = false,
     placeholder = 'Type a message...',
-    filesEnabled = true
+    filesEnabled = true,
+    insertText = '',
+    onInsertConsumed,
   }: Props = $props();
 
   let inputValue = $state('');
@@ -36,6 +40,24 @@
   let isDragOver = $state(false);
   let modalFile = $state<FileAttachment | null>(null);
   let errorMessage = $state<string | null>(null);
+
+  // When insertText changes, append it to the input and notify parent
+  $effect(() => {
+    if (insertText) {
+      inputValue = inputValue + insertText;
+      onInsertConsumed?.();
+      // Trigger auto-resize after insertion
+      if (textareaRef) {
+        requestAnimationFrame(() => {
+          if (textareaRef) {
+            textareaRef.style.height = 'auto';
+            textareaRef.style.height = Math.min(textareaRef.scrollHeight, 200) + 'px';
+            textareaRef.focus();
+          }
+        });
+      }
+    }
+  });
 
   let isStreaming = $derived(chatStore.isStreaming);
   let canSend = $derived(

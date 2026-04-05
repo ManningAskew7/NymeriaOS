@@ -3,10 +3,11 @@
 
   interface Props {
     onAction: (message: string) => void;
+    onInsert?: (text: string) => void;
     disabled?: boolean;
   }
 
-  let { onAction, disabled = false }: Props = $props();
+  let { onAction, onInsert, disabled = false }: Props = $props();
 
   const actions = [
     {
@@ -34,6 +35,12 @@
     const ctx = outlookStore.getEmailContext();
     onAction(promptFn(ctx));
   }
+
+  function handleInsertRef() {
+    if (!outlookStore.hasEmail || !onInsert) return;
+    const ctx = outlookStore.getEmailContext();
+    onInsert(`\n\n${ctx}\n`);
+  }
 </script>
 
 {#if outlookStore.isOutlook}
@@ -58,6 +65,15 @@
             <span class="qa-text">{action.label}</span>
           </button>
         {/each}
+        <button
+          class="qa-btn qa-btn-ref"
+          onclick={handleInsertRef}
+          disabled={disabled}
+          title="Insert email reference into message"
+        >
+          <span class="qa-icon">@</span>
+          <span class="qa-text">Ref Email</span>
+        </button>
       </div>
     {:else}
       <div class="qa-hint">Select an email to use quick actions</div>
@@ -72,6 +88,14 @@
             <span class="qa-text">{action.label}</span>
           </button>
         {/each}
+        <button
+          class="qa-btn qa-btn-ref"
+          disabled
+          title="Select an email first"
+        >
+          <span class="qa-icon">@</span>
+          <span class="qa-text">Ref Email</span>
+        </button>
       </div>
     {/if}
   </div>
@@ -128,6 +152,10 @@
   .qa-icon {
     font-weight: 700;
     font-size: var(--font-size-sm);
+  }
+
+  .qa-btn-ref {
+    border-style: dashed;
   }
 
   .qa-hint {
