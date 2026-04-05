@@ -10,6 +10,7 @@
   import { autonomousStore } from '$lib/stores/autonomous.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { startSyncPoll, stopSyncPoll } from '$lib/stores/syncPoll.svelte';
   import { api } from '$lib/services/api.svelte';
 
   // Debug: log immediately on script execution
@@ -52,18 +53,9 @@
    * Load history for a thread ID, guarding against stale applies.
    * Only updates chat state if the user hasn't navigated away.
    */
-  let processingPollTimer: ReturnType<typeof setInterval> | null = null;
-
-  function stopProcessingPoll() {
-    if (processingPollTimer) {
-      clearInterval(processingPollTimer);
-      processingPollTimer = null;
-    }
-  }
-
   function loadThreadHistory(threadId: string) {
     chatStore.clearMessages();
-    stopProcessingPoll();
+    stopSyncPoll();
     Promise.all([
       api.getThreadHistory(threadId),
       api.getThreadContextStats(threadId),
@@ -74,34 +66,8 @@
         chatStore.setContextStats(stats);
         chatStore.setActiveModel(stats?.model ?? null);
 
-        // If the agent is still processing this thread (we reconnected mid-stream),
-        // poll history periodically until it finishes.
-        // Use shorter interval when SSE is disconnected (primary catch-up),
-        // longer when connected (safety net — sync events handle most updates).
-        if (stats?.processing && !chatStore.isStreaming) {
-          const pollInterval = autonomousStore.connected ? 10000 : 3000;
-          console.log(`[Page] Thread is still processing, polling every ${pollInterval / 1000}s (SSE ${autonomousStore.connected ? 'connected' : 'disconnected'})`);
-          processingPollTimer = setInterval(() => {
-            if (threadsStore.currentThreadId !== threadId) {
-              stopProcessingPoll();
-              return;
-            }
-            Promise.all([
-              api.getThreadHistory(threadId),
-              api.getThreadContextStats(threadId),
-            ]).then(([h, s]) => {
-              if (threadsStore.currentThreadId === threadId && !chatStore.isStreaming) {
-                chatStore.setMessages(h.messages);
-                chatStore.setContextStats(s);
-                chatStore.setActiveModel(s?.model ?? null);
-                if (!s?.processing) {
-                  console.log('[Page] Thread processing complete, stopping poll');
-                  stopProcessingPoll();
-                }
-              }
-            }).catch(() => {});
-          }, pollInterval);
-        }
+        // Start the cross-client sync poller
+        startSyncPoll(threadId, history.messages.length);
       }
     }).catch((err) => {
       console.error('[Page] Failed to load thread history:', err);
@@ -167,7 +133,7 @@
     // Return cleanup — SSE disconnect happens via autonomousStore
     return () => {
       console.log('[Page] Cleanup - disconnecting SSE');
-      stopProcessingPoll();
+      stopSyncPoll();
       autonomousStore.disconnect();
     };
   });

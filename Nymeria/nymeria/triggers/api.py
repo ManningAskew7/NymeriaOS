@@ -752,7 +752,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Read client ID from header for sync event origin filtering
         client_id = http_request.headers.get("x-nymeria-client-id", "")
 
-        # Publish user message to event bus so other clients see it
+        # Publish user message to event bus so other clients see it immediately
         publish_sync_event(
             event_type="message_added",
             thread_id=thread_id,
@@ -760,28 +760,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             data={"role": "user", "content": request.message},
             origin_client_id=client_id,
         )
-
-        # Thinking token batcher: accumulates thinking chunks and publishes
-        # to the event bus periodically to avoid queue overflow
-        _thinking_buffer = []
-        _thinking_buffer_lock = asyncio.Lock()
-        _last_thinking_flush = [asyncio.get_event_loop().time()]
-        THINKING_BATCH_INTERVAL = 0.2  # seconds
-
-        async def _flush_thinking_buffer():
-            """Flush accumulated thinking tokens to event bus as a single event."""
-            async with _thinking_buffer_lock:
-                if not _thinking_buffer:
-                    return
-                combined = "".join(_thinking_buffer)
-                _thinking_buffer.clear()
-            publish_sync_event(
-                event_type="interactive_thinking",
-                thread_id=thread_id,
-                user_id=user_id,
-                data={"content": combined},
-                origin_client_id=client_id,
-            )
 
         async def event_generator():
             """Generate SSE events from agent stream."""
@@ -821,100 +799,46 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         if not client_disconnected:
                             client_disconnected = True
                             logger.info(f"Client disconnected for thread {thread_id}, agent will continue in background")
-                        # Still publish sync events even when originator disconnected,
-                        # so other connected clients continue receiving the stream
-                        chunk_type = chunk.get("type", "")
-                        if chunk_type == "thinking":
-                            async with _thinking_buffer_lock:
-                                _thinking_buffer.append(chunk.get("content", ""))
-                            now = asyncio.get_event_loop().time()
-                            if now - _last_thinking_flush[0] >= THINKING_BATCH_INTERVAL:
-                                await _flush_thinking_buffer()
-                                _last_thinking_flush[0] = now
-                        elif chunk_type in ("tool_call", "tool_result", "response"):
-                            await _flush_thinking_buffer()
-                            publish_sync_event(
-                                event_type=f"interactive_{chunk_type}",
-                                thread_id=thread_id,
-                                user_id=user_id,
-                                data=chunk,
-                                origin_client_id=client_id,
-                            )
                         continue
 
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
                     yield f"data: {event_data}\n\n"
 
-                    # Publish sync events for other clients
-                    chunk_type = chunk.get("type", "")
-                    if chunk_type == "thinking":
-                        # Batch thinking tokens to reduce event bus traffic
-                        async with _thinking_buffer_lock:
-                            _thinking_buffer.append(chunk.get("content", ""))
-                        now = asyncio.get_event_loop().time()
-                        if now - _last_thinking_flush[0] >= THINKING_BATCH_INTERVAL:
-                            await _flush_thinking_buffer()
-                            _last_thinking_flush[0] = now
-                    elif chunk_type in ("tool_call", "tool_result", "response"):
-                        # Flush any pending thinking first
-                        await _flush_thinking_buffer()
-                        publish_sync_event(
-                            event_type=f"interactive_{chunk_type}",
-                            thread_id=thread_id,
-                            user_id=user_id,
-                            data=chunk,
-                            origin_client_id=client_id,
-                        )
-
-                # Flush any remaining thinking tokens
-                await _flush_thinking_buffer()
-
-                # Build done data (needed for both sync event and direct SSE)
-                try:
-                    context_stats = agent.get_context_stats(thread_id)
-                except Exception as e:
-                    logger.warning(f"Failed to get context stats: {e}")
-                    context_stats = None
-
-                done_data = {
-                    'type': 'done',
-                    'thread_id': thread_id,
-                    'context_stats': context_stats,
-                    'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
-                }
-
-                # Auto-title the thread from the user's message if untitled
-                try:
-                    new_title = agent.thread_metadata_manager.auto_title(
-                        user_id, thread_id, request.message
-                    )
-                    if new_title:
-                        done_data['title'] = new_title
-                        done_data['title_source'] = 'auto'
-                except Exception as e:
-                    logger.warning(f"Failed to auto-title thread {thread_id}: {e}")
-
-                # Always publish interactive_done to event bus for other clients
-                publish_sync_event(
-                    event_type="interactive_done",
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    data=done_data,
-                    origin_client_id=client_id,
-                )
-
-                # Also publish thread_updated if auto-title was set
-                if done_data.get('title'):
-                    publish_sync_event(
-                        event_type="thread_updated",
-                        thread_id=thread_id,
-                        user_id=user_id,
-                        data={"title": done_data['title'], "title_source": done_data['title_source']},
-                        origin_client_id=client_id,
-                    )
-
-                # Only send done event to originator if still connected
+                # Only send done event if client is still connected
                 if not client_disconnected and not await http_request.is_disconnected():
+                    # Get context stats and model info for UI
+                    try:
+                        context_stats = agent.get_context_stats(thread_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to get context stats: {e}")
+                        context_stats = None
+
+                    done_data = {
+                        'type': 'done',
+                        'thread_id': thread_id,
+                        'context_stats': context_stats,
+                        'model': agent._get_llm_config_for_thread(thread_id).model or agent.settings.llm_model,
+                    }
+
+                    # Auto-title the thread from the user's message if untitled
+                    try:
+                        new_title = agent.thread_metadata_manager.auto_title(
+                            user_id, thread_id, request.message
+                        )
+                        if new_title:
+                            done_data['title'] = new_title
+                            done_data['title_source'] = 'auto'
+                            # Publish title change so other clients update their sidebar
+                            publish_sync_event(
+                                event_type="thread_updated",
+                                thread_id=thread_id,
+                                user_id=user_id,
+                                data={"title": new_title, "title_source": "auto"},
+                                origin_client_id=client_id,
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-title thread {thread_id}: {e}")
+
                     yield f"data: {json.dumps(done_data)}\n\n"
 
             except Exception as e:
@@ -2624,8 +2548,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         clients send interactive chat messages, or when thread metadata changes.
 
         Events include: task_started, thinking, tool_call, tool_result, response, task_completed,
-        interactive_thinking, interactive_tool_call, interactive_tool_result, interactive_response,
-        interactive_done, message_added, thread_updated, thread_created, thread_deleted
+        message_added, thread_updated, thread_created, thread_deleted
 
         Connect to this endpoint to receive real-time updates about all activity.
         """
@@ -2659,8 +2582,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         if origin and client_id and origin == client_id:
                             continue
 
-                        # Build SSE payload, stripping internal fields
-                        payload = {k: v for k, v in event.data.items() if not k.startswith("_")}
+                        # Build SSE payload, stripping internal fields and reserved keys
+                        # (event.data may contain a "type" key from the original chunk —
+                        #  we use event.event_type as the canonical type to preserve
+                        #  the interactive_ prefix for sync events)
+                        payload = {
+                            k: v for k, v in event.data.items()
+                            if not k.startswith("_") and k not in ("type", "thread_id", "task_id", "timestamp")
+                        }
                         event_data = {
                             "type": event.event_type,
                             "thread_id": event.thread_id,

@@ -19,9 +19,7 @@ class AutonomousEvent:
     """Event for autonomous task output and cross-client sync."""
 
     event_type: str  # Autonomous: "task_started", "thinking", "tool_call", "tool_result", "response", "task_completed"
-                     # Interactive sync: "interactive_thinking", "interactive_tool_call", "interactive_tool_result",
-                     #   "interactive_response", "interactive_done", "message_added"
-                     # Metadata sync: "thread_updated", "thread_created", "thread_deleted"
+                     # Cross-client sync: "message_added", "thread_updated", "thread_created", "thread_deleted"
     thread_id: str
     user_id: str
     task_id: str = ""
