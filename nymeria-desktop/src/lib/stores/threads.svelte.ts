@@ -463,6 +463,20 @@ function createThreadsStore() {
     },
 
     /**
+     * Full reset for connection switching. Wipes all local thread data
+     * so syncFromBackend() starts fresh against a different backend.
+     */
+    reset() {
+      threads = [];
+      folders = [];
+      currentThreadId = null;
+      syncInProgress = false;
+      saveThreads([]);
+      saveFolders([]);
+      saveCurrentThreadId(null);
+    },
+
+    /**
      * Sync the local thread list with the backend (server-side metadata).
      *
      * Backend is authoritative for titles and pins. On first sync (migration),

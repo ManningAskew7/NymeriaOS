@@ -421,6 +421,14 @@ export interface AppConfig {
   suppressAttachmentWarnings?: boolean;
 }
 
+// Saved connection for quick-switching between backends
+export interface SavedConnection {
+  id: string;
+  name: string;
+  apiUrl: string;
+  apiKey: string;
+}
+
 // Server settings types
 export type LLMProvider = 'openrouter' | 'openai' | 'anthropic';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';

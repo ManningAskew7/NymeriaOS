@@ -1,8 +1,9 @@
 <script lang="ts">
   import { configStore } from '$lib/stores/config.svelte';
+  import { connectionsStore } from '$lib/stores/connections.svelte';
   import { api } from '$lib/services/api.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { ServerSettings, LLMProvider, LogLevel, ThemeName } from '$lib/types';
+  import type { ServerSettings, LLMProvider, LogLevel, ThemeName, SavedConnection } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { modelsStore } from '$lib/stores/models.svelte';
@@ -13,9 +14,21 @@
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
 
+  interface Props {
+    initialTab?: string;
+  }
+
+  let { initialTab }: Props = $props();
+
   // Connection settings
   let apiUrl = $state(configStore.apiUrl);
   let apiKey = $state(configStore.apiKey);
+
+  // Saved connections UI state
+  let showSaveInput = $state(false);
+  let saveConnectionName = $state('');
+  let editingConnectionId = $state<string | null>(null);
+  let editingName = $state('');
 
   // Server settings
   let serverSettings = $state<ServerSettings | null>(null);
@@ -66,12 +79,20 @@
   );
 
   // UI state
-  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy'>('connection');
+  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy'>(
+    (initialTab as typeof activeTab) || 'connection'
+  );
   let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
   let loadingSettings = $state(false);
   let savingSettings = $state(false);
+
+  // Sync local fields when configStore changes externally (e.g. connection switch)
+  $effect(() => {
+    apiUrl = configStore.apiUrl;
+    apiKey = configStore.apiKey;
+  });
 
   // Load server settings when connected
   async function loadServerSettings() {
@@ -144,6 +165,57 @@
     setTimeout(() => {
       testMessage = '';
     }, 2000);
+  }
+
+  // Saved connections handlers
+  function handleSaveCurrentConnection() {
+    if (!saveConnectionName.trim()) return;
+    connectionsStore.saveCurrentAs(saveConnectionName.trim());
+    saveConnectionName = '';
+    showSaveInput = false;
+  }
+
+  function handleEditConnection(conn: SavedConnection) {
+    editingConnectionId = conn.id;
+    editingName = conn.name;
+    apiUrl = conn.apiUrl;
+    apiKey = conn.apiKey;
+  }
+
+  function handleUpdateConnection() {
+    if (!editingConnectionId) return;
+    connectionsStore.update(editingConnectionId, {
+      name: editingName.trim() || undefined,
+      apiUrl,
+      apiKey,
+    });
+    // Also apply to configStore if this is the active connection
+    if (connectionsStore.activeConnectionId === editingConnectionId) {
+      configStore.apiUrl = apiUrl;
+      configStore.apiKey = apiKey;
+    }
+    editingConnectionId = null;
+    editingName = '';
+    testMessage = 'Connection updated!';
+    setTimeout(() => { testMessage = ''; }, 2000);
+  }
+
+  function handleCancelEdit() {
+    editingConnectionId = null;
+    editingName = '';
+    apiUrl = configStore.apiUrl;
+    apiKey = configStore.apiKey;
+  }
+
+  function handleDeleteConnection(id: string) {
+    connectionsStore.delete(id);
+  }
+
+  async function handleConnectTo(id: string) {
+    await connectionsStore.switchTo(id);
+    // Reload server settings after switch
+    serverSettings = null;
+    await loadServerSettings();
   }
 
   async function handleTestConnection() {
@@ -291,6 +363,92 @@
   <!-- Connection Tab -->
   {#if activeTab === 'connection'}
     <div class="tab-content">
+      <!-- Saved Connections -->
+      <div class="saved-connections">
+        <div class="section-header">
+          <span class="section-title">Saved Connections</span>
+        </div>
+
+        {#if connectionsStore.connections.length === 0}
+          <p class="hint" style="margin-bottom: var(--spacing-md);">
+            No saved connections. Save your current connection to quickly switch between backends.
+          </p>
+        {:else}
+          <div class="connections-list">
+            {#each connectionsStore.connections as conn}
+              <div class="connection-row" class:active={connectionsStore.activeConnection?.id === conn.id}>
+                <span class="conn-status-dot" class:connected={connectionsStore.activeConnection?.id === conn.id}></span>
+                {#if editingConnectionId === conn.id}
+                  <input
+                    class="conn-name-input"
+                    type="text"
+                    bind:value={editingName}
+                    placeholder="Connection name"
+                  />
+                {:else}
+                  <div class="conn-info">
+                    <span class="conn-name">{conn.name}</span>
+                    <span class="conn-url">{conn.apiUrl}</span>
+                  </div>
+                {/if}
+                <div class="conn-actions">
+                  {#if editingConnectionId === conn.id}
+                    <button class="conn-action-btn" onclick={handleUpdateConnection} title="Save">
+                      <Icon name="check" size={14} />
+                    </button>
+                    <button class="conn-action-btn" onclick={handleCancelEdit} title="Cancel">
+                      <Icon name="x" size={14} />
+                    </button>
+                  {:else}
+                    {#if connectionsStore.activeConnection?.id !== conn.id}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onclick={() => handleConnectTo(conn.id)}
+                        disabled={connectionsStore.switching}
+                      >
+                        {connectionsStore.switching ? '...' : 'Connect'}
+                      </Button>
+                    {/if}
+                    <button class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit">
+                      <Icon name="edit" size={14} />
+                    </button>
+                    <button class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete">
+                      <Icon name="trash" size={14} />
+                    </button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if showSaveInput}
+          <div class="save-input-row">
+            <input
+              class="save-name-input"
+              type="text"
+              bind:value={saveConnectionName}
+              placeholder="Connection name (e.g. Work, Personal)"
+              onkeydown={(e) => e.key === 'Enter' && handleSaveCurrentConnection()}
+            />
+            <Button variant="primary" size="sm" onclick={handleSaveCurrentConnection} disabled={!saveConnectionName.trim()}>
+              Save
+            </Button>
+            <Button variant="secondary" size="sm" onclick={() => { showSaveInput = false; saveConnectionName = ''; }}>
+              Cancel
+            </Button>
+          </div>
+        {:else}
+          <Button variant="secondary" size="sm" onclick={() => (showSaveInput = true)}>
+            <Icon name="plus" size={14} />
+            Save Current Connection
+          </Button>
+        {/if}
+      </div>
+
+      <div class="section-divider"></div>
+
       {#if backendProcessStore.isTauri}
         <div class="auto-config-notice">
           <span class="status-dot connected"></span>
@@ -302,6 +460,13 @@
       {/if}
 
       {#if showConnectionAdvanced}
+        {#if connectionsStore.activeConnection}
+          <div class="active-connection-notice">
+            <Icon name="server" size={14} />
+            <span>Connected to: <strong>{connectionsStore.activeConnection.name}</strong></span>
+          </div>
+        {/if}
+
         <div class="field">
           <label for="api-url">API URL</label>
           <input
@@ -328,9 +493,18 @@
           <Button variant="secondary" onclick={handleTestConnection} disabled={testStatus === 'testing'}>
             {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
           </Button>
-          <Button variant="primary" onclick={handleSaveConnection}>
-            Save
-          </Button>
+          {#if editingConnectionId}
+            <Button variant="primary" onclick={handleUpdateConnection}>
+              Update Connection
+            </Button>
+            <Button variant="secondary" onclick={handleCancelEdit}>
+              Cancel Edit
+            </Button>
+          {:else}
+            <Button variant="primary" onclick={handleSaveConnection}>
+              Save
+            </Button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -1410,5 +1584,164 @@
 
   .advanced-toggle:hover {
     text-decoration: underline;
+  }
+
+  /* Saved Connections */
+  .saved-connections {
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .section-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .section-divider {
+    height: 1px;
+    background: var(--glass-border);
+    margin: var(--spacing-md) 0;
+  }
+
+  .connections-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .connection-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary, rgba(255, 255, 255, 0.03));
+    border: 1px solid transparent;
+    transition: all var(--transition-fast);
+  }
+
+  .connection-row.active {
+    border-color: var(--accent-primary);
+    background: rgba(34, 211, 238, 0.05);
+  }
+
+  .connection-row:hover {
+    background: var(--bg-hover);
+  }
+
+  .conn-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .conn-status-dot.connected {
+    background: var(--success, #22c55e);
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
+  }
+
+  .conn-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .conn-name {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conn-url {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conn-name-input {
+    flex: 1;
+    min-width: 0;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--glass-border);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .conn-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    flex-shrink: 0;
+  }
+
+  .conn-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: all var(--transition-fast);
+  }
+
+  .conn-action-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .conn-action-btn.danger:hover {
+    color: var(--error, #ef4444);
+  }
+
+  .save-input-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-xs);
+  }
+
+  .save-name-input {
+    flex: 1;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--glass-border);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .active-connection-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+    border-radius: var(--radius-md);
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    color: var(--accent-primary);
+    font-size: var(--font-size-sm);
   }
 </style>
