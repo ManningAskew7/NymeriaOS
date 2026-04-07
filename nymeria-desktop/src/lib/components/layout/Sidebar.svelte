@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { Button, Icon, Modal, SettingsPanel } from '$lib/components/common';
   import { NotificationCenter } from '$lib/components/notifications';
+  import ConnectionSwitcher from '$lib/components/layout/ConnectionSwitcher.svelte';
   import ThreadList from '$lib/components/threads/ThreadList.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -9,6 +10,7 @@
   import { uiStore } from '$lib/stores/ui.svelte';
 
   let showSettings = $state(false);
+  let settingsInitialTab = $state<string | undefined>(undefined);
   let showNotifications = $state(false);
 
   let isCollapsed = $derived(uiStore.sidebarCollapsed);
@@ -18,12 +20,14 @@
     chatStore.clearMessages();
   }
 
-  function openSettings() {
+  function openSettings(tab?: string) {
+    settingsInitialTab = tab;
     showSettings = true;
   }
 
   function closeSettings() {
     showSettings = false;
+    settingsInitialTab = undefined;
   }
 
   function toggleNotifications(e: MouseEvent) {
@@ -103,8 +107,9 @@
       {/if}
       <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
     </div>
+    <ConnectionSwitcher onOpenSettings={openSettings} />
     {#if !isCollapsed}
-      <button class="footer-btn" type="button" onclick={openSettings}>
+      <button class="footer-btn" type="button" onclick={() => openSettings()}>
         <Icon name="settings" size={18} />
         Settings
       </button>
@@ -112,7 +117,7 @@
       <button
         class="icon-btn"
         type="button"
-        onclick={openSettings}
+        onclick={() => openSettings()}
         title="Settings"
         aria-label="Settings"
       >
@@ -123,7 +128,7 @@
 </div>
 
 <Modal title="Settings" isOpen={showSettings} onClose={closeSettings}>
-  <SettingsPanel />
+  <SettingsPanel initialTab={settingsInitialTab} />
 </Modal>
 
 <style>
