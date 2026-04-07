@@ -69,13 +69,7 @@ function createConnectionsStore() {
     },
     get activeConnection(): SavedConnection | null {
       if (!activeConnectionId) return null;
-      const conn = connections.find((c) => c.id === activeConnectionId);
-      if (!conn) return null;
-      // Clear active if configStore has drifted from the saved values
-      if (conn.apiUrl !== configStore.apiUrl || conn.apiKey !== configStore.apiKey) {
-        return null;
-      }
-      return conn;
+      return connections.find((c) => c.id === activeConnectionId) ?? null;
     },
     get switching() {
       return switching;
