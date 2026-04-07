@@ -79,20 +79,13 @@
   );
 
   // UI state
-  let activeTab = $state<'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy'>(
-    (initialTab as typeof activeTab) || 'connection'
-  );
+  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy';
+  let activeTab = $state<SettingsTab>((initialTab as SettingsTab) || 'connection');
   let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
   let loadingSettings = $state(false);
   let savingSettings = $state(false);
-
-  // Sync local fields when configStore changes externally (e.g. connection switch)
-  $effect(() => {
-    apiUrl = configStore.apiUrl;
-    apiKey = configStore.apiKey;
-  });
 
   // Load server settings when connected
   async function loadServerSettings() {
@@ -213,6 +206,9 @@
 
   async function handleConnectTo(id: string) {
     await connectionsStore.switchTo(id);
+    // Sync local fields to new connection values
+    apiUrl = configStore.apiUrl;
+    apiKey = configStore.apiKey;
     // Reload server settings after switch
     serverSettings = null;
     await loadServerSettings();
@@ -376,8 +372,8 @@
         {:else}
           <div class="connections-list">
             {#each connectionsStore.connections as conn}
-              <div class="connection-row" class:active={connectionsStore.activeConnection?.id === conn.id}>
-                <span class="conn-status-dot" class:connected={connectionsStore.activeConnection?.id === conn.id}></span>
+              <div class="connection-row" class:active={connectionsStore.activeConnectionId === conn.id}>
+                <span class="conn-status-dot" class:connected={connectionsStore.activeConnectionId === conn.id}></span>
                 {#if editingConnectionId === conn.id}
                   <input
                     class="conn-name-input"
@@ -400,7 +396,7 @@
                       <Icon name="x" size={14} />
                     </button>
                   {:else}
-                    {#if connectionsStore.activeConnection?.id !== conn.id}
+                    {#if connectionsStore.activeConnectionId !== conn.id}
                       <Button
                         variant="secondary"
                         size="sm"
@@ -463,7 +459,7 @@
         {#if connectionsStore.activeConnection}
           <div class="active-connection-notice">
             <Icon name="server" size={14} />
-            <span>Connected to: <strong>{connectionsStore.activeConnection.name}</strong></span>
+            <span>Connected to: <strong>{connectionsStore.activeConnection.name ?? 'Unknown'}</strong></span>
           </div>
         {/if}
 

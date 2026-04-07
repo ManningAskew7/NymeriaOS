@@ -12,10 +12,6 @@
 
   let showDropdown = $state(false);
 
-  let isCollapsed = $derived(uiStore.sidebarCollapsed);
-
-  const activeConnection = $derived(connectionsStore.activeConnection);
-
   function safeHostname(url: string): string {
     try {
       return new URL(url).hostname;
@@ -24,13 +20,16 @@
     }
   }
 
-  const displayName = $derived(
-    activeConnection
-      ? activeConnection.name
-      : configStore.apiUrl
-        ? safeHostname(configStore.apiUrl)
-        : 'Not connected'
-  );
+  function getDisplayName(): string {
+    const conn = connectionsStore.activeConnection;
+    if (conn) return conn.name;
+    const url = configStore.apiUrl;
+    return url ? safeHostname(url) : 'Not connected';
+  }
+
+  function isActive(): boolean {
+    return connectionsStore.activeConnection !== null;
+  }
 
   function toggleDropdown(e: MouseEvent) {
     e.stopPropagation();
@@ -52,23 +51,24 @@
   }
 </script>
 
-{#if !isCollapsed}
+{#if !uiStore.sidebarCollapsed}
   <div class="connection-wrapper">
     <button
       class="footer-btn"
-      class:is-active={!!activeConnection}
+      class:is-active={isActive()}
       type="button"
       onclick={toggleDropdown}
       title="Switch connection"
     >
       <Icon name="server" size={18} />
-      <span class="conn-name">{displayName}</span>
+      <span class="conn-name">{getDisplayName()}</span>
       {#if connectionsStore.switching}
         <Icon name="loading" size={14} />
       {/if}
     </button>
 
     {#if showDropdown}
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div class="dropdown-backdrop" onclick={closeDropdown}></div>
       <div class="dropdown">
         {#if connectionsStore.connections.length === 0}
@@ -77,13 +77,14 @@
           </div>
         {:else}
           {#each connectionsStore.connections as conn}
+            {@const isConnActive = connectionsStore.activeConnectionId === conn.id}
             <button
               class="dropdown-item"
-              class:active={activeConnection?.id === conn.id}
+              class:active={isConnActive}
               onclick={() => handleSwitch(conn.id)}
               disabled={connectionsStore.switching}
             >
-              <span class="status-dot" class:connected={activeConnection?.id === conn.id}></span>
+              <span class="status-dot" class:connected={isConnActive}></span>
               <span class="item-name">{conn.name}</span>
               <span class="item-url">{safeHostname(conn.apiUrl)}</span>
             </button>
@@ -101,16 +102,17 @@
   <div class="connection-wrapper">
     <button
       class="icon-btn"
-      class:is-active={!!activeConnection}
+      class:is-active={isActive()}
       type="button"
       onclick={toggleDropdown}
-      title={displayName}
+      title={getDisplayName()}
       aria-label="Switch connection"
     >
       <Icon name="server" size={20} />
     </button>
 
     {#if showDropdown}
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div class="dropdown-backdrop" onclick={closeDropdown}></div>
       <div class="dropdown collapsed-dropdown">
         {#if connectionsStore.connections.length === 0}
@@ -119,13 +121,14 @@
           </div>
         {:else}
           {#each connectionsStore.connections as conn}
+            {@const isConnActive = connectionsStore.activeConnectionId === conn.id}
             <button
               class="dropdown-item"
-              class:active={activeConnection?.id === conn.id}
+              class:active={isConnActive}
               onclick={() => handleSwitch(conn.id)}
               disabled={connectionsStore.switching}
             >
-              <span class="status-dot" class:connected={activeConnection?.id === conn.id}></span>
+              <span class="status-dot" class:connected={isConnActive}></span>
               <span class="item-name">{conn.name}</span>
             </button>
           {/each}
