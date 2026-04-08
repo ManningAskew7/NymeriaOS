@@ -405,23 +405,24 @@
     {/if}
   </div>
 
-  {#if showActions}
-    <div class="message-actions">
-      <button type="button" class="action-btn" title="Copy response" onclick={handleCopyResponse}>
-        <Icon name={copyResponseIcon} size={14} />
-      </button>
-      <button type="button" class="action-btn" title="Copy full (thinking + tools + response)" onclick={handleCopyFull}>
-        <Icon name={copyFullIcon} size={14} />
-      </button>
-      <button type="button" class="action-btn" title="Report problem" onclick={openReportModal}>
-        <Icon name="warning" size={14} />
-      </button>
-    </div>
-  {/if}
-
-  <time class="timestamp">
-    {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-  </time>
+  <div class="message-footer">
+    <time class="timestamp">
+      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+    </time>
+    {#if showActions}
+      <div class="message-actions">
+        <button type="button" class="action-btn" title="Copy response" onclick={handleCopyResponse}>
+          <Icon name={copyResponseIcon} size={14} />
+        </button>
+        <button type="button" class="action-btn" title="Copy full (thinking + tools + response)" onclick={handleCopyFull}>
+          <Icon name={copyFullIcon} size={14} />
+        </button>
+        <button type="button" class="action-btn" title="Report problem" onclick={openReportModal}>
+          <Icon name="warning" size={14} />
+        </button>
+      </div>
+    {/if}
+  </div>
 </div>
 {/if}
 
@@ -776,15 +777,21 @@
   }
 
 
-  .timestamp {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
+  .message-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     margin-top: var(--spacing-xs);
     padding: 0 var(--spacing-sm);
   }
 
-  .user .timestamp {
-    text-align: right;
+  .user .message-footer {
+    justify-content: flex-end;
+  }
+
+  .timestamp {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 
   @keyframes slideUp {
@@ -864,10 +871,7 @@
   /* Action buttons (copy, report) */
   .message-actions {
     display: flex;
-    justify-content: flex-end;
     gap: var(--spacing-xs);
-    margin-top: var(--spacing-xs);
-    padding: 0 var(--spacing-xs);
   }
 
   .action-btn {
