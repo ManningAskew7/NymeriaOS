@@ -142,7 +142,31 @@
     }
   }
 
+  // Display provider mapping for thread-level overrides
+  // "" = Default (inherit global), "anthropic_proxy" = subscription, "anthropic_direct" = direct API
+  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter';
+
+  function toThreadDisplayProvider(provider: string, baseUrl?: string | null): ThreadDisplayProvider {
+    if (!provider) return '';
+    if (provider === 'anthropic' && baseUrl === '') return 'anthropic_direct';
+    if (provider === 'anthropic') return 'anthropic_proxy';
+    return provider as ThreadDisplayProvider;
+  }
+
+  function fromThreadDisplayProvider(dp: ThreadDisplayProvider): { provider: string; baseUrl: string | null } {
+    if (dp === '') return { provider: '', baseUrl: null };
+    if (dp === 'anthropic_proxy') return { provider: 'anthropic', baseUrl: null };
+    if (dp === 'anthropic_direct') return { provider: 'anthropic', baseUrl: '' };
+    return { provider: dp, baseUrl: null };
+  }
+
   // LLM form state
+  let threadDisplayProvider = $state<ThreadDisplayProvider>(
+    toThreadDisplayProvider(
+      threadConfig?.llmConfig?.provider ?? '',
+      threadConfig?.llmConfig?.base_url
+    )
+  );
   let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
   let llmModel = $state(threadConfig?.llmConfig?.model ?? '');
   let llmTemperature = $state<string>(
@@ -198,8 +222,10 @@
     }
   }
 
-  // Fetch models when effective provider changes
+  // Sync llmProvider from display provider and fetch models
   $effect(() => {
+    const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
+    llmProvider = provider;
     const ep = getEffectiveProvider();
     fetchAvailableModels(ep);
   });
@@ -380,13 +406,15 @@
       }
 
       // LLM config
-      const hasLlm = llmProvider || llmModel || llmTemperature || llmMaxTokens ||
+      const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
         llmUseModelDefaults !== 'default';
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
-        llm.provider = llmProvider || null;
+        const mapped = fromThreadDisplayProvider(threadDisplayProvider);
+        llm.provider = mapped.provider || null;
+        llm.base_url = mapped.baseUrl;
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
@@ -686,11 +714,12 @@
         <div class="tab-panel">
           <div class="field-group">
             <label class="field-label" for="llm-provider">Provider</label>
-            <select id="llm-provider" class="field-select" bind:value={llmProvider}>
+            <select id="llm-provider" class="field-select" bind:value={threadDisplayProvider}>
               <option value="">Default (inherit global)</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="anthropic">Anthropic</option>
+              <option value="anthropic_proxy">Anthropic (Subscription)</option>
+              <option value="anthropic_direct">Anthropic (Direct API)</option>
               <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </div>
 

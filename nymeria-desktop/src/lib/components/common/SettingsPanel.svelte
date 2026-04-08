@@ -30,8 +30,24 @@
   let editingConnectionId = $state<string | null>(null);
   let editingName = $state('');
 
+  // Display provider: splits "anthropic" into proxy vs direct based on base_url
+  type DisplayProvider = 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter';
+
+  function toDisplayProvider(provider: LLMProvider, baseUrl: string): DisplayProvider {
+    if (provider === 'anthropic' && !baseUrl) return 'anthropic_direct';
+    if (provider === 'anthropic') return 'anthropic_proxy';
+    return provider as DisplayProvider;
+  }
+
+  function fromDisplayProvider(dp: DisplayProvider): { provider: LLMProvider; clearBaseUrl: boolean } {
+    if (dp === 'anthropic_proxy') return { provider: 'anthropic', clearBaseUrl: false };
+    if (dp === 'anthropic_direct') return { provider: 'anthropic', clearBaseUrl: true };
+    return { provider: dp as LLMProvider, clearBaseUrl: false };
+  }
+
   // Server settings
   let serverSettings = $state<ServerSettings | null>(null);
+  let displayProvider = $state<DisplayProvider>('anthropic_proxy');
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmModel = $state('claude-sonnet-4-20250514');
   let llmTemperature = $state(1);
@@ -101,9 +117,11 @@
     }
   }
 
-  // Fetch models when provider changes
+  // Sync llmProvider from displayProvider and fetch models
   $effect(() => {
-    fetchAvailableModels(llmProvider);
+    const { provider } = fromDisplayProvider(displayProvider);
+    llmProvider = provider;
+    fetchAvailableModels(provider);
   });
 
   // UI state
@@ -123,6 +141,7 @@
     try {
       serverSettings = await api.getServerSettings();
       llmProvider = serverSettings.llm_provider;
+      displayProvider = toDisplayProvider(serverSettings.llm_provider, serverSettings.llm_base_url || '');
       llmModel = serverSettings.llm_model;
       llmTemperature = serverSettings.llm_temperature;
       llmMaxTokens = serverSettings.llm_max_tokens;
@@ -173,7 +192,7 @@
 
   // Load model metadata when provider switches to openrouter
   $effect(() => {
-    if (llmProvider === 'openrouter') {
+    if (displayProvider === 'openrouter') {
       modelsStore.loadModels();
     }
   });
@@ -271,8 +290,11 @@
     testMessage = '';
 
     try {
+      const { provider: actualProvider, clearBaseUrl } = fromDisplayProvider(displayProvider);
+      const effectiveBaseUrl = clearBaseUrl ? '' : llmBaseUrl;
+
       const result = await api.updateServerSettings({
-        llm_provider: llmProvider,
+        llm_provider: actualProvider,
         llm_model: llmModel,
         llm_temperature: llmTemperature,
         llm_max_tokens: llmMaxTokens,
@@ -283,7 +305,7 @@
         llm_reasoning_effort: llmReasoningEffort,
         llm_extended_thinking: llmExtendedThinking,
         llm_use_model_defaults: llmUseModelDefaults,
-        llm_base_url: llmBaseUrl,
+        llm_base_url: effectiveBaseUrl,
         context_management: contextManagement,
         sliding_window_cycles: slidingWindowCycles,
         max_self_invokes_per_hour: maxSelfInvokesPerHour,
@@ -576,12 +598,21 @@
       {:else}
         <div class="field">
           <label for="llm-provider">Provider</label>
-          <select id="llm-provider" bind:value={llmProvider}>
-            <option value="anthropic">Anthropic</option>
+          <select id="llm-provider" bind:value={displayProvider}>
+            <option value="anthropic_proxy">Anthropic (Subscription)</option>
+            <option value="anthropic_direct">Anthropic (Direct API)</option>
             <option value="openai">OpenAI</option>
             <option value="openrouter">OpenRouter</option>
           </select>
-          <p class="hint">LLM provider (requires API key in server .env)</p>
+          <p class="hint">
+            {#if displayProvider === 'anthropic_proxy'}
+              Routes through CLIProxy using your Claude subscription
+            {:else if displayProvider === 'anthropic_direct'}
+              Direct Anthropic API — pay-per-token (requires ANTHROPIC_API_KEY)
+            {:else}
+              LLM provider (requires API key in server .env)
+            {/if}
+          </p>
         </div>
 
         <div class="field">
@@ -592,7 +623,7 @@
                 <option value={model.id}>{model.name || model.id}</option>
               {/each}
             </select>
-            <p class="hint">{availableModels.length} models fetched from {llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'}</p>
+            <p class="hint">{availableModels.length} models available</p>
           {:else if loadingAvailableModels}
             <select id="llm-model" disabled>
               <option>Loading models...</option>
