@@ -629,7 +629,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         logger.info(f"Serving frontend from {_frontend_dir}")
 
         # Serve SvelteKit's _app/ assets and other static files
-        app.mount("/_app", StaticFiles(directory=os.path.join(_frontend_dir, "_app")), name="frontend-assets")
+        _app_dir = os.path.join(_frontend_dir, "_app")
+        if os.path.isdir(_app_dir):
+            app.mount("/_app", StaticFiles(directory=_app_dir), name="frontend-assets")
 
         # Serve static assets from frontend root (icons, favicon, manifest, etc.)
         for _icon_name in ["favicon.png", "icon-16.png", "icon-32.png", "icon-80.png", "manifest.xml"]:
@@ -1333,6 +1335,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         extended_thinking: Optional[bool] = None
         reasoning_effort: Optional[str] = None
         use_model_defaults: Optional[bool] = None
+        base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
 
     class ThreadConfigUpdateRequest(BaseModel):
         instructions: Optional[str] = Field(default=None, max_length=5000)

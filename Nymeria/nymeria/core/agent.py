@@ -1688,21 +1688,26 @@ class NymeriaAgent:
             frequency_penalty = None
             presence_penalty = None
 
-        # Only apply global base_url when the thread is using the global provider
-        # (or the same provider as global). If a thread overrides to a DIFFERENT
-        # provider, ignore the global base_url — that provider uses its own endpoint.
-        thread_switches_provider = (
-            tc and tc.provider and tc.provider != self.settings.llm_provider
-        )
-        base_url = None if thread_switches_provider else self.settings.llm_base_url
+        # Resolve base_url: per-thread override > global.
+        # Empty string ("") = explicit "use provider default" (direct API, no proxy).
+        # None = inherit global (which may be CLIProxy or unset).
+        if tc and tc.base_url is not None:
+            base_url = tc.base_url or None  # "" → None (direct API)
+        else:
+            base_url = self.settings.llm_base_url
 
-        # Resolve API key based on effective provider
-        key_map = {
-            "openai": self.settings.openai_api_key,
-            "anthropic": self.settings.anthropic_api_key,
-            "openrouter": self.settings.openrouter_api_key,
-        }
-        api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
+        # Resolve API key: proxy mode (base_url set) uses the global provider's
+        # key (same cpx- key for all providers through CLIProxy). Direct mode
+        # (no base_url) uses per-provider keys.
+        if base_url:
+            api_key = self.settings.get_api_key_for_provider()
+        else:
+            key_map = {
+                "openai": self.settings.openai_api_key,
+                "anthropic": self.settings.anthropic_api_key,
+                "openrouter": self.settings.openrouter_api_key,
+            }
+            api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
 
         return LLMConfig(
             provider=provider,
@@ -3153,6 +3158,18 @@ class NymeriaAgent:
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
             graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
+
+            # Pre-flight: patch any dangling tool calls from previous aborted runs
+            config = {
+                "recursion_limit": 150,
+                "configurable": {"thread_id": thread_id, "user_id": user_id},
+            }
+            try:
+                patched = self._patch_dangling_tool_calls(graph, config)
+                if patched:
+                    logger.info(f"[ASTREAM] Thread {thread_id}: Pre-flight patched {patched} dangling tool call(s)")
+            except Exception as e:
+                logger.warning(f"[ASTREAM] Thread {thread_id}: Pre-flight patch failed: {e}")
 
             # Log checkpoint state before processing (DEBUG level — visible with agent/llm profiles)
             if logger.isEnabledFor(logging.DEBUG):

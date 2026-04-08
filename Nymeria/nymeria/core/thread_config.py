@@ -34,6 +34,7 @@ class ThreadLLMConfig(BaseModel):
     extended_thinking: Optional[bool] = None
     reasoning_effort: Optional[str] = None
     use_model_defaults: Optional[bool] = None
+    base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
 
 
 class ThreadConfig(BaseModel):
