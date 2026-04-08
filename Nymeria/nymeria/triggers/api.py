@@ -2062,6 +2062,72 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             for m in models
         ]
 
+    @app.get("/models/available", tags=["Settings"])
+    async def get_available_models(
+        provider: Optional[str] = Query(default=None, description="Provider to fetch models for (anthropic, openai). Defaults to global provider."),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Fetch available models from the configured LLM provider or CLIProxy.
+
+        Queries the provider's /v1/models endpoint (or CLIProxy which aggregates
+        all provider models). Returns a simplified list for frontend dropdowns.
+        """
+        import httpx
+
+        settings = get_settings()
+        effective_provider = provider or settings.llm_provider
+
+        # Determine base URL and API key
+        base_url = settings.llm_base_url
+        if effective_provider == "anthropic":
+            api_key = settings.anthropic_api_key
+            if not base_url:
+                base_url = "https://api.anthropic.com"
+        elif effective_provider == "openai":
+            api_key = settings.openai_api_key
+            if not base_url:
+                base_url = "https://api.openai.com"
+        else:
+            # OpenRouter or other — use existing /models endpoint
+            return []
+
+        # When using CLIProxy, always use the global provider's key
+        if settings.llm_base_url:
+            api_key = settings.get_api_key_for_provider()
+
+        if not api_key:
+            return []
+
+        # Fetch from /v1/models
+        headers = {
+            "x-api-key": api_key,
+            "Authorization": f"Bearer {api_key}",
+            "anthropic-version": "2023-06-01",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                url = f"{base_url.rstrip('/')}/v1/models"
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            raw_models = data.get("data", [])
+            # Return simplified list sorted by ID
+            result = []
+            for m in sorted(raw_models, key=lambda x: x.get("id", "")):
+                model_id = m.get("id", "")
+                result.append({
+                    "id": model_id,
+                    "name": m.get("name") or model_id,
+                    "owned_by": m.get("owned_by", ""),
+                    "created": m.get("created"),
+                })
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to fetch models from {base_url}: {e}")
+            return []
+
     # ========================================================================
     # Dashboard Endpoints
     # ========================================================================

@@ -433,6 +433,14 @@ export interface SavedConnection {
 export type LLMProvider = 'openrouter' | 'openai' | 'anthropic';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
+// Available model from provider (from GET /models/available)
+export interface AvailableModel {
+  id: string;
+  name: string;
+  owned_by: string;
+  created: number | null;
+}
+
 // OpenRouter model metadata (from GET /models)
 export interface ModelMetadata {
   id: string;
