@@ -2080,7 +2080,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Determine base URL and API key
         base_url = settings.llm_base_url
         if effective_provider == "anthropic":
-            api_key = settings.anthropic_api_key
+            api_key = settings.anthropic_direct_api_key or settings.anthropic_api_key
             if not base_url:
                 base_url = "https://api.anthropic.com"
         elif effective_provider == "openai":
