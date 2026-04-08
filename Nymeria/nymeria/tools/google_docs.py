@@ -245,6 +245,230 @@ def _get_doc_end_index(document: dict) -> int:
     return 1
 
 
+def _find_table_at_index(document: dict, approx_index: int) -> Optional[dict]:
+    """Find the first table element at or after *approx_index* in the document body."""
+    for element in document.get("body", {}).get("content", []):
+        if "table" in element and element.get("startIndex", 0) >= approx_index - 2:
+            return element["table"]
+    return None
+
+
+def _find_tables(document: dict) -> list[dict]:
+    """Return all table elements in the document body, each as {table, startIndex}."""
+    results: list[dict] = []
+    for element in document.get("body", {}).get("content", []):
+        if "table" in element:
+            results.append({
+                "table": element["table"],
+                "startIndex": element.get("startIndex", 0),
+                "endIndex": element.get("endIndex", 0),
+            })
+    return results
+
+
+def _get_cell_content_range(cell: dict) -> Optional[tuple[int, int]]:
+    """Return (start, end) indices of the text content in a table cell, excluding final \\n.
+
+    Returns None if the cell has no content or is empty (just the paragraph marker).
+    """
+    for cell_content in cell.get("content", []):
+        para = cell_content.get("paragraph")
+        if para:
+            elements = para.get("elements", [])
+            # Find the first text run with actual text (not just the paragraph \n)
+            text_start: Optional[int] = None
+            text_end: Optional[int] = None
+            for el in elements:
+                tr = el.get("textRun")
+                if tr:
+                    content = tr.get("content", "")
+                    s = el.get("startIndex", 0)
+                    e = el.get("endIndex", s)
+                    if content.strip():
+                        if text_start is None:
+                            text_start = s
+                        text_end = e
+                    elif content == "\n" and text_start is None:
+                        # Empty cell — just the paragraph marker
+                        return None
+            if text_start is not None and text_end is not None:
+                return (text_start, text_end)
+    return None
+
+
+def _find_text_in_doc(document: dict, search_text: str) -> list[tuple[int, int]]:
+    """Return a list of (startIndex, endIndex) for all occurrences of search_text in the body.
+
+    Works across paragraph text runs (not across paragraph boundaries).
+    """
+    matches: list[tuple[int, int]] = []
+    body = document.get("body", {})
+
+    def _search_para(paragraph: dict) -> None:
+        # Build a combined text string from all text runs, tracking index offsets
+        run_map: list[tuple[int, int, str]] = []  # (doc_start, doc_end, text)
+        for pe in paragraph.get("elements", []):
+            tr = pe.get("textRun")
+            if tr:
+                run_map.append((
+                    pe.get("startIndex", 0),
+                    pe.get("endIndex", 0),
+                    tr.get("content", ""),
+                ))
+        combined = "".join(t for _, _, t in run_map)
+        if not combined or search_text not in combined:
+            return
+        # Map character positions in combined back to doc indices
+        doc_offsets: list[int] = []
+        for doc_start, doc_end, text in run_map:
+            for i in range(len(text)):
+                doc_offsets.append(doc_start + i)
+        search_len = len(search_text)
+        pos = 0
+        while True:
+            idx = combined.find(search_text, pos)
+            if idx == -1:
+                break
+            end_idx = idx + search_len
+            if end_idx <= len(doc_offsets):
+                matches.append((doc_offsets[idx], doc_offsets[end_idx - 1] + 1))
+            pos = idx + 1
+
+    def _walk_content(content: list) -> None:
+        for element in content:
+            para = element.get("paragraph")
+            if para:
+                _search_para(para)
+            table = element.get("table")
+            if table:
+                for row in table.get("tableRows", []):
+                    for cell in row.get("tableCells", []):
+                        _walk_content(cell.get("content", []))
+
+    _walk_content(body.get("content", []))
+    return matches
+
+
+def _get_cell_indices(table: dict) -> list[list[int]]:
+    """Return a 2D list of paragraph startIndex for each cell in a table."""
+    result: list[list[int]] = []
+    for row in table.get("tableRows", []):
+        row_indices: list[int] = []
+        for cell in row.get("tableCells", []):
+            cell_content = cell.get("content", [])
+            if cell_content:
+                para = cell_content[0].get("paragraph")
+                if para:
+                    elements = para.get("elements", [])
+                    if elements:
+                        row_indices.append(elements[0].get("startIndex", 0))
+                        continue
+            row_indices.append(0)
+        result.append(row_indices)
+    return result
+
+
+def _extract_markdown(document: dict) -> str:
+    """Extract document content as reconstructed markdown.
+
+    Reconstructs headings, bold, italic, links, bullets, numbered lists,
+    and tables from the Google Docs API structure.
+    """
+    body = document.get("body", {})
+    content = body.get("content", [])
+    lists_meta = document.get("lists", {})
+    parts: list[str] = []
+
+    for element in content:
+        paragraph = element.get("paragraph")
+        if paragraph:
+            para_style = paragraph.get("paragraphStyle", {})
+            named_style = para_style.get("namedStyleType", "NORMAL_TEXT")
+            bullet = paragraph.get("bullet")
+
+            # Build inline text with formatting
+            inline_parts: list[str] = []
+            for pe in paragraph.get("elements", []):
+                text_run = pe.get("textRun")
+                if not text_run:
+                    continue
+                text = text_run.get("content", "")
+                style = text_run.get("textStyle", {})
+                is_bold = style.get("bold", False)
+                is_italic = style.get("italic", False)
+                link = style.get("link", {}).get("url")
+
+                # Strip trailing newline — we add our own
+                text = text.rstrip("\n")
+                if not text:
+                    continue
+
+                if link:
+                    text = f"[{text}]({link})"
+                if is_bold and is_italic:
+                    text = f"***{text}***"
+                elif is_bold:
+                    text = f"**{text}**"
+                elif is_italic:
+                    text = f"*{text}*"
+                inline_parts.append(text)
+
+            line = "".join(inline_parts)
+            if not line:
+                parts.append("\n")
+                continue
+
+            # Heading prefix
+            heading_map = {
+                "HEADING_1": "# ", "HEADING_2": "## ", "HEADING_3": "### ",
+                "HEADING_4": "#### ", "HEADING_5": "##### ", "HEADING_6": "###### ",
+            }
+            if named_style in heading_map:
+                parts.append(heading_map[named_style] + line + "\n")
+            elif bullet:
+                list_id = bullet.get("listId", "")
+                nesting = bullet.get("nestingLevel", 0)
+                indent = "  " * nesting
+                # Determine ordered vs unordered from list metadata
+                list_props = lists_meta.get(list_id, {}).get("listProperties", {})
+                nesting_levels = list_props.get("nestingLevels", [])
+                glyph_type = ""
+                if nesting_levels and nesting < len(nesting_levels):
+                    glyph_type = nesting_levels[nesting].get("glyphType", "")
+                if glyph_type and glyph_type != "GLYPH_TYPE_UNSPECIFIED":
+                    parts.append(f"{indent}1. {line}\n")
+                else:
+                    parts.append(f"{indent}- {line}\n")
+            else:
+                parts.append(line + "\n")
+
+        table = element.get("table")
+        if table:
+            rows_data: list[list[str]] = []
+            for row in table.get("tableRows", []):
+                row_cells: list[str] = []
+                for cell in row.get("tableCells", []):
+                    cell_text = ""
+                    for cell_content in cell.get("content", []):
+                        cell_para = cell_content.get("paragraph")
+                        if cell_para:
+                            for pe in cell_para.get("elements", []):
+                                tr = pe.get("textRun")
+                                if tr:
+                                    cell_text += tr.get("content", "").strip()
+                    row_cells.append(cell_text)
+                rows_data.append(row_cells)
+            if rows_data:
+                # Header row
+                parts.append("| " + " | ".join(rows_data[0]) + " |\n")
+                parts.append("| " + " | ".join("---" for _ in rows_data[0]) + " |\n")
+                for row in rows_data[1:]:
+                    parts.append("| " + " | ".join(row) + " |\n")
+            parts.append("\n")
+
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Markdown parser — converts LLM markdown to Google Docs API requests
 # ---------------------------------------------------------------------------
@@ -465,30 +689,18 @@ def _parse_markdown(content: str) -> list[Block]:
     return blocks
 
 
-def _blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[list[dict], int]:
-    """Convert parsed blocks into Google Docs API batch requests.
+def _text_blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[list[dict], int]:
+    """Convert non-table blocks into Google Docs API batch requests.
 
-    Returns (requests, end_index) where end_index is the document index
-    after all content has been inserted.
-
-    Strategy: concatenate ALL text into a single string and insert it with
-    one insertText request to avoid index-shifting bugs, then apply
-    paragraph/text styles on the known final positions.
+    Returns (requests, end_index).  Concatenates all text into a single
+    ``insertText`` to avoid index-shifting bugs, then applies styles.
     """
-    # Phase 1: Build one big string and track where each block lands
     full_text = ""
-    segment_map: list[dict] = []  # {block, offset, length} — offset relative to full_text
+    segment_map: list[dict] = []
 
     for block in blocks:
         if block.kind == "hr":
             seg_text = "\n"
-        elif block.kind == "table":
-            if not block.rows:
-                continue
-            seg_text = ""
-            for row in block.rows:
-                seg_text += "\t".join(row) + "\n"
-            seg_text += "\n"
         else:
             seg_text = block.text + "\n"
 
@@ -502,7 +714,6 @@ def _blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[list[dic
     if not full_text:
         return [], start_index
 
-    # Phase 2: Single insert request for all text
     insert_request = {
         "insertText": {
             "location": {"index": start_index},
@@ -510,55 +721,85 @@ def _blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[list[dic
         }
     }
 
-    # Phase 3: Style requests — indices are start_index + offset into full_text
     style_requests: list[dict] = []
+
+    # Reset any text style inherited from adjacent content (bold, italic, link, color etc.)
+    # across the entire inserted range. Individual spans re-apply formatting as needed.
+    style_requests.append({
+        "updateTextStyle": {
+            "range": {
+                "startIndex": start_index,
+                "endIndex": start_index + len(full_text),
+            },
+            "textStyle": {},
+            "fields": "bold,italic,underline,strikethrough,link,foregroundColor,fontSize",
+        }
+    })
 
     for seg in segment_map:
         block = seg["block"]
         block_start = start_index + seg["offset"]
         text_len = seg["length"]
 
-        # Heading styles
+        block_range = {
+            "startIndex": block_start,
+            "endIndex": block_start + text_len,
+        }
+
         if block.kind == "heading":
             heading_map = {
                 1: "HEADING_1", 2: "HEADING_2", 3: "HEADING_3",
                 4: "HEADING_4", 5: "HEADING_5", 6: "HEADING_6",
             }
-            named_style = heading_map.get(block.level, "HEADING_1")
             style_requests.append({
                 "updateParagraphStyle": {
-                    "range": {
-                        "startIndex": block_start,
-                        "endIndex": block_start + text_len,
-                    },
-                    "paragraphStyle": {"namedStyleType": named_style},
+                    "range": block_range,
+                    "paragraphStyle": {"namedStyleType": heading_map.get(block.level, "HEADING_1")},
+                    "fields": "namedStyleType",
+                }
+            })
+        elif block.kind in ("paragraph", "hr"):
+            # Explicitly reset to NORMAL_TEXT so content inserted at the start of
+            # a heading paragraph doesn't inherit the surrounding heading style.
+            style_requests.append({
+                "updateParagraphStyle": {
+                    "range": block_range,
+                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
                     "fields": "namedStyleType",
                 }
             })
 
-        # Bullet/numbered list styles
         if block.kind == "bullet":
+            # Reset to NORMAL_TEXT first, then apply bullet style, to clear any
+            # inherited heading style from the surrounding paragraph context.
+            style_requests.append({
+                "updateParagraphStyle": {
+                    "range": block_range,
+                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                    "fields": "namedStyleType",
+                }
+            })
             style_requests.append({
                 "createParagraphBullets": {
-                    "range": {
-                        "startIndex": block_start,
-                        "endIndex": block_start + text_len,
-                    },
+                    "range": block_range,
                     "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
                 }
             })
         elif block.kind == "numbered":
             style_requests.append({
+                "updateParagraphStyle": {
+                    "range": block_range,
+                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                    "fields": "namedStyleType",
+                }
+            })
+            style_requests.append({
                 "createParagraphBullets": {
-                    "range": {
-                        "startIndex": block_start,
-                        "endIndex": block_start + text_len,
-                    },
+                    "range": block_range,
                     "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN",
                 }
             })
 
-        # Inline styles (bold, italic, links)
         for span in block.spans:
             span_start = block_start + span.start
             span_end = block_start + span.end
@@ -592,14 +833,180 @@ def _blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[list[dic
                             "startIndex": span_start,
                             "endIndex": span_end,
                         },
-                        "textStyle": {
-                            "link": {"url": span.link_url},
-                        },
+                        "textStyle": {"link": {"url": span.link_url}},
                         "fields": "link",
                     }
                 })
 
     return [insert_request] + style_requests, start_index + len(full_text)
+
+
+def _execute_write_segments(
+    document_id: str,
+    blocks: list[Block],
+    start_index: int,
+    account_id: Optional[str] = None,
+    prefix_requests: Optional[list[dict]] = None,
+) -> tuple[bool, str]:
+    """Execute a mixed sequence of text and table blocks against the Docs API.
+
+    Partitions *blocks* into contiguous text segments and individual table
+    segments, then processes them in order.  Text segments use a single
+    ``batchUpdate``; table segments require ``insertTable`` followed by a
+    document re-read to discover cell indices, then cell population.
+
+    *prefix_requests* (e.g. a deleteContentRange for overwrite mode) are
+    prepended to the very first batchUpdate.
+
+    Returns ``(success, message)``.
+    """
+    # Partition blocks into segments: ("text", [blocks]) or ("table", block)
+    segments: list[tuple[str, Any]] = []
+    current_text: list[Block] = []
+    for block in blocks:
+        if block.kind == "table":
+            if current_text:
+                segments.append(("text", current_text))
+                current_text = []
+            segments.append(("table", block))
+        else:
+            current_text.append(block)
+    if current_text:
+        segments.append(("text", current_text))
+
+    # Fast path — no tables, single batchUpdate
+    has_tables = any(s[0] == "table" for s in segments)
+    if not has_tables:
+        all_requests = list(prefix_requests or [])
+        reqs, _ = _text_blocks_to_requests(blocks, start_index)
+        all_requests.extend(reqs)
+        if not all_requests:
+            return True, "No content to write."
+        success, result = _docs_request(
+            lambda s: s.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": all_requests},
+            ).execute(),
+            account_id=account_id,
+        )
+        return (True, "ok") if success else (False, result)
+
+    # Multi-step path for mixed content
+    cursor = start_index
+    first_batch = True
+
+    for seg_type, seg_data in segments:
+        if seg_type == "text":
+            reqs, cursor = _text_blocks_to_requests(seg_data, cursor)
+            if first_batch and prefix_requests:
+                reqs = list(prefix_requests) + reqs
+            if reqs:
+                success, result = _docs_request(
+                    lambda s, r=reqs: s.documents().batchUpdate(
+                        documentId=document_id,
+                        body={"requests": r},
+                    ).execute(),
+                    account_id=account_id,
+                )
+                if not success:
+                    return False, result
+            first_batch = False
+
+        elif seg_type == "table":
+            table_block: Block = seg_data
+            if not table_block.rows:
+                continue
+
+            num_rows = len(table_block.rows)
+            num_cols = max(len(r) for r in table_block.rows)
+
+            # Execute prefix requests if this is the first segment
+            batch_reqs: list[dict] = []
+            if first_batch and prefix_requests:
+                batch_reqs.extend(prefix_requests)
+
+            # Insert table
+            batch_reqs.append({
+                "insertTable": {
+                    "rows": num_rows,
+                    "columns": num_cols,
+                    "location": {"index": cursor},
+                }
+            })
+            success, result = _docs_request(
+                lambda s, r=batch_reqs: s.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": r},
+                ).execute(),
+                account_id=account_id,
+            )
+            if not success:
+                return False, result
+            first_batch = False
+
+            # Re-read document to discover cell indices
+            success, doc = _docs_request(
+                lambda s: s.documents().get(documentId=document_id).execute(),
+                account_id=account_id,
+            )
+            if not success:
+                return False, doc
+
+            table_el = _find_table_at_index(doc, cursor)
+            if not table_el:
+                return False, "Could not locate inserted table in document."
+
+            cell_indices = _get_cell_indices(table_el)
+
+            # Populate cells in reverse order to preserve indices
+            populate_reqs: list[dict] = []
+            for r in reversed(range(num_rows)):
+                row_data = table_block.rows[r] if r < len(table_block.rows) else []
+                for c in reversed(range(num_cols)):
+                    cell_text = row_data[c] if c < len(row_data) else ""
+                    if cell_text and r < len(cell_indices) and c < len(cell_indices[r]):
+                        populate_reqs.append({
+                            "insertText": {
+                                "location": {"index": cell_indices[r][c]},
+                                "text": cell_text,
+                            }
+                        })
+
+            if populate_reqs:
+                success, result = _docs_request(
+                    lambda s, r=populate_reqs: s.documents().batchUpdate(
+                        documentId=document_id,
+                        body={"requests": r},
+                    ).execute(),
+                    account_id=account_id,
+                )
+                if not success:
+                    return False, result
+
+            # Re-read to get fresh end index for next segment
+            success, doc = _docs_request(
+                lambda s: s.documents().get(documentId=document_id).execute(),
+                account_id=account_id,
+            )
+            if not success:
+                return False, doc
+            cursor = _get_doc_end_index(doc) - 1
+            if cursor < 1:
+                cursor = 1
+
+    # If prefix requests were never sent (e.g. blocks was empty), send them now
+    if first_batch and prefix_requests:
+        success, result = _docs_request(
+            lambda s: s.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": list(prefix_requests)},
+            ).execute(),
+            account_id=account_id,
+        )
+        if not success:
+            return False, result
+
+    return True, "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +1018,7 @@ def google_docs_read(
     document_id: str,
     format: str = "text",
     max_chars: int = 50000,
+    include_metadata: bool = False,
     account_id: Optional[str] = None,
 ) -> str:
     """
@@ -620,8 +1028,12 @@ def google_docs_read(
 
     Args:
         document_id: The Google Docs document ID or full URL
-        format: Output format — "text" for plain text (default), "json" for raw API structure
+        format: Output format — "text" for plain text (default), "markdown" for
+                reconstructed markdown with headings/bold/lists/tables, "json" for
+                raw API structure with indices
         max_chars: Maximum characters to return (default: 50000)
+        include_metadata: If True, include document end index and other metadata
+                          in the response header (useful for subsequent insert operations)
         account_id: Google account ID (optional, uses first account if not specified)
 
     Returns:
@@ -638,16 +1050,26 @@ def google_docs_read(
         return f"[Error]: {result}"
 
     title = result.get("title", "(untitled)")
+    meta_line = ""
+    if include_metadata:
+        end_idx = _get_doc_end_index(result)
+        meta_line = f"\nMetadata: endIndex={end_idx}\n"
 
     if format == "json":
         body = result.get("body", {})
-        return f"[Success]: **{title}**\n\n```json\n{json.dumps(body, indent=2)[:max_chars]}\n```"
+        return f"[Success]: **{title}**{meta_line}\n\n```json\n{json.dumps(body, indent=2)[:max_chars]}\n```"
+
+    if format == "markdown":
+        text = _extract_markdown(result)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n...[truncated]"
+        return f"[Success]: **{title}**{meta_line}\n\n{text}"
 
     text = _extract_text(result)
     if len(text) > max_chars:
         text = text[:max_chars] + "\n...[truncated]"
 
-    return f"[Success]: **{title}**\n\n{text}"
+    return f"[Success]: **{title}**{meta_line}\n\n{text}"
 
 
 @tool
@@ -805,6 +1227,7 @@ def google_docs_write(
     document_id: str,
     content: str,
     mode: str = "append",
+    insert_index: Optional[int] = None,
     account_id: Optional[str] = None,
 ) -> str:
     """
@@ -814,22 +1237,30 @@ def google_docs_write(
     bold (**text**), italic (*text*), links ([text](url)), bullet lists (- item),
     numbered lists (1. item), and tables (| col | col |).
 
+    Markdown tables are rendered as real Google Docs tables with populated cells.
+
     Accepts either a document ID or a full Google Docs URL.
 
     Args:
         document_id: The Google Docs document ID or full URL
         content: Markdown-formatted content to write
         mode: "append" to add after existing content (default), "overwrite" to replace all content
+        insert_index: Optional — insert content at this specific 1-based index instead of
+                      appending. Use google_docs_read with format="json" or include_metadata=True
+                      to find indices. Cannot be combined with mode="overwrite".
         account_id: Google account ID (optional, uses first account if not specified)
 
     Returns:
         Summary of what was written (character count, element types)
     """
     document_id = _extract_document_id(document_id)
-    logger.info(f"google_docs_write called: document_id={document_id}, mode={mode}")
+    logger.info(f"google_docs_write called: document_id={document_id}, mode={mode}, insert_index={insert_index}")
 
     if mode not in ("append", "overwrite"):
         return "[Error]: mode must be 'append' or 'overwrite'."
+
+    if insert_index is not None and mode == "overwrite":
+        return "[Error]: Cannot use insert_index with mode='overwrite'."
 
     # Read document to get current state
     success, doc = _docs_request(
@@ -849,13 +1280,12 @@ def google_docs_write(
     for b in blocks:
         element_counts[b.kind] = element_counts.get(b.kind, 0) + 1
 
-    requests: list[dict] = []
+    prefix_requests: list[dict] = []
 
     if mode == "overwrite":
-        # Delete all body content (index 1 to endIndex-1)
         end_index = _get_doc_end_index(doc)
         if end_index > 2:
-            requests.append({
+            prefix_requests.append({
                 "deleteContentRange": {
                     "range": {
                         "startIndex": 1,
@@ -865,32 +1295,22 @@ def google_docs_write(
                 }
             })
         start_index = 1
+    elif insert_index is not None:
+        start_index = max(1, insert_index)
     else:
-        # Append: insert after existing content
         start_index = _get_doc_end_index(doc) - 1
         if start_index < 1:
             start_index = 1
 
-    # Generate insert + style requests
-    block_requests, final_index = _blocks_to_requests(blocks, start_index)
-    requests.extend(block_requests)
-
-    if not requests:
-        return "[Error]: No API requests generated from the content."
-
-    # Execute batch update
-    def _op(s):
-        return s.documents().batchUpdate(
-            documentId=document_id,
-            body={"requests": requests},
-        ).execute()
-
-    success, result = _docs_request(_op, account_id=account_id)
+    success, msg = _execute_write_segments(
+        document_id, blocks, start_index,
+        account_id=account_id,
+        prefix_requests=prefix_requests if prefix_requests else None,
+    )
     if not success:
-        return f"[Error]: {result}"
+        return f"[Error]: {msg}"
 
     total_chars = sum(len(b.text) for b in blocks)
-    # Add table cell text to the count
     for b in blocks:
         if b.kind == "table":
             for row in b.rows:
@@ -899,8 +1319,9 @@ def google_docs_write(
     for kind, count in sorted(element_counts.items()):
         summary_parts.append(f"{count} {kind}(s)")
 
+    location = f"at index {insert_index}" if insert_index else f"{mode} mode"
     return (
-        f"[Success]: Wrote {total_chars} characters to document ({mode} mode).\n"
+        f"[Success]: Wrote {total_chars} characters to document ({location}).\n"
         f"Elements: {', '.join(summary_parts)}"
     )
 
@@ -1262,6 +1683,16 @@ def google_docs_insert_table(
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_insert_table called: document_id={document_id}, {rows}x{columns} at index {index}")
 
+    # Clamp index to avoid off-by-one at document end
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if success:
+        end_idx = _get_doc_end_index(doc)
+        if index >= end_idx:
+            index = max(1, end_idx - 1)
+
     def _op(s):
         requests = [
             {
@@ -1282,6 +1713,161 @@ def google_docs_insert_table(
         return f"[Error]: {result}"
 
     return f"[Success]: Inserted {rows}x{columns} table at index {index}."
+
+
+@tool
+def google_docs_write_table(
+    document_id: str,
+    headers: list[str],
+    rows: list[list[str]],
+    index: Optional[int] = None,
+    bold_headers: bool = True,
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Create a populated table in a Google Docs document in one step.
+
+    Creates a real Google Docs table with headers and data rows already filled
+    in. This is the easiest way to add a data table.
+
+    Accepts either a document ID or a full Google Docs URL.
+
+    Args:
+        document_id: The Google Docs document ID or full URL
+        headers: List of column header strings (determines number of columns)
+        rows: List of data rows, each a list of cell strings
+        index: Optional 1-based index to insert at (default: end of document)
+        bold_headers: Whether to bold the header row (default: True)
+        account_id: Google account ID (optional, uses first account if not specified)
+
+    Returns:
+        Confirmation with table dimensions
+    """
+    document_id = _extract_document_id(document_id)
+    num_cols = len(headers)
+    num_rows = len(rows) + 1  # +1 for header row
+    logger.info(f"google_docs_write_table called: document_id={document_id}, {num_rows}x{num_cols}")
+
+    if not headers:
+        return "[Error]: headers list cannot be empty."
+
+    # Read document to determine insertion index
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {doc}"
+
+    if index is None:
+        index = _get_doc_end_index(doc) - 1
+    end_idx = _get_doc_end_index(doc)
+    if index >= end_idx:
+        index = max(1, end_idx - 1)
+
+    # Insert empty table
+    success, result = _docs_request(
+        lambda s: s.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": [{
+                "insertTable": {
+                    "rows": num_rows,
+                    "columns": num_cols,
+                    "location": {"index": index},
+                }
+            }]},
+        ).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {result}"
+
+    # Re-read to get cell indices
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {doc}"
+
+    table_el = _find_table_at_index(doc, index)
+    if not table_el:
+        return "[Error]: Table was inserted but could not be located in the document."
+
+    cell_indices = _get_cell_indices(table_el)
+
+    # Build all cell data: header row + data rows
+    all_rows = [headers] + rows
+
+    # Populate in reverse order to preserve indices
+    populate_reqs: list[dict] = []
+    for r in reversed(range(num_rows)):
+        row_data = all_rows[r] if r < len(all_rows) else []
+        for c in reversed(range(num_cols)):
+            cell_text = row_data[c] if c < len(row_data) else ""
+            if cell_text and r < len(cell_indices) and c < len(cell_indices[r]):
+                populate_reqs.append({
+                    "insertText": {
+                        "location": {"index": cell_indices[r][c]},
+                        "text": cell_text,
+                    }
+                })
+
+    if populate_reqs:
+        success, result = _docs_request(
+            lambda s: s.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": populate_reqs},
+            ).execute(),
+            account_id=account_id,
+        )
+        if not success:
+            return f"[Error]: {result}"
+
+    # Bold the header row if requested
+    if bold_headers and cell_indices and cell_indices[0]:
+        # Re-read to get updated indices after cell population
+        success, doc = _docs_request(
+            lambda s: s.documents().get(documentId=document_id).execute(),
+            account_id=account_id,
+        )
+        if success:
+            table_el = _find_table_at_index(doc, index)
+            if table_el:
+                first_row = table_el.get("tableRows", [{}])[0]
+                cells = first_row.get("tableCells", [])
+                bold_reqs: list[dict] = []
+                for cell in cells:
+                    for cell_content in cell.get("content", []):
+                        para = cell_content.get("paragraph")
+                        if para:
+                            elements = para.get("elements", [])
+                            for el in elements:
+                                tr = el.get("textRun")
+                                if tr and tr.get("content", "").strip():
+                                    s_idx = el.get("startIndex", 0)
+                                    e_idx = el.get("endIndex", s_idx)
+                                    if e_idx > s_idx:
+                                        bold_reqs.append({
+                                            "updateTextStyle": {
+                                                "range": {
+                                                    "startIndex": s_idx,
+                                                    "endIndex": e_idx,
+                                                },
+                                                "textStyle": {"bold": True},
+                                                "fields": "bold",
+                                            }
+                                        })
+                if bold_reqs:
+                    _docs_request(
+                        lambda s, r=bold_reqs: s.documents().batchUpdate(
+                            documentId=document_id,
+                            body={"requests": r},
+                        ).execute(),
+                        account_id=account_id,
+                    )
+
+    return f"[Success]: Created {num_rows}x{num_cols} table with {len(headers)} headers and {len(rows)} data rows."
 
 
 @tool
@@ -1332,10 +1918,15 @@ def google_docs_replace_text(
     find_text: str,
     replace_text: str,
     match_case: bool = True,
+    clear_formatting: bool = False,
     account_id: Optional[str] = None,
 ) -> str:
     """
     Find and replace all occurrences of text in a Google Docs document.
+
+    By default the replaced text inherits the formatting (bold, italic, color, etc.)
+    of the text it replaced. Use clear_formatting=True to reset the replaced text
+    to the document's default style instead.
 
     Accepts either a document ID or a full Google Docs URL.
 
@@ -1344,41 +1935,335 @@ def google_docs_replace_text(
         find_text: The text to search for
         replace_text: The text to replace it with
         match_case: Whether the search is case-sensitive (default: True)
+        clear_formatting: If True, reset the replaced text to default style —
+                          removes bold, italic, underline, color, font size, links
+                          (default: False)
         account_id: Google account ID (optional, uses first account if not specified)
 
     Returns:
         Number of replacements made
     """
     document_id = _extract_document_id(document_id)
-    logger.info(f"google_docs_replace_text called: document_id={document_id}, find='{find_text}'")
+    logger.info(f"google_docs_replace_text called: document_id={document_id}, find='{find_text}', clear_fmt={clear_formatting}")
 
-    def _op(s):
-        requests = [
-            {
+    success, result = _docs_request(
+        lambda s: s.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": [{
                 "replaceAllText": {
-                    "containsText": {
-                        "text": find_text,
-                        "matchCase": match_case,
-                    },
+                    "containsText": {"text": find_text, "matchCase": match_case},
                     "replaceText": replace_text,
                 }
-            }
-        ]
-        return s.documents().batchUpdate(
-            documentId=document_id,
-            body={"requests": requests},
-        ).execute()
-
-    success, result = _docs_request(_op, account_id=account_id)
+            }]},
+        ).execute(),
+        account_id=account_id,
+    )
     if not success:
         return f"[Error]: {result}"
 
     replies = result.get("replies", [])
-    count = 0
-    if replies:
-        count = replies[0].get("replaceAllText", {}).get("occurrencesChanged", 0)
+    count = replies[0].get("replaceAllText", {}).get("occurrencesChanged", 0) if replies else 0
+
+    if clear_formatting and count > 0 and replace_text:
+        # Re-read to find the replaced text ranges, then reset their formatting
+        success, doc = _docs_request(
+            lambda s: s.documents().get(documentId=document_id).execute(),
+            account_id=account_id,
+        )
+        if success:
+            ranges = _find_text_in_doc(doc, replace_text)
+            if ranges:
+                fmt_reqs = []
+                for s_idx, e_idx in ranges:
+                    fmt_reqs.append({
+                        "updateTextStyle": {
+                            "range": {"startIndex": s_idx, "endIndex": e_idx},
+                            "textStyle": {},
+                            "fields": "bold,italic,underline,strikethrough,link,foregroundColor,fontSize",
+                        }
+                    })
+                    fmt_reqs.append({
+                        "updateParagraphStyle": {
+                            "range": {"startIndex": s_idx, "endIndex": e_idx},
+                            "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                            "fields": "namedStyleType",
+                        }
+                    })
+                _docs_request(
+                    lambda s, r=fmt_reqs: s.documents().batchUpdate(
+                        documentId=document_id,
+                        body={"requests": r},
+                    ).execute(),
+                    account_id=account_id,
+                )
 
     return f"[Success]: Replaced {count} occurrence(s) of '{find_text}'."
+
+
+@tool
+def google_docs_find_index(
+    document_id: str,
+    search_text: str,
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Find the document indices of a text string in a Google Docs document.
+
+    Returns the start and end index for each match. Use these indices with
+    google_docs_insert_text, google_docs_delete_range, google_docs_apply_text_style,
+    and google_docs_write (insert_index) without needing to parse raw JSON.
+
+    Accepts either a document ID or a full Google Docs URL.
+
+    Args:
+        document_id: The Google Docs document ID or full URL
+        search_text: The text to search for (exact match, case-sensitive)
+        account_id: Google account ID (optional, uses first account if not specified)
+
+    Returns:
+        List of matches with their start and end indices
+    """
+    document_id = _extract_document_id(document_id)
+    logger.info(f"google_docs_find_index called: document_id={document_id}, search='{search_text}'")
+
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {doc}"
+
+    matches = _find_text_in_doc(doc, search_text)
+    if not matches:
+        return f"[Info]: No matches found for '{search_text}'."
+
+    lines = [f"[Success]: Found {len(matches)} match(es) for '{search_text}':\n"]
+    for i, (s_idx, e_idx) in enumerate(matches, 1):
+        lines.append(f"Match {i}: startIndex={s_idx}, endIndex={e_idx}")
+        lines.append(f"  → To insert BEFORE this text: use insert_index={s_idx}")
+        lines.append(f"  → To insert AFTER this text: use insert_index={e_idx}")
+        lines.append(f"  → To delete this text: delete_range({s_idx}, {e_idx})")
+    return "\n".join(lines)
+
+
+@tool
+def google_docs_table_update_cell(
+    document_id: str,
+    row: int,
+    col: int,
+    text: str,
+    table_index: int = 1,
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Update the content of a specific cell in an existing table.
+
+    Replaces the cell's current content with new text. Uses 1-based row, column,
+    and table indices.
+
+    Accepts either a document ID or a full Google Docs URL.
+
+    Args:
+        document_id: The Google Docs document ID or full URL
+        row: 1-based row number (1 = first row / header row)
+        col: 1-based column number (1 = first column)
+        text: New text to put in the cell (replaces existing content)
+        table_index: Which table in the document (1 = first table, default: 1)
+        account_id: Google account ID (optional, uses first account if not specified)
+
+    Returns:
+        Confirmation of the cell update
+    """
+    document_id = _extract_document_id(document_id)
+    logger.info(f"google_docs_table_update_cell called: doc={document_id}, table={table_index}, row={row}, col={col}")
+
+    if row < 1 or col < 1:
+        return "[Error]: row and col must be >= 1 (1-based)."
+
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {doc}"
+
+    tables = _find_tables(doc)
+    if not tables:
+        return "[Error]: No tables found in the document."
+    if table_index < 1 or table_index > len(tables):
+        return f"[Error]: table_index={table_index} but document has {len(tables)} table(s)."
+
+    table = tables[table_index - 1]["table"]
+    table_rows = table.get("tableRows", [])
+    if row > len(table_rows):
+        return f"[Error]: row={row} but table only has {len(table_rows)} row(s)."
+
+    row_data = table_rows[row - 1]
+    cells = row_data.get("tableCells", [])
+    if col > len(cells):
+        return f"[Error]: col={col} but row only has {len(cells)} column(s)."
+
+    cell = cells[col - 1]
+    cell_indices = _get_cell_indices({"tableRows": [row_data]})
+    cell_start = cell_indices[0][col - 1] if cell_indices and cell_indices[0] else None
+    if cell_start is None:
+        return "[Error]: Could not determine cell index."
+
+    reqs: list[dict] = []
+
+    # Delete existing cell content if any
+    content_range = _get_cell_content_range(cell)
+    if content_range:
+        c_start, c_end = content_range
+        if c_end > c_start:
+            reqs.append({
+                "deleteContentRange": {
+                    "range": {
+                        "startIndex": c_start,
+                        "endIndex": c_end,
+                        "segmentId": "",
+                    }
+                }
+            })
+
+    # Insert new text at cell start (after potential delete, index may shift)
+    # If we deleted content, insert at c_start; otherwise at cell_start
+    insert_at = content_range[0] if content_range else cell_start
+    if text:
+        reqs.append({
+            "insertText": {
+                "location": {"index": insert_at},
+                "text": text,
+            }
+        })
+
+    if not reqs:
+        return "[Info]: Cell is already empty and no new text provided."
+
+    success, result = _docs_request(
+        lambda s, r=reqs: s.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": r},
+        ).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {result}"
+
+    return f"[Success]: Updated table {table_index}, row {row}, col {col}."
+
+
+@tool
+def google_docs_table_append_row(
+    document_id: str,
+    row_data: list[str],
+    table_index: int = 1,
+    account_id: Optional[str] = None,
+) -> str:
+    """
+    Append a new row to the end of an existing table in a Google Docs document.
+
+    Accepts either a document ID or a full Google Docs URL.
+
+    Args:
+        document_id: The Google Docs document ID or full URL
+        row_data: List of cell strings for the new row (one per column)
+        table_index: Which table in the document to append to (1 = first table, default: 1)
+        account_id: Google account ID (optional, uses first account if not specified)
+
+    Returns:
+        Confirmation of the row append
+    """
+    document_id = _extract_document_id(document_id)
+    logger.info(f"google_docs_table_append_row called: doc={document_id}, table={table_index}")
+
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {doc}"
+
+    tables = _find_tables(doc)
+    if not tables:
+        return "[Error]: No tables found in the document."
+    if table_index < 1 or table_index > len(tables):
+        return f"[Error]: table_index={table_index} but document has {len(tables)} table(s)."
+
+    table_info = tables[table_index - 1]
+    table = table_info["table"]
+    table_start = table_info["startIndex"]
+    table_rows = table.get("tableRows", [])
+    num_rows = len(table_rows)
+    num_cols = table.get("columns", len(table_rows[0].get("tableCells", []))) if table_rows else 1
+
+    # Insert a new row below the last row
+    last_row_idx = num_rows - 1
+    success, result = _docs_request(
+        lambda s: s.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": [{
+                "insertTableRow": {
+                    "tableCellLocation": {
+                        "tableStartLocation": {"index": table_start},
+                        "rowIndex": last_row_idx,
+                        "columnIndex": 0,
+                    },
+                    "insertBelow": True,
+                }
+            }]},
+        ).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {result}"
+
+    # Re-read to get the new row's cell indices
+    success, doc = _docs_request(
+        lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return f"[Error]: {doc}"
+
+    tables = _find_tables(doc)
+    if not tables or table_index > len(tables):
+        return "[Error]: Could not locate table after row insertion."
+
+    updated_table = tables[table_index - 1]["table"]
+    updated_rows = updated_table.get("tableRows", [])
+    if len(updated_rows) <= last_row_idx:
+        return "[Error]: New row not found after insertion."
+
+    new_row = updated_rows[-1]  # Last row is the newly inserted one
+    cell_indices = _get_cell_indices({"tableRows": [new_row]})
+    if not cell_indices or not cell_indices[0]:
+        return "[Error]: Could not get cell indices for new row."
+
+    new_row_indices = cell_indices[0]
+    populate_reqs: list[dict] = []
+    for c in reversed(range(min(len(row_data), len(new_row_indices)))):
+        cell_text = row_data[c] if c < len(row_data) else ""
+        if cell_text:
+            populate_reqs.append({
+                "insertText": {
+                    "location": {"index": new_row_indices[c]},
+                    "text": cell_text,
+                }
+            })
+
+    if populate_reqs:
+        success, result = _docs_request(
+            lambda s, r=populate_reqs: s.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": r},
+            ).execute(),
+            account_id=account_id,
+        )
+        if not success:
+            return f"[Error]: {result}"
+
+    return f"[Success]: Appended row to table {table_index} ({num_cols} columns)."
 
 
 # ---------------------------------------------------------------------------
@@ -1397,6 +2282,10 @@ GOOGLE_DOCS_TOOLS = GOOGLE_DOCS_AUTH_TOOLS + [
     google_docs_apply_text_style,
     google_docs_update_paragraph_style,
     google_docs_insert_table,
+    google_docs_write_table,
     google_docs_insert_page_break,
     google_docs_replace_text,
+    google_docs_find_index,
+    google_docs_table_update_cell,
+    google_docs_table_append_row,
 ]
