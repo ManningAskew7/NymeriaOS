@@ -298,6 +298,13 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
             effort = config.reasoning_effort or "medium"
             budget = thinking_budget_map.get(effort, 4096)
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # Legacy thinking requires temperature=1
+            if "temperature" in kwargs and kwargs["temperature"] != 1:
+                logger.warning(
+                    "Extended thinking (type=enabled) requires temperature=1, "
+                    f"overriding configured value of {kwargs['temperature']}"
+                )
+            kwargs["temperature"] = 1
 
     return ChatAnthropic(**kwargs)
 
