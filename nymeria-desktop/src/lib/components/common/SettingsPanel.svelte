@@ -3,7 +3,7 @@
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { api } from '$lib/services/api.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { ServerSettings, LLMProvider, LogLevel, ThemeName, SavedConnection } from '$lib/types';
+  import type { ServerSettings, LLMProvider, LogLevel, ThemeName, SavedConnection, AvailableModel } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { modelsStore } from '$lib/stores/models.svelte';
@@ -77,6 +77,34 @@
   const currentModelMeta = $derived(
     llmProvider === 'openrouter' ? modelsStore.getById(llmModel) : undefined
   );
+
+  // Dynamic model list for providers that support /v1/models
+  let availableModels = $state<AvailableModel[]>([]);
+  let loadingAvailableModels = $state(false);
+  let availableModelsProvider = $state<string>('');
+
+  async function fetchAvailableModels(provider: string) {
+    if (provider !== 'anthropic' && provider !== 'openai') {
+      availableModels = [];
+      availableModelsProvider = '';
+      return;
+    }
+    if (availableModelsProvider === provider && availableModels.length > 0) return;
+    loadingAvailableModels = true;
+    try {
+      availableModels = await api.getAvailableModels(provider);
+      availableModelsProvider = provider;
+    } catch {
+      availableModels = [];
+    } finally {
+      loadingAvailableModels = false;
+    }
+  }
+
+  // Fetch models when provider changes
+  $effect(() => {
+    fetchAvailableModels(llmProvider);
+  });
 
   // UI state
   type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy';
@@ -558,11 +586,25 @@
 
         <div class="field">
           <label for="llm-model">Model</label>
-          <select id="llm-model" bind:value={llmModel}>
-            {#each modelOptions[llmProvider] as model}
-              <option value={model.value}>{model.label}</option>
-            {/each}
-          </select>
+          {#if availableModels.length > 0 && (llmProvider === 'anthropic' || llmProvider === 'openai')}
+            <select id="llm-model" bind:value={llmModel}>
+              {#each availableModels as model}
+                <option value={model.id}>{model.name || model.id}</option>
+              {/each}
+            </select>
+            <p class="hint">{availableModels.length} models fetched from {llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'}</p>
+          {:else if loadingAvailableModels}
+            <select id="llm-model" disabled>
+              <option>Loading models...</option>
+            </select>
+            <p class="hint">Fetching available models...</p>
+          {:else}
+            <select id="llm-model" bind:value={llmModel}>
+              {#each modelOptions[llmProvider] as model}
+                <option value={model.value}>{model.label}</option>
+              {/each}
+            </select>
+          {/if}
           <div class="model-custom-row">
             <input
               type="text"

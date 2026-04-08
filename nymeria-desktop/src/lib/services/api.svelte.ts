@@ -41,6 +41,7 @@ import type {
   TriggerSourceInfo,
   TriggerCreatedBy,
   ModelMetadata,
+  AvailableModel,
   MCPServer,
   MCPDiscoveredTool,
   MCPServerCreateRequest,
@@ -694,6 +695,20 @@ export class NymeriaAPI {
   async getOpenRouterModels(): Promise<ModelMetadata[]> {
     try {
       const response = await fetch(`${this.getBaseUrl()}/models`, {
+        headers: this.getHeaders()
+      });
+
+      if (!response.ok) return [];
+      return response.json();
+    } catch {
+      return [];
+    }
+  }
+
+  async getAvailableModels(provider?: string): Promise<AvailableModel[]> {
+    try {
+      const params = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+      const response = await fetch(`${this.getBaseUrl()}/models/available${params}`, {
         headers: this.getHeaders()
       });
 

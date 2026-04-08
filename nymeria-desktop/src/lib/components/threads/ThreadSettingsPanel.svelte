@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, AvailableModel } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -9,6 +9,7 @@
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
+  import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
@@ -168,6 +169,40 @@
 
   // Model metadata (reactive lookup)
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
+
+  // Dynamic model list for providers that support /v1/models
+  let availableModels = $state<AvailableModel[]>([]);
+  let loadingAvailableModels = $state(false);
+  let availableModelsProvider = $state<string>('');
+
+  // Effective provider: thread override or global default
+  function getEffectiveProvider(): string {
+    return llmProvider || serverSettingsStore.provider || '';
+  }
+
+  async function fetchAvailableModels(provider: string) {
+    if (provider !== 'anthropic' && provider !== 'openai') {
+      availableModels = [];
+      availableModelsProvider = '';
+      return;
+    }
+    if (availableModelsProvider === provider && availableModels.length > 0) return;
+    loadingAvailableModels = true;
+    try {
+      availableModels = await api.getAvailableModels(provider);
+      availableModelsProvider = provider;
+    } catch {
+      availableModels = [];
+    } finally {
+      loadingAvailableModels = false;
+    }
+  }
+
+  // Fetch models when effective provider changes
+  $effect(() => {
+    const ep = getEffectiveProvider();
+    fetchAvailableModels(ep);
+  });
 
   // System prompt & agent fields
   let systemPrompt = $state(threadConfig?.systemPrompt ?? '');
@@ -661,13 +696,26 @@
 
           <div class="field-group">
             <label class="field-label" for="llm-model">Model</label>
-            <input
-              id="llm-model"
-              class="field-input"
-              type="text"
-              bind:value={llmModel}
-              placeholder="Leave empty for global default"
-            />
+            {#if availableModels.length > 0}
+              <select id="llm-model" class="field-select" bind:value={llmModel}>
+                <option value="">Default (inherit global)</option>
+                {#each availableModels as model}
+                  <option value={model.id}>{model.name || model.id}</option>
+                {/each}
+              </select>
+            {:else if loadingAvailableModels}
+              <select id="llm-model" class="field-select" disabled>
+                <option>Loading models...</option>
+              </select>
+            {:else}
+              <input
+                id="llm-model"
+                class="field-input"
+                type="text"
+                bind:value={llmModel}
+                placeholder="Leave empty for global default"
+              />
+            {/if}
             {#if threadModelMeta && llmModel}
               <div class="model-meta-hint">
                 <span class="meta-name">{threadModelMeta.name}</span>
