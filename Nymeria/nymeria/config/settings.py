@@ -201,6 +201,7 @@ class Settings(BaseSettings):
     # API Keys
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
+    anthropic_direct_api_key: Optional[str] = Field(default=None, description="Direct Anthropic API key (pay-per-token), used when base_url is empty")
     openrouter_api_key: Optional[str] = Field(default=None)
     perplexity_api_key: Optional[str] = Field(default=None)
     perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")

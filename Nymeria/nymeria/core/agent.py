@@ -1698,13 +1698,17 @@ class NymeriaAgent:
 
         # Resolve API key: proxy mode (base_url set) uses the global provider's
         # key (same cpx- key for all providers through CLIProxy). Direct mode
-        # (no base_url) uses per-provider keys.
+        # (no base_url) uses per-provider keys — preferring the dedicated
+        # direct key for Anthropic when available.
         if base_url:
             api_key = self.settings.get_api_key_for_provider()
         else:
             key_map = {
                 "openai": self.settings.openai_api_key,
-                "anthropic": self.settings.anthropic_api_key,
+                "anthropic": (
+                    self.settings.anthropic_direct_api_key
+                    or self.settings.anthropic_api_key
+                ),
                 "openrouter": self.settings.openrouter_api_key,
             }
             api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
