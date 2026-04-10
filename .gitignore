@@ -8,7 +8,13 @@
 firebase-service-account.json
 google_credentials.json
 **/google_credentials.json
-CLIProxyAPI*/
+# Per-instance CLIProxy state — keep tracked files (source, compose, docs)
+# but exclude per-machine secrets, configs, and runtime data:
+CLIProxyAPI-main/auths/
+!CLIProxyAPI-main/auths/.gitkeep
+CLIProxyAPI-main/config.yaml
+CLIProxyAPI-main/logs/
+CLIProxyAPI-main/.env
 
 # --- git-crypt encrypted exceptions ---
 # On a fresh clone: install git-crypt, then `git-crypt unlock <keyfile>`
