@@ -1,0 +1,6 @@
+# Files encrypted at rest in the git repo via git-crypt.
+# On a fresh clone: install git-crypt, then `git-crypt unlock <keyfile>`.
+Nymeria/.env.docker filter=git-crypt diff=git-crypt
+Nymeria/.env filter=git-crypt diff=git-crypt
+Nymeria/firebase-service-account.json filter=git-crypt diff=git-crypt
+Nymeria/google_credentials.json filter=git-crypt diff=git-crypt
