@@ -1,4 +1,6 @@
 # === Secrets & Environment ===
+# Most env files are ignored by default. Specific files listed under the
+# git-crypt exceptions below ARE tracked, but only as ciphertext via git-crypt.
 .env
 .env.*
 !.env.example
@@ -7,6 +9,13 @@ firebase-service-account.json
 google_credentials.json
 **/google_credentials.json
 CLIProxyAPI*/
+
+# --- git-crypt encrypted exceptions ---
+# On a fresh clone: install git-crypt, then `git-crypt unlock <keyfile>`
+!Nymeria/.env.docker
+!Nymeria/.env
+!Nymeria/firebase-service-account.json
+!Nymeria/google_credentials.json
 
 # === Databases & User Data ===
 *.db
