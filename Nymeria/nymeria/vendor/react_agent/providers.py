@@ -75,7 +75,21 @@ def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatM
             except Exception as e:
                 logger.debug(f"Could not check tool support: {e}")
 
-        return llm.bind_tools(tools)
+        # Sort tools by name length descending so prefix-overlapping names
+        # (e.g. `todo` vs `todo_list`) are presented longest-first in the
+        # generated tool-call grammar. This prevents a streaming-mode parser
+        # bug in llama.cpp's peg-native where the parser commits to the
+        # shorter prefix (`todo`) on partial input, then backtracks to the
+        # longer name (`todo_list`) and emits a duplicate `name` field in
+        # the streamed delta. Standard OpenAI streaming clients accumulate
+        # tool_call name deltas by concatenation, producing mangled names
+        # like `todotodo_list` reaching the agent graph.
+        # Upstream bug filed against ggml-org/llama.cpp — this sort is a
+        # harmless client-side workaround (tool order does not affect model
+        # behavior, only the grammar ordering llama.cpp derives from it).
+        sorted_tools = sorted(tools, key=lambda t: len(t.name), reverse=True)
+
+        return llm.bind_tools(sorted_tools)
 
     return llm
 
@@ -185,6 +199,20 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
 
     if config.base_url:
         kwargs["base_url"] = config.base_url
+
+        # Local LLM servers (llama.cpp, KoboldCpp, LM Studio, Ollama) have
+        # unreliable tool-call streaming — the OpenAI streaming protocol's
+        # tool_calls deltas are a known-fragile area for local backends
+        # (see OpenClaw #5769, llama.cpp #19905/#20260/#20837).
+        # Disable streaming so tool_calls are parsed from the full response
+        # in one shot. Non-local providers keep streaming for the better UX.
+        _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
+        if any(h in config.base_url for h in _LOCAL_HOSTS):
+            kwargs["streaming"] = False
+            logger.info(
+                f"[LLM] Local base_url detected ({config.base_url}); "
+                f"streaming=False for reliable tool-call parsing"
+            )
 
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens

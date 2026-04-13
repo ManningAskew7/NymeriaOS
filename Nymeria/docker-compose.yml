@@ -71,6 +71,11 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    # Allow containers to reach services running on the host (e.g. local LLM
+    # inference servers like llama-server). The host-gateway magic value works
+    # on Docker Desktop (Win/Mac) AND Linux Docker.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${API_PORT:-8000}:8000"
     environment: &api-env
@@ -185,6 +190,8 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: >-
       bash -c "
         mkdir -p /data/auth_tokens &&
@@ -317,6 +324,8 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["python", "run.py", "mcp", "--http", "--host", "0.0.0.0", "--port", "8001"]
     ports:
       - "${MCP_PORT:-8001}:8001"

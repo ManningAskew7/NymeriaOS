@@ -3446,25 +3446,30 @@ class NymeriaAgent:
                                 final_response_parts.append(content)
                                 yield {"type": "response", "content": content}
 
-                    # Handle chat model end — catch preamble text that wasn't
-                    # streamed in chunks.  Some providers bundle the preamble
-                    # into the final AIMessage instead of streaming it, so it
-                    # only appears here (matches sync stream()'s explicit
-                    # "if msg.content and msg.tool_calls" check).
+                    # Handle chat model end — catch content that wasn't
+                    # streamed in chunks.  This covers two cases:
+                    # 1. Preamble text bundled into the final AIMessage
+                    #    alongside tool_calls (some providers do this).
+                    # 2. Non-streaming LLM responses (streaming=False) where
+                    #    the ENTIRE response arrives here, not via
+                    #    on_chat_model_stream.  Without this, the frontend
+                    #    shows empty bubbles because no SSE response events
+                    #    are emitted.
                     elif event_type == "on_chat_model_end":
                         if not streamed_text_in_current_llm_call:
                             output = event.get("data", {}).get("output")
-                            if output and hasattr(output, "content") and hasattr(output, "tool_calls"):
-                                if output.content and output.tool_calls:
-                                    preamble = output.content
-                                    if isinstance(preamble, str) and preamble.strip():
-                                        yield {"type": "response", "content": preamble}
-                                    elif isinstance(preamble, list):
-                                        for block in preamble:
-                                            if isinstance(block, dict) and block.get("type") == "text":
-                                                text = block.get("text", "")
-                                                if text:
-                                                    yield {"type": "response", "content": text}
+                            if output and hasattr(output, "content") and output.content:
+                                content = output.content
+                                if isinstance(content, str) and content.strip():
+                                    final_response_parts.append(content)
+                                    yield {"type": "response", "content": content}
+                                elif isinstance(content, list):
+                                    for block in content:
+                                        if isinstance(block, dict) and block.get("type") == "text":
+                                            text = block.get("text", "")
+                                            if text:
+                                                final_response_parts.append(text)
+                                                yield {"type": "response", "content": text}
 
                 # Index conversation turn in RAG (if enabled)
                 if final_response_parts:

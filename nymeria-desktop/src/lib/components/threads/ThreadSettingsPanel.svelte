@@ -143,13 +143,25 @@
   }
 
   // Display provider mapping for thread-level overrides
-  // "" = Default (inherit global), "anthropic_proxy" = subscription, "anthropic_direct" = direct API
-  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter';
+  // "" = Default (inherit global), "anthropic_proxy" = subscription, "anthropic_direct" = direct API,
+  // "local_openai" = openai provider pointed at a local OpenAI-compatible server
+  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'local_openai';
+
+  // Hostnames that indicate a local OpenAI-compatible inference server.
+  // host.docker.internal is how the Nymeria api container reaches the host.
+  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', 'host.docker.internal'];
+  const DEFAULT_LOCAL_BASE_URL = 'http://host.docker.internal:8080/v1';
+
+  function isLocalBaseUrl(baseUrl: string | null | undefined): boolean {
+    if (!baseUrl) return false;
+    return LOCAL_HOSTS.some(h => baseUrl.includes(h));
+  }
 
   function toThreadDisplayProvider(provider: string, baseUrl?: string | null): ThreadDisplayProvider {
     if (!provider) return '';
     if (provider === 'anthropic' && baseUrl === '') return 'anthropic_direct';
     if (provider === 'anthropic') return 'anthropic_proxy';
+    if (provider === 'openai' && isLocalBaseUrl(baseUrl)) return 'local_openai';
     return provider as ThreadDisplayProvider;
   }
 
@@ -157,6 +169,7 @@
     if (dp === '') return { provider: '', baseUrl: null };
     if (dp === 'anthropic_proxy') return { provider: 'anthropic', baseUrl: null };
     if (dp === 'anthropic_direct') return { provider: 'anthropic', baseUrl: '' };
+    if (dp === 'local_openai') return { provider: 'openai', baseUrl: DEFAULT_LOCAL_BASE_URL };
     return { provider: dp, baseUrl: null };
   }
 
@@ -169,6 +182,7 @@
   );
   let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
   let llmModel = $state(threadConfig?.llmConfig?.model ?? '');
+  let llmBaseUrl = $state(threadConfig?.llmConfig?.base_url ?? '');
   let llmTemperature = $state<string>(
     threadConfig?.llmConfig?.temperature != null
       ? String(threadConfig.llmConfig.temperature)
@@ -223,11 +237,26 @@
   }
 
   // Sync llmProvider from display provider and fetch models
+  // (skip the model fetch for local_openai — we don't want to call the real
+  // OpenAI API, and the user enters the local model alias as free text.)
   $effect(() => {
     const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
     llmProvider = provider;
+    if (threadDisplayProvider === 'local_openai') {
+      availableModels = [];
+      availableModelsProvider = '';
+      return;
+    }
     const ep = getEffectiveProvider();
     fetchAvailableModels(ep);
+  });
+
+  // Auto-populate the base URL field when the user picks Local LLM,
+  // unless they already have a local URL in there.
+  $effect(() => {
+    if (threadDisplayProvider === 'local_openai' && !isLocalBaseUrl(llmBaseUrl)) {
+      llmBaseUrl = DEFAULT_LOCAL_BASE_URL;
+    }
   });
 
   // System prompt & agent fields
@@ -414,7 +443,13 @@
         const llm: Record<string, unknown> = {};
         const mapped = fromThreadDisplayProvider(threadDisplayProvider);
         llm.provider = mapped.provider || null;
-        llm.base_url = mapped.baseUrl;
+        // For local_openai, persist the user-editable base URL (not the default
+        // from fromThreadDisplayProvider, which is just a placeholder).
+        if (threadDisplayProvider === 'local_openai') {
+          llm.base_url = llmBaseUrl || DEFAULT_LOCAL_BASE_URL;
+        } else {
+          llm.base_url = mapped.baseUrl;
+        }
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
@@ -720,12 +755,40 @@
               <option value="anthropic_direct">Anthropic (Direct API)</option>
               <option value="openai">OpenAI</option>
               <option value="openrouter">OpenRouter</option>
+              <option value="local_openai">Local LLM (OpenAI-compatible)</option>
             </select>
           </div>
 
+          {#if threadDisplayProvider === 'local_openai'}
+            <div class="field-group">
+              <label class="field-label" for="llm-base-url">API Base URL</label>
+              <input
+                id="llm-base-url"
+                class="field-input"
+                type="text"
+                bind:value={llmBaseUrl}
+                placeholder="http://host.docker.internal:8080/v1"
+              />
+              <span class="field-hint">
+                URL of your local OpenAI-compatible server, reachable from inside the Nymeria api container. Use <code>host.docker.internal</code> when the server runs on the host.
+              </span>
+            </div>
+          {/if}
+
           <div class="field-group">
             <label class="field-label" for="llm-model">Model</label>
-            {#if availableModels.length > 0}
+            {#if threadDisplayProvider === 'local_openai'}
+              <input
+                id="llm-model"
+                class="field-input"
+                type="text"
+                bind:value={llmModel}
+                placeholder="Local model alias (e.g. local-llm)"
+              />
+              <span class="field-hint">
+                The model alias your local server reports (the <code>--alias</code> flag value, or the model file basename).
+              </span>
+            {:else if availableModels.length > 0}
               <select id="llm-model" class="field-select" bind:value={llmModel}>
                 <option value="">Default (inherit global)</option>
                 {#each availableModels as model}

@@ -30,18 +30,37 @@
   let editingConnectionId = $state<string | null>(null);
   let editingName = $state('');
 
-  // Display provider: splits "anthropic" into proxy vs direct based on base_url
-  type DisplayProvider = 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter';
+  // Display provider: splits "anthropic" into proxy vs direct based on base_url,
+  // and "openai" into hosted vs local based on whether base_url points at a local host.
+  type DisplayProvider = 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'local_openai';
+
+  // Hostnames that indicate a local OpenAI-compatible inference server
+  // (llama.cpp llama-server, LM Studio, Ollama, etc.). host.docker.internal is
+  // how the Nymeria api container reaches the Windows/macOS host.
+  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', 'host.docker.internal'];
+  const DEFAULT_LOCAL_BASE_URL = 'http://host.docker.internal:8080/v1';
+
+  // Default CLIProxy URL inside the Nymeria docker network. Used when the user
+  // picks Anthropic (Subscription) but llmBaseUrl is empty (e.g. they were
+  // previously on Direct API which stores base_url as "").
+  const DEFAULT_CLIPROXY_BASE_URL = 'http://cli-proxy-api:8317';
+
+  function isLocalBaseUrl(baseUrl: string | null | undefined): boolean {
+    if (!baseUrl) return false;
+    return LOCAL_HOSTS.some(h => baseUrl.includes(h));
+  }
 
   function toDisplayProvider(provider: LLMProvider, baseUrl: string): DisplayProvider {
     if (provider === 'anthropic' && !baseUrl) return 'anthropic_direct';
     if (provider === 'anthropic') return 'anthropic_proxy';
+    if (provider === 'openai' && isLocalBaseUrl(baseUrl)) return 'local_openai';
     return provider as DisplayProvider;
   }
 
   function fromDisplayProvider(dp: DisplayProvider): { provider: LLMProvider; clearBaseUrl: boolean } {
     if (dp === 'anthropic_proxy') return { provider: 'anthropic', clearBaseUrl: false };
     if (dp === 'anthropic_direct') return { provider: 'anthropic', clearBaseUrl: true };
+    if (dp === 'local_openai') return { provider: 'openai', clearBaseUrl: false };
     return { provider: dp as LLMProvider, clearBaseUrl: false };
   }
 
@@ -118,10 +137,34 @@
   }
 
   // Sync llmProvider from displayProvider and fetch models
+  // (skip the model fetch for local_openai — we don't want to call the real
+  // OpenAI API, and the user enters the local model alias as free text.)
   $effect(() => {
     const { provider } = fromDisplayProvider(displayProvider);
     llmProvider = provider;
+    if (displayProvider === 'local_openai') {
+      availableModels = [];
+      availableModelsProvider = '';
+      return;
+    }
     fetchAvailableModels(provider);
+  });
+
+  // Auto-populate the base URL field when the user picks Local LLM,
+  // unless they already have a local URL in there.
+  $effect(() => {
+    if (displayProvider === 'local_openai' && !isLocalBaseUrl(llmBaseUrl)) {
+      llmBaseUrl = DEFAULT_LOCAL_BASE_URL;
+    }
+  });
+
+  // Auto-populate the base URL field when the user picks Anthropic (Subscription)
+  // and the field is empty. Without this, switching from Direct API → Subscription
+  // saves an empty base_url, which gets interpreted as Direct on reload.
+  $effect(() => {
+    if (displayProvider === 'anthropic_proxy' && !llmBaseUrl) {
+      llmBaseUrl = DEFAULT_CLIPROXY_BASE_URL;
+    }
   });
 
   // UI state
@@ -603,12 +646,15 @@
             <option value="anthropic_direct">Anthropic (Direct API)</option>
             <option value="openai">OpenAI</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="local_openai">Local LLM (OpenAI-compatible)</option>
           </select>
           <p class="hint">
             {#if displayProvider === 'anthropic_proxy'}
               Routes through CLIProxy using your Claude subscription
             {:else if displayProvider === 'anthropic_direct'}
               Direct Anthropic API — pay-per-token (requires ANTHROPIC_API_KEY)
+            {:else if displayProvider === 'local_openai'}
+              Local OpenAI-compatible server (e.g. llama.cpp llama-server, LM Studio). Edit the API Base URL under Advanced Settings.
             {:else}
               LLM provider (requires API key in server .env)
             {/if}
@@ -617,7 +663,10 @@
 
         <div class="field">
           <label for="llm-model">Model</label>
-          {#if availableModels.length > 0 && (llmProvider === 'anthropic' || llmProvider === 'openai')}
+          {#if displayProvider === 'local_openai'}
+            <!-- Local LLM model names are whatever the user --alias'd llama-server with;
+                 no dropdown — use the free-text input below. -->
+          {:else if availableModels.length > 0 && (llmProvider === 'anthropic' || llmProvider === 'openai')}
             <select id="llm-model" bind:value={llmModel}>
               {#each availableModels as model}
                 <option value={model.id}>{model.name || model.id}</option>
@@ -640,7 +689,11 @@
             <input
               type="text"
               bind:value={llmModel}
-              placeholder={llmProvider === 'openrouter' ? 'e.g. meta-llama/llama-4-scout' : 'Custom model ID'}
+              placeholder={
+                displayProvider === 'local_openai' ? 'Local model alias (e.g. local-llm)' :
+                llmProvider === 'openrouter' ? 'e.g. meta-llama/llama-4-scout' :
+                'Custom model ID'
+              }
               class="model-custom"
             />
             <button
@@ -653,7 +706,9 @@
             </button>
           </div>
           <p class="hint">
-            {#if llmProvider === 'openrouter'}
+            {#if displayProvider === 'local_openai'}
+              Enter the model alias your local server reports (the <code>--alias</code> flag value, or the model file basename)
+            {:else if llmProvider === 'openrouter'}
               Use the dropdown or paste a model ID from <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>
             {:else if llmProvider === 'openai'}
               Use the dropdown or enter an OpenAI model name
