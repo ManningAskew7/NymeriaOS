@@ -9,12 +9,12 @@ The Docker deployment provides:
 - **Redis** for cross-container event communication
 - **Horizontal scaling** - run multiple API containers behind a load balancer
 - **Separate worker** - isolated ticker for autonomous task execution
-- **Platform integrations** - Telegram, Discord, Slack webhooks
+- **Platform integrations** - Telegram, Discord, Slack, Twitch, and MCP services
 
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- Your existing `.env` file with LLM API keys
+- Your existing environment file(s) with LLM API keys
 - (Optional) Messaging platform credentials for integrations
 
 ## Migration Steps
@@ -157,6 +157,8 @@ docker compose --env-file .env.docker down
 docker compose --env-file .env.docker up -d
 ```
 
+The compose stack also bind-mounts `./nymeria`, `run.py`, and `.env.docker` into containers for live code/config sync, so host-side edits are immediately reflected after restart.
+
 ## Architecture Reference
 
 ```
@@ -170,7 +172,7 @@ docker compose --env-file .env.docker up -d
 │       │             │                               │
 │  ┌────┴─────────────┴───────────────────────┐      │
 │  │ PostgreSQL :5432                          │      │
-│  │ (conversations, TODOs, checkpoints)       │      │
+│  │ (conversations and checkpoints)           │      │
 │  └───────────────────────────────────────────┘      │
 │                                                     │
 │  Volumes:                                           │
@@ -238,6 +240,8 @@ Verify Redis connection:
 ```bash
 docker compose exec redis redis-cli ping
 ```
+
+Remember that only one worker instance should run, while API containers can scale horizontally.
 
 ### Database connection errors
 

@@ -1,6 +1,6 @@
 # OpenRouter Documentation URLs for Nymeria
 
-Comprehensive reference of every `https://openrouter.ai/docs/` page useful for debugging and implementing OpenRouter architecture in Nymeria.
+Comprehensive reference of OpenRouter documentation pages useful for debugging and implementing OpenRouter-backed behavior in Nymeria.
 
 ---
 
@@ -253,23 +253,17 @@ Comprehensive reference of every `https://openrouter.ai/docs/` page useful for d
 
 ## Priority Pages for Nymeria Development
 
-For an AI agent framework like Nymeria using OpenRouter as an LLM provider, these are the highest-priority pages:
+For the current Nymeria codebase, these are the highest-priority pages:
 
-1. **API Overview** - Request/response schema, headers, completions format
-2. **Authentication (API)** - Bearer token usage, key management
-3. **Streaming** - SSE implementation, error handling during streams
-4. **Errors and Debugging** - Error codes, debug mode, upstream body echo
-5. **Parameters** - All supported parameters (temperature, top_p, max_tokens, etc.)
-6. **Tool & Function Calling** - Critical for Nymeria's 45+ tools
-7. **Model Fallbacks** - Automatic failover between models
-8. **Provider Selection / Routing** - Cost vs performance optimization
-9. **Structured Outputs** - JSON schema enforcement for reliable parsing
-10. **Limits (Rate Limits)** - Understanding and handling rate limits
-11. **Prompt Caching** - Cost reduction for repeated system prompts
-12. **BYOK** - Using your own provider keys through OpenRouter
-13. **Message Transforms** - Context window optimization
-14. **Reasoning Tokens** - For thinking/reasoning models
-15. **LangChain Integration** - If Nymeria uses LangChain/LangGraph
-16. **OpenAI SDK Integration** - Drop-in compatibility
-17. **Embeddings** - For Nymeria's RAG semantic search
-18. **Web Search Plugin** - For Nymeria's web search capabilities
+1. **API Overview** - request/response schema and OpenAI-compatible chat behavior used by Nymeria's provider layer
+2. **Authentication (API)** - Bearer token usage plus `/api/v1/key` diagnostics, which Nymeria now queries at runtime
+3. **Streaming** - SSE implementation and failure handling during chat streams
+4. **Errors and Debugging** - relevant to Nymeria's provider error handling and insufficient-credit reporting
+5. **Parameters** - model/provider parameter support, which Nymeria checks before sending optional settings
+6. **Reasoning Tokens** - relevant to `LLM_REASONING_EFFORT`, extended thinking, and OpenRouter reasoning payloads
+7. **Tool & Function Calling** - important for tool-capable OpenRouter models
+8. **Models / Provider Selection / Fallbacks** - relevant to capability caching, routing, and resilient model selection
+9. **Prompt Caching** - useful for repeated system-prompt and context-heavy workloads
+10. **Embeddings** - relevant to Nymeria's RAG and semantic retrieval work
+11. **LangChain Integration** - relevant because Nymeria builds on LangGraph/LangChain-style abstractions
+12. **Get Current API Key** - relevant to runtime diagnostics surfaced through `/settings/llm/runtime`

@@ -2,14 +2,14 @@
 
 ## Overview
 
-This feature allows users to create, edit, and delete TODOs for Nymeria through the desktop UI, with support for recurring schedules. Previously, only the LLM agent could manage TODOs via tools.
+This feature allows users to create, edit, complete, and delete TODOs for Nymeria through the desktop UI, with support for recurring schedules. Previously, only the LLM agent could manage TODOs via tools.
 
 **Key Features:**
 - Full CRUD operations for TODOs via REST API
 - Recurrence presets (`5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly`)
 - Visual distinction between user-created vs agent-created TODOs
 - Visual distinction between recurring vs one-time TODOs
-- Thread selection for scheduled TODO output
+- Thread selection and per-thread task counts for scheduled TODO output
 
 ---
 
@@ -88,34 +88,28 @@ class TodoItem(BaseModel):
 
 ```python
 class TodoCreateRequest(BaseModel):
-    task: str                    # Required
-    priority: Optional[str]      # low, medium, high
-    deadline: Optional[datetime]
+    task: str
     notes: Optional[str]
-    scheduled_for: Optional[str] # "30s", "5m", "2h", or "2026-01-15T14:00"
+    scheduled_for: Optional[str] # "30s", "5m", "2h", "1w", or ISO datetime
     recurrence: Optional[str]    # 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
     thread_id: Optional[str]     # Thread for scheduled execution output
 
 class TodoUpdateRequest(BaseModel):
     task: Optional[str]
-    priority: Optional[str]
-    status: Optional[str]
-    deadline: Optional[datetime]
+    status: Optional[str]        # pending, in_progress, done
     notes: Optional[str]
-    blocked_reason: Optional[str]
     scheduled_for: Optional[str]
     recurrence: Optional[str]
     thread_id: Optional[str]
     clear_schedule: bool = False
     clear_recurrence: bool = False
-    clear_deadline: bool = False
 ```
 
 ### Timezone Handling
 
 **Critical Implementation Detail:**
 
-The `_parse_scheduled_for` helper (aliasing `parse_scheduled_time`) handles timezone conversion:
+The `_parse_scheduled_for` helper handles timezone conversion:
 
 ```python
 def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
@@ -123,10 +117,7 @@ def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
     # Uses timezone-aware UTC: datetime.now(timezone.utc) + timedelta(...)
 
     # Absolute times: "2026-01-15T14:00"
-    # Parsed as USER_TIMEZONE time, then converted to UTC:
-    # 1. datetime.strptime() -> naive datetime
-    # 2. .replace(tzinfo=user_tz) -> assign configured user timezone
-    # 3. .astimezone(timezone.utc) -> convert to UTC
+    # Parsed as local system time, then converted to UTC
 ```
 
 The `_datetime_to_timestamp` function in `todo_schedule_db.py` handles naive datetimes:
@@ -208,7 +199,6 @@ async completeTodo(todoId: string): Promise<TodoItem>
 
 Modal form with:
 - Task input (required)
-- Priority select
 - Notes textarea
 - Schedule datetime-local input
 - Recurrence select (appears when schedule is set)
@@ -257,7 +247,7 @@ todo_manager.sync_schedule_to_db(user_id, created_item.id, schedule_db)
 
 **Root Cause:** `datetime.utcnow()` returns a naive datetime, but `timestamp()` interprets naive datetimes as local time.
 
-**Fix:** Use timezone-aware datetimes:
+**Fix:** Use timezone-aware datetimes for relative times and convert parsed absolute times to UTC before storage.
 
 ```python
 # WRONG

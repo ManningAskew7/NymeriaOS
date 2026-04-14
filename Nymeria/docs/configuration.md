@@ -32,6 +32,8 @@ These settings give power users fine-grained control over LLM behavior. All are 
 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
+**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately.
+
 ### API Keys
 
 Set the API key for your chosen provider:
@@ -52,7 +54,7 @@ Set the API key for your chosen provider:
 | `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
 | `USER_TIMEZONE` | `Australia/Sydney` | IANA timezone used for time context and absolute schedule parsing |
 
-### API Server
+### API Server and Paths
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -61,6 +63,7 @@ Set the API key for your chosen provider:
 | `API_PORT` | `8000` | Server port |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins, or `*` for all |
 | `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
+| `NYMERIA_PROJECT_ROOT` | auto-detected | Override project root resolution, mainly for Tauri or frozen builds |
 
 ### Redis (Docker Only)
 
@@ -99,15 +102,23 @@ Set the API key for your chosen provider:
 | `TWITCH_BUFFER_SIZE` | `500` | Chat message ring buffer size (50-5000) |
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat evaluation |
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks (60-3600) |
+| `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum new messages before a pulse fires |
 | `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Messages to include in pulse context |
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
 | `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
 | `WEBHOOK_SECRET` | - | Secret for validating incoming webhooks |
 
-### Logging
+### Service and Logging
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SERVICE_NAME` | `NymeriaService` | Windows service name |
+| `SERVICE_DISPLAY_NAME` | `Nymeria AI Assistant` | Display name in Windows Services |
+| `SERVICE_DESCRIPTION` | `Personal AI Assistant service providing REST API access` | Windows service description |
+| `SERVICE_AUTO_START` | `true` | Auto-start the Windows service on boot |
+| `SERVICE_LOG_FILE` | `service.log` | Service log filename |
+| `SERVICE_LOG_MAX_BYTES` | `10485760` | Rotate log after this many bytes |
+| `SERVICE_LOG_BACKUP_COUNT` | `5` | Number of rotated log backups to keep |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `AUDIT_LOG_ENABLED` | `true` | Log all tool executions to audit log |
 
@@ -145,7 +156,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 
 - **`none`**: No automatic context management (manual `/compact` still available)
 
-### Watchdog & TODO System
+### Watchdog, TODO, and Push Notifications
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -154,6 +165,8 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before auto-archive (1-30) |
 | `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
+| `FCM_ENABLED` | `false` | Enable Firebase Cloud Messaging push notifications |
+| `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |
 
 ---
 
@@ -171,6 +184,7 @@ Nymeria uses the following directories under the project root:
 | `data/users/` | User profiles, memories, thread configs, activity logs, triggers |
 | `data/backups/` | Self-modification backups |
 | `data/custom_tools/` | Custom tool definitions (`{tool_id}.json`) |
+| `data/mcp_servers/` | MCP server configuration storage |
 | `data/notifications/` | User notification storage |
 
 These directories and files are created automatically on first run.

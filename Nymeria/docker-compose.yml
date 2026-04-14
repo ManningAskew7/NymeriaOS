@@ -236,7 +236,7 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
-    command: ["python", "run.py", "discord-bot"]
+    command: ["python", "run.py", "discord-bot", "--api-url", "http://nymeria-api:8000"]
     profiles:
       - discord  # Only starts when explicitly enabled: docker compose --profile discord up -d
     environment:
@@ -246,14 +246,11 @@ services:
       DISCORD_RESPOND_MODE: ${DISCORD_RESPOND_MODE:-mention}
     volumes:
       - nymeria_data:/data
-      - nymeria_workspace:/workspace
       - ./nymeria:/app/nymeria
       - ./run.py:/app/run.py
       - ./.env.docker:/app/.env.docker
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "pgrep", "-f", "run.py discord-bot"]

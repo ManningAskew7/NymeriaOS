@@ -16,8 +16,12 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
   - 5 sort modes: Recent, Oldest, A-Z, Most Tasks, Active First
   - Unfiled threads grouped by date (Today, Yesterday, Previous 7 Days, Older)
 - **Advanced LLM Settings**: Fine-tune model parameters (top_p, top_k, penalties, reasoning effort)
-- **Persistent Configuration**: API settings and theme preferences saved locally
+- **Persistent Configuration**: API settings, theme preferences, and local thread metadata saved locally
 - **First-Run Setup Wizard**: Guided configuration for new users
+- **Cross-Client Sync**: Polling and SSE-based refresh paths keep desktop, browser, and Outlook views aligned
+- **Tool & Runtime Admin Panels**: Manage built-in tools, custom tools, MCP servers, triggers, and server settings from the UI
+- **Outlook Mode**: Taskpane-friendly layout with collapsed side panels and email-context quick actions
+- **Tauri Backend Awareness**: Desktop build can monitor a Tauri-managed backend process instead of assuming an external API only
 
 ## Screenshots
 
@@ -50,7 +54,7 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 
 - [Node.js](https://nodejs.org/) 18+
 - [Rust](https://rustup.rs/) (for Tauri)
-- [Nymeria API](../nymeria/) running on `http://localhost:8000`
+- [Nymeria API](../Nymeria/) running on `http://localhost:8000`
 
 ## Getting Started
 
@@ -114,6 +118,14 @@ The Settings panel (⚙️ in sidebar) provides four configuration tabs:
 - Self-invoke rate limiting
 - Watchdog configuration
 - Log level
+
+### Tools & Runtime
+- Built-in/default tool preferences
+- Custom tool management
+- MCP server management and testing
+- Trigger/source configuration
+- Server settings and health views
+- CLIProxy session controls in Tauri builds
 
 ## Building for Production
 
@@ -236,7 +248,7 @@ Events from scheduled TODO execution (via `autonomousStore`):
 | `tool_call` | Tool invocation with id, name, and arguments |
 | `tool_result` | Tool execution result |
 | `response` | Streamed response text chunks |
-| `task_completed` | Execution finished (includes `notify`, `content`) |
+| `task_completed` | Execution finished (includes `notify`, `content`, and optional `error` for failures) |
 
 ## Architecture
 
@@ -274,7 +286,7 @@ Backend Ticker                    Frontend
 
 ### Config Store & Setup Flow
 
-The `configStore` manages API configuration and tracks setup completion:
+The `configStore` manages API configuration and tracks setup completion. Additional stores handle thread metadata sync, cross-client polling, MCP servers, tool preferences, backend-process status, Outlook mode, and server/runtime administration.
 
 ```typescript
 {

@@ -130,14 +130,15 @@ Mod events appear in the chat buffer as system messages formatted as `[MOD] mode
 
 The bot also attempts the unified `channel.moderate` v2 subscription (covers all mod actions including warns) but this requires many `moderator:read:*` scopes. See the OAuth Scopes section for details.
 
-## Tools (21 total)
+## Tools (23 total)
 
-All tools are registered as OPTIONAL_TOOLS and enabled per-thread via thread config. Tools marked with **[auto]** are auto-enabled on first start; others need manual enabling.
+All tools are registered as OPTIONAL_TOOLS and enabled per-thread via thread config. Tools marked with **[auto]** are auto-enabled on first start via `DEFAULT_TWITCH_TOOLS`; others need manual enabling.
 
 ### Chat Tools
 
 | Tool | Token | Auto | Description |
 |------|-------|------|-------------|
+| `twitch_read_chat` | Bot | **[auto]** | Read recent buffered chat context without calling the Twitch API |
 | `twitch_send` | Bot | **[auto]** | Send a message to chat (max 500 chars) |
 | `twitch_announce` | Bot | **[auto]** | Send a highlighted announcement (color options) |
 | `twitch_delete_message` | Bot | | Delete a specific message by ID, or clear all chat |
@@ -212,8 +213,9 @@ Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat pulse |
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
 | `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum new messages before pulse fires |
+| `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Messages to include in pulse context |
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
-| `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
+| `TWITCH_RESPOND_MODE` | `command` | Response mode (currently command-focused) |
 
 ## Thread Configuration
 
@@ -231,7 +233,7 @@ curl -X PUT "http://localhost:8000/threads/twitch_silk/config" \
 | File | Purpose |
 |------|---------|
 | `nymeria/triggers/twitch_bot.py` | Main bot class, commands, pulse loop |
-| `nymeria/tools/twitch.py` | All 21 Twitch tools (OPTIONAL_TOOLS) |
+| `nymeria/tools/twitch.py` | All 23 Twitch tools (OPTIONAL_TOOLS) |
 | `nymeria/config/settings.py` | Twitch settings fields |
 | `run.py` | `twitch-bot` subcommand entry point |
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) |

@@ -115,6 +115,7 @@ export interface ThreadConfig {
   callable: boolean;
   callableName?: string | null;
   callableDescription?: string | null;
+  injectTodosInPrompt: boolean;
   showAutonomousPrompts: boolean;
   showPromptMetadata?: boolean;
   createdAt?: string | null;
@@ -131,6 +132,7 @@ export interface ThreadConfigUpdateRequest {
   callable?: boolean;
   callable_name?: string | null;
   callable_description?: string | null;
+  inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;
   clear_instructions?: boolean;

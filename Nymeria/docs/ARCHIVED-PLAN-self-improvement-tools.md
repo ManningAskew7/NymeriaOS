@@ -1,12 +1,14 @@
-# Plan: Self-Improvement Tools for Nymeria
+# Archived Plan: Self-Improvement Tools for Nymeria
 
 ## Overview
 
-Add tools that allow Nymeria to modify herself and learn from users, making her unique among AI assistants.
+This is an archived planning document for early self-improvement ideas. Large parts of the memory system, self-modification safety layer, backups, rollback flow, and custom-tool architecture have since been implemented in different forms.
 
 ---
 
 ## Tool 1: Memory & Personality System
+
+Status: largely implemented in evolved form (`user_profile.py`, memory tools, personality preferences, prompt injection of profile context).
 
 ### Purpose
 Allow Nymeria to remember user preferences and adapt her personality across conversations.
@@ -77,6 +79,8 @@ personality_set(trait: str, value: str) -> str
 ---
 
 ## Tool 2: Self-Modification Agent
+
+Status: partially implemented and evolved into the current self-modification/callable-thread toolchain with backups, rollback support, restricted file handling, and dedicated prompts.
 
 ### Purpose
 A sub-agent that Nymeria can invoke to modify her own configuration, add tools, or debug issues.
@@ -221,6 +225,10 @@ Nymeria: I'll create that tool for you.
 | `data/users/.gitkeep` | User profiles directory |
 
 ---
+
+## Notes for Readers
+
+Treat file paths, tool names, and architecture in this document as historical planning context, not current source-of-truth documentation. For current behavior, prefer `docs/architecture.md`, `docs/tools.md`, `docs/api.md`, and the runtime code under `nymeria/core/`, `nymeria/tools/`, and `nymeria/triggers/`.
 
 ## Open Questions
 

@@ -1,8 +1,8 @@
 # Nymeria Response Format Architecture
 
-> **⚠️ DEPRECATED**: This document describes the OLD JSON-based response format that has been **replaced** by the tool-based visibility control system.
+> **⚠️ DEPRECATED**: This document describes the old JSON-based response format that was replaced by Nymeria's newer runtime behavior.
 >
-> **New Approach**: The LLM now streams responses naturally without any special formatting. All responses are shown in chat.
+> **Current approach**: Nymeria now streams responses naturally without forcing a JSON wrapper for normal agent output. Modern runtime behavior centers on streamed `thinking`/`tool_call`/`tool_result`/`response` events, activity logging, and explicit notification/autonomous pipelines.
 >
 > **Why the change?**
 > - Simpler: No complex JSON parsing with multiple fallback strategies
@@ -10,7 +10,7 @@
 > - Explicit: Visibility control is an intentional tool call, not embedded formatting
 > - Extensible: Easy to add future tools like `send_notification`
 >
-> This document is preserved for historical reference only.
+> This document is preserved for historical reference only. It should not be treated as current architecture guidance.
 
 ---
 
@@ -22,7 +22,7 @@ Nymeria is an AI agent that can operate in two modes:
 1. **Interactive** - Responding to direct user messages
 2. **Autonomous** - Executing scheduled tasks in the background
 
-The challenge: When running autonomously, the agent needs to decide whether its response should be **shown to the user** or **logged silently**. We ~~currently~~ *previously* solved this by forcing the LLM to output structured JSON with a visibility field.
+The challenge: when running autonomously, the agent needed to decide whether its response should be shown to the user or logged silently. This was previously handled by forcing the LLM to output structured JSON with a visibility field.
 
 ---
 
@@ -46,7 +46,7 @@ The LLM needs to make this judgment call based on context.
 
 ---
 
-## Current Implementation
+## Historical Implementation
 
 ### Forced JSON Response Format
 
@@ -165,9 +165,9 @@ def parse_agent_response(raw_response: str) -> NymeriaResponse:
 
 ---
 
-## How Visibility Routing Works
+## Historical Visibility Routing
 
-After parsing the response, the ticker (scheduler) routes based on visibility:
+After parsing the response, the old ticker/scheduler path routed based on visibility:
 
 ```python
 if response.visibility == "activity":
@@ -225,7 +225,7 @@ else:  # visibility == "full"
 
 ---
 
-## Alternative Approaches to Consider
+## Alternative Approaches That Were Considered
 
 ### A. Post-Processing Classification
 Instead of forcing JSON output, let the LLM respond naturally. Then use a fast classifier to determine visibility:

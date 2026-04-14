@@ -8,7 +8,7 @@
 
 When Extended Thinking is enabled, OpenRouter **does** stream reasoning tokens back to us. However, LangChain's `ChatOpenAI` silently drops them during the Chat Completions streaming path. The reasoning text never reaches Nymeria's streaming handler in `agent.py`.
 
-Currently this is fine — reasoning works (the model thinks before answering), we just don't display the thinking text. This document captures the full pipeline analysis for if we want to surface reasoning text in the UI later.
+Currently this is mostly fine — reasoning works (the model thinks before answering), but the streamed reasoning text from OpenRouter chat completions is not surfaced in Nymeria's UI. This document captures the full pipeline analysis for if we want to surface it later.
 
 ## The Streaming Pipeline
 
@@ -112,9 +112,9 @@ So `model_kwargs["reasoning"]` → LangChain detects `"reasoning"` in payload �
 
 | Scenario | What Happens |
 |----------|-------------|
-| Extended Thinking OFF | `extra_body={"reasoning": {"effort": "none"}}` — model skips reasoning entirely, responds immediately |
-| Extended Thinking ON | `extra_body={"reasoning": {"enabled": true}}` — model reasons internally, ~3-6s pause of empty chunks, then streams final answer |
-| Extended Thinking ON + effort | `extra_body={"reasoning": {"enabled": true, "effort": "high"}}` — same as above, longer reasoning phase |
+| Extended Thinking OFF | No OpenRouter reasoning payload is sent when extended thinking is disabled, so the model responds normally without streamed reasoning |
+| Extended Thinking ON | `extra_body={"reasoning": {"enabled": true}}` is sent for compatible OpenRouter models, the model reasons internally, then streams the final answer |
+| Extended Thinking ON + effort | `extra_body={"reasoning": {"enabled": true, "effort": "high"}}` — same as above, with a potentially longer reasoning phase |
 
 The empty `content=''` chunks during reasoning phase are the model's reasoning tokens with the text stripped by LangChain. The pause is real thinking time.
 
@@ -191,6 +191,12 @@ LangChain may add native support for OpenRouter's `reasoning` field in a future 
 3. Updating `agent.py`'s stream handler to check `chunk.additional_kwargs.get("reasoning")`
 4. Yielding reasoning as `{"type": "thinking", "content": reasoning_text, "is_reasoning": True}`
 5. Frontend `MessageBubble.svelte` already handles thinking steps — just need to mark them as reasoning
+
+## Current Codebase Notes
+
+- Nymeria now stores `llm_extended_thinking` and `llm_reasoning_effort` in settings and exposes them through `/settings` and `/settings/llm/runtime`.
+- Anthropic-native thinking blocks already flow through Nymeria's `thinking` SSE/UI pipeline; this investigation is specifically about OpenRouter chat-completions reasoning fields being dropped before they reach that pipeline.
+- The `consult` tool separately uses OpenRouter reasoning and can read `reasoning_details` from non-streaming responses.
 
 ## Package Versions (at time of investigation)
 

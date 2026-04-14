@@ -19,21 +19,17 @@ pip install -r requirements.txt
 
 ## Step 2: Configure Environment
 
-Copy the minimal configuration template:
+For a full local config template:
 
 ```bash
-cp .env.minimal .env
+cp .env.docker.example .env.docker
 ```
 
-Or for all options:
-
-```bash
-cp .env.example .env
-```
+Or create `.env` manually for a lighter local setup. The runtime loads both `.env` and `.env.docker` if present.
 
 ## Step 3: Set Your API Keys
 
-Edit `.env` and fill in the required values:
+Edit `.env` or `.env.docker` and fill in the required values:
 
 ### Generate NYMERIA_API_KEY
 
@@ -41,7 +37,7 @@ Edit `.env` and fill in the required values:
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Copy the output to `NYMERIA_API_KEY=` in your `.env` file.
+Copy the output to `NYMERIA_API_KEY=` in your environment file.
 
 ### Set Your LLM Provider API Key
 
@@ -105,7 +101,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 ### "No API key for LLM provider"
 
-Make sure you've set the API key for your chosen provider in `.env`:
+Make sure you've set the API key for your chosen provider in your environment file:
 - `ANTHROPIC_API_KEY` for Anthropic
 - `OPENAI_API_KEY` for OpenAI
 - `OPENROUTER_API_KEY` for OpenRouter
@@ -118,7 +114,7 @@ Make sure you've set the API key for your chosen provider in `.env`:
 
 ### "Invalid API key"
 
-The `NYMERIA_API_KEY` in your backend `.env` must match exactly what you enter in the desktop app.
+The `NYMERIA_API_KEY` in your backend environment file must match exactly what you enter in the desktop app.
 
 ### Desktop app shows blank screen
 
@@ -132,7 +128,7 @@ The `NYMERIA_API_KEY` in your backend `.env` must match exactly what you enter i
 
 - Read the full documentation in `docs/`
 - Customize Nymeria's personality in `nymeria/config/soul.md`
-- Add custom tools in `nymeria/tools/`
+- Explore other entry points like `python run.py cli`, `python run.py worker`, or `python run.py mcp`
 - Install as a Windows service: `python run.py service install`
 
 ## Getting Help

@@ -173,16 +173,27 @@ GET /tools
 Authorization: Bearer <token>
 ```
 
-**Response:**
-```json
-{
-  "tools": [
-    {"name": "bash_execute", "description": "Execute shell commands...", "enabled": true},
-    {"name": "file_read", "description": "Read contents of a file...", "enabled": true},
-    {"name": "memory_save", "description": "Save a memory about the user...", "enabled": true}
-  ]
-}
+**Response:** current thread-available tool list.
+
+### List Optional Tools
+
+```http
+GET /tools/optional
+Authorization: Bearer <token>
 ```
+
+Returns optional tools that can be enabled per thread.
+
+### Default Tool Policy
+
+```http
+GET /tools/defaults
+PUT /tools/defaults
+DELETE /tools/defaults
+Authorization: Bearer <token>
+```
+
+Manage the default tool set applied to newly created threads.
 
 ---
 
@@ -361,33 +372,16 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:**
-```json
-{
-  "llm_provider": "anthropic",
-  "llm_model": "claude-sonnet-4-20250514",
-  "llm_temperature": 1.0,
-  "llm_max_tokens": null,
-  "llm_top_p": null,
-  "llm_top_k": null,
-  "llm_frequency_penalty": null,
-  "llm_presence_penalty": null,
-  "llm_reasoning_effort": null,
-  "llm_extended_thinking": false,
-  "llm_use_model_defaults": false,
-  "context_management": "auto_compact",
-  "compact_threshold": 0.8,
-  "compact_keep_messages": 4,
-  "compact_model": null,
-  "sliding_window_cycles": 5,
-  "max_self_invokes_per_hour": 50,
-  "log_level": "INFO",
-  "watchdog_enabled": true,
-  "watchdog_interval_minutes": 5,
-  "todo_staleness_minutes": 20,
-  "activity_retention_hours": 12
-}
+**Response:** includes LLM settings plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+
+### LLM Runtime Diagnostics
+
+```http
+GET /settings/llm/runtime
+Authorization: Bearer <token>
 ```
+
+Returns the currently active runtime provider/model, effective max tokens, source env files, and OpenRouter key diagnostics when applicable.
 
 ---
 
@@ -585,7 +579,8 @@ Authorization: Bearer <token>
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `user_id` | `"default"` | User ID |
-| `filter_status` | active only | Filter: `all`, `pending`, `in_progress`, `blocked`, `done` |
+| `filter_status` | active only | Filter: `all`, `pending`, `in_progress`, `done` |
+| `thread_id` | - | Filter TODOs to a specific thread |
 
 **Response:**
 ```json
@@ -596,7 +591,6 @@ Authorization: Bearer <token>
       "id": "abc123",
       "task": "Check inbox",
       "status": "pending",
-      "priority": "medium",
       "created_at": "2026-02-02T10:00:00Z",
       "updated_at": "2026-02-02T10:00:00Z",
       "scheduled_for": "2026-02-02T14:00:00Z",
@@ -623,7 +617,6 @@ Authorization: Bearer <token>
 ```json
 {
   "task": "Check inbox",
-  "priority": "medium",
   "scheduled_for": "30m",
   "recurrence": "daily",
   "thread_id": "optional-thread-id",
@@ -634,11 +627,9 @@ Authorization: Bearer <token>
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `task` | string | Yes | Task description |
-| `priority` | string | No | `low`, `medium`, `high` |
-| `deadline` | string | No | Optional due date/time (ISO datetime) |
-| `scheduled_for` | string | No | Relative (`30s`, `5m`, `2h`, `1d`) or absolute (`YYYY-MM-DD HH:MM[:SS]` / `YYYY-MM-DDTHH:MM[:SS]`, interpreted in `USER_TIMEZONE`) |
-| `recurrence` | string | No | `5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly` |
-| `thread_id` | string | No | Thread for autonomous output |
+| `scheduled_for` | string | No | Relative (`30s`, `5m`, `2h`, `1d`, `1w`) or absolute datetime |
+| `recurrence` | string | No | Valid recurrence pattern |
+| `thread_id` | string | No | Thread for autonomous output, defaults to a user-scoped default thread |
 | `notes` | string | No | Additional context |
 
 **Response:** Created TODO object
@@ -658,30 +649,24 @@ Authorization: Bearer <token>
 {
   "task": "Updated task",
   "status": "in_progress",
-  "priority": "high",
   "scheduled_for": "2h",
   "thread_id": "thread-xyz",
   "clear_schedule": false,
   "recurrence": "weekly",
-  "clear_recurrence": false,
-  "clear_deadline": false
+  "clear_recurrence": false
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `task` | string | Updated task text |
-| `status` | string | `pending`, `in_progress`, `blocked`, `done` |
-| `priority` | string | `low`, `medium`, `high` |
-| `deadline` | string | Set/update deadline (ISO datetime) |
-| `notes` | string | Set/update notes |
-| `blocked_reason` | string | Reason for blocked status |
-| `scheduled_for` | string | Set/update next scheduled execution |
-| `recurrence` | string | Set/update recurrence pattern |
+| `status` | string | `pending`, `in_progress`, `done` |
+| `notes` | string | Set or update notes |
+| `scheduled_for` | string | Set or update next scheduled execution |
+| `recurrence` | string | Set or update recurrence pattern |
 | `thread_id` | string | Thread for autonomous output |
 | `clear_schedule` | bool | Remove schedule if `true` |
 | `clear_recurrence` | bool | Remove recurrence if `true` |
-| `clear_deadline` | bool | Remove deadline if `true` |
 
 **Response:** Updated TODO object
 
@@ -694,7 +679,7 @@ POST /todos/{todo_id}/complete?user_id=default
 Authorization: Bearer <token>
 ```
 
-Marks the TODO as done and removes any schedule.
+Marks the TODO as done. Recurring TODOs are rescheduled by the backend rather than simply being unscheduled.
 
 **Response:** Updated TODO object
 
@@ -996,19 +981,17 @@ GET /agents/threads
 Authorization: Bearer <token>
 ```
 
-**Response:**
-```json
-{
-  "callable_threads": [
-    {
-      "thread_id": "research-abc",
-      "callable_name": "ResearchAgent",
-      "description": "Research assistant for web queries",
-      "callable": true
-    }
-  ]
-}
+Returns callable thread configs. The response shape is `{"threads": [...], "total": N}`.
+
+### Create Callable Thread
+
+```http
+POST /agents/threads
+Authorization: Bearer <token>
+Content-Type: application/json
 ```
+
+Creates a callable thread directly from the API.
 
 ---
 
@@ -1167,7 +1150,7 @@ Permanently deletes the user's RAG index.
 
 ## User Tool Preferences API
 
-Manage per-user tool enablement and configuration.
+Manage per-user tool visibility and configuration.
 
 ### List User Tools
 
@@ -1176,17 +1159,7 @@ GET /users/{user_id}/tools
 Authorization: Bearer <token>
 ```
 
-**Response:**
-```json
-{
-  "user_id": "default",
-  "tools": [
-    {"name": "bash_execute", "enabled": true, "category": "core"},
-    {"name": "file_read", "enabled": true, "category": "core"},
-    {"name": "browser_navigate", "enabled": false, "category": "browser"}
-  ]
-}
-```
+Returns the user's tool inventory and enabled state.
 
 ---
 
@@ -1197,68 +1170,7 @@ GET /users/{user_id}/tools/preferences
 Authorization: Bearer <token>
 ```
 
-**Response:**
-```json
-{
-  "user_id": "default",
-  "disabled_tools": ["browser_navigate", "browser_click"],
-  "disabled_categories": [],
-  "tool_configs": {
-    "bash_execute": {"timeout_seconds": 60}
-  }
-}
-```
-
----
-
-### Enable Tool
-
-```http
-PUT /users/{user_id}/tools/{tool_name}/enable
-Authorization: Bearer <token>
-```
-
-**Response:**
-```json
-{
-  "message": "Tool 'browser_navigate' enabled for user default"
-}
-```
-
----
-
-### Disable Tool
-
-```http
-DELETE /users/{user_id}/tools/{tool_name}/enable
-Authorization: Bearer <token>
-```
-
-**Response:**
-```json
-{
-  "message": "Tool 'browser_navigate' disabled for user default"
-}
-```
-
----
-
-### Enable Tool Category
-
-```http
-PUT /users/{user_id}/tools/categories/{category}/enable
-Authorization: Bearer <token>
-```
-
-Enables all tools in a category (e.g., "browser", "outlook", "memory").
-
-**Response:**
-```json
-{
-  "message": "Category 'browser' enabled for user default",
-  "tools_enabled": ["browser_navigate", "browser_click", "browser_type", ...]
-}
-```
+Returns disabled tools plus per-tool config overrides.
 
 ---
 
@@ -1270,21 +1182,7 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:**
-```json
-{
-  "timeout_seconds": 60,
-  "max_retries": 3
-}
-```
-
-**Response:**
-```json
-{
-  "message": "Tool 'bash_execute' configured",
-  "config": {"timeout_seconds": 60, "max_retries": 3}
-}
-```
+Update config for a specific tool.
 
 ---
 
@@ -1297,18 +1195,11 @@ Authorization: Bearer <token>
 
 Resets all tool preferences to defaults.
 
-**Response:**
-```json
-{
-  "message": "Tool preferences reset for user default"
-}
-```
-
 ---
 
 ## Unified Tools API
 
-Access both built-in and custom tools through a unified interface.
+Access built-in and custom tools through one API surface. This is also where enablement and description updates now live.
 
 ### List Unified Tools
 
@@ -1318,6 +1209,33 @@ Authorization: Bearer <token>
 ```
 
 Returns all tools (built-in + custom) in a unified format.
+
+### Enable Unified Tool
+
+```http
+PUT /users/{user_id}/tools/unified/{tool_id}/enable
+Authorization: Bearer <token>
+```
+
+Enable or disable a built-in or custom tool through the unified tool identity.
+
+### Update Unified Tool Description
+
+```http
+PUT /users/{user_id}/tools/unified/{tool_id}/description
+Authorization: Bearer <token>
+```
+
+Override the user-visible description for a tool.
+
+### Update Unified Tool Config
+
+```http
+PUT /users/{user_id}/tools/unified/{tool_id}/config
+Authorization: Bearer <token>
+```
+
+Update configuration for a unified tool entry.
 
 **Response:**
 ```json
@@ -1416,6 +1334,46 @@ Authorization: Bearer <token>
 ```
 
 ---
+
+## MCP Servers, Devices, and Voice
+
+### MCP Servers
+
+```http
+GET /mcp-servers
+POST /mcp-servers
+GET /mcp-servers/{server_id}
+PUT /mcp-servers/{server_id}
+DELETE /mcp-servers/{server_id}
+POST /mcp-servers/{server_id}/discover
+POST /mcp-servers/{server_id}/test
+Authorization: Bearer <token>
+```
+
+Manage MCP server definitions, trigger tool discovery, and optionally auto-enable discovered MCP tools for a thread when creating a server.
+
+### Device Registration
+
+```http
+POST /devices/register
+DELETE /devices/{token}
+Authorization: Bearer <token>
+```
+
+Register or unregister FCM device tokens for push notifications.
+
+### Voice Endpoints
+
+```http
+POST /voice/chat
+POST /voice/tts
+POST /voice/stt
+Authorization: Bearer <token>
+```
+
+- `/voice/chat` accepts audio upload, runs STT -> agent -> TTS, and returns audio.
+- `/voice/tts` accepts JSON text and returns synthesized audio.
+- `/voice/stt` accepts audio and returns transcribed text.
 
 ## Tool Categories API
 

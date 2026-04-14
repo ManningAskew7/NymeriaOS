@@ -265,7 +265,8 @@
   let callableName = $state(threadConfig?.callableName ?? '');
   let callableDescription = $state(threadConfig?.callableDescription ?? '');
 
-  // Visibility
+  // Visibility / advanced
+  let injectTodosInPrompt = $state(threadConfig?.injectTodosInPrompt ?? false);
   let showAutonomousPrompts = $state(threadConfig?.showAutonomousPrompts ?? false);
   let showPromptMetadata = $state(threadConfig?.showPromptMetadata ?? false);
 
@@ -384,6 +385,9 @@
     if (callableName !== origCallableName) return true;
     if (callableDescription !== origCallableDescription) return true;
 
+    const origInjectTodos = threadConfig?.injectTodosInPrompt ?? false;
+    if (injectTodosInPrompt !== origInjectTodos) return true;
+
     const origShowAutonomous = threadConfig?.showAutonomousPrompts ?? false;
     if (showAutonomousPrompts !== origShowAutonomous) return true;
 
@@ -482,7 +486,8 @@
         updates.callable_description = callableDescription.trim() || null;
       }
 
-      // Visibility
+      // Visibility / advanced
+      updates.inject_todos_in_prompt = injectTodosInPrompt;
       updates.show_autonomous_prompts = showAutonomousPrompts;
       updates.show_prompt_metadata = showPromptMetadata;
 
@@ -663,7 +668,17 @@
           <span class="char-count">{instructions.length} / 5000</span>
 
           <div class="visibility-section">
-            <h3 class="section-title">Visibility</h3>
+            <h3 class="section-title">Advanced</h3>
+
+            <label class="toggle-row">
+              <input type="checkbox" bind:checked={injectTodosInPrompt} />
+              <span class="toggle-label">Inject TODOs into system prompt</span>
+            </label>
+            <p class="field-hint">
+              Include active TODOs directly in the system prompt so the LLM can
+              see and act on them without tool calls. Uses extra context tokens.
+            </p>
+
             <label class="toggle-row">
               <input type="checkbox" bind:checked={showAutonomousPrompts} />
               <span class="toggle-label">Show autonomous prompts</span>
