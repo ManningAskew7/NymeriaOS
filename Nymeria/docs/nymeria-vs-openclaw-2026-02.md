@@ -24,7 +24,7 @@ Important date correction:
 - Self-mod is constrained to approved directories with backups, syntax validation, import checks, and explicit reload/test flow.
 
 4. Fine-grained control surface for serious users.
-- Per-thread config (instructions/tool toggles/LLM overrides), per-user tool preferences, custom HTTP/MCP tools, and sub-agent CRUD provide high operational control.
+- Per-thread config (instructions/tool toggles/LLM overrides), per-user tool preferences, custom HTTP/MCP tools, MCP server management, callable threads, and runtime settings provide high operational control.
 
 5. Runtime architecture is cohesive for reliability.
 - Thread locking, dual sync/async graph handling, context compaction, and event-bus streaming are implemented as first-class runtime concerns.
@@ -60,7 +60,7 @@ Important date correction:
 - Keep Nymeria's safer defaults while gaining OpenClaw-like ecosystem speed.
 
 5. Close the mobility gap without losing Nymeria's strengths.
-- Add lightweight mobile control surfaces (approval actions, activity feed, urgent notifications, quick command input) while keeping desktop as the deep cockpit.
+- Add lightweight mobile control surfaces (approval actions, activity feed, urgent notifications, quick command input) while keeping desktop as the deep cockpit. This matters even more now that the broader project has separate mobile-oriented work outside the desktop app.
 
 6. Raise reliability guarantees for always-on operation.
 - Explicit SLO-style telemetry, trigger/workflow observability, dead-letter queues, and replay tools for failed autonomous runs.
@@ -79,8 +79,7 @@ If Nymeria adds a secure omnichannel gateway + deterministic approval/resume wor
   - `Nymeria/nymeria/core/ticker.py`
   - `Nymeria/nymeria/core/trigger_manager.py`
   - `Nymeria/nymeria/core/custom_tools.py`
-  - `Nymeria/nymeria/core/self_agent.py`
-  - `Nymeria/nymeria/tools/__init__.py`
+    - `Nymeria/nymeria/tools/__init__.py`
   - `Nymeria/docs/architecture.md`
   - `Nymeria/docs/tools.md`
 - Report PDF:

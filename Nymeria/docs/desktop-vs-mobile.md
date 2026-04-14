@@ -1,6 +1,6 @@
 # Desktop vs Mobile — Cross-Platform Reference
 
-This document maps every file in the desktop app (`/nymeria-desktop`) to its mobile counterpart (`/nymeria-mobile`) and documents the differences. Use it when replicating changes across both apps.
+This document maps the major desktop app areas (`/nymeria-desktop`) to their mobile counterparts (`/nymeria-mobile`) and documents the important differences. It is a maintenance guide, not a byte-for-byte file inventory, because the two codebases have already diverged in a number of platform-specific and feature-specific areas.
 
 ## Quick Reference
 
@@ -20,57 +20,24 @@ This document maps every file in the desktop app (`/nymeria-desktop`) to its mob
 
 ## File-by-File Comparison
 
-### Identical Files (copy directly)
+### Shared core areas
 
-These files are byte-for-byte identical. Changes to one **must** be copied to the other.
+A lot of business logic is still conceptually shared across desktop and mobile, especially around chat, threads, tools, triggers, MCP, and API interaction. But these files are **no longer safe to assume byte-identical**.
 
-| File (relative to `src/lib/`) | Lines | Notes |
-|-------------------------------|-------|-------|
-| `types/index.ts` | 737 | All TypeScript types and interfaces |
-| `services/api.svelte.ts` | ~1200 | Full REST + SSE API client |
-| `stores/chat.svelte.ts` | 878 | Message streaming, steps, tool calls, throttled flushing |
-| `stores/threads.svelte.ts` | 669 | Thread list, folders, sorting, sync, pins |
-| `stores/threadConfig.svelte.ts` | — | Per-thread LLM and tool config |
-| `stores/autonomous.svelte.ts` | — | SSE connection to `/autonomous/stream` |
-| `stores/todos.svelte.ts` | — | Todo CRUD, grouping, scheduling |
-| `stores/health.svelte.ts` | — | Backend health polling |
-| `stores/notifications.svelte.ts` | — | Notification polling |
-| `stores/activity.svelte.ts` | — | Activity feed |
-| `stores/models.svelte.ts` | — | Model metadata |
-| `stores/tools.svelte.ts` | — | Custom tools CRUD |
-| `stores/builtInTools.svelte.ts` | — | Built-in tool metadata |
-| `stores/defaultTools.svelte.ts` | — | Default tool config |
-| `stores/unifiedTools.svelte.ts` | — | Merged tool list |
-| `stores/triggers.svelte.ts` | — | Trigger management |
-| `stores/navigation.svelte.ts` | — | Navigation helpers |
-| `themes.ts` | 310 | 5 themes, CSS variable system |
-| `utils/markdown.ts` | 101 | marked + highlight.js + remend |
-| `utils/modelOptions.ts` | 34 | Model parameter helpers |
-| `components/chat/MessageBubble.svelte` | 731 | Message rendering (steps, tools, thinking, attachments) |
-| `components/chat/ChatContainer.svelte` | — | Scrollable message list, auto-scroll |
-| `components/chat/ToolCallCard.svelte` | — | Tool invocation display |
-| `components/chat/ThinkingBlock.svelte` | — | Collapsible thinking content |
-| `components/chat/StreamingText.svelte` | — | Blinking cursor + markdown |
-| `components/chat/ContextStatusBar.svelte` | — | Token usage display |
-| `components/chat/FilePreview.svelte` | — | File attachment preview |
-| `components/chat/ImageModal.svelte` | — | Full-size image viewer |
-| `components/common/Button.svelte` | — | Styled button variants |
-| `components/common/Icon.svelte` | — | SVG icon library |
-| `components/common/Modal.svelte` | — | Overlay modal |
-| `components/common/Spinner.svelte` | — | Loading indicator |
-| `components/common/Collapsible.svelte` | — | Expand/collapse container |
-| `components/common/ThinkingIndicator.svelte` | — | Animated thinking state |
-| `components/notifications/NotificationCenter.svelte` | — | Notification dropdown |
-| `components/notifications/NotificationItem.svelte` | — | Individual notification |
-| `components/dashboard/ActivityFeed.svelte` | — | Activity log display |
-| `components/dashboard/ActivityItem.svelte` | — | Individual activity entry |
-| `components/dashboard/ScheduledTasksFeed.svelte` | — | Scheduled todos countdown |
-| `components/dashboard/ScheduledTodoItem.svelte` | — | Individual scheduled item |
-| `components/tools/ToolManagementPanel.svelte` | — | Tool enable/disable list |
-| `components/tools/ToolCountWarning.svelte` | — | Tool count warning |
-| `components/triggers/TriggerConfigTab.svelte` | — | Trigger configuration |
+In practice:
+- treat shared stores and services as **parallel implementations with substantial overlap**
+- compare before copying changes
+- replicate logic intentionally instead of assuming a blind file copy is correct
 
-> **Important**: The threads store is identical even though mobile's ThreadList UI doesn't use folders, pins, or sorting. The full capability is available — the mobile UI just hasn't exposed it yet.
+This matters because the apps now differ in several real ways, including:
+- mobile lifecycle handling (`@capacitor/app`, Preferences backup/restore, back button handling)
+- mobile haptics and keyboard state
+- desktop-only Tauri startup behavior and backend readiness UI
+- desktop-only Outlook mode and CLIProxy integration
+- different component organization in a few areas
+- some store and type files already diverging in content, not just comments
+
+> **Important**: The underlying concepts are often shared, but this document should be used as a synchronization guide, not proof that files are identical.
 
 ---
 
@@ -78,14 +45,14 @@ These files are byte-for-byte identical. Changes to one **must** be copied to th
 
 #### `stores/config.svelte.ts`
 
-**Only difference**: default `apiUrl` value.
+The default `apiUrl` still differs by platform, but this is no longer the only difference worth assuming. Treat it as mostly-shared logic that still needs comparison before copying.
 
 | | Desktop | Mobile |
 |-|---------|--------|
 | Default `apiUrl` | `'http://localhost:8000'` | `''` (empty) |
 | Reset `apiUrl` | `'http://localhost:8000'` | `''` |
 
-**When changing**: If you modify any logic in this store, copy it to both. Only preserve the `apiUrl` default difference.
+**When changing**: replicate configuration logic carefully, while preserving platform-specific defaults and any mobile setup behavior tied to first-run connection flow.
 
 #### `routes/+layout.ts`
 
@@ -147,6 +114,7 @@ Desktop: 1129 lines. Mobile: 957 lines. Same settings categories (Connection, Ap
 | **Safe areas** | None | `env(safe-area-inset-*)` padding |
 | **On save connection** | No side effects | Calls `healthStore.check()` + sets `setupCompleted` |
 | **Active class** | `.selected` | `.active` |
+| **Lines** | ~1816 | ~1163 |
 
 **When changing**: Settings fields, validation logic, and API call structure should be replicated. Layout, sizing, and mobile UX are platform-specific.
 
@@ -170,6 +138,7 @@ Desktop: 725 lines. Mobile: 145 lines. **Most divergent file.**
 | **Task counts** | Shows active task count | Not implemented |
 | **Search** | Not present | Text search filter at top |
 | **Thread config** | Configure button → ThreadSettingsPanel modal | Not present (uses separate route) |
+| **Lines** | ~766 | ~145 |
 
 **When changing**: Adding new thread list features requires independent implementation on each platform. The underlying `threadsStore` is shared, so data-layer changes sync automatically.
 
@@ -221,7 +190,7 @@ Both exist and provide per-thread LLM config UI. The mobile version has larger t
 
 ---
 
-### Desktop-Only Files (no mobile equivalent)
+### Desktop-Only Files / Features (no mobile equivalent)
 
 | File | Purpose | Migration Notes |
 |------|---------|-----------------|
@@ -230,20 +199,28 @@ Both exist and provide per-thread LLM config UI. The mobile version has larger t
 | `components/layout/MainPanel.svelte` | Center panel container | Replaced by `ChatPanel.svelte` |
 | `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator | Integrated into `ChatPanel` header |
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
-| `components/tools/ToolForm.svelte` | Create/edit custom tool form | Not yet ported |
-| `components/tools/ToolTestPanel.svelte` | Test tool with parameters | Not yet ported |
+| `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
+| `components/common/StartupOverlay.svelte` | Backend startup/readiness overlay | Desktop-only Tauri startup behavior |
+| `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |
+| `components/tools/ToolForm.svelte` | Create/edit custom tool form | Desktop-only today |
+| `components/tools/ToolTestPanel.svelte` | Test tool with parameters | Desktop-only today |
+| `stores/backendProcess.svelte.ts` | Tracks embedded backend startup state | Desktop-only |
+| `stores/cliproxy.svelte.ts` | CLIProxy status and controls | Desktop-only |
+| `stores/connections.svelte.ts` | Connection-switching helpers | Desktop-only |
+| `stores/outlook.svelte.ts` | Outlook mode state | Desktop-only |
+| `stores/syncPoll.svelte.ts` | Sync/message-count polling helpers | Desktop-only |
 | `stores/utils/crud-store.ts` | CRUD utility pattern | Not used in mobile |
 | `stores/utils/polling.ts` | Polling helper | Not used in mobile |
 | `lib/index.ts` | Barrel exports | Not needed |
 
-### Mobile-Only Files (no desktop equivalent)
+### Mobile-Only Files / Features (no desktop equivalent)
 
 | File | Purpose | Notes |
 |------|---------|-------|
 | `components/layout/MobileShell.svelte` | 3-panel scroll-snap container | Replaces `AppShell.svelte` |
 | `components/layout/LeftPanel.svelte` | Threads + settings + notifications | Replaces `Sidebar.svelte` |
 | `components/layout/ChatPanel.svelte` | Chat header + container + input | Replaces `MainPanel.svelte` |
-| `utils/lifecycle.ts` | Capacitor app lifecycle (back button, foreground/background, Preferences backup) | Capacitor-specific |
+| `utils/lifecycle.ts` | Capacitor app lifecycle (back button, foreground/background, Preferences backup/restore) | Capacitor-specific |
 | `utils/haptics.ts` | Haptic feedback wrapper (`hapticImpact`, `hapticNotification`) | Capacitor-specific |
 
 ### Component Directory Reorganization
@@ -263,45 +240,50 @@ Some components moved directories between desktop and mobile:
 
 ### Adding a new API endpoint
 
-1. Add the method to `services/api.svelte.ts` (identical file — copy to both)
-2. Add any new types to `types/index.ts` (identical file — copy to both)
-3. If it needs a new store, create it identically in both `stores/` directories
+1. Add the method to `services/api.svelte.ts` in both apps
+2. Add any new types to `types/index.ts` in both apps
+3. If it needs a new store, add it to both platforms unless the feature is explicitly platform-specific
+4. Compare existing desktop/mobile implementations before copying because these files have already diverged
 
 ### Adding a new store
 
-1. Create the store file (should be identical unless it manages UI state)
-2. Import and initialize in `+page.svelte` (both, respecting lifecycle differences)
-3. If it needs polling, start/stop it in the mobile `+page.svelte` lifecycle handlers
+1. Create the store on both platforms if the feature is shared
+2. Import and initialize it in each `+page.svelte` or shell entry point as needed
+3. Respect lifecycle differences, especially mobile foreground/background handling and desktop startup readiness
+4. Do not assume new stores will remain identical over time
 
 ### Adding a new SSE event type
 
-1. Add the type to `types/index.ts` (copy to both)
-2. Handle it in `stores/chat.svelte.ts` or `stores/autonomous.svelte.ts` (both identical)
-3. If it needs UI, add to `MessageBubble.svelte` (identical) or platform-specific components
+1. Add the type to `types/index.ts` in both apps
+2. Handle it in `stores/chat.svelte.ts` or `stores/autonomous.svelte.ts` on both platforms
+3. Update rendering in `MessageBubble.svelte` or any platform-specific component affected
+4. Verify both implementations, because these files are no longer guaranteed identical
 
 ### Modifying chat streaming logic
 
-1. Change `stores/chat.svelte.ts` (identical — copy to both)
-2. If the change affects message rendering, update `MessageBubble.svelte` (identical — copy to both)
+1. Update `stores/chat.svelte.ts` on both platforms
+2. If rendering changes, update `MessageBubble.svelte` on both platforms
+3. Compare diffs before copying because both files have already diverged
 
 ### Adding a new theme
 
-1. Add to `themes.ts` (identical — copy to both)
-2. Update `SettingsPanel.svelte` in both (different files — update each independently)
+1. Add it to `themes.ts` in both apps
+2. Update `SettingsPanel.svelte` in both apps independently
 
 ### Adding a new settings field
 
-1. Add the type to `types/index.ts` (copy to both)
-2. Add the API call to `services/api.svelte.ts` (copy to both)
-3. Add UI to `SettingsPanel.svelte` (implement in each with platform-appropriate sizing)
+1. Add the type to `types/index.ts` in both apps
+2. Add the API call to `services/api.svelte.ts` in both apps
+3. Add UI to `SettingsPanel.svelte` with platform-appropriate presentation
+4. Check for desktop-only tabs such as proxy/integration controls before mirroring UI structure
 
 ### Adding a new chat feature (e.g., reactions, editing)
 
-1. Types: `types/index.ts` (copy)
-2. API: `services/api.svelte.ts` (copy)
-3. Store logic: `stores/chat.svelte.ts` (copy)
-4. Message rendering: `MessageBubble.svelte` (copy, unless it needs touch-specific interactions)
-5. Input UI: `InputBar.svelte` (implement independently — different interaction models)
+1. Types: `types/index.ts` on both platforms
+2. API: `services/api.svelte.ts` on both platforms
+3. Store logic: `stores/chat.svelte.ts` on both platforms
+4. Message rendering: `MessageBubble.svelte` on both platforms, checking existing divergence first
+5. Input UI: `InputBar.svelte` independently, because interaction models differ substantially
 
 ### Adding thread list features (folders, sorting, pins)
 

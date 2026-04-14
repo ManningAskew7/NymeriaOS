@@ -34,6 +34,7 @@
 
   // Form state — Instructions
   let instructions = $state('');
+  let injectTodosInPrompt = $state(false);
   let showAutonomousPrompts = $state(false);
   let showPromptMetadata = $state(false);
 
@@ -206,6 +207,7 @@
 
   function initFormFromConfig(cfg: ThreadConfig | null) {
     instructions = cfg?.instructions ?? '';
+    injectTodosInPrompt = cfg?.injectTodosInPrompt ?? false;
     showAutonomousPrompts = cfg?.showAutonomousPrompts ?? false;
     showPromptMetadata = cfg?.showPromptMetadata ?? false;
     systemPrompt = cfg?.systemPrompt ?? '';
@@ -264,10 +266,12 @@
     const origCallable = orig?.callable ?? false;
     const origCallableName = orig?.callableName ?? '';
     const origCallableDesc = orig?.callableDescription ?? '';
+    const origInjectTodos = orig?.injectTodosInPrompt ?? false;
     const origShowAuto = orig?.showAutonomousPrompts ?? false;
     const origShowMeta = orig?.showPromptMetadata ?? false;
 
     if (instructions !== origInstructions) return true;
+    if (injectTodosInPrompt !== origInjectTodos) return true;
     if (showAutonomousPrompts !== origShowAuto) return true;
     if (showPromptMetadata !== origShowMeta) return true;
     if (systemPrompt !== origSystemPrompt) return true;
@@ -367,7 +371,8 @@
         updates.callable_description = callableDescription.trim() || null;
       }
 
-      // Visibility
+      // Visibility / advanced
+      updates.inject_todos_in_prompt = injectTodosInPrompt;
       updates.show_autonomous_prompts = showAutonomousPrompts;
       updates.show_prompt_metadata = showPromptMetadata;
 
@@ -466,7 +471,14 @@
         </div>
 
         <div class="section-divider">
-          <span class="section-title">Visibility</span>
+          <span class="section-title">Advanced</span>
+        </div>
+        <div class="setting-group">
+          <label class="setting-toggle">
+            <input type="checkbox" bind:checked={injectTodosInPrompt} />
+            <span>Inject TODOs into system prompt</span>
+          </label>
+          <p class="hint">Include active TODOs in the system prompt so the LLM sees them without tool calls.</p>
         </div>
         <div class="setting-group">
           <label class="setting-toggle">

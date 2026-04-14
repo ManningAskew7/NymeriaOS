@@ -63,6 +63,9 @@ def _format_todo_item(item, show_notes: bool = False) -> str:
         display_time = item.scheduled_for.astimezone(get_user_tz())
         line += f" [scheduled: {display_time.strftime('%Y-%m-%d %H:%M')}]"
 
+    if item.recurrence:
+        line += f" [recurring: {item.recurrence}]"
+
     if show_notes and item.notes:
         line += f"\n    Notes: {item.notes}"
 

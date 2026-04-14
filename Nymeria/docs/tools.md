@@ -1,10 +1,10 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **22 core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and **~100+ optional tools** (16 Outlook + 4 trigger + 9 _PRV_A + 9 browser + 14 calendar + 7 self-modify + 2 utility + 21 Twitch + Google Docs) available for per-thread enabling.
+Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. Treat the counts below as approximate only when noted, because the optional surface evolves over time.
 
 ## Summary Table
 
-### Core Tools (21)
+### Core Tools
 
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
@@ -26,10 +26,9 @@ Nymeria has a three-tier tool system: **22 core tools** always loaded, **dynamic
 | 16 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
 | 17 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
 | 18 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
-| 18 | `clear_agent_context` | Subagent | SAFE | On | Clear sub-agent conversation context |
-| 19 | `reload_all` | Subagent | MODERATE | On | Reload all tools, agents, and trigger sources |
-| 20 | `self_modify_rollback` | Self-modify | **SENSITIVE** | **Off** | Rollback a self-modification from backup |
-| 22 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack/Teams) |
+| 19 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+
+> **Note:** `reload_all` and `self_modify_rollback` are in `ALL_TOOLS` (imported from `subagent.py`). They are also in `SUBAGENT_TOOLS` / optional tooling for backward compatibility. The "optional" classification refers to per-thread enabling — they can be disabled per-thread via thread config even though they're always available globally.
 
 ### Optional: Trigger Tools (4)
 
@@ -42,9 +41,9 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
 | 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
 
-### Optional: _PRV_A Tools (9)
+### Optional: _PRV_A Tools (8 _PRV_A-specific + 1)
 
-Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching (auto-invalidated after writes).
+Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching (auto-invalidated after writes). The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module — it's placed here as a general-purpose extraction utility.
 
 | # | Tool | Security | Description |
 |---|------|----------|-------------|
@@ -468,26 +467,11 @@ notify(message: str, platform: Literal["auto", "telegram", "discord", "slack"] =
 
 ---
 
-## Agent Management Tools
-
-### clear_agent_context
-
-Clear the conversation context for a sub-agent, making it start fresh.
-
-```python
-clear_agent_context(agent_name: str)
-```
-
-**Parameters:**
-- `agent_name` (`str`): Name of the sub-agent (e.g., `"BrowserAgent"`)
-
-**Returns:** Success or info message.
-
----
+## Agent Management / Self-Modify Tools
 
 ### reload_all
 
-Reload all tools, agents, and trigger sources. Call after SelfModifyAgent creates/modifies code, or after manual file edits.
+Reload all tools, agents, and trigger sources. Call after SelfModifyAgent creates or modifies code, or after manual file edits.
 
 ```python
 reload_all()
@@ -495,7 +479,9 @@ reload_all()
 
 **Returns:** Count of reloaded tools and trigger sources.
 
-**Important:** Due to how LangGraph works, newly created tools are NOT available in the same conversation turn. They work on the next user message.
+**Availability:** Present in `SUBAGENT_TOOLS` / optional tooling, not in the always-loaded core `ALL_TOOLS` list.
+
+**Important:** Due to how LangGraph works, newly created tools are not available in the same conversation turn. They work on the next user message.
 
 ---
 
@@ -512,7 +498,9 @@ self_modify_rollback(file_path: str)
 
 **Returns:** Success or error message.
 
-**Security:** **SENSITIVE** — disabled by default. Requires explicit opt-in via user tool preferences or per-thread config. This is the only core tool with `SecurityLevel.SENSITIVE`.
+**Security:** **SENSITIVE** — disabled by default. Requires explicit opt-in via user tool preferences or per-thread config.
+
+**Availability:** This is not an always-loaded core tool. It is surfaced through self-modify or optional tool paths.
 
 ---
 
@@ -612,71 +600,24 @@ trigger_delete(trigger_id: str)
 
 ---
 
-## Callable Thread Tools
+## Callable Thread Tools (Dynamic)
 
-Callable threads are threads with `callable=True` in their config. They appear as **directly callable tools** — each generated by `agents/tool_factory.py`, which creates a LangChain `BaseTool` wrapper delegating to `thread_agent_executor`.
+Any thread with `callable=True` in its thread config becomes a callable tool — there are no hardcoded agent names or fixed configurations. Each callable thread is fully configurable via the UI:
+
+- **Name**: The tool name equals the thread's sidebar title (synced via `callable_name` in thread config)
+- **Model**: Set per-thread via `llm_config.model` (inherits global default if not set)
+- **Tools**: Enable/disable any optional tools per-thread
+- **System prompt**: Custom `system_prompt` or `instructions` per-thread
+
+Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The thread becomes available as a tool to all other threads after `sync_agent_tools()` runs.
+
+The tool signature for any callable thread is:
 
 ```python
-# All callable thread tools have this signature:
-AgentName(task: str) -> str
+ThreadName(task: str) -> str
 ```
 
-The `task` parameter is the instruction for the callable thread. An injected `config` parameter provides user context.
-
-Callable threads are configured entirely through per-thread settings (system prompt, LLM overrides, enabled/disabled tools). The thread title always equals the `callable_name` — renaming in the sidebar updates the tool name and rebuilds the registry.
-
-### BrowserAgent
-
-Autonomous browser control — navigate, click, type, extract data from websites.
-
-| Setting | Value |
-|---------|-------|
-| LLM | `google/gemini-3-flash-preview` via OpenRouter |
-| Temperature | 0.3 |
-| Context turns | 10 |
-| Required env | `OPENROUTER_API_KEY` |
-| Internal tools | 9 browser tools (see below) |
-
-### OutlookAgent
-
-Email management — read, send, search, and organize Outlook emails via Microsoft Graph API.
-
-| Setting | Value |
-|---------|-------|
-| LLM | `x-ai/grok-4.1-fast` via OpenRouter |
-| Temperature | 0.3 |
-| Context turns | 8 |
-| Required env | `OPENROUTER_API_KEY` |
-| Internal tools | 13 Outlook tools (see below) |
-
-### CalendarAgent
-
-Google Calendar management — list, create, update, delete events and manage Google accounts.
-
-| Setting | Value |
-|---------|-------|
-| LLM | `x-ai/grok-4.1-fast` via OpenRouter |
-| Temperature | 0.3 |
-| Context turns | 8 |
-| Required env | `OPENROUTER_API_KEY`, `GOOGLE_OAUTH_CREDENTIALS` |
-| Internal tools | 14 calendar tools (see below) |
-
-### SelfModifyAgent
-
-Code modification agent — creates/modifies tools, agents, trigger sources, and manages trigger instances.
-
-| Setting | Value |
-|---------|-------|
-| LLM | `anthropic/claude-opus-4.5` via OpenRouter |
-| Temperature | 0.5 |
-| Max tokens | 16000 |
-| Context turns | 5 |
-| Required env | `OPENROUTER_API_KEY` |
-| Internal tools | 7 self-modify tools (see below) |
-
----
-
-## Sub-Agent Internal Tools
+The `task` parameter is the instruction. An injected `config` parameter provides user/thread context. Callable threads are created dynamically by `agents/tool_factory.py` via `create_callable_thread_tool()`, which wraps `thread_agent_executor` in a LangChain `BaseTool`. The factory also handles circular call detection to prevent deadlock.
 
 ### Browser Tools (9)
 
@@ -770,12 +711,13 @@ Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (3
 
 ---
 
-### SelfModify Tools (7)
+### SelfModify Tools (8)
 
 Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** and **list** operations work on any path within the project root. **Write** and **delete** are restricted to `nymeria/tools/`, `nymeria/agents/`, and `nymeria/triggers/sources/`.
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
+| `self_modify_instructions` | `()` | Return the agent's system prompt (instructions for self-modification) |
 | `self_file_read` | `(file_path: str)` | Read a file from the Nymeria codebase. |
 | `self_file_write` | `(file_path: str, content: str)` | Write content to tools/, agents/, or triggers/sources/. Auto-backups. |
 | `self_file_list` | `(directory: str = "nymeria/tools")` | List files in a directory. |
@@ -792,20 +734,25 @@ Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** an
 
 Optional tools are NOT loaded by default. They're available for per-thread enabling via the thread config UI.
 
-**Currently available (~55 tools):**
-- 13 Outlook email tools (3 auth + 10 email)
-- 4 trigger tools (create/list/update/delete)
-- 9 browser tools (navigate, click, type, content, screenshot, scroll, key, close, status)
-- 14 calendar tools (3 auth + 11 event)
-- 7 self-modify tools (file read/write/list/delete, test import, reload, invoke)
-- 21 Twitch tools (chat, moderation, stream info, broadcaster actions) — see `docs/twitch-bot.md`
-- 2 utility tools (self_modify_rollback, consult)
+**Currently available (representative categories):**
+- Outlook tools: 3 auth + 13 email + 1 attachment = 17 total
+- Trigger tools: 4
+- Browser tools: 9
+- Calendar tools: 3 auth + 11 event = 14 total
+- Self-modify tools: 8
+- Subagent tools (reload/rollback): 2
+- Google Docs tools: 3 auth + 16 document = 19 total
+- Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
+- Twitch tools: 22
+- Utility tools: `claude_code`, `sticky_note`, `hello_test` = 3
 
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
 2. Per-thread config has an `enabled_tools` list (tool names)
 3. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
-4. Users enable/disable optional tools via the desktop UI thread settings or `PATCH /threads/{id}/config`
+4. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
+
+**Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains tools like `claude_code`, `sticky_note`, `hello_test`, `reload_all`, and `self_modify_rollback`.
 
 ---
 
@@ -948,15 +895,15 @@ Tool metadata is defined in `tools/metadata.py`. Each tool has a category, secur
 
 ### Tools by Security Level
 
-**SAFE:** `file_read`, `web_search`, `consult`, `profile_save`, `profile_forget`, `profile_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `notepad_write`, `notepad_read`, `notepad_clear`, `clear_agent_context`
+Representative examples:
 
-**MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, `reload_all`
+**SAFE:** `file_read`, `web_search`, `consult`, `profile_save`, `profile_forget`, `profile_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `notepad_write`, `notepad_read`, `notepad_edit`, `notepad_clear`
 
-**SENSITIVE:** `self_modify_rollback`
+**MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, many trigger/email/calendar/browser actions
 
-**MODERATE (optional):** `trigger_create`, `trigger_update`, `trigger_delete` — in `OPTIONAL_TOOLS`, not loaded by default
+**SENSITIVE:** self-modify file mutation and rollback tools
 
-**SAFE (optional):** `trigger_list` — in `OPTIONAL_TOOLS`, not loaded by default
+For the precise current registry, check `nymeria/tools/metadata.py`, which is the source of truth.
 
 ---
 

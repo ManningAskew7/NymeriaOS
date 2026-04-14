@@ -57,6 +57,8 @@ class ThreadConfig(BaseModel):
         le=200,
         description="Max ReAct iterations for this callable thread (1-200). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
     )
+    # Inject active TODOs into the system prompt so the LLM sees them without tool calls
+    inject_todos_in_prompt: bool = False
     # Debug: show autonomous wakeup prompts (triggers, scheduler, watchdog) in chat
     show_autonomous_prompts: bool = False
     # Debug: show the [Time: ...] [Trigger: ...] metadata prepended to each message
@@ -99,6 +101,8 @@ class ThreadConfig(BaseModel):
         if self.system_prompt:
             return True
         if self.callable:
+            return True
+        if self.inject_todos_in_prompt:
             return True
         if self.show_autonomous_prompts:
             return True

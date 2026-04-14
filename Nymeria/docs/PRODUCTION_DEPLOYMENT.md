@@ -4,8 +4,8 @@ This document outlines deployment options for Nymeria, from local development to
 
 ## Deployment Options Overview
 
-- **Local**: run directly on host (`python run.py api`)
-- **Docker Compose**: production-oriented split services (`api`, `worker`, `postgres`, `redis`, `mcp`, optional `discord-bot`)
+- **Local**: run directly on host (`python run.py api`, or other `run.py` subcommands as needed)
+- **Docker Compose**: production-oriented split services (`api`, `worker`, `postgres`, `redis`, `mcp`, optional chat/voice services)
 
 ## Quick Start
 
@@ -73,8 +73,8 @@ docker compose --env-file .env.docker up -d
 
 | Capability | Local | Docker Compose |
 |------------|-------|----------------|
-| Core tools (`bash_execute`, file tools, web, memory, TODO, triggers, notify) | ✅ Host system | ✅ Containerized |
-| Sub-agent wrappers (`BrowserAgent`, `OutlookAgent`, `CalendarAgent`, `SelfModifyAgent`) | ✅ | ✅ |
+| Core tools | ✅ Host system | ✅ Containerized |
+| Optional and callable-thread tools | ✅ | ✅ |
 | Browser automation | ⚠️ Install Playwright/Chromium | ✅ Included in image |
 | `claude_code` integration | ⚠️ Install Claude Code CLI | ⚠️ Requires CLI availability in container |
 | Self-modification persistence | ✅ (local filesystem) | ✅ (via mounted volumes) |
@@ -147,7 +147,7 @@ python run.py mcp --http --port 8001
 
 ### Docker MCP
 
-The `mcp` service starts by default in `docker compose --env-file .env.docker up -d` and is exposed on port 8001:
+The `mcp` service starts by default in `docker compose --env-file .env.docker up -d` and runs `python run.py mcp --http --host 0.0.0.0 --port 8001`:
 
 ```yaml
 # In docker-compose.yml
@@ -171,17 +171,17 @@ Configure Claude Code to use Nymeria:
 
 ### Horizontal Scaling (API)
 
-The API server is stateless and can be scaled:
+The API process can be scaled behind a load balancer:
 
 ```bash
 docker compose --env-file .env.docker up -d --scale api=3
 ```
 
-Add a load balancer (nginx, traefik) in front.
+When Redis is enabled, the API container creates the event bus connection and runs with ticker disabled, so SSE clients can still receive worker-published autonomous events.
 
 ### Single Worker
 
-The worker (ticker) should only run ONE instance to avoid duplicate task execution.
+The worker (`python run.py worker`) should only run one instance to avoid duplicate scheduled-task execution.
 
 ## Backup & Recovery
 
@@ -215,7 +215,8 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 3. **Webhook Secret**: Validate incoming webhooks
 4. **Network**: Use HTTPS in production (reverse proxy)
 5. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments.
-6. **Kali Tools**: Use responsibly and only on authorized targets
+6. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive.
+7. **Kali Tools**: Use responsibly and only on authorized targets
 
 ## Troubleshooting
 
@@ -243,6 +244,8 @@ Ensure code/data mounts are intact in `docker-compose.yml`:
 ```yaml
 volumes:
   - ./nymeria:/app/nymeria
+  - ./run.py:/app/run.py
+  - ./.env.docker:/app/.env.docker
   - nymeria_data:/data
 ```
 
@@ -254,4 +257,4 @@ docker compose --env-file .env.docker build
 docker compose --env-file .env.docker up -d
 ```
 
-Self-modifications are preserved by the bind-mounted `./nymeria` code directory and `nymeria_data` volume. Re-apply carefully after upstream upgrades if merge conflicts occur.
+Self-modifications and runtime config are preserved by bind-mounted code/config files (`./nymeria`, `run.py`, `.env.docker`) plus the `nymeria_data` volume. Re-apply carefully after upstream upgrades if merge conflicts occur.

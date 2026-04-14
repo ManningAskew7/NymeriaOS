@@ -603,12 +603,15 @@ class NymeriaAgent:
             "",
             "The following tasks are pending. Work on them proactively when appropriate.",
             "Use todo(todo_id=..., status='done') to mark complete, or todo_delete if no longer needed.",
+            "**Recurring TODOs** auto-reschedule when marked done — they act as heartbeats. Only todo_delete stops them permanently.",
             "",
         ]
 
         for todo in display_todos:
             icon = STATUS_ICONS.get(todo.status, "[ ]")
             line = f"- {icon} **{todo.id}**: {todo.task}"
+            if todo.recurrence:
+                line += f" *(recurring: {todo.recurrence})*"
 
             lines.append(line)
 
@@ -638,13 +641,15 @@ class NymeriaAgent:
         memory_str = "|".join(f"{m.key}:{m.value}" for m in profile.memories)
         personality_str = "|".join(f"{k}:{v}" for k, v in profile.personality_overrides.items())
 
-        # Include thread-scoped TODOs in the hash
-        todo_list = self.todo_manager.get_todos(user_id)
-        if thread_id:
-            active_todos = todo_list.get_active_todos_for_thread(thread_id)
-        else:
-            active_todos = todo_list.get_active_todos()
-        todo_str = "|".join(f"{t.id}:{t.status.value}:{t.task[:50]}" for t in active_todos)
+        # Include thread-scoped TODOs in the hash (only if injected into prompt)
+        todo_str = ""
+        if tc and tc.inject_todos_in_prompt:
+            todo_list = self.todo_manager.get_todos(user_id)
+            if thread_id:
+                active_todos = todo_list.get_active_todos_for_thread(thread_id)
+            else:
+                active_todos = todo_list.get_active_todos()
+            todo_str = "|".join(f"{t.id}:{t.status.value}:{t.task[:50]}" for t in active_todos)
 
         # Include tool preferences in the hash (so graph is rebuilt when tools change)
         tool_prefs = profile.tool_preferences
@@ -698,7 +703,10 @@ class NymeriaAgent:
         base = tc.system_prompt if (tc and tc.system_prompt) else self._base_system_prompt
 
         memories_section = self._build_user_memories_section(user_id)
-        todos_section = self._build_active_todos_section(user_id, thread_id)
+        # Only inject TODOs into prompt if the per-thread setting is enabled (off by default)
+        todos_section = ""
+        if tc and tc.inject_todos_in_prompt:
+            todos_section = self._build_active_todos_section(user_id, thread_id)
         prompt = base + memories_section + todos_section
 
         # Inject per-thread instructions (before mode rules so they always come last)

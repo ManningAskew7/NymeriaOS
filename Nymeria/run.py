@@ -332,14 +332,13 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     """
     Run the Discord bot (gateway mode via WebSocket).
 
-    Connects to Discord using the bot token and responds to messages
-    and slash commands. Autonomous task results are posted back to
-    originating Discord channels via the event bus.
+    Thin client architecture: the bot calls the Nymeria REST API for
+    all operations instead of running its own NymeriaAgent. This
+    ensures Discord always reflects the same state as the frontend.
     """
-    from nymeria import NymeriaAgent
-    from nymeria.tools import get_all_tools_with_agents
     from nymeria.config import get_settings
     from nymeria.triggers.discord_bot import NymeriaDiscordBot
+    from nymeria.triggers.discord_api_client import NymeriaAPIClient
 
     settings = get_settings()
 
@@ -350,32 +349,22 @@ def run_discord_bot(args: argparse.Namespace) -> None:
         print("     DISCORD_BOT_TOKEN=your-token-here")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None)
+    # API URL is required — the bot is a thin client
+    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_key = settings.nymeria_api_key or ""
 
-    print("Starting Nymeria Discord Bot...")
+    print("Starting Nymeria Discord Bot (thin client)...")
     print(f"  - Mode: gateway (WebSocket)")
     print(f"  - Respond mode: {settings.discord_respond_mode}")
-    print(f"  - Model: {settings.llm_model}")
+    print(f"  - API: {api_url}")
 
-    # Initialize Redis event bus if configured
-    if settings.redis_enabled and settings.redis_url:
-        from nymeria.core.event_bus import create_event_bus, set_event_bus
-        event_bus = create_event_bus(settings)
-        set_event_bus(event_bus)
-        print(f"  - Redis event bus: {settings.redis_url}")
-
-    if api_url:
-        print(f"  - API URL: {api_url} (SSE events enabled)")
-
-    # Create agent without ticker (ticker runs in worker/api, not bot)
-    agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=False)
-    agent.sync_agent_tools()
+    # Create API client
+    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
 
     # Create and run bot
     bot = NymeriaDiscordBot(
-        agent=agent,
+        api=api,
         respond_mode=settings.discord_respond_mode,
-        api_url=api_url,
     )
 
     # Handle shutdown signals

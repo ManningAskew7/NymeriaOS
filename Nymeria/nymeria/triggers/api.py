@@ -1259,14 +1259,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 conn.execute(
                     "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
                 )
-                # Also clean checkpoint_writes if the table exists
-                try:
-                    conn.execute(
-                        "DELETE FROM checkpoint_writes WHERE thread_id = ?",
-                        (thread_id,),
-                    )
-                except Exception:
-                    pass  # Table may not exist
+                # Also clean checkpoint_writes and checkpoint_blobs
+                for table in ("checkpoint_writes", "checkpoint_blobs"):
+                    try:
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE thread_id = ?",
+                            (thread_id,),
+                        )
+                    except Exception:
+                        pass  # Table may not exist
                 conn.commit()
                 conn.close()
             except Exception as e:
@@ -1283,6 +1284,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         try:
                             cur.execute(
                                 "DELETE FROM checkpoint_writes WHERE thread_id = %s",
+                                (thread_id,),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
                                 (thread_id,),
                             )
                         except Exception:
@@ -1346,6 +1354,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable: Optional[bool] = None
         callable_name: Optional[str] = Field(default=None, max_length=64)
         callable_description: Optional[str] = Field(default=None, max_length=500)
+        inject_todos_in_prompt: Optional[bool] = None
         show_autonomous_prompts: Optional[bool] = None
         show_prompt_metadata: Optional[bool] = None
         clear_instructions: bool = False
@@ -1377,6 +1386,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "callable": False,
             "callable_name": None,
             "callable_description": None,
+            "inject_todos_in_prompt": False,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
             "created_at": None,
@@ -1457,6 +1467,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.callable_name = request.callable_name
         if request.callable_description is not None:
             tc.callable_description = request.callable_description
+        if request.inject_todos_in_prompt is not None:
+            tc.inject_todos_in_prompt = request.inject_todos_in_prompt
         if request.show_autonomous_prompts is not None:
             tc.show_autonomous_prompts = request.show_autonomous_prompts
         if request.show_prompt_metadata is not None:
@@ -3790,6 +3802,88 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         return {
             "status": "ok",
             "message": "Tool preferences reset to defaults",
+        }
+
+    # ========================================================================
+    # User Memory Endpoints
+    # ========================================================================
+
+    @app.get("/users/{user_id}/memories", tags=["User Memories"])
+    async def list_memories(
+        user_id: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """List all memories stored for a user."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        return {
+            "user_id": user_id,
+            "memories": [
+                {
+                    "key": m.key,
+                    "value": m.value,
+                    "created_at": m.created_at.isoformat(),
+                    "accessed_at": m.accessed_at.isoformat(),
+                    "access_count": m.access_count,
+                }
+                for m in profile.memories
+            ],
+            "count": len(profile.memories),
+        }
+
+    class MemorySaveRequest(BaseModel):
+        key: str = Field(..., description="Memory key identifier")
+        value: str = Field(..., max_length=1000, description="Memory content")
+
+    @app.post("/users/{user_id}/memories", tags=["User Memories"])
+    async def save_memory(
+        user_id: str,
+        request: MemorySaveRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Save or update a memory for a user."""
+        agent = get_agent()
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            success = profile.add_memory(request.key, request.value)
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Memory limit reached ({profile.MAX_MEMORIES})",
+            )
+        return {"status": "ok", "key": request.key}
+
+    @app.delete("/users/{user_id}/memories/{key}", tags=["User Memories"])
+    async def forget_memory(
+        user_id: str,
+        key: str,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Remove a memory by key."""
+        agent = get_agent()
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            removed = profile.remove_memory(key)
+        if not removed:
+            raise HTTPException(status_code=404, detail=f"No memory with key '{key}'")
+        return {"status": "ok", "key": key}
+
+    @app.get("/users/{user_id}/memories/search", tags=["User Memories"])
+    async def search_memories(
+        user_id: str,
+        q: str = Query(..., description="Search term"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Search memories by key or value substring."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        results = profile.search_memories(q)
+        return {
+            "user_id": user_id,
+            "query": q,
+            "results": [
+                {"key": m.key, "value": m.value, "access_count": m.access_count}
+                for m in results
+            ],
+            "count": len(results),
         }
 
     @app.get("/tools/categories", tags=["Tools"])

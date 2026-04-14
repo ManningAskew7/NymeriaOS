@@ -1,8 +1,10 @@
 # Logging Reference
 
-Centralized in `nymeria/config/logging_config.py`. All log level decisions flow through `configure_logging()`, called once by `run.py`. Format: `HH:MM:SS LEVEL module: message`.
+Most runtime logging is centralized in `nymeria/config/logging_config.py`. For normal CLI, API, worker, bot, and foreground gateway runs, log level decisions flow through `configure_logging()`, called by `run.py`. Format: `HH:MM:SS LEVEL module: message`.
 
-**Log file:** `Nymeria/data/logs/service.log` (10MB rotating, 5 backups). Logs go to both console AND this file.
+**Log file:** `Nymeria/data/logs/service.log` (rotating; size and backup count come from settings). In normal `run.py` flows, logs go to both console and this file.
+
+**Important exception:** the Windows service path in `service_runner.py` uses its own simpler logging setup instead of `configure_logging()`.
 
 ```bash
 # Read logs from a different terminal while API runs:
@@ -34,10 +36,25 @@ LOG_MODULES=nymeria.core.agent:DEBUG    # Per-module overrides (highest priority
 | `ticker` | Scheduled TODO polling and execution, watchdog | Debug autonomous task scheduling |
 | `triggers` | Trigger checking, firing, source plugins | Debug event-driven trigger issues |
 | `checkpoints` | SQLite/Postgres checkpoint read/write | Debug state persistence, missing messages |
+| `api` | HTTP request handling | Debug API routing, auth issues, schedule parsing |
 | `sse` | Event bus publishing | Debug frontend not receiving events |
 | `compactor` | Auto-compaction, token tracking | Debug context management |
-| `api` | HTTP request handling | Debug API routing, auth issues |
 | `all` | Everything at DEBUG | Full firehose (very verbose) |
+
+## Special Cases
+
+### Windows service mode
+
+`service_runner.py` does **not** use the centralized formatter/profile system. It configures a plain rotating file handler directly, writes only to file, and suppresses `httpx`/`httpcore` noise separately.
+
+That means:
+- `LOG_PROFILES` and `LOG_MODULES` are documented for the main `run.py` startup paths, not this service runner path
+- service log formatting differs from the compact `NymeriaFormatter`
+- if you are debugging the Windows service specifically, check `service_runner.py` first
+
+### MCP server mode
+
+`nymeria/mcp_server.py` sets up its own basic stderr logging with `logging.basicConfig(...)` so STDIO JSON-RPC is not corrupted. Treat MCP logging as a separate path from the main application runtime.
 
 ## Log Tags
 

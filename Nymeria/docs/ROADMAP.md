@@ -76,11 +76,11 @@ Allow custom tools to execute sandboxed Python code for simple transformations.
 ### Composite Tools / Workflows
 Chain multiple tools together into reusable workflows.
 
-### Automatic Sub-Agent Routing
-Detect when to route messages to sub-agents based on intent classification or keyword matching.
+### Automatic Callable-Thread Routing
+Detect when to route messages to callable threads based on intent classification or keyword matching.
 
 ### Tool Sharing / Marketplace
-Central repository for community-created custom tools and sub-agent configurations.
+Central repository for community-created custom tools and callable-thread configurations.
 
 ---
 
@@ -93,6 +93,12 @@ Central repository for community-created custom tools and sub-agent configuratio
 5. **Permissions**: Fine-grained access control for tools?
 
 ---
+
+## Recently Implemented but not fully reflected elsewhere yet
+
+- MCP server management endpoints are now part of the API surface.
+- Voice endpoints (`/voice/chat`, `/voice/tts`, `/voice/stt`) and device registration are now first-class runtime features.
+- A `twitch-bot` runtime exists alongside CLI, API, worker, MCP, and Discord modes.
 
 ## Related Documents
 
