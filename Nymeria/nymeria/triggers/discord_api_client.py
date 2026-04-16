@@ -5,8 +5,9 @@ with the Nymeria backend without running their own NymeriaAgent instance.
 All state lives in the API container — this is just a wrapper.
 """
 
+import json as _json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
@@ -80,6 +81,37 @@ class NymeriaAPIClient:
             "thread_id": thread_id,
             "user_id": user_id,
         })
+
+    async def chat_stream(
+        self, message: str, thread_id: str, user_id: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream chat events via SSE (POST /chat).
+
+        Yields dicts with 'type' key: thinking, response, tool_call,
+        tool_result, error, done, etc.
+        """
+        async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
+            async with client.stream(
+                "POST",
+                self._url("/chat"),
+                headers=self._headers,
+                json={
+                    "message": message,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    raw = line[6:]
+                    if raw.startswith(":"):
+                        continue
+                    try:
+                        yield _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        continue
 
     # ── Thread Management ─────────────────────────────────────────────────
 

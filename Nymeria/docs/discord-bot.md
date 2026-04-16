@@ -8,11 +8,11 @@ Nymeria's Discord integration runs as a stateless gateway that translates Discor
 Docker: nymeria-discord-bot (profile: discord)
   └─ NymeriaDiscordBot(discord.Client)
        ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-       ├─ CommandTree (29 slash commands across 6 groups)
+       ├─ CommandTree (30 slash commands across 6 groups)
        └─ SSE listener (autonomous task completion → channel posts)
 ```
 
-Unlike the Twitch bot (which calls `agent.chat()` directly), the Discord bot communicates exclusively via the REST API. This means:
+Unlike the Twitch bot (which calls `agent.chat()` directly), the Discord bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`) — users see text appear progressively as the model generates it, with tool call boundaries shown as visual separators. This means:
 
 - The frontend always reflects the same state as Discord
 - Context stats, compaction, and tool changes are visible in the UI
@@ -164,7 +164,19 @@ Per-channel persistent notes that survive conversation compaction.
 
 | Command | Description |
 |---------|-------------|
+| `/show-tools` | Toggle whether tool calls are shown as embeds in chat. Defaults to hidden — only response text is shown, with horizontal rule separators at tool boundaries. When enabled, tool calls appear as blue embeds with arguments and results. |
 | `/channel-context` | Toggle whether Nymeria includes recent channel messages as context in `/ask` and @mentions. Defaults to enabled. |
+
+## Streaming Responses
+
+Chat responses (`/ask` and @mentions) are streamed via SSE rather than waiting for the full response. Users see text appear progressively as the model generates it, with edits every ~1.5 seconds.
+
+**Tool call display modes:**
+
+- **Hidden (default):** Response text streams into a single progressively-edited message. Tool call boundaries are shown as horizontal rule separators (─────). Toggle with `/show-tools`.
+- **Shown:** Text segments are sent as separate messages with tool call embeds (blue → green on completion) between them. Each embed shows the tool name, arguments, and result.
+
+If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint automatically.
 
 ## Autonomous Task Delivery
 
