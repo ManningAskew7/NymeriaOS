@@ -125,6 +125,7 @@ class ChatResponse(BaseModel):
 
     response: str = Field(..., description="Agent response")
     thread_id: str = Field(..., description="Conversation thread ID")
+    tool_call_count: int = Field(default=0, description="Number of tool calls made in this turn")
 
 
 class HealthResponse(BaseModel):
@@ -954,7 +955,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             thread_id=thread_id,
             user_id=user_id,
         )
-        return ChatResponse(response=response, thread_id=thread_id)
+        tool_call_count = getattr(agent, "_last_chat_tool_calls", 0)
+        return ChatResponse(
+            response=response,
+            thread_id=thread_id,
+            tool_call_count=tool_call_count,
+        )
 
     @app.get("/threads/{thread_id}/history", response_model=ThreadHistoryResponse, tags=["Threads"])
     async def get_thread_history(
@@ -1323,6 +1329,87 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         client_id = http_request.headers.get("x-nymeria-client-id", "")
         publish_sync_event(
             event_type="thread_deleted",
+            thread_id=thread_id,
+            user_id=user_id,
+            data={},
+            origin_client_id=client_id,
+        )
+
+        return {"status": "ok", "thread_id": thread_id}
+
+    @app.post("/threads/{thread_id}/clear", tags=["Threads"])
+    async def clear_thread(
+        http_request: Request,
+        thread_id: str,
+        user_id: str = Query(default="default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """
+        Clear conversation history for a thread (checkpoints only).
+
+        Preserves thread config (tools, instructions, model overrides),
+        notepad content, and metadata. Use DELETE /threads/{id} to
+        remove everything.
+        """
+        agent = get_agent()
+        settings = get_settings()
+
+        # 1. Delete metadata
+        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+
+        # 2. Delete checkpoints (messages, tool calls, thinking blocks)
+        if settings.database_backend == "sqlite":
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(str(settings.db_path))
+                conn.execute(
+                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+                )
+                for table in ("checkpoint_writes", "checkpoint_blobs"):
+                    try:
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE thread_id = ?",
+                            (thread_id,),
+                        )
+                    except Exception:
+                        pass
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
+        elif settings.database_backend == "postgres":
+            import psycopg  # type: ignore[import-untyped]
+            try:
+                with psycopg.connect(settings.postgres_uri) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM checkpoints WHERE thread_id = %s",
+                            (thread_id,),
+                        )
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoint_writes WHERE thread_id = %s",
+                                (thread_id,),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
+                                (thread_id,),
+                            )
+                        except Exception:
+                            pass
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
+
+        logger.info(f"Thread {thread_id} conversation cleared (config + notepad preserved)")
+
+        # Publish sync event so other clients refresh
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        publish_sync_event(
+            event_type="thread_cleared",
             thread_id=thread_id,
             user_id=user_id,
             data={},

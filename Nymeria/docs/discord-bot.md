@@ -8,7 +8,7 @@ Nymeria's Discord integration runs as a stateless gateway that translates Discor
 Docker: nymeria-discord-bot (profile: discord)
   └─ NymeriaDiscordBot(discord.Client)
        ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-       ├─ CommandTree (28 slash commands across 6 groups)
+       ├─ CommandTree (29 slash commands across 6 groups)
        └─ SSE listener (autonomous task completion → channel posts)
 ```
 
@@ -91,11 +91,12 @@ docker logs nymeria-discord-bot --tail 15
 |---------|-------------|
 | `/ask <message>` | Send a message to Nymeria. Includes recent channel context if enabled. |
 | `/stop` | Abort the current running operation. |
-| `/clear` | Wipe conversation history for this channel's thread. |
+| `/clear` | Clear conversation history for this channel (preserves notepad and tool config). |
 | `/compact` | Compress conversation context to reclaim token space. |
 | `/thread` | Show thread ID, context usage (%), token count, compaction count, and context mode. |
 | `/context` | Detailed context breakdown: effective model, token usage with progress bar, tools by category, per-thread overrides (instructions, enabled/disabled tools, callable status). |
 | `/tasks [status]` | Quick view of scheduled and autonomous tasks. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. Shows schedule time, recurrence, and bound thread. |
+| `/export [format]` | Export conversation history as a file attachment. Format: `markdown` (default), `json`, `txt`. |
 | `/restart [target]` | Restart the Discord bot (default) or API server (`/restart target:api`). Bot restarts use Docker's restart policy; API restart uses the existing `POST /restart` endpoint. |
 | `/help` | List all available commands. |
 
