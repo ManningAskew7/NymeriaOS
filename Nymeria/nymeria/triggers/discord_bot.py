@@ -514,12 +514,14 @@ class NymeriaDiscordBot(discord.Client):
                 thread_id = make_thread_id(
                     interaction.guild_id, interaction.channel_id
                 )
+                user_id = make_user_id(interaction.user.id)
 
                 # Fetch all data in parallel
-                settings, context, tools_data = await asyncio.gather(
+                settings, context, tools_data, todos = await asyncio.gather(
                     self.api.get_settings(),
                     self.api.get_context_stats(thread_id),
                     self.api.get_default_tools(),
+                    self.api.list_todos(user_id),
                     return_exceptions=True,
                 )
 
@@ -530,6 +532,8 @@ class NymeriaDiscordBot(discord.Client):
                     context = {}
                 if isinstance(tools_data, Exception):
                     tools_data = {}
+                if isinstance(todos, Exception):
+                    todos = []
 
                 # Uptime
                 uptime_seconds = int(time.time() - self._start_time)
@@ -624,6 +628,36 @@ class NymeriaDiscordBot(discord.Client):
                 embed.add_field(
                     name="Tools & System",
                     value="\n".join(sys_lines),
+                    inline=True,
+                )
+
+                # Tasks
+                if todos:
+                    t_pending = sum(1 for t in todos if t.get("status") == "pending")
+                    t_in_prog = sum(1 for t in todos if t.get("status") == "in_progress")
+                    t_done = sum(1 for t in todos if t.get("status") == "done")
+                    task_parts = []
+                    if t_pending:
+                        task_parts.append(f"{t_pending} pending")
+                    if t_in_prog:
+                        task_parts.append(f"{t_in_prog} in progress")
+                    if t_done:
+                        task_parts.append(f"{t_done} done")
+                    embed.add_field(
+                        name="Tasks",
+                        value=" / ".join(task_parts) if task_parts else "none",
+                        inline=True,
+                    )
+
+                # Discord
+                ctx_enabled = self._context_enabled.get(interaction.channel_id, True)
+                discord_lines = [
+                    f"respond: {self.respond_mode}",
+                    f"channel context: {'on' if ctx_enabled else 'off'}",
+                ]
+                embed.add_field(
+                    name="Discord",
+                    value=" | ".join(discord_lines),
                     inline=True,
                 )
 
@@ -904,6 +938,276 @@ class NymeriaDiscordBot(discord.Client):
                 f"{'Nymeria will include recent user messages from this channel with each prompt.' if new_state else 'Nymeria will only see messages sent directly to her.'}",
                 ephemeral=True,
             )
+
+        # --- /tasks ---
+        @self.tree.command(name="tasks", description="Quick view of scheduled and autonomous tasks")
+        @app_commands.describe(status="Filter by status (default: active)")
+        @app_commands.choices(status=[
+            app_commands.Choice(name="active (pending + in progress)", value="active"),
+            app_commands.Choice(name="pending", value="pending"),
+            app_commands.Choice(name="in progress", value="in_progress"),
+            app_commands.Choice(name="done", value="done"),
+            app_commands.Choice(name="all", value="all"),
+        ])
+        async def cmd_tasks(
+            interaction: discord.Interaction,
+            status: app_commands.Choice[str] = None,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            user_id = make_user_id(interaction.user.id)
+            try:
+                items = await self.api.list_todos(user_id)
+                filter_val = status.value if status else "active"
+
+                if filter_val == "active":
+                    items = [i for i in items if i.get("status") != "done"]
+                elif filter_val != "all":
+                    items = [i for i in items if i.get("status") == filter_val]
+
+                if not items:
+                    await interaction.followup.send(
+                        f"No {filter_val} tasks.", ephemeral=True
+                    )
+                    return
+
+                # Count by status
+                pending = sum(1 for i in items if i.get("status") == "pending")
+                in_prog = sum(1 for i in items if i.get("status") == "in_progress")
+                done = sum(1 for i in items if i.get("status") == "done")
+                parts = []
+                if pending:
+                    parts.append(f"{pending} pending")
+                if in_prog:
+                    parts.append(f"{in_prog} in progress")
+                if done:
+                    parts.append(f"{done} done")
+                summary = f"{len(items)} tasks ({', '.join(parts)})" if parts else f"{len(items)} tasks"
+
+                # Sort: scheduled items first (by scheduled_for asc), then non-scheduled
+                def sort_key(item):
+                    s = item.get("scheduled_for") or ""
+                    return (0 if s else 1, s)
+                items.sort(key=sort_key)
+
+                embed = discord.Embed(
+                    title="Scheduled Tasks",
+                    description=summary,
+                    color=discord.Color.orange(),
+                )
+
+                status_icons = {"pending": "\u23f3", "in_progress": "\u25b6", "done": "\u2705"}
+                for item in items[:10]:
+                    st = item.get("status", "pending")
+                    icon = status_icons.get(st, "?")
+                    task = item.get("task", "")[:60]
+
+                    detail_parts = []
+                    scheduled = item.get("scheduled_for")
+                    if scheduled:
+                        detail_parts.append(f"fires: {scheduled[:16]}")
+                    recurrence = item.get("recurrence")
+                    if recurrence:
+                        detail_parts.append(f"repeat: {recurrence}")
+                    thread = item.get("thread_id")
+                    if thread:
+                        detail_parts.append(f"thread: `{thread[:25]}`")
+
+                    embed.add_field(
+                        name=f"{icon} {task}",
+                        value=" | ".join(detail_parts) if detail_parts else "no schedule",
+                        inline=False,
+                    )
+
+                if len(items) > 10:
+                    embed.set_footer(text=f"Showing 10 of {len(items)} \u2014 use /todos list for full view")
+                else:
+                    embed.set_footer(text="Use /todos for full task management")
+
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error(f"Error listing tasks: {e}", exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+        # --- /context ---
+        @self.tree.command(name="context", description="Detailed context breakdown for this channel")
+        async def cmd_context(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            thread_id = make_thread_id(
+                interaction.guild_id, interaction.channel_id
+            )
+            try:
+                # Fetch all data in parallel
+                context, thread_cfg, settings, categories, tools_data = await asyncio.gather(
+                    self.api.get_context_stats(thread_id),
+                    self.api.get_thread_config(thread_id),
+                    self.api.get_settings(),
+                    self.api.get_tool_categories(),
+                    self.api.get_default_tools(),
+                    return_exceptions=True,
+                )
+
+                # Handle errors gracefully
+                if isinstance(context, Exception):
+                    context = {}
+                if isinstance(thread_cfg, Exception):
+                    thread_cfg = None
+                if isinstance(settings, Exception):
+                    settings = {}
+                if isinstance(categories, Exception):
+                    categories = {}
+                if isinstance(tools_data, Exception):
+                    tools_data = {}
+
+                embed = discord.Embed(
+                    title="Context Breakdown",
+                    color=discord.Color.teal(),
+                )
+
+                # --- Model ---
+                effective_model = context.get("model") or settings.get("llm_model", "?")
+                provider = settings.get("llm_provider", "?")
+                base_url = settings.get("llm_base_url")
+                if base_url and "cli-proxy" in base_url:
+                    provider_str = f"{provider} (via CLIProxy)"
+                elif base_url:
+                    provider_str = f"{provider} ({base_url})"
+                else:
+                    provider_str = provider
+
+                model_lines = [f"`{effective_model}` | {provider_str}"]
+
+                # Check for thread-level model override
+                if thread_cfg:
+                    llm_cfg = thread_cfg.get("llm_config") or {}
+                    thread_model = llm_cfg.get("model")
+                    if thread_model and thread_model != settings.get("llm_model"):
+                        model_lines.append(f"\u26a0\ufe0f thread override: model=`{thread_model}`")
+                    thread_temp = llm_cfg.get("temperature")
+                    if thread_temp is not None:
+                        model_lines.append(f"temperature: {thread_temp}")
+
+                embed.add_field(
+                    name="Model",
+                    value="\n".join(model_lines),
+                    inline=False,
+                )
+
+                # --- Context Window ---
+                total_tokens = context.get("total_tokens", 0)
+                context_limit = context.get("context_limit", 0)
+                usage_pct = context.get("usage_percentage", 0)
+                cumulative = context.get("cumulative_tokens", 0)
+                compactions = context.get("compaction_count", 0)
+                last_compact = context.get("last_compaction")
+                ctx_mode = context.get("context_management", settings.get("context_management", "?"))
+
+                ctx_lines = [
+                    context_bar(usage_pct),
+                    f"{fmt_tokens(total_tokens)} / {fmt_tokens(context_limit)} tokens",
+                ]
+                if cumulative:
+                    ctx_lines[-1] += f" (cumulative: {fmt_tokens(cumulative)})"
+                compact_parts = []
+                if compactions:
+                    compact_parts.append(f"{compactions} compaction{'s' if compactions != 1 else ''}")
+                if last_compact:
+                    # Show truncated ISO timestamp
+                    compact_parts.append(f"last: {last_compact[:16]}")
+                if compact_parts:
+                    ctx_lines.append(" | ".join(compact_parts))
+                mode_str = f"mode: {ctx_mode}"
+                compact_threshold = settings.get("compact_threshold")
+                if compact_threshold and ctx_mode == "auto_compact":
+                    mode_str += f" (threshold {int(compact_threshold * 100)}%)"
+                ctx_lines.append(mode_str)
+
+                embed.add_field(
+                    name="Context Window",
+                    value="\n".join(ctx_lines),
+                    inline=False,
+                )
+
+                # --- Tools ---
+                default_tools = set(tools_data.get("default_tools", []))
+                available_tools = tools_data.get("available_tools", [])
+                cats = categories.get("categories", {}) if isinstance(categories, dict) else {}
+
+                # Determine effective enabled tools for this thread
+                disabled = set()
+                extra_enabled = set()
+                if thread_cfg:
+                    disabled = set(thread_cfg.get("disabled_tools") or [])
+                    extra_enabled = set(thread_cfg.get("enabled_tools") or [])
+
+                effective_enabled = (default_tools - disabled) | extra_enabled
+                total_available = len(available_tools)
+
+                tool_lines = [f"{len(effective_enabled)} enabled (of {total_available} available)"]
+
+                # Show categories with counts
+                cat_parts = []
+                for cat_name in sorted(cats.keys()):
+                    cat_tools = set(cats[cat_name])
+                    enabled_in_cat = len(cat_tools & effective_enabled)
+                    total_in_cat = len(cat_tools)
+                    if enabled_in_cat == total_in_cat:
+                        cat_parts.append(f"{cat_name}: {total_in_cat}")
+                    else:
+                        cat_parts.append(f"{cat_name}: {enabled_in_cat}/{total_in_cat}")
+                # Join categories into compact lines, ~3 per line
+                while cat_parts:
+                    chunk = cat_parts[:3]
+                    cat_parts = cat_parts[3:]
+                    tool_lines.append(" | ".join(chunk))
+                    if len(tool_lines) >= 9:  # Cap to avoid embed overflow
+                        remaining = len(cat_parts)
+                        if remaining:
+                            tool_lines.append(f"...and {remaining} more categories")
+                        break
+
+                embed.add_field(
+                    name="Tools",
+                    value="\n".join(tool_lines),
+                    inline=False,
+                )
+
+                # --- Thread Overrides ---
+                override_lines = []
+                if thread_cfg:
+                    instructions = thread_cfg.get("instructions")
+                    if instructions:
+                        override_lines.append(f"instructions: {len(instructions)} chars")
+                    if disabled:
+                        override_lines.append(f"disabled: {', '.join(sorted(disabled)[:8])}")
+                        if len(disabled) > 8:
+                            override_lines[-1] += f" (+{len(disabled) - 8} more)"
+                    if extra_enabled:
+                        override_lines.append(f"enabled: {', '.join(sorted(extra_enabled)[:8])}")
+                        if len(extra_enabled) > 8:
+                            override_lines[-1] += f" (+{len(extra_enabled) - 8} more)"
+                    if thread_cfg.get("inject_todos_in_prompt"):
+                        override_lines.append("inject TODOs: yes")
+                    sys_prompt = thread_cfg.get("system_prompt")
+                    if sys_prompt:
+                        override_lines.append(f"custom system prompt: {len(sys_prompt)} chars")
+                    if thread_cfg.get("callable"):
+                        cname = thread_cfg.get("callable_name", "?")
+                        override_lines.append(f"callable as: {cname}")
+
+                if not override_lines:
+                    override_lines.append("None \u2014 using global defaults")
+
+                embed.add_field(
+                    name="Thread Overrides",
+                    value="\n".join(override_lines),
+                    inline=False,
+                )
+
+                embed.set_footer(text=f"thread: {thread_id}")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error(f"Error getting context: {e}", exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
         # --- /stop ---
         @self.tree.command(name="stop", description="Abort the current running operation")
@@ -1568,7 +1872,9 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/notepad read | write | clear", value="Per-channel persistent notes (survive compaction)", inline=False)
             embed.add_field(name="/todos add | list | complete | delete", value="Scheduled tasks and reminders (with repeat intervals)", inline=False)
             embed.add_field(name="/thread", value="Show thread info (tokens, compactions)", inline=False)
-            embed.add_field(name="/status", value="Show comprehensive system status", inline=False)
+            embed.add_field(name="/context", value="Detailed context breakdown (model, tools, overrides, tokens)", inline=False)
+            embed.add_field(name="/status", value="Comprehensive system status (model, context, tools, tasks)", inline=False)
+            embed.add_field(name="/tasks [status]", value="Quick view of scheduled and autonomous tasks", inline=False)
             embed.add_field(name="/channel-context", value="Toggle whether Nymeria reads recent channel messages", inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
