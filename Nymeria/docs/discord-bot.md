@@ -218,6 +218,10 @@ When enabled (default), the bot fetches the last ~10 non-bot messages from the c
 
 This helps Nymeria understand the ongoing conversation even when invoked via `/ask` rather than a direct @mention.
 
+## Future Improvements
+
+- **`/activation` command** — Toggle between `mention` and `all` respond modes from Discord instead of requiring an env var change + restart. OpenClaw implements this as `/activation mention|always`. Deferred because the interaction between per-guild settings, env var defaults, and runtime state is more complex than it appears.
+
 ## Key Files
 
 | What | Where |
