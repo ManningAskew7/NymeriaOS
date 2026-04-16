@@ -12,6 +12,7 @@ for autonomous task results.
 import asyncio
 import json as _json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -922,6 +923,43 @@ class NymeriaDiscordBot(discord.Client):
                     f"Error sending abort: {e}", ephemeral=True
                 )
 
+        # --- /restart ---
+        @self.tree.command(name="restart", description="Restart a Nymeria service")
+        @app_commands.describe(target="What to restart (default: bot)")
+        @app_commands.choices(target=[
+            app_commands.Choice(name="bot (Discord bot)", value="bot"),
+            app_commands.Choice(name="api (API server)", value="api"),
+        ])
+        async def cmd_restart(
+            interaction: discord.Interaction,
+            target: app_commands.Choice[str] = None,
+        ):
+            target_value = target.value if target else "bot"
+
+            if target_value == "api":
+                await interaction.response.send_message(
+                    "Restarting API server...", ephemeral=True
+                )
+                try:
+                    await self.api.restart_api()
+                except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError):
+                    # API process died before sending response — that means it worked
+                    pass
+                except Exception as e:
+                    logger.error(f"Error restarting API: {e}", exc_info=True)
+                    await interaction.followup.send(
+                        f"Error: {e}", ephemeral=True
+                    )
+            else:
+                # Bot self-restart: send message, then exit.
+                # Docker restart policy (unless-stopped) brings us back.
+                await interaction.response.send_message(
+                    "Restarting bot... (back in a few seconds)", ephemeral=True
+                )
+                logger.info("Bot restart requested via /restart command")
+                await self.close()
+                os._exit(0)
+
         # --- /tools group ---
         tools_group = app_commands.Group(
             name="tools", description="View and manage available tools"
@@ -1518,6 +1556,7 @@ class NymeriaDiscordBot(discord.Client):
             )
             embed.add_field(name="/ask <message>", value="Send a message without @mentioning", inline=False)
             embed.add_field(name="/stop", value="Abort the current running operation", inline=False)
+            embed.add_field(name="/restart [bot|api]", value="Restart the Discord bot or API server", inline=False)
             embed.add_field(name="/clear", value="Wipe conversation history for this channel", inline=False)
             embed.add_field(name="/compact", value="Compress conversation to save context", inline=False)
             embed.add_field(name="/model [name] [scope]", value="Show or change the LLM model (global or per-channel)", inline=False)
