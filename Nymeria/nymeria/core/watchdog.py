@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from rich.console import Console
@@ -203,14 +203,33 @@ class Watchdog:
         Bypasses TodoItem.is_stale() which uses hours. This gives the
         watchdog its own minutes-based granularity.
         """
+        now = datetime.now(timezone.utc)
         # Not stale if scheduled for the future
-        if todo.scheduled_for and todo.scheduled_for > datetime.utcnow():
+        if todo.scheduled_for:
+            sf = todo.scheduled_for if todo.scheduled_for.tzinfo else todo.scheduled_for.replace(tzinfo=timezone.utc)
+            if sf > now:
+                return False
+        # Not stale if it has a recurrence pattern (recurring TODOs are managed by the ticker)
+        if todo.recurrence:
             return False
-        threshold = datetime.utcnow() - timedelta(minutes=self.staleness_minutes)
-        return todo.is_active() and todo.updated_at < threshold
+        threshold = now - timedelta(minutes=self.staleness_minutes)
+        updated = todo.updated_at if todo.updated_at.tzinfo else todo.updated_at.replace(tzinfo=timezone.utc)
+        return todo.is_active() and updated < threshold
 
     def _check_todos(self) -> None:
         """Check all users' TODOs for staleness and dispatch per-thread nudges."""
+        # Runtime kill switches (can disable without restart):
+        #   - Env var: NYMERIA_WATCHDOG_DISABLED=1
+        #   - File flag: {data_dir}/flags/watchdog-off (persistent across restarts)
+        import os
+        if os.environ.get('NYMERIA_WATCHDOG_DISABLED', '').strip().lower() in ('1', 'true', 'yes'):
+            return
+        try:
+            flag_path = self.agent.settings.data_dir / "flags" / "watchdog-off"
+            if flag_path.exists():
+                return
+        except Exception:
+            pass
         # Clean up completed futures
         with self._lock:
             done_threads = [
