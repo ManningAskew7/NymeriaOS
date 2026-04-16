@@ -304,7 +304,7 @@ class NymeriaAgent:
     """
 
     MAIN_AGENT_MAX_ITERATIONS = 70
-    CALLABLE_DEFAULT_MAX_ITERATIONS = 25
+    CALLABLE_DEFAULT_MAX_ITERATIONS = 50
     SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
 
     def __init__(
