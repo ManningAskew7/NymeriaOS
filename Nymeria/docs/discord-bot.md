@@ -8,7 +8,7 @@ Nymeria's Discord integration runs as a stateless gateway that translates Discor
 Docker: nymeria-discord-bot (profile: discord)
   └─ NymeriaDiscordBot(discord.Client)
        ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-       ├─ CommandTree (26 slash commands across 6 groups)
+       ├─ CommandTree (28 slash commands across 6 groups)
        └─ SSE listener (autonomous task completion → channel posts)
 ```
 
@@ -94,6 +94,8 @@ docker logs nymeria-discord-bot --tail 15
 | `/clear` | Wipe conversation history for this channel's thread. |
 | `/compact` | Compress conversation context to reclaim token space. |
 | `/thread` | Show thread ID, context usage (%), token count, compaction count, and context mode. |
+| `/context` | Detailed context breakdown: effective model, token usage with progress bar, tools by category, per-thread overrides (instructions, enabled/disabled tools, callable status). |
+| `/tasks [status]` | Quick view of scheduled and autonomous tasks. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. Shows schedule time, recurrence, and bound thread. |
 | `/restart [target]` | Restart the Discord bot (default) or API server (`/restart target:api`). Bot restarts use Docker's restart policy; API restart uses the existing `POST /restart` endpoint. |
 | `/help` | List all available commands. |
 
@@ -106,7 +108,7 @@ docker logs nymeria-discord-bot --tail 15
 | `/model [name] [scope]` | Show or change the LLM model. `scope` is `"global"` (server default) or `"thread"` (channel override). |
 | `/models` | List all available models from the current provider with context window sizes. |
 | `/think [mode]` | Set extended thinking mode: `off`, `on`, `low`, `medium`, `high`. Without argument, shows current state. |
-| `/status` | Comprehensive dashboard: model, provider, context bar, tools count, uptime, watchdog status. |
+| `/status` | Comprehensive dashboard: model, provider, context bar, tools count, uptime, watchdog, task counts, Discord respond mode and channel context state. |
 
 ### TODOs (`/todos`)
 
