@@ -214,6 +214,7 @@ class NymeriaDiscordBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self._start_time = time.time()
         self._context_enabled: Dict[int, bool] = {}  # channel_id -> enabled
+        self._show_tool_calls: Dict[int, bool] = {}  # channel_id -> show tool embeds
 
         # Register slash commands
         self._register_commands()
@@ -238,20 +239,16 @@ class NymeriaDiscordBot(discord.Client):
                 )
             message_with_context = f"{context}{message}" if context else message
 
-            try:
-                data = await self.api.chat(message_with_context, thread_id, user_id)
-                response = data.get("response", "")
-                tool_calls = data.get("tool_call_count", 0)
-                if tool_calls:
-                    response += f"\n\n-# Tool calls: {tool_calls}"
-            except Exception as e:
-                logger.error(f"Error in /ask: {e}", exc_info=True)
-                response = f"Sorry, I encountered an error: {e}"
+            async def _first(content: str) -> discord.Message:
+                return await interaction.followup.send(content, wait=True)
 
-            chunks = split_message(response)
-            await interaction.followup.send(chunks[0])
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk)
+            await self._stream_to_channel(
+                channel=interaction.channel,
+                first_send=_first,
+                message=message_with_context,
+                thread_id=thread_id,
+                user_id=user_id,
+            )
 
         @self.tree.command(name="clear", description="Clear conversation history (preserves notepad + tool config)")
         async def cmd_clear(interaction: discord.Interaction):
@@ -943,6 +940,19 @@ class NymeriaDiscordBot(discord.Client):
             await interaction.response.send_message(
                 f"Channel context is now **{state_str}** for this channel.\n"
                 f"{'Nymeria will include recent user messages from this channel with each prompt.' if new_state else 'Nymeria will only see messages sent directly to her.'}",
+                ephemeral=True,
+            )
+
+        @self.tree.command(name="show-tools", description="Toggle whether tool calls are shown in chat")
+        async def cmd_show_tools(interaction: discord.Interaction):
+            channel_id = interaction.channel_id
+            currently_shown = self._show_tool_calls.get(channel_id, False)
+            new_state = not currently_shown
+            self._show_tool_calls[channel_id] = new_state
+            state_str = "shown" if new_state else "hidden"
+            await interaction.response.send_message(
+                f"Tool calls are now **{state_str}** in this channel.\n"
+                f"{'Tool names, arguments, and results will appear as embeds during responses.' if new_state else 'Only the final response text will be shown.'}",
                 ephemeral=True,
             )
 
@@ -2017,8 +2027,212 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/status", value="Comprehensive system status (model, context, tools, tasks)", inline=False)
             embed.add_field(name="/tasks [status]", value="Quick view of scheduled and autonomous tasks", inline=False)
             embed.add_field(name="/export [format]", value="Export conversation history (markdown, json, txt)", inline=False)
+            embed.add_field(name="/show-tools", value="Toggle whether tool calls are shown in chat (off by default)", inline=False)
             embed.add_field(name="/channel-context", value="Toggle whether Nymeria reads recent channel messages", inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # =========================================================================
+    # Streaming chat dispatcher
+    # =========================================================================
+
+    async def _stream_to_channel(
+        self,
+        channel: Any,
+        first_send,  # Callable[[str], Awaitable[discord.Message]]
+        message: str,
+        thread_id: str,
+        user_id: str,
+    ) -> None:
+        """Stream SSE chat events to a Discord channel as multiple messages.
+
+        Args:
+            channel: Discord channel to send messages to.
+            first_send: Callable for the first message (interaction.followup.send
+                        for /ask, channel.send for @mentions).
+            message: The user message to send to the agent.
+            thread_id: Nymeria thread ID.
+            user_id: Nymeria user ID.
+        """
+        EDIT_INTERVAL = 1.5  # seconds between message edits
+
+        # Per-invocation state
+        text_buffer = ""
+        current_msg: Optional[discord.Message] = None
+        last_edit = 0.0
+        tool_call_count = 0
+        first_sent = False
+        tool_msgs: Dict[str, discord.Message] = {}
+
+        async def _send(content: str) -> discord.Message:
+            """Send a message, using first_send for the first one."""
+            nonlocal first_sent
+            if not first_sent:
+                first_sent = True
+                return await first_send(content)
+            return await channel.send(content)
+
+        async def _flush_buffer(final: bool = False):
+            """Send or edit the current text buffer to Discord."""
+            nonlocal text_buffer, current_msg, last_edit
+            if not text_buffer:
+                if final:
+                    current_msg = None
+                return
+            try:
+                if current_msg is None:
+                    current_msg = await _send(text_buffer)
+                    last_edit = time.monotonic()
+                else:
+                    await current_msg.edit(content=text_buffer)
+                    last_edit = time.monotonic()
+            except discord.HTTPException:
+                # Edit failed (rate limit, token expired) — send new message
+                try:
+                    current_msg = await channel.send(text_buffer)
+                    last_edit = time.monotonic()
+                except Exception:
+                    pass
+            if final:
+                text_buffer = ""
+                current_msg = None
+
+        async def _finalize_text():
+            """Finalize current text segment (flush + reset for next segment)."""
+            await _flush_buffer(final=True)
+
+        try:
+            async for event in self.api.chat_stream(message, thread_id, user_id):
+                etype = event.get("type", "")
+                if etype == "thinking":
+                    try:
+                        await channel.trigger_typing()
+                    except Exception:
+                        pass
+
+                elif etype == "response":
+                    chunk = event.get("content", "")
+                    if chunk:
+                        text_buffer += chunk
+                        # Check for message overflow
+                        if len(text_buffer) > 1800:
+                            await _flush_buffer(final=True)
+                        # Throttled edit
+                        elif time.monotonic() - last_edit >= EDIT_INTERVAL:
+                            await _flush_buffer()
+
+                elif etype == "tool_call":
+                    tool_call_count += 1
+                    show_tools = self._show_tool_calls.get(channel.id, False)
+                    if show_tools:
+                        await _finalize_text()
+                        name = event.get("name", "?")
+                        args = event.get("args", {})
+                        args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "—"
+                        if len(args_str) > 1000:
+                            args_str = args_str[:997] + "..."
+                        embed = discord.Embed(
+                            title=f"🔧 {name}",
+                            description=f"```json\n{args_str}\n```" if args else None,
+                            color=discord.Color.blue(),
+                        )
+                        try:
+                            tool_msg = await channel.send(embed=embed)
+                            tool_msgs[event.get("id", "")] = tool_msg
+                        except Exception as e:
+                            logger.warning(f"Failed to send tool call embed: {e}")
+                    try:
+                        await channel.trigger_typing()
+                    except Exception:
+                        pass
+
+                elif etype == "tool_result":
+                    show_tools = self._show_tool_calls.get(channel.id, False)
+                    if not show_tools:
+                        # Inject separator so post-tool text is visually
+                        # distinct from pre-tool text within the same message
+                        if text_buffer and "──────" not in text_buffer[-20:]:
+                            text_buffer += "\n\n──────────────────────────────\n\n"
+                    if show_tools:
+                        tc_id = event.get("id", "")
+                        result = event.get("result", "")
+                        tool_msg = tool_msgs.get(tc_id)
+                        if tool_msg:
+                            result_str = str(result)
+                            if len(result_str) > 1000:
+                                result_str = result_str[:997] + "..."
+                            try:
+                                old_embed = tool_msg.embeds[0] if tool_msg.embeds else discord.Embed()
+                                old_embed.color = discord.Color.green()
+                                old_embed.add_field(
+                                    name="Result",
+                                    value=f"```\n{result_str}\n```" if result_str else "*(empty)*",
+                                    inline=False,
+                                )
+                                await tool_msg.edit(embed=old_embed)
+                            except Exception as e:
+                                logger.warning(f"Failed to edit tool result: {e}")
+
+                elif etype == "error":
+
+                    await _finalize_text()
+                    error_content = event.get("content", "Unknown error")
+                    try:
+                        await _send(f"Sorry, I encountered an error: {error_content}")
+                    except Exception:
+                        pass
+
+                elif etype == "iteration_limit":
+                    content = event.get("content", "")
+                    if content:
+                        try:
+                            await channel.send(f"⚠️ {content}")
+                        except Exception:
+                            pass
+
+                elif etype == "done":
+
+                    # Append tool call footer to remaining buffer
+                    if tool_call_count and text_buffer:
+                        text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
+                    elif tool_call_count and current_msg:
+                        # Buffer empty but we have an existing message to edit
+                        try:
+                            old_content = current_msg.content or ""
+                            await current_msg.edit(
+                                content=old_content + f"\n\n-# Tool calls: {tool_call_count}"
+                            )
+                        except Exception:
+                            pass
+                    await _flush_buffer(final=True)
+
+                # Silently ignore: queued, compacted, context_attached
+
+            # Stream ended — flush any remaining buffer
+            await _clear_thinking()
+            if text_buffer:
+                if tool_call_count:
+                    text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
+                await _flush_buffer(final=True)
+
+        except Exception as e:
+            logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
+            await _clear_thinking()
+            # Sync fallback
+            try:
+                data = await self.api.chat(message, thread_id, user_id)
+                response = data.get("response", "")
+                tc = data.get("tool_call_count", 0)
+                if tc:
+                    response += f"\n\n-# Tool calls: {tc}"
+                chunks = split_message(response)
+                for chunk in chunks:
+                    await _send(chunk) if not first_sent else await channel.send(chunk)
+            except Exception as e2:
+                logger.error(f"Sync fallback also failed: {e2}", exc_info=True)
+                try:
+                    await _send(f"Sorry, I encountered an error: {e2}")
+                except Exception:
+                    pass
 
     async def setup_hook(self) -> None:
         """No-op — commands are synced per-guild in on_ready."""
@@ -2080,21 +2294,13 @@ class NymeriaDiscordBot(discord.Client):
             )
         content_with_context = f"{context}{content}" if context else content
 
-        # Show typing indicator while processing
-        async with message.channel.typing():
-            try:
-                data = await self.api.chat(content_with_context, thread_id, user_id)
-                response = data.get("response", "")
-                tool_calls = data.get("tool_call_count", 0)
-                if tool_calls:
-                    response += f"\n\n-# Tool calls: {tool_calls}"
-            except Exception as e:
-                logger.error(f"Error processing message: {e}", exc_info=True)
-                response = f"Sorry, I encountered an error: {e}"
-
-        chunks = split_message(response)
-        for chunk in chunks:
-            await message.channel.send(chunk)
+        await self._stream_to_channel(
+            channel=message.channel,
+            first_send=lambda content: message.channel.send(content),
+            message=content_with_context,
+            thread_id=thread_id,
+            user_id=user_id,
+        )
 
     async def _api_sse_listener(self) -> None:
         """
