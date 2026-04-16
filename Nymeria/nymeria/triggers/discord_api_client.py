@@ -223,6 +223,12 @@ class NymeriaAPIClient:
         params = {"provider": provider} if provider else None
         return await self._get("/models/available", params=params)
 
+    # ── System ────────────────────────────────────────────────────────────
+
+    async def restart_api(self) -> dict:
+        """Trigger API server restart."""
+        return await self._post("/restart")
+
     # ── Health ────────────────────────────────────────────────────────────
 
     async def health(self) -> bool:
