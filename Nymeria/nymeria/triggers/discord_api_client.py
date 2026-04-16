@@ -70,14 +70,16 @@ class NymeriaAPIClient:
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
-    async def chat(self, message: str, thread_id: str, user_id: str) -> str:
-        """Send a message and get a response (non-streaming)."""
-        data = await self._post("/chat/sync", json={
+    async def chat(self, message: str, thread_id: str, user_id: str) -> dict:
+        """Send a message and get a response (non-streaming).
+
+        Returns dict with 'response' (str) and 'tool_call_count' (int).
+        """
+        return await self._post("/chat/sync", json={
             "message": message,
             "thread_id": thread_id,
             "user_id": user_id,
         })
-        return data.get("response", "")
 
     # ── Thread Management ─────────────────────────────────────────────────
 
@@ -94,6 +96,19 @@ class NymeriaAPIClient:
     async def delete_thread(self, thread_id: str) -> dict:
         """Delete all history for a thread."""
         return await self._delete(f"/threads/{thread_id}")
+
+    async def clear_thread(self, thread_id: str, user_id: str = "default") -> dict:
+        """Clear conversation history only (preserve notepad + config)."""
+        return await self._post(
+            f"/threads/{thread_id}/clear", params={"user_id": user_id}
+        )
+
+    async def get_history(self, thread_id: str, include_internal: bool = False) -> dict:
+        """Get conversation history for a thread."""
+        return await self._get(
+            f"/threads/{thread_id}/history",
+            params={"include_internal": str(include_internal).lower()},
+        )
 
     async def get_context_stats(self, thread_id: str) -> dict:
         """Get token usage and context stats for a thread."""

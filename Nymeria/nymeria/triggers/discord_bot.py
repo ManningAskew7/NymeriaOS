@@ -10,11 +10,13 @@ for autonomous task results.
 """
 
 import asyncio
+import io
 import json as _json
 import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import discord
@@ -237,7 +239,11 @@ class NymeriaDiscordBot(discord.Client):
             message_with_context = f"{context}{message}" if context else message
 
             try:
-                response = await self.api.chat(message_with_context, thread_id, user_id)
+                data = await self.api.chat(message_with_context, thread_id, user_id)
+                response = data.get("response", "")
+                tool_calls = data.get("tool_call_count", 0)
+                if tool_calls:
+                    response += f"\n\n-# Tool calls: {tool_calls}"
             except Exception as e:
                 logger.error(f"Error in /ask: {e}", exc_info=True)
                 response = f"Sorry, I encountered an error: {e}"
@@ -247,16 +253,17 @@ class NymeriaDiscordBot(discord.Client):
             for chunk in chunks[1:]:
                 await interaction.followup.send(chunk)
 
-        @self.tree.command(name="clear", description="Wipe conversation history for this channel")
+        @self.tree.command(name="clear", description="Clear conversation history (preserves notepad + tool config)")
         async def cmd_clear(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             thread_id = make_thread_id(
                 interaction.guild_id, interaction.channel_id
             )
+            user_id = make_user_id(interaction.user.id)
             try:
-                await self.api.delete_thread(thread_id)
+                await self.api.clear_thread(thread_id, user_id)
                 await interaction.followup.send(
-                    "Conversation history cleared for this channel.",
+                    "Conversation history cleared. Notepad and tool config preserved.",
                     ephemeral=True,
                 )
             except Exception as e:
@@ -938,6 +945,140 @@ class NymeriaDiscordBot(discord.Client):
                 f"{'Nymeria will include recent user messages from this channel with each prompt.' if new_state else 'Nymeria will only see messages sent directly to her.'}",
                 ephemeral=True,
             )
+
+        # --- /export ---
+        @self.tree.command(name="export", description="Export conversation history as a file")
+        @app_commands.describe(
+            format="Output format (default: markdown)",
+        )
+        @app_commands.choices(format=[
+            app_commands.Choice(name="markdown", value="markdown"),
+            app_commands.Choice(name="json", value="json"),
+            app_commands.Choice(name="txt", value="txt"),
+        ])
+        async def cmd_export(
+            interaction: discord.Interaction,
+            format: app_commands.Choice[str] = None,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            thread_id = make_thread_id(
+                interaction.guild_id, interaction.channel_id
+            )
+            fmt = format.value if format else "markdown"
+            try:
+                data = await self.api.get_history(thread_id)
+                messages = data.get("messages", [])
+
+                if not messages:
+                    await interaction.followup.send(
+                        "No conversation history to export.", ephemeral=True
+                    )
+                    return
+
+                # Format the messages
+                if fmt == "json":
+                    content = _json.dumps(messages, indent=2, ensure_ascii=False)
+                    ext = "json"
+                elif fmt == "txt":
+                    lines = []
+                    for msg in messages:
+                        role = msg.get("role", "unknown").capitalize()
+                        steps = msg.get("steps", [])
+                        if steps:
+                            lines.append(f"[{role}]")
+                            for step in steps:
+                                stype = step.get("type", "")
+                                if stype == "thinking":
+                                    lines.append(f"  [Thinking] {step.get('content', '')}")
+                                elif stype == "tool_call":
+                                    name = step.get("name", "?")
+                                    args = step.get("arguments") or {}
+                                    result = step.get("result", "")
+                                    args_str = _json.dumps(args, ensure_ascii=False) if args else ""
+                                    lines.append(f"  [Tool: {name}] {args_str}")
+                                    if result:
+                                        lines.append(f"    → {str(result)[:200]}")
+                                elif stype == "response":
+                                    lines.append(step.get("content", ""))
+                        else:
+                            text = msg.get("content", "")
+                            if isinstance(text, list):
+                                text = "\n".join(
+                                    b.get("text", "") for b in text
+                                    if isinstance(b, dict) and b.get("text")
+                                )
+                            lines.append(f"[{role}] {text}")
+                        lines.append("")
+                    content = "\n".join(lines)
+                    ext = "txt"
+                else:
+                    # Markdown (default)
+                    parts = []
+                    for msg in messages:
+                        role = msg.get("role", "unknown").capitalize()
+                        steps = msg.get("steps", [])
+                        if steps:
+                            parts.append(f"### {role}")
+                            for step in steps:
+                                stype = step.get("type", "")
+                                if stype == "thinking":
+                                    parts.append(
+                                        f"> *Thinking:* {step.get('content', '')}"
+                                    )
+                                elif stype == "tool_call":
+                                    name = step.get("name", "?")
+                                    args = step.get("arguments") or {}
+                                    result = step.get("result", "")
+                                    parts.append(
+                                        f"**Tool: {name}**\n"
+                                        f"```json\n{_json.dumps(args, indent=2, ensure_ascii=False)}\n```"
+                                    )
+                                    if result:
+                                        result_str = str(result)
+                                        if len(result_str) > 500:
+                                            result_str = result_str[:497] + "..."
+                                        parts.append(f"**Result:**\n```\n{result_str}\n```")
+                                elif stype == "response":
+                                    parts.append(step.get("content", ""))
+                        else:
+                            text = msg.get("content", "")
+                            if isinstance(text, list):
+                                text = "\n".join(
+                                    b.get("text", "") for b in text
+                                    if isinstance(b, dict) and b.get("text")
+                                )
+                            parts.append(f"### {role}\n\n{text}")
+                        parts.append("---")
+                    content = "\n\n".join(parts)
+                    ext = "md"
+
+                # Build filename
+                channel_name = "export"
+                if hasattr(interaction.channel, "name") and interaction.channel.name:
+                    channel_name = interaction.channel.name
+                date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+                filename = f"nymeria-{channel_name}-{date_str}.{ext}"
+
+                # Check size (Discord 25MB limit)
+                encoded = content.encode("utf-8")
+                if len(encoded) > 25 * 1024 * 1024:
+                    await interaction.followup.send(
+                        f"Export too large ({len(encoded) / 1024 / 1024:.1f} MB). "
+                        "Discord limits file uploads to 25 MB.",
+                        ephemeral=True,
+                    )
+                    return
+
+                buf = io.BytesIO(encoded)
+                file = discord.File(buf, filename=filename)
+                await interaction.followup.send(
+                    f"Exported {len(messages)} messages as `{filename}`",
+                    file=file,
+                    ephemeral=True,
+                )
+            except Exception as e:
+                logger.error(f"Error exporting history: {e}", exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
         # --- /tasks ---
         @self.tree.command(name="tasks", description="Quick view of scheduled and autonomous tasks")
@@ -1861,7 +2002,7 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/ask <message>", value="Send a message without @mentioning", inline=False)
             embed.add_field(name="/stop", value="Abort the current running operation", inline=False)
             embed.add_field(name="/restart [bot|api]", value="Restart the Discord bot or API server", inline=False)
-            embed.add_field(name="/clear", value="Wipe conversation history for this channel", inline=False)
+            embed.add_field(name="/clear", value="Clear conversation history (preserves notepad + tools)", inline=False)
             embed.add_field(name="/compact", value="Compress conversation to save context", inline=False)
             embed.add_field(name="/model [name] [scope]", value="Show or change the LLM model (global or per-channel)", inline=False)
             embed.add_field(name="/models", value="List available models from the provider", inline=False)
@@ -1875,6 +2016,7 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/context", value="Detailed context breakdown (model, tools, overrides, tokens)", inline=False)
             embed.add_field(name="/status", value="Comprehensive system status (model, context, tools, tasks)", inline=False)
             embed.add_field(name="/tasks [status]", value="Quick view of scheduled and autonomous tasks", inline=False)
+            embed.add_field(name="/export [format]", value="Export conversation history (markdown, json, txt)", inline=False)
             embed.add_field(name="/channel-context", value="Toggle whether Nymeria reads recent channel messages", inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1941,7 +2083,11 @@ class NymeriaDiscordBot(discord.Client):
         # Show typing indicator while processing
         async with message.channel.typing():
             try:
-                response = await self.api.chat(content_with_context, thread_id, user_id)
+                data = await self.api.chat(content_with_context, thread_id, user_id)
+                response = data.get("response", "")
+                tool_calls = data.get("tool_call_count", 0)
+                if tool_calls:
+                    response += f"\n\n-# Tool calls: {tool_calls}"
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
                 response = f"Sorry, I encountered an error: {e}"
