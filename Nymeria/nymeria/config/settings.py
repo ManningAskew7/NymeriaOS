@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings.sources import EnvSettingsSource
 
 
 def _get_project_root() -> Path:
@@ -29,6 +30,22 @@ def _get_project_root() -> Path:
 PROJECT_ROOT = _get_project_root()
 
 
+class _NonEmptyEnvSource(EnvSettingsSource):
+    """
+    Env settings source that treats empty-string values as missing.
+
+    Docker Compose expansions like ``${VAR:-}`` inject empty strings into
+    the container environment even when the variable is unset upstream.
+    Because pydantic-settings prioritizes env vars over .env files, those
+    empty strings shadow real values in the .env file and silently break
+    optional integrations (e.g. web search). Treating empty strings as
+    missing here lets the dotenv source win the merge.
+    """
+
+    def __call__(self):
+        return {k: v for k, v in super().__call__().items() if v != ""}
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -37,6 +54,22 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
+            init_settings,
+            _NonEmptyEnvSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     @model_validator(mode="before")
     @classmethod
