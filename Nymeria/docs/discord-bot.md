@@ -8,7 +8,7 @@ Nymeria's Discord integration runs as a stateless gateway that translates Discor
 Docker: nymeria-discord-bot (profile: discord)
   └─ NymeriaDiscordBot(discord.Client)
        ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-       ├─ CommandTree (23 slash commands across 6 groups)
+       ├─ CommandTree (25 slash commands across 6 groups)
        └─ SSE listener (autonomous task completion → channel posts)
 ```
 
@@ -66,6 +66,23 @@ docker logs nymeria-discord-bot --tail 50
 
 When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent docker-compose from complaining about the missing env var.
 
+### Slash Command Sync
+
+Discord slash commands are synced **per-guild** in the `on_ready` hook — the bot clears any stale global commands, copies the local command tree to each guild, and calls `tree.sync(guild=guild)`. This means:
+
+- **After adding/removing/renaming slash commands**, you must restart the bot container so `on_ready` fires and pushes the updated tree to Discord.
+- Sync is near-instant for guild commands (unlike global commands which can take up to an hour).
+- The Discord client may take a few seconds to refresh its autocomplete cache — if new commands don't appear immediately, close and reopen the slash command menu.
+
+```bash
+# Restart to sync new/changed commands
+docker compose --env-file .env.docker restart discord-bot
+
+# Verify sync succeeded in logs
+docker logs nymeria-discord-bot --tail 15
+# Look for: "Slash commands synced to guild: <name>"
+```
+
 ## Commands Reference
 
 ### Chat
@@ -115,8 +132,10 @@ When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent dock
 | `/tools optional` | List optional tool categories with per-channel active counts. |
 | `/tools enabled` | Show all tools active in this channel: core (with any disabled), optional enabled. |
 | `/tools category <name>` | List tools in a category with enabled/disabled status for this channel. |
+| `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`) or category name (e.g., `email`). Autocomplete suggests both. |
+| `/tools disable <name>` | Disable a tool or entire category for this channel. Works for core tools (disabling a default) and optional tools. |
 
-Tool overrides are per-thread (per-channel). Use the frontend or API to enable/disable tools for a channel.
+Tool overrides are per-thread (per-channel). Changes made with `/tools enable` and `/tools disable` are visible in `/tools enabled` and the frontend.
 
 ### Memory (`/memory`)
 

@@ -1139,6 +1139,168 @@ class NymeriaDiscordBot(discord.Client):
                 logger.error(f"Error listing category: {e}", exc_info=True)
                 await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
+        async def _resolve_tool_names(
+            self_bot: "NymeriaDiscordBot",
+            name: str,
+        ) -> tuple:
+            """Resolve a name to tool names — could be a category or individual tool.
+
+            Returns (tool_names, is_category, category_name, error_msg).
+            If error_msg is set, the other fields are empty/None.
+            """
+            name_key = name.lower().strip().replace("-", "_")
+
+            # Check categories first
+            cat_data = await self_bot.api.get_tool_categories()
+            categories = cat_data.get("categories", {})
+
+            if name_key in categories:
+                return (categories[name_key], True, name_key, None)
+
+            # Check if it's an individual tool name
+            data = await self_bot.api.get_default_tools()
+            available = data.get("available_tools", [])
+            all_names = {t["name"] for t in available}
+
+            if name_key in all_names:
+                return ([name_key], False, None, None)
+
+            # Not found — build suggestions
+            cat_list = ", ".join(f"`{k}`" for k in sorted(categories))
+            return ([], False, None, f"Unknown tool or category `{name}`. Categories: {cat_list}")
+
+        async def _tool_name_autocomplete(
+            interaction: discord.Interaction,
+            current: str,
+        ) -> List[app_commands.Choice[str]]:
+            """Autocomplete for tool/category names."""
+            try:
+                cat_data = await self.api.get_tool_categories()
+                categories = cat_data.get("categories", {})
+                data = await self.api.get_default_tools()
+                available = data.get("available_tools", [])
+
+                choices: List[app_commands.Choice[str]] = []
+                current_lower = current.lower()
+
+                # Categories first (prefixed for clarity)
+                for cat_name, tools in sorted(categories.items()):
+                    if current_lower in cat_name:
+                        label = f"{cat_name} (category — {len(tools)} tools)"
+                        choices.append(app_commands.Choice(name=label[:100], value=cat_name))
+
+                # Then individual tools
+                for t in available:
+                    tool_name = t["name"]
+                    if current_lower in tool_name.lower():
+                        desc = (t.get("description") or "").split("\n")[0][:60]
+                        label = f"{tool_name} — {desc}" if desc else tool_name
+                        choices.append(app_commands.Choice(name=label[:100], value=tool_name))
+
+                return choices[:25]  # Discord max
+            except Exception:
+                return []
+
+        @tools_group.command(
+            name="enable",
+            description="Enable a tool or category for this channel",
+        )
+        @app_commands.describe(name="Tool name or category (e.g., email, bash_execute)")
+        @app_commands.autocomplete(name=_tool_name_autocomplete)
+        async def cmd_tools_enable(interaction: discord.Interaction, name: str):
+            await interaction.response.defer(ephemeral=True)
+            try:
+                thread_id = make_thread_id(
+                    interaction.guild_id, interaction.channel_id
+                )
+                tool_names, is_category, cat_name, error = await _resolve_tool_names(self, name)
+                if error:
+                    await interaction.followup.send(error, ephemeral=True)
+                    return
+
+                # Read current thread config
+                tc = await self.api.get_thread_config(thread_id)
+                current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
+                current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
+
+                # Add to enabled, remove from disabled
+                new_enabled = current_enabled | set(tool_names)
+                new_disabled = current_disabled - set(tool_names)
+
+                await self.api.update_thread_config(
+                    thread_id,
+                    enabled_tools=sorted(new_enabled),
+                    disabled_tools=sorted(new_disabled),
+                )
+
+                # Confirmation embed
+                if is_category:
+                    tool_list = ", ".join(f"`{t}`" for t in sorted(tool_names))
+                    embed = discord.Embed(
+                        title=f"Enabled category: {cat_name}",
+                        description=f"{len(tool_names)} tools enabled:\n{tool_list}",
+                        color=discord.Color.green(),
+                    )
+                else:
+                    embed = discord.Embed(
+                        title=f"Enabled: {tool_names[0]}",
+                        color=discord.Color.green(),
+                    )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error(f"Error enabling tool: {e}", exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+        @tools_group.command(
+            name="disable",
+            description="Disable a tool or category for this channel",
+        )
+        @app_commands.describe(name="Tool name or category (e.g., email, bash_execute)")
+        @app_commands.autocomplete(name=_tool_name_autocomplete)
+        async def cmd_tools_disable(interaction: discord.Interaction, name: str):
+            await interaction.response.defer(ephemeral=True)
+            try:
+                thread_id = make_thread_id(
+                    interaction.guild_id, interaction.channel_id
+                )
+                tool_names, is_category, cat_name, error = await _resolve_tool_names(self, name)
+                if error:
+                    await interaction.followup.send(error, ephemeral=True)
+                    return
+
+                # Read current thread config
+                tc = await self.api.get_thread_config(thread_id)
+                current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
+                current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
+
+                # Remove from enabled, add to disabled
+                new_enabled = current_enabled - set(tool_names)
+                new_disabled = current_disabled | set(tool_names)
+
+                await self.api.update_thread_config(
+                    thread_id,
+                    enabled_tools=sorted(new_enabled),
+                    disabled_tools=sorted(new_disabled),
+                )
+
+                # Confirmation embed
+                if is_category:
+                    tool_list = ", ".join(f"`{t}`" for t in sorted(tool_names))
+                    embed = discord.Embed(
+                        title=f"Disabled category: {cat_name}",
+                        description=f"{len(tool_names)} tools disabled:\n{tool_list}",
+                        color=discord.Color.red(),
+                    )
+                else:
+                    embed = discord.Embed(
+                        title=f"Disabled: {tool_names[0]}",
+                        color=discord.Color.red(),
+                    )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error(f"Error disabling tool: {e}", exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
         self.tree.add_command(tools_group)
 
         # --- /memory group ---
@@ -1362,7 +1524,7 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/models", value="List available models from the provider", inline=False)
             embed.add_field(name="/think [off|on|low|medium|high]", value="Show or set thinking/reasoning mode", inline=False)
             embed.add_field(name="/config show | get | set", value="View and update Nymeria settings", inline=False)
-            embed.add_field(name="/tools core | enabled | optional | category <name>", value="View and manage available tools", inline=False)
+            embed.add_field(name="/tools core | enabled | optional | category | enable | disable", value="View and manage available tools per-channel", inline=False)
             embed.add_field(name="/memory list | save | forget | search", value="Manage persistent memories about you", inline=False)
             embed.add_field(name="/notepad read | write | clear", value="Per-channel persistent notes (survive compaction)", inline=False)
             embed.add_field(name="/todos add | list | complete | delete", value="Scheduled tasks and reminders (with repeat intervals)", inline=False)
