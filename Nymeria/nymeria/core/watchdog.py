@@ -203,6 +203,9 @@ class Watchdog:
         Bypasses TodoItem.is_stale() which uses hours. This gives the
         watchdog its own minutes-based granularity.
         """
+        # Not stale if scheduled for the future
+        if todo.scheduled_for and todo.scheduled_for > datetime.utcnow():
+            return False
         threshold = datetime.utcnow() - timedelta(minutes=self.staleness_minutes)
         return todo.is_active() and todo.updated_at < threshold
 
