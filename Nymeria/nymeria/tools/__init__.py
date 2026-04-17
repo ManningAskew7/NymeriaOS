@@ -62,6 +62,7 @@ from ._prv_a_acme import _PRV_TOOLS_A4
 from ._prv_a_acme import _PRV_TOOLS_A5
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
+from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -93,6 +94,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + GOOGLE_DOCS_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
+    + SLASH_COMMAND_TOOLS
 )}
 
 # All available tools
@@ -176,6 +178,8 @@ __all__ = [
     "_PRV_TOOLS_A5",
     "_PRV_TOOLS_A",
     "TWITCH_TOOLS",
+    "slash_command",
+    "SLASH_COMMAND_TOOLS",
 ]
 
 
