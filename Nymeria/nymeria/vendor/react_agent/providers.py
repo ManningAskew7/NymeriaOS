@@ -289,7 +289,16 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     if config.base_url:
         kwargs["anthropic_api_url"] = config.base_url
 
-    if config.temperature is not None:
+    # Determine model family for API compatibility
+    model_name = (config.model or "").lower()
+    # Claude 4.7+ removes support for sampling params (temperature, top_p, top_k)
+    # and extended thinking budgets. Use adaptive thinking only.
+    is_47_plus = "opus-4-7" in model_name or "sonnet-4-7" in model_name
+    is_46_model = "opus-4-6" in model_name or "sonnet-4-6" in model_name
+    uses_adaptive = is_47_plus or is_46_model
+
+    # Sampling parameters — 4.7+ returns 400 for non-default values
+    if not is_47_plus and config.temperature is not None:
         kwargs["temperature"] = config.temperature
 
     if config.request_timeout is not None:
@@ -297,27 +306,25 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
-    if config.top_p is not None:
+    if not is_47_plus and config.top_p is not None:
         kwargs["top_p"] = config.top_p
-    if config.top_k is not None:
+    if not is_47_plus and config.top_k is not None:
         kwargs["top_k"] = config.top_k
 
     # Extended thinking: use ChatAnthropic's first-class `thinking` parameter
     # (passing via model_kwargs triggers a deprecation warning)
     if config.extended_thinking or config.reasoning_effort is not None:
-        # Claude 4.6 models use adaptive thinking (type=enabled is deprecated)
-        # Older models (4.5, 3.7, etc.) still require type=enabled with budget_tokens
-        model_name = (config.model or "").lower()
-        is_46_model = "opus-4-6" in model_name or "sonnet-4-6" in model_name
-
-        if is_46_model:
+        if uses_adaptive:
             # Adaptive: Claude decides when/how much to think
-            # effort defaults to "high" when omitted
-            kwargs["thinking"] = {"type": "adaptive"}
+            thinking_config = {"type": "adaptive"}
+            # 4.7+ omits thinking content by default — opt in for streaming
+            if is_47_plus:
+                thinking_config["display"] = "summarized"
+            kwargs["thinking"] = thinking_config
             if config.reasoning_effort is not None:
                 kwargs["model_kwargs"] = {"output_config": {"effort": config.reasoning_effort}}
         else:
-            # Legacy: explicit budget_tokens for older models
+            # Legacy: explicit budget_tokens for older models (4.5, 3.7, etc.)
             thinking_budget_map = {
                 "low": 1024,
                 "medium": 4096,
