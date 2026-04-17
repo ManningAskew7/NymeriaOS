@@ -10,7 +10,6 @@ from .scheduler import DurableScheduler, ExecutionResult
 from .rate_limiter import RateLimiter
 from .todo_manager import TodoManager, TodoList, TodoItem, TodoStatus
 from .todo_schedule_db import TodoScheduleDB, ScheduledTodoEntry
-from .watchdog import Watchdog, get_watchdog, set_watchdog
 
 # Deprecated imports - kept for backwards compatibility, will be removed
 from ._deprecated.task_db import TaskDatabase, TaskStatus, DurableTask
@@ -54,8 +53,4 @@ __all__ = [
     # TODO Schedule Database
     "TodoScheduleDB",
     "ScheduledTodoEntry",
-    # Watchdog
-    "Watchdog",
-    "get_watchdog",
-    "set_watchdog",
 ]

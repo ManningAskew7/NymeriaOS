@@ -110,13 +110,8 @@ class GatewayServer:
                 except Exception as e:
                     logger.error(f"Error stopping ticker: {e}", exc_info=True)
 
-            # Stop the watchdog
-            if hasattr(self._agent, '_watchdog') and self._agent._watchdog is not None:
-                try:
-                    self._agent._watchdog.stop()
-                    logger.info("Watchdog stopped")
-                except Exception as e:
-                    logger.error(f"Error stopping watchdog: {e}", exc_info=True)
+            # Watchdog now runs as an external thin-client service (run.py watchdog),
+            # so there's nothing for the gateway to stop here.
 
         self._running = False
         self._stop_event.set()

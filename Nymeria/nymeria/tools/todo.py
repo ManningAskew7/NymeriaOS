@@ -20,7 +20,6 @@ from ..core.activity_log import ActivityType, log_activity
 from ..core.time_utils import parse_scheduled_time, get_user_tz
 from ..core.todo_constants import STATUS_ICONS, STATUS_ORDER, VALID_RECURRENCES
 from ..core.todo_manager import TodoManager, TodoStatus
-from ..core.watchdog import get_watchdog
 from .utils import get_user_id, get_thread_id
 
 logger = logging.getLogger(__name__)
@@ -215,12 +214,6 @@ def todo(
             item = todo_list.get_item(todo_id)
             logger.info(f"TODO updated for user {user_id}: {todo_id}")
 
-            # Clear watchdog nudge tracking on status change to done
-            if todo_status == TodoStatus.DONE:
-                watchdog = get_watchdog()
-                if watchdog:
-                    watchdog.clear_nudge_tracking(user_id, todo_id)
-
             # Auto-reschedule recurring TODOs marked as done
             if todo_status == TodoStatus.DONE and item.recurrence:
                 from ..core.todo_constants import RECURRENCE_DELTAS
@@ -323,11 +316,6 @@ def _todo_complete_internal(
         if success:
             logger.info(f"TODO completed for user {user_id}: {todo_id}")
 
-            # Clear watchdog nudge tracking
-            watchdog = get_watchdog()
-            if watchdog:
-                watchdog.clear_nudge_tracking(user_id, todo_id)
-
             # Auto-reschedule recurring TODOs
             if has_recurrence:
                 from ..core.todo_constants import RECURRENCE_DELTAS
@@ -394,11 +382,6 @@ def todo_delete(
         deleted = todo_list.delete_item(todo_id)
         if deleted:
             logger.info(f"TODO deleted for user {user_id}: {todo_id}")
-
-            # Clear watchdog nudge tracking
-            watchdog = get_watchdog()
-            if watchdog:
-                watchdog.clear_nudge_tracking(user_id, todo_id)
 
             # Remove from schedule database
             if schedule_db:

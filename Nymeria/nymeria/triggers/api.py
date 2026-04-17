@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, log_activity
-from ..core.event_bus import get_event_bus, AutonomousEvent, publish_sync_event
+from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
 from ..core.notifications import NotificationStore, Notification
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
@@ -95,6 +95,19 @@ class ChatRequest(BaseModel):
     force_unsupported_attachments: bool = Field(
         default=False,
         description="Allow send even when attachment compatibility checks fail",
+    )
+    is_self_invoke: bool = Field(
+        default=False,
+        description=(
+            "Mark this invocation as autonomous/internal. Trusted in-cluster "
+            "services (e.g. watchdog worker) use this to route requests through "
+            "the autonomous prompt path and mark the message as internal. "
+            "Requires API key auth like all /chat requests."
+        ),
+    )
+    trigger_override: Optional[str] = Field(
+        default=None,
+        description="Trigger label for autonomous invocations (e.g. 'watchdog')",
     )
 
 
@@ -827,17 +840,40 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Read client ID from header for sync event origin filtering
         client_id = http_request.headers.get("x-nymeria-client-id", "")
 
-        # Publish user message to event bus so other clients see it immediately
-        publish_sync_event(
-            event_type="message_added",
-            thread_id=thread_id,
-            user_id=user_id,
-            data={"role": "user", "content": request.message},
-            origin_client_id=client_id,
+        # For autonomous/self-invoke calls (e.g. watchdog worker), the "user message"
+        # isn't from a real user — skip message_added so it doesn't appear in clients
+        # as a user-authored message. Frontend subscribes to /autonomous/stream for
+        # autonomous task events instead.
+        if not request.is_self_invoke:
+            publish_sync_event(
+                event_type="message_added",
+                thread_id=thread_id,
+                user_id=user_id,
+                data={"role": "user", "content": request.message},
+                origin_client_id=client_id,
+            )
+
+        # Autonomous task bookends: publish task_started/task_completed to Redis so
+        # /autonomous/stream subscribers see watchdog/ticker activity live. Matches
+        # the event pattern the former in-process watchdog emitted.
+        autonomous_task_id = (
+            f"{request.trigger_override or 'autonomous'}-{thread_id}"
+            if request.is_self_invoke
+            else None
         )
+        if autonomous_task_id:
+            publish_autonomous_event(
+                event_type="task_started",
+                thread_id=thread_id,
+                user_id=user_id,
+                task_id=autonomous_task_id,
+                data={"prompt": request.message, "source": request.trigger_override or "autonomous"},
+            )
 
         async def event_generator():
             """Generate SSE events from agent stream."""
+            autonomous_final_content_parts: List[str] = []
+            autonomous_completed = False
             try:
                 # Convert attachments to dict format for agent
                 attachments = None
@@ -865,6 +901,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     attachments=attachments,
                     images=images,
                     force_unsupported_attachments=request.force_unsupported_attachments,
+                    _is_self_invoke=request.is_self_invoke,
+                    _trigger_override=request.trigger_override,
                 ):
                     # If client disconnected, stop yielding SSE events but keep
                     # consuming the generator so the agent finishes its work.
@@ -878,6 +916,23 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
                     yield f"data: {event_data}\n\n"
+
+                    # Mirror streaming chunks to the autonomous event bus for
+                    # self-invoke calls so /autonomous/stream subscribers see
+                    # live progress (tool_call, tool_result, thinking, response).
+                    if autonomous_task_id:
+                        ctype = chunk.get("type")
+                        if ctype in ("tool_call", "tool_result", "thinking", "response"):
+                            payload = {k: v for k, v in chunk.items() if k != "type"}
+                            publish_autonomous_event(
+                                event_type=ctype,
+                                thread_id=thread_id,
+                                user_id=user_id,
+                                task_id=autonomous_task_id,
+                                data=payload,
+                            )
+                            if ctype == "response":
+                                autonomous_final_content_parts.append(chunk.get("content", ""))
 
                 # Only send done event if client is still connected
                 if not client_disconnected and not await http_request.is_disconnected():
@@ -924,6 +979,27 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     "thread_id": thread_id,
                 })
                 yield f"data: {error_data}\n\n"
+                if autonomous_task_id and not autonomous_completed:
+                    publish_autonomous_event(
+                        event_type="task_completed",
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        task_id=autonomous_task_id,
+                        data={"error": True, "content": str(e), "source": request.trigger_override or "autonomous"},
+                    )
+                    autonomous_completed = True
+            finally:
+                if autonomous_task_id and not autonomous_completed:
+                    publish_autonomous_event(
+                        event_type="task_completed",
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        task_id=autonomous_task_id,
+                        data={
+                            "content": "".join(autonomous_final_content_parts),
+                            "source": request.trigger_override or "autonomous",
+                        },
+                    )
 
         return StreamingResponse(
             event_generator(),
@@ -954,6 +1030,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             request.message,
             thread_id=thread_id,
             user_id=user_id,
+            _is_self_invoke=request.is_self_invoke,
+            _trigger_override=request.trigger_override,
         )
         tool_call_count = getattr(agent, "_last_chat_tool_calls", 0)
         return ChatResponse(
@@ -2047,6 +2125,39 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "stt_model": "STT_MODEL",
             "stt_language": "STT_LANGUAGE",
             "voice_default_thread_id": "VOICE_DEFAULT_THREAD_ID",
+            # API keys
+            "perplexity_api_key": "PERPLEXITY_API_KEY",
+            "perplexity_search_model": "PERPLEXITY_SEARCH_MODEL",
+            "openai_api_key": "OPENAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
+            "anthropic_direct_api_key": "ANTHROPIC_DIRECT_API_KEY",
+            "openrouter_api_key": "OPENROUTER_API_KEY",
+            "gemini_api_key": "GEMINI_API_KEY",
+            "gemini_extraction_model": "GEMINI_EXTRACTION_MODEL",
+            # Runtime tuning
+            "user_timezone": "USER_TIMEZONE",
+            "ticker_poll_interval": "TICKER_POLL_INTERVAL",
+            "max_concurrent_autonomous": "MAX_CONCURRENT_AUTONOMOUS",
+            "tool_timeout": "TOOL_TIMEOUT",
+            "lock_timeout": "LOCK_TIMEOUT",
+            "todo_auto_archive_days": "TODO_AUTO_ARCHIVE_DAYS",
+            # Infrastructure (persist but need restart)
+            "redis_url": "REDIS_URL",
+            "redis_enabled": "REDIS_ENABLED",
+            "postgres_uri": "POSTGRES_URI",
+            "nymeria_data_dir": "NYMERIA_DATA_DIR",
+            # Platform tokens (persist but need restart)
+            "discord_bot_token": "DISCORD_BOT_TOKEN",
+            "discord_webhook_url": "DISCORD_WEBHOOK_URL",
+            "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+            "telegram_default_chat_id": "TELEGRAM_DEFAULT_CHAT_ID",
+        }
+
+        # Settings that are persisted but only take effect after /restart api
+        restart_required_keys = {
+            "redis_url", "redis_enabled", "postgres_uri", "nymeria_data_dir",
+            "discord_bot_token", "discord_webhook_url",
+            "telegram_bot_token", "telegram_default_chat_id",
         }
 
         # Get updates as dict, excluding None values
@@ -2125,11 +2236,142 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
             logger.info(f"Hot-reloaded LLM settings: {llm_fields & set(updates_dict.keys())}")
 
+        needs_restart = bool(restart_required_keys & set(updates_dict.keys()))
         return {
-            "message": "Settings updated and applied",
+            "message": "Settings updated and applied" + (
+                " (some changes require /restart api to take effect)"
+                if needs_restart else ""
+            ),
             "updated": list(updates_dict.keys()),
-            "restart_required": False,
+            "restart_required": needs_restart,
         }
+
+    # ========================================================================
+    # Environment Variables Endpoint
+    # ========================================================================
+
+    @app.get("/settings/env", tags=["Settings"])
+    async def get_env_vars(
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Get all settable environment variables with masked sensitive values.
+
+        Returns a list of env var entries with name, env_var, value (masked
+        for secrets), and category.
+        """
+        # Keys that should be masked in /env show
+        secret_keys = {
+            "nymeria_api_key", "webhook_secret",
+            "openai_api_key", "anthropic_api_key", "anthropic_direct_api_key",
+            "openrouter_api_key", "perplexity_api_key", "gemini_api_key",
+            "discord_bot_token", "discord_webhook_url",
+            "telegram_bot_token",
+            "twitch_client_secret", "twitch_bot_access_token",
+            "twitch_bot_refresh_token", "twitch_broadcaster_token",
+            "twitch_broadcaster_refresh_token",
+            "slack_bot_token",
+            "postgres_uri", "redis_url",
+            "tts_api_key", "stt_api_key",
+            "fcm_credentials_json",
+        }
+
+        # Category groupings for display
+        categories = {
+            "LLM": [
+                "llm_provider", "llm_model", "llm_temperature", "llm_max_tokens",
+                "llm_top_p", "llm_top_k", "llm_frequency_penalty",
+                "llm_presence_penalty", "llm_reasoning_effort",
+                "llm_extended_thinking", "llm_use_model_defaults", "llm_base_url",
+            ],
+            "API Keys": [
+                "nymeria_api_key", "openai_api_key", "anthropic_api_key",
+                "anthropic_direct_api_key", "openrouter_api_key",
+                "perplexity_api_key", "perplexity_search_model",
+                "gemini_api_key", "gemini_extraction_model",
+            ],
+            "Context": [
+                "context_management", "compact_threshold", "compact_keep_messages",
+                "compact_model", "sliding_window_cycles",
+            ],
+            "System": [
+                "log_level", "watchdog_enabled", "watchdog_interval_minutes",
+                "user_timezone", "nymeria_data_dir",
+                "tool_timeout", "lock_timeout",
+            ],
+            "Tasks": [
+                "ticker_poll_interval", "max_concurrent_autonomous",
+                "max_self_invokes_per_hour", "todo_staleness_minutes",
+                "todo_auto_archive_days", "activity_retention_hours",
+            ],
+            "Voice": [
+                "tts_provider", "tts_base_url", "tts_api_key", "tts_model",
+                "tts_voice", "tts_output_format", "tts_speed",
+                "stt_provider", "stt_base_url", "stt_api_key", "stt_model",
+                "stt_language", "voice_default_thread_id",
+            ],
+            "Infrastructure": [
+                "redis_url", "redis_enabled", "postgres_uri",
+            ],
+            "Discord": [
+                "discord_bot_token", "discord_webhook_url",
+            ],
+            "Telegram": [
+                "telegram_bot_token", "telegram_default_chat_id",
+            ],
+            "Twitch": [
+                "twitch_client_id", "twitch_client_secret",
+                "twitch_bot_access_token", "twitch_bot_refresh_token",
+                "twitch_bot_user_id", "twitch_broadcaster_token",
+                "twitch_broadcaster_refresh_token", "twitch_channel",
+                "twitch_buffer_size", "twitch_pulse_enabled",
+                "twitch_pulse_interval", "twitch_respond_mode",
+            ],
+        }
+
+        def mask_value(val: str) -> str:
+            """Mask a secret value, showing first 4 and last 3 chars."""
+            s = str(val)
+            if len(s) <= 10:
+                return s[:2] + "..." + s[-1:] if len(s) > 3 else "***"
+            return s[:4] + "..." + s[-3:]
+
+        entries = []
+        for category, keys in categories.items():
+            for key in keys:
+                val = getattr(settings, key, None)
+                env_var = key.upper()
+                is_secret = key in secret_keys
+                display_val = None
+                if val is not None:
+                    display_val = mask_value(str(val)) if is_secret else str(val)
+                entries.append({
+                    "name": key,
+                    "env_var": env_var,
+                    "value": display_val,
+                    "is_set": val is not None and str(val) != "",
+                    "is_secret": is_secret,
+                    "category": category,
+                })
+
+        return {"entries": entries}
+
+    @app.get("/settings/env/{key}", tags=["Settings"])
+    async def get_env_var(
+        key: str,
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Get a single environment variable's unmasked value."""
+        val = getattr(settings, key, None)
+        if val is None:
+            # Also try looking up by env var name (uppercase)
+            key_lower = key.lower()
+            val = getattr(settings, key_lower, None)
+            if val is None:
+                raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+            key = key_lower
+        return {"name": key, "env_var": key.upper(), "value": str(val) if val is not None else None}
 
     # ========================================================================
     # Model Metadata Endpoint
@@ -2241,6 +2483,20 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         todo_manager = TodoManager(settings.data_dir)
         todo_list = todo_manager.get_todos(user_id)
         return todo_list.get_thread_task_counts()
+
+    @app.get("/todos/users", tags=["Dashboard"])
+    async def list_users_with_todos(
+        _: bool = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """
+        List all user IDs that have TODO lists.
+
+        Used by the watchdog worker to discover users to scan for stale TODOs
+        without having to crawl the data directory itself.
+        """
+        todo_manager = TodoManager(settings.data_dir)
+        return todo_manager.get_all_users_with_todos()
 
     @app.get("/todos", response_model=TodoListResponse, tags=["Dashboard"])
     async def get_todos(

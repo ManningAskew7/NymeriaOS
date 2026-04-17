@@ -226,6 +226,33 @@ services:
     networks:
       - nymeria-network
 
+  # Watchdog thin-client worker (polls API for stale TODOs)
+  watchdog:
+    build:
+      context: .
+      dockerfile: Dockerfile.full
+    container_name: nymeria-watchdog
+    restart: unless-stopped
+    command: ["python", "run.py", "watchdog", "--api-url", "http://nymeria-api:8000"]
+    environment:
+      <<: *api-env
+    volumes:
+      - nymeria_data:/data                    # for kill-switch file at /data/flags/watchdog-off
+      - ./nymeria:/app/nymeria                # Bind mount: live code sync
+      - ./run.py:/app/run.py                  # Bind mount: live entry point
+      - ./.env.docker:/app/.env.docker        # Bind mount: settings persist across restarts
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "run.py watchdog"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - nymeria-network
+
   # Discord Bot for two-way communication
   discord-bot:
     build:
