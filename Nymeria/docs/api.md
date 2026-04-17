@@ -64,6 +64,8 @@ Authorization: Bearer <token>
 | `user_id` | string | No | `"default"` | User ID for profile/memory isolation |
 | `attachments` | array | No | - | Optional multimodal attachments (images/documents) |
 | `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
+| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and publishes `task_started` / `tool_call` / `tool_result` / `thinking` / `response` / `task_completed` events to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the watchdog worker; gated by the same Bearer-auth check as any `/chat` call. |
+| `trigger_override` | string | No | - | Label for autonomous invocations (e.g. `"watchdog"`, `"ticker"`). Becomes part of `task_id` and the `source` field on emitted autonomous events. |
 
 **Response:** Server-Sent Events (SSE)
 
@@ -85,7 +87,7 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:** Same as streaming endpoint
+**Request Body:** Same as the streaming endpoint, including the optional `is_self_invoke` and `trigger_override` fields. Self-invoke behavior here is identical to `/chat` — it's a pass-through to `agent.chat()` with those flags.
 
 **Response:**
 ```json
@@ -567,6 +569,24 @@ Aborts a running stream on the thread. Cascades to any active callable child thr
 ## TODO Management API
 
 Manage TODO items with optional scheduling for autonomous execution.
+
+### List Users with TODOs
+
+```http
+GET /todos/users
+Authorization: Bearer <token>
+```
+
+Returns all user IDs that have a TODO list on disk. Used by the watchdog worker to enumerate users before polling each one's TODOs; also useful for dashboards that need to list known users without hard-coding them.
+
+No query parameters.
+
+**Response:**
+```json
+["default", "discord_699436710118817823", "telegram_5551234567"]
+```
+
+---
 
 ### List TODOs
 

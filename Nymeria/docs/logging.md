@@ -63,11 +63,11 @@ Every subsystem uses a standardized `[TAG]` prefix. Filter by tag to isolate a s
 | Tag | Source file | Meaning |
 |-----|-------------|---------|
 | `[LLM]` | `vendor/react_agent/nodes.py` | LLM invocation and response. INFO shows message count + response summary. DEBUG shows full message array. |
-| `[STREAM]` | `core/agent.py` `stream()` | Sync streaming path (used by ticker, watchdog, triggers, callable threads). |
-| `[ASTREAM]` | `core/agent.py` `astream()` | Async streaming path (used by the API for user chat). |
+| `[STREAM]` | `core/agent.py` `stream()` | Sync streaming path (used by ticker, triggers, callable threads). |
+| `[ASTREAM]` | `core/agent.py` `astream()` | Async streaming path (used by the API's `/chat` endpoint, including watchdog self-invokes). |
 | `[CALLABLE]` | `core/thread_agent_executor.py` | Callable thread lifecycle. Shows name, thread_id, task_id, task preview, timing. |
 | `[TICKER]` | `core/ticker.py` | Scheduled TODO execution. |
-| `[WATCHDOG]` | `core/watchdog.py` | Stale TODO nudge lifecycle. |
+| `[WATCHDOG]` | `triggers/watchdog_worker.py` | Stale TODO nudge lifecycle. Emitted by the standalone watchdog container; the API also logs `[ASTREAM]` when the resulting `/chat` self-invoke runs. |
 | `[TRIGGER]` | `core/trigger_manager.py` | Event-driven trigger firing. Shows trigger name, thread_id, timing. |
 
 **Framing pattern:** Every execution path uses `=== START ===` / `=== END ===` / `=== ERROR ===` framing at INFO:
