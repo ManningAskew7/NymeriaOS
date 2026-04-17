@@ -167,6 +167,14 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
 | `FCM_ENABLED` | `false` | Enable Firebase Cloud Messaging push notifications |
 | `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |
+| `NYMERIA_WATCHDOG_DISABLED` | - | Set to `1` / `true` / `yes` at runtime to mute the watchdog without restarting. See also the file flag below. |
+
+**Watchdog runtime kill switches** (disable without restart):
+
+- **Env var**: `NYMERIA_WATCHDOG_DISABLED=1` (re-read on every poll cycle)
+- **File flag**: `{data_dir}/flags/watchdog-off` — persistent across container restarts because `/data` is a Docker volume. Create it with `docker exec nymeria-watchdog touch /data/flags/watchdog-off`; remove with `rm` to re-enable.
+
+In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`, defined in `docker-compose.yml`). It's a thin client that calls the API over HTTP — no `NymeriaAgent` in the watchdog process. To disable it entirely, set `WATCHDOG_ENABLED=false` and restart, or simply don't start the service (`docker compose stop watchdog`). See `docs/architecture.md` §4.2 for details.
 
 ---
 
@@ -277,7 +285,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 Available models:
-- `claude-opus-4-20250514` (most capable)
+- `claude-opus-4-7` (current flagship — see `docs/cliproxy.md` "Claude 4.7 compatibility" for the thinking/sampling-param caveats the provider already handles)
+- `claude-opus-4-6` (previous flagship)
+- `claude-opus-4-20250514`
 - `claude-sonnet-4-20250514` (balanced)
 - `claude-haiku-3-5-20241022` (fastest)
 
@@ -318,7 +328,7 @@ Uses `ChatAnthropic` with native `/v1/messages` format. No format translation �
 
 ```bash
 LLM_PROVIDER=anthropic
-LLM_MODEL=claude-opus-4-6-20250612    # Must match a model in proxy's Claude registry
+LLM_MODEL=claude-opus-4-7             # Must match a model in proxy's Claude registry
 LLM_BASE_URL=http://localhost:8317    # No /v1 suffix — ChatAnthropic appends /v1/messages
 ANTHROPIC_API_KEY=nymeria-local-dev-key  # Proxy auth key (matches api-keys in proxy config)
 ```
