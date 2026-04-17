@@ -20,6 +20,7 @@
 
   function loadThreadHistory(threadId: string) {
     chatStore.clearMessages();
+    chatStore.setLoadingHistory(true);
     Promise.all([
       api.getThreadHistory(threadId),
       api.getThreadContextStats(threadId),
@@ -29,10 +30,14 @@
           chatStore.setMessages(history.messages);
           chatStore.setContextStats(stats);
           chatStore.setActiveModel(stats?.model ?? null);
+          chatStore.setLoadingHistory(false);
         }
       })
       .catch((err) => {
         console.error('[Page] Failed to load thread history:', err);
+        if (threadsStore.currentThreadId === threadId) {
+          chatStore.setLoadingHistory(false);
+        }
       });
   }
 

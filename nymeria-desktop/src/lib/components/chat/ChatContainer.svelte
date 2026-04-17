@@ -1,6 +1,7 @@
 <script lang="ts">
   import { chatStore } from '$lib/stores/chat.svelte';
   import MessageBubble from './MessageBubble.svelte';
+  import Spinner from '$lib/components/common/Spinner.svelte';
 
   let containerRef = $state<HTMLDivElement | null>(null);
 
@@ -40,7 +41,12 @@
 </script>
 
 <div class="chat-container" bind:this={containerRef}>
-  {#if chatStore.messages.length === 0}
+  {#if chatStore.isLoadingHistory}
+    <div class="loading-state">
+      <Spinner size="lg" />
+      <p>Loading conversation…</p>
+    </div>
+  {:else if chatStore.messages.length === 0}
     <div class="empty-state">
       <div class="empty-icon">
         <svg
@@ -77,7 +83,8 @@
     /* scroll-behavior handled programmatically via scrollToBottom() */
   }
 
-  .empty-state {
+  .empty-state,
+  .loading-state {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -85,7 +92,17 @@
     height: 100%;
     text-align: center;
     color: var(--text-secondary);
+    gap: var(--spacing-md);
+  }
+
+  .empty-state {
     animation: fadeIn 600ms ease-out;
+  }
+
+  .loading-state p {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
   }
 
   .empty-icon {

@@ -55,6 +55,7 @@
    */
   function loadThreadHistory(threadId: string) {
     chatStore.clearMessages();
+    chatStore.setLoadingHistory(true);
     stopSyncPoll();
     Promise.all([
       api.getThreadHistory(threadId),
@@ -65,12 +66,18 @@
         chatStore.setMessages(history.messages);
         chatStore.setContextStats(stats);
         chatStore.setActiveModel(stats?.model ?? null);
+        chatStore.setLoadingHistory(false);
 
         // Start the cross-client sync poller
         startSyncPoll(threadId, history.messages.length);
+      } else {
+        // Stale: another loader now owns the flag, don't touch it.
       }
     }).catch((err) => {
       console.error('[Page] Failed to load thread history:', err);
+      if (threadsStore.currentThreadId === threadId) {
+        chatStore.setLoadingHistory(false);
+      }
     });
   }
 
