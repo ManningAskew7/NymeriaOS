@@ -146,6 +146,17 @@ def _extract_timestamp(text: str) -> Optional[str]:
         return None
 
 
+#: Hard cap on how many checkpoints we'll deserialize when computing
+#: message timestamps. Threads without compaction can accumulate
+#: thousands of checkpoints — walking all of them to find the creation
+#: of messages that live in every checkpoint (e.g. the pinned system
+#: message) wastes tens of seconds of CPU on each /history poll and
+#: pegs the event loop. Messages whose creation is older than this
+#: many checkpoints simply get no timestamp; the frontend falls back
+#: to display-order.
+_TIMESTAMP_SCAN_LIMIT = 200
+
+
 def _build_message_timestamp_map(
     graph: Any,
     thread_id: str,
@@ -153,9 +164,16 @@ def _build_message_timestamp_map(
 ) -> Dict[str, str]:
     """Build a message_id -> ISO timestamp map from LangGraph checkpoint history.
 
-    Each checkpoint records a ``created_at`` timestamp.  Messages are
-    append-only (via the ``add_messages`` reducer), so the *first*
-    checkpoint where a message ID appears gives its true creation time.
+    Each checkpoint records a ``created_at`` timestamp. Messages are
+    append-only within a compaction window, so a message's earliest
+    appearance in the checkpoint stream gives its creation time.
+
+    Streams ``get_state_history()`` newest-first and stops as soon as
+    every target message has "aged out" — i.e. stopped appearing in
+    older checkpoints. Also caps the total walk at
+    ``_TIMESTAMP_SCAN_LIMIT`` checkpoints so threads that have never
+    been compacted (where pinned messages never age out) don't pay a
+    linear-in-history cost on every poll.
 
     Args:
         graph: The compiled LangGraph.
@@ -167,31 +185,71 @@ def _build_message_timestamp_map(
     timestamp_map: Dict[str, str] = {}
 
     try:
-        # get_state_history() returns newest-first; reverse to oldest-first
-        all_states = list(graph.get_state_history(config))
-        all_states.reverse()
+        # Push the scan limit down to Postgres so we don't even fetch
+        # older rows. Without this, the default query returns every
+        # checkpoint for the thread and the cost is paid before our
+        # Python-side early-exit has a chance to help.
+        state_iter = graph.get_state_history(config, limit=_TIMESTAMP_SCAN_LIMIT)
+    except Exception as e:
+        logger.warning(f"[Timestamps] Failed to open state history for thread {thread_id}: {e}")
+        return timestamp_map
 
-        seen_ids: set = set()
-
-        for state in all_states:
-            try:
-                checkpoint_ts = state.created_at
-                if not checkpoint_ts:
+    # Fallback path: no target set → walk newest-first up to the scan
+    # limit. Later iterations overwrite with older timestamps so each
+    # entry ends at its earliest occurrence within the window.
+    if not target_ids:
+        try:
+            for i, state in enumerate(state_iter):
+                if i >= _TIMESTAMP_SCAN_LIMIT:
+                    break
+                ts = getattr(state, "created_at", None)
+                if not ts:
                     continue
-
-                for msg in state.values.get("messages", []):
+                try:
+                    msgs = state.values.get("messages", [])
+                except Exception:
+                    continue
+                for msg in msgs:
                     try:
-                        if msg.id and msg.id not in seen_ids:
-                            timestamp_map[msg.id] = checkpoint_ts
-                            seen_ids.add(msg.id)
+                        mid = getattr(msg, "id", None)
+                        if mid:
+                            timestamp_map[mid] = ts
                     except Exception:
                         continue
+        except Exception as e:
+            logger.warning(f"[Timestamps] Failed to build checkpoint map for thread {thread_id}: {e}")
+        return timestamp_map
 
-                # Early exit once all target IDs are resolved
-                if target_ids and target_ids.issubset(seen_ids):
-                    break
+    # Targeted path: iterate newest-first, track which targets are still
+    # "active" (present in the checkpoint we just read). The moment a
+    # target stops appearing, its previous timestamp is its creation
+    # time. When every target has aged out (still_active is empty), we
+    # can stop early. Otherwise we hit the hard cap.
+    still_active: set = set(target_ids)
+    try:
+        for i, state in enumerate(state_iter):
+            if not still_active or i >= _TIMESTAMP_SCAN_LIMIT:
+                break
+            ts = getattr(state, "created_at", None)
+            if not ts:
+                continue
+            try:
+                msg_ids_here = {
+                    getattr(msg, "id", None)
+                    for msg in state.values.get("messages", [])
+                }
+                msg_ids_here.discard(None)
             except Exception:
                 continue
+
+            # Targets still present here — record (overwrite with older ts).
+            for mid in still_active & msg_ids_here:
+                timestamp_map[mid] = ts
+
+            # Targets that disappeared — we just went past their creation.
+            aged_out = still_active - msg_ids_here
+            if aged_out:
+                still_active -= aged_out
     except Exception as e:
         logger.warning(f"[Timestamps] Failed to build checkpoint map for thread {thread_id}: {e}")
 
