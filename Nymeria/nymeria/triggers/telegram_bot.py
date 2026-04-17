@@ -40,6 +40,7 @@ from telegram.ext import (
     filters,
 )
 
+from . import attachment_helpers
 from .discord_api_client import NymeriaAPIClient
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,32 @@ def markdown_to_html(text: str) -> str:
     return result
 
 
+def format_tool_call_html(name: str, args: Any, max_args_len: int = 800) -> str:
+    """Render a tool-call announcement as Telegram HTML."""
+    args_str = ""
+    if args:
+        try:
+            args_str = _json.dumps(args, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args_str = str(args)
+    if len(args_str) > max_args_len:
+        args_str = args_str[: max_args_len - 3] + "..."
+    text = f"<b>Tool: {escape_html(name)}</b>"
+    if args_str:
+        text += f"\n<pre>{escape_html(args_str)}</pre>"
+    return text
+
+
+def format_tool_result_html(result: Any, max_len: int = 800) -> str:
+    """Render a tool-result block as Telegram HTML."""
+    result_str = str(result) if result is not None else ""
+    if not result_str:
+        return "<i>(empty result)</i>"
+    if len(result_str) > max_len:
+        result_str = result_str[: max_len - 3] + "..."
+    return f"<b>Result:</b>\n<pre>{escape_html(result_str)}</pre>"
+
+
 # =============================================================================
 # Message Splitting
 # =============================================================================
@@ -238,6 +265,9 @@ class NymeriaTelegramBot:
         self.default_chat_id = default_chat_id
         self._start_time = time.time()
         self._show_tool_calls: Dict[int, bool] = {}  # chat_id -> show
+        # Per-thread streaming state for autonomous task delivery.
+        # thread_id -> { chat_id, buffer (response text), tool_count }
+        self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._application = None
 
     def run(self) -> None:
@@ -359,9 +389,12 @@ class NymeriaTelegramBot:
         # Callback query handler (stop button)
         app.add_handler(CallbackQueryHandler(self._on_stop_button, pattern=r"^stop:"))
 
-        # Plain text messages (DMs and replies-to-bot in groups)
+        # Plain text messages, photos, and document uploads
+        # (DMs and replies-to-bot in groups). Captions on photos/documents
+        # are surfaced via update.message.caption inside the handler.
         app.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, self._on_message
+            (filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND,
+            self._on_message,
         ))
 
         # Error handler
@@ -372,18 +405,28 @@ class NymeriaTelegramBot:
     # =========================================================================
 
     async def _send_html(
-        self, chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE, **kwargs
+        self,
+        chat_id: int,
+        text: str,
+        context: Optional[ContextTypes.DEFAULT_TYPE] = None,
+        **kwargs,
     ) -> Message:
-        """Send a message with HTML parse mode, falling back to plain text."""
+        """Send a message with HTML parse mode, falling back to plain text.
+
+        If ``context`` is omitted, the bot is taken from ``self._application``
+        so background tasks (e.g. the autonomous SSE listener) can use this
+        helper without a Telegram update context.
+        """
+        bot = context.bot if context is not None else self._application.bot
         try:
-            return await context.bot.send_message(
+            return await bot.send_message(
                 chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, **kwargs
             )
         except BadRequest:
             # HTML parsing failed — send as plain text
             # Strip HTML tags for readable fallback
             plain = re.sub(r"<[^>]+>", "", text)
-            return await context.bot.send_message(
+            return await bot.send_message(
                 chat_id=chat_id, text=plain or text, **kwargs
             )
 
@@ -423,6 +466,7 @@ class NymeriaTelegramBot:
         thread_id: str,
         user_id: str,
         context: ContextTypes.DEFAULT_TYPE,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Stream SSE chat events to a Telegram chat with progressive editing.
 
@@ -468,11 +512,13 @@ class NymeriaTelegramBot:
                                 "\u23f9 Stop", callback_data=f"stop:{thread_id}"
                             )
                         ]])
-                    current_msg = await _send_html_raw(display, reply_markup)
+                    current_msg = await self._send_html(
+                        chat_id, display, context, reply_markup=reply_markup
+                    )
                     first_msg_sent = True
                     last_edit = time.monotonic()
                 else:
-                    await _edit_html_raw(current_msg, display)
+                    await self._edit_html(current_msg, display)
                     last_edit = time.monotonic()
             except Exception:
                 # Edit/send failed — try sending a new plain message
@@ -494,40 +540,19 @@ class NymeriaTelegramBot:
                 text_buffer = ""
                 current_msg = None
 
-        async def _send_html_raw(text: str, reply_markup=None) -> Message:
-            try:
-                return await context.bot.send_message(
-                    chat_id=chat_id, text=text,
-                    parse_mode=ParseMode.HTML, reply_markup=reply_markup,
-                )
-            except BadRequest:
-                plain = re.sub(r"<[^>]+>", "", text)
-                return await context.bot.send_message(
-                    chat_id=chat_id, text=plain or text, reply_markup=reply_markup,
-                )
-
-        async def _edit_html_raw(msg: Message, text: str):
-            try:
-                await msg.edit_text(text=text, parse_mode=ParseMode.HTML)
-            except BadRequest as e:
-                if "message is not modified" in str(e).lower():
-                    return
-                if "can't parse" in str(e).lower():
-                    plain = re.sub(r"<[^>]+>", "", text)
-                    try:
-                        await msg.edit_text(text=plain or text)
-                    except BadRequest:
-                        pass
-            except RetryAfter as e:
-                await asyncio.sleep(e.retry_after)
-            except TimedOut:
-                pass
-
         # Start typing indicator
         typing_task = asyncio.create_task(_keep_typing())
 
         try:
-            async for event in self.api.chat_stream(message, thread_id, user_id):
+            async for event in self.api.chat_stream(
+                message,
+                thread_id,
+                user_id,
+                attachments=attachments,
+                # Chat clients can't surface the desktop's compatibility
+                # modal — auto-accept the risk when the user attached files.
+                force_unsupported_attachments=bool(attachments),
+            ):
                 etype = event.get("type", "")
 
                 if etype == "thinking":
@@ -549,29 +574,20 @@ class NymeriaTelegramBot:
 
                     show_tools = self._show_tool_calls.get(chat_id, False)
                     if show_tools:
-                        name = event.get("name", "?")
-                        args = event.get("args", {})
-                        args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else ""
-                        if len(args_str) > 800:
-                            args_str = args_str[:797] + "..."
-                        tool_text = f"<b>Tool: {escape_html(name)}</b>"
-                        if args_str:
-                            tool_text += f"\n<pre>{escape_html(args_str)}</pre>"
+                        tool_text = format_tool_call_html(
+                            event.get("name", "?"), event.get("args", {})
+                        )
                         try:
-                            await _send_html_raw(tool_text)
+                            await self._send_html(chat_id, tool_text, context)
                         except Exception as e:
                             logger.warning(f"Failed to send tool call: {e}")
 
                 elif etype == "tool_result":
                     show_tools = self._show_tool_calls.get(chat_id, False)
                     if show_tools:
-                        result = event.get("result", "")
-                        result_str = str(result)
-                        if len(result_str) > 800:
-                            result_str = result_str[:797] + "..."
-                        result_text = f"<b>Result:</b>\n<pre>{escape_html(result_str)}</pre>" if result_str else "<i>(empty result)</i>"
+                        result_text = format_tool_result_html(event.get("result", ""))
                         try:
-                            await _send_html_raw(result_text)
+                            await self._send_html(chat_id, result_text, context)
                         except Exception as e:
                             logger.warning(f"Failed to send tool result: {e}")
                     # Post-tool text will naturally go into a new message
@@ -600,7 +616,7 @@ class NymeriaTelegramBot:
 
                 elif etype == "done":
                     if tool_call_count and text_buffer:
-                        text_buffer += f"\n\n<i>Tool calls: {tool_call_count}</i>"
+                        text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
                     elif tool_call_count and current_msg:
                         try:
                             old_text = current_msg.text or ""
@@ -616,14 +632,20 @@ class NymeriaTelegramBot:
             # Stream ended — flush any remaining buffer
             if text_buffer:
                 if tool_call_count:
-                    text_buffer += f"\n\n<i>Tool calls: {tool_call_count}</i>"
+                    text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
                 await _flush(final=True)
 
         except Exception as e:
             logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
             # Sync fallback
             try:
-                data = await self.api.chat(message, thread_id, user_id)
+                data = await self.api.chat(
+                    message,
+                    thread_id,
+                    user_id,
+                    attachments=attachments,
+                    force_unsupported_attachments=bool(attachments),
+                )
                 response = data.get("response", "")
                 tc = data.get("tool_call_count", 0)
                 if tc:
@@ -2048,12 +2070,19 @@ class NymeriaTelegramBot:
     # =========================================================================
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle non-command text messages.
+        """Handle text messages, photos, and document uploads.
 
         In DMs: respond to all messages.
         In groups: only respond to replies to the bot's messages.
+
+        Photos and documents are downloaded, validated against the same
+        MIME / size constraints the desktop frontend enforces, and sent
+        to the API as ``attachments``. The message text is taken from the
+        message's ``text`` if present, else its ``caption``; if neither
+        exists we substitute a placeholder so the API's ``min_length=1``
+        check on ``message`` is satisfied.
         """
-        if not update.message or not update.message.text:
+        if not update.message:
             return
 
         chat = update.effective_chat
@@ -2071,13 +2100,104 @@ class NymeriaTelegramBot:
         user_id = update.effective_user.id
         thread_id = make_thread_id(chat_id)
 
+        text = (update.message.text or update.message.caption or "").strip()
+        attachments, errors = await self._collect_attachments(update, context)
+
+        for err in errors:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=err)
+            except Exception:
+                pass
+
+        if not text and not attachments:
+            return
+
+        if not text and attachments:
+            # API requires non-empty message text — give the agent a hint
+            # that the user sent only attachment(s).
+            text = "[attachment]" if len(attachments) == 1 else "[attachments]"
+
         await self._stream_to_chat(
             chat_id=chat_id,
-            message=update.message.text,
+            message=text,
             thread_id=thread_id,
             user_id=make_user_id(user_id),
             context=context,
+            attachments=attachments or None,
         )
+
+    async def _collect_attachments(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> "tuple[List[Dict[str, Any]], List[str]]":
+        """Download and validate attachments from a Telegram message.
+
+        Returns ``(attachments, errors)``. ``attachments`` is the list of
+        API-shaped dicts ready to send; ``errors`` is a list of short
+        user-facing strings to post back into the chat (oversized files,
+        unsupported MIME types, download failures).
+        """
+        msg = update.message
+        attachments: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        # ---- Photos --------------------------------------------------------
+        # Telegram sends a list of PhotoSize objects sorted small → large.
+        # The largest version is JPEG-encoded by Telegram regardless of the
+        # original upload format.
+        if msg.photo:
+            best = msg.photo[-1]
+            ok, size_err = attachment_helpers.size_within_limit(
+                best.file_size, "image/jpeg", "photo.jpg"
+            )
+            if not ok and size_err:
+                errors.append(size_err)
+            else:
+                try:
+                    tg_file = await context.bot.get_file(best.file_id)
+                    raw = bytes(await tg_file.download_as_bytearray())
+                    att, err = attachment_helpers.build_attachment(
+                        raw, "image/jpeg", "photo.jpg"
+                    )
+                    if att:
+                        attachments.append(att)
+                    elif err:
+                        errors.append(err)
+                except Exception as e:
+                    logger.warning(f"Failed to download Telegram photo: {e}")
+                    errors.append("Couldn't download that photo — try resending.")
+
+        # ---- Document (image-as-file, PDF, txt, md, csv) -------------------
+        if msg.document:
+            doc = msg.document
+            ok, size_err = attachment_helpers.size_within_limit(
+                doc.file_size, doc.mime_type, doc.file_name
+            )
+            if not ok and size_err:
+                errors.append(size_err)
+            else:
+                try:
+                    tg_file = await context.bot.get_file(doc.file_id)
+                    raw = bytes(await tg_file.download_as_bytearray())
+                    att, err = attachment_helpers.build_attachment(
+                        raw, doc.mime_type, doc.file_name
+                    )
+                    if att:
+                        attachments.append(att)
+                    elif err:
+                        errors.append(err)
+                except Exception as e:
+                    logger.warning(f"Failed to download Telegram document: {e}")
+                    errors.append("Couldn't download that file — try resending.")
+
+        if len(attachments) > attachment_helpers.MAX_FILES_PER_MESSAGE:
+            extra = len(attachments) - attachment_helpers.MAX_FILES_PER_MESSAGE
+            attachments = attachments[: attachment_helpers.MAX_FILES_PER_MESSAGE]
+            errors.append(
+                f"Skipped {extra} extra file(s) — max "
+                f"{attachment_helpers.MAX_FILES_PER_MESSAGE} per message."
+            )
+
+        return attachments, errors
 
     # =========================================================================
     # Autonomous SSE Listener
@@ -2132,37 +2252,128 @@ class NymeriaTelegramBot:
             reconnect_delay = min(reconnect_delay * 2, max_delay)
 
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
-        """Process a single event from the API SSE stream."""
+        """Stream an autonomous-task event to the matching Telegram chat.
+
+        Mirrors the per-event splitting that ``_stream_to_chat`` does for
+        regular chat: response chunks accumulate in a per-thread buffer and
+        get flushed at every tool_call boundary, so preamble text, tool
+        announcements, and post-tool replies each land in their own bubble.
+        No wrapper header — bubbles look identical to regular chat.
+        """
         event_type = event.get("type", "")
         thread_id = event.get("thread_id", "")
 
-        if event_type != "task_completed":
-            return
         if not thread_id.startswith("telegram_"):
             return
-        if event.get("error"):
+
+        try:
+            chat_id = int(thread_id[len("telegram_"):])
+        except ValueError:
             return
 
-        chat_id_str = thread_id[len("telegram_"):]
+        state = self._autonomous_state.get(thread_id)
+
+        def _ensure_state() -> Dict[str, Any]:
+            nonlocal state
+            if state is None:
+                state = {"chat_id": chat_id, "buffer": "", "tool_count": 0}
+                self._autonomous_state[thread_id] = state
+            return state
+
+        async def _flush_buffer(footer: Optional[str] = None) -> None:
+            """Send the buffered response text as its own bubble, then reset."""
+            if state is None:
+                return
+            buf = state["buffer"]
+            if footer:
+                buf = (buf + footer) if buf else footer
+            if not buf.strip():
+                state["buffer"] = ""
+                return
+            display = markdown_to_html(buf)
+            # Telegram's hard limit is 4096; we already cap response chunks
+            # below that, but split as a safety net for the footer case.
+            for chunk in split_message(display, 4000):
+                try:
+                    await self._send_html(chat_id, chunk)
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous chunk: {e}")
+            state["buffer"] = ""
+
         try:
-            chat_id = int(chat_id_str)
-            content = event.get("content", "Task completed.")
-            task_label = event.get("task", "Scheduled task")
+            if event_type == "task_started":
+                _ensure_state()
 
-            text = "<b>Autonomous Task Completed</b>\n"
-            if task_label:
-                text += f"{escape_html(task_label[:256])}\n\n"
-            if content:
-                if len(content) > 3800:
-                    content = content[:3797] + "..."
-                text += f"<b>Result:</b>\n{escape_html(content)}"
+            elif event_type == "thinking":
+                # Same as regular chat — silently ignored.
+                return
 
-            await self._application.bot.send_message(
-                chat_id=chat_id, text=text, parse_mode=ParseMode.HTML,
-            )
-            logger.info(f"Posted autonomous result to Telegram chat {chat_id}")
+            elif event_type == "response":
+                s = _ensure_state()
+                chunk = event.get("content", "")
+                if not chunk:
+                    return
+                s["buffer"] += chunk
+                # Flush early if a single segment grows large enough that we'd
+                # otherwise risk hitting the 4096-char Telegram limit mid-stream.
+                if len(s["buffer"]) > 3800:
+                    await _flush_buffer()
+
+            elif event_type == "tool_call":
+                s = _ensure_state()
+                # Finalize preamble text as its own bubble so the tool call
+                # marker (if shown) and any post-tool reply land in fresh ones.
+                await _flush_buffer()
+                s["tool_count"] += 1
+                if self._show_tool_calls.get(chat_id, False):
+                    tool_text = format_tool_call_html(
+                        event.get("name", "?"), event.get("args", {})
+                    )
+                    try:
+                        await self._send_html(chat_id, tool_text)
+                    except Exception as e:
+                        logger.warning(f"Failed to send autonomous tool call: {e}")
+
+            elif event_type == "tool_result":
+                _ensure_state()
+                if self._show_tool_calls.get(chat_id, False):
+                    result_text = format_tool_result_html(event.get("result", ""))
+                    try:
+                        await self._send_html(chat_id, result_text)
+                    except Exception as e:
+                        logger.warning(f"Failed to send autonomous tool result: {e}")
+
+            elif event_type == "task_completed":
+                if event.get("error"):
+                    err = event.get("content") or "Unknown error"
+                    try:
+                        await self._send_html(
+                            chat_id,
+                            f"<i>Autonomous task error:</i> {escape_html(str(err))}",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send autonomous error: {e}")
+                else:
+                    s = _ensure_state()
+                    # If we received no per-event responses (older API or
+                    # non-streaming task), fall back to the aggregated content.
+                    if not s["buffer"] and not s["tool_count"]:
+                        fallback = event.get("content") or ""
+                        if fallback:
+                            s["buffer"] = fallback
+                    footer = (
+                        f"\n\n_Tool calls: {s['tool_count']}_"
+                        if s["tool_count"]
+                        else None
+                    )
+                    await _flush_buffer(footer=footer)
+                self._autonomous_state.pop(thread_id, None)
+                logger.info(f"Streamed autonomous result to Telegram chat {chat_id}")
+
         except Exception as e:
-            logger.error(f"Error posting SSE event to Telegram: {e}", exc_info=True)
+            logger.error(f"Error handling autonomous event {event_type}: {e}", exc_info=True)
+            # Drop state so the thread starts fresh on the next task.
+            self._autonomous_state.pop(thread_id, None)
 
     # =========================================================================
     # Error Handler

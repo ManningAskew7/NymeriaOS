@@ -205,6 +205,20 @@ Discord has a 2000-character message limit. The bot's `split_message()` function
 3. Falls back to line breaks (`\n`), then sentence boundaries (`. `)
 4. Hard-splits at 2000 chars only as last resort
 
+### Attachments (images & documents)
+
+The bot accepts message attachments alongside (or instead of) text. Files are downloaded, base64-encoded, and forwarded to the API as the same `attachments` payload the desktop frontend uses.
+
+- **Images:** `image/jpeg`, `image/png`, `image/gif`, `image/webp` — 10 MB max.
+- **Documents:** `application/pdf`, `text/plain`, `text/markdown`, `text/csv` — 20 MB max.
+- **Limit:** 4 files per message; extras are dropped with a warning.
+
+If a message has attachments but no text, a short `[attachment]` placeholder is substituted so the API's non-empty-message requirement is satisfied. Unsupported MIME types and oversized files are rejected with a short reply in the channel — the rest of the message still goes through.
+
+**Limitation:** `/ask` does NOT yet accept attachments — Discord slash commands need a separate `attachment` option type. Use a regular @mention (with the file attached to the same Discord message) or a DM with the file attached.
+
+Because chat clients can't surface the desktop's "model may not support these attachments" override modal, the bot auto-sets `force_unsupported_attachments=true` whenever attachments are present. If the underlying model can't process the file the LLM will say so itself, but the upfront capability check is bypassed.
+
 ### Channel Context
 
 When enabled (default), the bot fetches the last ~10 non-bot messages from the channel and prepends them as context:
@@ -228,6 +242,7 @@ This helps Nymeria understand the ongoing conversation even when invoked via `/a
 |------|-------|
 | Bot implementation | `nymeria/triggers/discord_bot.py` |
 | API client | `nymeria/triggers/discord_api_client.py` |
+| Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_discord_bot()` |
 | Docker config | `docker-compose.yml` (profile: `discord`) |
 | Env vars | `.env.docker` (`DISCORD_BOT_TOKEN`, `DISCORD_RESPOND_MODE`) |

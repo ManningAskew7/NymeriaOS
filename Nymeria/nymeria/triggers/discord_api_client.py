@@ -71,16 +71,37 @@ class NymeriaAPIClient:
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
-    async def chat(self, message: str, thread_id: str, user_id: str) -> dict:
+    async def chat(
+        self,
+        message: str,
+        thread_id: str,
+        user_id: str,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        force_unsupported_attachments: bool = False,
+    ) -> dict:
         """Send a message and get a response (non-streaming).
+
+        ``attachments`` is the list of file dicts accepted by the API
+        (``file_type``, ``data_url``, ``mime_type``, ``file_name``); see
+        ``triggers.attachment_helpers.build_attachment``.
+
+        ``force_unsupported_attachments`` skips the model-capability
+        compatibility check that would otherwise raise an error event.
+        Set this from chat-only frontends (Discord/Telegram) where the
+        user can't dismiss the desktop's "model may not support" modal.
 
         Returns dict with 'response' (str) and 'tool_call_count' (int).
         """
-        return await self._post("/chat/sync", json={
+        body: Dict[str, Any] = {
             "message": message,
             "thread_id": thread_id,
             "user_id": user_id,
-        })
+        }
+        if attachments:
+            body["attachments"] = attachments
+        if force_unsupported_attachments:
+            body["force_unsupported_attachments"] = True
+        return await self._post("/chat/sync", json=body)
 
     async def chat_stream(
         self,
@@ -89,6 +110,8 @@ class NymeriaAPIClient:
         user_id: str,
         is_self_invoke: bool = False,
         trigger_override: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        force_unsupported_attachments: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat events via SSE (POST /chat).
 
@@ -99,6 +122,9 @@ class NymeriaAPIClient:
         is_self_invoke=True so the API treats the nudge as an internal
         message and routes it through the autonomous prompt path.
         trigger_override supplies the label (e.g. 'watchdog').
+
+        ``attachments`` carries multimodal file payloads; same shape as
+        :meth:`chat`.
         """
         body: Dict[str, Any] = {
             "message": message,
@@ -109,6 +135,10 @@ class NymeriaAPIClient:
             body["is_self_invoke"] = True
         if trigger_override:
             body["trigger_override"] = trigger_override
+        if attachments:
+            body["attachments"] = attachments
+        if force_unsupported_attachments:
+            body["force_unsupported_attachments"] = True
         async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
             async with client.stream(
                 "POST",
