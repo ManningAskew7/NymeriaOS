@@ -33,7 +33,6 @@ from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager, TodoStatus
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
 from .todo_schedule_db import TodoScheduleDB
-from .watchdog import Watchdog, set_watchdog
 from .audit import AuditLogger
 from .prompts import INTERACTIVE_MODE_RULES, AUTONOMOUS_MODE_RULES, get_time_context
 from .migration import migrate_old_scheduled_tasks
@@ -442,18 +441,9 @@ class NymeriaAgent:
         else:
             logger.info("Ticker disabled (separate worker handles scheduling)")
 
-        # Initialize and start watchdog for TODO staleness monitoring
-        self._watchdog: Optional[Watchdog] = None
-        if self.settings.watchdog_enabled:
-            self._watchdog = Watchdog(
-                self,
-                self.todo_manager,
-                interval_minutes=self.settings.watchdog_interval_minutes,
-                staleness_minutes=self.settings.todo_staleness_minutes,
-            )
-            self._watchdog.start()
-            set_watchdog(self._watchdog)
-            logger.info("Watchdog started for TODO staleness monitoring")
+        # The watchdog now runs as a standalone thin-client service
+        # (run.py watchdog → nymeria/triggers/watchdog_worker.py).
+        # NymeriaAgent no longer owns one; see docs/architecture.md.
 
         logger.info(
             f"NymeriaAgent initialized with provider={self.settings.llm_provider}, "
@@ -2002,17 +1992,31 @@ class NymeriaAgent:
             self._user_graphs[cache_key] = (memory_hash, graph)
         return graph
 
-    def _get_async_graph_for_user(self, user_id: str, thread_id: str = ""):
+    def _get_async_graph_for_user(
+        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+    ):
         """
         Get the appropriate async graph for a user+thread, rebuilding if memories or TODOs changed.
 
         Args:
             user_id: User identifier
+            is_autonomous: If True, include autonomous execution instructions (never cached)
             thread_id: Thread for scoping TODOs in the system prompt
 
         Returns:
             LangGraph compiled graph for async operations
         """
+        # Autonomous graphs are never cached — always rebuild so the autonomous
+        # prompt is freshly composed (mirrors the sync _get_graph_for_user path)
+        if is_autonomous:
+            logger.debug(f"Building autonomous async graph for user {user_id}, thread {thread_id}")
+            full_prompt = self._build_full_system_prompt(
+                user_id, is_autonomous=True, thread_id=thread_id
+            )
+            return self._build_async_graph_with_prompt(
+                full_prompt, user_id=user_id, thread_id=thread_id
+            )
+
         memory_hash = self._get_memory_hash(user_id, thread_id)
         cache_key = (user_id, thread_id)
 
@@ -3111,6 +3115,7 @@ class NymeriaAgent:
         attachments: Optional[List[Dict[str, str]]] = None,
         images: Optional[List[Dict[str, str]]] = None,
         force_unsupported_attachments: bool = False,
+        _is_self_invoke: bool = False,
         _trigger_override: str = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -3155,7 +3160,8 @@ class NymeriaAgent:
                 return
 
         try:
-            self._thread_locks.set_lock_info(thread_id, "user")
+            holder = "autonomous" if _is_self_invoke else "user"
+            self._thread_locks.set_lock_info(thread_id, holder)
 
             # Clear any stale abort signal and capture the event for this run
             abort_event = self._thread_locks.get_abort_event(thread_id)
@@ -3163,13 +3169,17 @@ class NymeriaAgent:
 
             import time as _time
             _stream_start = _time.monotonic()
-            logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}")
+            logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
 
-            # Cancel pending self_invoke (user is active)
-            self.scheduler.cancel(user_id)
+            # Cancel pending self_invoke only on USER messages — don't cancel ourselves
+            if not _is_self_invoke:
+                self.scheduler.cancel(user_id)
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
-            graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
+            # For autonomous execution, include the autonomous mode instructions
+            graph = self._get_async_graph_for_user(
+                user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+            )
 
             # Pre-flight: patch any dangling tool calls from previous aborted runs
             config = {
@@ -3203,8 +3213,8 @@ class NymeriaAgent:
                 except Exception as e:
                     logger.warning(f"[ASTREAM] Could not fetch existing state: {e}")
 
-            # Inject time context into the message
-            time_context = self._get_time_context(is_autonomous=False, trigger_override=_trigger_override)
+            # Inject time context into the message (includes trigger type for autonomous wake-ups)
+            time_context = self._get_time_context(is_autonomous=_is_self_invoke, trigger_override=_trigger_override)
             message_with_context = f"{time_context}\n\n{message}"
 
             # Check for pending summary from manual /compact
@@ -3342,9 +3352,21 @@ class NymeriaAgent:
                         }
                         return
 
-                input_state = {"messages": [HumanMessage(content=content)]}
+                if _is_self_invoke:
+                    human_msg = _create_human_message(
+                        content, internal=True, internal_type="autonomous_wakeup"
+                    )
+                else:
+                    human_msg = HumanMessage(content=content)
+                input_state = {"messages": [human_msg]}
             else:
-                input_state = {"messages": [HumanMessage(content=message_with_context)]}
+                if _is_self_invoke:
+                    human_msg = _create_human_message(
+                        message_with_context, internal=True, internal_type="autonomous_wakeup"
+                    )
+                else:
+                    human_msg = HumanMessage(content=message_with_context)
+                input_state = {"messages": [human_msg]}
 
             # Track emitted events to avoid duplicates
             emitted_tool_starts: set = set()

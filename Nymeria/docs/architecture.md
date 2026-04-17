@@ -239,6 +239,40 @@ The old `self_invoke` and `DurableScheduler` system is deprecated but retained i
 
 ---
 
+### 4.2 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)
+
+The **Watchdog** nudges Nymeria when active TODOs haven't been touched for a while. It runs as a **thin-client process** alongside (not inside) the API — same structural pattern as the Discord and Telegram bots.
+
+**Why a separate process?** The old watchdog lived inside `NymeriaAgent.__init__`, which meant every container that built an agent (both `api` and `worker` in Docker) started its own watchdog — two instances scanning the same TODOs, with in-process callbacks via `get_watchdog()` to clear nudge state. Running it as a sibling service eliminates the duplication and the global coupling.
+
+**Flow:**
+```
+watchdog container (run.py watchdog)
+    │
+    ├─ every watchdog_interval_minutes:
+    │     GET /todos/users  → list user IDs
+    │     GET /todos?user_id=X  → fetch each user's TODOs
+    │     filter: active + not recurring + scheduled_for not in future
+    │            + updated_at older than todo_staleness_minutes
+    │     group stale TODOs by thread_id
+    │
+    └─ per thread:
+          POST /chat  { is_self_invoke: true, trigger_override: "watchdog" }
+          ↓
+          API sets holder=autonomous, routes through autonomous prompt,
+          publishes task_started/tool_call/.../task_completed to
+          /autonomous/stream subscribers
+          ↓
+          Watchdog also fires a Telegram/Discord/Slack notification
+          via the stateless senders in `nymeria.tools.notify`.
+```
+
+**State:** The worker keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next poll whenever `updated_at > last_seen` — no cross-process callbacks required. State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle.
+
+**Kill switches:** `NYMERIA_WATCHDOG_DISABLED=1` env var, or a `{data_dir}/flags/watchdog-off` file (persistent across container restarts).
+
+---
+
 ### 4.1 Event Bus & Autonomous Streaming (`nymeria/core/event_bus.py`)
 
 The **EventBus** enables real-time streaming of autonomous task execution to connected frontend clients.

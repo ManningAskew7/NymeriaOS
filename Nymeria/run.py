@@ -8,6 +8,7 @@ Usage:
     python run.py api --port 8080  # Start API on custom port
     python run.py worker           # Start worker (ticker only, for Docker)
     python run.py discord-bot     # Start Discord bot (gateway mode)
+    python run.py telegram-bot    # Start Telegram bot (polling mode)
     python run.py twitch-bot      # Start Twitch chat bot
     python run.py mcp              # Start MCP server (stdio mode)
     python run.py mcp --http       # Start MCP server (HTTP mode)
@@ -380,6 +381,110 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     bot.run(settings.discord_bot_token, log_handler=None)
 
 
+def run_watchdog(args: argparse.Namespace) -> None:
+    """
+    Run the watchdog worker (thin client).
+
+    Polls the Nymeria REST API for stale TODOs and POSTs nudges to /chat
+    with is_self_invoke=true. Owns no NymeriaAgent — the API handles all
+    agent execution and event publishing.
+    """
+    import asyncio
+
+    from nymeria.config import get_settings
+    from nymeria.triggers.discord_api_client import NymeriaAPIClient
+    from nymeria.triggers.watchdog_worker import WatchdogWorker
+
+    settings = get_settings()
+
+    if not settings.watchdog_enabled:
+        print("[Info] Watchdog is disabled (WATCHDOG_ENABLED=false). Exiting.")
+        sys.exit(0)
+
+    if not settings.nymeria_api_key:
+        print("\n[Error] NYMERIA_API_KEY is required for the watchdog worker.")
+        sys.exit(1)
+
+    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_key = settings.nymeria_api_key
+
+    print("Starting Nymeria Watchdog (thin client)...")
+    print(f"  - API: {api_url}")
+    print(f"  - Interval: {settings.watchdog_interval_minutes}m")
+    print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
+
+    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    worker = WatchdogWorker(client=api, settings=settings)
+
+    def signal_handler(signum, frame):
+        print("\nShutdown signal received, stopping watchdog worker...")
+        worker.stop()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        asyncio.run(worker.run())
+    except KeyboardInterrupt:
+        pass
+    print("Watchdog worker exited.")
+
+
+def run_telegram_bot(args: argparse.Namespace) -> None:
+    """
+    Run the Telegram bot (polling mode).
+
+    Thin client architecture: the bot calls the Nymeria REST API for
+    all operations instead of running its own NymeriaAgent. This
+    ensures Telegram always reflects the same state as the frontend.
+    """
+    from nymeria.config import get_settings
+    from nymeria.triggers.telegram_bot import NymeriaTelegramBot
+    from nymeria.triggers.discord_api_client import NymeriaAPIClient
+
+    settings = get_settings()
+
+    if not settings.telegram_bot_token:
+        print("\n[Error] TELEGRAM_BOT_TOKEN is not set.")
+        print("  1. Message @BotFather on Telegram")
+        print("  2. Create a new bot with /newbot")
+        print("  3. Copy the token and add it to your .env:")
+        print("     TELEGRAM_BOT_TOKEN=your-token-here")
+        sys.exit(1)
+
+    # API URL is required — the bot is a thin client
+    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_key = settings.nymeria_api_key or ""
+
+    print("Starting Nymeria Telegram Bot (thin client)...")
+    print(f"  - Mode: polling")
+    print(f"  - API: {api_url}")
+    if settings.telegram_default_chat_id:
+        print(f"  - Default chat: {settings.telegram_default_chat_id}")
+
+    # Create API client
+    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+
+    # Create and run bot
+    bot = NymeriaTelegramBot(
+        api=api,
+        bot_token=settings.telegram_bot_token,
+        default_chat_id=settings.telegram_default_chat_id,
+    )
+
+    # Handle shutdown signals
+    def signal_handler(signum, frame):
+        print("\nShutdown signal received, stopping Telegram bot...")
+        import os
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    print("\nConnecting to Telegram...")
+    bot.run()
+
+
 def run_twitch_bot(args: argparse.Namespace) -> None:
     """
     Run the Twitch bot.
@@ -589,6 +694,29 @@ Examples:
              "when running the bot and API as separate local processes.",
     )
 
+    # Telegram bot subcommand
+    telegram_parser = subparsers.add_parser(
+        "telegram-bot",
+        help="Start Telegram bot (polling mode)"
+    )
+    telegram_parser.add_argument(
+        "--api-url",
+        default=None,
+        help="URL of running Nymeria API (e.g. http://localhost:8000)",
+    )
+
+    # Watchdog subcommand (thin client)
+    watchdog_parser = subparsers.add_parser(
+        "watchdog",
+        help="Start watchdog worker (thin client — polls API for stale TODOs)"
+    )
+    watchdog_parser.add_argument(
+        "--api-url",
+        default=None,
+        help="URL of running Nymeria API (e.g. http://localhost:8000). "
+             "Defaults to http://nymeria-api:8000 for Docker deployments.",
+    )
+
     # Twitch bot subcommand
     subparsers.add_parser(
         "twitch-bot",
@@ -645,7 +773,7 @@ Actions:
 
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
-    if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "twitch-bot"):
+    if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "telegram-bot", "twitch-bot", "watchdog"):
         validate_config()
     elif args.command == "service" and args.action in ("install", "run"):
         validate_config()
@@ -662,6 +790,10 @@ Actions:
         run_worker(args)
     elif args.command == "discord-bot":
         run_discord_bot(args)
+    elif args.command == "telegram-bot":
+        run_telegram_bot(args)
+    elif args.command == "watchdog":
+        run_watchdog(args)
     elif args.command == "twitch-bot":
         run_twitch_bot(args)
     elif args.command == "mcp":

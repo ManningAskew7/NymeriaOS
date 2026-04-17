@@ -509,7 +509,6 @@ async def nymeria_todo_complete(
     try:
         from nymeria.core.activity_log import ActivityType, log_activity
         from nymeria.core.todo_manager import TodoStatus
-        from nymeria.core.watchdog import get_watchdog
 
         with agent.todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
@@ -521,11 +520,6 @@ async def nymeria_todo_complete(
             success = todo_list.complete_item(todo_id)
             if success:
                 logger.info(f"TODO completed: user={user_id}, id={todo_id}")
-
-                # Clear watchdog nudge tracking
-                watchdog = get_watchdog()
-                if watchdog:
-                    watchdog.clear_nudge_tracking(user_id, todo_id)
 
                 # Auto-reschedule recurring TODOs
                 rescheduled = False
@@ -607,7 +601,6 @@ async def nymeria_todo_update(
         from nymeria.core.time_utils import parse_scheduled_time
         from nymeria.core.todo_manager import TodoStatus
         from nymeria.core.activity_log import ActivityType, log_activity
-        from nymeria.core.watchdog import get_watchdog
 
         # Parse status
         todo_status = None
@@ -636,12 +629,6 @@ async def nymeria_todo_update(
             if success:
                 item = todo_list.get_item(todo_id)
                 logger.info(f"TODO updated: user={user_id}, id={todo_id}")
-
-                # Clear watchdog nudge tracking on completion
-                if todo_status == TodoStatus.DONE:
-                    watchdog = get_watchdog()
-                    if watchdog:
-                        watchdog.clear_nudge_tracking(user_id, todo_id)
 
                 # Sync to schedule database
                 if hasattr(agent, '_schedule_db'):
@@ -698,17 +685,11 @@ async def nymeria_todo_delete(
 
     try:
         from nymeria.core.activity_log import ActivityType, log_activity
-        from nymeria.core.watchdog import get_watchdog
 
         with agent.todo_manager.atomic_update(user_id) as todo_list:
             deleted = todo_list.delete_item(todo_id)
             if deleted:
                 logger.info(f"TODO deleted: user={user_id}, id={todo_id}")
-
-                # Clear watchdog nudge tracking
-                watchdog = get_watchdog()
-                if watchdog:
-                    watchdog.clear_nudge_tracking(user_id, todo_id)
 
                 # Remove from schedule database
                 if hasattr(agent, '_schedule_db'):

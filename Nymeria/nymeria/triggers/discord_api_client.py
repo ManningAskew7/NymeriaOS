@@ -83,23 +83,38 @@ class NymeriaAPIClient:
         })
 
     async def chat_stream(
-        self, message: str, thread_id: str, user_id: str
+        self,
+        message: str,
+        thread_id: str,
+        user_id: str,
+        is_self_invoke: bool = False,
+        trigger_override: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat events via SSE (POST /chat).
 
         Yields dicts with 'type' key: thinking, response, tool_call,
         tool_result, error, done, etc.
+
+        For autonomous/trusted callers (watchdog worker, etc.), set
+        is_self_invoke=True so the API treats the nudge as an internal
+        message and routes it through the autonomous prompt path.
+        trigger_override supplies the label (e.g. 'watchdog').
         """
+        body: Dict[str, Any] = {
+            "message": message,
+            "thread_id": thread_id,
+            "user_id": user_id,
+        }
+        if is_self_invoke:
+            body["is_self_invoke"] = True
+        if trigger_override:
+            body["trigger_override"] = trigger_override
         async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
             async with client.stream(
                 "POST",
                 self._url("/chat"),
                 headers=self._headers,
-                json={
-                    "message": message,
-                    "thread_id": thread_id,
-                    "user_id": user_id,
-                },
+                json=body,
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
@@ -211,6 +226,14 @@ class NymeriaAPIClient:
         data = await self._get("/todos", params={"user_id": user_id})
         return data.get("items", [])
 
+    async def list_users_with_todos(self) -> List[str]:
+        """List all user IDs that have TODO lists (for the watchdog worker)."""
+        data = await self._get("/todos/users")
+        # Endpoint returns a JSON array directly
+        if isinstance(data, list):
+            return data
+        return []
+
     async def add_todo(
         self,
         user_id: str,
@@ -260,6 +283,14 @@ class NymeriaAPIClient:
     async def update_thread_config(self, thread_id: str, **kwargs) -> dict:
         """Update per-thread configuration (PATCH /threads/{id}/config)."""
         return await self._patch(f"/threads/{thread_id}/config", json=kwargs)
+
+    async def get_env_vars(self) -> dict:
+        """Get all settable env vars with masked values."""
+        return await self._get("/settings/env")
+
+    async def get_env_var(self, key: str) -> dict:
+        """Get a single env var's unmasked value."""
+        return await self._get(f"/settings/env/{key}")
 
     async def list_models(self) -> List[dict]:
         """List known models from the model capabilities cache."""
