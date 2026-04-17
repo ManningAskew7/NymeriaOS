@@ -59,6 +59,7 @@ Set the API key for your chosen provider:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | (required) | Bearer token for API authentication. Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `NYMERIA_API_URL` | auto | Local API URL for in-process tools (e.g. `slash_command`). Defaults to `http://api:8000` in Docker, `http://localhost:8000` otherwise |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins, or `*` for all |

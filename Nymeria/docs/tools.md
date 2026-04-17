@@ -41,6 +41,14 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
 | 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
 
+### Optional: Slash Command Tool (1)
+
+Not loaded by default. Enable per-thread to let the agent invoke the same user-facing slash commands that the Discord/Telegram bots expose.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `slash_command` | Self | MODERATE | Run a Nymeria slash command on the current thread (config, env, tools, memory, TODOs, notepad, status). Destructive commands blocked. |
+
 ### Optional: _PRV_A Tools (8 _PRV_A-specific + 1)
 
 Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching (auto-invalidated after writes). The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module — it's placed here as a general-purpose extraction utility.
@@ -597,6 +605,49 @@ trigger_delete(trigger_id: str)
 - `trigger_id` (`str`): The 8-char trigger ID
 
 **Returns:** Success or error message.
+
+---
+
+## Slash Command Tool (Optional)
+
+Gives the agent a single dispatch tool that invokes the same user-facing slash commands exposed by the Discord and Telegram bots — so the agent can inspect and change its own backend (LLM model, tool set, memories, TODOs, env vars, notepad) without dedicated per-setting tools bloating the tool list.
+
+> **Note:** Not loaded by default. Lives in `OPTIONAL_TOOLS` — enable per-thread via thread config UI or `PATCH /threads/{id}/config {"enabled_tools": ["slash_command"]}`.
+
+### slash_command
+
+Run a Nymeria slash command on the agent's own thread.
+
+```python
+slash_command(command: str)
+```
+
+**Parameters:**
+- `command` (`str`): The slash command string (with or without a leading `/`). Values with spaces may be quoted.
+
+**How to use:** Tell the agent to call `/help` first. The help output is the source of truth for syntax — the tool's own description only lists a handful of examples to keep the tool schema small.
+
+**Example commands:**
+- `/help` — list every supported command
+- `/status` — model, context, tools, tasks summary
+- `/config set llm_model claude-opus-4-6` — change global model
+- `/env get PERPLEXITY_API_KEY` — fetch unmasked secret
+- `/memory save color "deep blue"` — save a user memory
+- `/tools enable browser` — turn on a category on this thread
+- `/todos add Check logs | 2h | daily` — scheduled repeating TODO
+- `/notepad write replace:new notepad contents` — overwrite the thread notepad
+
+**Blocked commands:** `/ask`, `/stop`, `/clear`, `/compact`, `/restart`, `/start` — these would interrupt or destroy the current conversation and are rejected before any API call.
+
+**Returns:** Plain-text result prefixed with `[Success]`, `[Error]`, or `[Info]`.
+
+**Requirements:**
+- `NYMERIA_API_URL` — defaults to `http://api:8000` inside Docker or `http://localhost:8000` outside.
+- `NYMERIA_API_KEY` — read from settings automatically (same key the backend serves with), so no separate configuration needed.
+
+**Security note:** The tool runs in-process against the local API using the same bearer token the backend validates against. `/env get` returns unmasked secrets — the agent is considered trusted within its own thread, and anyone who can invoke the tool can already call the underlying endpoint.
+
+**Implementation:** See `nymeria/tools/slash_command.py` (parser + denylist + tool entry point) and `nymeria/triggers/slash_dispatcher.py` (command → API-method routing and plain-text formatting). Mirrors the Telegram bot's command handlers but emits plain text instead of HTML.
 
 ---
 
