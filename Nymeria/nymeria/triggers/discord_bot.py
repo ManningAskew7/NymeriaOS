@@ -23,6 +23,7 @@ import discord
 import httpx
 from discord import app_commands
 
+from . import attachment_helpers
 from .discord_api_client import NymeriaAPIClient
 
 logger = logging.getLogger(__name__)
@@ -2150,6 +2151,7 @@ class NymeriaDiscordBot(discord.Client):
         message: str,
         thread_id: str,
         user_id: str,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Stream SSE chat events to a Discord channel as multiple messages.
 
@@ -2209,7 +2211,15 @@ class NymeriaDiscordBot(discord.Client):
             await _flush_buffer(final=True)
 
         try:
-            async for event in self.api.chat_stream(message, thread_id, user_id):
+            async for event in self.api.chat_stream(
+                message,
+                thread_id,
+                user_id,
+                attachments=attachments,
+                # Chat clients can't surface the desktop's compatibility
+                # modal — auto-accept the risk when the user attached files.
+                force_unsupported_attachments=bool(attachments),
+            ):
                 etype = event.get("type", "")
                 if etype == "thinking":
                     try:
@@ -2386,8 +2396,19 @@ class NymeriaDiscordBot(discord.Client):
                 return
             content = re.sub(rf"<@!?{self.user.id}>\s*", "", content).strip()
 
-        if not content.strip():
+        attachments, attach_errors = await self._collect_attachments(message)
+
+        for err in attach_errors:
+            try:
+                await message.channel.send(err)
+            except Exception:
+                pass
+
+        if not content.strip() and not attachments:
             return
+
+        if not content.strip() and attachments:
+            content = "[attachment]" if len(attachments) == 1 else "[attachments]"
 
         guild_id = message.guild.id if message.guild else None
         thread_id = make_thread_id(guild_id, message.channel.id)
@@ -2408,7 +2429,52 @@ class NymeriaDiscordBot(discord.Client):
             message=content_with_context,
             thread_id=thread_id,
             user_id=user_id,
+            attachments=attachments or None,
         )
+
+    async def _collect_attachments(
+        self, message: discord.Message
+    ) -> "tuple[List[Dict[str, Any]], List[str]]":
+        """Download and validate Discord message attachments.
+
+        Returns ``(attachments, errors)``. Mirrors the desktop frontend's
+        MIME / size constraints via ``attachment_helpers``. Oversized or
+        unsupported files are skipped with a short user-facing error
+        instead of failing the whole message.
+        """
+        attachments: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        for att in message.attachments:
+            ok, size_err = attachment_helpers.size_within_limit(
+                att.size, att.content_type, att.filename
+            )
+            if not ok and size_err:
+                errors.append(size_err)
+                continue
+            try:
+                raw = await att.read()
+            except Exception as e:
+                logger.warning(f"Failed to download Discord attachment {att.filename}: {e}")
+                errors.append(f"Couldn't download {att.filename} — try resending.")
+                continue
+            built, err = attachment_helpers.build_attachment(
+                raw, att.content_type, att.filename
+            )
+            if built:
+                attachments.append(built)
+            elif err:
+                errors.append(err)
+
+        if len(attachments) > attachment_helpers.MAX_FILES_PER_MESSAGE:
+            extra = len(attachments) - attachment_helpers.MAX_FILES_PER_MESSAGE
+            attachments = attachments[: attachment_helpers.MAX_FILES_PER_MESSAGE]
+            errors.append(
+                f"Skipped {extra} extra file(s) — max "
+                f"{attachment_helpers.MAX_FILES_PER_MESSAGE} per message."
+            )
+
+        return attachments, errors
 
     async def _api_sse_listener(self) -> None:
         """

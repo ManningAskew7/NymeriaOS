@@ -190,6 +190,22 @@ Telegram has a 4096-character message limit. The bot splits long responses intel
 3. Falls back to line breaks (`\n`), then sentence boundaries (`. `)
 4. Hard-splits at 4096 chars only as last resort
 
+### Attachments (images & documents)
+
+The bot accepts photos and document uploads alongside (or instead of) text. Files are downloaded, base64-encoded, and forwarded to the API as the same `attachments` payload the desktop frontend uses, so the same multimodal models work.
+
+- **Images:** `image/jpeg`, `image/png`, `image/gif`, `image/webp` — 10 MB max.
+- **Documents:** `application/pdf`, `text/plain`, `text/markdown`, `text/csv` — 20 MB max.
+- **Limit:** 4 files per message; extras are dropped with a warning.
+
+Telegram converts photos to JPEG and serves them in multiple resolutions; the bot uses the highest. To preserve original encoding (PNG, etc.), send the image as a *file* / *document* instead of a photo.
+
+The message text comes from `text` if present, otherwise the photo/document `caption`. If neither is set, a short `[attachment]` placeholder is substituted so the API's non-empty-message requirement is satisfied.
+
+Unsupported MIME types and oversized files are rejected with a short reply in the chat — the rest of the message still goes through.
+
+Because Telegram is text-only and can't surface the desktop's "model may not support these attachments" override modal, the bot auto-sets `force_unsupported_attachments=true` whenever attachments are present. If the underlying model can't actually process the file the LLM will say so itself, but the upfront capability check is bypassed (useful with CLIProxy, where multimodal capabilities aren't advertised the way OpenRouter advertises them).
+
 ### HTML Formatting
 
 All bot output uses Telegram's HTML parse mode. The bot converts markdown from the AI model to Telegram HTML:
@@ -203,9 +219,16 @@ If HTML parsing fails (malformed tags in AI output), the bot falls back to plain
 
 ## Autonomous Task Delivery
 
-The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO completes on a Telegram thread, the bot receives a `task_completed` event and posts the result to the originating chat.
+The bot maintains a background SSE connection to `GET /autonomous/stream`. When a watchdog or scheduled TODO fires on a Telegram thread, the bot streams the events into the chat the same way it streams a regular conversation:
 
-TODOs created via `/todo_add` in a Telegram chat will have their results delivered back to that chat automatically.
+- Per-thread state is kept in memory keyed by the Nymeria thread ID, so concurrent autonomous runs in different chats don't interleave.
+- `response` chunks accumulate in a buffer and flush as a new message bubble at every `tool_call` boundary.
+- `tool_call` / `tool_result` markers are shown only when the chat has `/showtools` enabled.
+- A small `Tool calls: N` italic footer is appended to the final bubble when tools were used.
+- No wrapper header — bubbles look identical to a regular reply, with the chat itself providing the autonomous-vs-user provenance.
+- On `task_completed` with `error: true`, a single short `Autonomous task error: ...` line is posted instead.
+
+TODOs created via `/todo_add` in a Telegram chat have their results delivered back to that chat automatically.
 
 ## Key Files
 
@@ -213,6 +236,7 @@ TODOs created via `/todo_add` in a Telegram chat will have their results deliver
 |------|-------|
 | Bot implementation | `nymeria/triggers/telegram_bot.py` |
 | API client (shared) | `nymeria/triggers/discord_api_client.py` |
+| Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_telegram_bot()` |
 | Docker config | `docker-compose.yml` (profile: `telegram`) |
 | Env vars | `.env.docker` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_DEFAULT_CHAT_ID`) |
