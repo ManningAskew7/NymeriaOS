@@ -35,6 +35,7 @@ function createChatStore() {
   let contextStats = $state<ContextStats | null>(null);
   let activeModel = $state<string | null>(null);
   let isQueued = $state(false);
+  let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
 
   // Throttle state for streaming buffers
@@ -73,6 +74,9 @@ function createChatStore() {
     },
     get isQueued() {
       return isQueued;
+    },
+    get isLoadingHistory() {
+      return isLoadingHistory;
     },
     get instantScroll() {
       return _instantScroll;
@@ -368,6 +372,10 @@ function createChatStore() {
     setStreaming(streaming: boolean) {
       if (!streaming) this._forceFlush();
       isStreaming = streaming;
+    },
+
+    setLoadingHistory(loading: boolean) {
+      isLoadingHistory = loading;
     },
 
     setIntermediateContent(content: string) {

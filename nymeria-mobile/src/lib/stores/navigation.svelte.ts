@@ -25,6 +25,7 @@ export async function switchToThread(
   }
   threadsStore.selectThread(threadId);
   chatStore.prepareForThreadSwitch();
+  chatStore.setLoadingHistory(true);
 
   // Navigate to chat panel immediately
   uiStore.goToChat();
@@ -35,12 +36,14 @@ export async function switchToThread(
       api.getThreadContextStats(threadId),
     ]);
 
-    // Stale navigation guard
+    // Stale navigation guard. Leave isLoadingHistory alone: whichever
+    // thread the user ended up on owns it now.
     if (threadsStore.currentThreadId !== threadId) return { success: true };
 
     chatStore.setMessages(history.messages);
     chatStore.setContextStats(stats);
     chatStore.setActiveModel(stats?.model ?? null);
+    chatStore.setLoadingHistory(false);
 
     // Stream recovery for active interactive streams
     const hasInteractiveStream = hasActiveStreamForThread(threadId);
@@ -59,6 +62,7 @@ export async function switchToThread(
     console.error('Failed to load thread history:', error);
     if (threadsStore.currentThreadId !== threadId) return { success: true };
     chatStore.clearMessages();
+    chatStore.setLoadingHistory(false);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };
   }

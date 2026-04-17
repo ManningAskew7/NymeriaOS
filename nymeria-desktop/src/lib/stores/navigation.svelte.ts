@@ -26,6 +26,7 @@ export async function switchToThread(
   }
   threadsStore.selectThread(threadId);
   chatStore.prepareForThreadSwitch();
+  chatStore.setLoadingHistory(true);
 
   try {
     const [history, stats] = await Promise.all([
@@ -33,12 +34,15 @@ export async function switchToThread(
       api.getThreadContextStats(threadId),
     ]);
 
-    // Stale navigation guard — user clicked another thread during the await
+    // Stale navigation guard — user clicked another thread during the await.
+    // Leave isLoadingHistory alone: whichever thread the user ended up on
+    // owns the flag now (set by its own switchToThread call).
     if (threadsStore.currentThreadId !== threadId) return { success: true };
 
     chatStore.setMessages(history.messages);
     chatStore.setContextStats(stats);
     chatStore.setActiveModel(stats?.model ?? null);
+    chatStore.setLoadingHistory(false);
 
     // Start cross-client sync poller
     startSyncPoll(threadId, history.messages.length);
@@ -66,6 +70,7 @@ export async function switchToThread(
     // Don't report failure if user already navigated away — the error is stale
     if (threadsStore.currentThreadId !== threadId) return { success: true };
     chatStore.clearMessages();
+    chatStore.setLoadingHistory(false);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };
   }
