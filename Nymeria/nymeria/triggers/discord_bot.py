@@ -918,10 +918,11 @@ class NymeriaDiscordBot(discord.Client):
                         except ValueError:
                             parsed = value
 
-                await self.api.update_settings(**{key: parsed})
-                await interaction.followup.send(
-                    f"**{key}** set to `{parsed}`.", ephemeral=True
-                )
+                result = await self.api.update_settings(**{key: parsed})
+                msg = f"**{key}** set to `{parsed}`."
+                if result.get("restart_required"):
+                    msg += "\nThis change requires `/restart api` to take effect."
+                await interaction.followup.send(msg, ephemeral=True)
             except httpx.HTTPStatusError as e:
                 detail = e.response.json().get("detail", str(e)) if e.response else str(e)
                 await interaction.followup.send(f"Error: {detail}", ephemeral=True)
@@ -929,6 +930,112 @@ class NymeriaDiscordBot(discord.Client):
                 await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
         self.tree.add_command(config_group)
+
+        # --- /env group ---
+        env_group = app_commands.Group(
+            name="env", description="View and set environment variables"
+        )
+
+        @env_group.command(name="show", description="Show all environment variables (secrets masked)")
+        async def cmd_env_show(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            try:
+                data = await self.api.get_env_vars()
+                entries = data.get("entries", [])
+
+                # Group by category
+                by_cat: Dict[str, list] = {}
+                for e in entries:
+                    by_cat.setdefault(e["category"], []).append(e)
+
+                embed = discord.Embed(
+                    title="Environment Variables",
+                    description=f"{len(entries)} variables ({sum(1 for e in entries if e['is_set'])} set)",
+                    color=discord.Color.greyple(),
+                )
+
+                for cat, items in by_cat.items():
+                    lines = []
+                    for e in items:
+                        if e["is_set"]:
+                            val = e["value"]
+                            if e["is_secret"]:
+                                lines.append(f"\U0001f512 `{e['name']}` = `{val}`")
+                            else:
+                                lines.append(f"\u2705 `{e['name']}` = `{val}`")
+                        else:
+                            lines.append(f"\u274c `{e['name']}`")
+                    text = "\n".join(lines)
+                    if len(text) > 1024:
+                        text = text[:1020] + "..."
+                    embed.add_field(name=cat, value=text, inline=False)
+
+                embed.set_footer(text="Use /env get <key> for unmasked values")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error(f"Error showing env vars: {e}", exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+        @env_group.command(name="get", description="Get an environment variable (unmasked)")
+        @app_commands.describe(key="Variable name (e.g., perplexity_api_key)")
+        async def cmd_env_get(interaction: discord.Interaction, key: str):
+            await interaction.response.defer(ephemeral=True)
+            try:
+                data = await self.api.get_env_var(key)
+                val = data.get("value")
+                name = data.get("name", key)
+                if val:
+                    await interaction.followup.send(
+                        f"**{name}** = `{val}`", ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"**{name}** is not set.", ephemeral=True
+                    )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    await interaction.followup.send(
+                        f"Unknown variable `{key}`.", ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(f"Error: {e}", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+        @env_group.command(name="set", description="Set an environment variable")
+        @app_commands.describe(
+            key="Variable name (e.g., perplexity_api_key)",
+            value="New value",
+        )
+        async def cmd_env_set(interaction: discord.Interaction, key: str, value: str):
+            await interaction.response.defer(ephemeral=True)
+            try:
+                # Auto-convert types
+                if value.lower() in ("true", "false"):
+                    parsed = value.lower() == "true"
+                elif value.lower() == "none":
+                    parsed = None
+                else:
+                    try:
+                        parsed = int(value)
+                    except ValueError:
+                        try:
+                            parsed = float(value)
+                        except ValueError:
+                            parsed = value
+
+                result = await self.api.update_settings(**{key: parsed})
+                msg = f"**{key}** set to `{parsed}`."
+                if result.get("restart_required"):
+                    msg += "\nThis change requires `/restart api` to take effect."
+                await interaction.followup.send(msg, ephemeral=True)
+            except httpx.HTTPStatusError as e:
+                detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                await interaction.followup.send(f"Error: {detail}", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+        self.tree.add_command(env_group)
 
         @self.tree.command(name="channel-context", description="Toggle whether Nymeria reads recent channel messages")
         async def cmd_channel_context(interaction: discord.Interaction):
@@ -2018,6 +2125,7 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/models", value="List available models from the provider", inline=False)
             embed.add_field(name="/think [off|on|low|medium|high]", value="Show or set thinking/reasoning mode", inline=False)
             embed.add_field(name="/config show | get | set", value="View and update Nymeria settings", inline=False)
+            embed.add_field(name="/env show | get | set", value="View and set environment variables (API keys, infrastructure)", inline=False)
             embed.add_field(name="/tools core | enabled | optional | category | enable | disable", value="View and manage available tools per-channel", inline=False)
             embed.add_field(name="/memory list | save | forget | search", value="Manage persistent memories about you", inline=False)
             embed.add_field(name="/notepad read | write | clear", value="Per-channel persistent notes (survive compaction)", inline=False)
