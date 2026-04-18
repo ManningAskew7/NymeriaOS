@@ -278,7 +278,7 @@ class NymeriaTwitchBot(commands.Bot):
 
         # Thread/user IDs for the agent
         self._thread_id = f"twitch_{channel}"
-        self._user_id = f"twitch_{channel}_bot"
+        self._user_id = "default"
 
         # State
         self._start_time = time.time()

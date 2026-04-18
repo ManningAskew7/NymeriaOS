@@ -57,6 +57,8 @@ class ThreadConfig(BaseModel):
         le=200,
         description="Max ReAct iterations for this callable thread (1-200). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
     )
+    # Inject user profile (saved facts, personality) into the system prompt
+    inject_profile_in_prompt: bool = False
     # Inject active TODOs into the system prompt so the LLM sees them without tool calls
     inject_todos_in_prompt: bool = False
     # Debug: show autonomous wakeup prompts (triggers, scheduler, watchdog) in chat

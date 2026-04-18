@@ -182,6 +182,15 @@ def notify(
         if result is None:
             return f"[Error]: {platform.title()} not configured. Set credentials in .env file."
         if result.startswith("Sent"):
+            try:
+                from ..core.activity_log import ActivityType, log_activity
+                log_activity(
+                    ActivityType.NOTIFICATION_SENT,
+                    f"Notification sent: {result}",
+                    metadata={"platforms": [platform]},
+                )
+            except Exception:
+                pass
             return f"[Success]: {result}"
         return f"[Error]: {result}"
 
@@ -199,6 +208,15 @@ def notify(
             errors.append(f"{name}: {result}")
 
     if results:
+        try:
+            from ..core.activity_log import ActivityType, log_activity
+            log_activity(
+                ActivityType.NOTIFICATION_SENT,
+                f"Notification sent: {'; '.join(results)}",
+                metadata={"platforms": [r.split("to ")[-1] for r in results]},
+            )
+        except Exception:
+            pass
         return f"[Success]: {'; '.join(results)}"
     elif errors:
         return f"[Error]: All platforms failed - {'; '.join(errors)}"
