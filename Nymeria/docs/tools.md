@@ -19,14 +19,15 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 9 | `profile_list` | Profile | SAFE | On | List all saved memories and preferences |
 | 10 | `personality_set` | Profile | SAFE | On | Set communication preferences |
 | 11 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
-| 12 | `todo` | TODO | SAFE | On | Create or update a TODO item |
-| 13 | `todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
-| 14 | `todo_list` | TODO | SAFE | On | List TODO items |
+| 12 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
+| 13 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
+| 14 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
 | 15 | `notepad_write` | Notepad | SAFE | On | Write to thread's persistent notepad |
 | 16 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
 | 17 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
 | 18 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
 | 19 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 20 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
 
 > **Note:** `reload_all` and `self_modify_rollback` are in `ALL_TOOLS` (imported from `subagent.py`). They are also in `SUBAGENT_TOOLS` / optional tooling for backward compatibility. The "optional" classification refers to per-thread enabling — they can be disabled per-thread via thread config even though they're always available globally.
 
@@ -383,15 +384,15 @@ TODOs are the **primary driver for autonomous operation**. Active TODOs are auto
 >
 > **Migration note:** `todo_add` and `todo_update` were merged into the single `todo` tool. Priority, deadline, blocked status, and the permanent flag have been removed.
 
-### todo
+### nym_todo
 
-Create or update a TODO item. Omit `todo_id` to create; provide it to update.
+Create or update a TODO item. Omit `todo_id` to create; provide it to update. Scheduled TODOs auto-wake the agent to execute them.
 
 ```python
-todo(todo_id: Optional[str] = None, task: Optional[str] = None,
-     scheduled_for: Optional[str] = None, status: Optional[str] = None,
-     notes: Optional[str] = None, recurrence: Optional[str] = None,
-     clear_schedule: bool = False, clear_recurrence: bool = False)
+nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
+         scheduled_for: Optional[str] = None, status: Optional[str] = None,
+         notes: Optional[str] = None, recurrence: Optional[str] = None,
+         clear_schedule: bool = False, clear_recurrence: bool = False)
 ```
 
 **Parameters:**
@@ -412,18 +413,18 @@ todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Statuses:** `pending` (default), `in_progress`, `done`. Use `todo(todo_id=..., status="done")` to complete a TODO.
 
-**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `todo(todo_id=..., clear_recurrence=True)` or `todo_delete`.
+**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
 
 **Auto-purge:** Non-recurring completed TODOs are automatically archived after 7 days by the ticker daemon.
 
 ---
 
-### todo_delete
+### nym_todo_delete
 
 Delete a TODO permanently. No archive — immediately removed. Cancels any scheduled execution.
 
 ```python
-todo_delete(todo_id: str)
+nym_todo_delete(todo_id: str)
 ```
 
 **Parameters:**
@@ -433,12 +434,12 @@ todo_delete(todo_id: str)
 
 ---
 
-### todo_list
+### nym_todo_list
 
 List TODO items. Shows active (non-done) by default.
 
 ```python
-todo_list(filter_status: Optional[str] = None)
+nym_todo_list(filter_status: Optional[str] = None)
 ```
 
 **Parameters:**
@@ -472,6 +473,29 @@ notify(message: str, platform: Literal["auto", "telegram", "discord", "slack"] =
 - Slack: `SLACK_WEBHOOK_URL`
 
 **Behavior in auto mode:** Tries all configured platforms. If any succeed, returns the success messages (failures are not reported in mixed outcomes). If all fail, returns all errors. If none are configured, returns an error listing the required env vars.
+
+### tool_search
+
+Search, enable, and disable tools for the current thread. Allows the agent to discover tools it doesn't currently have loaded and activate them.
+
+```python
+tool_search(action: str, query: str = "", category: str = "", tools: list[str] = None)
+```
+
+**Actions:**
+- `search` — Search tools by keyword and/or category. Returns up to 15 results with name, description, category, security level, and enabled status.
+- `enable` — Enable tools by name (`tools` param) or by category (`category` param). All tools in the category are enabled at once.
+- `disable` — Disable tools for the thread (`tools` param).
+- `list_categories` — List all tool categories with tool counts.
+- `status` — Show currently enabled/disabled tools for this thread.
+
+**Parameters:**
+- `action` (`str`): One of: `search`, `enable`, `disable`, `list_categories`, `status`
+- `query` (`str`): Keyword to search tool names and descriptions (for `search`)
+- `category` (`str`): Category name to filter search or enable all tools in (e.g. `"email"`, `"twitch"`)
+- `tools` (`list[str]`): Specific tool names to enable or disable
+
+**Note:** Due to how LangGraph works, newly enabled/disabled tools take effect on the **next message**, not the current turn.
 
 ---
 
