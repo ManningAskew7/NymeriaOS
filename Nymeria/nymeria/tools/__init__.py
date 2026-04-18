@@ -29,6 +29,9 @@ from .thread_notes import (
     NOTEPAD_TOOLS,
 )
 from .todo import (
+    nym_todo,
+    nym_todo_delete,
+    nym_todo_list,
     todo,
     todo_delete,
     todo_list,
@@ -63,6 +66,7 @@ from ._prv_a_acme import _PRV_TOOLS_A5
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
+from .tool_search import tool_search, TOOL_SEARCH_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -117,11 +121,13 @@ ALL_TOOLS = [
     notepad_edit,
     notepad_clear,
     # TODO tools
-    todo,
-    todo_delete,
-    todo_list,
+    nym_todo,
+    nym_todo_delete,
+    nym_todo_list,
     # Unified notification tool
     notify,
+    # Tool discovery and management
+    tool_search,
 ]
 
 __all__ = [
@@ -143,6 +149,9 @@ __all__ = [
     "notepad_edit",
     "notepad_clear",
     "NOTEPAD_TOOLS",
+    "nym_todo",
+    "nym_todo_delete",
+    "nym_todo_list",
     "todo",
     "todo_delete",
     "todo_list",
@@ -180,6 +189,8 @@ __all__ = [
     "TWITCH_TOOLS",
     "slash_command",
     "SLASH_COMMAND_TOOLS",
+    "tool_search",
+    "TOOL_SEARCH_TOOLS",
 ]
 
 

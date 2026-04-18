@@ -72,7 +72,7 @@ def _format_todo_item(item, show_notes: bool = False) -> str:
 
 
 @tool
-def todo(
+def nym_todo(
     todo_id: Optional[str] = None,
     task: Optional[str] = None,
     scheduled_for: Optional[str] = None,
@@ -87,7 +87,10 @@ def todo(
     """
     Create or update a TODO item. Omit todo_id to create, provide it to update.
 
-    Recurring TODOs auto-reschedule when marked done — use todo_delete or
+    These are YOUR tasks — scheduled TODOs auto-wake you to execute them.
+    Use scheduled_for to prompt yourself at a specific time.
+
+    Recurring TODOs auto-reschedule when marked done — use nym_todo_delete or
     clear_recurrence to stop them permanently.
 
     Args:
@@ -360,7 +363,7 @@ def _todo_complete_internal(
 
 
 @tool
-def todo_delete(
+def nym_todo_delete(
     todo_id: str,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -400,7 +403,7 @@ def todo_delete(
 
 
 @tool
-def todo_list(
+def nym_todo_list(
     filter_status: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -457,7 +460,12 @@ def todo_list(
 
 # Export TODO tools
 TODO_TOOLS = [
-    todo,
-    todo_delete,
-    todo_list,
+    nym_todo,
+    nym_todo_delete,
+    nym_todo_list,
 ]
+
+# Backward-compatible aliases
+todo = nym_todo
+todo_delete = nym_todo_delete
+todo_list = nym_todo_list

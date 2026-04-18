@@ -23,6 +23,8 @@ class ToolCategory(str, Enum):
     BROWSER = "browser"     # Playwright browser automation tools (optional)
     CALENDAR = "calendar"   # Google Calendar auth + API tools (optional)
     GOOGLE_DOCS = "google_docs"  # Google Docs tools (optional)
+    TWITCH = "twitch"       # Twitch chat, moderation, and channel tools (optional)
+    _PRV_A = "_prv_a"           # Acme Hardware supplier/vendor/product lookup tools (optional)
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
     MCP_SERVER = "mcp_server"  # Tools auto-discovered from MCP servers
 
@@ -220,21 +222,21 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Rollback code modifications to previous backup",
     ),
 
-    # TODO tools - task management
-    "todo": ToolMetadata(
-        name="todo",
+    # TODO tools - autonomous task scheduling
+    "nym_todo": ToolMetadata(
+        name="nym_todo",
         category=ToolCategory.TODO,
         security_level=SecurityLevel.SAFE,
-        description="Create or update a TODO item",
+        description="Create or update a TODO — scheduled TODOs auto-wake the agent",
     ),
-    "todo_delete": ToolMetadata(
-        name="todo_delete",
+    "nym_todo_delete": ToolMetadata(
+        name="nym_todo_delete",
         category=ToolCategory.TODO,
         security_level=SecurityLevel.SAFE,
         description="Delete a TODO item",
     ),
-    "todo_list": ToolMetadata(
-        name="todo_list",
+    "nym_todo_list": ToolMetadata(
+        name="nym_todo_list",
         category=ToolCategory.TODO,
         security_level=SecurityLevel.SAFE,
         description="List TODO items",
@@ -661,6 +663,315 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         default_enabled=False,
     ),
 
+    # Notepad edit (missing from original registry)
+    "notepad_edit": ToolMetadata(
+        name="notepad_edit",
+        category=ToolCategory.NOTEPAD,
+        security_level=SecurityLevel.SAFE,
+        description="Edit specific sections of thread's notepad",
+    ),
+
+    # Sticky note
+    "sticky_note": ToolMetadata(
+        name="sticky_note",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.SAFE,
+        description="Manage the desktop sticky note checklist",
+        default_enabled=False,
+    ),
+
+    # Slash command
+    "slash_command": ToolMetadata(
+        name="slash_command",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.MODERATE,
+        description="Invoke a Nymeria slash command on your own thread",
+        default_enabled=False,
+    ),
+
+    # Outlook additional tools
+    "outlook_get_attachments": ToolMetadata(
+        name="outlook_get_attachments",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="Download and extract text content from email attachments",
+        default_enabled=False,
+    ),
+    "outlook_draft_reply": ToolMetadata(
+        name="outlook_draft_reply",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a draft reply to an email without sending",
+        default_enabled=False,
+    ),
+    "outlook_edit_draft": ToolMetadata(
+        name="outlook_edit_draft",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Edit an existing email draft before sending",
+        default_enabled=False,
+    ),
+    "outlook_set_category": ToolMetadata(
+        name="outlook_set_category",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.SAFE,
+        description="Add or remove a category tag on an email",
+        default_enabled=False,
+    ),
+
+    # Google Docs additional tools
+    "google_docs_find_index": ToolMetadata(
+        name="google_docs_find_index",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.SAFE,
+        description="Find the document indices of a text string",
+        default_enabled=False,
+    ),
+    "google_docs_write_table": ToolMetadata(
+        name="google_docs_write_table",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a populated table in a Google Doc",
+        default_enabled=False,
+    ),
+    "google_docs_table_update_cell": ToolMetadata(
+        name="google_docs_table_update_cell",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Update a specific cell in an existing table",
+        default_enabled=False,
+    ),
+    "google_docs_table_append_row": ToolMetadata(
+        name="google_docs_table_append_row",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Append a new row to an existing table",
+        default_enabled=False,
+    ),
+
+    # Google Sheets tools
+    "google_sheets_search": ToolMetadata(
+        name="google_sheets_search",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.SAFE,
+        description="Search a Google Sheet for rows matching a query",
+        default_enabled=False,
+    ),
+    "google_sheets_append": ToolMetadata(
+        name="google_sheets_append",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Append one or more rows to a Google Sheet",
+        default_enabled=False,
+    ),
+    "google_sheets_update": ToolMetadata(
+        name="google_sheets_update",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Update cells in an existing Google Sheet row",
+        default_enabled=False,
+    ),
+
+    # _PRV_A tools
+    "_prv_a_supplier_lookup": ToolMetadata(
+        name="_prv_a_supplier_lookup",
+        category=ToolCategory._PRV_A,
+        security_level=SecurityLevel.SAFE,
+        description="Find overseas suppliers that stock a specific brand or product type",
+        default_enabled=False,
+    ),
+    "_prv_a_vendor_info": ToolMetadata(
+        name="_prv_a_vendor_info",
+        category=ToolCategory._PRV_A,
+        security_level=SecurityLevel.SAFE,
+        description="Look up vendor information including quality ratings and notes",
+        default_enabled=False,
+    ),
+    "_prv_a_product_search": ToolMetadata(
+        name="_prv_a_product_search",
+        category=ToolCategory._PRV_A,
+        security_level=SecurityLevel.SAFE,
+        description="Search the Acme Hardware product catalog for parts",
+        default_enabled=False,
+    ),
+    "_prv_a_acme_lifecycle": ToolMetadata(
+        name="_prv_a_acme_lifecycle",
+        category=ToolCategory._PRV_A,
+        security_level=SecurityLevel.SAFE,
+        description="Check lifecycle status of Acme/Allen-Bradley part numbers",
+        default_enabled=False,
+    ),
+    "_prv_a_acme_pricelist": ToolMetadata(
+        name="_prv_a_acme_pricelist",
+        category=ToolCategory._PRV_A,
+        security_level=SecurityLevel.SAFE,
+        description="Look up Acme Electric part details and list pricing",
+        default_enabled=False,
+    ),
+
+    # Twitch tools
+    "twitch_read_chat": ToolMetadata(
+        name="twitch_read_chat",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Read recent messages from the chat buffer",
+        default_enabled=False,
+    ),
+    "twitch_send": ToolMetadata(
+        name="twitch_send",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Send a message to the Twitch channel chat",
+        default_enabled=False,
+    ),
+    "twitch_announce": ToolMetadata(
+        name="twitch_announce",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Send a highlighted announcement to Twitch chat",
+        default_enabled=False,
+    ),
+    "twitch_delete_message": ToolMetadata(
+        name="twitch_delete_message",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Delete a chat message or clear all chat",
+        default_enabled=False,
+    ),
+    "twitch_timeout": ToolMetadata(
+        name="twitch_timeout",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Timeout a user in Twitch chat",
+        default_enabled=False,
+    ),
+    "twitch_ban": ToolMetadata(
+        name="twitch_ban",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SENSITIVE,
+        description="Permanently ban a user from Twitch chat",
+        default_enabled=False,
+    ),
+    "twitch_unban": ToolMetadata(
+        name="twitch_unban",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Unban or untimeout a user in Twitch chat",
+        default_enabled=False,
+    ),
+    "twitch_warn": ToolMetadata(
+        name="twitch_warn",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Issue an official warning to a chat user",
+        default_enabled=False,
+    ),
+    "twitch_automod_review": ToolMetadata(
+        name="twitch_automod_review",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Approve or deny a message held by AutoMod",
+        default_enabled=False,
+    ),
+    "twitch_shoutout": ToolMetadata(
+        name="twitch_shoutout",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Give a shoutout to another channel",
+        default_enabled=False,
+    ),
+    "twitch_get_stream": ToolMetadata(
+        name="twitch_get_stream",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Get current live stream status, viewers, game, and uptime",
+        default_enabled=False,
+    ),
+    "twitch_get_channel": ToolMetadata(
+        name="twitch_get_channel",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Get channel info — title, game, tags, language",
+        default_enabled=False,
+    ),
+    "twitch_get_chatters": ToolMetadata(
+        name="twitch_get_chatters",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Get list of users currently in chat",
+        default_enabled=False,
+    ),
+    "twitch_get_banned": ToolMetadata(
+        name="twitch_get_banned",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Get list of banned users with reasons",
+        default_enabled=False,
+    ),
+    "twitch_get_schedule": ToolMetadata(
+        name="twitch_get_schedule",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Get the channel's upcoming stream schedule",
+        default_enabled=False,
+    ),
+    "twitch_clip": ToolMetadata(
+        name="twitch_clip",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a clip of the last ~30 seconds of the live stream",
+        default_enabled=False,
+    ),
+    "twitch_create_poll": ToolMetadata(
+        name="twitch_create_poll",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a poll in the channel",
+        default_enabled=False,
+    ),
+    "twitch_end_poll": ToolMetadata(
+        name="twitch_end_poll",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="End an active poll",
+        default_enabled=False,
+    ),
+    "twitch_create_prediction": ToolMetadata(
+        name="twitch_create_prediction",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Create a channel points prediction",
+        default_enabled=False,
+    ),
+    "twitch_resolve_prediction": ToolMetadata(
+        name="twitch_resolve_prediction",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Resolve, cancel, or lock a prediction",
+        default_enabled=False,
+    ),
+    "twitch_set_channel_info": ToolMetadata(
+        name="twitch_set_channel_info",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.MODERATE,
+        description="Update channel title, game/category, and tags",
+        default_enabled=False,
+    ),
+    "twitch_get_subs": ToolMetadata(
+        name="twitch_get_subs",
+        category=ToolCategory.TWITCH,
+        security_level=SecurityLevel.SAFE,
+        description="Check subscriber count or if a user is subscribed",
+        default_enabled=False,
+    ),
+
+    # Tool search (core, always available)
+    "tool_search": ToolMetadata(
+        name="tool_search",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.SAFE,
+        description="Search, enable, and disable optional tools for the current thread",
+    ),
 }
 
 
