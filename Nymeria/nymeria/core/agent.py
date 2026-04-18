@@ -560,22 +560,20 @@ class NymeriaAgent:
         else:  # memory
             return CheckpointerConfig(backend="memory")
 
-    def _build_user_memories_section(self, user_id: str) -> str:
+    def _build_user_profile_section(self, user_id: str) -> str:
         """
-        Build the user memories section for the system prompt.
+        Build the user profile section for the system prompt.
 
-        This section is sandboxed - only this part changes based on user memories.
-        The rest of the system prompt (soul.md) remains unchanged.
+        Only injected when the thread has inject_profile_in_prompt enabled.
 
         Args:
             user_id: User identifier
 
         Returns:
-            Formatted memories section to append to system prompt
+            Formatted profile section to append to system prompt
         """
         profile = self.profile_manager.get_profile(user_id)
 
-        # No memories yet
         if not profile.memories and not profile.personality_overrides:
             return ""
 
@@ -583,21 +581,19 @@ class NymeriaAgent:
             "",
             "---",
             "",
-            "## User Memories",
+            "## User Profile",
             "",
             "The following information has been saved about this user. Use it naturally",
             "in conversation - you don't need to explicitly mention that you 'remember' it.",
             "",
         ]
 
-        # Add personality preferences first (they affect how to respond)
         if profile.personality_overrides:
             lines.append("### Communication Preferences")
             for trait, value in profile.personality_overrides.items():
                 lines.append(f"- **{trait}**: {value}")
             lines.append("")
 
-        # Add factual memories
         if profile.memories:
             lines.append("### Known Facts")
             for mem in sorted(profile.memories, key=lambda m: m.key):
@@ -685,9 +681,12 @@ class NymeriaAgent:
             return f"{hash(thread_config_str)}"
 
         profile = self.profile_manager.get_profile(user_id)
-        # Simple hash based on memory keys and values
-        memory_str = "|".join(f"{m.key}:{m.value}" for m in profile.memories)
-        personality_str = "|".join(f"{k}:{v}" for k, v in profile.personality_overrides.items())
+        # Only include profile in hash if this thread injects it
+        memory_str = ""
+        personality_str = ""
+        if tc and tc.inject_profile_in_prompt:
+            memory_str = "|".join(f"{m.key}:{m.value}" for m in profile.memories)
+            personality_str = "|".join(f"{k}:{v}" for k, v in profile.personality_overrides.items())
 
         # Include thread-scoped TODOs in the hash (only if injected into prompt)
         todo_str = ""
@@ -750,12 +749,13 @@ class NymeriaAgent:
         # Determine base prompt: custom system_prompt or default soul.md
         base = tc.system_prompt if (tc and tc.system_prompt) else self._base_system_prompt
 
-        memories_section = self._build_user_memories_section(user_id)
-        # Only inject TODOs into prompt if the per-thread setting is enabled (off by default)
+        profile_section = ""
+        if tc and tc.inject_profile_in_prompt:
+            profile_section = self._build_user_profile_section(user_id)
         todos_section = ""
         if tc and tc.inject_todos_in_prompt:
             todos_section = self._build_active_todos_section(user_id, thread_id)
-        prompt = base + memories_section + todos_section
+        prompt = base + profile_section + todos_section
 
         # Inject per-thread instructions (before mode rules so they always come last)
         if tc and tc.instructions:
@@ -2650,6 +2650,17 @@ class NymeriaAgent:
             # This ensures user activity takes priority over scheduled tasks
             if not _is_self_invoke:
                 self.scheduler.cancel(user_id)
+                try:
+                    from .activity_log import ActivityType, log_activity
+                    preview = message.strip()[:120].replace("\n", " ")
+                    log_activity(
+                        ActivityType.USER_MESSAGE,
+                        f"{preview}",
+                        user_id=user_id,
+                        thread_id=thread_id,
+                    )
+                except Exception:
+                    pass
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             # For autonomous execution, include the autonomous mode instructions
@@ -2813,6 +2824,17 @@ class NymeriaAgent:
             # Cancel pending self_invoke if this is a USER message (not self_invoke)
             if not _is_self_invoke:
                 self.scheduler.cancel(user_id)
+                try:
+                    from .activity_log import ActivityType, log_activity
+                    preview = message.strip()[:120].replace("\n", " ")
+                    log_activity(
+                        ActivityType.USER_MESSAGE,
+                        f"{preview}",
+                        user_id=user_id,
+                        thread_id=thread_id,
+                    )
+                except Exception:
+                    pass
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             # For autonomous execution, include the autonomous mode instructions

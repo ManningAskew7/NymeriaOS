@@ -242,8 +242,8 @@ def make_thread_id(chat_id: int) -> str:
 
 
 def make_user_id(user_id: int) -> str:
-    """Generate a Nymeria user ID from a Telegram user ID."""
-    return f"telegram_{user_id}"
+    """Map Telegram user to Nymeria user. Single-user system — always 'default'."""
+    return "default"
 
 
 # =============================================================================

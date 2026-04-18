@@ -122,8 +122,8 @@ def make_thread_id(guild_id: Optional[int], channel_id: int) -> str:
 
 
 def make_user_id(user_id: int) -> str:
-    """Generate a Nymeria user ID from a Discord user ID."""
-    return f"discord_{user_id}"
+    """Map Discord user to Nymeria user. Single-user system — always 'default'."""
+    return "default"
 
 
 CONTEXT_MESSAGE_COUNT = 10

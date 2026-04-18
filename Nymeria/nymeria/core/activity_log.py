@@ -33,6 +33,8 @@ class ActivityType(str, Enum):
     TODO_COMPLETED = "todo_completed"
     TODO_DELETED = "todo_deleted"
     TRIGGER_COMPLETED = "trigger_completed"
+    USER_MESSAGE = "user_message"
+    NOTIFICATION_SENT = "notification_sent"
 
 
 class ActivityEntry(BaseModel):
@@ -138,6 +140,7 @@ class ActivityLog:
         limit: int = 50,
         activity_type: Optional[ActivityType] = None,
         thread_id: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> List[ActivityEntry]:
         """
         Get activity entries for a user.
@@ -147,6 +150,7 @@ class ActivityLog:
             limit: Maximum number of entries to return
             activity_type: Optional filter by type
             thread_id: Optional filter by thread ID
+            since: Optional cutoff — only return entries after this time
 
         Returns:
             List of ActivityEntry objects, newest first
@@ -154,6 +158,9 @@ class ActivityLog:
         lock = self._get_lock(user_id)
         with lock:
             entries = self._load_entries(user_id)
+
+        if since:
+            entries = [e for e in entries if e.timestamp >= since]
 
         # Filter by type if specified
         if activity_type:

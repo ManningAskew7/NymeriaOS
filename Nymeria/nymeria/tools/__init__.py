@@ -67,6 +67,10 @@ from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_search import tool_search, TOOL_SEARCH_TOOLS
+from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
+from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
+
+WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
@@ -99,6 +103,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
     + SLASH_COMMAND_TOOLS
+    + WATCHDOG_TOOLS
 )}
 
 # All available tools
@@ -191,6 +196,13 @@ __all__ = [
     "SLASH_COMMAND_TOOLS",
     "tool_search",
     "TOOL_SEARCH_TOOLS",
+    "activity_feed",
+    "ACTIVITY_FEED_TOOLS",
+    "watchdog_dispatch",
+    "watchdog_read_notepad",
+    "watchdog_todo_overview",
+    "WATCHDOG_DISPATCH_TOOLS",
+    "WATCHDOG_TOOLS",
 ]
 
 

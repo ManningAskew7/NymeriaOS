@@ -486,7 +486,7 @@ def create_webhook_router(get_agent_fn, get_settings_fn) -> APIRouter:
 
         # Generate thread ID from platform + channel for conversation continuity
         thread_id = f"{platform}_{incoming.channel_id}"
-        user_id = f"{platform}_{incoming.sender_id}"
+        user_id = "default"
 
         # Ensure thread metadata exists for this platform channel
         try:

@@ -68,6 +68,17 @@ Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `googl
 
 See `docs/_prv_a/setup-guide.md` for full setup instructions, Google Sheet IDs, and configuration.
 
+### Optional: Watchdog Tools (4)
+
+Not loaded by default. Enable per-thread for the Smart Watchdog scheduler.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `activity_feed` | Watchdog | SAFE | Structured activity summary across all threads (user messages, tasks, TODOs, notifications) |
+| 2 | `watchdog_dispatch` | Watchdog | MODERATE | Create a TODO on a different thread (cannot self-target) |
+| 3 | `watchdog_read_notepad` | Watchdog | SAFE | Read another thread's notepad for state awareness |
+| 4 | `watchdog_todo_overview` | Watchdog | SAFE | List all active TODOs across all threads, grouped by thread |
+
 ### Callable Thread Tools (Dynamic)
 
 Any thread with `callable=True` in its thread config becomes a tool that other threads can invoke. There are no hardcoded agents — callable threads are fully configurable via the UI:
@@ -675,6 +686,70 @@ slash_command(command: str)
 
 ---
 
+## Watchdog Tools (Optional)
+
+Tools for the Smart Watchdog — an intelligent scheduler thread that observes system activity and dispatches work to other threads. Not loaded by default; enable per-thread via thread config.
+
+### activity_feed
+
+Get a structured activity summary across all threads since a given time window.
+
+```python
+activity_feed(minutes_ago: int = 10)
+```
+
+**Parameters:**
+- `minutes_ago` (`int`): Look-back window in minutes (default 10)
+
+**Returns:** Structured text report grouped by thread showing user messages, autonomous tasks, TODO changes, and notifications. Returns "No activity" if the window is empty.
+
+**Data source:** Reads from the persisted activity log (`data/activity/{user_id}.json`). Only as complete as what gets logged — user messages, TODO state changes, autonomous task execution, and notifications are all captured.
+
+### watchdog_dispatch
+
+Create a TODO on a different thread. Cannot target the calling thread.
+
+```python
+watchdog_dispatch(target_thread_id: str, task: str, scheduled_for: str = "now", notes: str = "")
+```
+
+**Parameters:**
+- `target_thread_id` (`str`): Thread ID to dispatch the TODO to (must differ from caller)
+- `task` (`str`): Clear, specific description of what the target thread should do
+- `scheduled_for` (`str`): When to fire — `"now"`, `"30s"`, `"5m"`, `"1h"`, `"1d"`, or `"YYYY-MM-DD HH:MM"`
+- `notes` (`str`): Supporting context for the target thread
+
+**Returns:** Confirmation with the created TODO ID, or error if self-targeting or limit reached.
+
+**Implementation:** `nymeria/tools/watchdog_dispatch.py`. Wraps `TodoManager.add()` with a cross-thread guard. Logs activity as `WATCHDOG_NUDGE`.
+
+### watchdog_read_notepad
+
+Read another thread's notepad to understand what it's currently focused on.
+
+```python
+watchdog_read_notepad(target_thread_id: str)
+```
+
+**Parameters:**
+- `target_thread_id` (`str`): Thread ID whose notepad to read
+
+**Returns:** Notepad content, or message indicating the notepad is empty.
+
+### watchdog_todo_overview
+
+List all active TODOs across all threads, grouped by thread. Shows thread assignment, schedule, and recurrence for each TODO.
+
+```python
+watchdog_todo_overview()
+```
+
+**Returns:** All active TODOs grouped by thread with status icons, schedule times, and recurrence info. Use this before dispatching to avoid creating duplicate TODOs.
+
+**Implementation:** All watchdog tools live in `nymeria/tools/watchdog_dispatch.py`.
+
+---
+
 ## Callable Thread Tools (Dynamic)
 
 Any thread with `callable=True` in its thread config becomes a callable tool — there are no hardcoded agent names or fixed configurations. Each callable thread is fully configurable via the UI:
@@ -819,6 +894,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Docs tools: 3 auth + 16 document = 19 total
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
+- Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
 - Utility tools: `claude_code`, `sticky_note`, `hello_test` = 3
 
 **How it works:**
