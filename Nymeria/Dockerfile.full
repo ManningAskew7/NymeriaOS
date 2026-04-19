@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     jq \
     unzip \
+    ffmpeg \
     # Networking tools
     net-tools \
     iputils-ping \

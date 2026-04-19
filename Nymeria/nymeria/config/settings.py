@@ -400,8 +400,8 @@ class Settings(BaseSettings):
     )
 
     # Voice / TTS Configuration
-    tts_provider: Literal["none", "openai", "qwen3"] = Field(
-        default="none", description="TTS provider: none, openai, qwen3"
+    tts_provider: Literal["none", "openai", "qwen3", "gemini", "cartesia"] = Field(
+        default="none", description="TTS provider: none, openai, qwen3, gemini, cartesia"
     )
     tts_base_url: Optional[str] = Field(
         default=None,

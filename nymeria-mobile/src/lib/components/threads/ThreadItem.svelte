@@ -78,6 +78,12 @@
     showActions = false;
     threadsStore.togglePinThread(thread.id);
   }
+
+  function handleCopyId(e: MouseEvent) {
+    e.stopPropagation();
+    showActions = false;
+    navigator.clipboard.writeText(thread.id);
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
@@ -123,6 +129,10 @@
         <button class="action-item" onclick={handlePin}>
           <Icon name="pin" size={18} />
           <span>{thread.pinned ? 'Unpin' : 'Pin'}</span>
+        </button>
+        <button class="action-item" onclick={handleCopyId}>
+          <Icon name="copy" size={18} />
+          <span>Copy ID</span>
         </button>
         <button class="action-item danger" onclick={handleDelete}>
           <Icon name="trash" size={18} />

@@ -97,6 +97,11 @@
     onConfigure?.();
   }
 
+  function handleCopyId() {
+    contextMenu = null;
+    navigator.clipboard.writeText(thread.id);
+  }
+
   function handleContextRename() {
     contextMenu = null;
     editTitle = thread.title;
@@ -225,6 +230,10 @@
         <span>Configure</span>
       </button>
     {/if}
+    <button class="context-item" onclick={handleCopyId} type="button">
+      <Icon name="copy" size={14} />
+      <span>Copy ID</span>
+    </button>
     <button class="context-item" onclick={handleContextRename} type="button">
       <Icon name="edit" size={14} />
       <span>Rename</span>
