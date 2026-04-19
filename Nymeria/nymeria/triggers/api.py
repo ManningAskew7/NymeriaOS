@@ -4778,14 +4778,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         token = body.get("token", "").strip()
         platform = body.get("platform", "unknown")
         user_id = body.get("user_id", "default")
+        thread_ids = body.get("thread_ids")
 
         if not token:
             raise HTTPException(status_code=400, detail="Token is required")
 
+        if thread_ids is not None and not isinstance(thread_ids, list):
+            raise HTTPException(status_code=400, detail="thread_ids must be a list")
+
         settings = get_settings()
         data_dir = str(settings.data_dir)
 
-        is_new = register_token(data_dir, token, platform, user_id)
+        is_new = register_token(data_dir, token, platform, user_id, thread_ids=thread_ids)
         return {
             "status": "registered" if is_new else "updated",
             "platform": platform,

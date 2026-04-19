@@ -112,8 +112,17 @@ def save_tokens(data_dir: str, tokens: List[Dict]):
     path.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
 
 
-def register_token(data_dir: str, token: str, platform: str, user_id: str) -> bool:
+def register_token(
+    data_dir: str,
+    token: str,
+    platform: str,
+    user_id: str,
+    thread_ids: Optional[List[str]] = None,
+) -> bool:
     """Register a device token. Deduplicates by token value.
+
+    thread_ids: if provided, the device only receives pushes for these threads.
+    An empty list or None means the device receives all pushes.
 
     Returns True if new token was added, False if already exists.
     """
@@ -121,17 +130,21 @@ def register_token(data_dir: str, token: str, platform: str, user_id: str) -> bo
     # Check for existing
     for t in tokens:
         if t.get("token") == token:
-            # Update metadata
             t["platform"] = platform
             t["user_id"] = user_id
+            if thread_ids is not None:
+                t["thread_ids"] = thread_ids
             save_tokens(data_dir, tokens)
             return False
     # Add new
-    tokens.append({
+    entry: Dict = {
         "token": token,
         "platform": platform,
         "user_id": user_id,
-    })
+    }
+    if thread_ids is not None:
+        entry["thread_ids"] = thread_ids
+    tokens.append(entry)
     save_tokens(data_dir, tokens)
     logger.info(f"[FCM] Registered new {platform} device (total: {len(tokens)})")
     return True
@@ -159,9 +172,12 @@ def send_to_all_devices(
     summary: str = "",
     user_id: Optional[str] = None,
 ):
-    """Send a push notification to all registered devices.
+    """Send a push notification to matching registered devices.
 
-    If user_id is provided, only sends to devices registered by that user.
+    Filtering rules (all must pass):
+    - user_id: if provided, only devices registered by that user
+    - thread_ids: if the device registered with thread_ids, the push's
+      thread_id must be in that list. Devices with no thread_ids get everything.
     """
     tokens = load_tokens(data_dir)
     if not tokens:
@@ -169,6 +185,10 @@ def send_to_all_devices(
 
     for entry in tokens:
         if user_id and entry.get("user_id") != user_id:
+            continue
+        subscribed = entry.get("thread_ids")
+        if subscribed and thread_id and thread_id not in subscribed:
+            logger.debug(f"[FCM] Skipping device (thread {thread_id} not in {subscribed})")
             continue
         token = entry.get("token")
         if token:
