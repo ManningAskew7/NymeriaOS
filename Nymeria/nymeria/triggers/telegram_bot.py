@@ -628,6 +628,11 @@ class NymeriaTelegramBot:
                     for attach_path in parse_attach_paths(event.get("result", "")):
                         await self._send_file_attachment(chat_id, attach_path, context)
 
+                elif etype == "workspace_artifact":
+                    attach_path = event.get("path")
+                    if isinstance(attach_path, str) and attach_path:
+                        await self._send_file_attachment(chat_id, attach_path, context)
+
                 elif etype == "error":
                     await _flush(final=True)
                     error_content = event.get("content", "Unknown error")
@@ -2378,6 +2383,11 @@ class NymeriaTelegramBot:
                     except Exception as e:
                         logger.warning(f"Failed to send autonomous tool result: {e}")
                 for attach_path in parse_attach_paths(event.get("result", "")):
+                    await self._send_file_attachment(chat_id, attach_path)
+
+            elif event_type == "workspace_artifact":
+                attach_path = event.get("path")
+                if isinstance(attach_path, str) and attach_path:
                     await self._send_file_attachment(chat_id, attach_path)
 
             elif event_type == "task_completed":

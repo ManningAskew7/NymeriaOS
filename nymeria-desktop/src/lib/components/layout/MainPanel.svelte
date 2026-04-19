@@ -285,6 +285,17 @@
         break;
       }
 
+      case 'workspace_artifact': {
+        const data = event.data as {
+          toolCallId?: string;
+          artifact: import('$lib/types').WorkspaceArtifact;
+        };
+        if (data.toolCallId) {
+          chatStore.addToolCallArtifacts(data.toolCallId, [data.artifact]);
+        }
+        break;
+      }
+
       case 'response': {
         // Add response as a step (preserves order with thinking and tool calls)
         const data = event.data as { content: string; isComplete: boolean };

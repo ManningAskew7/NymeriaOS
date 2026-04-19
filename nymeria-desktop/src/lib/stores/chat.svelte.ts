@@ -1,8 +1,30 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats } from '$lib/types';
+import type {
+  Message,
+  MessageStep,
+  ToolCall,
+  ToolCallStatus,
+  FileAttachment,
+  WorkspaceArtifact,
+  ContextStats
+} from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 
 function generateId(): string {
   return crypto.randomUUID();
+}
+
+function mergeArtifacts(
+  existing: WorkspaceArtifact[] | undefined,
+  incoming: WorkspaceArtifact[] | undefined
+): WorkspaceArtifact[] | undefined {
+  if (!incoming?.length) return existing;
+  if (!existing?.length) return [...incoming];
+
+  const merged = new Map(existing.map((artifact) => [artifact.path, artifact]));
+  for (const artifact of incoming) {
+    merged.set(artifact.path, artifact);
+  }
+  return Array.from(merged.values());
 }
 
 /**
@@ -549,6 +571,43 @@ function createChatStore() {
       });
     },
 
+    addToolCallArtifacts(id: string, artifacts: WorkspaceArtifact[]) {
+      if (!artifacts.length) return;
+
+      const existing = activeToolCalls.get(id);
+      if (existing) {
+        const updated: ToolCall = {
+          ...existing,
+          artifacts: mergeArtifacts(existing.artifacts, artifacts)
+        };
+        const newMap = new Map(activeToolCalls);
+        newMap.set(id, updated);
+        activeToolCalls = newMap;
+      }
+
+      messages = messages.map((msg) => {
+        if (msg.role === 'assistant' && msg.steps) {
+          const updatedSteps = msg.steps.map((step) => {
+            if (step.type === 'tool_call' && step.id === id) {
+              return {
+                ...step,
+                artifacts: mergeArtifacts(step.artifacts, artifacts)
+              };
+            }
+            return step;
+          });
+
+          return {
+            ...msg,
+            steps: updatedSteps,
+            toolCalls: this._computeToolCalls(updatedSteps)
+          };
+        }
+
+        return msg;
+      });
+    },
+
     /**
      * Add a response step to the last assistant message.
      * Response steps preserve order with thinking and tool calls for proper interleaving.
@@ -691,6 +750,7 @@ function createChatStore() {
           name: s.name || '',
           arguments: s.arguments || {},
           result: s.result,
+          artifacts: s.artifacts,
           status: s.status || 'pending',
           startTime: s.startTime,
           endTime: s.endTime

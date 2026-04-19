@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import mimetypes
+import os
 import re
 import sys
 import threading
@@ -119,6 +121,7 @@ _CONTEXT_PREFIX_PATTERN = re.compile(
     r'^\[(?:Current )?Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n',
     re.MULTILINE
 )
+_ATTACH_TAG_PATTERN = re.compile(r"\[attach:(.+?)\]")
 
 # Regex to extract the timestamp string from the time context prefix
 _TIMESTAMP_EXTRACT_PATTERN = re.compile(
@@ -1056,41 +1059,124 @@ class NymeriaAgent:
                 return message.strip()
         return result
 
-    def _tool_result_extra_events(self, tool_name: str, raw_result: str) -> List[Dict[str, Any]]:
-        """Build extra stream events for structured tool results."""
-        payload = self._parse_subagent_error_marker(raw_result)
-        if not payload:
+    @staticmethod
+    def _get_workspace_dir() -> Path:
+        """Return the root directory exposed by the workspace download API."""
+        return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
+
+    @classmethod
+    def _strip_attach_tags(cls, result: str) -> str:
+        """Remove legacy attach markers from tool output shown to clients."""
+        if not isinstance(result, str):
+            return str(result)
+        cleaned = _ATTACH_TAG_PATTERN.sub("", result)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def _clean_tool_result_for_display(cls, result: str) -> str:
+        """Remove internal markers from a tool result before streaming it to UIs."""
+        return cls._strip_attach_tags(cls._strip_subagent_error_marker(result))
+
+    @staticmethod
+    def _serialize_workspace_artifact(path: Path) -> Dict[str, Any]:
+        """Build metadata for a downloadable workspace artifact."""
+        mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        return {
+            "path": str(path),
+            "name": path.name,
+            "mime_type": mime_type,
+            "size_bytes": path.stat().st_size,
+        }
+
+    @classmethod
+    def _extract_workspace_artifacts(cls, result: str) -> List[Dict[str, Any]]:
+        """Extract valid workspace artifacts from legacy attach tags."""
+        if not isinstance(result, str):
             return []
 
-        code = payload.get("code")
-        message = payload.get("message")
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
+        workspace_dir = cls._get_workspace_dir()
+        artifacts: List[Dict[str, Any]] = []
+        seen: set[str] = set()
 
-        if code == "subagent_iteration_limit":
-            max_iterations = metadata.get("max_iterations", 0)
-            tool_call_count = metadata.get("tool_call_count", 0)
-            agent_name = metadata.get("agent_name") or tool_name
+        for raw_path in _ATTACH_TAG_PATTERN.findall(result):
+            candidates = [Path(raw_path)]
+            if not Path(raw_path).is_absolute():
+                candidates.append(workspace_dir / raw_path)
 
-            event = {
-                "type": "iteration_limit",
-                "scope": "sub_agent",
-                "agent_name": agent_name,
-                "max_iterations": max_iterations if isinstance(max_iterations, int) and max_iterations > 0 else 0,
-                "tool_call_count": tool_call_count if isinstance(tool_call_count, int) and tool_call_count > 0 else None,
-                "content": message if isinstance(message, str) and message.strip()
-                else f"{agent_name} hit its iteration limit.",
-            }
+            resolved_path: Optional[Path] = None
+            for candidate in candidates:
+                try:
+                    candidate_resolved = candidate.resolve()
+                except Exception:
+                    continue
+                if not candidate_resolved.is_relative_to(workspace_dir):
+                    continue
+                if not candidate_resolved.is_file():
+                    continue
+                resolved_path = candidate_resolved
+                break
 
-            if event["max_iterations"] <= 0:
-                event["max_iterations"] = 30
-            if event["tool_call_count"] is None:
-                event.pop("tool_call_count")
+            if resolved_path is None:
+                logger.debug("Ignoring non-downloadable attach path: %s", raw_path)
+                continue
 
-            return [event]
+            resolved_str = str(resolved_path)
+            if resolved_str in seen:
+                continue
+            seen.add(resolved_str)
+            artifacts.append(cls._serialize_workspace_artifact(resolved_path))
 
-        return []
+        return artifacts
+
+    def _tool_result_extra_events(
+        self,
+        tool_name: str,
+        raw_result: str,
+        tool_call_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Build extra stream events for structured tool results."""
+        events: List[Dict[str, Any]] = []
+
+        payload = self._parse_subagent_error_marker(raw_result)
+        if payload:
+            code = payload.get("code")
+            message = payload.get("message")
+            metadata = payload.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            if code == "subagent_iteration_limit":
+                max_iterations = metadata.get("max_iterations", 0)
+                tool_call_count = metadata.get("tool_call_count", 0)
+                agent_name = metadata.get("agent_name") or tool_name
+
+                event = {
+                    "type": "iteration_limit",
+                    "scope": "sub_agent",
+                    "agent_name": agent_name,
+                    "max_iterations": max_iterations if isinstance(max_iterations, int) and max_iterations > 0 else 0,
+                    "tool_call_count": tool_call_count if isinstance(tool_call_count, int) and tool_call_count > 0 else None,
+                    "content": message if isinstance(message, str) and message.strip()
+                    else f"{agent_name} hit its iteration limit.",
+                }
+
+                if event["max_iterations"] <= 0:
+                    event["max_iterations"] = 30
+                if event["tool_call_count"] is None:
+                    event.pop("tool_call_count")
+
+                events.append(event)
+
+        for artifact in self._extract_workspace_artifacts(raw_result):
+            events.append({
+                "type": "workspace_artifact",
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                **artifact,
+            })
+
+        return events
 
     def _extract_tokens_from_response(self, messages: List) -> tuple:
         """
@@ -3103,7 +3189,7 @@ class NymeriaAgent:
                                 logger.debug(f"[STREAM] ToolMessage: id={tool_call_id}, name={tool_name}")
 
                                 raw_result = msg.content if isinstance(msg.content, str) else str(msg.content)
-                                display_result = self._strip_subagent_error_marker(raw_result)
+                                display_result = self._clean_tool_result_for_display(raw_result)
 
                                 yield {
                                     "type": "tool_result",
@@ -3112,7 +3198,11 @@ class NymeriaAgent:
                                     "result": display_result,
                                 }
 
-                                for extra_event in self._tool_result_extra_events(tool_name or "", raw_result):
+                                for extra_event in self._tool_result_extra_events(
+                                    tool_name or "",
+                                    raw_result,
+                                    tool_call_id,
+                                ):
                                     yield extra_event
 
                 # Index conversation turn in RAG (if enabled)
@@ -3517,14 +3607,18 @@ class NymeriaAgent:
                             else:
                                 result = str(output)
                             raw_result = result if isinstance(result, str) else str(result)
-                            display_result = self._strip_subagent_error_marker(raw_result)
+                            display_result = self._clean_tool_result_for_display(raw_result)
                             yield {
                                 "type": "tool_result",
                                 "id": run_id,
                                 "name": tool_name,
                                 "result": display_result,
                             }
-                            for extra_event in self._tool_result_extra_events(tool_name, raw_result):
+                            for extra_event in self._tool_result_extra_events(
+                                tool_name,
+                                raw_result,
+                                run_id,
+                            ):
                                 yield extra_event
 
                     # Handle chat model streaming - classify content by type
@@ -3920,7 +4014,11 @@ class NymeriaAgent:
                                         "status": "success",
                                     }
                                     if tool_call_id in tool_results:
-                                        step["result"] = tool_results[tool_call_id]
+                                        raw_tool_result = tool_results[tool_call_id]
+                                        step["result"] = self._clean_tool_result_for_display(raw_tool_result)
+                                        artifacts = self._extract_workspace_artifacts(raw_tool_result)
+                                        if artifacts:
+                                            step["artifacts"] = artifacts
                                     current_turn["steps"].append(step)
                         else:
                             # String content (OpenAI/OpenRouter): no interleaving
@@ -3939,7 +4037,11 @@ class NymeriaAgent:
                                     "status": "success",
                                 }
                                 if tool_call_id in tool_results:
-                                    step["result"] = tool_results[tool_call_id]
+                                    raw_tool_result = tool_results[tool_call_id]
+                                    step["result"] = self._clean_tool_result_for_display(raw_tool_result)
+                                    artifacts = self._extract_workspace_artifacts(raw_tool_result)
+                                    if artifacts:
+                                        step["artifacts"] = artifacts
                                 current_turn["steps"].append(step)
 
                     else:
