@@ -780,10 +780,14 @@
   .message-footer {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: var(--spacing-xs);
     margin-top: var(--spacing-xs);
     padding: 0 var(--spacing-sm);
+  }
+
+  .user .message-footer {
+    justify-content: flex-end;
   }
 
   .timestamp {
