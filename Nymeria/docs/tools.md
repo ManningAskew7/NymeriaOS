@@ -85,7 +85,7 @@ Not loaded by default. Enable per-thread to let the agent create new conversatio
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
-| 1 | `spawn_thread` | Subagent | MODERATE | Create a new sidebar thread with custom instructions, tool selection, and LLM overrides. Optionally dispatches an initial message and blocks until the child responds. |
+| 1 | `spawn_thread` | Subagent | MODERATE | Create or delete a sidebar thread with custom instructions, tool selection, and LLM overrides. New threads are callable (globally invocable) by default. Create mode optionally dispatches an initial message and blocks until the child responds; delete mode cleans up a previously-spawned thread. |
 
 ### Callable Thread Tools (Dynamic)
 
@@ -763,15 +763,16 @@ watchdog_todo_overview()
 
 ### spawn_thread
 
-Create a new conversation thread with scoped configuration and optionally kick it off with an initial message. The new thread appears in the desktop sidebar inside a **"Spawned by Nymeria"** folder so it stays separate from user-created threads.
+Create or delete a conversation thread with scoped configuration. Two modes via the `action` parameter: `"create"` (default) and `"delete"`. Spawned threads appear in the desktop sidebar inside a **"Spawned by Nymeria"** folder so they stay separate from user-created threads.
 
 ```python
 spawn_thread(
-    title: str,
+    title: Optional[str] = None,
     instructions: Optional[str] = None,
     optional_tools: Optional[List[str]] = None,
     tool_categories: Optional[List[str]] = None,
     disabled_tools: Optional[List[str]] = None,
+    make_callable: bool = True,
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
     llm_temperature: Optional[float] = None,
@@ -779,37 +780,49 @@ spawn_thread(
     llm_extended_thinking: Optional[bool] = None,
     llm_reasoning_effort: Optional[str] = None,
     initial_message: Optional[str] = None,
+    action: str = "create",
+    delete_thread_id: Optional[str] = None,
 )
 ```
 
-**Parameters:**
-- `title` (required): User-visible thread title in the sidebar. Truncated to 80 chars.
-- `instructions`: Extra system-prompt instructions **APPENDED** to `soul.md` (max 5000 chars). Cannot replace the base personality.
-- `optional_tools`: List of optional tool names to enable on the new thread (e.g. `["sticky_note", "browser_navigate"]`). Core tools are inherited automatically — only list extras.
+**Create mode (`action="create"`, default):**
+
+- `title` (required for create): User-visible thread title. Truncated to 80 chars.
+- `instructions`: Extra system-prompt instructions **APPENDED** to `soul.md` (max 5000 chars). Cannot replace the base personality. Also used as the callable tool's description if provided.
+- `optional_tools`: List of optional tool names to enable (e.g. `["sticky_note", "browser_navigate"]`). Core tools are inherited automatically — only list extras.
 - `tool_categories`: List of categories (e.g. `["email", "browser"]`) to bulk-enable every optional tool in that category. Merged with `optional_tools`.
 - `disabled_tools`: List of core tool names to EXCLUDE from the new thread.
-- `llm_*`: Optional LLM overrides for the new thread. Omit to inherit global settings.
-- `initial_message`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output. If omitted, the new thread is created empty.
+- `make_callable` (default `True`): If `True`, the new thread is registered as a globally callable tool with an auto-derived name (`spawned_{slug}_{rand8}`). Any thread (including the parent) can invoke it by calling that tool name. Set `False` for a single-use thread.
+- `llm_*`: Optional LLM overrides. Omit to inherit global settings.
+- `initial_message`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
 
-**Returns:**
-- Without `initial_message`: preamble with the new thread_id (e.g. `[Spawned]: thread_id=spawned-research-4f2a9e12`).
-- With `initial_message`: preamble + the child thread's response text.
-- On error: `[Error]: ...`
+**Create returns:**
+- Preamble with the new `thread_id` (`spawned-{slug}-{rand8}`).
+- If `make_callable=True`: the generated callable tool name (e.g. `spawned_research_a3f21c9d`) the parent can invoke later.
+- If `initial_message` provided: the child's response text appended.
+- A reminder of the `action="delete"` call needed to remove the thread.
 
-**Thread ID format:** `spawned-{slug}-{rand8}` where `slug` is derived from the title. Classified as `callable` platform. `callable=False` on the config — spawned threads are NOT globally invocable as tools.
+**Delete mode (`action="delete"`):**
 
-**Safety limits:**
-- **Spawn depth**: capped at 3 by default (via `NYMERIA_MAX_SPAWN_DEPTH` env). Depth is tracked in `platform_meta.spawn_depth`.
-- **Rate limit**: 10 spawns per parent per hour by default (via `NYMERIA_MAX_SPAWNS_PER_HOUR` env).
-- **Abort cascade**: the parent→child relationship is registered so stopping the parent stops its children too.
+- `delete_thread_id` (required for delete): The spawned thread's ID (must start with `"spawned-"`).
+- Only the **calling thread** (the original spawn parent, tracked via `platform_meta.spawn_parent`) can delete a given spawned thread. If the stored spawn_parent is empty (e.g. an older spawn without lineage), any thread may delete it.
+- Cleans up: metadata, config, checkpoints (SQLite or Postgres), notepad, and — if the thread was callable — unregisters the tool globally via `sync_agent_tools()`.
+- Publishes a `thread_deleted` sync event so all connected clients remove it from their sidebars.
 
-**Frontend behavior:** When the `thread_created` sync event arrives with a `spawned-` thread_id, the desktop client lazily creates a "Spawned by Nymeria" folder (if missing) and files the thread there. The folder is user-editable (rename, delete, pin, move threads out).
+**Delete returns:** `[Deleted]: thread_id=spawned-...` on success.
 
-**System prompt rule:** The tool only exposes the *append* path (`instructions`). It cannot set `system_prompt` (which would replace `soul.md` entirely) — this is intentional. If a spawned thread needs a fully replaced prompt, use `POST /agents/threads` or the desktop thread settings UI instead.
+**Safety limits (create only):**
+- **Spawn depth**: capped at 3 by default (`NYMERIA_MAX_SPAWN_DEPTH` env). Depth stored in `platform_meta.spawn_depth`.
+- **Rate limit**: 10 spawns per parent per hour (`NYMERIA_MAX_SPAWNS_PER_HOUR` env).
+- **Abort cascade**: parent→child invocation is registered so stopping the parent stops its children.
 
-**Implementation:** `nymeria/tools/spawn_thread.py`. Mirrors `thread_agent_executor.invoke()` for live event streaming (so child activity appears in the autonomous pane) but works for non-callable threads.
+**Frontend behavior:** When the `thread_created` sync event arrives with a `spawned-` thread_id, the desktop client lazily creates a "Spawned by Nymeria" folder and files the thread there. `thread_deleted` events trigger removal from the sidebar (and the folder).
 
-**Non-blocking (deferred):** Fire-and-forget spawning is not currently supported. It would need cross-thread TODO creation (extending `nym_todo` to target other threads) or a thread mailbox channel before it's useful. Today's blocking-only mode covers the common "delegate a task, get the answer" use case.
+**System prompt rule:** The tool only exposes the *append* path (`instructions`). It cannot set `system_prompt` (which would replace `soul.md` entirely).
+
+**Implementation:** `nymeria/tools/spawn_thread.py`. Mirrors `thread_agent_executor.invoke()` for live event streaming (child activity appears in the autonomous pane). Delete path mirrors `DELETE /threads/{id}` from `triggers/api.py`.
+
+**Non-blocking (deferred):** Fire-and-forget spawning is not currently supported. Would need cross-thread TODO creation (extending `nym_todo` to target other threads) or a thread mailbox channel. Today's blocking-only mode covers the common "delegate a task, get the answer" use case.
 
 ---
 

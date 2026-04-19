@@ -1,18 +1,18 @@
-"""Spawn a new conversation thread with per-thread configuration.
+"""Spawn and optionally delete conversation threads with per-thread config.
 
 Lets the agent create a new thread that appears in the desktop sidebar with
 its own appended instructions, tool selection, and optional LLM overrides.
-Optionally dispatches an initial_message and blocks until the child responds.
+Spawned threads are callable (invocable as tools) by default, so the parent
+can re-invoke them later. Supports two actions:
 
-The tool only exposes the *append* path for system prompts (ThreadConfig.instructions);
-it cannot replace soul.md (ThreadConfig.system_prompt is never set). Spawned
-threads are NOT callable (callable=False) — they don't become globally invocable
-tools. Use POST /agents/threads for that.
+  action="create" (default): Create a new thread. Optionally dispatches an
+      initial_message and blocks until the child responds.
+  action="delete": Remove a previously-spawned thread (metadata, config,
+      checkpoints, notepad, and callable-tool registration). Only the thread
+      that originally spawned it can delete it.
 
-Safety:
-- Spawn depth capped via NYMERIA_MAX_SPAWN_DEPTH (default 3).
-- Rate limit via NYMERIA_MAX_SPAWNS_PER_HOUR (default 10 per parent).
-- Parent/child invocation is registered for cascading abort.
+The tool only exposes the *append* path for system prompts
+(ThreadConfig.instructions); it cannot replace soul.md.
 """
 
 import logging
@@ -37,11 +37,23 @@ _spawn_counts: Dict[str, List[float]] = {}
 
 
 def _slug_from_title(title: str, max_len: int = 24) -> str:
-    """Produce a safe slug from the title for thread IDs."""
+    """Safe slug (hyphenated) for thread IDs."""
     safe = "".join(c if c.isalnum() else "-" for c in title.lower())
     safe = "-".join(filter(None, safe.split("-")))
     safe = safe[:max_len].rstrip("-")
     return safe or "thread"
+
+
+def _callable_name_from_title(title: str) -> str:
+    """Unique callable_name (snake_case + random suffix).
+
+    Prefixed with 'spawned_' so auto-generated names don't collide with
+    user-created callable threads or core tool names.
+    """
+    safe = "".join(c.lower() if c.isalnum() else "_" for c in title)
+    safe = "_".join(filter(None, safe.split("_")))
+    safe = safe[:24].strip("_") or "thread"
+    return f"spawned_{safe}_{uuid.uuid4().hex[:8]}"
 
 
 def _check_rate_limit(parent_thread_id: str) -> Optional[str]:
@@ -78,13 +90,155 @@ def _get_parent_spawn_depth(parent_thread_id: Optional[str], agent) -> int:
     return 0
 
 
+def _delete_checkpoints(thread_id: str) -> None:
+    """Delete all checkpoint rows for a thread (SQLite or Postgres)."""
+    from ..config.settings import get_settings
+
+    settings = get_settings()
+
+    if settings.database_backend == "sqlite":
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(str(settings.db_path))
+            try:
+                conn.execute(
+                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+                )
+                for table in ("checkpoint_writes", "checkpoint_blobs"):
+                    try:
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,)
+                        )
+                    except Exception:
+                        pass
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning(
+                f"spawn_thread: SQLite checkpoint delete failed for {thread_id}: {e}"
+            )
+    elif settings.database_backend == "postgres":
+        import psycopg  # type: ignore[import-untyped]
+
+        try:
+            with psycopg.connect(settings.postgres_uri) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,)
+                    )
+                    for table in ("checkpoint_writes", "checkpoint_blobs"):
+                        try:
+                            cur.execute(
+                                f"DELETE FROM {table} WHERE thread_id = %s",
+                                (thread_id,),
+                            )
+                        except Exception:
+                            pass
+                conn.commit()
+        except Exception as e:
+            logger.warning(
+                f"spawn_thread: Postgres checkpoint delete failed for {thread_id}: {e}"
+            )
+
+
+def _delete_spawned(
+    agent,
+    target_thread_id: str,
+    user_id: str,
+    caller_thread_id: Optional[str],
+) -> str:
+    """Delete a spawned thread (config, metadata, checkpoints, notepad)."""
+    from ..core.event_bus import publish_sync_event
+
+    if not target_thread_id or not target_thread_id.startswith("spawned-"):
+        return (
+            f"[Error]: Can only delete spawned threads (id must start with "
+            f"'spawned-'). Got: {target_thread_id!r}"
+        )
+
+    target_meta = agent.thread_metadata_manager.get_thread(user_id, target_thread_id)
+    target_config = agent.thread_config_manager.get_config(target_thread_id)
+    if target_meta is None and target_config is None:
+        return f"[Error]: Spawned thread not found: {target_thread_id}"
+
+    spawn_parent = None
+    if target_meta and target_meta.platform_meta:
+        spawn_parent = target_meta.platform_meta.get("spawn_parent")
+
+    # Only the spawning parent may delete. If metadata has no recorded parent
+    # (old spawn), allow deletion from any thread as a fallback.
+    if caller_thread_id and spawn_parent and spawn_parent != caller_thread_id:
+        return (
+            f"[Error]: Only the parent that spawned this thread can delete it. "
+            f"Caller is {caller_thread_id!r}; spawn_parent is {spawn_parent!r}."
+        )
+
+    was_callable = bool(target_config and target_config.callable)
+
+    try:
+        agent.thread_metadata_manager.delete_thread(user_id, target_thread_id)
+    except Exception as e:
+        logger.warning(
+            f"spawn_thread: metadata delete failed for {target_thread_id}: {e}"
+        )
+
+    _delete_checkpoints(target_thread_id)
+
+    try:
+        agent.thread_config_manager.delete_config(target_thread_id)
+    except Exception as e:
+        logger.warning(
+            f"spawn_thread: config delete failed for {target_thread_id}: {e}"
+        )
+
+    try:
+        agent.invalidate_thread_config_cache(target_thread_id)
+    except Exception as e:
+        logger.warning(
+            f"spawn_thread: cache invalidate failed for {target_thread_id}: {e}"
+        )
+
+    if was_callable:
+        try:
+            agent.sync_agent_tools()
+        except Exception as e:
+            logger.warning(f"spawn_thread: sync_agent_tools failed after delete: {e}")
+
+    try:
+        from .thread_notes import delete_notepad
+
+        delete_notepad(target_thread_id)
+    except Exception as e:
+        logger.warning(
+            f"spawn_thread: notepad delete failed for {target_thread_id}: {e}"
+        )
+
+    try:
+        publish_sync_event(
+            event_type="thread_deleted",
+            thread_id=target_thread_id,
+            user_id=user_id,
+            data={},
+        )
+    except Exception as e:
+        logger.warning(f"spawn_thread: thread_deleted publish failed: {e}")
+
+    logger.info(
+        f"Deleted spawned thread {target_thread_id} (was_callable={was_callable})"
+    )
+    return f"[Deleted]: thread_id={target_thread_id}"
+
+
 @tool
 def spawn_thread(
-    title: str,
+    title: Optional[str] = None,
     instructions: Optional[str] = None,
     optional_tools: Optional[List[str]] = None,
     tool_categories: Optional[List[str]] = None,
     disabled_tools: Optional[List[str]] = None,
+    make_callable: bool = True,
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
     llm_temperature: Optional[float] = None,
@@ -92,59 +246,71 @@ def spawn_thread(
     llm_extended_thinking: Optional[bool] = None,
     llm_reasoning_effort: Optional[str] = None,
     initial_message: Optional[str] = None,
+    action: str = "create",
+    delete_thread_id: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """Create a new conversation thread with scoped configuration.
+    """Create or delete a conversation thread with scoped configuration.
 
-    The new thread appears in the desktop sidebar inside a "Spawned by Nymeria"
-    folder. All configuration parameters are optional — if omitted, the new
-    thread inherits your user-level defaults (core tools, global LLM settings,
-    default personality). Use this when you need a fresh context for a specific
-    sub-task with a different toolset or tighter instructions than your current
-    thread has.
+    Two modes via the `action` parameter:
 
-    Args:
-        title: Required. User-visible thread title shown in the sidebar.
-        instructions: Extra system-prompt instructions APPENDED to the default
-            personality (soul.md). Max 5000 chars. Cannot replace the base
-            personality — only extend it. Use this to state the thread's
-            purpose (e.g. "You are focused on PDF summarization. Be terse.").
-        optional_tools: List of OPTIONAL tool names to enable on the new thread.
-            E.g. ["sticky_note", "browser_navigate"]. Use tool_search(
-            action="search", query="...") first to discover tool names. Core
-            tools (file_read, bash_execute, etc.) are inherited automatically
-            — only list EXTRAS here.
-        tool_categories: List of tool category names (e.g. ["email", "browser"])
-            to bulk-enable every optional tool in that category. Merged with
-            optional_tools. Use tool_search(action="list_categories") to
-            discover valid categories.
-        disabled_tools: List of CORE tool names to exclude from the new thread
-            (e.g. ["bash_execute"] for a sandboxed child). Optional.
+      action="create" (default): Create a new thread. It appears in the
+          desktop sidebar inside a "Spawned by Nymeria" folder. By default
+          the thread is CALLABLE — it's registered as a global tool so any
+          thread (including its parent) can invoke it by calling the
+          auto-generated tool name. Set make_callable=False to opt out.
+
+      action="delete": Remove a previously-spawned thread. Only the thread
+          that originally spawned it can delete it. Cleans up metadata,
+          config, checkpoints, notepad, and (if callable) unregisters
+          the tool globally.
+
+    Args (create mode):
+        title: Required for create. User-visible thread title shown in the
+            sidebar. Truncated to 80 chars.
+        instructions: Extra system-prompt instructions APPENDED to the
+            default personality (soul.md). Max 5000 chars. Cannot replace
+            the base personality. Also used as the callable tool's
+            description if provided.
+        optional_tools: List of OPTIONAL tool names to enable on the new
+            thread (e.g. ["sticky_note", "browser_navigate"]). Core tools
+            are inherited automatically — only list EXTRAS. Use
+            tool_search(action="search", query="...") to discover names.
+        tool_categories: List of category names (e.g. ["email", "browser"])
+            to bulk-enable every optional tool in that category. Merged
+            with optional_tools.
+        disabled_tools: List of CORE tool names to EXCLUDE (e.g.
+            ["bash_execute"] for a sandboxed child).
+        make_callable: If True (default), the new thread becomes a globally
+            callable tool. The tool's name is auto-derived from the title
+            with a random suffix (e.g. 'spawned_research_a3f21c9d') and
+            printed in the response so you can invoke it later. Set False
+            if this thread should be single-use.
         llm_provider, llm_model, llm_temperature, llm_max_tokens,
         llm_extended_thinking, llm_reasoning_effort: Optional LLM overrides
-            for this thread. If omitted, the thread inherits global settings.
-        initial_message: If provided, dispatches this message to the new thread
-            and BLOCKS until the child returns its response. The child's
-            response becomes part of this tool's output. If omitted, the thread
-            is created empty and visible in the sidebar for user interaction.
+            for this thread. Omit to inherit global settings.
+        initial_message: If provided, dispatches this message to the new
+            thread and BLOCKS until the child returns its response. The
+            child's response becomes part of this tool's output.
 
-    Returns:
-        If initial_message is omitted: a preamble with the new thread_id.
-        If initial_message is provided: preamble + the child thread's response.
-        On error: "[Error]: ..."
+    Args (delete mode):
+        delete_thread_id: Required for delete. The spawned thread's ID
+            (must start with "spawned-"). Only valid if the calling thread
+            is the one that originally spawned it.
 
-    Limits:
-        - Spawn depth capped at 3 by default (prevents runaway recursion).
-        - Rate limit: 10 spawns per parent thread per hour by default.
+    Returns (create):
+        Preamble with the new thread_id, the callable tool name (if
+        make_callable=True), and — if initial_message was provided —
+        the child thread's response text.
+
+    Returns (delete):
+        "[Deleted]: thread_id=spawned-..." on success.
+
+    Limits (create):
+        - Spawn depth capped at 3 by default (NYMERIA_MAX_SPAWN_DEPTH env).
+        - 10 spawns per parent per hour (NYMERIA_MAX_SPAWNS_PER_HOUR).
         - instructions max 5000 chars; title truncated to 80 chars.
-
-    Notes:
-        - The new thread's thread_id starts with "spawned-". It's filed under
-          a "Spawned by Nymeria" folder in the desktop sidebar.
-        - Parent/child is registered so aborting the parent cascades.
-        - Spawned threads are NOT callable; they won't appear as tools to
-          other threads.
     """
     from . import ALL_TOOLS, OPTIONAL_TOOLS
     from ..core.agent import get_current_agent
@@ -163,11 +329,30 @@ def spawn_thread(
         user_id = cfg.get("user_id", "default") or "default"
         parent_thread_id = cfg.get("thread_id")
 
+    action_norm = (action or "create").strip().lower()
+
+    # === Delete action ===
+    if action_norm == "delete":
+        if not delete_thread_id or not delete_thread_id.strip():
+            return "[Error]: delete_thread_id is required when action='delete'."
+        return _delete_spawned(
+            agent=agent,
+            target_thread_id=delete_thread_id.strip(),
+            user_id=user_id,
+            caller_thread_id=parent_thread_id,
+        )
+
+    if action_norm != "create":
+        return f"[Error]: Unknown action '{action}'. Use 'create' or 'delete'."
+
+    # === Create action ===
     if not title or not title.strip():
-        return "[Error]: title is required and cannot be empty."
+        return "[Error]: title is required when action='create' and cannot be empty."
     title = title.strip()[:80]
 
-    max_depth = int(os.environ.get("NYMERIA_MAX_SPAWN_DEPTH", DEFAULT_MAX_SPAWN_DEPTH))
+    max_depth = int(
+        os.environ.get("NYMERIA_MAX_SPAWN_DEPTH", DEFAULT_MAX_SPAWN_DEPTH)
+    )
     parent_depth = _get_parent_spawn_depth(parent_thread_id, agent)
     new_depth = parent_depth + 1
     if new_depth > max_depth:
@@ -254,6 +439,15 @@ def spawn_thread(
     rand_suffix = uuid.uuid4().hex[:8]
     new_thread_id = f"spawned-{slug}-{rand_suffix}"
 
+    callable_name: Optional[str] = None
+    callable_description: Optional[str] = None
+    if make_callable:
+        callable_name = _callable_name_from_title(title)
+        if instructions and instructions.strip():
+            callable_description = instructions.strip()[:500]
+        else:
+            callable_description = f"Invoke the '{title}' spawned thread"
+
     try:
         tc = ThreadConfig(
             thread_id=new_thread_id,
@@ -261,7 +455,9 @@ def spawn_thread(
             enabled_tools=sorted(enabled_set),
             disabled_tools=sorted(disabled_list),
             llm_config=llm_config,
-            callable=False,
+            callable=bool(make_callable),
+            callable_name=callable_name,
+            callable_description=callable_description,
         )
     except Exception as e:
         return f"[Error]: Invalid configuration: {str(e)}"
@@ -291,6 +487,14 @@ def spawn_thread(
 
     agent.invalidate_thread_config_cache(new_thread_id)
 
+    if make_callable:
+        try:
+            agent.sync_agent_tools()
+        except Exception as e:
+            logger.warning(
+                f"spawn_thread: sync_agent_tools failed after create: {e}"
+            )
+
     try:
         publish_sync_event(
             event_type="thread_created",
@@ -307,6 +511,10 @@ def spawn_thread(
         logger.warning(f"spawn_thread: thread_created publish failed: {e}")
 
     preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
+    if make_callable and callable_name:
+        preamble_lines.append(
+            f'Callable as: {callable_name}(task="...") — any thread can invoke this.'
+        )
     if tc.enabled_tools:
         preamble_lines.append(
             f"Enabled optional tools: {', '.join(tc.enabled_tools)}"
@@ -317,6 +525,10 @@ def spawn_thread(
         )
     if warnings:
         preamble_lines.append(f"[Warning]: {'; '.join(warnings)}")
+    preamble_lines.append(
+        f'To delete later: spawn_thread(action="delete", '
+        f'delete_thread_id="{new_thread_id}")'
+    )
     preamble = "\n".join(preamble_lines)
 
     if not initial_message or not initial_message.strip():
@@ -343,8 +555,9 @@ def _invoke_spawned(
 ) -> str:
     """Dispatch the initial message to the spawned thread and collect its response.
 
-    Mirrors thread_agent_executor.invoke() but works for non-callable threads.
-    Publishes autonomous events so the frontend can stream the child's activity.
+    Mirrors thread_agent_executor.invoke() but works for either callable or
+    non-callable spawned threads. Publishes autonomous events so the frontend
+    can stream the child's activity live.
     """
     from langchain_core.runnables.config import var_child_runnable_config
     from langchain_core.tracers.context import (
