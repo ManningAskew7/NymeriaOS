@@ -93,11 +93,13 @@ def file_write(
     encoding: str = "utf-8",
     create_directories: bool = True,
     append: bool = False,
+    attach: bool = False,
 ) -> str:
     """
     Write content to a file.
 
     Use this tool to create or modify text files on the filesystem.
+    Set attach=True to send the file to the user in chat (Telegram/Discord) after writing.
 
     Args:
         file_path: Absolute or relative path to the file
@@ -105,6 +107,7 @@ def file_write(
         encoding: File encoding (default utf-8)
         create_directories: Create parent directories if they don't exist (default True)
         append: Append to file instead of overwriting (default False)
+        attach: Send the written file to the user as a downloadable attachment (default False)
 
     Returns:
         Success message or error message
@@ -144,7 +147,10 @@ def file_write(
 
         action = "Appended to" if append else "Wrote"
         logger.debug(f"{action} {len(content)} characters to {file_path}")
-        return f"[Success]: {action} {len(content)} characters to {file_path}"
+        result = f"[Success]: {action} {len(content)} characters to {file_path}"
+        if attach:
+            result += f"\n[attach:{file_path}]"
+        return result
 
     except PermissionError:
         return f"[Error]: Permission denied writing to: {file_path}"

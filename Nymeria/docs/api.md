@@ -794,6 +794,28 @@ Authorization: Bearer <token>
 
 ---
 
+## Workspace API
+
+### Download Workspace File
+
+Download a file from the workspace directory. Used by bot clients to deliver `file_write(..., attach=True)` artifacts to users.
+
+```http
+GET /workspace/download?path=/workspace/report.csv
+```
+
+**Query Parameters:**
+- `path` (required): Absolute file path within the workspace directory.
+
+**Responses:**
+- `200`: File content with appropriate `Content-Type` and `Content-Disposition` headers.
+- `403`: Path is outside the workspace directory.
+- `404`: File does not exist.
+
+**Security:** Only files within `NYMERIA_WORKSPACE_DIR` (default `/workspace`) can be served. Paths are resolved and checked against the workspace root to prevent traversal.
+
+---
+
 ## Custom Tools API
 
 Manage custom HTTP and MCP tools programmatically.
