@@ -211,9 +211,9 @@ Because Telegram is text-only and can't surface the desktop's "model may not sup
 When Nymeria writes a file with `file_write(..., attach=True)`, the bot automatically downloads and sends it in the Telegram chat. This lets the agent deliver reports, CSVs, images, and other artifacts directly to the user's phone.
 
 **How it works:**
-1. The `file_write` tool appends an `[attach:/workspace/file.csv]` tag to its result when `attach=True`.
-2. The bot detects this tag in `tool_result` SSE events (both interactive and autonomous).
-3. The bot fetches the file from `GET /workspace/download?path=...` on the API.
+1. `file_write(..., attach=True)` only marks files inside `NYMERIA_WORKSPACE_DIR` (default `/workspace`) as deliverable.
+2. The API emits a `workspace_artifact` SSE event with the file path, filename, and MIME type. For mixed-version compatibility, the raw tool result still carries an `[attach:/workspace/file.csv]` tag.
+3. The bot downloads the file from `GET /workspace/download?path=...` on the API.
 4. Images (`image/*` under 10 MB) are sent as inline photos; everything else as downloadable documents.
 
 **Limits:** Files over 50 MB (Telegram bot limit) are silently skipped. Only files within `/workspace/` can be downloaded — the API rejects paths outside the workspace directory.

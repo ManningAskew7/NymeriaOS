@@ -21,6 +21,7 @@ NYMERIA_PROTECTED_DIRS = [
 
 # Get the Nymeria project root for path comparison
 _NYMERIA_ROOT = Path(__file__).parent.parent.parent.resolve()
+_WORKSPACE_DIR = Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
 
 
 @tool
@@ -149,7 +150,13 @@ def file_write(
         logger.debug(f"{action} {len(content)} characters to {file_path}")
         result = f"[Success]: {action} {len(content)} characters to {file_path}"
         if attach:
-            result += f"\n[attach:{file_path}]"
+            if path.is_relative_to(_WORKSPACE_DIR):
+                result += f"\n[attach:{path}]"
+            else:
+                result += (
+                    f"\n[Info]: Attachment skipped. Only files inside "
+                    f"{_WORKSPACE_DIR} can be delivered to chat clients."
+                )
         return result
 
     except PermissionError:

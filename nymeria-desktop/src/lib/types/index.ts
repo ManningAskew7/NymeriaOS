@@ -15,6 +15,13 @@ export interface FileAttachment {
   size: number;            // File size in bytes
 }
 
+export interface WorkspaceArtifact {
+  path: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 
 // Tool call types (defined early so MessageStep can reference ToolCallStatus)
 export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
@@ -30,6 +37,7 @@ export interface MessageStep {
   name?: string;
   arguments?: Record<string, unknown>;
   result?: string;
+  artifacts?: WorkspaceArtifact[];
   status?: ToolCallStatus;
   startTime?: Date;
   endTime?: Date;
@@ -54,6 +62,7 @@ export interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
   result?: string;
+  artifacts?: WorkspaceArtifact[];
   status: ToolCallStatus;
   startTime?: Date;
   endTime?: Date;
@@ -332,6 +341,7 @@ export type SSEEventType =
   | 'thinking'
   | 'tool_call'
   | 'tool_result'
+  | 'workspace_artifact'
   | 'response'
   | 'error'
   | 'done'
@@ -370,6 +380,15 @@ export interface ToolResultEvent {
     name: string;
     result: string;
     status: 'success' | 'error';
+  };
+}
+
+export interface WorkspaceArtifactEvent {
+  type: 'workspace_artifact';
+  data: {
+    toolCallId?: string;
+    toolName: string;
+    artifact: WorkspaceArtifact;
   };
 }
 

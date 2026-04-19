@@ -154,9 +154,9 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `create_directories` (`bool`, default `True`): Create parent directories if they don't exist
 - `append` (`bool`, default `False`): Append to file instead of overwriting
-- `attach` (`bool`, default `False`): Send the file to the user as a downloadable attachment in chat (Telegram/Discord). When `True`, an `[attach:/path]` tag is appended to the result, which bot clients detect and use to fetch and deliver the file.
+- `attach` (`bool`, default `False`): Deliver the written file back to chat clients (Telegram, Discord, desktop artifact viewer). Only files inside `NYMERIA_WORKSPACE_DIR` (default `/workspace`) are attachable. When attach succeeds, the raw tool result includes an `[attach:/path]` tag for backward compatibility and the API emits a structured `workspace_artifact` SSE event.
 
-**Returns:** Success/error message with character count. When `attach=True`, includes an `[attach:/path]` tag that triggers file delivery to the user.
+**Returns:** Success/error message with character count. When `attach=True` and the file is inside the workspace directory, the raw tool result includes an `[attach:/path]` tag and clients receive a `workspace_artifact` event. If the file is outside the workspace, the write still succeeds but attachment delivery is skipped with an info note.
 
 **Protected paths:** Writes to `nymeria/core/`, `nymeria/config/`, `nymeria/triggers/`, `nymeria/gateway/`, and `nymeria/__init__.py` are blocked. Use the SelfModifyAgent for those directories.
 

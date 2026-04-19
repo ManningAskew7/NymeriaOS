@@ -259,6 +259,8 @@ Some components moved directories between desktop and mobile:
 3. Update rendering in `MessageBubble.svelte` or any platform-specific component affected
 4. Verify both implementations, because these files are no longer guaranteed identical
 
+Current example: `workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`, but only desktop renders it today via `ToolCallCard.svelte` + `WorkspaceArtifactModal.svelte`.
+
 ### Modifying chat streaming logic
 
 1. Update `stores/chat.svelte.ts` on both platforms

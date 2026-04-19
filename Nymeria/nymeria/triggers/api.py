@@ -922,7 +922,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     # live progress (tool_call, tool_result, thinking, response).
                     if autonomous_task_id:
                         ctype = chunk.get("type")
-                        if ctype in ("tool_call", "tool_result", "thinking", "response"):
+                        if ctype in ("tool_call", "tool_result", "thinking", "response", "workspace_artifact"):
                             payload = {k: v for k, v in chunk.items() if k != "type"}
                             publish_autonomous_event(
                                 event_type=ctype,

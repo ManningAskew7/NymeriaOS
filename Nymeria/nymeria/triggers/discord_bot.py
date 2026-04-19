@@ -27,6 +27,7 @@ from . import attachment_helpers
 from .discord_api_client import NymeriaAPIClient
 
 logger = logging.getLogger(__name__)
+_ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
 
 
 # =============================================================================
@@ -180,6 +181,13 @@ def parse_thread_id(thread_id: str) -> Dict[str, Any]:
         if len(parts) >= 3:
             return {"type": "guild", "guild_id": parts[1], "channel_id": parts[2]}
     return {"type": "unknown"}
+
+
+def parse_attach_paths(result: str) -> List[str]:
+    """Extract file paths from legacy attach tags in tool output."""
+    if not isinstance(result, str):
+        return []
+    return _ATTACH_RE.findall(result)
 
 
 # =============================================================================
@@ -2289,6 +2297,13 @@ class NymeriaDiscordBot(discord.Client):
                                 await tool_msg.edit(embed=old_embed)
                             except Exception as e:
                                 logger.warning(f"Failed to edit tool result: {e}")
+                    for attach_path in parse_attach_paths(event.get("result", "")):
+                        await self._send_workspace_attachment(channel, attach_path)
+
+                elif etype == "workspace_artifact":
+                    attach_path = event.get("path")
+                    if isinstance(attach_path, str) and attach_path:
+                        await self._send_workspace_attachment(channel, attach_path)
 
                 elif etype == "error":
 
@@ -2337,7 +2352,13 @@ class NymeriaDiscordBot(discord.Client):
             await _clear_thinking()
             # Sync fallback
             try:
-                data = await self.api.chat(message, thread_id, user_id)
+                data = await self.api.chat(
+                    message,
+                    thread_id,
+                    user_id,
+                    attachments=attachments,
+                    force_unsupported_attachments=bool(attachments),
+                )
                 response = data.get("response", "")
                 tc = data.get("tool_call_count", 0)
                 if tc:
@@ -2345,12 +2366,73 @@ class NymeriaDiscordBot(discord.Client):
                 chunks = split_message(response)
                 for chunk in chunks:
                     await _send(chunk) if not first_sent else await channel.send(chunk)
+                await self._send_latest_history_artifacts(channel, thread_id)
             except Exception as e2:
                 logger.error(f"Sync fallback also failed: {e2}", exc_info=True)
                 try:
                     await _send(f"Sorry, I encountered an error: {e2}")
                 except Exception:
                     pass
+
+    async def _send_workspace_attachment(self, channel: Any, file_path: str) -> bool:
+        """Download a workspace file from the API and upload it to Discord."""
+        result = await self.api.download_workspace_file(file_path)
+        if result is None:
+            return False
+
+        raw_bytes, filename, _content_type = result
+        buf = io.BytesIO(raw_bytes)
+        buf.name = filename
+
+        try:
+            await channel.send(
+                content=f"Generated file: `{filename}`",
+                file=discord.File(buf, filename=filename),
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to send Discord workspace attachment %s: %s", file_path, e)
+            return False
+
+    async def _send_latest_history_artifacts(self, channel: Any, thread_id: str) -> None:
+        """Send artifact attachments from the latest assistant turn after sync fallback."""
+        try:
+            history = await self.api.get_history(thread_id)
+        except Exception as e:
+            logger.warning("Failed to load history for artifact fallback on %s: %s", thread_id, e)
+            return
+
+        messages = history.get("messages", [])
+        if not isinstance(messages, list):
+            return
+
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+
+            tool_calls = message.get("tool_calls") or []
+            sent_paths: set[str] = set()
+
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+
+                    artifacts = tool_call.get("artifacts") or []
+                    if isinstance(artifacts, list):
+                        for artifact in artifacts:
+                            if not isinstance(artifact, dict):
+                                continue
+                            path = artifact.get("path")
+                            if isinstance(path, str) and path and path not in sent_paths:
+                                if await self._send_workspace_attachment(channel, path):
+                                    sent_paths.add(path)
+
+                    result = tool_call.get("result", "")
+                    for path in parse_attach_paths(result):
+                        if path not in sent_paths and await self._send_workspace_attachment(channel, path):
+                            sent_paths.add(path)
+            break
 
     async def setup_hook(self) -> None:
         """No-op — commands are synced per-guild in on_ready."""
@@ -2541,11 +2623,7 @@ class NymeriaDiscordBot(discord.Client):
         event_type = event.get("type", "")
         thread_id = event.get("thread_id", "")
 
-        if event_type != "task_completed":
-            return
         if not thread_id.startswith("discord_"):
-            return
-        if event.get("error"):
             return
 
         parsed = parse_thread_id(thread_id)
@@ -2558,6 +2636,20 @@ class NymeriaDiscordBot(discord.Client):
             channel = self.get_channel(channel_id)
             if not channel:
                 channel = await self.fetch_channel(channel_id)
+
+            if not channel or not hasattr(channel, "send"):
+                return
+
+            if event_type == "workspace_artifact":
+                attach_path = event.get("path")
+                if isinstance(attach_path, str) and attach_path:
+                    await self._send_workspace_attachment(channel, attach_path)
+                return
+
+            if event_type != "task_completed":
+                return
+            if event.get("error"):
+                return
 
             if channel and hasattr(channel, "send"):
                 content = event.get("content", "Task completed.")

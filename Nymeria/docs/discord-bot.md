@@ -219,6 +219,18 @@ If a message has attachments but no text, a short `[attachment]` placeholder is 
 
 Because chat clients can't surface the desktop's "model may not support these attachments" override modal, the bot auto-sets `force_unsupported_attachments=true` whenever attachments are present. If the underlying model can't process the file the LLM will say so itself, but the upfront capability check is bypassed.
 
+### File Delivery (outbound attachments)
+
+When Nymeria writes a workspace file with `file_write(..., attach=True)`, the Discord bot uploads that file back into the channel as a normal Discord attachment. This works for both interactive chats and autonomous task runs.
+
+**How it works:**
+1. `file_write(..., attach=True)` only marks files inside `NYMERIA_WORKSPACE_DIR` (default `/workspace`) as deliverable.
+2. The API emits a `workspace_artifact` SSE event containing the file path, filename, MIME type, and originating tool call ID.
+3. The Discord bot downloads the file from `GET /workspace/download?path=...` and re-uploads it with `discord.File`.
+4. For mixed-version safety, the bot still understands legacy `[attach:/path]` tags if it sees an older backend result.
+
+**Limits:** Discord's upload size limits still apply. If the generated file is too large or no longer exists, the bot logs the failure and the rest of the response continues normally.
+
 ### Channel Context
 
 When enabled (default), the bot fetches the last ~10 non-bot messages from the channel and prepends them as context:

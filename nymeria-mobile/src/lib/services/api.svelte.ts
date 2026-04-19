@@ -6,6 +6,8 @@ import type {
   ThreadHistory,
   Tool,
   Message,
+  MessageStep,
+  ToolCall,
   ContextStats,
   ServerSettings,
   ServerSettingsUpdate,
@@ -20,6 +22,7 @@ import type {
   Notification,
   NotificationsResponse,
   FileAttachment,
+  WorkspaceArtifact,
   AttachmentValidationResult,
   CustomTool,
   HTTPToolConfig,
@@ -79,6 +82,71 @@ export class NymeriaAPI {
 
   private getBaseUrl(): string {
     return configStore.apiUrl.replace(/\/$/, '');
+  }
+
+  private normalizeWorkspaceArtifact(raw: unknown): WorkspaceArtifact | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const data = raw as Record<string, unknown>;
+    const path = data.path as string | undefined;
+    const name = data.name as string | undefined;
+    if (!path || !name) return null;
+
+    return {
+      path,
+      name,
+      mimeType: (data.mimeType as string) || (data.mime_type as string) || 'application/octet-stream',
+      sizeBytes: Number((data.sizeBytes as number | string | undefined) ?? data.size_bytes ?? 0) || 0
+    };
+  }
+
+  private normalizeMessageStep(raw: unknown): MessageStep | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const step = raw as Record<string, unknown>;
+    const type = step.type as MessageStep['type'] | undefined;
+    if (!type) return null;
+
+    const artifacts = Array.isArray(step.artifacts)
+      ? step.artifacts
+          .map((artifact) => this.normalizeWorkspaceArtifact(artifact))
+          .filter((artifact): artifact is WorkspaceArtifact => artifact !== null)
+      : undefined;
+
+    return {
+      type,
+      content: step.content as string | undefined,
+      id: step.id as string | undefined,
+      name: step.name as string | undefined,
+      arguments: step.arguments as Record<string, unknown> | undefined,
+      result: step.result as string | undefined,
+      artifacts,
+      status: step.status as MessageStep['status'],
+      startTime: step.startTime ? new Date(step.startTime as string) : undefined,
+      endTime: step.endTime ? new Date(step.endTime as string) : undefined
+    };
+  }
+
+  private normalizeToolCall(raw: unknown): ToolCall | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const toolCall = raw as Record<string, unknown>;
+    const artifacts = Array.isArray(toolCall.artifacts)
+      ? toolCall.artifacts
+          .map((artifact) => this.normalizeWorkspaceArtifact(artifact))
+          .filter((artifact): artifact is WorkspaceArtifact => artifact !== null)
+      : undefined;
+
+    return {
+      id: (toolCall.id as string) || crypto.randomUUID(),
+      name: (toolCall.name as string) || 'unknown',
+      arguments: (toolCall.arguments as Record<string, unknown>) || {},
+      result: toolCall.result as string | undefined,
+      artifacts,
+      status: (toolCall.status as ToolCall['status']) || 'success',
+      startTime: toolCall.startTime ? new Date(toolCall.startTime as string) : undefined,
+      endTime: toolCall.endTime ? new Date(toolCall.endTime as string) : undefined
+    };
   }
 
   async healthCheck(): Promise<boolean> {
@@ -254,6 +322,34 @@ export class NymeriaAPI {
     return await response.json() as AttachmentValidationResult;
   }
 
+  async downloadWorkspaceFile(path: string): Promise<{
+    blob: Blob;
+    filename: string;
+    contentType: string;
+  }> {
+    const url = new URL(`${this.getBaseUrl()}/workspace/download`);
+    url.searchParams.set('path', path);
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${configStore.apiKey}`
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to download workspace file: ${response.status} ${text}`);
+    }
+
+    const blob = await response.blob();
+    const contentType = response.headers.get('content-type') || blob.type || 'application/octet-stream';
+    const disposition = response.headers.get('content-disposition') || '';
+    const filenameMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = filenameMatch?.[1] || path.split('/').pop() || 'download';
+
+    return { blob, filename, contentType };
+  }
+
   private parseSSEEvent(data: Record<string, unknown>): SSEEvent | null {
     const eventType = data.type as SSEEventType;
     // Extract thread_id from every event - backend sends it with all events
@@ -307,6 +403,21 @@ export class NymeriaAPI {
             timestamp: new Date(),
             threadId
           };
+
+        case 'workspace_artifact': {
+          const artifact = this.normalizeWorkspaceArtifact(data);
+          if (!artifact) return null;
+          return {
+            type: 'workspace_artifact',
+            data: {
+              toolCallId: data.tool_call_id as string | undefined,
+              toolName: (data.tool_name as string) || '',
+              artifact
+            },
+            timestamp: new Date(),
+            threadId
+          };
+        }
 
         case 'error':
           return {
@@ -592,11 +703,19 @@ export class NymeriaAPI {
         id: (m.id as string) || crypto.randomUUID(),
         role: m.role as 'user' | 'assistant' | 'system',
         content: m.content as string,
-        steps: m.steps as Message['steps'],                              // New: ordered steps array
-        intermediateContent: m.intermediate_content as string | undefined, // Legacy fallback
+        steps: Array.isArray(m.steps)
+          ? m.steps
+              .map((step) => this.normalizeMessageStep(step))
+              .filter((step): step is MessageStep => step !== null)
+          : undefined,
+        intermediateContent: m.intermediate_content as string | undefined,
         timestamp: new Date((m.timestamp as string) || Date.now()),
         status: 'complete' as const,
-        toolCalls: m.tool_calls as Message['toolCalls'],                 // Legacy fallback
+        toolCalls: Array.isArray(m.tool_calls)
+          ? m.tool_calls
+              .map((toolCall) => this.normalizeToolCall(toolCall))
+              .filter((toolCall): toolCall is ToolCall => toolCall !== null)
+          : undefined,
         attachments: m.attachments as Message['attachments'],
         autonomousSource: m.autonomous_source as string | undefined
       })
