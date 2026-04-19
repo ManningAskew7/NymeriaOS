@@ -206,6 +206,18 @@ Unsupported MIME types and oversized files are rejected with a short reply in th
 
 Because Telegram is text-only and can't surface the desktop's "model may not support these attachments" override modal, the bot auto-sets `force_unsupported_attachments=true` whenever attachments are present. If the underlying model can't actually process the file the LLM will say so itself, but the upfront capability check is bypassed (useful with CLIProxy, where multimodal capabilities aren't advertised the way OpenRouter advertises them).
 
+### File Delivery (outbound attachments)
+
+When Nymeria writes a file with `file_write(..., attach=True)`, the bot automatically downloads and sends it in the Telegram chat. This lets the agent deliver reports, CSVs, images, and other artifacts directly to the user's phone.
+
+**How it works:**
+1. The `file_write` tool appends an `[attach:/workspace/file.csv]` tag to its result when `attach=True`.
+2. The bot detects this tag in `tool_result` SSE events (both interactive and autonomous).
+3. The bot fetches the file from `GET /workspace/download?path=...` on the API.
+4. Images (`image/*` under 10 MB) are sent as inline photos; everything else as downloadable documents.
+
+**Limits:** Files over 50 MB (Telegram bot limit) are silently skipped. Only files within `/workspace/` can be downloaded — the API rejects paths outside the workspace directory.
+
 ### HTML Formatting
 
 All bot output uses Telegram's HTML parse mode. The bot converts markdown from the AI model to Telegram HTML:

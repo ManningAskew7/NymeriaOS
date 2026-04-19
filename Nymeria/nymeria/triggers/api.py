@@ -4959,6 +4959,32 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         return {"text": text}
 
+    # ── Workspace file download ──────────────────────────────────────────
+    @app.get("/workspace/download", tags=["Workspace"])
+    async def download_workspace_file(
+        path: str = Query(..., description="Absolute file path within the workspace"),
+    ):
+        """Download a file from the workspace directory (used by bot clients for file attachments)."""
+        from pathlib import Path as _Path
+        import mimetypes
+
+        workspace_dir = _Path(
+            os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")
+        ).resolve()
+        resolved = _Path(path).resolve()
+
+        if not resolved.is_relative_to(workspace_dir):
+            raise HTTPException(status_code=403, detail="Path outside workspace")
+        if not resolved.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        media_type = mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
+        return FileResponse(
+            path=str(resolved),
+            media_type=media_type,
+            filename=resolved.name,
+        )
+
     return app
 
 

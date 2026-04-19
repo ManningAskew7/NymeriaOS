@@ -337,6 +337,37 @@ class NymeriaAPIClient:
         """Trigger API server restart."""
         return await self._post("/restart")
 
+    # ── Workspace ────────────────────────────────────────────────────────
+
+    async def download_workspace_file(
+        self, file_path: str
+    ) -> Optional[tuple]:
+        """Download a file from the workspace.
+
+        Returns ``(raw_bytes, filename, content_type)`` or ``None``.
+        """
+        _MAX_SIZE = 50 * 1024 * 1024  # Telegram bot limit
+        try:
+            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+                resp = await client.get(
+                    self._url("/workspace/download"),
+                    headers=self._headers,
+                    params={"path": file_path},
+                )
+                resp.raise_for_status()
+                if len(resp.content) > _MAX_SIZE:
+                    logger.warning("Workspace file too large to attach: %s (%d bytes)", file_path, len(resp.content))
+                    return None
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                cd = resp.headers.get("content-disposition", "")
+                filename = file_path.rsplit("/", 1)[-1]
+                if "filename=" in cd:
+                    filename = cd.split("filename=")[-1].strip('" ')
+                return (resp.content, filename, content_type)
+        except Exception as e:
+            logger.warning("Failed to download workspace file %s: %s", file_path, e)
+            return None
+
     # ── Health ────────────────────────────────────────────────────────────
 
     async def health(self) -> bool:

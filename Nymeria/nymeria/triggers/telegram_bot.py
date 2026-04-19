@@ -172,6 +172,14 @@ def format_tool_result_html(result: Any, max_len: int = 800) -> str:
     return f"<b>Result:</b>\n<pre>{escape_html(result_str)}</pre>"
 
 
+_ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
+
+
+def parse_attach_paths(result: str) -> List[str]:
+    """Extract file paths from ``[attach:/path]`` tags in a tool result."""
+    return _ATTACH_RE.findall(result)
+
+
 # =============================================================================
 # Message Splitting
 # =============================================================================
@@ -451,6 +459,33 @@ class NymeriaTelegramBot:
         except TimedOut:
             pass
 
+    async def _send_file_attachment(
+        self,
+        chat_id: int,
+        file_path: str,
+        context: Optional[ContextTypes.DEFAULT_TYPE] = None,
+    ) -> bool:
+        """Download a workspace file and send it to the Telegram chat."""
+        result = await self.api.download_workspace_file(file_path)
+        if result is None:
+            return False
+        raw_bytes, filename, content_type = result
+        bot = context.bot if context is not None else self._application.bot
+        buf = io.BytesIO(raw_bytes)
+        buf.name = filename
+        try:
+            if content_type.startswith("image/") and len(raw_bytes) < 10 * 1024 * 1024:
+                await bot.send_photo(chat_id=chat_id, photo=buf, caption=filename)
+            else:
+                await bot.send_document(chat_id=chat_id, document=buf, caption=filename)
+            return True
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            return False
+        except Exception as e:
+            logger.warning("Failed to send file attachment %s: %s", file_path, e)
+            return False
+
     def _parse_args(self, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Get the text after the command."""
         return " ".join(context.args) if context.args else ""
@@ -590,8 +625,8 @@ class NymeriaTelegramBot:
                             await self._send_html(chat_id, result_text, context)
                         except Exception as e:
                             logger.warning(f"Failed to send tool result: {e}")
-                    # Post-tool text will naturally go into a new message
-                    # since _flush(final=True) was called on tool_call
+                    for attach_path in parse_attach_paths(event.get("result", "")):
+                        await self._send_file_attachment(chat_id, attach_path, context)
 
                 elif etype == "error":
                     await _flush(final=True)
@@ -2342,6 +2377,8 @@ class NymeriaTelegramBot:
                         await self._send_html(chat_id, result_text)
                     except Exception as e:
                         logger.warning(f"Failed to send autonomous tool result: {e}")
+                for attach_path in parse_attach_paths(event.get("result", "")):
+                    await self._send_file_attachment(chat_id, attach_path)
 
             elif event_type == "task_completed":
                 if event.get("error"):

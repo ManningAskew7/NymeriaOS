@@ -137,7 +137,7 @@ file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = No
 Write content to a file.
 
 ```python
-file_write(file_path: str, content: str, encoding: str = "utf-8", create_directories: bool = True, append: bool = False)
+file_write(file_path: str, content: str, encoding: str = "utf-8", create_directories: bool = True, append: bool = False, attach: bool = False)
 ```
 
 **Parameters:**
@@ -146,8 +146,9 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `create_directories` (`bool`, default `True`): Create parent directories if they don't exist
 - `append` (`bool`, default `False`): Append to file instead of overwriting
+- `attach` (`bool`, default `False`): Send the file to the user as a downloadable attachment in chat (Telegram/Discord). When `True`, an `[attach:/path]` tag is appended to the result, which bot clients detect and use to fetch and deliver the file.
 
-**Returns:** Success/error message with character count.
+**Returns:** Success/error message with character count. When `attach=True`, includes an `[attach:/path]` tag that triggers file delivery to the user.
 
 **Protected paths:** Writes to `nymeria/core/`, `nymeria/config/`, `nymeria/triggers/`, `nymeria/gateway/`, and `nymeria/__init__.py` are blocked. Use the SelfModifyAgent for those directories.
 
