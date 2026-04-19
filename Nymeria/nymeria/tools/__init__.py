@@ -69,6 +69,7 @@ from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_search import tool_search, TOOL_SEARCH_TOOLS
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
+from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
@@ -104,6 +105,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + TWITCH_TOOLS
     + SLASH_COMMAND_TOOLS
     + WATCHDOG_TOOLS
+    + SPAWN_THREAD_TOOLS
 )}
 
 # All available tools
@@ -203,6 +205,8 @@ __all__ = [
     "watchdog_todo_overview",
     "WATCHDOG_DISPATCH_TOOLS",
     "WATCHDOG_TOOLS",
+    "spawn_thread",
+    "SPAWN_THREAD_TOOLS",
 ]
 
 
