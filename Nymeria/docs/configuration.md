@@ -177,6 +177,26 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 
 In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`, defined in `docker-compose.yml`). It's a thin client that calls the API over HTTP — no `NymeriaAgent` in the watchdog process. To disable it entirely, set `WATCHDOG_ENABLED=false` and restart, or simply don't start the service (`docker compose stop watchdog`). See `docs/architecture.md` §4.2 for details.
 
+### Voice (TTS / STT)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TTS_PROVIDER` | `none` | TTS provider: `none`, `gemini`, `openai`, `qwen3` |
+| `TTS_BASE_URL` | (per provider) | TTS API base URL. Not used for Gemini (uses SDK). Defaults: OpenAI=`https://api.openai.com/v1`, Qwen3=`http://localhost:8880/v1` |
+| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for OpenAI/Qwen3 TTS. Gemini uses `GEMINI_API_KEY` instead |
+| `TTS_MODEL` | `tts-1-hd` | Model name. Gemini: `gemini-3.1-flash-tts-preview`, OpenAI: `tts-1` / `tts-1-hd` |
+| `TTS_VOICE` | `nova` | Voice identifier. Gemini: `Kore`, `Puck`, `Charon`, `Algenib`, `Leda`, `Orus`, `Zephyr` (30 total). OpenAI: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer` |
+| `TTS_OUTPUT_FORMAT` | `mp3` | Output format: mp3, wav, opus, aac. Gemini always outputs MP3 (converted from WAV server-side) |
+| `TTS_SPEED` | `1.0` | Playback speed 0.25-4.0. Not applicable for Gemini |
+| `STT_PROVIDER` | `none` | STT provider: `none`, `openai`, `faster-whisper` |
+| `STT_BASE_URL` | (per provider) | STT API base URL |
+| `STT_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for STT |
+| `STT_MODEL` | `gpt-4o-mini-transcribe` | STT model name |
+| `STT_LANGUAGE` | - | Language hint (ISO 639-1, e.g., `en`) |
+| `VOICE_DEFAULT_THREAD_ID` | - | Default thread for voice/watch interactions (falls back to `watch-default`) |
+
+**Gemini TTS** requires `GEMINI_API_KEY` (also used for document extraction). Supports 200+ inline audio tags for expressive speech — e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
+
 ---
 
 ## Data Directories

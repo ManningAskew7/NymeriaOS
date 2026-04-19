@@ -4866,7 +4866,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             response_text = ""
             async for event in agent.astream(
                 transcription, thread_id=tid, user_id=user_id,
-                _trigger_override="Smartwatch — respond concisely, your reply will be spoken aloud",
+                _trigger_override=(
+                    "Smartwatch — respond concisely (1-2 sentences max), "
+                    "your reply will be spoken aloud via TTS"
+                ),
             ):
                 if event.get("type") == "response":
                     response_text += event.get("content", "")

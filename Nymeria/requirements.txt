@@ -55,8 +55,9 @@ python-telegram-bot[rate-limiter]>=22.0
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0
 
-# Document extraction (email attachments)
+# Document extraction (email attachments) + Gemini TTS
 google-genai>=1.0.0
+pydub>=0.25.1
 openpyxl>=3.1.0
 
 # Windows Service Support

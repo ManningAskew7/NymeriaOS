@@ -634,11 +634,17 @@
             <label class="setting-label">TTS Provider</label>
             <select class="setting-input" bind:value={ttsProvider}>
               <option value="none">None (disabled)</option>
+              <option value="cartesia">Cartesia Sonic</option>
+              <option value="gemini">Gemini TTS</option>
               <option value="openai">OpenAI</option>
               <option value="qwen3">Qwen3-TTS (Local)</option>
             </select>
             <p class="hint">
-              {#if ttsProvider === 'openai'}
+              {#if ttsProvider === 'cartesia'}
+                Cartesia Sonic-3 — ultra-low latency (~90ms), speed/emotion controls
+              {:else if ttsProvider === 'gemini'}
+                Google Gemini 3.1 Flash TTS — 30 voices, 70+ languages, audio tags supported
+              {:else if ttsProvider === 'openai'}
                 Uses OpenAI TTS API (tts-1, tts-1-hd)
               {:else if ttsProvider === 'qwen3'}
                 Local Qwen3-TTS via OpenAI-compatible server
@@ -649,16 +655,18 @@
           </div>
 
           {#if ttsProvider !== 'none'}
-            <div class="setting-group">
-              <label class="setting-label">Base URL</label>
-              <input
-                type="text"
-                class="setting-input"
-                bind:value={ttsBaseUrl}
-                placeholder={ttsProvider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:8880/v1'}
-              />
-              <p class="hint">Leave empty for default ({ttsProvider === 'openai' ? 'api.openai.com' : 'localhost:8880'})</p>
-            </div>
+            {#if ttsProvider !== 'gemini' && ttsProvider !== 'cartesia'}
+              <div class="setting-group">
+                <label class="setting-label">Base URL</label>
+                <input
+                  type="text"
+                  class="setting-input"
+                  bind:value={ttsBaseUrl}
+                  placeholder={ttsProvider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:8880/v1'}
+                />
+                <p class="hint">Leave empty for default ({ttsProvider === 'openai' ? 'api.openai.com' : 'localhost:8880'})</p>
+              </div>
+            {/if}
 
             <div class="setting-group">
               <label class="setting-label">Model</label>
@@ -666,7 +674,7 @@
                 type="text"
                 class="setting-input"
                 bind:value={ttsModel}
-                placeholder={ttsProvider === 'openai' ? 'tts-1-hd' : 'Qwen3-TTS-0.6B'}
+                placeholder={ttsProvider === 'cartesia' ? 'sonic-3' : ttsProvider === 'gemini' ? 'gemini-3.1-flash-tts-preview' : ttsProvider === 'openai' ? 'tts-1-hd' : 'Qwen3-TTS-0.6B'}
               />
             </div>
 
@@ -676,10 +684,14 @@
                 type="text"
                 class="setting-input"
                 bind:value={ttsVoice}
-                placeholder={ttsProvider === 'openai' ? 'nova' : 'default'}
+                placeholder={ttsProvider === 'cartesia' ? 'Voice ID from play.cartesia.ai' : ttsProvider === 'gemini' ? 'Kore' : ttsProvider === 'openai' ? 'nova' : 'default'}
               />
               <p class="hint">
-                {#if ttsProvider === 'openai'}
+                {#if ttsProvider === 'cartesia'}
+                  Voice UUID from play.cartesia.ai/voices
+                {:else if ttsProvider === 'gemini'}
+                  Options: Kore, Puck, Charon, Algenib, Leda, Orus, Zephyr, and more
+                {:else if ttsProvider === 'openai'}
                   Options: alloy, echo, fable, onyx, nova, shimmer
                 {:else}
                   Voice ID or reference audio path for Qwen3-TTS
@@ -687,26 +699,30 @@
               </p>
             </div>
 
-            <div class="setting-group">
-              <label class="setting-label">Output Format</label>
-              <select class="setting-input" bind:value={ttsOutputFormat}>
-                <option value="mp3">MP3</option>
-                <option value="wav">WAV</option>
-                <option value="opus">Opus</option>
-                <option value="aac">AAC</option>
-              </select>
-            </div>
+            {#if ttsProvider !== 'gemini'}
+              {#if ttsProvider !== 'cartesia'}
+                <div class="setting-group">
+                  <label class="setting-label">Output Format</label>
+                  <select class="setting-input" bind:value={ttsOutputFormat}>
+                    <option value="mp3">MP3</option>
+                    <option value="wav">WAV</option>
+                    <option value="opus">Opus</option>
+                    <option value="aac">AAC</option>
+                  </select>
+                </div>
+              {/if}
 
-            <div class="setting-group">
-              <label class="setting-label">Speed: {ttsSpeed.toFixed(2)}x</label>
-              <input
-                type="range"
-                min="0.25"
-                max="4.0"
-                step="0.25"
-                bind:value={ttsSpeed}
-              />
-            </div>
+              <div class="setting-group">
+                <label class="setting-label">Speed: {ttsSpeed.toFixed(2)}x</label>
+                <input
+                  type="range"
+                  min="0.25"
+                  max="4.0"
+                  step="0.25"
+                  bind:value={ttsSpeed}
+                />
+              </div>
+            {/if}
           {/if}
 
           <h3 class="section-heading">Speech-to-Text (STT)</h3>
