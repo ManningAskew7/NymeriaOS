@@ -1,0 +1,505 @@
+"""Spawn a new conversation thread with per-thread configuration.
+
+Lets the agent create a new thread that appears in the desktop sidebar with
+its own appended instructions, tool selection, and optional LLM overrides.
+Optionally dispatches an initial_message and blocks until the child responds.
+
+The tool only exposes the *append* path for system prompts (ThreadConfig.instructions);
+it cannot replace soul.md (ThreadConfig.system_prompt is never set). Spawned
+threads are NOT callable (callable=False) — they don't become globally invocable
+tools. Use POST /agents/threads for that.
+
+Safety:
+- Spawn depth capped via NYMERIA_MAX_SPAWN_DEPTH (default 3).
+- Rate limit via NYMERIA_MAX_SPAWNS_PER_HOUR (default 10 per parent).
+- Parent/child invocation is registered for cascading abort.
+"""
+
+import logging
+import os
+import threading
+import time
+import uuid
+from typing import Annotated, Dict, List, Optional
+
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_SPAWN_DEPTH = 3
+DEFAULT_MAX_SPAWNS_PER_HOUR = 10
+RATE_WINDOW_SECONDS = 3600
+
+# In-memory rate limiter: parent_thread_id -> list of spawn timestamps
+_spawn_rate_lock = threading.Lock()
+_spawn_counts: Dict[str, List[float]] = {}
+
+
+def _slug_from_title(title: str, max_len: int = 24) -> str:
+    """Produce a safe slug from the title for thread IDs."""
+    safe = "".join(c if c.isalnum() else "-" for c in title.lower())
+    safe = "-".join(filter(None, safe.split("-")))
+    safe = safe[:max_len].rstrip("-")
+    return safe or "thread"
+
+
+def _check_rate_limit(parent_thread_id: str) -> Optional[str]:
+    """Return an error message if rate-limited, else None."""
+    max_per_hour = int(
+        os.environ.get("NYMERIA_MAX_SPAWNS_PER_HOUR", DEFAULT_MAX_SPAWNS_PER_HOUR)
+    )
+    now = time.time()
+    with _spawn_rate_lock:
+        timestamps = _spawn_counts.get(parent_thread_id, [])
+        timestamps = [t for t in timestamps if now - t < RATE_WINDOW_SECONDS]
+        if len(timestamps) >= max_per_hour:
+            oldest = min(timestamps)
+            wait = int(RATE_WINDOW_SECONDS - (now - oldest))
+            return (
+                f"[Error]: Spawn rate limit reached ({max_per_hour} per hour). "
+                f"Wait ~{wait}s before spawning again."
+            )
+        timestamps.append(now)
+        _spawn_counts[parent_thread_id] = timestamps
+    return None
+
+
+def _get_parent_spawn_depth(parent_thread_id: Optional[str], agent) -> int:
+    """Read parent's spawn_depth from thread metadata. Returns 0 if not set."""
+    if not parent_thread_id or not agent:
+        return 0
+    try:
+        meta = agent.thread_metadata_manager.get_thread("default", parent_thread_id)
+        if meta and meta.platform_meta:
+            return int(meta.platform_meta.get("spawn_depth", "0"))
+    except Exception:
+        pass
+    return 0
+
+
+@tool
+def spawn_thread(
+    title: str,
+    instructions: Optional[str] = None,
+    optional_tools: Optional[List[str]] = None,
+    tool_categories: Optional[List[str]] = None,
+    disabled_tools: Optional[List[str]] = None,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    llm_temperature: Optional[float] = None,
+    llm_max_tokens: Optional[int] = None,
+    llm_extended_thinking: Optional[bool] = None,
+    llm_reasoning_effort: Optional[str] = None,
+    initial_message: Optional[str] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """Create a new conversation thread with scoped configuration.
+
+    The new thread appears in the desktop sidebar inside a "Spawned by Nymeria"
+    folder. All configuration parameters are optional — if omitted, the new
+    thread inherits your user-level defaults (core tools, global LLM settings,
+    default personality). Use this when you need a fresh context for a specific
+    sub-task with a different toolset or tighter instructions than your current
+    thread has.
+
+    Args:
+        title: Required. User-visible thread title shown in the sidebar.
+        instructions: Extra system-prompt instructions APPENDED to the default
+            personality (soul.md). Max 5000 chars. Cannot replace the base
+            personality — only extend it. Use this to state the thread's
+            purpose (e.g. "You are focused on PDF summarization. Be terse.").
+        optional_tools: List of OPTIONAL tool names to enable on the new thread.
+            E.g. ["sticky_note", "browser_navigate"]. Use tool_search(
+            action="search", query="...") first to discover tool names. Core
+            tools (file_read, bash_execute, etc.) are inherited automatically
+            — only list EXTRAS here.
+        tool_categories: List of tool category names (e.g. ["email", "browser"])
+            to bulk-enable every optional tool in that category. Merged with
+            optional_tools. Use tool_search(action="list_categories") to
+            discover valid categories.
+        disabled_tools: List of CORE tool names to exclude from the new thread
+            (e.g. ["bash_execute"] for a sandboxed child). Optional.
+        llm_provider, llm_model, llm_temperature, llm_max_tokens,
+        llm_extended_thinking, llm_reasoning_effort: Optional LLM overrides
+            for this thread. If omitted, the thread inherits global settings.
+        initial_message: If provided, dispatches this message to the new thread
+            and BLOCKS until the child returns its response. The child's
+            response becomes part of this tool's output. If omitted, the thread
+            is created empty and visible in the sidebar for user interaction.
+
+    Returns:
+        If initial_message is omitted: a preamble with the new thread_id.
+        If initial_message is provided: preamble + the child thread's response.
+        On error: "[Error]: ..."
+
+    Limits:
+        - Spawn depth capped at 3 by default (prevents runaway recursion).
+        - Rate limit: 10 spawns per parent thread per hour by default.
+        - instructions max 5000 chars; title truncated to 80 chars.
+
+    Notes:
+        - The new thread's thread_id starts with "spawned-". It's filed under
+          a "Spawned by Nymeria" folder in the desktop sidebar.
+        - Parent/child is registered so aborting the parent cascades.
+        - Spawned threads are NOT callable; they won't appear as tools to
+          other threads.
+    """
+    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from ..core.agent import get_current_agent
+    from ..core.event_bus import publish_sync_event
+    from ..core.thread_config import ThreadConfig, ThreadLLMConfig
+    from .metadata import get_all_categories, get_category_tools_summary
+
+    agent = get_current_agent()
+    if agent is None:
+        return "[Error]: No active agent; cannot spawn thread."
+
+    user_id = "default"
+    parent_thread_id: Optional[str] = None
+    if config and config.get("configurable"):
+        cfg = config["configurable"]
+        user_id = cfg.get("user_id", "default") or "default"
+        parent_thread_id = cfg.get("thread_id")
+
+    if not title or not title.strip():
+        return "[Error]: title is required and cannot be empty."
+    title = title.strip()[:80]
+
+    max_depth = int(os.environ.get("NYMERIA_MAX_SPAWN_DEPTH", DEFAULT_MAX_SPAWN_DEPTH))
+    parent_depth = _get_parent_spawn_depth(parent_thread_id, agent)
+    new_depth = parent_depth + 1
+    if new_depth > max_depth:
+        return (
+            f"[Error]: Spawn depth limit reached ({max_depth}). "
+            f"Parent thread is already at depth {parent_depth}. "
+            f"Override via NYMERIA_MAX_SPAWN_DEPTH if intentional."
+        )
+
+    if parent_thread_id:
+        err = _check_rate_limit(parent_thread_id)
+        if err:
+            return err
+
+    warnings: List[str] = []
+    enabled_set: set = set()
+
+    if tool_categories:
+        cat_summary = get_category_tools_summary()
+        valid_cats = set(get_all_categories())
+        unknown_cats: List[str] = []
+        for cat in tool_categories:
+            cat_norm = cat.lower().strip().replace("-", "_")
+            if cat_norm not in valid_cats:
+                unknown_cats.append(cat)
+                continue
+            for name in cat_summary.get(cat_norm, []):
+                if name in OPTIONAL_TOOLS:
+                    enabled_set.add(name)
+        if unknown_cats:
+            warnings.append(f"unknown categor(ies): {', '.join(unknown_cats)}")
+
+    if optional_tools:
+        all_known = {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys())
+        unknown_tools: List[str] = []
+        for name in optional_tools:
+            if name in OPTIONAL_TOOLS:
+                enabled_set.add(name)
+            elif name in all_known or (
+                agent.tool_registry and agent.tool_registry.get_tool(name)
+            ):
+                enabled_set.add(name)
+            else:
+                unknown_tools.append(name)
+        if unknown_tools:
+            warnings.append(f"unknown tool(s): {', '.join(unknown_tools)}")
+
+    disabled_list: List[str] = []
+    if disabled_tools:
+        core_tool_names = {t.name for t in ALL_TOOLS}
+        unknown_disabled: List[str] = []
+        for name in disabled_tools:
+            if name in core_tool_names:
+                disabled_list.append(name)
+            else:
+                unknown_disabled.append(name)
+        if unknown_disabled:
+            warnings.append(
+                f"unknown core tool(s) to disable: {', '.join(unknown_disabled)}"
+            )
+
+    llm_config = None
+    if any(
+        v is not None
+        for v in [
+            llm_provider,
+            llm_model,
+            llm_temperature,
+            llm_max_tokens,
+            llm_extended_thinking,
+            llm_reasoning_effort,
+        ]
+    ):
+        llm_config = ThreadLLMConfig(
+            provider=llm_provider,
+            model=llm_model,
+            temperature=llm_temperature,
+            max_tokens=llm_max_tokens,
+            extended_thinking=llm_extended_thinking,
+            reasoning_effort=llm_reasoning_effort,
+        )
+
+    slug = _slug_from_title(title)
+    rand_suffix = uuid.uuid4().hex[:8]
+    new_thread_id = f"spawned-{slug}-{rand_suffix}"
+
+    try:
+        tc = ThreadConfig(
+            thread_id=new_thread_id,
+            instructions=instructions.strip() if instructions else None,
+            enabled_tools=sorted(enabled_set),
+            disabled_tools=sorted(disabled_list),
+            llm_config=llm_config,
+            callable=False,
+        )
+    except Exception as e:
+        return f"[Error]: Invalid configuration: {str(e)}"
+
+    if not agent.thread_config_manager.save_config(tc):
+        return "[Error]: Failed to save thread config."
+
+    platform_meta: Dict[str, str] = {"spawn_depth": str(new_depth)}
+    if parent_thread_id:
+        platform_meta["spawn_parent"] = parent_thread_id
+
+    try:
+        agent.thread_metadata_manager.upsert_thread(
+            user_id,
+            new_thread_id,
+            title=title,
+            title_source="callable",
+            platform="callable",
+            platform_meta=platform_meta,
+        )
+    except Exception as e:
+        try:
+            agent.thread_config_manager.delete_config(new_thread_id)
+        except Exception:
+            pass
+        return f"[Error]: Failed to save thread metadata: {str(e)}"
+
+    agent.invalidate_thread_config_cache(new_thread_id)
+
+    try:
+        publish_sync_event(
+            event_type="thread_created",
+            thread_id=new_thread_id,
+            user_id=user_id,
+            data={
+                "title": title,
+                "title_source": "callable",
+                "platform": "callable",
+                "platform_meta": platform_meta,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"spawn_thread: thread_created publish failed: {e}")
+
+    preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
+    if tc.enabled_tools:
+        preamble_lines.append(
+            f"Enabled optional tools: {', '.join(tc.enabled_tools)}"
+        )
+    if tc.disabled_tools:
+        preamble_lines.append(
+            f"Disabled core tools: {', '.join(tc.disabled_tools)}"
+        )
+    if warnings:
+        preamble_lines.append(f"[Warning]: {'; '.join(warnings)}")
+    preamble = "\n".join(preamble_lines)
+
+    if not initial_message or not initial_message.strip():
+        return preamble
+
+    response = _invoke_spawned(
+        agent=agent,
+        child_thread_id=new_thread_id,
+        parent_thread_id=parent_thread_id,
+        title=title,
+        task=initial_message.strip(),
+        user_id=user_id,
+    )
+    return f"{preamble}\n\n{response}"
+
+
+def _invoke_spawned(
+    agent,
+    child_thread_id: str,
+    parent_thread_id: Optional[str],
+    title: str,
+    task: str,
+    user_id: str,
+) -> str:
+    """Dispatch the initial message to the spawned thread and collect its response.
+
+    Mirrors thread_agent_executor.invoke() but works for non-callable threads.
+    Publishes autonomous events so the frontend can stream the child's activity.
+    """
+    from langchain_core.runnables.config import var_child_runnable_config
+    from langchain_core.tracers.context import (
+        run_collector_var,
+        tracing_v2_callback_var,
+    )
+
+    from ..core.event_bus import publish_autonomous_event
+
+    task_id = f"spawned-{uuid.uuid4().hex[:8]}"
+
+    if parent_thread_id:
+        agent.register_callable_invocation(parent_thread_id, child_thread_id)
+
+    config_token = var_child_runnable_config.set(None)
+    callback_token = tracing_v2_callback_var.set(None)
+    collector_token = run_collector_var.set(None)
+
+    try:
+        publish_autonomous_event(
+            event_type="task_started",
+            thread_id=child_thread_id,
+            user_id=user_id,
+            task_id=task_id,
+            data={"prompt": task, "callable_name": title, "trigger": "spawn_thread"},
+        )
+
+        response_parts: List[str] = []
+        thinking_parts: List[str] = []
+        iteration_limit_hit = False
+
+        parent_name = parent_thread_id or "unknown"
+        if parent_thread_id:
+            try:
+                parent_meta = agent.thread_metadata_manager.get_thread(
+                    user_id, parent_thread_id
+                )
+                if parent_meta and parent_meta.title:
+                    parent_name = parent_meta.title
+            except Exception:
+                pass
+        trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
+
+        for chunk in agent.stream(
+            message=task,
+            thread_id=child_thread_id,
+            user_id=user_id,
+            _is_self_invoke=True,
+            _trigger_override=trigger_override,
+        ):
+            ctype = chunk.get("type")
+            if ctype == "tool_call":
+                publish_autonomous_event(
+                    event_type="tool_call",
+                    thread_id=child_thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "args": chunk.get("args", {}),
+                    },
+                )
+            elif ctype == "tool_result":
+                publish_autonomous_event(
+                    event_type="tool_result",
+                    thread_id=child_thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "result": chunk.get("result"),
+                    },
+                )
+            elif ctype == "thinking":
+                content = chunk.get("content", "")
+                if content:
+                    thinking_parts.append(content)
+                publish_autonomous_event(
+                    event_type="thinking",
+                    thread_id=child_thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={"content": content},
+                )
+            elif ctype == "response":
+                content = chunk.get("content", "")
+                if content:
+                    response_parts.append(content)
+                publish_autonomous_event(
+                    event_type="response",
+                    thread_id=child_thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={"content": content},
+                )
+            elif ctype == "error":
+                raise RuntimeError(
+                    chunk.get("content") or "spawned thread stream error"
+                )
+            elif ctype == "iteration_limit":
+                iteration_limit_hit = True
+
+        response_text = (
+            "".join(response_parts) if response_parts else "".join(thinking_parts)
+        )
+
+        if iteration_limit_hit and response_text:
+            response_text += (
+                "\n\n[Note: Spawned thread was stopped at iteration limit — "
+                "result may be incomplete.]"
+            )
+        elif iteration_limit_hit and not response_text:
+            response_text = (
+                "[Spawned thread hit iteration limit without producing a response.]"
+            )
+
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=child_thread_id,
+            user_id=user_id,
+            task_id=task_id,
+            data={"content": response_text, "callable_name": title},
+        )
+
+        return response_text or "[Spawned thread returned no content.]"
+
+    except Exception as e:
+        logger.error(
+            f"spawn_thread dispatch failed for {child_thread_id}: {e}", exc_info=True
+        )
+        try:
+            publish_autonomous_event(
+                event_type="task_completed",
+                thread_id=child_thread_id,
+                user_id=user_id,
+                task_id=task_id,
+                data={
+                    "error": True,
+                    "error_message": str(e)[:200],
+                    "content": f"Task failed: {str(e)[:200]}",
+                    "callable_name": title,
+                },
+            )
+        except Exception:
+            pass
+        return f"[Error]: Initial message failed: {str(e)}"
+
+    finally:
+        run_collector_var.reset(collector_token)
+        tracing_v2_callback_var.reset(callback_token)
+        var_child_runnable_config.reset(config_token)
+        if parent_thread_id:
+            agent.unregister_callable_invocation(parent_thread_id, child_thread_id)
+
+
+SPAWN_THREAD_TOOLS = [spawn_thread]

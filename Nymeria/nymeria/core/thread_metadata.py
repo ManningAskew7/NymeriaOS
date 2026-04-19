@@ -64,6 +64,8 @@ def classify_platform(thread_id: str) -> str:
         return "trigger"
     if thread_id.startswith("agent-"):
         return "callable"
+    if thread_id.startswith("spawned-"):
+        return "callable"
     return "desktop"
 
 

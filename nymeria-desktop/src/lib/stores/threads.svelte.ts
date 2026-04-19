@@ -107,8 +107,11 @@ function detectPlatform(threadId: string): ThreadPlatform {
   if (threadId.startsWith('slack_')) return 'slack';
   if (threadId.startsWith('trigger-')) return 'trigger';
   if (threadId.startsWith('agent-')) return 'callable';
+  if (threadId.startsWith('spawned-')) return 'callable';
   return 'desktop';
 }
+
+const SPAWNED_FOLDER_NAME = 'Spawned by Nymeria';
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -140,6 +143,43 @@ function createThreadsStore() {
   let activeThreadTasks = $state<Set<string>>(new Set());
   let folders = $state<ThreadFolder[]>(loadFolders());
   let sortMode = $state<SortMode>(loadSortMode());
+
+  /**
+   * Ensure any spawned- threads that aren't in a folder get filed into
+   * a "Spawned by Nymeria" folder (creating it lazily). Called after
+   * backend syncs or sync-event thread additions.
+   */
+  function autoFileSpawnedThreads(): void {
+    const spawnedIds = threads
+      .filter((t) => t.id.startsWith('spawned-'))
+      .map((t) => t.id);
+    if (spawnedIds.length === 0) return;
+
+    const filedIds = new Set(folders.flatMap((f) => f.threadIds));
+    const unfiled = spawnedIds.filter((id) => !filedIds.has(id));
+    if (unfiled.length === 0) return;
+
+    let spawnedFolder = folders.find((f) => f.name === SPAWNED_FOLDER_NAME);
+    if (!spawnedFolder) {
+      spawnedFolder = {
+        id: generateId(),
+        name: SPAWNED_FOLDER_NAME,
+        createdAt: new Date(),
+        order: folders.length,
+        threadIds: [],
+        collapsed: false,
+      };
+      folders = [...folders, spawnedFolder];
+    }
+
+    const targetId = spawnedFolder.id;
+    folders = folders.map((f) =>
+      f.id === targetId
+        ? { ...f, threadIds: [...f.threadIds, ...unfiled] }
+        : f
+    );
+    saveFolders(folders);
+  }
 
   function saveCurrentThreadId(id: string | null): void {
     if (typeof localStorage === 'undefined') return;
@@ -560,6 +600,7 @@ function createThreadsStore() {
 
       threads = merged;
       saveThreads(threads);
+      autoFileSpawnedThreads();
       console.log('[Threads] Synced from backend:', backendThreads.length, 'threads');
     },
 
@@ -734,6 +775,9 @@ function createThreadsStore() {
       };
       threads = [thread, ...threads];
       saveThreads(threads);
+      if (id.startsWith('spawned-')) {
+        autoFileSpawnedThreads();
+      }
     },
 
     /**

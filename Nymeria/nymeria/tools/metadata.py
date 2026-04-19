@@ -249,6 +249,19 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Reload all tools and trigger sources after code changes",
     ),
 
+    # Thread spawning — create new sidebar threads with scoped config (optional)
+    "spawn_thread": ToolMetadata(
+        name="spawn_thread",
+        category=ToolCategory.SUBAGENT,
+        security_level=SecurityLevel.MODERATE,
+        description=(
+            "Create a new conversation thread with custom instructions, tool "
+            "selection, and optional LLM overrides. Optionally dispatches an "
+            "initial message and blocks until the child responds. Spawned "
+            "threads appear in a 'Spawned by Nymeria' folder in the sidebar."
+        ),
+    ),
+
     # Trigger tools - event-driven automation (optional, not in ALL_TOOLS by default)
     "trigger_create": ToolMetadata(
         name="trigger_create",
