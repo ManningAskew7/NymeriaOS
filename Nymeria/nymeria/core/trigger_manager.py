@@ -590,25 +590,17 @@ class TriggerManager:
         )
 
         try:
-            from .event_bus import publish_autonomous_event
-
             task_id = f"trigger-{trigger.id}"
-
-            publish_autonomous_event(
-                event_type="task_started",
-                thread_id=thread_id,
-                user_id=user_id,
-                task_id=task_id,
-                data={
-                    "prompt": batch_prompt,
-                    "trigger_id": trigger.id,
-                    "trigger_name": trigger.name,
-                },
-            )
 
             response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
                 agent, batch_prompt, thread_id, user_id, task_id,
                 attachments=all_attachments or None,
+                task_started_data={
+                    "prompt": batch_prompt,
+                    "trigger_id": trigger.id,
+                    "trigger_name": trigger.name,
+                    "batch_size": len(events),
+                },
             )
             response = "".join(response_parts)
 
@@ -652,8 +644,6 @@ class TriggerManager:
         trigger: TriggerDefinition,
     ) -> None:
         """Send a prompt to the agent, streaming events live."""
-        from .event_bus import publish_autonomous_event
-
         template = (
             config.get("prompt_template")
             or config.get("prompt")
@@ -673,22 +663,14 @@ class TriggerManager:
             f"trigger={trigger.name} ({trigger.id}){att_note}, prompt={prompt[:100]}..."
         )
 
-        # Publish task_started immediately so frontend enters streaming mode
-        publish_autonomous_event(
-            event_type="task_started",
-            thread_id=thread_id,
-            user_id=user_id,
-            task_id=task_id,
-            data={
+        response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
+            agent, prompt, thread_id, user_id, task_id,
+            attachments=event_attachments,
+            task_started_data={
                 "prompt": prompt,
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
             },
-        )
-
-        response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
-            agent, prompt, thread_id, user_id, task_id,
-            attachments=event_attachments,
         )
         response = "".join(response_parts)
 
@@ -716,8 +698,14 @@ class TriggerManager:
         user_id: str,
         task_id: str,
         attachments: Optional[List[Dict[str, str]]] = None,
+        task_started_data: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[str], List[str], bool]:
         """Stream through the agent, publishing each event live.
+
+        If *task_started_data* is provided, the ``task_started`` event is
+        published when the first chunk arrives (i.e. after the thread lock
+        is acquired), not before.  This prevents the frontend from entering
+        streaming mode while the user's chat is still active.
 
         Returns (response_parts, thinking_parts, iteration_limit_hit).
         """
@@ -727,6 +715,7 @@ class TriggerManager:
         thinking_parts: List[str] = []
         chunk_count = 0
         iteration_limit_hit = False
+        started_published = False
 
         for chunk in agent.stream(
             message=prompt,
@@ -735,6 +724,16 @@ class TriggerManager:
             _is_self_invoke=True,
             attachments=attachments,
         ):
+            if not started_published and task_started_data is not None:
+                publish_autonomous_event(
+                    event_type="task_started",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data=task_started_data,
+                )
+                started_published = True
+
             chunk_type = chunk.get("type")
             chunk_count += 1
             logger.debug(f"[TRIGGER] thread={thread_id}: chunk #{chunk_count} type={chunk_type}")
