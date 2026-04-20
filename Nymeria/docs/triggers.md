@@ -236,7 +236,7 @@ curl "http://localhost:8000/triggers/executions/recent?user_id=default&limit=50"
 
 Statuses: `success`, `error`, `partial`, `deferred` (thread was busy).
 
-> Note: webhook fires (which route through `/chat`) currently don't log `TriggerExecution` records — only poll-source fires do. Webhook activity appears in the thread's message history instead.
+Both poll-source and webhook fires log `TriggerExecution` records. Webhook fires log from the background thread that drives the internal `/chat` POST (success when the stream drains cleanly, error with `error_message` on any exception).
 
 ## Health Monitoring
 
@@ -334,13 +334,25 @@ If the trigger fires into a thread the user is **not currently viewing**, events
 
 ### Cooldown & fire count
 
-Before dispatching, the webhook fire endpoint checks `cooldown_seconds` against `last_fired` — returns `429` with remaining seconds if still cooling down. On successful dispatch, `last_fired` and `fire_count` are updated.
+Before dispatching, the webhook fire endpoint atomically checks `cooldown_seconds` against `last_fired` and increments `fire_count` inside a single `TriggerManager.atomic_update()` block. This prevents two concurrent webhook hits from both passing the cooldown check or from both reading `fire_count=N` and each writing `N+1` (losing an increment). Returns `429` with remaining seconds if still cooling down.
+
+### Event payload identity
+
+Both execution paths include `trigger_id` and `trigger_name` in the `task_started` and `task_completed` payloads. The frontend's `classifyAutonomousSource()` uses these to label the prompt bubble as a trigger (vs. scheduler/watchdog/autonomous), and `threadsStore.ensureThread()` uses `trigger_name` on `task_started` to auto-create a sidebar entry for triggers bound to new threads.
+
+For the webhook path, these flow through two optional fields on `ChatRequest` (`trigger_id`, `trigger_name`) which the internal fire POST sets — the `/chat` event_generator merges them into every autonomous event it publishes.
+
+### Pending events cap
+
+Poll-sourced triggers that fire into a busy thread store events in `pending_events` for the next poll cycle. The list is capped at 50; when exceeded, the **newest** 50 are kept (stale alerts are less useful than fresh ones).
 
 ## Architecture
 
 **Storage:**
 - `data/triggers/{user_id}.json` — trigger definitions
-- `data/triggers/{user_id}_executions.json` — execution log (rolling 200 entries)
+- `data/triggers/{user_id}_executions.json` — execution log (rolling 200 entries, JSON array)
+
+`TriggerManager.get_all_users_with_triggers()` filters out `*_executions.json` files when enumerating users — otherwise the ticker would treat the execution log as a user's trigger store, fail to parse it as `TriggerStore`, and `atomic_update`'s save-on-exit would clobber the log.
 
 **Event bus:**
 - `nymeria/core/event_bus.py` — in-memory `EventBus` with per-subscriber `Queue`

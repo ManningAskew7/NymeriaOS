@@ -15,6 +15,7 @@ from ..core.trigger_manager import (
     TriggerAction,
     TriggerCondition,
     TriggerDefinition,
+    TriggerExecution,
     TriggerManager,
     _safe_format,
 )
@@ -415,17 +416,29 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
             "source_ip": request.client.host if request.client else "unknown",
         }
 
-        # Cooldown check
-        if trigger.cooldown_seconds and trigger.last_fired:
-            elapsed = (datetime.utcnow() - trigger.last_fired).total_seconds()
-            if elapsed < trigger.cooldown_seconds:
-                remaining = int(trigger.cooldown_seconds - elapsed)
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Cooldown active. Retry in {remaining}s.",
-                )
-
-        manager.update_trigger(user_id, trigger_id, last_fired=datetime.utcnow(), fire_count=trigger.fire_count + 1)
+        # Atomic cooldown check + fire_count increment. Prevents two
+        # concurrent webhook hits from both passing the cooldown check or
+        # both computing fire_count=N+1 from the same snapshot and losing
+        # an increment.
+        with manager.atomic_update(user_id) as store:
+            live_trigger = store.get_trigger(trigger_id)
+            if live_trigger is None:
+                raise HTTPException(status_code=404, detail="Trigger not found")
+            now = datetime.utcnow()
+            if live_trigger.cooldown_seconds and live_trigger.last_fired:
+                elapsed = (now - live_trigger.last_fired).total_seconds()
+                if elapsed < live_trigger.cooldown_seconds:
+                    remaining = int(live_trigger.cooldown_seconds - elapsed)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Cooldown active. Retry in {remaining}s.",
+                    )
+            live_trigger.last_fired = now
+            live_trigger.fire_count += 1
+            trigger_name = live_trigger.name
+            action_config = dict(live_trigger.action.config)
+            action_type = live_trigger.action.type
+            thread_id = live_trigger.thread_id or f"trigger-{trigger_id}"
 
         # Route through POST /chat with is_self_invoke=True so the
         # autonomous event publishing uses the same proven path as the
@@ -435,7 +448,6 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         import time as _time
         settings = get_settings()
 
-        action_config = trigger.action.config
         template = (
             action_config.get("prompt_template")
             or action_config.get("prompt")
@@ -443,16 +455,22 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         )
         template_vars = {
             **event,
-            "trigger_id": trigger.id,
-            "trigger_name": trigger.name,
+            "trigger_id": trigger_id,
+            "trigger_name": trigger_name,
         }
         prompt = _safe_format(template, template_vars)
-        thread_id = trigger.thread_id or f"trigger-{trigger.id}"
 
         def _fire():
             import httpx
 
             start = _time.monotonic()
+            execution = TriggerExecution(
+                trigger_id=trigger_id,
+                trigger_name=trigger_name,
+                event_count=1,
+                events_summary=str(event)[:200],
+                action_type=action_type,
+            )
             try:
                 with httpx.Client(timeout=300) as client:
                     with client.stream(
@@ -465,26 +483,34 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                             "user_id": user_id,
                             "is_self_invoke": True,
                             "trigger_override": "trigger",
+                            "trigger_id": trigger_id,
+                            "trigger_name": trigger_name,
                         },
                     ) as resp:
                         resp.raise_for_status()
                         for _line in resp.iter_lines():
                             pass
                 elapsed = _time.monotonic() - start
+                execution.status = "success"
                 logger.info(
-                    f"[TRIGGER] Fired via /chat: trigger={trigger.name} ({trigger_id}), "
+                    f"[TRIGGER] Fired via /chat: trigger={trigger_name} ({trigger_id}), "
                     f"thread={thread_id}, elapsed={elapsed:.1f}s"
                 )
             except Exception as e:
+                execution.status = "error"
+                execution.error_message = str(e)[:200]
                 logger.error(f"Trigger fire failed for {trigger_id}: {e}", exc_info=True)
+            finally:
+                execution.duration_seconds = round(_time.monotonic() - start, 2)
+                manager.log_execution(user_id, execution)
 
         threading.Thread(target=_fire, name=f"trigger-fire-{trigger_id}", daemon=True).start()
 
         return {
             "status": "fired",
             "trigger_id": trigger_id,
-            "trigger_name": trigger.name,
-            "action_type": trigger.action.type,
+            "trigger_name": trigger_name,
+            "action_type": action_type,
         }
 
     return router

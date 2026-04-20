@@ -287,7 +287,11 @@ class TriggerManager:
         users = []
         if self.triggers_dir.exists():
             for p in self.triggers_dir.iterdir():
-                if p.is_file() and p.suffix == ".json":
+                # Skip per-user execution logs (*_executions.json) -- they
+                # sit in the same dir but are not trigger stores. Treating
+                # them as user files makes the ticker wipe the log every
+                # poll cycle via atomic_update's save-on-exit.
+                if p.is_file() and p.suffix == ".json" and not p.stem.endswith("_executions"):
                     users.append(p.stem)
         return sorted(users)
 
@@ -332,7 +336,11 @@ class TriggerManager:
         try:
             entries: list = []
             if path.exists():
-                entries = json.loads(path.read_text(encoding="utf-8"))
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                # Defensive: tolerate stale non-list files from earlier bugs
+                # instead of crashing when a TriggerStore dict was mistakenly
+                # written here.
+                entries = loaded if isinstance(loaded, list) else []
             entries.append(execution.model_dump(mode="json"))
             if len(entries) > MAX_EXECUTION_LOG:
                 entries = entries[-MAX_EXECUTION_LOG:]
@@ -353,9 +361,12 @@ class TriggerManager:
         if not path.exists():
             return []
         try:
-            entries = json.loads(path.read_text(encoding="utf-8"))
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, list):
+                return []
+            entries = loaded
             if trigger_id:
-                entries = [e for e in entries if e.get("trigger_id") == trigger_id]
+                entries = [e for e in entries if isinstance(e, dict) and e.get("trigger_id") == trigger_id]
             return list(reversed(entries[-limit:]))
         except Exception as e:
             logger.warning(f"Failed to read trigger executions: {e}")
@@ -447,8 +458,10 @@ class TriggerManager:
                     and agent is not None
                     and agent._thread_locks.is_thread_busy(thread_id)
                 ):
-                    # Cap pending to 50 events to prevent unbounded growth
-                    trigger.pending_events = (trigger.pending_events + events)[:50]
+                    # Cap pending to 50 events to prevent unbounded growth.
+                    # Keep the most recent events when truncating -- stale
+                    # alerts are less useful than fresh ones.
+                    trigger.pending_events = (trigger.pending_events + events)[-50:]
                     lock_info = agent._thread_locks.get_lock_info(thread_id)
                     held = lock_info.get("held_seconds", "?") if lock_info else "?"
                     logger.info(
