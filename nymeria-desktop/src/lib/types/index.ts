@@ -124,6 +124,8 @@ export interface ThreadConfig {
   callable: boolean;
   callableName?: string | null;
   callableDescription?: string | null;
+  enabledSkills: string[];
+  disabledSkills: string[];
   injectTodosInPrompt: boolean;
   showAutonomousPrompts: boolean;
   showPromptMetadata?: boolean;
@@ -136,6 +138,8 @@ export interface ThreadConfigUpdateRequest {
   instructions?: string | null;
   disabled_tools?: string[] | null;
   enabled_tools?: string[] | null;
+  enabled_skills?: string[] | null;
+  disabled_skills?: string[] | null;
   llm_config?: Partial<ThreadLLMConfig> | null;
   system_prompt?: string | null;
   callable?: boolean;
@@ -147,8 +151,56 @@ export interface ThreadConfigUpdateRequest {
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
+  clear_enabled_skills?: boolean;
+  clear_disabled_skills?: boolean;
   clear_llm_config?: boolean;
   clear_system_prompt?: boolean;
+}
+
+// =========================================================================
+// Agent Skills (SKILL.md progressive-disclosure bundles)
+// =========================================================================
+
+export type SkillScope = 'bundled' | 'global' | 'user';
+export type SkillMarketplaceSource = 'anthropic' | 'clawhub' | 'git';
+
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  scope: SkillScope;
+  allowed_tools: string[];
+  has_scripts: boolean;
+  has_references: boolean;
+  has_assets: boolean;
+}
+
+export interface SkillDetail extends SkillMetadata {
+  body: string;
+  path: string;
+  license?: string | null;
+  scripts: string[];
+  references: string[];
+}
+
+export interface MarketplaceSkillEntry {
+  name: string;
+  description: string;
+  source: SkillMarketplaceSource;
+  repo_url?: string | null;
+}
+
+export interface SkillInstallRequest {
+  name: string;
+  source: SkillMarketplaceSource;
+  scope: 'user' | 'global';
+}
+
+export interface ThreadActiveSkillsResponse {
+  thread_id: string;
+  enabled_global: string[];
+  thread_enabled: string[];
+  thread_disabled: string[];
+  skills: SkillMetadata[];
 }
 
 export interface AgentTemplate {

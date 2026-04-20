@@ -44,6 +44,11 @@ class ThreadConfig(BaseModel):
     instructions: Optional[str] = Field(default=None, max_length=5000)
     disabled_tools: List[str] = Field(default_factory=list)
     enabled_tools: List[str] = Field(default_factory=list)
+    # Agent Skills (SKILL.md progressive-disclosure bundles).
+    # enabled_skills extends the user's enabled_global_skills for this thread;
+    # disabled_skills subtracts from it. Active set is (global ∪ enabled) − disabled.
+    enabled_skills: List[str] = Field(default_factory=list, max_length=50)
+    disabled_skills: List[str] = Field(default_factory=list, max_length=50)
     llm_config: Optional[ThreadLLMConfig] = None
     # Full system prompt replacement (overrides soul.md entirely)
     system_prompt: Optional[str] = Field(default=None, max_length=50000)
@@ -95,6 +100,10 @@ class ThreadConfig(BaseModel):
         if self.disabled_tools:
             return True
         if self.enabled_tools:
+            return True
+        if self.enabled_skills:
+            return True
+        if self.disabled_skills:
             return True
         if self.llm_config:
             d = self.llm_config.model_dump(exclude_none=True)

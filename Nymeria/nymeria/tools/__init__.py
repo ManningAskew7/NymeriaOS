@@ -68,6 +68,12 @@ from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_search import tool_search, TOOL_SEARCH_TOOLS
+from .search_skills import (
+    list_installed_skills,
+    search_skills,
+    install_skill,
+    SEARCH_SKILLS_TOOLS,
+)
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
@@ -136,6 +142,10 @@ ALL_TOOLS = [
     notify,
     # Tool discovery and management
     tool_search,
+    # Skill discovery and installation
+    list_installed_skills,
+    search_skills,
+    install_skill,
 ]
 
 __all__ = [
@@ -200,6 +210,10 @@ __all__ = [
     "SLASH_COMMAND_TOOLS",
     "tool_search",
     "TOOL_SEARCH_TOOLS",
+    "list_installed_skills",
+    "search_skills",
+    "install_skill",
+    "SEARCH_SKILLS_TOOLS",
     "activity_feed",
     "ACTIVITY_FEED_TOOLS",
     "watchdog_dispatch",

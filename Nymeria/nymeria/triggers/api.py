@@ -1550,6 +1550,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         instructions: Optional[str] = Field(default=None, max_length=5000)
         disabled_tools: Optional[List[str]] = None
         enabled_tools: Optional[List[str]] = None
+        enabled_skills: Optional[List[str]] = None
+        disabled_skills: Optional[List[str]] = None
         llm_config: Optional[ThreadLLMConfigRequest] = None
         system_prompt: Optional[str] = Field(default=None, max_length=50000)
         callable: Optional[bool] = None
@@ -1561,6 +1563,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         clear_instructions: bool = False
         clear_disabled_tools: bool = False
         clear_enabled_tools: bool = False
+        clear_enabled_skills: bool = False
+        clear_disabled_skills: bool = False
         clear_llm_config: bool = False
         clear_system_prompt: bool = False
 
@@ -1617,6 +1621,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.disabled_tools = []
         if request.clear_enabled_tools:
             tc.enabled_tools = []
+        if request.clear_enabled_skills:
+            tc.enabled_skills = []
+        if request.clear_disabled_skills:
+            tc.disabled_skills = []
         if request.clear_llm_config:
             tc.llm_config = None
         if request.clear_system_prompt:
@@ -1629,6 +1637,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.disabled_tools = request.disabled_tools
         if request.enabled_tools is not None and not request.clear_enabled_tools:
             tc.enabled_tools = request.enabled_tools
+        if request.enabled_skills is not None and not request.clear_enabled_skills:
+            tc.enabled_skills = request.enabled_skills
+        if request.disabled_skills is not None and not request.clear_disabled_skills:
+            tc.disabled_skills = request.disabled_skills
         if request.llm_config is not None and not request.clear_llm_config:
             # Use exclude_unset to distinguish "not sent" from "explicitly set to null"
             llm_data = request.llm_config.model_dump(exclude_unset=True)
@@ -1976,6 +1988,241 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "mode": "custom",
             "default_tools": sorted(profile.tool_preferences.default_thread_tools),
         }
+
+    # ------------------------------------------------------------------
+    # Agent Skills (SKILL.md progressive-disclosure bundles)
+    # ------------------------------------------------------------------
+
+    class SkillMetadataResponse(BaseModel):
+        name: str
+        description: str
+        scope: str
+        allowed_tools: List[str] = []
+        has_scripts: bool = False
+        has_references: bool = False
+        has_assets: bool = False
+
+    class SkillDetailResponse(SkillMetadataResponse):
+        body: str
+        path: str
+        license: Optional[str] = None
+        scripts: List[str] = []
+        references: List[str] = []
+
+    class SkillInstallRequest(BaseModel):
+        name: str
+        source: str = Field("anthropic", description="Marketplace source: 'anthropic' (Phase 1).")
+        scope: str = Field("user", description="Install scope: 'user' or 'global'.")
+
+    class GlobalSkillsUpdateRequest(BaseModel):
+        skill_names: List[str]
+
+    def _invalidate_graph_caches():
+        agent = get_agent()
+        with agent._graph_cache_lock:
+            agent._user_graphs.clear()
+        try:
+            agent._async_user_graphs.clear()
+        except Exception:
+            pass
+
+    def _skill_to_metadata(skill) -> dict:
+        return {
+            "name": skill.name,
+            "description": skill.description,
+            "scope": skill.scope,
+            "allowed_tools": skill.allowed_tools,
+            "has_scripts": skill.has_scripts,
+            "has_references": skill.has_references,
+            "has_assets": skill.has_assets,
+        }
+
+    @app.get("/skills", tags=["Skills"])
+    async def list_skills(
+        user_id: str = Query("default"),
+        scope: Optional[str] = Query(None, description="Filter by scope: user/global/bundled"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """List all installed skills visible to *user_id*."""
+        agent = get_agent()
+        if agent.skill_manager is None:
+            return {"skills": [], "error": "skills subsystem unavailable"}
+        skills = agent.skill_manager.list_installed(user_id=user_id)
+        if scope:
+            skills = [s for s in skills if s.scope == scope]
+        return {"skills": [_skill_to_metadata(s) for s in skills]}
+
+    @app.get("/skills/marketplace/search", tags=["Skills"])
+    async def search_marketplace(
+        source: str = Query("anthropic"),
+        q: Optional[str] = Query(None),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Search a remote marketplace for skills."""
+        from ..skills.marketplace import get_fetcher, MarketplaceError
+        try:
+            fetcher = get_fetcher(source)
+            entries = fetcher.list(query=q)
+        except NotImplementedError as e:
+            raise HTTPException(status_code=501, detail=str(e))
+        except MarketplaceError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {
+            "source": source,
+            "query": q,
+            "results": [
+                {"name": e.name, "description": e.description, "source": e.source, "repo_url": e.repo_url}
+                for e in entries
+            ],
+        }
+
+    @app.get("/skills/{name}", response_model=SkillDetailResponse, tags=["Skills"])
+    async def get_skill(
+        name: str,
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Return the full body + frontmatter of an installed skill."""
+        agent = get_agent()
+        if agent.skill_manager is None:
+            raise HTTPException(status_code=503, detail="skills subsystem unavailable")
+        skill = agent.skill_manager.get(name, user_id=user_id)
+        if skill is None:
+            raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        return {
+            **_skill_to_metadata(skill),
+            "body": skill.body,
+            "path": str(skill.path),
+            "license": skill.license,
+            "scripts": skill.list_scripts(),
+            "references": skill.list_references(),
+        }
+
+    @app.post("/skills/install", tags=["Skills"])
+    async def install_skill_endpoint(
+        request: SkillInstallRequest,
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Install a skill from a marketplace into user or global scope."""
+        agent = get_agent()
+        if agent.skill_manager is None:
+            raise HTTPException(status_code=503, detail="skills subsystem unavailable")
+        from ..skills.marketplace import get_fetcher, MarketplaceError
+        if request.scope not in ("user", "global"):
+            raise HTTPException(status_code=400, detail="scope must be 'user' or 'global'")
+        try:
+            fetcher = get_fetcher(request.source)
+        except NotImplementedError as e:
+            raise HTTPException(status_code=501, detail=str(e))
+        except MarketplaceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        target_dir = agent.skill_manager.target_dir(
+            request.scope, user_id=user_id if request.scope == "user" else None
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            skill = fetcher.fetch(request.name, target_dir)
+        except MarketplaceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("install_skill_endpoint failed")
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+        agent.skill_manager.reload()
+        _invalidate_graph_caches()
+        return {"status": "ok", "skill": _skill_to_metadata(skill), "path": str(skill.path)}
+
+    @app.delete("/skills/{name}", tags=["Skills"])
+    async def uninstall_skill(
+        name: str,
+        scope: str = Query("user"),
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Remove an installed skill from disk."""
+        agent = get_agent()
+        if agent.skill_manager is None:
+            raise HTTPException(status_code=503, detail="skills subsystem unavailable")
+        if scope not in ("user", "global"):
+            raise HTTPException(status_code=400, detail="scope must be 'user' or 'global'")
+        try:
+            deleted = agent.skill_manager.uninstall(
+                name, scope=scope,
+                user_id=user_id if scope == "user" else None,
+            )
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"skill not found in scope={scope}: {name}")
+
+        # Also clean up any stale references to this skill name in profile/thread configs.
+        try:
+            profile = agent.profile_manager.get_profile(user_id)
+            if name in getattr(profile, "enabled_global_skills", []):
+                profile.enabled_global_skills = [
+                    n for n in profile.enabled_global_skills if n != name
+                ]
+                agent.profile_manager.save_profile(profile)
+        except Exception:
+            pass
+
+        _invalidate_graph_caches()
+        return {"status": "ok", "deleted": name, "scope": scope}
+
+    @app.get("/threads/{thread_id}/skills", tags=["Skills"])
+    async def get_thread_active_skills(
+        thread_id: str,
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Resolved set of skills active on this thread (after scope + overrides)."""
+        agent = get_agent()
+        if agent.skill_manager is None:
+            return {"skills": []}
+        profile = agent.profile_manager.get_profile(user_id)
+        tc = agent.thread_config_manager.get_config(thread_id)
+        enabled_global = list(getattr(profile, "enabled_global_skills", []) or [])
+        enabled_thread = list(tc.enabled_skills) if tc and tc.enabled_skills else []
+        disabled_thread = list(tc.disabled_skills) if tc and tc.disabled_skills else []
+        active = agent.skill_manager.list_for_thread(
+            user_id=user_id,
+            enabled_global_skills=enabled_global,
+            thread_enabled_skills=enabled_thread,
+            thread_disabled_skills=disabled_thread,
+        )
+        return {
+            "thread_id": thread_id,
+            "enabled_global": enabled_global,
+            "thread_enabled": enabled_thread,
+            "thread_disabled": disabled_thread,
+            "skills": [_skill_to_metadata(s) for s in active],
+        }
+
+    @app.get("/settings/global-skills", tags=["Skills"])
+    async def get_global_skills(
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Which skills are enabled-by-default for every new thread."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        return {"enabled_global_skills": list(getattr(profile, "enabled_global_skills", []) or [])}
+
+    @app.put("/settings/global-skills", tags=["Skills"])
+    async def set_global_skills(
+        request: GlobalSkillsUpdateRequest,
+        user_id: str = Query("default"),
+        _: bool = Depends(verify_api_key),
+    ):
+        """Replace the user's enabled-by-default skill list."""
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        profile.enabled_global_skills = list(request.skill_names)
+        agent.profile_manager.save_profile(profile)
+        _invalidate_graph_caches()
+        return {"enabled_global_skills": profile.enabled_global_skills}
 
     @app.get("/settings", response_model=ServerSettingsResponse, tags=["Settings"])
     async def get_server_settings(

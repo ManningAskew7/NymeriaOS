@@ -496,6 +496,16 @@ class Settings(BaseSettings):
         return self.data_dir / "mcp_servers"
 
     @property
+    def skills_dir(self) -> Path:
+        """Get the Agent Skills data directory (user-installed + global skills)."""
+        return self.data_dir / "skills"
+
+    @property
+    def bundled_skills_dir(self) -> Path:
+        """Get the repo-bundled skills directory (ships with Nymeria)."""
+        return PROJECT_ROOT / "nymeria" / "skills_bundled"
+
+    @property
     def cors_origins_list(self) -> List[str]:
         """Get CORS origins as a list."""
         if self.cors_origins == "*":

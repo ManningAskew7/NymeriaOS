@@ -28,6 +28,10 @@ python-dotenv>=1.0.0
 
 # HTTP client (for web tools)
 httpx>=0.27.0
+requests>=2.31.0  # agent skills marketplace (GitHub API)
+
+# Agent Skills — SKILL.md frontmatter parser
+PyYAML>=6.0
 
 # Utilities
 python-multipart>=0.0.12
