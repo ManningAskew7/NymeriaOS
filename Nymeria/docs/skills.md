@@ -92,13 +92,61 @@ Plus: the existing `PATCH /threads/{id}/config` accepts `enabled_skills` and
 Registered in `ALL_TOOLS` so the agent can manage its own skill library:
 
 - `list_installed_skills(scope='all'|'user'|'global'|'bundled')`
-- `search_skills(query, source='installed'|'anthropic')`
+- `search_skills(query, source='installed'|'anthropic', top_k=8)`
 - `install_skill(name, source='anthropic', scope='user'|'global')`
 
 The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS` —
 it's synthesized per-graph in
 `NymeriaAgent._build_skill_meta_tool()` and only appears on threads with ≥1
 active skill.
+
+## Semantic search
+
+`search_skills` uses a three-stage fallback chain so natural-language intent
+queries find the right skill even when the query and the skill name share no
+keywords:
+
+1. **Semantic** — `openai/text-embedding-3-small` embeddings indexed in
+   `sqlite-vec`, the same stack Nymeria's RAG already uses. Requires
+   `OPENAI_API_KEY`. Returns top-k by cosine similarity on
+   `name + description + allowed-tools`.
+2. **BM25 / FTS5** — sqlite `FTS5` full-text search with Porter stemming,
+   ranked by `bm25()`. No model, no network. Kicks in when semantic is
+   unavailable or returns no results.
+3. **Substring** — last-resort case-insensitive substring match over names
+   and descriptions.
+
+The tool's JSON response always includes a ``mode`` field (`"semantic"`,
+`"bm25"`, or `"substring"`) plus a ``warning`` when running degraded:
+
+```json
+{
+  "count": 3,
+  "mode": "bm25",
+  "warning": "semantic search unavailable (OPENAI_API_KEY not set; semantic search disabled); falling back to keyword search. Set OPENAI_API_KEY on the server for better skill discovery.",
+  "results": [{"name": "pdf", "description": "…", "score": 0.71, "scope": "user"}]
+}
+```
+
+The index is namespaced. Installed skills live in the `installed` namespace
+and get rebuilt on every `SkillManager.reload()` (i.e. after an install,
+uninstall, or reload-skills tool call). Marketplace entries live in
+`marketplace:<source>` namespaces and are refreshed lazily with a 15-minute
+TTL when the agent searches `source="anthropic"`.
+
+Index storage: `data/skills/index.db` (sqlite). Zero new Python deps —
+`openai` and `sqlite-vec` are already in `requirements.txt` for RAG.
+
+### Marketplace fetch performance
+
+The Anthropic marketplace fetcher downloads the entire `anthropics/skills`
+repo as a single tarball (~few MB) via GitHub's codeload endpoint and
+caches the bytes for 15 minutes. Both `list()` (parse all SKILL.md
+frontmatter in-memory) and `fetch()` (extract a single skill's subtree)
+share that cache — a typical "search → install" flow hits the network
+exactly once.
+
+## Phase 1.5 — agent-authored skills (not yet implemented)
 
 ## Marketplace
 
@@ -159,11 +207,33 @@ correctness/ergonomics upgrade (Pydantic-validated frontmatter, atomic
   red flags in SKILL.md and scripts.
 - Bundled skills cannot be uninstalled at runtime (they're part of the repo).
 
+## Future improvements
+
+- **Local-server embeddings as a fallback step.** Ollama / llama.cpp-server /
+  LM Studio expose an OpenAI-compatible `/v1/embeddings` endpoint when
+  serving an embedding model (e.g. `nomic-embed-text`, `all-MiniLM`). A
+  `SKILLS_LOCAL_EMBED_URL` env var could slot in between the OpenAI path
+  and the BM25 fallback, letting users who run a local inference stack get
+  semantic search without an OpenAI key. The current fallback chain is
+  `OpenAI → BM25 → substring`; adding this would make it
+  `OpenAI → local /v1/embeddings → BM25 → substring`.
+- **Agent-authored skills tools** (`create_skill`, `edit_skill`,
+  `delete_skill`) — see the Phase 1.5 section above.
+- **ClawHub + arbitrary git URL marketplaces** — the `marketplace.py`
+  fetcher stubs are ready for Phase 2.
+- **Skill version pinning and semver resolution** — currently always
+  grabs `main`.
+- **Graph RAG-Tool Fusion / hybrid retrieval** — combining semantic +
+  BM25 with reciprocal rank fusion beats either alone past ~100 skills
+  (see research-doc citation). Not worth the code until the installed
+  library outgrows ~50 skills.
+
 ## References
 
 - Research synthesis on skills architectures:
   `compass_artifact_wf-e088516e-e35b-4ba3-8124-078f934fdccd_text_markdown.md`
 - Anthropic spec + reference skills: https://github.com/anthropics/skills
-- Skills module: `nymeria/skills/` (loader, meta-tool factory, marketplace)
+- Skills module: `nymeria/skills/` (loader, meta-tool factory, marketplace, embedding index)
 - Agent-facing tools: `nymeria/tools/search_skills.py`
 - Desktop UI: `nymeria-desktop/src/lib/components/skills/`, `stores/skills.svelte.ts`
+- [Anthropic `tool_search_with_embeddings` cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/tool_use/tool_search_with_embeddings.ipynb) — canonical embedding-search pattern that this implementation mirrors (differs only in embedding model: we reuse Nymeria's existing `text-embedding-3-small` instead of `all-MiniLM-L6-v2` to avoid shipping a local model)
