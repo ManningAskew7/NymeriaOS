@@ -11,6 +11,7 @@
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import { ToolManagementPanel } from '../tools';
+  import SkillsPanel from '../skills/SkillsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
 
@@ -168,7 +169,7 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'proxy';
+  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'skills' | 'voice' | 'proxy';
   let activeTab = $state<SettingsTab>((initialTab as SettingsTab) || 'connection');
   let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -429,6 +430,14 @@
       disabled={!serverSettings}
     >
       Tools
+    </button>
+    <button
+      class="tab"
+      class:active={activeTab === 'skills'}
+      onclick={() => (activeTab = 'skills')}
+      disabled={!serverSettings}
+    >
+      Skills
     </button>
     <button
       class="tab"
@@ -1048,6 +1057,13 @@
   {#if activeTab === 'tools'}
     <div class="tab-content tab-content-full">
       <ToolManagementPanel />
+    </div>
+  {/if}
+
+  <!-- Skills Tab -->
+  {#if activeTab === 'skills'}
+    <div class="tab-content tab-content-full">
+      <SkillsPanel />
     </div>
   {/if}
 

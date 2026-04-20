@@ -10,6 +10,7 @@
   import { api } from '$lib/services/api.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
+  import SkillCard from '../skills/SkillCard.svelte';
   import ImageModal from './ImageModal.svelte';
 
   interface Props {
@@ -339,16 +340,29 @@
             />
           {:else if step.type === 'tool_call'}
             <div class="tool-calls">
-              <ToolCallCard toolCall={{
-                id: step.id || '',
-                name: step.name || '',
-                arguments: step.arguments || {},
-                result: step.result,
-                artifacts: step.artifacts,
-                status: step.status || 'pending',
-                startTime: step.startTime,
-                endTime: step.endTime
-              }} />
+              {#if step.name === 'Skill'}
+                <SkillCard toolCall={{
+                  id: step.id || '',
+                  name: step.name || '',
+                  arguments: step.arguments || {},
+                  result: step.result,
+                  artifacts: step.artifacts,
+                  status: step.status || 'pending',
+                  startTime: step.startTime,
+                  endTime: step.endTime
+                }} />
+              {:else}
+                <ToolCallCard toolCall={{
+                  id: step.id || '',
+                  name: step.name || '',
+                  arguments: step.arguments || {},
+                  result: step.result,
+                  artifacts: step.artifacts,
+                  status: step.status || 'pending',
+                  startTime: step.startTime,
+                  endTime: step.endTime
+                }} />
+              {/if}
             </div>
           {:else if step.type === 'response' && step.content}
             <div class="message-content">
@@ -371,7 +385,11 @@
         {#if hasToolCalls}
           <div class="tool-calls">
             {#each message.toolCalls || [] as toolCall (toolCall.id)}
-              <ToolCallCard {toolCall} />
+              {#if toolCall.name === 'Skill'}
+                <SkillCard {toolCall} />
+              {:else}
+                <ToolCallCard {toolCall} />
+              {/if}
             {/each}
           </div>
         {/if}

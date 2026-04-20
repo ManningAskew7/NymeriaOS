@@ -15,6 +15,7 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import MCPServerForm from '$lib/components/tools/MCPServerForm.svelte';
   import type { MCPServerCreateRequest } from '$lib/types';
+  import { skillsStore } from '$lib/stores/skills.svelte';
 
   interface Props {
     thread: Thread;
@@ -26,7 +27,11 @@
   let { thread, threadConfig, onClose, onSaved }: Props = $props();
 
   // Active tab
-  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'triggers'>('instructions');
+  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'skills' | 'triggers'>('instructions');
+
+  // Per-thread skill overrides
+  let threadEnabledSkills = $state<Set<string>>(new Set(threadConfig?.enabledSkills ?? []));
+  let threadDisabledSkills = $state<Set<string>>(new Set(threadConfig?.disabledSkills ?? []));
 
   // Form state — initialized from threadConfig
   let instructions = $state(threadConfig?.instructions ?? '');
@@ -300,7 +305,54 @@
     if (!mcpServersStore.loaded && !mcpServersStore.loading) {
       mcpServersStore.load();
     }
+    if (!skillsStore.installedLoaded && !skillsStore.installedLoading) {
+      skillsStore.loadInstalled();
+    }
+    if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) {
+      skillsStore.loadGlobal();
+    }
   });
+
+  // Per-thread skill resolution: (global ∪ enabled) − disabled
+  const resolvedActiveSkillNames = $derived.by(() => {
+    const seen = new Set<string>();
+    for (const n of skillsStore.enabledGlobal) {
+      if (!threadDisabledSkills.has(n)) seen.add(n);
+    }
+    for (const n of threadEnabledSkills) {
+      if (!threadDisabledSkills.has(n)) seen.add(n);
+    }
+    return seen;
+  });
+
+  function toggleThreadSkillEnabled(name: string) {
+    const next = new Set(threadEnabledSkills);
+    if (next.has(name)) next.delete(name);
+    else {
+      next.add(name);
+      // When explicitly enabling, clear any disable override for this skill.
+      if (threadDisabledSkills.has(name)) {
+        const d = new Set(threadDisabledSkills);
+        d.delete(name);
+        threadDisabledSkills = d;
+      }
+    }
+    threadEnabledSkills = next;
+  }
+
+  function toggleThreadSkillDisabled(name: string) {
+    const next = new Set(threadDisabledSkills);
+    if (next.has(name)) next.delete(name);
+    else {
+      next.add(name);
+      if (threadEnabledSkills.has(name)) {
+        const e = new Set(threadEnabledSkills);
+        e.delete(name);
+        threadEnabledSkills = e;
+      }
+    }
+    threadDisabledSkills = next;
+  }
 
   const filteredTools = $derived(() => {
     let allTools = unifiedToolsStore.tools;
@@ -373,6 +425,12 @@
     for (const t of enabledTools) {
       if (!origEnabled.has(t)) return true;
     }
+    const origEnabledSkills = new Set(threadConfig?.enabledSkills ?? []);
+    const origDisabledSkills = new Set(threadConfig?.disabledSkills ?? []);
+    if (threadEnabledSkills.size !== origEnabledSkills.size) return true;
+    for (const s of threadEnabledSkills) if (!origEnabledSkills.has(s)) return true;
+    if (threadDisabledSkills.size !== origDisabledSkills.size) return true;
+    for (const s of threadDisabledSkills) if (!origDisabledSkills.has(s)) return true;
     if (llmProvider !== origProvider) return true;
     if (llmModel !== origModel) return true;
     if (llmTemperature !== origTemp) return true;
@@ -436,6 +494,18 @@
         updates.enabled_tools = Array.from(enabledTools);
       } else {
         updates.clear_enabled_tools = true;
+      }
+
+      // Per-thread skill overrides
+      if (threadEnabledSkills.size > 0) {
+        updates.enabled_skills = Array.from(threadEnabledSkills);
+      } else {
+        updates.clear_enabled_skills = true;
+      }
+      if (threadDisabledSkills.size > 0) {
+        updates.disabled_skills = Array.from(threadDisabledSkills);
+      } else {
+        updates.clear_disabled_skills = true;
       }
 
       // LLM config
@@ -527,6 +597,8 @@
       instructions = '';
       disabledTools = new Set();
       enabledTools = new Set();
+      threadEnabledSkills = new Set();
+      threadDisabledSkills = new Set();
       llmProvider = '';
       llmModel = '';
       llmTemperature = '';
@@ -544,11 +616,14 @@
         instructions: null,
         disabledTools: [],
         enabledTools: [],
+        enabledSkills: [],
+        disabledSkills: [],
         llmConfig: null,
         systemPrompt: null,
         callable: false,
         callableName: null,
         callableDescription: null,
+        injectTodosInPrompt: false,
         showAutonomousPrompts: false,
         showPromptMetadata: false,
         createdAt: null,
@@ -633,6 +708,17 @@
         Tools
         {#if disabledToolCount > 0}
           <span class="tab-badge">{disabledToolCount}</span>
+        {/if}
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'skills'}
+        onclick={() => (activeTab = 'skills')}
+        type="button"
+      >
+        Skills
+        {#if resolvedActiveSkillNames.size > 0}
+          <span class="tab-badge">{resolvedActiveSkillNames.size}</span>
         {/if}
       </button>
       <button
@@ -1058,6 +1144,63 @@
                   <Icon name="plus" size={14} /> Add MCP Server
                 </button>
               {/if}
+            </div>
+          {/if}
+        </div>
+
+      {:else if activeTab === 'skills'}
+        <div class="tab-panel skills-thread-panel">
+          {#if skillsStore.installed.length === 0}
+            <div class="skills-empty">
+              <p style="margin: 0;">No skills installed yet.</p>
+              <p class="field-hint" style="margin-top: 0.5rem;">
+                Install skills from Settings → Skills → Browse Marketplace, then return here to enable them for this thread.
+              </p>
+            </div>
+          {:else}
+            <p class="field-hint">
+              Turn skills on or off for this thread. Globally-enabled skills are on by default and can be disabled here; other installed skills can be enabled for this thread only.
+            </p>
+            <div class="skills-list">
+              {#each skillsStore.installed as skill (skill.name)}
+                {@const globalOn = skillsStore.enabledGlobal.includes(skill.name)}
+                {@const threadOn = threadEnabledSkills.has(skill.name)}
+                {@const threadOff = threadDisabledSkills.has(skill.name)}
+                {@const activeHere = (globalOn || threadOn) && !threadOff}
+                <div class="skill-row" class:active={activeHere}>
+                  <div class="skill-info">
+                    <div class="skill-head">
+                      <span class="skill-name">{skill.name}</span>
+                      <span class="skill-scope">{skill.scope}</span>
+                      {#if globalOn}<span class="skill-chip">global</span>{/if}
+                    </div>
+                    <p class="skill-desc">{skill.description}</p>
+                  </div>
+                  <div class="skill-toggles">
+                    {#if globalOn}
+                      <button
+                        class="skill-btn"
+                        class:skill-btn-danger={threadOff}
+                        onclick={() => toggleThreadSkillDisabled(skill.name)}
+                        type="button"
+                        title="Disable for this thread only"
+                      >
+                        {threadOff ? 'Disabled here' : 'Disable for thread'}
+                      </button>
+                    {:else}
+                      <button
+                        class="skill-btn"
+                        class:skill-btn-active={threadOn}
+                        onclick={() => toggleThreadSkillEnabled(skill.name)}
+                        type="button"
+                        title="Enable for this thread"
+                      >
+                        {threadOn ? 'Enabled here' : 'Enable for thread'}
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
             </div>
           {/if}
         </div>
@@ -1621,5 +1764,101 @@
   .mcp-add-btn:hover {
     color: var(--accent-primary);
     border-color: var(--accent-primary);
+  }
+
+  .skills-thread-panel .skills-empty {
+    text-align: center;
+    padding: var(--spacing-lg);
+    color: var(--text-secondary);
+  }
+
+  .skills-thread-panel .skills-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-md);
+  }
+
+  .skills-thread-panel .skill-row {
+    display: flex;
+    gap: var(--spacing-md);
+    padding: var(--spacing-sm);
+    background: var(--bg-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .skills-thread-panel .skill-row.active {
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-base));
+  }
+
+  .skills-thread-panel .skill-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .skills-thread-panel .skill-head {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-bottom: 4px;
+  }
+
+  .skills-thread-panel .skill-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-sm);
+  }
+
+  .skills-thread-panel .skill-scope,
+  .skills-thread-panel .skill-chip {
+    font-size: var(--font-size-xs);
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border-subtle);
+  }
+  .skills-thread-panel .skill-chip {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+  }
+
+  .skills-thread-panel .skill-desc {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  .skills-thread-panel .skill-toggles {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-start;
+  }
+
+  .skills-thread-panel .skill-btn {
+    padding: 4px 10px;
+    font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .skills-thread-panel .skill-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+  .skills-thread-panel .skill-btn-active {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  }
+  .skills-thread-panel .skill-btn-danger {
+    color: var(--danger, #ef4444);
+    border-color: color-mix(in srgb, var(--danger, #ef4444) 40%, transparent);
+    background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
   }
 </style>

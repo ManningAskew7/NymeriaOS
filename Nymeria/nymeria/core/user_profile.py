@@ -141,6 +141,14 @@ class UserProfile(BaseModel):
         description="User preferences for tool availability and configuration"
     )
 
+    enabled_global_skills: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Agent Skills turned on by default for all of this user's threads. "
+            "Per-thread enabled_skills/disabled_skills extend/override this set."
+        ),
+    )
+
     # Limits
     MAX_MEMORIES: int = 100
     MAX_VALUE_LENGTH: int = 1000

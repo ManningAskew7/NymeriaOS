@@ -28,6 +28,11 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 18 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
 | 19 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
 | 20 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
+| 21 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
+| 22 | `search_skills` | Skills | SAFE | On | Search installed skills or the Anthropic marketplace |
+| 23 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
+
+> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. See `docs/skills.md`.
 
 > **Note:** `reload_all` and `self_modify_rollback` are in `ALL_TOOLS` (imported from `subagent.py`). They are also in `SUBAGENT_TOOLS` / optional tooling for backward compatibility. The "optional" classification refers to per-thread enabling — they can be disabled per-thread via thread config even though they're always available globally.
 

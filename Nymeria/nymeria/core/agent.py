@@ -41,6 +41,8 @@ from .migration import migrate_old_scheduled_tasks
 from .memory_index import MemoryIndex
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
+from ..skills import SkillManager
+from ..skills.meta_tool import create_skill_meta_tool
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +409,19 @@ class NymeriaAgent:
         # Initialize per-thread config manager
         self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
 
+        # Initialize Agent Skills manager (SKILL.md progressive-disclosure bundles)
+        try:
+            self.skill_manager = SkillManager(
+                bundled_dir=self.settings.bundled_skills_dir,
+                data_skills_dir=self.settings.skills_dir,
+            )
+        except Exception as e:
+            logger.warning(
+                "SkillManager init failed (%s); skills feature disabled this session",
+                e,
+            )
+            self.skill_manager = None
+
         # Initialize thread metadata manager (server-side titles, pins, platform info)
         self.thread_metadata_manager = ThreadMetadataManager(self.settings.data_dir)
 
@@ -688,9 +703,12 @@ class NymeriaAgent:
                 f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
                 f"|dt:{sorted(tc.disabled_tools)}"
                 f"|et:{sorted(tc.enabled_tools)}"
+                f"|es:{sorted(tc.enabled_skills)}"
+                f"|ds:{sorted(tc.disabled_skills)}"
                 f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
             )
-            return f"{hash(thread_config_str)}"
+            skills_str = self._skills_fingerprint(user_id, thread_id)
+            return f"{hash(thread_config_str + skills_str)}"
 
         profile = self.profile_manager.get_profile(user_id)
         # Only include profile in hash if this thread injects it
@@ -723,10 +741,14 @@ class NymeriaAgent:
                 f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
                 f"|dt:{sorted(tc.disabled_tools)}"
                 f"|et:{sorted(tc.enabled_tools)}"
+                f"|es:{sorted(tc.enabled_skills)}"
+                f"|ds:{sorted(tc.disabled_skills)}"
                 f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
             )
 
-        return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str)}"
+        skills_str = self._skills_fingerprint(user_id, thread_id)
+
+        return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str + skills_str)}"
 
     def _build_full_system_prompt(
         self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
@@ -1914,6 +1936,70 @@ class NymeriaAgent:
 
         return tools
 
+    def _build_skill_meta_tool(self, user_id: str, tc, thread_tools: List[BaseTool]):
+        """Return the Skill meta-tool for this thread, or None if no skills are active.
+
+        Combines the user's enabled_global_skills with ThreadConfig overrides
+        (enabled_skills ∪ disabled_skills). Returns None when the resulting
+        active set is empty so we don't pay tool-schema overhead needlessly.
+        """
+        if self.skill_manager is None:
+            return None
+        try:
+            profile = self.profile_manager.get_profile(user_id)
+            enabled_global = list(getattr(profile, "enabled_global_skills", []) or [])
+        except Exception:
+            enabled_global = []
+
+        enabled_thread = list(tc.enabled_skills) if tc and tc.enabled_skills else []
+        disabled_thread = list(tc.disabled_skills) if tc and tc.disabled_skills else []
+
+        active = self.skill_manager.list_for_thread(
+            user_id=user_id,
+            enabled_global_skills=enabled_global,
+            thread_enabled_skills=enabled_thread,
+            thread_disabled_skills=disabled_thread,
+        )
+        if not active:
+            return None
+
+        return create_skill_meta_tool(
+            active_skills=active,
+            skill_manager=self.skill_manager,
+            user_id=user_id,
+            thread_tool_names=[t.name for t in thread_tools],
+        )
+
+    def _skills_fingerprint(self, user_id: str, thread_id: str) -> str:
+        """Hash inputs that affect the Skill meta-tool's description.
+
+        Included so the per-(user, thread) graph cache invalidates when:
+        - the user toggles a skill in enabled_global_skills
+        - the thread flips enabled_skills / disabled_skills
+        - an active skill's frontmatter (name, description, allowed_tools) changes on disk
+        """
+        if self.skill_manager is None:
+            return "nosm"
+        try:
+            profile = self.profile_manager.get_profile(user_id)
+            enabled_global = list(getattr(profile, "enabled_global_skills", []) or [])
+        except Exception:
+            enabled_global = []
+        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+        enabled_thread = list(tc.enabled_skills) if tc and tc.enabled_skills else []
+        disabled_thread = list(tc.disabled_skills) if tc and tc.disabled_skills else []
+        active = self.skill_manager.list_for_thread(
+            user_id=user_id,
+            enabled_global_skills=enabled_global,
+            thread_enabled_skills=enabled_thread,
+            thread_disabled_skills=disabled_thread,
+        )
+        parts = [
+            f"{s.name}:{s.scope}:{hash(s.description)}:{sorted(s.allowed_tools)}"
+            for s in active
+        ]
+        return f"sk:{hash('|'.join(parts))}"
+
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a LangGraph execution graph with a specific system prompt.
 
@@ -1991,6 +2077,11 @@ class NymeriaAgent:
                             reg_tool = self.tool_registry.get_tool(name)
                             if reg_tool:
                                 tools.append(reg_tool)
+
+        # Inject the Skill meta-tool if any skills are active on this thread.
+        skill_tool = self._build_skill_meta_tool(user_id, tc, tools)
+        if skill_tool is not None:
+            tools.append(skill_tool)
 
         return create_graph(
             config=config,
@@ -2074,6 +2165,11 @@ class NymeriaAgent:
                             reg_tool = self.tool_registry.get_tool(name)
                             if reg_tool:
                                 tools.append(reg_tool)
+
+        # Inject the Skill meta-tool if any skills are active on this thread.
+        skill_tool = self._build_skill_meta_tool(user_id, tc, tools)
+        if skill_tool is not None:
+            tools.append(skill_tool)
 
         return create_graph(
             config=config,
