@@ -849,6 +849,7 @@ export interface TriggerCreateRequest {
   conditions?: TriggerCondition[];
   cooldown_seconds?: number;
   enabled?: boolean;
+  thread_id?: string;
 }
 
 export interface TriggerUpdateRequest {

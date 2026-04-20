@@ -110,7 +110,30 @@ def trigger_create(
     if bind_to_current_thread:
         thread_id = get_thread_id(config)
         if thread_id == "default":
-            return "[Error]: Cannot bind to default thread. Run this from a named thread."
+            return (
+                "[Error]: Cannot bind trigger to this conversation — "
+                "it needs to be created from a dedicated thread, not the default thread."
+            )
+
+    # Validate source type early for specific error messages
+    from ..triggers.sources import get_source, AVAILABLE_SOURCES
+
+    source = get_source(source_type)
+    if source is None:
+        available = ", ".join(AVAILABLE_SOURCES.keys()) if AVAILABLE_SOURCES else "none"
+        return f"[Error]: Unknown source type '{source_type}'. Available: {available}"
+
+    ok, msg = source.validate_config(source_config or {})
+    if not ok:
+        return f"[Error]: Invalid source config for '{source_type}': {msg}"
+
+    # Validate action config
+    if action_type == "agent_prompt" and not action_config.get("prompt_template") and not action_config.get("prompt"):
+        return "[Error]: agent_prompt requires 'prompt_template' in action_config."
+    if action_type == "notify" and not action_config.get("message_template"):
+        return "[Error]: notify requires 'message_template' in action_config."
+    if action_type == "create_todo" and not action_config.get("task_template"):
+        return "[Error]: create_todo requires 'task_template' in action_config."
 
     # Parse conditions
     condition_objects = None
@@ -134,7 +157,7 @@ def trigger_create(
     )
 
     if trigger is None:
-        return "[Error]: Failed to create trigger. Check source type and config."
+        return "[Error]: Failed to create trigger (at trigger limit, or internal error)."
 
     result = f"[Success]: Created trigger '{name}' (ID: {trigger.id})"
     if source_type == "webhook":
