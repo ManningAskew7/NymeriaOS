@@ -45,6 +45,7 @@ class TriggerCreateRequest(BaseModel):
     conditions: List[TriggerConditionRequest] = Field(default_factory=list)
     cooldown_seconds: int = Field(default=0, ge=0)
     enabled: bool = Field(default=True)
+    thread_id: Optional[str] = Field(default=None, description="Bind to existing thread instead of creating trigger thread")
 
 
 class TriggerUpdateRequest(BaseModel):
@@ -154,6 +155,7 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
             cooldown_seconds=body.cooldown_seconds,
             enabled=body.enabled,
             created_by="user",
+            thread_id=body.thread_id,
         )
 
         if trigger is None:
@@ -176,17 +178,18 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
             manager.update_trigger(user_id, trigger.id, conditions=conditions)
             trigger = manager.get_trigger(user_id, trigger.id)
 
-        # Create thread metadata for the trigger thread
-        try:
-            agent = get_agent_fn()
-            agent.thread_metadata_manager.upsert_thread(
-                user_id, trigger.thread_id,
-                title=f"Trigger: {body.name}",
-                title_source="platform",
-                platform="trigger",
-            )
-        except Exception:
-            pass
+        # Create thread metadata only when trigger has its own thread (not bound to existing)
+        if not body.thread_id:
+            try:
+                agent = get_agent_fn()
+                agent.thread_metadata_manager.upsert_thread(
+                    user_id, trigger.thread_id,
+                    title=f"Trigger: {body.name}",
+                    title_source="platform",
+                    platform="trigger",
+                )
+            except Exception:
+                pass
 
         return TriggerResponse.from_definition(trigger)
 

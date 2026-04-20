@@ -190,6 +190,7 @@
           conditions: conditions.filter(c => c.field && c.value),
           cooldown_seconds: cooldownSeconds,
           enabled,
+          thread_id: resolvedThreadId || undefined,
         };
         const created = await triggersStore.createTrigger(request);
         onCreated?.(created);
