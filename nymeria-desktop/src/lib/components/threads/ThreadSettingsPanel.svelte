@@ -1064,7 +1064,10 @@
 
       {:else if activeTab === 'triggers'}
         <div class="tab-panel">
-          <TriggerConfigTab {thread} />
+          <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+            <p style="margin: 0; font-size: var(--font-size-sm);">Triggers have moved to the Dashboard panel.</p>
+            <p style="margin: 0.5rem 0 0; font-size: var(--font-size-xs);">Use the "Triggers" section in the right panel to manage automations.</p>
+          </div>
         </div>
       {/if}
     </div>

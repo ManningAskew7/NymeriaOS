@@ -10,7 +10,9 @@ in ``data_dir/triggers/``.
 
 import json
 import logging
+import re
 import threading
+import time as _time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 # Thread-safe locks keyed by user_id
 _trigger_locks: Dict[str, threading.RLock] = {}
 _locks_lock = threading.Lock()
+
+MAX_EXECUTION_LOG = 200
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +55,17 @@ class TriggerAction(BaseModel):
     )
 
 
+class TriggerCondition(BaseModel):
+    """A filter condition evaluated against each event before firing."""
+
+    field: str = Field(..., description="Event field name to check")
+    operator: Literal["equals", "contains", "starts_with", "matches_regex", "not_equals"] = Field(
+        default="contains"
+    )
+    value: str = Field(default="")
+    case_sensitive: bool = Field(default=False)
+
+
 class TriggerDefinition(BaseModel):
     """A single trigger instance created by the user or agent."""
 
@@ -59,6 +74,7 @@ class TriggerDefinition(BaseModel):
     source_type: str = Field(..., description="Must match a registered source")
     source_config: dict = Field(default_factory=dict, description="Validated against source's config_schema")
     action: TriggerAction
+    conditions: List[TriggerCondition] = Field(default_factory=list, description="Event filters (AND logic)")
     enabled: bool = Field(default=True)
     cooldown_seconds: int = Field(default=0, ge=0, description="Min seconds between firings")
     last_fired: Optional[datetime] = Field(default=None)
@@ -67,6 +83,29 @@ class TriggerDefinition(BaseModel):
     thread_id: str = Field(default="", description="Persistent thread for this trigger")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     created_by: str = Field(default="agent", description="'agent' or 'user'")
+    # Health tracking
+    consecutive_errors: int = Field(default=0)
+    last_error: Optional[str] = Field(default=None)
+    last_error_at: Optional[datetime] = Field(default=None)
+    health_status: Literal["healthy", "degraded", "failing"] = Field(default="healthy")
+    # Pending events deferred because the thread was busy
+    pending_events: List[dict] = Field(default_factory=list)
+
+
+class TriggerExecution(BaseModel):
+    """A single trigger execution record for audit logging."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    trigger_id: str = ""
+    trigger_name: str = ""
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    status: Literal["success", "error", "partial", "deferred"] = "success"
+    event_count: int = 1
+    events_summary: str = ""
+    response_summary: str = ""
+    error_message: Optional[str] = None
+    duration_seconds: float = 0.0
+    action_type: str = ""
 
 
 class TriggerStore(BaseModel):
@@ -249,13 +288,93 @@ class TriggerManager:
                     users.append(p.stem)
         return sorted(users)
 
+    # -- conditions -------------------------------------------------------
+
+    @staticmethod
+    def _evaluate_conditions(event: dict, conditions: List[TriggerCondition]) -> bool:
+        """Return True if ALL conditions pass (AND logic)."""
+        for cond in conditions:
+            event_value = str(event.get(cond.field, ""))
+            compare_value = cond.value
+            if not cond.case_sensitive:
+                event_value = event_value.lower()
+                compare_value = compare_value.lower()
+
+            if cond.operator == "equals" and event_value != compare_value:
+                return False
+            elif cond.operator == "not_equals" and event_value == compare_value:
+                return False
+            elif cond.operator == "contains" and compare_value not in event_value:
+                return False
+            elif cond.operator == "starts_with" and not event_value.startswith(compare_value):
+                return False
+            elif cond.operator == "matches_regex":
+                try:
+                    flags = 0 if cond.case_sensitive else re.IGNORECASE
+                    if not re.search(cond.value, str(event.get(cond.field, "")), flags):
+                        return False
+                except re.error:
+                    return False
+        return True
+
+    # -- execution log ----------------------------------------------------
+
+    def _executions_path(self, user_id: str) -> Path:
+        safe = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+        return self.triggers_dir / f"{safe}_executions.json"
+
+    def log_execution(self, user_id: str, execution: TriggerExecution) -> None:
+        """Append an execution record, capping at MAX_EXECUTION_LOG entries."""
+        path = self._executions_path(user_id)
+        try:
+            entries: list = []
+            if path.exists():
+                entries = json.loads(path.read_text(encoding="utf-8"))
+            entries.append(execution.model_dump(mode="json"))
+            if len(entries) > MAX_EXECUTION_LOG:
+                entries = entries[-MAX_EXECUTION_LOG:]
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(entries, default=str), encoding="utf-8")
+            temp.replace(path)
+        except Exception as e:
+            logger.warning(f"Failed to log trigger execution: {e}")
+
+    def get_executions(
+        self,
+        user_id: str,
+        trigger_id: str | None = None,
+        limit: int = 50,
+    ) -> List[dict]:
+        """Read execution history, optionally filtered by trigger_id."""
+        path = self._executions_path(user_id)
+        if not path.exists():
+            return []
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+            if trigger_id:
+                entries = [e for e in entries if e.get("trigger_id") == trigger_id]
+            return list(reversed(entries[-limit:]))
+        except Exception as e:
+            logger.warning(f"Failed to read trigger executions: {e}")
+            return []
+
     # -- polling (for poll-based sources) ---------------------------------
 
-    def check_triggers(self, user_id: str) -> List[Tuple[TriggerDefinition, List[dict]]]:
+    def check_triggers(
+        self,
+        user_id: str,
+        agent: Optional["NymeriaAgent"] = None,
+    ) -> List[Tuple[TriggerDefinition, List[dict]]]:
         """Check all enabled triggers for a user.
 
         Returns list of ``(trigger, events)`` pairs where events is non-empty.
         Persists updated state and last_fired timestamps.
+        Tracks health status per trigger on source errors.
+
+        When *agent* is provided, performs a non-blocking busy check on each
+        trigger's thread before returning events.  Events destined for a busy
+        thread are stored in ``pending_events`` and retried next cycle, so
+        the caller never blocks a thread-pool slot waiting for a lock.
         """
         from ..triggers.sources import get_source, AVAILABLE_SOURCES
 
@@ -277,6 +396,10 @@ class TriggerManager:
                     if elapsed < trigger.cooldown_seconds:
                         continue
 
+                # Exponential backoff for failing triggers
+                if trigger.health_status == "failing" and trigger.consecutive_errors % 10 != 0:
+                    continue
+
                 source = get_source(trigger.source_type)
                 if source is None:
                     logger.warning(f"Source '{trigger.source_type}' not registered, skipping trigger {trigger.id}")
@@ -284,14 +407,65 @@ class TriggerManager:
 
                 try:
                     events = source.check(trigger.source_config, trigger.state)
+                    # Reset health on success
+                    if trigger.consecutive_errors > 0:
+                        trigger.consecutive_errors = 0
+                        trigger.health_status = "healthy"
+                        trigger.last_error = None
                 except Exception as e:
+                    trigger.consecutive_errors += 1
+                    trigger.last_error = str(e)[:200]
+                    trigger.last_error_at = now
+                    if trigger.consecutive_errors >= 5:
+                        trigger.health_status = "failing"
+                    elif trigger.consecutive_errors >= 2:
+                        trigger.health_status = "degraded"
                     logger.error(f"Source check failed for trigger {trigger.id}: {e}")
                     continue
 
-                if events:
-                    trigger.last_fired = now
-                    trigger.fire_count += len(events)
-                    results.append((trigger, events))
+                # Apply conditions filter
+                if events and trigger.conditions:
+                    events = [e for e in events if self._evaluate_conditions(e, trigger.conditions)]
+
+                # Merge any previously deferred events
+                if trigger.pending_events:
+                    events = trigger.pending_events + (events or [])
+                    trigger.pending_events = []
+
+                if not events:
+                    continue
+
+                # --- Thread busy check (agent_prompt actions only) ---
+                # Non-agent actions (notify, create_todo) don't need a thread
+                # lock, so they fire immediately regardless.
+                thread_id = trigger.thread_id or f"trigger-{trigger.id}"
+                if (
+                    trigger.action.type == "agent_prompt"
+                    and agent is not None
+                    and agent._thread_locks.is_thread_busy(thread_id)
+                ):
+                    # Cap pending to 50 events to prevent unbounded growth
+                    trigger.pending_events = (trigger.pending_events + events)[:50]
+                    lock_info = agent._thread_locks.get_lock_info(thread_id)
+                    held = lock_info.get("held_seconds", "?") if lock_info else "?"
+                    logger.info(
+                        f"[TRIGGER] Thread {thread_id} is busy (held {held}s), "
+                        f"deferring {len(events)} event(s) for trigger "
+                        f"'{trigger.name}' ({trigger.id})"
+                    )
+                    self.log_execution(user_id, TriggerExecution(
+                        trigger_id=trigger.id,
+                        trigger_name=trigger.name,
+                        event_count=len(events),
+                        events_summary=f"Deferred: thread busy (held {held}s)",
+                        action_type=trigger.action.type,
+                        status="deferred",
+                    ))
+                    continue
+
+                trigger.last_fired = now
+                trigger.fire_count += len(events)
+                results.append((trigger, events))
 
         return results
 
@@ -306,13 +480,21 @@ class TriggerManager:
     ) -> None:
         """Execute a trigger's action with event data interpolated into templates."""
         action = trigger.action
-        # Merge event data with trigger metadata for template interpolation
         template_vars = {
             **event,
             "trigger_id": trigger.id,
             "trigger_name": trigger.name,
             "fired_at": datetime.utcnow().isoformat(),
         }
+
+        start = _time.monotonic()
+        execution = TriggerExecution(
+            trigger_id=trigger.id,
+            trigger_name=trigger.name,
+            event_count=1,
+            events_summary=str(event)[:200],
+            action_type=action.type,
+        )
 
         try:
             if action.type == "agent_prompt":
@@ -323,12 +505,18 @@ class TriggerManager:
                 self._fire_create_todo(action.config, template_vars, user_id)
             else:
                 logger.error(f"Unknown action type: {action.type}")
+            execution.status = "success"
         except Exception as e:
+            execution.status = "error"
+            execution.error_message = str(e)[:200]
             logger.error(
                 f"[TRIGGER] Action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
             self._publish_trigger_error(trigger, user_id, str(e))
+        finally:
+            execution.duration_seconds = round(_time.monotonic() - start, 2)
+            self.log_execution(user_id, execution)
 
     def fire_action_batch(
         self,
@@ -347,7 +535,6 @@ class TriggerManager:
             return
 
         if len(events) == 1 or trigger.action.type != "agent_prompt":
-            # Single event or non-prompt action: fire individually
             for event in events:
                 self.fire_action(trigger, event, agent, user_id)
             return
@@ -377,7 +564,6 @@ class TriggerManager:
             + "\n\n---\nProcess all items above."
         )
 
-        # Collect attachments from all events in the batch
         all_attachments: List[Dict[str, str]] = []
         for event in events:
             event_atts = event.get("attachments")
@@ -385,7 +571,6 @@ class TriggerManager:
                 all_attachments.extend(event_atts)
 
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
-        import time as _time
         _start = _time.monotonic()
         att_note = f", attachments={len(all_attachments)}" if all_attachments else ""
         logger.info(
@@ -393,12 +578,19 @@ class TriggerManager:
             f"trigger={trigger.name} ({trigger.id}), batched={len(events)} events{att_note}"
         )
 
+        execution = TriggerExecution(
+            trigger_id=trigger.id,
+            trigger_name=trigger.name,
+            event_count=len(events),
+            events_summary=str(events[0])[:200],
+            action_type=action.type,
+        )
+
         try:
             from .event_bus import publish_autonomous_event
 
             task_id = f"trigger-{trigger.id}"
 
-            # Publish task_started immediately so frontend enters streaming mode
             publish_autonomous_event(
                 event_type="task_started",
                 thread_id=thread_id,
@@ -417,6 +609,9 @@ class TriggerManager:
             )
             response = "".join(response_parts)
 
+            execution.status = "partial" if iteration_limit_hit else "success"
+            execution.response_summary = response[:200]
+
             self._publish_trigger_completion(
                 trigger=trigger,
                 thread_id=thread_id,
@@ -434,11 +629,16 @@ class TriggerManager:
                 f"elapsed={_elapsed:.1f}s"
             )
         except Exception as e:
+            execution.status = "error"
+            execution.error_message = str(e)[:200]
             logger.error(
                 f"[TRIGGER] Batched action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
             self._publish_trigger_error(trigger, user_id, str(e))
+        finally:
+            execution.duration_seconds = round(_time.monotonic() - _start, 2)
+            self.log_execution(user_id, execution)
 
     def _fire_agent_prompt(
         self,
@@ -463,7 +663,6 @@ class TriggerManager:
         # Extract attachments from event data (e.g. email attachments from Outlook trigger)
         event_attachments = template_vars.get("attachments")
 
-        import time as _time
         _start = _time.monotonic()
         att_note = f", attachments={len(event_attachments)}" if event_attachments else ""
         logger.info(

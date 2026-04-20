@@ -41,16 +41,23 @@ def get_source(name: str) -> Optional[BaseTriggerSource]:
 
 
 def list_sources() -> Dict[str, Dict[str, Any]]:
-    """Return metadata for all registered sources.
+    """Return enriched metadata for all registered sources.
 
     Returns:
-        Dict mapping source name to ``{description, config_schema}``.
+        Dict mapping source name to full metadata including category,
+        icon, setup guide, template variables, and example config.
     """
     return {
         name: {
             "name": name,
             "description": source.description,
             "config_schema": source.config_schema,
+            "category": source.category,
+            "icon": source.icon,
+            "setup_guide": source.setup_guide,
+            "template_variables": source.template_variables,
+            "example_config": source.example_config,
+            "requires_auth": source.requires_auth,
         }
         for name, source in AVAILABLE_SOURCES.items()
     }

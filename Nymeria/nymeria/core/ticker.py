@@ -307,7 +307,7 @@ class Ticker:
         logger.info(f"[TRIGGER POLL] Checking triggers for {len(users)} user(s): {users}")
 
         for user_id in users:
-            fired = manager.check_triggers(user_id)
+            fired = manager.check_triggers(user_id, agent=self.agent)
             logger.info(f"[TRIGGER POLL] user={user_id}: {len(fired)} trigger(s) fired")
             for trigger, events in fired:
                 logger.info(

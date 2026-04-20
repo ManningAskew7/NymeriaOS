@@ -114,6 +114,15 @@ class ThreadLockManager:
                 }
             return None
 
+    def is_thread_busy(self, thread_id: str) -> bool:
+        """Non-blocking check whether a thread's lock is currently held."""
+        lock = self.get_lock(thread_id)
+        acquired = lock.acquire(blocking=False)
+        if acquired:
+            lock.release()
+            return False
+        return True
+
 
 # Regex to strip injected time context from user messages in history
 # Matches: [Current Time: ...]\n[Trigger: ...]\n\n  OR  [Time: ...]\n[Trigger: ...]\n\n

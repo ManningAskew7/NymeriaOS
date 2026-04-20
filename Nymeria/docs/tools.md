@@ -41,6 +41,7 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 2 | `trigger_list` | Trigger | SAFE | List triggers |
 | 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
 | 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
+| 5 | `trigger_sources_info` | Trigger | SAFE | List available trigger sources with config schemas and template variables |
 
 ### Optional: Slash Command Tool (1)
 
@@ -652,6 +653,24 @@ trigger_delete(trigger_id: str)
 
 ---
 
+### trigger_sources_info
+
+Get a formatted catalog of all available trigger sources with their config fields, template variables, and example configs. Useful for LLM-assisted trigger creation.
+
+```python
+trigger_sources_info()
+```
+
+**Parameters:** None.
+
+**Returns:** Formatted text listing each source with:
+- Name, description, category
+- Config fields with types, defaults, and required flags
+- Template variables available for action templates
+- Example config
+
+---
+
 ## Slash Command Tool (Optional)
 
 Gives the agent a single dispatch tool that invokes the same user-facing slash commands exposed by the Discord and Telegram bots — so the agent can inspect and change its own backend (LLM model, tool set, memories, TODOs, env vars, notepad) without dedicated per-setting tools bloating the tool list.
@@ -684,6 +703,8 @@ slash_command(command: str)
 **Blocked commands:** `/ask`, `/stop`, `/clear`, `/compact`, `/restart`, `/start` — these would interrupt or destroy the current conversation and are rejected before any API call.
 
 **Returns:** Plain-text result prefixed with `[Success]`, `[Error]`, or `[Info]`.
+
+**Runtime behavior:** Works in both normal conversation turns and autonomous scheduled TODO runs. Nymeria's ticker uses the synchronous `agent.stream()` path, so `slash_command` provides both sync and async invocation modes even though the underlying dispatcher talks to the local API asynchronously.
 
 **Requirements:**
 - `NYMERIA_API_URL` — defaults to `http://api:8000` inside Docker or `http://localhost:8000` outside.

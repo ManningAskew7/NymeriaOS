@@ -1,11 +1,18 @@
 /**
  * Triggers Store
  *
- * Reactive state for trigger management (CRUD + enable/disable).
+ * Reactive state for trigger management (CRUD, enable/disable, test, executions).
  */
 
 import { api } from '$lib/services/api.svelte';
-import type { Trigger, TriggerCreateRequest, TriggerUpdateRequest, TriggerSourceInfo } from '$lib/types';
+import type {
+  Trigger,
+  TriggerCreateRequest,
+  TriggerUpdateRequest,
+  TriggerSourceInfo,
+  TriggerExecution,
+  TriggerTestResult,
+} from '$lib/types';
 
 // State
 let triggers = $state<Trigger[]>([]);
@@ -13,6 +20,7 @@ let sources = $state<Record<string, TriggerSourceInfo>>({});
 let loading = $state(false);
 let loaded = $state(false);
 let error = $state<string | null>(null);
+let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 // Actions
 async function loadTriggers(): Promise<void> {
@@ -55,8 +63,34 @@ async function deleteTrigger(id: string): Promise<void> {
   triggers = triggers.filter(t => t.id !== id);
 }
 
+async function testTrigger(id: string): Promise<TriggerTestResult> {
+  return await api.testTrigger(id);
+}
+
+async function getExecutions(triggerId: string): Promise<TriggerExecution[]> {
+  return await api.getTriggerExecutions(triggerId);
+}
+
+function startPolling(): void {
+  if (pollInterval) return;
+  pollInterval = setInterval(() => {
+    loadTriggers();
+  }, 30_000);
+}
+
+function stopPolling(): void {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
 function clearError(): void {
   error = null;
+}
+
+function threadTriggers(threadId: string): Trigger[] {
+  return triggers.filter(t => t.thread_id === threadId);
 }
 
 // Export store
@@ -68,11 +102,18 @@ export const triggersStore = {
   get error() { return error; },
 
   get enabledCount() { return triggers.filter(t => t.enabled).length; },
+  get activeTriggers() { return triggers.filter(t => t.enabled); },
+  get pausedTriggers() { return triggers.filter(t => !t.enabled); },
 
+  threadTriggers,
   loadTriggers,
   loadSources,
   createTrigger,
   updateTrigger,
   deleteTrigger,
-  clearError
+  testTrigger,
+  getExecutions,
+  startPolling,
+  stopPolling,
+  clearError,
 };

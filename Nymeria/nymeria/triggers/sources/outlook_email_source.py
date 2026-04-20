@@ -43,40 +43,102 @@ class OutlookEmailSource(BaseTriggerSource):
 
     name = "outlook_email"
     description = "Fires when new emails arrive in an Outlook mailbox folder"
+    category = "communication"
+    icon = "fileText"
+    requires_auth = "outlook"
+    setup_guide = (
+        "Monitors your Outlook/Microsoft 365 inbox for new emails.\n\n"
+        "**Prerequisites:** You must have authenticated a Microsoft account "
+        "via the Outlook tools first (`outlook_authenticate`).\n\n"
+        "**How it works:**\n"
+        "- Polls your mailbox every ~30 seconds for new messages\n"
+        "- Automatically tags processed emails to prevent duplicates\n"
+        "- Supports filtering by sender, folder, and read status\n"
+        "- Attachments are downloaded and passed to the agent\n\n"
+        "**Tip:** Use the `from_filter` to only trigger on emails from "
+        "specific senders (e.g., your boss, a client, or a service)."
+    )
+    template_variables = [
+        "subject", "from_name", "from_address", "to_addresses",
+        "body_preview", "received_time", "is_read", "has_attachments",
+        "is_flagged", "email_id", "conversation_id", "web_link",
+    ]
+    example_config = {
+        "folder": "inbox",
+        "unread_only": True,
+        "from_filter": "boss@company.com",
+        "max_emails": 5,
+    }
+
     config_schema: Dict[str, Any] = {
         "account_id": {
             "type": "string",
             "description": "Microsoft account ID; uses first authenticated account if omitted",
             "required": False,
+            "placeholder": "Leave empty for default account",
+            "group": "Authentication",
+            "order": 1,
         },
         "folder": {
             "type": "string",
-            "description": "Mail folder to monitor (default: inbox)",
+            "description": "Mail folder to monitor",
             "required": False,
+            "default": "inbox",
+            "enum": ["inbox", "sent", "drafts", "junk", "archive"],
+            "group": "Source",
+            "order": 2,
         },
         "unread_only": {
             "type": "boolean",
-            "description": "Only trigger on unread emails (default: true)",
+            "description": "Only trigger on unread emails",
             "required": False,
+            "default": True,
+            "group": "Filters",
+            "order": 3,
         },
         "from_filter": {
             "type": "string",
-            "description": "Only emails from this sender address",
+            "description": "Only trigger for emails from this sender address",
             "required": False,
+            "placeholder": "boss@company.com",
+            "group": "Filters",
+            "order": 4,
+        },
+        "subject_filter": {
+            "type": "string",
+            "description": "Only trigger when subject contains this text (case-insensitive)",
+            "required": False,
+            "placeholder": "urgent",
+            "group": "Filters",
+            "order": 5,
+        },
+        "importance_filter": {
+            "type": "string",
+            "description": "Only trigger for emails of this importance level",
+            "required": False,
+            "enum": ["high", "normal", "low"],
+            "group": "Filters",
+            "order": 6,
         },
         "max_emails": {
             "type": "integer",
-            "description": "Max emails per poll cycle (default: 5)",
+            "description": "Max emails per poll cycle (1-50)",
             "required": False,
+            "default": 5,
+            "group": "Advanced",
+            "order": 7,
         },
         "processed_category": {
             "type": "string",
             "description": (
                 "Outlook category to tag processed emails with. "
-                "Also used as a server-side filter to exclude already-processed "
-                "emails. Set to empty string to disable. (default: Nymeria-Read)"
+                "Also used to exclude already-processed emails. "
+                "Set to empty string to disable."
             ),
             "required": False,
+            "default": "Nymeria-Read",
+            "group": "Advanced",
+            "order": 8,
         },
     }
 
@@ -94,6 +156,8 @@ class OutlookEmailSource(BaseTriggerSource):
         folder = config.get("folder", "inbox")
         unread_only = config.get("unread_only", True)
         from_filter = config.get("from_filter")
+        subject_filter = config.get("subject_filter")
+        importance_filter = config.get("importance_filter")
         max_emails = min(config.get("max_emails", 5), 50)
         processed_category = config.get("processed_category", "Nymeria-Read")
 
@@ -147,6 +211,9 @@ class OutlookEmailSource(BaseTriggerSource):
             # OData filter on nested emailAddress
             safe_addr = from_filter.replace("'", "''")
             filters.append(f"from/emailAddress/address eq '{safe_addr}'")
+
+        if importance_filter:
+            filters.append(f"importance eq '{importance_filter}'")
 
         # --- Server-side category exclusion (primary dedup) ---
         if processed_category:
@@ -209,6 +276,14 @@ class OutlookEmailSource(BaseTriggerSource):
         # Dedup against seen IDs
         seen_ids = set(state.get("seen_ids", []))
         new_messages = [m for m in messages if m.get("id") not in seen_ids]
+
+        # Post-fetch subject filter (case-insensitive contains)
+        if subject_filter and new_messages:
+            needle = subject_filter.lower()
+            new_messages = [
+                m for m in new_messages
+                if needle in m.get("subject", "").lower()
+            ]
 
         if not new_messages:
             return []
@@ -422,6 +497,22 @@ class OutlookEmailSource(BaseTriggerSource):
             )
 
         return attachments
+
+    def get_sample_event(self, config: dict) -> dict:
+        return {
+            "email_id": "AAMkAGVmMDEz-sample",
+            "conversation_id": "AAQkAGVmMDEz-conv",
+            "subject": "Q3 Budget Review - Action Required",
+            "from_name": config.get("from_filter", "Jane Smith") or "Jane Smith",
+            "from_address": config.get("from_filter", "jane@company.com") or "jane@company.com",
+            "to_addresses": "you@company.com",
+            "received_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "body_preview": "Hi, please review the attached Q3 budget spreadsheet and let me know your thoughts by Friday.",
+            "is_read": False,
+            "has_attachments": True,
+            "is_flagged": False,
+            "web_link": "https://outlook.office365.com/mail/inbox/...",
+        }
 
     def validate_config(self, config: dict) -> Tuple[bool, str]:
         """Config validation with extra checks on top of base schema validation."""
