@@ -109,6 +109,14 @@ class ChatRequest(BaseModel):
         default=None,
         description="Trigger label for autonomous invocations (e.g. 'watchdog')",
     )
+    trigger_id: Optional[str] = Field(
+        default=None,
+        description="Trigger ID when trigger_override=='trigger' -- surfaced in autonomous events for frontend classification.",
+    )
+    trigger_name: Optional[str] = Field(
+        default=None,
+        description="Trigger name when trigger_override=='trigger' -- surfaced in autonomous events for frontend classification.",
+    )
 
 
 class AttachmentValidationRequest(BaseModel):
@@ -866,6 +874,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # it. Otherwise the frontend receives task_started while its own chat is
         # still streaming and skips the autonomous-streaming handoff.
 
+        def _trigger_fields() -> dict:
+            """Common trigger identity fields for autonomous event payloads."""
+            fields: Dict[str, Any] = {}
+            if request.trigger_id:
+                fields["trigger_id"] = request.trigger_id
+            if request.trigger_name:
+                fields["trigger_name"] = request.trigger_name
+            return fields
+
         async def event_generator():
             """Generate SSE events from agent stream."""
             autonomous_final_content_parts: List[str] = []
@@ -919,7 +936,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                             thread_id=thread_id,
                             user_id=user_id,
                             task_id=autonomous_task_id,
-                            data={"prompt": request.message, "source": request.trigger_override or "autonomous"},
+                            data={
+                                "prompt": request.message,
+                                "source": request.trigger_override or "autonomous",
+                                **_trigger_fields(),
+                            },
                         )
                         autonomous_started = True
 
@@ -994,7 +1015,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         thread_id=thread_id,
                         user_id=user_id,
                         task_id=autonomous_task_id,
-                        data={"error": True, "content": str(e), "source": request.trigger_override or "autonomous"},
+                        data={
+                            "error": True,
+                            "content": str(e),
+                            "source": request.trigger_override or "autonomous",
+                            **_trigger_fields(),
+                        },
                     )
                     autonomous_completed = True
             finally:
@@ -1007,6 +1033,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         data={
                             "content": "".join(autonomous_final_content_parts),
                             "source": request.trigger_override or "autonomous",
+                            **_trigger_fields(),
                         },
                     )
 
