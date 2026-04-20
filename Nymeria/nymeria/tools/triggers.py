@@ -4,6 +4,7 @@ Triggers react to external events (webhooks, API changes, incoming data).
 They complement recurring TODOs, which handle time-based autonomous work.
 """
 
+import json
 import logging
 from typing import Annotated, Optional
 
@@ -212,5 +213,44 @@ def trigger_delete(
     return f"[Error]: Trigger '{trigger_id}' not found."
 
 
+@tool
+def trigger_sources_info() -> str:
+    """Get detailed information about all available trigger sources.
+
+    Returns a formatted description of each trigger source including
+    config fields, template variables, and example configurations.
+    Use this when helping users set up new triggers.
+
+    Returns:
+        Formatted source catalog with config schemas and examples.
+    """
+    from ..triggers.sources import AVAILABLE_SOURCES
+
+    if not AVAILABLE_SOURCES:
+        return "[Info]: No trigger sources registered."
+
+    lines = ["Available Trigger Sources:\n"]
+    for name, source in AVAILABLE_SOURCES.items():
+        lines.append(f"## {name}")
+        lines.append(f"  {source.description}")
+        lines.append(f"  Category: {source.category}")
+        if source.requires_auth:
+            lines.append(f"  Requires: {source.requires_auth} authentication")
+        if source.template_variables:
+            vars_str = ", ".join(f"{{{v}}}" for v in source.template_variables)
+            lines.append(f"  Template variables: {vars_str}")
+        if source.example_config:
+            lines.append(f"  Example config: {json.dumps(source.example_config)}")
+        if source.config_schema:
+            lines.append("  Config fields:")
+            for field_name, field_def in source.config_schema.items():
+                req = " (required)" if field_def.get("required") else ""
+                default = f" [default: {field_def.get('default')}]" if "default" in field_def else ""
+                desc = field_def.get("description", "")
+                lines.append(f"    - {field_name}{req}: {desc}{default}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 # Grouped export for ALL_TOOLS registration
-TRIGGER_TOOLS = [trigger_create, trigger_list, trigger_update, trigger_delete]
+TRIGGER_TOOLS = [trigger_create, trigger_list, trigger_update, trigger_delete, trigger_sources_info]

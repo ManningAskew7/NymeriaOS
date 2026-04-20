@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
-from ..core.trigger_manager import TriggerAction, TriggerDefinition, TriggerManager
+from ..core.trigger_manager import (
+    TriggerAction,
+    TriggerCondition,
+    TriggerDefinition,
+    TriggerManager,
+    _safe_format,
+)
 
 if TYPE_CHECKING:
     from ..core.agent import NymeriaAgent
@@ -23,12 +29,20 @@ logger = logging.getLogger(__name__)
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+class TriggerConditionRequest(BaseModel):
+    field: str
+    operator: str = "contains"
+    value: str = ""
+    case_sensitive: bool = False
+
+
 class TriggerCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     source_type: str = Field(..., min_length=1)
     source_config: dict = Field(default_factory=dict)
     action_type: str = Field(...)
     action_config: dict = Field(default_factory=dict)
+    conditions: List[TriggerConditionRequest] = Field(default_factory=list)
     cooldown_seconds: int = Field(default=0, ge=0)
     enabled: bool = Field(default=True)
 
@@ -39,6 +53,7 @@ class TriggerUpdateRequest(BaseModel):
     source_config: Optional[dict] = None
     action_type: Optional[str] = None
     action_config: Optional[dict] = None
+    conditions: Optional[List[TriggerConditionRequest]] = None
     cooldown_seconds: Optional[int] = None
 
 
@@ -48,6 +63,7 @@ class TriggerResponse(BaseModel):
     source_type: str
     source_config: dict
     action: TriggerAction
+    conditions: List[TriggerCondition] = Field(default_factory=list)
     enabled: bool
     cooldown_seconds: int
     last_fired: Optional[str] = None
@@ -55,6 +71,9 @@ class TriggerResponse(BaseModel):
     thread_id: str = ""
     created_at: str
     created_by: str
+    consecutive_errors: int = 0
+    last_error: Optional[str] = None
+    health_status: str = "healthy"
 
     @classmethod
     def from_definition(cls, t: TriggerDefinition) -> "TriggerResponse":
@@ -64,6 +83,7 @@ class TriggerResponse(BaseModel):
             source_type=t.source_type,
             source_config=t.source_config,
             action=t.action,
+            conditions=t.conditions,
             enabled=t.enabled,
             cooldown_seconds=t.cooldown_seconds,
             last_fired=t.last_fired.isoformat() if t.last_fired else None,
@@ -71,6 +91,9 @@ class TriggerResponse(BaseModel):
             thread_id=t.thread_id,
             created_at=t.created_at.isoformat(),
             created_by=t.created_by,
+            consecutive_errors=t.consecutive_errors,
+            last_error=t.last_error,
+            health_status=t.health_status,
         )
 
 
@@ -100,13 +123,16 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     async def list_triggers(
         user_id: str = Query(default="default"),
         enabled_only: bool = Query(default=False),
+        thread_id: Optional[str] = Query(default=None),
         _: bool = Depends(verify_api_key_fn),
     ):
-        """List all triggers for a user."""
+        """List all triggers for a user, optionally filtered by thread."""
         manager = _get_manager()
         triggers = manager.get_triggers(user_id)
         if enabled_only:
             triggers = [t for t in triggers if t.enabled]
+        if thread_id:
+            triggers = [t for t in triggers if t.thread_id == thread_id]
         return [TriggerResponse.from_definition(t) for t in triggers]
 
     @router.post("", response_model=TriggerResponse, status_code=201)
@@ -136,6 +162,20 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                 detail="Failed to create trigger. Check source_type and config.",
             )
 
+        # Apply conditions
+        if body.conditions:
+            conditions = [
+                TriggerCondition(
+                    field=c.field,
+                    operator=c.operator,
+                    value=c.value,
+                    case_sensitive=c.case_sensitive,
+                )
+                for c in body.conditions
+            ]
+            manager.update_trigger(user_id, trigger.id, conditions=conditions)
+            trigger = manager.get_trigger(user_id, trigger.id)
+
         # Create thread metadata for the trigger thread
         try:
             agent = get_agent_fn()
@@ -146,9 +186,32 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                 platform="trigger",
             )
         except Exception:
-            pass  # Non-critical — metadata will be created lazily if needed
+            pass
 
         return TriggerResponse.from_definition(trigger)
+
+    @router.get("/sources/list")
+    async def list_sources(_: bool = Depends(verify_api_key_fn)):
+        """List available trigger source types with enriched metadata."""
+        from .sources import list_sources as _list
+        return {"sources": _list()}
+
+    @router.post("/sources/reload")
+    async def reload_sources(_: bool = Depends(verify_api_key_fn)):
+        """Reload trigger source plugins from disk."""
+        from .sources import reload_sources as _reload
+        count = _reload()
+        return {"sources_loaded": count}
+
+    @router.get("/executions/recent")
+    async def get_recent_executions(
+        user_id: str = Query(default="default"),
+        limit: int = Query(default=50, ge=1, le=200),
+        _: bool = Depends(verify_api_key_fn),
+    ):
+        """Get recent trigger executions across all triggers."""
+        manager = _get_manager()
+        return manager.get_executions(user_id, limit=limit)
 
     @router.get("/{trigger_id}", response_model=TriggerResponse)
     async def get_trigger(
@@ -178,10 +241,32 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
             kwargs["name"] = body.name
         if body.enabled is not None:
             kwargs["enabled"] = body.enabled
-        if body.source_config is not None:
-            kwargs["source_config"] = body.source_config
         if body.cooldown_seconds is not None:
             kwargs["cooldown_seconds"] = body.cooldown_seconds
+        if body.conditions is not None:
+            kwargs["conditions"] = [
+                TriggerCondition(
+                    field=c.field,
+                    operator=c.operator,
+                    value=c.value,
+                    case_sensitive=c.case_sensitive,
+                )
+                for c in body.conditions
+            ]
+
+        if body.source_config is not None:
+            # Validate against source schema before accepting
+            existing = manager.get_trigger(user_id, trigger_id)
+            if existing is None:
+                raise HTTPException(status_code=404, detail="Trigger not found")
+            from .sources import get_source
+            source = get_source(existing.source_type)
+            if source:
+                ok, msg = source.validate_config(body.source_config)
+                if not ok:
+                    raise HTTPException(status_code=400, detail=f"Invalid source config: {msg}")
+            kwargs["source_config"] = body.source_config
+
         if body.action_type is not None or body.action_config is not None:
             existing = manager.get_trigger(user_id, trigger_id)
             if existing is None:
@@ -206,26 +291,80 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         user_id: str = Query(default="default"),
         _: bool = Depends(verify_api_key_fn),
     ):
-        """Delete a trigger permanently."""
+        """Delete a trigger and clean up its thread metadata."""
         manager = _get_manager()
+        trigger = manager.get_trigger(user_id, trigger_id)
         ok = manager.delete_trigger(user_id, trigger_id)
         if not ok:
             raise HTTPException(status_code=404, detail="Trigger not found")
 
-    # -- Source discovery --------------------------------------------------
+        # Clean up orphaned thread metadata
+        if trigger and trigger.thread_id:
+            try:
+                agent = get_agent_fn()
+                agent.thread_metadata_manager.delete_thread(user_id, trigger.thread_id)
+            except Exception:
+                pass
 
-    @router.get("/sources/list")
-    async def list_sources(_: bool = Depends(verify_api_key_fn)):
-        """List available trigger source types and their config schemas."""
-        from .sources import list_sources as _list
-        return {"sources": _list()}
+    @router.get("/{trigger_id}/executions")
+    async def get_trigger_executions(
+        trigger_id: str,
+        user_id: str = Query(default="default"),
+        limit: int = Query(default=50, ge=1, le=200),
+        _: bool = Depends(verify_api_key_fn),
+    ):
+        """Get execution history for a specific trigger."""
+        manager = _get_manager()
+        return manager.get_executions(user_id, trigger_id=trigger_id, limit=limit)
 
-    @router.post("/sources/reload")
-    async def reload_sources(_: bool = Depends(verify_api_key_fn)):
-        """Reload trigger source plugins from disk."""
-        from .sources import reload_sources as _reload
-        count = _reload()
-        return {"sources_loaded": count}
+    @router.post("/{trigger_id}/test")
+    async def test_trigger(
+        trigger_id: str,
+        user_id: str = Query(default="default"),
+        _: bool = Depends(verify_api_key_fn),
+    ):
+        """Test a trigger with sample event data (dry run, no execution)."""
+        manager = _get_manager()
+        trigger = manager.get_trigger(user_id, trigger_id)
+        if trigger is None:
+            raise HTTPException(status_code=404, detail="Trigger not found")
+
+        from .sources import get_source
+        source = get_source(trigger.source_type)
+        if source is None:
+            raise HTTPException(status_code=400, detail=f"Source '{trigger.source_type}' not available")
+
+        sample_event = source.get_sample_event(trigger.source_config)
+        template_vars = {
+            **sample_event,
+            "trigger_id": trigger.id,
+            "trigger_name": trigger.name,
+            "fired_at": datetime.utcnow().isoformat(),
+        }
+
+        action = trigger.action
+        if action.type == "agent_prompt":
+            template = action.config.get("prompt_template") or action.config.get("prompt") or ""
+            rendered = _safe_format(template, template_vars)
+        elif action.type == "notify":
+            rendered = _safe_format(action.config.get("message_template", ""), template_vars)
+        elif action.type == "create_todo":
+            rendered = _safe_format(action.config.get("task_template", ""), template_vars)
+        else:
+            rendered = ""
+
+        # Check if conditions would pass
+        conditions_pass = True
+        if trigger.conditions:
+            conditions_pass = TriggerManager._evaluate_conditions(sample_event, trigger.conditions)
+
+        return {
+            "sample_event": sample_event,
+            "rendered_output": rendered,
+            "action_type": action.type,
+            "template_variables_used": list(template_vars.keys()),
+            "conditions_pass": conditions_pass,
+        }
 
     # -- Webhook fire endpoint --------------------------------------------
 
@@ -241,9 +380,6 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         This endpoint does NOT require API key auth -- it's designed to be
         called by external services (Tasker, IFTTT, Zapier, n8n, etc.).
         Authentication is via the optional per-trigger shared secret.
-
-        The request body (JSON) is passed as event data, with all keys
-        available as ``{template_vars}`` in action templates.
         """
         manager = _get_manager()
         trigger = manager.get_trigger(user_id, trigger_id)
@@ -270,7 +406,6 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         except Exception:
             body = {}
 
-        # Build event
         event = {
             **body,
             "fired_at": datetime.utcnow().isoformat(),
@@ -287,10 +422,8 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                     detail=f"Cooldown active. Retry in {remaining}s.",
                 )
 
-        # Update last_fired and fire_count
         manager.update_trigger(user_id, trigger_id, last_fired=datetime.utcnow(), fire_count=trigger.fire_count + 1)
 
-        # Fire action in background thread to avoid blocking the response
         import threading
         agent = get_agent_fn()
 

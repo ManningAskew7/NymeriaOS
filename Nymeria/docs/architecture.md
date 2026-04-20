@@ -433,6 +433,7 @@ The agent provides two streaming methods with different use cases:
 - Returns complete node outputs after each node execution
 - Provides full tool call arguments (unlike `stream_mode="messages"` which has empty args)
 - Used by CLI interface and Ticker (autonomous mode)
+- Tools invoked from this path must support synchronous execution; async-backed tools such as `slash_command` need a sync bridge if they are expected to work during scheduled TODO runs
 
 **`astream()` (Asynchronous)**
 - Uses `graph.astream_events()` with `version="v2"`
@@ -493,10 +494,15 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - Configurable respond mode: `mention` (only @Nymeria) or `all`
 
 **Event-Driven Trigger Sources** (`triggers/sources/`):
-- `base.py` — Abstract `TriggerSource` base class
-- `webhook_source.py` — Generic incoming webhook trigger
-- `outlook_email_source.py` — Polls Outlook for new emails, fires agent prompts
-- Managed by `core/trigger_manager.py` which coordinates source lifecycle
+- `base.py` — Abstract `BaseTriggerSource` with rich metadata (category, icon, setup_guide, template_variables, example_config, requires_auth, get_sample_event())
+- `webhook_source.py` — Push-based incoming webhook with file-backed queue persistence
+- `outlook_email_source.py` — Polls Outlook inbox via Graph API, supports sender/subject/importance filters
+- `rss_source.py` — Polls RSS/Atom feeds, deduplicates via rolling seen_ids window
+- `http_poll_source.py` — Generic URL monitoring with change/status/contains/always fire modes
+- `slack_source.py` — Polls Slack conversations.history API for new channel messages
+- `teams_source.py` — Polls Microsoft Graph API for Teams channel messages
+- Sources auto-register via `register_source()` and are discovered by `list_sources()`
+- Managed by `core/trigger_manager.py` which coordinates source lifecycle, health tracking (healthy/degraded/failing with exponential backoff), condition filtering (AND logic), and execution history logging
 
 ---
 

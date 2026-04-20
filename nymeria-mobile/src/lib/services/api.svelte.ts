@@ -42,6 +42,8 @@ import type {
   TriggerUpdateRequest,
   TriggerSourceInfo,
   TriggerCreatedBy,
+  TriggerExecution,
+  TriggerTestResult,
   ModelMetadata,
   MCPServer,
   MCPDiscoveredTool,
@@ -2020,13 +2022,17 @@ export class NymeriaAPI {
       source_type: item.source_type as string,
       source_config: (item.source_config as Record<string, unknown>) || {},
       action: item.action as Trigger['action'],
+      conditions: (item.conditions as Trigger['conditions']) || [],
       enabled: (item.enabled ?? true) as boolean,
       cooldown_seconds: (item.cooldown_seconds || 0) as number,
       last_fired: (item.last_fired as string) || null,
       fire_count: (item.fire_count || 0) as number,
       thread_id: (item.thread_id || '') as string,
       created_at: item.created_at as string,
-      created_by: (item.created_by || 'user') as TriggerCreatedBy
+      created_by: (item.created_by || 'user') as TriggerCreatedBy,
+      consecutive_errors: (item.consecutive_errors || 0) as number,
+      last_error: (item.last_error as string) || null,
+      health_status: (item.health_status || 'healthy') as Trigger['health_status'],
     };
   }
 
@@ -2105,6 +2111,54 @@ export class NymeriaAPI {
 
     const data = await response.json();
     return data.sources || {};
+  }
+
+  async testTrigger(triggerId: string, userId: string = 'default'): Promise<TriggerTestResult> {
+    const params = new URLSearchParams({ user_id: userId });
+    const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}/test?${params}`, {
+      method: 'POST',
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    return await response.json();
+  }
+
+  async getTriggerExecutions(
+    triggerId: string,
+    userId: string = 'default',
+    limit: number = 50
+  ): Promise<TriggerExecution[]> {
+    const params = new URLSearchParams({ user_id: userId, limit: limit.toString() });
+    const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}/executions?${params}`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
+  async getRecentTriggerExecutions(
+    userId: string = 'default',
+    limit: number = 50
+  ): Promise<TriggerExecution[]> {
+    const params = new URLSearchParams({ user_id: userId, limit: limit.toString() });
+    const response = await fetch(`${this.getBaseUrl()}/triggers/executions/recent?${params}`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return await response.json();
   }
 }
 

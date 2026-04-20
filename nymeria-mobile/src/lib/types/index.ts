@@ -787,12 +787,31 @@ export interface TriggerSourceSchemaField {
   type: 'string' | 'boolean' | 'integer' | 'number' | 'object' | 'array';
   description: string;
   required: boolean;
+  default?: unknown;
+  placeholder?: string;
+  enum?: string[];
+  group?: string;
+  order?: number;
+  secret?: boolean;
 }
 
 export interface TriggerSourceInfo {
   name: string;
   description: string;
   config_schema: Record<string, TriggerSourceSchemaField>;
+  category: string;
+  icon: string;
+  setup_guide: string;
+  template_variables: string[];
+  example_config: Record<string, unknown>;
+  requires_auth: string | null;
+}
+
+export interface TriggerCondition {
+  field: string;
+  operator: 'equals' | 'contains' | 'starts_with' | 'matches_regex' | 'not_equals';
+  value: string;
+  case_sensitive?: boolean;
 }
 
 export interface TriggerAction {
@@ -800,12 +819,15 @@ export interface TriggerAction {
   config: Record<string, unknown>;
 }
 
+export type TriggerHealthStatus = 'healthy' | 'degraded' | 'failing';
+
 export interface Trigger {
   id: string;
   name: string;
   source_type: string;
   source_config: Record<string, unknown>;
   action: TriggerAction;
+  conditions: TriggerCondition[];
   enabled: boolean;
   cooldown_seconds: number;
   last_fired: string | null;
@@ -813,6 +835,9 @@ export interface Trigger {
   thread_id: string;
   created_at: string;
   created_by: TriggerCreatedBy;
+  consecutive_errors: number;
+  last_error: string | null;
+  health_status: TriggerHealthStatus;
 }
 
 export interface TriggerCreateRequest {
@@ -821,6 +846,7 @@ export interface TriggerCreateRequest {
   source_config: Record<string, unknown>;
   action_type: TriggerActionType;
   action_config: Record<string, unknown>;
+  conditions?: TriggerCondition[];
   cooldown_seconds?: number;
   enabled?: boolean;
 }
@@ -831,5 +857,28 @@ export interface TriggerUpdateRequest {
   source_config?: Record<string, unknown>;
   action_type?: TriggerActionType;
   action_config?: Record<string, unknown>;
+  conditions?: TriggerCondition[];
   cooldown_seconds?: number;
+}
+
+export interface TriggerExecution {
+  id: string;
+  trigger_id: string;
+  trigger_name: string;
+  timestamp: string;
+  status: 'success' | 'error' | 'partial' | 'deferred';
+  event_count: number;
+  events_summary: string;
+  response_summary: string;
+  error_message: string | null;
+  duration_seconds: number;
+  action_type: string;
+}
+
+export interface TriggerTestResult {
+  sample_event: Record<string, unknown>;
+  rendered_output: string;
+  action_type: string;
+  template_variables_used: string[];
+  conditions_pass: boolean;
 }

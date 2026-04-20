@@ -1,8 +1,10 @@
 <script lang="ts">
   import { Collapsible } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
+  import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
+  import { triggersStore } from '$lib/stores/triggers.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -69,6 +71,21 @@
           <TodoFeed threadId={currentThreadId} />
         {:else}
           <TodoFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
+        {/if}
+      </Collapsible>
+
+      <!-- Triggers Section -->
+      <Collapsible title="Triggers" defaultOpen={true}>
+        {#snippet header()}
+          <span class="section-title">Triggers</span>
+          {#if triggersStore.enabledCount > 0}
+            <span class="section-count">{triggersStore.enabledCount}</span>
+          {/if}
+        {/snippet}
+        {#if activeTab === 'thread' && currentThreadId}
+          <TriggerFeed threadId={currentThreadId} />
+        {:else}
+          <TriggerFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
       </Collapsible>
 

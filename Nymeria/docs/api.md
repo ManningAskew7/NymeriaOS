@@ -1447,6 +1447,130 @@ Returns available tool categories.
 
 ---
 
+## Triggers API
+
+Event-driven automations that fire actions when source conditions are met.
+
+### List Sources
+
+```http
+GET /triggers/sources/list
+Authorization: Bearer <token>
+```
+
+Returns all registered trigger sources with metadata.
+
+**Response:**
+```json
+{
+  "sources": {
+    "webhook": {
+      "name": "webhook",
+      "description": "Fires when an HTTP POST is received",
+      "config_schema": { ... },
+      "category": "custom",
+      "icon": "bolt",
+      "setup_guide": "...",
+      "template_variables": ["fired_at", "source_ip"],
+      "example_config": {},
+      "requires_auth": null
+    }
+  }
+}
+```
+
+### Create Trigger
+
+```http
+POST /triggers
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "RSS Monitor",
+  "source_type": "rss",
+  "source_config": { "url": "https://example.com/feed.xml" },
+  "action_type": "agent_prompt",
+  "action_config": { "prompt_template": "New article: {title} - {summary}" },
+  "conditions": [{ "field": "title", "operator": "contains", "value": "release" }],
+  "cooldown_seconds": 60,
+  "enabled": true
+}
+```
+
+### List Triggers
+
+```http
+GET /triggers?thread_id=<optional>
+Authorization: Bearer <token>
+```
+
+### Update Trigger
+
+```http
+PATCH /triggers/{trigger_id}
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Accepts any subset of: `name`, `enabled`, `source_config`, `action_type`, `action_config`, `conditions`, `cooldown_seconds`.
+
+### Delete Trigger
+
+```http
+DELETE /triggers/{trigger_id}
+Authorization: Bearer <token>
+```
+
+### Test Trigger (Dry Run)
+
+```http
+POST /triggers/{trigger_id}/test
+Authorization: Bearer <token>
+```
+
+Returns a preview using sample event data without actually executing.
+
+**Response:**
+```json
+{
+  "sample_event": { "title": "...", "link": "..." },
+  "rendered_output": "New article: ...",
+  "action_type": "agent_prompt",
+  "template_variables_used": ["title", "summary"],
+  "conditions_pass": true
+}
+```
+
+### Trigger Execution History
+
+```http
+GET /triggers/{trigger_id}/executions?limit=50
+Authorization: Bearer <token>
+```
+
+Per-trigger execution history.
+
+```http
+GET /triggers/executions/recent?limit=50
+Authorization: Bearer <token>
+```
+
+All recent executions across triggers.
+
+### Fire Webhook
+
+```http
+POST /triggers/fire/{trigger_id}
+Content-Type: application/json
+```
+
+Push-based endpoint for webhook triggers. Accepts any JSON body.
+
+---
+
 ## Error Responses
 
 All errors follow this format:

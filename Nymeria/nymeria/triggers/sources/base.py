@@ -3,11 +3,23 @@
 Each trigger source watches for a specific type of external event
 (webhooks, email arrival, GitHub activity, etc.) and returns events
 when they occur. Sources must be lightweight -- no LLM calls.
+
+Config schema fields support these keys:
+    type         str   "string"|"integer"|"number"|"boolean"|"object"|"array"
+    description  str   Field description shown in UI
+    required     bool  Whether the field is mandatory
+    default      Any   Prefill value in the UI
+    placeholder  str   Hint text shown in empty inputs
+    enum         list  Dropdown options (strings)
+    group        str   Visual grouping label in the setup wizard
+    order        int   Display order within the form
+    secret       bool  Mask the input (password-style)
 """
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +35,14 @@ class BaseTriggerSource(ABC):
     name: str = ""
     description: str = ""
     config_schema: Dict[str, Any] = {}
+
+    # Rich metadata for frontend catalog / setup wizard
+    category: str = "general"
+    icon: str = "bolt"
+    setup_guide: str = ""
+    template_variables: List[str] = []
+    example_config: dict = {}
+    requires_auth: Optional[str] = None
 
     @abstractmethod
     def check(self, config: dict, state: dict) -> List[dict]:
@@ -41,6 +61,17 @@ class BaseTriggerSource(ABC):
             event-specific data available as ``{template_vars}`` in actions.
         """
         ...
+
+    def get_sample_event(self, config: dict) -> dict:
+        """Return a realistic sample event dict for testing/preview.
+
+        Override per source to provide meaningful sample data that matches
+        the structure returned by ``check()``.
+        """
+        return {
+            "trigger_name": "test",
+            "fired_at": datetime.utcnow().isoformat(),
+        }
 
     def validate_config(self, config: dict) -> Tuple[bool, str]:
         """Validate source config against the declared schema.
