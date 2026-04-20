@@ -427,12 +427,54 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
 
         manager.update_trigger(user_id, trigger_id, last_fired=datetime.utcnow(), fire_count=trigger.fire_count + 1)
 
+        # Route through POST /chat with is_self_invoke=True so the
+        # autonomous event publishing uses the same proven path as the
+        # watchdog/ticker.  This ensures the frontend receives streaming
+        # events through the exact same code that TODO streaming uses.
         import threading
-        agent = get_agent_fn()
+        import time as _time
+        settings = get_settings()
+
+        action_config = trigger.action.config
+        template = (
+            action_config.get("prompt_template")
+            or action_config.get("prompt")
+            or "Trigger {trigger_name} fired."
+        )
+        template_vars = {
+            **event,
+            "trigger_id": trigger.id,
+            "trigger_name": trigger.name,
+        }
+        prompt = _safe_format(template, template_vars)
+        thread_id = trigger.thread_id or f"trigger-{trigger.id}"
 
         def _fire():
+            import httpx
+
+            start = _time.monotonic()
             try:
-                manager.fire_action(trigger, event, agent, user_id)
+                with httpx.Client(timeout=300) as client:
+                    with client.stream(
+                        "POST",
+                        f"http://localhost:{settings.api_port}/chat",
+                        headers={"X-API-Key": settings.nymeria_api_key},
+                        json={
+                            "message": prompt,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "is_self_invoke": True,
+                            "trigger_override": "trigger",
+                        },
+                    ) as resp:
+                        resp.raise_for_status()
+                        for _line in resp.iter_lines():
+                            pass
+                elapsed = _time.monotonic() - start
+                logger.info(
+                    f"[TRIGGER] Fired via /chat: trigger={trigger.name} ({trigger_id}), "
+                    f"thread={thread_id}, elapsed={elapsed:.1f}s"
+                )
             except Exception as e:
                 logger.error(f"Trigger fire failed for {trigger_id}: {e}", exc_info=True)
 
