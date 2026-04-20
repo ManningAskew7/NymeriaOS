@@ -209,6 +209,8 @@ class TriggerManager:
         cooldown_seconds: int = 0,
         enabled: bool = True,
         created_by: str = "agent",
+        thread_id: Optional[str] = None,
+        conditions: Optional[List[TriggerCondition]] = None,
     ) -> Optional[TriggerDefinition]:
         """Create a new trigger. Returns the definition or None if at limit."""
         from ..triggers.sources import get_source
@@ -240,7 +242,8 @@ class TriggerManager:
                 cooldown_seconds=cooldown_seconds,
                 enabled=enabled,
                 created_by=created_by,
-                thread_id=f"trigger-{uuid.uuid4()}",
+                thread_id=thread_id or f"trigger-{uuid.uuid4()}",
+                conditions=conditions or [],
             )
             # Inject trigger_id into state so sources can identify it
             trigger.state["trigger_id"] = trigger.id
