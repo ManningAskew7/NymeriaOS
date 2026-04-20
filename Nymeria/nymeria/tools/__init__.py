@@ -52,6 +52,7 @@ from .triggers import (
     trigger_list,
     trigger_update,
     trigger_delete,
+    trigger_inspect,
     TRIGGER_TOOLS,
 )
 from .hello_test import hello_test
@@ -172,6 +173,7 @@ __all__ = [
     "trigger_list",
     "trigger_update",
     "trigger_delete",
+    "trigger_inspect",
     "TRIGGER_TOOLS",
     "AUTH_TOOLS",
     "EMAIL_TOOLS",

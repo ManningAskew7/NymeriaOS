@@ -6,13 +6,19 @@ They complement recurring TODOs, which handle time-based autonomous work.
 
 import json
 import logging
-from typing import Annotated, Optional
+from datetime import datetime
+from typing import Annotated, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from ..core.trigger_manager import TriggerAction, TriggerManager
-from .utils import get_user_id
+from ..core.trigger_manager import (
+    TriggerAction,
+    TriggerCondition,
+    TriggerManager,
+    _safe_format,
+)
+from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,19 @@ def _get_trigger_manager() -> TriggerManager:
     return _trigger_manager
 
 
+def _parse_conditions(conditions: list) -> List[TriggerCondition]:
+    """Parse a list of dicts into TriggerCondition objects."""
+    return [
+        TriggerCondition(
+            field=c["field"],
+            operator=c.get("operator", "contains"),
+            value=c.get("value", ""),
+            case_sensitive=c.get("case_sensitive", False),
+        )
+        for c in conditions
+    ]
+
+
 @tool
 def trigger_create(
     name: str,
@@ -38,6 +57,8 @@ def trigger_create(
     action_config: dict,
     source_config: Optional[dict] = None,
     cooldown_seconds: int = 0,
+    conditions: Optional[list] = None,
+    bind_to_current_thread: bool = False,
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Create a new event trigger for automated responses to external events.
@@ -49,7 +70,7 @@ def trigger_create(
     Args:
         name: Human-friendly trigger name (e.g. "Wake-up morning briefing").
         source_type: Event source type.  Use "webhook" for HTTP push triggers.
-            Call trigger_list_sources() to see all available sources.
+            Call trigger_sources_info() to see all available sources.
         action_type: What to do when the trigger fires.
             "agent_prompt" -- send a prompt to yourself (most powerful).
             "notify" -- send a notification to the user (no LLM call).
@@ -61,18 +82,43 @@ def trigger_create(
             Templates support {variable} interpolation from event data.
         source_config: Source-specific config (e.g. {"secret": "mykey"} for webhooks).
         cooldown_seconds: Minimum seconds between trigger firings (0 = no cooldown).
+        conditions: Optional list of filter conditions (AND logic). Each condition
+            is a dict with keys: field, operator, value, case_sensitive.
+            Operators: "equals", "not_equals", "contains", "starts_with", "matches_regex".
+            Example: [{"field": "priority", "operator": "equals", "value": "high"}]
+        bind_to_current_thread: If True, the trigger fires in THIS thread
+            instead of creating a separate trigger thread. Use this when you
+            want trigger events delivered to your own conversation.
 
     Returns:
         Success message with trigger ID and webhook URL, or error.
 
     Examples:
-        trigger_create("Wake-up briefing", "webhook", "agent_prompt",
-            {"prompt_template": "User woke up at {fired_at}. Create morning briefing."})
-        trigger_create("Deployment alert", "webhook", "notify",
-            {"message_template": "Deploy event: {status}"}, {"secret": "s3cr3t"})
+        trigger_create("Deploy alert", "webhook", "agent_prompt",
+            {"prompt_template": "Deploy event: {message}. Summarize and notify."},
+            bind_to_current_thread=True)
+        trigger_create("RSS monitor", "rss", "notify",
+            {"message_template": "New post: {title} -- {link}"},
+            source_config={"url": "https://example.com/feed"},
+            conditions=[{"field": "title", "operator": "contains", "value": "release"}])
     """
     user_id = get_user_id(config)
     manager = _get_trigger_manager()
+
+    # Resolve thread binding
+    thread_id = None
+    if bind_to_current_thread:
+        thread_id = get_thread_id(config)
+        if thread_id == "default":
+            return "[Error]: Cannot bind to default thread. Run this from a named thread."
+
+    # Parse conditions
+    condition_objects = None
+    if conditions:
+        try:
+            condition_objects = _parse_conditions(conditions)
+        except (KeyError, TypeError) as e:
+            return f"[Error]: Invalid conditions format: {e}. Each condition needs at least 'field'."
 
     action = TriggerAction(type=action_type, config=action_config)
     trigger = manager.add_trigger(
@@ -83,6 +129,8 @@ def trigger_create(
         action=action,
         cooldown_seconds=cooldown_seconds,
         created_by="agent",
+        thread_id=thread_id,
+        conditions=condition_objects,
     )
 
     if trigger is None:
@@ -92,25 +140,33 @@ def trigger_create(
     if source_type == "webhook":
         result += f"\nWebhook URL: POST /triggers/fire/{trigger.id}"
         if trigger.source_config.get("secret"):
-            result += f"?secret=<configured>"
+            result += "?secret=<configured>"
     result += f"\nAction: {action_type}"
+    if bind_to_current_thread:
+        result += f"\nBound to current thread: {thread_id}"
+    else:
+        result += f"\nTrigger thread: {trigger.thread_id}"
     if cooldown_seconds:
         result += f"\nCooldown: {cooldown_seconds}s"
+    if conditions:
+        result += f"\nConditions: {len(conditions)} filter(s) active"
     return result
 
 
 @tool
 def trigger_list(
     enabled_only: bool = False,
+    current_thread_only: bool = False,
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
-    """List all event triggers with their status and configuration.
+    """List all event triggers with their status, health, and configuration.
 
     Args:
         enabled_only: If True, only show enabled triggers.
+        current_thread_only: If True, only show triggers bound to this thread.
 
     Returns:
-        Formatted list of triggers.
+        Formatted list of triggers with status, health, and thread info.
     """
     user_id = get_user_id(config)
     manager = _get_trigger_manager()
@@ -119,8 +175,16 @@ def trigger_list(
     if enabled_only:
         triggers = [t for t in triggers if t.enabled]
 
+    if current_thread_only:
+        thread_id = get_thread_id(config)
+        triggers = [t for t in triggers if t.thread_id == thread_id]
+
     if not triggers:
-        return "[Info]: No triggers configured. Use trigger_create to set one up."
+        msg = "[Info]: No triggers found"
+        if current_thread_only:
+            msg += " for this thread"
+        msg += ". Use trigger_create to set one up."
+        return msg
 
     lines = [f"Triggers ({len(triggers)} total):"]
     for t in triggers:
@@ -129,10 +193,17 @@ def trigger_list(
         lines.append(
             f"  [{t.id}] {status} | {t.name}\n"
             f"    Source: {t.source_type} | Action: {t.action.type} | "
-            f"Fired: {t.fire_count}x (last: {last})"
+            f"Fired: {t.fire_count}x (last: {last})\n"
+            f"    Thread: {t.thread_id} | Health: {t.health_status}"
         )
         if t.cooldown_seconds:
             lines.append(f"    Cooldown: {t.cooldown_seconds}s")
+        if t.conditions:
+            lines.append(f"    Conditions: {len(t.conditions)} filter(s)")
+        if t.pending_events:
+            lines.append(f"    Pending: {len(t.pending_events)} deferred event(s)")
+        if t.last_error:
+            lines.append(f"    Last error: {t.last_error[:100]}")
     return "\n".join(lines)
 
 
@@ -145,6 +216,7 @@ def trigger_update(
     action_type: Optional[str] = None,
     action_config: Optional[dict] = None,
     cooldown_seconds: Optional[int] = None,
+    conditions: Optional[list] = None,
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Update an existing trigger's configuration or enable/disable it.
@@ -157,6 +229,9 @@ def trigger_update(
         action_type: New action type (optional).
         action_config: New action config (optional).
         cooldown_seconds: New cooldown in seconds (optional).
+        conditions: New filter conditions (optional). Pass an empty list []
+            to clear all conditions. Each condition is a dict with keys:
+            field, operator, value, case_sensitive.
 
     Returns:
         Success or error message.
@@ -173,8 +248,14 @@ def trigger_update(
         kwargs["source_config"] = source_config
     if cooldown_seconds is not None:
         kwargs["cooldown_seconds"] = cooldown_seconds
+
+    if conditions is not None:
+        try:
+            kwargs["conditions"] = _parse_conditions(conditions) if conditions else []
+        except (KeyError, TypeError) as e:
+            return f"[Error]: Invalid conditions format: {e}."
+
     if action_type is not None or action_config is not None:
-        # Need to build a full TriggerAction if updating action fields
         existing = manager.get_trigger(user_id, trigger_id)
         if existing is None:
             return f"[Error]: Trigger '{trigger_id}' not found."
@@ -187,7 +268,10 @@ def trigger_update(
 
     ok = manager.update_trigger(user_id, trigger_id, **kwargs)
     if ok:
-        return f"[Success]: Trigger {trigger_id} updated."
+        parts = [f"[Success]: Trigger {trigger_id} updated."]
+        if conditions is not None:
+            parts.append(f"Conditions: {len(kwargs.get('conditions', []))} filter(s)")
+        return " ".join(parts)
     return f"[Error]: Trigger '{trigger_id}' not found."
 
 
@@ -211,6 +295,159 @@ def trigger_delete(
     if ok:
         return f"[Success]: Trigger {trigger_id} deleted."
     return f"[Error]: Trigger '{trigger_id}' not found."
+
+
+@tool
+def trigger_inspect(
+    trigger_id: str,
+    action: str = "detail",
+    limit: int = 10,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Inspect a trigger: view details, test with sample data, or check execution history.
+
+    Three modes via the action parameter:
+
+      action="detail" (default): Full trigger configuration, health status,
+          conditions, pending events, and thread binding info.
+
+      action="test": Dry-run the trigger with sample event data. Shows
+          the rendered action output and whether conditions would pass.
+          Does NOT actually fire the trigger.
+
+      action="history": Show recent execution history for this trigger,
+          including status, duration, and error messages.
+
+    Args:
+        trigger_id: The 8-char trigger ID to inspect.
+        action: "detail", "test", or "history".
+        limit: Max executions to return for history mode (default 10, max 50).
+
+    Returns:
+        Formatted trigger details, test results, or execution history.
+
+    Examples:
+        trigger_inspect("a1b2c3d4")
+        trigger_inspect("a1b2c3d4", action="test")
+        trigger_inspect("a1b2c3d4", action="history", limit=5)
+    """
+    user_id = get_user_id(config)
+    manager = _get_trigger_manager()
+
+    if action == "detail":
+        return _inspect_detail(manager, user_id, trigger_id)
+    elif action == "test":
+        return _inspect_test(manager, user_id, trigger_id)
+    elif action == "history":
+        return _inspect_history(manager, user_id, trigger_id, min(max(limit, 1), 50))
+    else:
+        return f"[Error]: Unknown action '{action}'. Use 'detail', 'test', or 'history'."
+
+
+def _inspect_detail(manager: TriggerManager, user_id: str, trigger_id: str) -> str:
+    trigger = manager.get_trigger(user_id, trigger_id)
+    if trigger is None:
+        return f"[Error]: Trigger '{trigger_id}' not found."
+
+    status = "ENABLED" if trigger.enabled else "DISABLED"
+    last = trigger.last_fired.strftime("%Y-%m-%d %H:%M:%S") if trigger.last_fired else "never"
+    created = trigger.created_at.strftime("%Y-%m-%d %H:%M:%S")
+
+    lines = [
+        f"Trigger: {trigger.name} [{trigger.id}]",
+        f"  Status: {status} | Health: {trigger.health_status}",
+        f"  Source: {trigger.source_type}",
+        f"  Source config: {json.dumps(trigger.source_config)}",
+        f"  Action: {trigger.action.type}",
+        f"  Action config: {json.dumps(trigger.action.config)}",
+        f"  Thread: {trigger.thread_id}",
+        f"  Cooldown: {trigger.cooldown_seconds}s",
+        f"  Fired: {trigger.fire_count}x (last: {last})",
+        f"  Created: {created} by {trigger.created_by}",
+    ]
+    if trigger.conditions:
+        lines.append(f"  Conditions ({len(trigger.conditions)}):")
+        for c in trigger.conditions:
+            cs = " (case-sensitive)" if c.case_sensitive else ""
+            lines.append(f"    - {c.field} {c.operator} '{c.value}'{cs}")
+    if trigger.pending_events:
+        lines.append(f"  Pending events: {len(trigger.pending_events)}")
+    if trigger.last_error:
+        error_time = trigger.last_error_at.strftime("%Y-%m-%d %H:%M") if trigger.last_error_at else "?"
+        lines.append(f"  Last error ({error_time}): {trigger.last_error}")
+        lines.append(f"  Consecutive errors: {trigger.consecutive_errors}")
+    return "\n".join(lines)
+
+
+def _inspect_test(manager: TriggerManager, user_id: str, trigger_id: str) -> str:
+    trigger = manager.get_trigger(user_id, trigger_id)
+    if trigger is None:
+        return f"[Error]: Trigger '{trigger_id}' not found."
+
+    from ..triggers.sources import get_source
+
+    source = get_source(trigger.source_type)
+    if source is None:
+        return f"[Error]: Source '{trigger.source_type}' not available."
+
+    sample_event = source.get_sample_event(trigger.source_config)
+    template_vars = {
+        **sample_event,
+        "trigger_id": trigger.id,
+        "trigger_name": trigger.name,
+        "fired_at": datetime.utcnow().isoformat(),
+    }
+
+    action_cfg = trigger.action
+    if action_cfg.type == "agent_prompt":
+        template = action_cfg.config.get("prompt_template") or action_cfg.config.get("prompt") or ""
+        rendered = _safe_format(template, template_vars)
+    elif action_cfg.type == "notify":
+        rendered = _safe_format(action_cfg.config.get("message_template", ""), template_vars)
+    elif action_cfg.type == "create_todo":
+        rendered = _safe_format(action_cfg.config.get("task_template", ""), template_vars)
+    else:
+        rendered = "(unknown action type)"
+
+    conditions_pass = True
+    if trigger.conditions:
+        conditions_pass = TriggerManager._evaluate_conditions(sample_event, trigger.conditions)
+
+    lines = [
+        f"Test results for '{trigger.name}' [{trigger.id}]:",
+        f"  Sample event: {json.dumps(sample_event)}",
+        f"  Action type: {action_cfg.type}",
+        f"  Rendered output: {rendered}",
+        f"  Available variables: {', '.join(f'{{{k}}}' for k in template_vars.keys())}",
+        f"  Conditions pass: {'YES' if conditions_pass else 'NO'}",
+    ]
+    if not conditions_pass and trigger.conditions:
+        lines.append("  (Conditions would BLOCK this sample event from firing)")
+    return "\n".join(lines)
+
+
+def _inspect_history(manager: TriggerManager, user_id: str, trigger_id: str, limit: int) -> str:
+    executions = manager.get_executions(user_id, trigger_id=trigger_id, limit=limit)
+    if not executions:
+        return f"[Info]: No execution history for trigger '{trigger_id}'."
+
+    lines = [f"Execution history for {trigger_id} ({len(executions)} entries):"]
+    for ex in executions:
+        ts = ex.get("timestamp", "?")
+        status = ex.get("status", "?")
+        duration = ex.get("duration_seconds", "?")
+        events = ex.get("event_count", 1)
+        action_type = ex.get("action_type", "?")
+        error = ex.get("error_message")
+        summary = ex.get("events_summary", "")[:80]
+
+        line = f"  [{ts}] {status} | {action_type} | {events} event(s) | {duration}s"
+        if summary:
+            line += f"\n    Summary: {summary}"
+        if error:
+            line += f"\n    Error: {error}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 @tool
@@ -253,4 +490,11 @@ def trigger_sources_info() -> str:
 
 
 # Grouped export for ALL_TOOLS registration
-TRIGGER_TOOLS = [trigger_create, trigger_list, trigger_update, trigger_delete, trigger_sources_info]
+TRIGGER_TOOLS = [
+    trigger_create,
+    trigger_list,
+    trigger_update,
+    trigger_delete,
+    trigger_inspect,
+    trigger_sources_info,
+]
