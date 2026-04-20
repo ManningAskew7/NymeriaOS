@@ -861,19 +861,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             if request.is_self_invoke
             else None
         )
-        if autonomous_task_id:
-            publish_autonomous_event(
-                event_type="task_started",
-                thread_id=thread_id,
-                user_id=user_id,
-                task_id=autonomous_task_id,
-                data={"prompt": request.message, "source": request.trigger_override or "autonomous"},
-            )
+        # Defer task_started publish until the first chunk arrives — this ensures
+        # the thread lock has been acquired and any prior user chat has released
+        # it. Otherwise the frontend receives task_started while its own chat is
+        # still streaming and skips the autonomous-streaming handoff.
 
         async def event_generator():
             """Generate SSE events from agent stream."""
             autonomous_final_content_parts: List[str] = []
             autonomous_completed = False
+            autonomous_started = False
             try:
                 # Convert attachments to dict format for agent
                 attachments = None
@@ -913,6 +910,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                             client_disconnected = True
                             logger.info(f"Client disconnected for thread {thread_id}, agent will continue in background")
                         continue
+
+                    # Publish task_started on the first chunk so the frontend
+                    # handoff happens only after the thread lock is acquired.
+                    if autonomous_task_id and not autonomous_started:
+                        publish_autonomous_event(
+                            event_type="task_started",
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            task_id=autonomous_task_id,
+                            data={"prompt": request.message, "source": request.trigger_override or "autonomous"},
+                        )
+                        autonomous_started = True
 
                     event_data = json.dumps({**chunk, "thread_id": thread_id})
                     yield f"data: {event_data}\n\n"
