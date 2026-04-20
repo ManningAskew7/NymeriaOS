@@ -58,7 +58,8 @@ def trigger_create(
     source_config: Optional[dict] = None,
     cooldown_seconds: int = 0,
     conditions: Optional[list] = None,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """Create a new event trigger for automated responses to external events.
 
@@ -167,7 +168,8 @@ def trigger_create(
 def trigger_list(
     enabled_only: bool = False,
     current_thread_only: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """List all event triggers with their status, health, and configuration.
 
@@ -227,7 +229,8 @@ def trigger_update(
     action_config: Optional[dict] = None,
     cooldown_seconds: Optional[int] = None,
     conditions: Optional[list] = None,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """Update an existing trigger's configuration or enable/disable it.
 
@@ -288,7 +291,8 @@ def trigger_update(
 @tool
 def trigger_delete(
     trigger_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """Delete a trigger permanently.
 
@@ -312,7 +316,8 @@ def trigger_inspect(
     trigger_id: str,
     action: str = "detail",
     limit: int = 10,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """Inspect a trigger: view details, test with sample data, or check execution history.
 
