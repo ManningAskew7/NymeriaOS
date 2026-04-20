@@ -75,61 +75,146 @@ def list_installed_skills(
     return json.dumps({"count": len(payload), "skills": payload}, indent=2)
 
 
+_MARKETPLACE_INDEX_TTL_SECONDS = 15 * 60
+_marketplace_indexed_at: dict[str, float] = {}
+
+
+def _ensure_marketplace_indexed(agent, source: str) -> tuple[str, str | None]:
+    """Refresh the marketplace namespace in the embedding index if stale.
+
+    Returns (namespace, warning_or_none). On fetcher errors the warning is
+    surfaced but we still return the namespace so any previously-indexed
+    data can be searched.
+    """
+    import time as _time
+    namespace = f"marketplace:{source}"
+    index = getattr(agent.skill_manager, "embedding_index", None) if agent and agent.skill_manager else None
+    if index is None:
+        return namespace, "skills embedding index unavailable"
+
+    now = _time.time()
+    last = _marketplace_indexed_at.get(source, 0.0)
+    if now - last < _MARKETPLACE_INDEX_TTL_SECONDS:
+        return namespace, None
+
+    try:
+        from ..skills.marketplace import get_fetcher, MarketplaceError
+        fetcher = get_fetcher(source)
+        entries = fetcher.list(query=None)
+    except NotImplementedError as e:
+        return namespace, f"marketplace {source!r} not available: {e}"
+    except MarketplaceError as e:
+        return namespace, f"marketplace fetch failed: {e}"
+    except Exception as e:
+        logger.exception("marketplace list failed for %s", source)
+        return namespace, f"marketplace fetch error: {type(e).__name__}: {e}"
+
+    try:
+        index.rebuild(namespace=namespace, items=entries)
+        _marketplace_indexed_at[source] = now
+    except Exception as e:
+        logger.exception("marketplace index rebuild failed for %s", source)
+        return namespace, f"index rebuild failed: {e}"
+    return namespace, None
+
+
 @tool
 def search_skills(
     query: str,
     source: Literal["installed", "anthropic"] = "installed",
+    top_k: int = 8,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
-    """Search for Agent Skills by keyword, either in the local installed pool
-    or in a remote marketplace.
+    """Search for Agent Skills by natural-language query.
+
+    Uses semantic similarity (OpenAI embeddings) when available, falls back
+    to keyword BM25 search, then substring matching. This means you can
+    search by intent like "extract text from images" and find skills named
+    `ocr-tool` even though your query doesn't contain "ocr".
 
     Args:
-        query: Free-text search term matched against skill names and
-            descriptions (case-insensitive substring).
-        source: Where to search. "installed" (default) hits the local disk;
-            "anthropic" hits github.com/anthropics/skills for skills you
-            don't yet have installed.
+        query: Free-text search term. Names, descriptions, and intent all match.
+        source: Where to search. "installed" (default) = the local disk pool;
+            "anthropic" = github.com/anthropics/skills (for discovering skills
+            you don't yet have installed).
+        top_k: Max number of results to return (default 8).
 
     Returns:
-        JSON string with a list of matches. Each match includes
-        {name, description, source}.
+        JSON string with ``{count, mode, results, warning?}``:
+            - ``mode`` is "semantic" (best), "bm25" (keyword fallback), or
+              "substring" (final safety net)
+            - ``warning`` is only present when search is running in degraded
+              mode — surface its message to the user so they can set up a
+              better configuration (typically set OPENAI_API_KEY).
+            - each result is ``{name, description, score, ...}``
     """
     agent = _agent()
-    q = (query or "").strip().lower()
+    if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
+        return json.dumps({"error": "skills subsystem not initialized"})
+
+    index = getattr(agent.skill_manager, "embedding_index", None)
+    q = query or ""
 
     if source == "installed":
-        if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
-            return json.dumps({"error": "skills subsystem not initialized"})
-        user_id = get_user_id(config)
-        matches = []
-        for s in agent.skill_manager.list_installed(user_id=user_id):
-            if not q or q in s.name.lower() or q in s.description.lower():
-                matches.append({
-                    "name": s.name,
-                    "description": s.description,
-                    "scope": s.scope,
-                    "source": "installed",
-                })
-        return json.dumps({"count": len(matches), "results": matches}, indent=2)
+        if index is None:
+            # Ultimate substring fallback — no index at all.
+            user_id = get_user_id(config)
+            q_lower = q.strip().lower()
+            matches = []
+            for s in agent.skill_manager.list_installed(user_id=user_id):
+                if not q_lower or q_lower in s.name.lower() or q_lower in s.description.lower():
+                    matches.append({
+                        "name": s.name,
+                        "description": s.description,
+                        "scope": s.scope,
+                        "score": 1.0,
+                    })
+            return json.dumps({
+                "count": len(matches),
+                "mode": "substring",
+                "warning": "embedding index unavailable — using substring match",
+                "results": matches[:top_k],
+            }, indent=2)
+
+        response = index.search(q, namespace="installed", top_k=top_k)
+        out = response.to_json()
+        # Annotate that results are drawn from the installed pool.
+        for r in out["results"]:
+            r.setdefault("source", "installed")
+        return json.dumps(out, indent=2)
 
     if source == "anthropic":
-        try:
-            from ..skills.marketplace import get_fetcher, MarketplaceError
-            fetcher = get_fetcher("anthropic")
-            entries = fetcher.list(query=q or None)
-        except MarketplaceError as e:
-            return json.dumps({"error": str(e)})
-        except Exception as e:
-            logger.exception("anthropic skills search failed")
-            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+        namespace, mp_warning = _ensure_marketplace_indexed(agent, "anthropic")
+        if index is None:
+            # Index unavailable — fall through to direct substring match against
+            # the marketplace list.
+            try:
+                from ..skills.marketplace import get_fetcher, MarketplaceError
+                fetcher = get_fetcher("anthropic")
+                entries = fetcher.list(query=q or None)
+            except (MarketplaceError, NotImplementedError) as e:
+                return json.dumps({"error": str(e)})
+            matches = [
+                {"name": e.name, "description": e.description, "source": e.source, "score": 1.0}
+                for e in entries
+            ][:top_k]
+            return json.dumps({
+                "count": len(matches),
+                "mode": "substring",
+                "warning": "embedding index unavailable — using keyword match on marketplace list",
+                "results": matches,
+            }, indent=2)
 
-        matches = [
-            {"name": e.name, "description": e.description, "source": e.source}
-            for e in entries
-        ]
-        return json.dumps({"count": len(matches), "results": matches}, indent=2)
+        response = index.search(q, namespace=namespace, top_k=top_k)
+        out = response.to_json()
+        if mp_warning:
+            # Preserve any earlier warning (e.g. from degraded semantic) by joining.
+            existing = out.get("warning")
+            out["warning"] = f"{existing}; {mp_warning}" if existing else mp_warning
+        for r in out["results"]:
+            r.setdefault("source", "anthropic")
+        return json.dumps(out, indent=2)
 
     return json.dumps({"error": f"unknown source: {source!r}"})
 

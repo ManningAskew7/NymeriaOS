@@ -411,9 +411,16 @@ class NymeriaAgent:
 
         # Initialize Agent Skills manager (SKILL.md progressive-disclosure bundles)
         try:
+            from ..skills.embedding_index import SkillEmbeddingIndex
+            skill_index_db = self.settings.skills_dir / "index.db"
+            skill_index = SkillEmbeddingIndex(
+                db_path=skill_index_db,
+                openai_api_key=self.settings.openai_api_key,
+            )
             self.skill_manager = SkillManager(
                 bundled_dir=self.settings.bundled_skills_dir,
                 data_skills_dir=self.settings.skills_dir,
+                embedding_index=skill_index,
             )
         except Exception as e:
             logger.warning(

@@ -233,9 +233,18 @@ class SkillManager:
 
     Thread-safety: discovery is guarded by a lock. Read methods read from the
     in-memory cache which is only swapped atomically.
+
+    An optional :class:`SkillEmbeddingIndex` gets refreshed on every reload so
+    the ``search_skills`` agent-facing tool has an up-to-date semantic + BM25
+    index of the installed pool.
     """
 
-    def __init__(self, bundled_dir: Path, data_skills_dir: Path):
+    def __init__(
+        self,
+        bundled_dir: Path,
+        data_skills_dir: Path,
+        embedding_index=None,
+    ):
         self._bundled_dir = bundled_dir
         self._data_dir = data_skills_dir
         self._global_dir = data_skills_dir / "global"
@@ -246,9 +255,15 @@ class SkillManager:
         self._bundled: Dict[str, Skill] = {}
         self._global: Dict[str, Skill] = {}
         self._per_user: Dict[str, Dict[str, Skill]] = {}
+        self._embedding_index = embedding_index
 
         self._ensure_dirs()
         self.reload()
+
+    @property
+    def embedding_index(self):
+        """Return the attached SkillEmbeddingIndex, or None if search is keyword-only."""
+        return self._embedding_index
 
     def _ensure_dirs(self) -> None:
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -294,6 +309,29 @@ class SkillManager:
             total, len(self._bundled), len(self._global),
             sum(len(v) for v in self._per_user.values()),
         )
+
+        # Refresh the installed embedding index if one is attached.
+        if self._embedding_index is not None:
+            try:
+                # De-dupe by name with user > global > bundled precedence so the
+                # index matches what `get()` would resolve for any user.
+                merged: Dict[str, Skill] = {}
+                merged.update(self._bundled)
+                merged.update(self._global)
+                for user_map in self._per_user.values():
+                    merged.update(user_map)
+                summary = self._embedding_index.rebuild(
+                    namespace="installed",
+                    items=list(merged.values()),
+                )
+                logger.info(
+                    "skills index rebuilt: fts=%d semantic=%d%s",
+                    summary.get("fts_indexed", 0),
+                    summary.get("semantic_indexed", 0),
+                    f" warning={summary.get('warning')!r}" if summary.get("warning") else "",
+                )
+            except Exception as e:
+                logger.warning("skills embedding index rebuild failed: %s", e)
 
     def _user_scope(self, user_id: Optional[str]) -> Dict[str, Skill]:
         if not user_id:
