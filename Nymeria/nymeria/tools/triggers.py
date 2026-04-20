@@ -58,14 +58,13 @@ def trigger_create(
     source_config: Optional[dict] = None,
     cooldown_seconds: int = 0,
     conditions: Optional[list] = None,
-    bind_to_current_thread: bool = False,
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Create a new event trigger for automated responses to external events.
 
     Triggers fire when an external event occurs (webhook POST, etc.) and
-    execute an action automatically.  Use this for event-driven automation
-    that complements your scheduled TODOs.
+    execute an action automatically.  The trigger is automatically bound to
+    the current thread — when it fires, the prompt/notification arrives here.
 
     Args:
         name: Human-friendly trigger name (e.g. "Wake-up morning briefing").
@@ -76,7 +75,7 @@ def trigger_create(
             "notify" -- send a notification to the user (no LLM call).
             "create_todo" -- create a TODO item (no LLM call).
         action_config: Action-specific configuration dict.
-            agent_prompt: {"prompt_template": "...", "thread_id": "optional"}
+            agent_prompt: {"prompt_template": "..."}
             notify: {"message_template": "...", "platform": "auto"}
             create_todo: {"task_template": "..."}
             Templates support {variable} interpolation from event data.
@@ -86,17 +85,13 @@ def trigger_create(
             is a dict with keys: field, operator, value, case_sensitive.
             Operators: "equals", "not_equals", "contains", "starts_with", "matches_regex".
             Example: [{"field": "priority", "operator": "equals", "value": "high"}]
-        bind_to_current_thread: If True, the trigger fires in THIS thread
-            instead of creating a separate trigger thread. Use this when you
-            want trigger events delivered to your own conversation.
 
     Returns:
         Success message with trigger ID and webhook URL, or error.
 
     Examples:
         trigger_create("Deploy alert", "webhook", "agent_prompt",
-            {"prompt_template": "Deploy event: {message}. Summarize and notify."},
-            bind_to_current_thread=True)
+            {"prompt_template": "Deploy event: {message}. Summarize and notify."})
         trigger_create("RSS monitor", "rss", "notify",
             {"message_template": "New post: {title} -- {link}"},
             source_config={"url": "https://example.com/feed"},
@@ -105,15 +100,10 @@ def trigger_create(
     user_id = get_user_id(config)
     manager = _get_trigger_manager()
 
-    # Resolve thread binding
-    thread_id = None
-    if bind_to_current_thread:
-        thread_id = get_thread_id(config)
-        if thread_id == "default":
-            return (
-                "[Error]: Cannot bind trigger to this conversation — "
-                "it needs to be created from a dedicated thread, not the default thread."
-            )
+    # Always bind to current thread; fall back to auto-generated thread only from default
+    thread_id = get_thread_id(config)
+    if thread_id == "default":
+        thread_id = None
 
     # Validate source type early for specific error messages
     from ..triggers.sources import get_source, AVAILABLE_SOURCES
@@ -165,10 +155,7 @@ def trigger_create(
         if trigger.source_config.get("secret"):
             result += "?secret=<configured>"
     result += f"\nAction: {action_type}"
-    if bind_to_current_thread:
-        result += f"\nBound to current thread: {thread_id}"
-    else:
-        result += f"\nTrigger thread: {trigger.thread_id}"
+    result += f"\nThread: {trigger.thread_id}"
     if cooldown_seconds:
         result += f"\nCooldown: {cooldown_seconds}s"
     if conditions:
