@@ -25,6 +25,7 @@ class ToolCategory(str, Enum):
     GOOGLE_DOCS = "google_docs"  # Google Docs tools (optional)
     TWITCH = "twitch"       # Twitch chat, moderation, and channel tools (optional)
     _PRV_A = "_prv_a"           # Acme Hardware supplier/vendor/product lookup tools (optional)
+    SKILLS = "skills"       # Agent Skills discovery/install (list_installed_skills, search_skills, install_skill)
     CUSTOM = "custom"       # User-created custom tools (HTTP, MCP, etc.)
     MCP_SERVER = "mcp_server"  # Tools auto-discovered from MCP servers
 
@@ -984,6 +985,26 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.CORE,
         security_level=SecurityLevel.SAFE,
         description="Search, enable, and disable optional tools for the current thread",
+    ),
+
+    # Agent Skills — discovery, install, inspection
+    "list_installed_skills": ToolMetadata(
+        name="list_installed_skills",
+        category=ToolCategory.SKILLS,
+        security_level=SecurityLevel.SAFE,
+        description="List all Agent Skills installed on disk (across user/global/bundled scopes)",
+    ),
+    "search_skills": ToolMetadata(
+        name="search_skills",
+        category=ToolCategory.SKILLS,
+        security_level=SecurityLevel.SAFE,
+        description="Search installed skills or the Anthropic marketplace (github.com/anthropics/skills)",
+    ),
+    "install_skill": ToolMetadata(
+        name="install_skill",
+        category=ToolCategory.SKILLS,
+        security_level=SecurityLevel.MODERATE,
+        description="Install a skill from the marketplace into user or global scope",
     ),
 }
 

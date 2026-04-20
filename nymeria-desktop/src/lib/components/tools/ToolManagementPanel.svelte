@@ -30,11 +30,12 @@
     email: { name: 'Outlook Email', icon: 'mail' },
     browser: { name: 'Browser', icon: 'globe' },
     calendar: { name: 'Google Calendar', icon: 'calendar' },
+    skills: { name: 'Agent Skills', icon: 'bolt' },
     custom: { name: 'Custom', icon: 'puzzle' },
     mcp_server: { name: 'MCP Servers', icon: 'server' },
   };
 
-  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'self_modify', 'subagent', 'mcp_server', 'custom'];
+  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'skills', 'self_modify', 'subagent', 'mcp_server', 'custom'];
 
   // --- Custom tools state ---
   let showCreateForm = $state(false);
