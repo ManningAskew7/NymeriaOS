@@ -1318,6 +1318,10 @@
     min-height: 0;
     max-height: 60vh;
     height: 60vh;
+    /* Keep a stable width so collapsing the Core/Available cards doesn't
+       cascade into the parent Modal auto-sizing down (Modal only has a
+       400px floor, so narrow content otherwise shrinks the whole dialog). */
+    min-width: 640px;
     display: flex;
     flex-direction: column;
     /* Pull flush-right by defeating the parent Modal's right padding */

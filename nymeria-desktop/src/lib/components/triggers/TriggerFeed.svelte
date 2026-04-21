@@ -98,7 +98,7 @@
           <span class="label-text">Active</span>
           <span class="count highlight">{activeTriggers.length}</span>
         </h3>
-        <div class="group-items highlighted">
+        <div class="group-items">
           {#each activeTriggers as trigger, i (trigger.id)}
             <TriggerItem
               {trigger}
@@ -270,13 +270,6 @@
   .group-items {
     display: flex;
     flex-direction: column;
-    background: var(--bg-elevated-2);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-  }
-
-  .group-items.highlighted {
-    background: rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.08);
-    border: 1px solid rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.2);
+    gap: 6px;
   }
 </style>

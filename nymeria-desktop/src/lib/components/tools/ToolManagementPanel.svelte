@@ -52,6 +52,13 @@
   let coreOpen = $state(true);
   let availableOpen = $state(false);
 
+  // While a search is active, force both sections open so matches are
+  // visible regardless of the user's manual collapse state. When the
+  // search clears, their original preferences take effect again.
+  const isSearching = $derived(searchQuery.trim().length > 0);
+  const effectiveCoreOpen = $derived(coreOpen || isSearching);
+  const effectiveAvailableOpen = $derived(availableOpen || isSearching);
+
   // Load stores on mount
   $effect(() => {
     if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
@@ -111,6 +118,15 @@
   const coreCount = $derived(selectedTools.size);
   const availableCount = $derived(defaultToolsStore.tools.length - selectedTools.size);
   const totalWithCallable = $derived(selectedTools.size + defaultToolsStore.callableThreadCount);
+
+  // Match counts within the current search, per section. Used to show
+  // "no results" hints inside sections the search failed to find anything in.
+  const coreMatchCount = $derived(
+    Object.values(coreToolsByCategory()).reduce((n, arr) => n + arr.length, 0)
+  );
+  const availableMatchCount = $derived(
+    Object.values(availableToolsByCategory()).reduce((n, arr) => n + arr.length, 0)
+  );
 
   const hasChanges = $derived(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
@@ -314,21 +330,24 @@
 
     <!-- Core Tools Section -->
     {#if coreCount > 0}
-      <div class="section-group" class:collapsed={!coreOpen}>
+      <div class="section-group" class:collapsed={!effectiveCoreOpen}>
         <button
           class="section-header section-toggle"
           onclick={() => (coreOpen = !coreOpen)}
           type="button"
-          aria-expanded={coreOpen}
+          aria-expanded={effectiveCoreOpen}
         >
-          <span class="section-chevron" class:open={coreOpen}>
+          <span class="section-chevron" class:open={effectiveCoreOpen}>
             <Icon name="chevronRight" size={14} />
           </span>
           <span class="section-title">Core Tools</span>
-          <span class="section-count">{coreCount}</span>
+          <span class="section-count">{isSearching ? `${coreMatchCount}/${coreCount}` : coreCount}</span>
         </button>
-        {#if coreOpen}
+        {#if effectiveCoreOpen}
         <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
+        {#if isSearching && coreMatchCount === 0}
+          <div class="section-empty">No core tools match "{searchQuery}".</div>
+        {/if}
         <div class="tools-list">
           {#each CATEGORY_ORDER as category}
             {#if coreToolsByCategory()[category]?.length}
@@ -423,21 +442,24 @@
 
     <!-- Available Tools Section -->
     {#if availableCount > 0}
-      <div class="section-group available-section" class:collapsed={!availableOpen}>
+      <div class="section-group available-section" class:collapsed={!effectiveAvailableOpen}>
         <button
           class="section-header section-toggle"
           onclick={() => (availableOpen = !availableOpen)}
           type="button"
-          aria-expanded={availableOpen}
+          aria-expanded={effectiveAvailableOpen}
         >
-          <span class="section-chevron" class:open={availableOpen}>
+          <span class="section-chevron" class:open={effectiveAvailableOpen}>
             <Icon name="chevronRight" size={14} />
           </span>
           <span class="section-title">Available Tools</span>
-          <span class="section-count">{availableCount}</span>
+          <span class="section-count">{isSearching ? `${availableMatchCount}/${availableCount}` : availableCount}</span>
         </button>
-        {#if availableOpen}
+        {#if effectiveAvailableOpen}
         <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
+        {#if isSearching && availableMatchCount === 0}
+          <div class="section-empty">No available tools match "{searchQuery}".</div>
+        {/if}
         <div class="tools-list">
           {#each CATEGORY_ORDER as category}
             {#if availableToolsByCategory()[category]?.length}
@@ -1057,6 +1079,14 @@
     color: var(--text-muted);
     background: var(--bg-elevated);
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .section-empty {
+    padding: var(--spacing-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    font-style: italic;
+    text-align: center;
   }
 
   .available-section {

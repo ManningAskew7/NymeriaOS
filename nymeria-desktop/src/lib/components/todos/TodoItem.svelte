@@ -181,35 +181,41 @@
         </span>
       {/if}
       <span class="todo-task">{todo.task}</span>
-      {#if threadTitle}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <span
-          class="thread-badge"
-          class:clickable={!!onNavigateToThread}
-          onclick={(e) => { if (onNavigateToThread) { e.stopPropagation(); onNavigateToThread(); } }}
-        >{threadTitle}</span>
+      {#if hasDetails}
+        <span class="expand-icon" class:rotated={expanded} aria-hidden="true">
+          <Icon name="chevronDown" size={12} />
+        </span>
       {/if}
-      <div class="badges">
+    </div>
+
+    {#if threadTitle || recurrenceLabel || scheduledInfo}
+      <div class="todo-meta">
+        {#if threadTitle}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="meta-thread"
+            class:clickable={!!onNavigateToThread}
+            title={threadTitle}
+            onclick={(e) => { if (onNavigateToThread) { e.stopPropagation(); onNavigateToThread(); } }}
+          >{threadTitle}</span>
+        {/if}
         {#if recurrenceLabel}
-          <span class="recurrence-badge" title="Recurring task">
+          {#if threadTitle}<span class="meta-sep" aria-hidden="true">·</span>{/if}
+          <span class="meta-item" title="Recurring task">
             <Icon name="refresh" size={10} />
             {recurrenceLabel}
           </span>
         {/if}
         {#if scheduledInfo}
-          <span class="scheduled-badge" title="Time until activation">
+          {#if threadTitle || recurrenceLabel}<span class="meta-sep" aria-hidden="true">·</span>{/if}
+          <span class="meta-item meta-countdown" title="Time until activation">
             <Icon name="clock" size={10} />
             {scheduledInfo}
           </span>
         {/if}
-        {#if hasDetails}
-          <span class="expand-icon" class:rotated={expanded}>
-            <Icon name="chevronDown" size={12} />
-          </span>
-        {/if}
       </div>
-    </div>
+    {/if}
 
     <!-- Expandable details -->
     {#if expanded}
@@ -239,19 +245,25 @@
 
 <style>
   .todo-item {
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-sm);
-    padding: var(--spacing-sm);
+    padding: 10px var(--spacing-sm) 10px 12px;
     border-radius: var(--radius-md);
-    transition: background var(--transition-fast), transform var(--transition-fast);
+    transition: background var(--transition-fast), border-color var(--transition-fast);
     width: 100%;
     text-align: left;
-    background: transparent;
-    border: none;
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
     cursor: default;
     font-family: inherit;
     animation: staggerFadeIn 0.3s ease-out backwards;
+  }
+
+  .todo-item:focus-visible {
+    outline: 1px solid var(--accent-primary);
+    outline-offset: 1px;
   }
 
   .todo-item:nth-child(1) { animation-delay: 0.03s; }
@@ -269,6 +281,7 @@
 
   .todo-item:hover {
     background: var(--bg-hover);
+    border-color: var(--border-default);
   }
 
   .todo-item:hover .edit-btn {
@@ -276,40 +289,62 @@
   }
 
   .todo-item.completed {
-    opacity: 0.6;
+    opacity: 0.55;
   }
 
   .todo-item.completed .todo-task {
     text-decoration: line-through;
+    text-decoration-color: var(--text-muted);
+    text-decoration-thickness: 1px;
   }
 
   .todo-item.highlighted {
     background: rgba(var(--accent-primary-rgb), 0.08);
+    border-color: rgba(var(--accent-primary-rgb), 0.35);
   }
 
   .todo-item.highlighted:hover {
     background: rgba(var(--accent-primary-rgb), 0.12);
   }
 
+  /* Scheduled accent — a thin inside rail rather than a chunky border */
+  .todo-item.scheduled::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    background: var(--accent-primary);
+    border-radius: 0 1px 1px 0;
+    opacity: 0.55;
+    transition: opacity var(--transition-fast);
+  }
+
+  .todo-item.scheduled:hover::before,
+  .todo-item.highlighted::before {
+    opacity: 1;
+  }
+
   .complete-btn {
     flex-shrink: 0;
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     border-radius: var(--radius-sm);
-    border: 2px solid var(--border-default);
+    border: 1.5px solid var(--border-default);
     background: transparent;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     transition: all var(--transition-fast);
-    margin-top: 1px;
+    margin-top: 2px;
     padding: 0;
   }
 
   .complete-btn:hover:not(:disabled) {
     border-color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.1);
+    background: rgba(var(--accent-primary-rgb), 0.12);
   }
 
   .complete-btn.done {
@@ -348,34 +383,34 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    gap: 3px;
   }
 
   .todo-header {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
+    min-width: 0;
   }
 
   .creator-badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     border-radius: var(--radius-full);
     flex-shrink: 0;
-  }
-
-  .creator-badge.user {
-    background: rgba(var(--accent-primary-rgb), 0.15);
     color: var(--accent-primary);
+    opacity: 0.7;
   }
 
   .todo-task {
     font-size: var(--font-size-sm);
+    font-weight: 500;
     color: var(--text-primary);
-    line-height: 1.4;
+    line-height: 1.35;
+    letter-spacing: -0.005em;
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -383,40 +418,67 @@
     white-space: nowrap;
   }
 
-  .badges {
+  /* Quiet secondary metadata row — the key to the professional look */
+  .todo-meta {
     display: flex;
     align-items: center;
-    gap: var(--spacing-xs);
-    flex-shrink: 0;
-    margin-left: auto;
+    gap: 6px;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.3;
   }
 
-  .recurrence-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: var(--font-size-xs);
-    color: var(--warning);
-    background: rgba(var(--warning-rgb, 245, 158, 11), 0.1);
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
+  .meta-thread {
+    color: var(--text-secondary);
+    font-weight: 500;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+    min-width: 0;
+    transition: color var(--transition-fast);
   }
 
-  .scheduled-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: var(--font-size-xs);
+  .meta-thread.clickable {
+    cursor: pointer;
+  }
+
+  .meta-thread.clickable:hover {
     color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.1);
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
+  }
+
+  .meta-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meta-countdown {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .highlighted .meta-countdown {
+    color: var(--accent-primary);
+  }
+
+  .meta-sep {
+    color: var(--text-muted);
+    opacity: 0.5;
+    flex-shrink: 0;
+    user-select: none;
   }
 
   .expand-icon {
     display: flex;
     align-items: center;
     color: var(--text-muted);
+    flex-shrink: 0;
     transition: transform var(--transition-fast);
   }
 
@@ -426,7 +488,7 @@
 
   .edit-btn {
     flex-shrink: 0;
-    padding: var(--spacing-xs);
+    padding: 4px;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-muted);
@@ -434,11 +496,14 @@
     opacity: 0;
     transition: all var(--transition-fast);
     border: none;
+    align-self: flex-start;
+    margin-top: 2px;
   }
 
   .edit-btn:hover {
-    background: var(--bg-elevated-2);
+    background: var(--bg-active);
     color: var(--text-primary);
+    opacity: 1;
   }
 
   .todo-details {
@@ -447,7 +512,7 @@
     gap: var(--spacing-xs);
     padding-top: var(--spacing-xs);
     border-top: 1px solid var(--border-subtle);
-    margin-top: var(--spacing-xs);
+    margin-top: 4px;
   }
 
   .detail-row {
@@ -456,38 +521,11 @@
     gap: var(--spacing-xs);
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
+    line-height: 1.45;
   }
 
   .detail-row.notes span {
     white-space: pre-wrap;
     word-break: break-word;
-  }
-
-  .todo-item.scheduled {
-    border-left: 2px solid var(--accent-primary);
-    padding-left: calc(var(--spacing-sm) - 2px);
-  }
-
-  .thread-badge {
-    display: inline-block;
-    max-width: 100px;
-    padding: 1px 6px;
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.1);
-    border-radius: var(--radius-sm);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-shrink: 0;
-  }
-
-  .thread-badge.clickable {
-    cursor: pointer;
-  }
-
-  .thread-badge.clickable:hover {
-    background: rgba(var(--accent-primary-rgb), 0.2);
   }
 </style>
