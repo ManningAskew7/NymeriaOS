@@ -57,6 +57,8 @@ services:
       dockerfile: Dockerfile.full
     container_name: nymeria-api
     restart: unless-stopped
+    # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
+    init: true
     # Symlink OAuth token caches to /data so they survive container rebuilds
     command: >-
       bash -c "
@@ -187,6 +189,8 @@ services:
       dockerfile: Dockerfile.full
     container_name: nymeria-worker
     restart: unless-stopped
+    # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
+    init: true
     dns:
       - 8.8.8.8
       - 1.1.1.1

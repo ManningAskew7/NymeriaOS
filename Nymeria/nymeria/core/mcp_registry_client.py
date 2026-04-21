@@ -131,12 +131,20 @@ class OfficialMCPRegistryFetcher:
         return entries
 
     def fetch_detail(self, server_id: str) -> Dict[str, Any]:
+        """Fetch a server's full record, picking the latest version envelope.
+
+        The official registry exposes detail via `/v0/servers/{id}/versions`,
+        which returns {"servers": [envelope, envelope, ...]}. Each envelope is
+        {"server": {...}, "_meta": {...}}. We unwrap and pick the latest entry
+        (preferring an explicit latest flag, falling back to the last element).
+        """
         cache_key = f"detail|{server_id}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        url = f"{self._base}/v0/servers/{server_id}"
+        from urllib.parse import quote
+        url = f"{self._base}/v0/servers/{quote(server_id, safe='')}/versions"
         try:
             resp = self._http.get(url, timeout=15)
         except Exception as e:
@@ -149,18 +157,56 @@ class OfficialMCPRegistryFetcher:
             payload = resp.json()
         except Exception as e:
             raise RegistryError(f"official registry returned non-JSON: {e}") from e
-        self._cache.put(cache_key, payload)
-        return payload
 
-    def _entry_from_raw(self, raw: Dict[str, Any]) -> Optional[MCPRegistryEntry]:
+        envelopes = payload.get("servers") or payload.get("versions") or payload.get("data") or []
+        if not isinstance(envelopes, list) or not envelopes:
+            raise RegistryError(f"no versions listed for '{server_id}'")
+
+        # Prefer an explicitly-flagged latest. If none is flagged, fall back to
+        # the first entry: the registry orders newest-first, verified against
+        # the live API on 2026-04 for both list and versions endpoints.
+        latest = next(
+            (e for e in envelopes if isinstance(e, dict) and (
+                (e.get("_meta") or {}).get("isLatest")
+                or (e.get("_meta") or {}).get("is_latest")
+                or e.get("isLatest")
+                or e.get("is_latest")
+            )),
+            envelopes[0],
+        )
+        server = self._unwrap_envelope(latest)
+        if server is None:
+            raise RegistryError(f"could not extract server record for '{server_id}'")
+
+        self._cache.put(cache_key, server)
+        return server
+
+    @staticmethod
+    def _unwrap_envelope(raw: Any) -> Optional[Dict[str, Any]]:
+        """Handle both the new {"server": {...}, "_meta": {...}} envelope shape
+        and the old flat shape, so we stay working across minor API tweaks.
+        """
         if not isinstance(raw, dict):
             return None
-        rid = raw.get("id") or raw.get("name")
+        if isinstance(raw.get("server"), dict):
+            return raw["server"]
+        return raw
+
+    def _entry_from_raw(self, raw: Dict[str, Any]) -> Optional[MCPRegistryEntry]:
+        server = self._unwrap_envelope(raw)
+        if server is None:
+            return None
+        rid = server.get("id") or server.get("name")
         if not rid:
             return None
-        name = raw.get("display_name") or raw.get("name") or rid
-        description = raw.get("description", "") or ""
-        install_hint = self._install_hint_from_raw(raw)
+        name = (
+            server.get("display_name")
+            or server.get("displayName")
+            or server.get("name")
+            or rid
+        )
+        description = server.get("description", "") or ""
+        install_hint = self._install_hint_from_raw(server)
         return MCPRegistryEntry(
             id=rid,
             name=name,
@@ -171,14 +217,25 @@ class OfficialMCPRegistryFetcher:
 
     @staticmethod
     def _install_hint_from_raw(raw: Dict[str, Any]) -> Optional[str]:
-        """Pick the first viable install hint from a server entry's packages."""
-        packages = raw.get("packages") or []
+        """Pick the first viable install hint from a server entry's packages.
+
+        Accepts the unwrapped server record OR the envelope (unwraps if needed).
+        Accepts both snake_case and camelCase field names (registry_type /
+        registryType) since the registry has shipped both.
+        """
+        server = OfficialMCPRegistryFetcher._unwrap_envelope(raw) or {}
+        packages = server.get("packages") or []
         if not isinstance(packages, list):
             return None
         for pkg in packages:
             if not isinstance(pkg, dict):
                 continue
-            reg = (pkg.get("registry_type") or pkg.get("registry") or "").lower()
+            reg = (
+                pkg.get("registry_type")
+                or pkg.get("registryType")
+                or pkg.get("registry")
+                or ""
+            ).lower()
             name = pkg.get("name") or pkg.get("identifier")
             if not name:
                 continue
@@ -190,7 +247,7 @@ class OfficialMCPRegistryFetcher:
             if reg in ("oci", "docker"):
                 return None  # Phase 2: surface as a docker-catalog hint.
         # Check remote endpoints as a last resort (HTTP/SSE servers).
-        remotes = raw.get("remotes") or []
+        remotes = server.get("remotes") or []
         if isinstance(remotes, list):
             for r in remotes:
                 if isinstance(r, dict) and r.get("url"):
@@ -295,7 +352,12 @@ def resolve_registry_id(server_id: str) -> MCPServerDefinition:
     # Delegate back to parse_mcp_source for stdio/URL handling and naming.
     defn = parse_mcp_source(
         install_hint,
-        name=detail.get("display_name") or detail.get("name") or server_id,
+        name=(
+            detail.get("display_name")
+            or detail.get("displayName")
+            or detail.get("name")
+            or server_id
+        ),
         resolver=None,  # shouldn't recurse — install_hint is a command or URL
     )
     defn.description = detail.get("description", "") or defn.description
