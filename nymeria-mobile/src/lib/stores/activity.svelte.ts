@@ -1,7 +1,11 @@
 import { api } from '$lib/services/api.svelte';
 import type { ActivityEntry } from '$lib/types';
 
-const POLL_INTERVAL = 30000; // 30 seconds
+const POLL_INTERVAL = 45000; // 45 seconds
+
+function isHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
 
 function createActivityStore() {
   let entries = $state<ActivityEntry[]>([]);
@@ -9,6 +13,7 @@ function createActivityStore() {
   let error = $state<string | null>(null);
   let lastFetch = $state<Date | null>(null);
   let pollIntervalId: ReturnType<typeof setInterval> | null = null;
+  let visibilityHandler: (() => void) | null = null;
 
   let currentThreadFilter = $state<string | undefined>(undefined);
   let currentPollThreadId = $state<string | undefined>(undefined);
@@ -39,13 +44,26 @@ function createActivityStore() {
 
     currentPollThreadId = threadId;
     fetch(50, threadId);
-    pollIntervalId = setInterval(() => fetch(50, currentPollThreadId), POLL_INTERVAL);
+    pollIntervalId = setInterval(() => {
+      if (!isHidden()) fetch(50, currentPollThreadId);
+    }, POLL_INTERVAL);
+
+    if (typeof document !== 'undefined') {
+      visibilityHandler = () => {
+        if (!isHidden()) fetch(50, currentPollThreadId);
+      };
+      document.addEventListener('visibilitychange', visibilityHandler);
+    }
   }
 
   function stopPolling(): void {
     if (pollIntervalId) {
       clearInterval(pollIntervalId);
       pollIntervalId = null;
+    }
+    if (visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+      visibilityHandler = null;
     }
     currentPollThreadId = undefined;
   }

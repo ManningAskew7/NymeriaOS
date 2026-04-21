@@ -115,9 +115,16 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     """
     router = APIRouter(prefix="/triggers", tags=["Triggers"])
 
+    # Cached per-router: TriggerManager loads/watches files on construction,
+    # so we build it once instead of on every request.
+    _manager: Optional[TriggerManager] = None
+
     def _get_manager() -> TriggerManager:
-        settings = get_settings()
-        return TriggerManager(settings.data_dir)
+        nonlocal _manager
+        if _manager is None:
+            settings = get_settings()
+            _manager = TriggerManager(settings.data_dir)
+        return _manager
 
     # -- CRUD endpoints ---------------------------------------------------
 

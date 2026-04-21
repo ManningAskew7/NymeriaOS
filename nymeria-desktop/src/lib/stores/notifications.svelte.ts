@@ -10,7 +10,12 @@ function createNotificationStore() {
 
   // Polling state
   let pollInterval: ReturnType<typeof setInterval> | null = null;
-  const POLL_INTERVAL_MS = 30000; // 30 seconds
+  let visibilityHandler: (() => void) | null = null;
+  const POLL_INTERVAL_MS = 60000; // 60 seconds
+
+  function isHidden(): boolean {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  }
 
   async function fetch(): Promise<void> {
     loading = true;
@@ -61,16 +66,27 @@ function createNotificationStore() {
     // Initial fetch
     fetch();
 
-    // Start polling
+    // Skip scheduled fetches while tab is hidden.
     pollInterval = setInterval(() => {
-      fetch();
+      if (!isHidden()) fetch();
     }, POLL_INTERVAL_MS);
+
+    if (typeof document !== 'undefined') {
+      visibilityHandler = () => {
+        if (!isHidden()) fetch();
+      };
+      document.addEventListener('visibilitychange', visibilityHandler);
+    }
   }
 
   function stopPolling(): void {
     if (pollInterval) {
       clearInterval(pollInterval);
       pollInterval = null;
+    }
+    if (visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+      visibilityHandler = null;
     }
   }
 
