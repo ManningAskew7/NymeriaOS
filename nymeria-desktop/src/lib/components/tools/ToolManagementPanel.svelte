@@ -43,11 +43,14 @@
   let testingTool = $state<CustomTool | null>(null);
   let customFilter = $state<'all' | 'http' | 'mcp'>('all');
 
-  // Description/config editing
-  let editingDescriptionTool = $state<UnifiedTool | null>(null);
-  let editingConfigTool = $state<UnifiedTool | null>(null);
+  // Combined built-in tool editor (description override + dynamic config)
+  let editingBuiltinTool = $state<UnifiedTool | null>(null);
   let descriptionInput = $state('');
   let configInputs = $state<Record<string, unknown>>({});
+
+  // Collapsible state for Core / Available sections
+  let coreOpen = $state(true);
+  let availableOpen = $state(false);
 
   // Load stores on mount
   $effect(() => {
@@ -216,43 +219,49 @@
     }).format(date);
   }
 
-  // Description editing
-  function openDescriptionEditor(tool: UnifiedTool) {
-    editingDescriptionTool = tool;
-    descriptionInput = tool.customDescription || tool.defaultDescription;
-  }
-
-  async function saveDescription() {
-    if (!editingDescriptionTool) return;
-    const newDescription = descriptionInput.trim() === editingDescriptionTool.defaultDescription
-      ? null
-      : descriptionInput.trim();
-    await unifiedToolsStore.setToolDescription(editingDescriptionTool.id, newDescription);
-    editingDescriptionTool = null;
-    descriptionInput = '';
+  // Open combined editor for a built-in tool by name (DefaultToolInfo rows only carry the name)
+  function openBuiltinEditor(toolName: string) {
+    const unified = unifiedToolsStore.tools.find(
+      (t) => t.name === toolName && t.toolType === 'builtin'
+    );
+    if (!unified) return;
+    editingBuiltinTool = unified;
+    descriptionInput = unified.customDescription || unified.defaultDescription;
+    configInputs = { ...unified.userConfig };
   }
 
   function resetDescription() {
-    if (editingDescriptionTool) {
-      descriptionInput = editingDescriptionTool.defaultDescription;
+    if (editingBuiltinTool) {
+      descriptionInput = editingBuiltinTool.defaultDescription;
     }
-  }
-
-  // Config editing
-  function openConfigEditor(tool: UnifiedTool) {
-    editingConfigTool = tool;
-    configInputs = { ...tool.userConfig };
-  }
-
-  async function saveConfig() {
-    if (!editingConfigTool) return;
-    await unifiedToolsStore.setToolConfig(editingConfigTool.id, configInputs);
-    editingConfigTool = null;
-    configInputs = {};
   }
 
   function updateConfigValue(key: string, value: unknown) {
     configInputs = { ...configInputs, [key]: value };
+  }
+
+  async function saveBuiltinTool() {
+    if (!editingBuiltinTool) return;
+    const tool = editingBuiltinTool;
+
+    const trimmed = descriptionInput.trim();
+    const nextDescription = trimmed === tool.defaultDescription ? null : trimmed;
+    const descriptionChanged = nextDescription !== (tool.customDescription ?? null);
+
+    const hasConfigSchema = tool.configSchema && Object.keys(tool.configSchema).length > 0;
+    const configChanged = hasConfigSchema &&
+      JSON.stringify(configInputs) !== JSON.stringify(tool.userConfig);
+
+    if (descriptionChanged) {
+      await unifiedToolsStore.setToolDescription(tool.id, nextDescription);
+    }
+    if (configChanged) {
+      await unifiedToolsStore.setToolConfig(tool.id, configInputs);
+    }
+
+    editingBuiltinTool = null;
+    descriptionInput = '';
+    configInputs = {};
   }
 
   function handleModalKeydown(e: KeyboardEvent) {
@@ -260,13 +269,13 @@
       if (showCreateForm) { showCreateForm = false; }
       else if (editingTool) { editingTool = null; }
       else if (testingTool) { testingTool = null; }
-      else if (editingDescriptionTool) { editingDescriptionTool = null; }
-      else if (editingConfigTool) { editingConfigTool = null; }
+      else if (editingBuiltinTool) { editingBuiltinTool = null; }
     }
   }
 </script>
 
 <div class="tool-management">
+  <div class="panel-scroll">
   {#if defaultToolsStore.loading}
     <div class="loading">Loading tools...</div>
   {:else if !defaultToolsStore.loaded}
@@ -305,11 +314,20 @@
 
     <!-- Core Tools Section -->
     {#if coreCount > 0}
-      <div class="section-group">
-        <div class="section-header">
+      <div class="section-group" class:collapsed={!coreOpen}>
+        <button
+          class="section-header section-toggle"
+          onclick={() => (coreOpen = !coreOpen)}
+          type="button"
+          aria-expanded={coreOpen}
+        >
+          <span class="section-chevron" class:open={coreOpen}>
+            <Icon name="chevronRight" size={14} />
+          </span>
           <span class="section-title">Core Tools</span>
           <span class="section-count">{coreCount}</span>
-        </div>
+        </button>
+        {#if coreOpen}
         <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
         <div class="tools-list">
           {#each CATEGORY_ORDER as category}
@@ -328,16 +346,26 @@
                         <span class="tool-name">{tool.name}</span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
-                      <button
-                        class="tool-toggle"
-                        onclick={() => toggleTool(tool.name)}
-                        type="button"
-                        title="Remove from core"
-                      >
-                        <span class="toggle-track">
-                          <span class="toggle-thumb"></span>
-                        </span>
-                      </button>
+                      <div class="tool-row-actions">
+                        <button
+                          class="row-edit-btn"
+                          onclick={() => openBuiltinEditor(tool.name)}
+                          type="button"
+                          title="Edit tool"
+                        >
+                          <Icon name="edit" size={14} />
+                        </button>
+                        <button
+                          class="tool-toggle"
+                          onclick={() => toggleTool(tool.name)}
+                          type="button"
+                          title="Remove from core"
+                        >
+                          <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                          </span>
+                        </button>
+                      </div>
                     </div>
                   {/each}
                 </div>
@@ -362,16 +390,26 @@
                         <span class="tool-name">{tool.name}</span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
-                      <button
-                        class="tool-toggle"
-                        onclick={() => toggleTool(tool.name)}
-                        type="button"
-                        title="Remove from core"
-                      >
-                        <span class="toggle-track">
-                          <span class="toggle-thumb"></span>
-                        </span>
-                      </button>
+                      <div class="tool-row-actions">
+                        <button
+                          class="row-edit-btn"
+                          onclick={() => openBuiltinEditor(tool.name)}
+                          type="button"
+                          title="Edit tool"
+                        >
+                          <Icon name="edit" size={14} />
+                        </button>
+                        <button
+                          class="tool-toggle"
+                          onclick={() => toggleTool(tool.name)}
+                          type="button"
+                          title="Remove from core"
+                        >
+                          <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                          </span>
+                        </button>
+                      </div>
                     </div>
                   {/each}
                 </div>
@@ -379,16 +417,26 @@
             {/if}
           {/each}
         </div>
+        {/if}
       </div>
     {/if}
 
     <!-- Available Tools Section -->
     {#if availableCount > 0}
-      <div class="section-group available-section">
-        <div class="section-header">
+      <div class="section-group available-section" class:collapsed={!availableOpen}>
+        <button
+          class="section-header section-toggle"
+          onclick={() => (availableOpen = !availableOpen)}
+          type="button"
+          aria-expanded={availableOpen}
+        >
+          <span class="section-chevron" class:open={availableOpen}>
+            <Icon name="chevronRight" size={14} />
+          </span>
           <span class="section-title">Available Tools</span>
           <span class="section-count">{availableCount}</span>
-        </div>
+        </button>
+        {#if availableOpen}
         <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
         <div class="tools-list">
           {#each CATEGORY_ORDER as category}
@@ -412,16 +460,26 @@
                         </span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
-                      <button
-                        class="tool-toggle off"
-                        onclick={() => toggleTool(tool.name)}
-                        type="button"
-                        title="Add to core"
-                      >
-                        <span class="toggle-track">
-                          <span class="toggle-thumb"></span>
-                        </span>
-                      </button>
+                      <div class="tool-row-actions">
+                        <button
+                          class="row-edit-btn"
+                          onclick={() => openBuiltinEditor(tool.name)}
+                          type="button"
+                          title="Edit tool"
+                        >
+                          <Icon name="edit" size={14} />
+                        </button>
+                        <button
+                          class="tool-toggle off"
+                          onclick={() => toggleTool(tool.name)}
+                          type="button"
+                          title="Add to core"
+                        >
+                          <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                          </span>
+                        </button>
+                      </div>
                     </div>
                   {/each}
                 </div>
@@ -446,16 +504,26 @@
                         <span class="tool-name">{tool.name}</span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
-                      <button
-                        class="tool-toggle off"
-                        onclick={() => toggleTool(tool.name)}
-                        type="button"
-                        title="Add to core"
-                      >
-                        <span class="toggle-track">
-                          <span class="toggle-thumb"></span>
-                        </span>
-                      </button>
+                      <div class="tool-row-actions">
+                        <button
+                          class="row-edit-btn"
+                          onclick={() => openBuiltinEditor(tool.name)}
+                          type="button"
+                          title="Edit tool"
+                        >
+                          <Icon name="edit" size={14} />
+                        </button>
+                        <button
+                          class="tool-toggle off"
+                          onclick={() => toggleTool(tool.name)}
+                          type="button"
+                          title="Add to core"
+                        >
+                          <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                          </span>
+                        </button>
+                      </div>
                     </div>
                   {/each}
                 </div>
@@ -463,34 +531,10 @@
             {/if}
           {/each}
         </div>
+        {/if}
       </div>
     {/if}
 
-    <!-- Footer -->
-    <div class="panel-footer">
-      <button
-        class="btn btn-ghost"
-        onclick={handleReset}
-        disabled={defaultToolsStore.saving}
-        type="button"
-      >
-        Reset to Nymeria Defaults
-      </button>
-      <button
-        class="btn btn-primary"
-        onclick={handleSave}
-        disabled={defaultToolsStore.saving || !hasChanges()}
-        type="button"
-      >
-        {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}
-      </button>
-    </div>
-
-    {#if saveMessage}
-      <div class="save-message" class:success={saveStatus === 'success'} class:error={saveStatus === 'error'}>
-        {saveMessage}
-      </div>
-    {/if}
   {/if}
 
   <!-- MCP Servers Section -->
@@ -585,6 +629,35 @@
       </div>
     {/if}
   </div>
+  </div>
+
+  <!-- Pinned footer: Save/Reset for the core-tools selection -->
+  {#if defaultToolsStore.loaded}
+    <div class="panel-footer panel-footer-pinned">
+      <button
+        class="btn btn-ghost"
+        onclick={handleReset}
+        disabled={defaultToolsStore.saving}
+        type="button"
+      >
+        Reset to Nymeria Defaults
+      </button>
+      <button
+        class="btn btn-primary"
+        onclick={handleSave}
+        disabled={defaultToolsStore.saving || !hasChanges()}
+        type="button"
+      >
+        {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}
+      </button>
+    </div>
+
+    {#if saveMessage}
+      <div class="save-message" class:success={saveStatus === 'success'} class:error={saveStatus === 'error'}>
+        {saveMessage}
+      </div>
+    {/if}
+  {/if}
 
   <!-- Create form modal -->
   {#if showCreateForm}
@@ -644,134 +717,131 @@
     </div>
   {/if}
 
-  <!-- Edit description modal -->
-  {#if editingDescriptionTool}
+  <!-- Edit built-in tool modal (description override + dynamic configSchema) -->
+  {#if editingBuiltinTool}
+    {@const tool = editingBuiltinTool}
+    {@const hasConfigSchema = tool.configSchema && Object.keys(tool.configSchema).length > 0}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingDescriptionTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal modal-sm">
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingBuiltinTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal">
         <div class="modal-header">
-          <h3>Edit Description: {editingDescriptionTool.name}</h3>
-          <button class="close-btn" onclick={() => (editingDescriptionTool = null)}>
+          <h3>Edit Tool: {tool.name}</h3>
+          <button class="close-btn" onclick={() => (editingBuiltinTool = null)}>
             &times;
           </button>
         </div>
         <div class="modal-body">
-          <p>Customize how this tool is described to the AI.</p>
+          <div class="tool-meta-grid">
+            <div class="meta-item">
+              <span class="meta-label">Name</span>
+              <code class="meta-value">{tool.name}</code>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Category</span>
+              <span class="meta-value">{getCategoryInfo(String(tool.category)).name}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Security</span>
+              <span class="meta-value">{tool.securityLevel}</span>
+            </div>
+          </div>
 
           <div class="form-group">
-            <label for="description-input">Description</label>
+            <span class="field-label">Original docstring</span>
+            <p class="docstring-readonly">{tool.defaultDescription}</p>
+          </div>
+
+          <div class="form-group">
+            <label for="description-input">Description shown to the agent</label>
+            <p class="field-description">Override how this tool is described. The agent sees this text verbatim.</p>
             <textarea
               id="description-input"
               rows={4}
               bind:value={descriptionInput}
               placeholder="Enter a custom description..."
             ></textarea>
+            {#if tool.customDescription}
+              <div class="info-box">
+                <Icon name="info" size={14} />
+                <span>This tool has a custom description. Click "Reset to Default" to restore the original.</span>
+              </div>
+            {/if}
           </div>
 
-          {#if editingDescriptionTool.customDescription}
-            <div class="info-box">
-              <Icon name="info" size={14} />
-              <span>This tool has a custom description. Click "Reset to Default" to restore the original.</span>
+          {#if hasConfigSchema}
+            <div class="config-section">
+              <span class="field-label">Configuration</span>
+              <div class="config-form">
+                {#each Object.entries(tool.configSchema ?? {}) as [key, schema]}
+                  {@const schemaObj = schema as Record<string, unknown>}
+                  <div class="form-group">
+                    <label for={`config-${key}`}>
+                      {schemaObj.title || key}
+                      {#if schemaObj.required}
+                        <span class="required">*</span>
+                      {/if}
+                    </label>
+                    {#if schemaObj.description}
+                      <p class="field-description">{schemaObj.description}</p>
+                    {/if}
+
+                    {#if schemaObj.type === 'boolean'}
+                      <label class="checkbox-label">
+                        <input
+                          type="checkbox"
+                          id={`config-${key}`}
+                          checked={configInputs[key] as boolean || false}
+                          onchange={(e) => updateConfigValue(key, (e.target as HTMLInputElement).checked)}
+                        />
+                        <span>Enabled</span>
+                      </label>
+                    {:else if schemaObj.type === 'number' || schemaObj.type === 'integer'}
+                      <input
+                        type="number"
+                        id={`config-${key}`}
+                        value={configInputs[key] as number || schemaObj.default || 0}
+                        min={schemaObj.minimum as number || undefined}
+                        max={schemaObj.maximum as number || undefined}
+                        step={schemaObj.type === 'integer' ? 1 : 0.1}
+                        onchange={(e) => updateConfigValue(key, parseFloat((e.target as HTMLInputElement).value))}
+                      />
+                    {:else if schemaObj.enum}
+                      <select
+                        id={`config-${key}`}
+                        value={configInputs[key] as string || schemaObj.default || ''}
+                        onchange={(e) => updateConfigValue(key, (e.target as HTMLSelectElement).value)}
+                      >
+                        {#each (schemaObj.enum as string[]) as option}
+                          <option value={option}>{option}</option>
+                        {/each}
+                      </select>
+                    {:else}
+                      <input
+                        type="text"
+                        id={`config-${key}`}
+                        value={configInputs[key] as string || schemaObj.default || ''}
+                        placeholder={schemaObj.placeholder as string || ''}
+                        onchange={(e) => updateConfigValue(key, (e.target as HTMLInputElement).value)}
+                      />
+                    {/if}
+                  </div>
+                {/each}
+              </div>
             </div>
           {/if}
-
-          <div class="modal-actions">
-            <Button variant="ghost" onclick={() => (editingDescriptionTool = null)}>
-              Cancel
-            </Button>
-            {#if editingDescriptionTool.customDescription || descriptionInput !== editingDescriptionTool.defaultDescription}
-              <Button variant="ghost" onclick={resetDescription}>
-                Reset to Default
-              </Button>
-            {/if}
-            <Button variant="primary" onclick={saveDescription} disabled={unifiedToolsStore.loading}>
-              Save Description
-            </Button>
-          </div>
         </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Configure tool modal -->
-  {#if editingConfigTool && editingConfigTool.configSchema}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingConfigTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>Configure: {editingConfigTool.name}</h3>
-          <button class="close-btn" onclick={() => (editingConfigTool = null)}>
-            &times;
-          </button>
-        </div>
-        <div class="modal-body">
-          <p>Configure settings for this tool.</p>
-
-          <div class="config-form">
-            {#each Object.entries(editingConfigTool.configSchema) as [key, schema]}
-              {@const schemaObj = schema as Record<string, unknown>}
-              <div class="form-group">
-                <label for={`config-${key}`}>
-                  {schemaObj.title || key}
-                  {#if schemaObj.required}
-                    <span class="required">*</span>
-                  {/if}
-                </label>
-                {#if schemaObj.description}
-                  <p class="field-description">{schemaObj.description}</p>
-                {/if}
-
-                {#if schemaObj.type === 'boolean'}
-                  <label class="checkbox-label">
-                    <input
-                      type="checkbox"
-                      id={`config-${key}`}
-                      checked={configInputs[key] as boolean || false}
-                      onchange={(e) => updateConfigValue(key, (e.target as HTMLInputElement).checked)}
-                    />
-                    <span>Enabled</span>
-                  </label>
-                {:else if schemaObj.type === 'number' || schemaObj.type === 'integer'}
-                  <input
-                    type="number"
-                    id={`config-${key}`}
-                    value={configInputs[key] as number || schemaObj.default || 0}
-                    min={schemaObj.minimum as number || undefined}
-                    max={schemaObj.maximum as number || undefined}
-                    step={schemaObj.type === 'integer' ? 1 : 0.1}
-                    onchange={(e) => updateConfigValue(key, parseFloat((e.target as HTMLInputElement).value))}
-                  />
-                {:else if schemaObj.enum}
-                  <select
-                    id={`config-${key}`}
-                    value={configInputs[key] as string || schemaObj.default || ''}
-                    onchange={(e) => updateConfigValue(key, (e.target as HTMLSelectElement).value)}
-                  >
-                    {#each (schemaObj.enum as string[]) as option}
-                      <option value={option}>{option}</option>
-                    {/each}
-                  </select>
-                {:else}
-                  <input
-                    type="text"
-                    id={`config-${key}`}
-                    value={configInputs[key] as string || schemaObj.default || ''}
-                    placeholder={schemaObj.placeholder as string || ''}
-                    onchange={(e) => updateConfigValue(key, (e.target as HTMLInputElement).value)}
-                  />
-                {/if}
-              </div>
-            {/each}
-          </div>
-
-          <div class="modal-actions">
-            <Button variant="ghost" onclick={() => (editingConfigTool = null)}>
-              Cancel
+        <div class="modal-footer">
+          <Button variant="ghost" onclick={() => (editingBuiltinTool = null)}>
+            Cancel
+          </Button>
+          {#if tool.customDescription || descriptionInput !== tool.defaultDescription}
+            <Button variant="ghost" onclick={resetDescription}>
+              Reset to Default
             </Button>
-            <Button variant="primary" onclick={saveConfig} disabled={unifiedToolsStore.loading}>
-              Save Configuration
-            </Button>
-          </div>
+          {/if}
+          <Button variant="primary" onclick={saveBuiltinTool} disabled={unifiedToolsStore.loading}>
+            Save Changes
+          </Button>
         </div>
       </div>
     </div>
@@ -792,6 +862,21 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  /* Scrollable region inside the Tools tab. Right padding keeps content
+     clear of the scrollbar, which itself sits flush with the Settings
+     modal's right border (parent reset via .tab-tools-flex margin). */
+  .panel-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    padding-right: var(--spacing-lg);
   }
 
   .loading {
@@ -876,18 +961,76 @@
     color: var(--text-muted);
   }
 
-  /* Section groups (Core / Available) */
+  /* Section groups (Core / Available) — bordered card with a solid grey header bar */
   .section-group {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
   }
 
+  /* Unused for the Core/Available buttons now, kept for any other callers */
   .section-header {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
     padding: 0 var(--spacing-xs);
+  }
+
+  /* Solid grey title bar for the Core / Available cards */
+  button.section-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    width: 100%;
+    min-height: 44px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated-2);
+    border: 0;
+    border-bottom: 1px solid var(--border-default);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    transition: background var(--transition-fast);
+  }
+
+  button.section-toggle:hover {
+    background: var(--bg-hover);
+  }
+
+  button.section-toggle:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+  }
+
+  /* When collapsed: round all corners, drop the divider */
+  .section-group.collapsed button.section-toggle {
+    border-bottom: none;
+    border-radius: var(--radius-md);
+  }
+
+  .section-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    transition: transform var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .section-chevron.open {
+    transform: rotate(90deg);
+  }
+
+  /* Promote the section title so it outweighs the CORE/PROFILE category bars below */
+  .section-toggle .section-title {
+    font-size: var(--font-size-md, 14px);
+    font-weight: 700;
+    letter-spacing: 0.01em;
   }
 
   .section-title {
@@ -909,9 +1052,11 @@
 
   .section-hint {
     margin: 0;
-    padding: 0 var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-md);
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-subtle);
   }
 
   .available-section {
@@ -923,12 +1068,10 @@
     color: var(--text-muted);
   }
 
-  /* Tools list */
+  /* Tools list — sits inside .section-group card, so it inherits the outer border */
   .tools-list {
     max-height: 320px;
     overflow-y: auto;
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
   }
 
   .category-group {
@@ -1016,6 +1159,35 @@
     text-overflow: ellipsis;
   }
 
+  /* Row actions — pen edit button + toggle */
+  .tool-row-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex-shrink: 0;
+  }
+
+  .row-edit-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm, 4px);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .row-edit-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-subtle);
+    background: var(--bg-secondary);
+  }
+
   /* Toggle switch */
   .tool-toggle {
     flex-shrink: 0;
@@ -1060,6 +1232,15 @@
     justify-content: space-between;
     padding-top: var(--spacing-sm);
     border-top: 1px solid var(--border-subtle);
+  }
+
+  /* Pinned variant: stays at the bottom of the Tools tab regardless
+     of scroll position. Right padding matches .panel-scroll so the
+     Save button aligns with the scrollable content above. */
+  .panel-footer-pinned {
+    flex-shrink: 0;
+    padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-sm) 0;
+    margin-top: 0;
   }
 
   .btn {
@@ -1324,6 +1505,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: var(--spacing-md);
     z-index: 1000;
   }
 
@@ -1331,14 +1513,13 @@
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
-    width: 90%;
+    width: 100%;
     max-width: 600px;
-    max-height: 90vh;
-    overflow: auto;
-  }
-
-  .modal.modal-sm {
-    max-width: 450px;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
   }
 
   .modal-header {
@@ -1347,6 +1528,7 @@
     align-items: center;
     padding: var(--spacing-md);
     border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
   }
 
   .modal-header h3 {
@@ -1356,6 +1538,9 @@
 
   .modal-body {
     padding: var(--spacing-md);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   .modal-body p {
@@ -1365,11 +1550,13 @@
     line-height: 1.5;
   }
 
-  .modal-actions {
+  .modal-footer {
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-sm);
-    margin-top: var(--spacing-lg);
+    padding: var(--spacing-md);
+    border-top: 1px solid var(--border-subtle);
+    flex-shrink: 0;
   }
 
   .close-btn {
@@ -1474,5 +1661,65 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
+  }
+
+  .tool-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--spacing-md);
+  }
+
+  .meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .meta-label {
+    font-size: var(--font-size-xs, 11px);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+
+  .meta-value {
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  code.meta-value {
+    font-family: var(--font-mono, monospace);
+  }
+
+  .docstring-readonly {
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    margin: 0;
+  }
+
+  .config-section {
+    padding-top: var(--spacing-sm);
+    border-top: 1px solid var(--border-subtle);
+    margin-top: var(--spacing-sm);
+  }
+
+  .config-section .field-label {
+    display: block;
+    margin-bottom: var(--spacing-sm);
+    font-weight: 600;
   }
 </style>
