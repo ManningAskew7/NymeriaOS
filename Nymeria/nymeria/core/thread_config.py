@@ -15,7 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .user_profile import migrate_tool_names
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,15 @@ class ThreadConfig(BaseModel):
     instructions: Optional[str] = Field(default=None, max_length=5000)
     disabled_tools: List[str] = Field(default_factory=list)
     enabled_tools: List[str] = Field(default_factory=list)
+
+    @field_validator("disabled_tools", "enabled_tools", mode="before")
+    @classmethod
+    def _migrate_legacy_tool_names(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return migrate_tool_names([str(x) for x in v])
+        return v
     # Agent Skills (SKILL.md progressive-disclosure bundles).
     # enabled_skills extends the user's enabled_global_skills for this thread;
     # disabled_skills subtracts from it. Active set is (global ∪ enabled) − disabled.

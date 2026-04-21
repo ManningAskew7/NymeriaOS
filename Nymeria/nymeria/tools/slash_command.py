@@ -8,14 +8,16 @@ the agent to call `/help` first to see the full command list.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shlex
+import threading
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Awaitable, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, tool
+from langchain_core.tools import InjectedToolArg, StructuredTool
 
 from .utils import get_thread_id, get_user_id
 
@@ -80,8 +82,70 @@ def _parse(raw: str) -> tuple[Optional[str], Optional[str], list[str], str]:
     return command, subcommand, args, rest
 
 
-@tool
-async def slash_command(
+async def _dispatch_command(command: str, config: RunnableConfig) -> str:
+    """Shared slash-command execution logic for sync and async tool paths."""
+    cmd, sub, args, rest = _parse(command)
+    if cmd is None:
+        return "[Error]: Empty command. Try /help."
+
+    thread_id = get_thread_id(config)
+    user_id = get_user_id(config)
+
+    # Lazy imports — see module docstring.
+    from ..triggers.discord_api_client import NymeriaAPIClient
+    from ..triggers.slash_dispatcher import SlashCommandDispatcher
+    from ..config import get_settings
+
+    settings = get_settings()
+    api_key = settings.nymeria_api_key or ""
+    base_url = _resolve_base_url()
+
+    client = NymeriaAPIClient(base_url=base_url, api_key=api_key)
+    dispatcher = SlashCommandDispatcher(api=client, thread_id=thread_id, user_id=user_id)
+
+    logger.info(
+        "slash_command: cmd=%s sub=%s args=%s thread=%s",
+        cmd, sub, args, thread_id,
+    )
+
+    return await dispatcher.dispatch(cmd, sub, args, rest)
+
+
+def _run_async_from_sync(coro_factory: Callable[[], Awaitable[str]]) -> str:
+    """Run async slash-command dispatch from sync tool contexts.
+
+    Scheduled TODOs execute through agent.stream(), which uses the sync
+    LangGraph tool path. Provide a sync wrapper here so slash_command works
+    in both interactive and autonomous execution modes.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    result: dict[str, str] = {}
+    error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro_factory())
+        except BaseException as exc:  # pragma: no cover - defensive bridge
+            error["value"] = exc
+
+    thread = threading.Thread(
+        target=_runner,
+        name="slash-command-sync-bridge",
+        daemon=True,
+    )
+    thread.start()
+    thread.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result["value"]
+
+
+def _slash_command_sync(
     command: str,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -117,30 +181,23 @@ async def slash_command(
     Returns:
         Plain-text result prefixed with [Success], [Error], or [Info].
     """
-    cmd, sub, args, rest = _parse(command)
-    if cmd is None:
-        return "[Error]: Empty command. Try /help."
+    return _run_async_from_sync(lambda: _dispatch_command(command, config))
 
-    thread_id = get_thread_id(config)
-    user_id = get_user_id(config)
 
-    # Lazy imports — see module docstring.
-    from ..triggers.discord_api_client import NymeriaAPIClient
-    from ..triggers.slash_dispatcher import SlashCommandDispatcher
-    from ..config import get_settings
-    settings = get_settings()
-    api_key = settings.nymeria_api_key or ""
-    base_url = _resolve_base_url()
+async def _slash_command_async(
+    command: str,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """Async slash-command tool path for API/SSE chat execution."""
+    return await _dispatch_command(command, config)
 
-    client = NymeriaAPIClient(base_url=base_url, api_key=api_key)
-    dispatcher = SlashCommandDispatcher(api=client, thread_id=thread_id, user_id=user_id)
 
-    logger.info(
-        "slash_command: cmd=%s sub=%s args=%s thread=%s",
-        cmd, sub, args, thread_id,
-    )
-
-    return await dispatcher.dispatch(cmd, sub, args, rest)
+slash_command = StructuredTool.from_function(
+    func=_slash_command_sync,
+    coroutine=_slash_command_async,
+    name="slash_command",
+)
 
 
 SLASH_COMMAND_TOOLS = [slash_command]

@@ -1940,16 +1940,20 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """Set which tools new threads inherit by default."""
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
         from ..tools.metadata import MCP_SERVER_TOOL_METADATA
+        from ..core.user_profile import migrate_tool_names
+
+        # Auto-migrate legacy names (e.g. todo -> nym_todo) from stale clients.
+        tool_names = migrate_tool_names(list(request.tool_names))
 
         # Validate tool names (allow built-in, optional, and MCP server tools)
         known = {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys()) | set(MCP_SERVER_TOOL_METADATA.keys())
-        unknown = set(request.tool_names) - known
+        unknown = set(tool_names) - known
         if unknown:
             raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
 
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = list(request.tool_names)
+        profile.tool_preferences.default_thread_tools = tool_names
         agent.profile_manager.save_profile(profile)
 
         # Clear graph caches and rebuild defaults so new threads pick up the change
@@ -1960,8 +1964,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         return {
             "status": "ok",
-            "default_tools": sorted(request.tool_names),
-            "count": len(request.tool_names),
+            "default_tools": sorted(tool_names),
+            "count": len(tool_names),
         }
 
     @app.delete("/tools/defaults", tags=["Tools"])
