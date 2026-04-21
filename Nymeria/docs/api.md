@@ -1089,6 +1089,10 @@ Resets thread config to defaults.
 
 Manage RAG (Retrieval Augmented Generation) settings and indexes per user.
 
+`rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the `rag_settings` tool — the watermark prevents re-flipping.
+
+Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and chunks for a thread are removed when the thread is deleted. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
+
 ### Get RAG Settings
 
 ```http

@@ -21,16 +21,23 @@ A thread's conversation lives in three places:
 Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses `COMPACT_THRESHOLD` of the model's context limit.
 
 ```
-1. compact_now()  (or _do_auto_compact())
+1. compact_now()  (or _do_auto_compact() / _do_compact_sync())
 2.   _generate_summary()          — LLM produces a prose summary of the conversation
-3.   _clear_and_reset()           — RemoveMessage commands wipe all messages from state,
+3.   _pre_trim_memory_flush()     — full pre-compact message list is indexed into
+                                    the per-user RAG store (sqlite-vec + FTS5 at
+                                    data/users/{uid}/memory.db). Defensive backup
+                                    of the per-turn indexer; failures are logged
+                                    and never block compaction.
+4.   _clear_and_reset()           — RemoveMessage commands wipe all messages from state,
                                     then one HumanMessage with internal_type='compaction_marker'
                                     is written as a single-message placeholder
-4.   _prune_checkpoints_before()  — raw SQL DELETEs all pre-compact rows
-5.   _pending_summaries[thread_id] = summary   (attached to the user's next message)
+5.   _prune_checkpoints_before()  — raw SQL DELETEs all pre-compact rows
+6.   _pending_summaries[thread_id] = summary   (attached to the user's next message)
 ```
 
 The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is hidden from the UI by the display filter (see "Display filter internal_types" below).
+
+The pre-compact RAG flush (step 3) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
 
 ### Checkpoint pruning (added 2026-04-21)
 

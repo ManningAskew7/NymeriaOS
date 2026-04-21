@@ -924,6 +924,12 @@ class NymeriaAgent:
         if not memory_index:
             return
 
+        # Skip empty turns (would store "User: \n\nAssistant: " noise).
+        if not (user_message and user_message.strip()):
+            return
+        if not (ai_response and ai_response.strip()):
+            return
+
         try:
             # Combine into a conversation turn for indexing
             turn_content = f"User: {user_message}\n\nAssistant: {ai_response}"
@@ -1487,6 +1493,13 @@ class NymeriaAgent:
         if not summary:
             return {"success": False, "reason": "Failed to generate summary"}
 
+        # Flush messages to RAG before clearing — defensive backup of the
+        # per-turn indexer. Failures here must not block compaction.
+        try:
+            self._flush_memories_before_trim(user_id, thread_id, messages)
+        except Exception as e:
+            logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
+
         # Clear all messages
         cleared = await self._clear_and_reset(thread_id, msg_count_before)
         if not cleared:
@@ -1575,6 +1588,13 @@ class NymeriaAgent:
         summary = self._generate_summary_sync(thread_id, user_id)
         if not summary:
             return {"success": False, "reason": "Failed to generate summary"}
+
+        # Flush messages to RAG before clearing — defensive backup of the
+        # per-turn indexer. Failures here must not block compaction.
+        try:
+            self._flush_memories_before_trim(user_id, thread_id, messages)
+        except Exception as e:
+            logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
         cleared = self._clear_and_reset_sync(thread_id, msg_count)
         if not cleared:
@@ -1869,6 +1889,13 @@ class NymeriaAgent:
         summary = await self._generate_summary(thread_id, user_id)
         if not summary:
             return {"success": False, "reason": "Failed to generate summary"}
+
+        # Flush messages to RAG before clearing — defensive backup of the
+        # per-turn indexer. Failures here must not block compaction.
+        try:
+            self._flush_memories_before_trim(user_id, thread_id, messages)
+        except Exception as e:
+            logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
         # Clear all messages
         cleared = await self._clear_and_reset(thread_id, msg_count_before)
@@ -4617,6 +4644,10 @@ class NymeriaAgent:
 
             for msg in messages_to_remove:
                 if isinstance(msg, HumanMessage):
+                    # Skip internal markers (compact prompts, auto-resume, time-context
+                    # injections). They aren't real user turns and pollute the index.
+                    if getattr(msg, "additional_kwargs", {}).get("internal"):
+                        continue
                     # Save previous turn if exists
                     if current_user_msg and current_ai_parts:
                         # Strip time context from user message

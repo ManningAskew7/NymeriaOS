@@ -1437,6 +1437,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to delete notepad for {thread_id}: {e}")
 
+        # 5. Remove RAG chunks for this thread so rag_search doesn't return
+        # stale results pointing at a thread that no longer exists.
+        try:
+            idx = agent._get_memory_index(user_id)
+            if idx:
+                deleted = idx.delete_by_thread(user_id, thread_id)
+                logger.info(f"Thread {thread_id}: removed {deleted} RAG chunk(s)")
+        except Exception as e:
+            logger.warning(f"Failed to delete RAG chunks for {thread_id}: {e}")
+
         logger.info(f"Thread {thread_id} fully deleted")
 
         # Publish sync event so other clients remove the thread
@@ -1467,6 +1477,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         agent = get_agent()
         settings = get_settings()
+
+        # 0. Flush messages to RAG before destroying state — defensive backup
+        # of the per-turn indexer. Catches anything missed (tool-heavy turns,
+        # pre-fix history). Failures must not block the clear.
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            state = await agent._default_async_graph.aget_state(config)
+            messages = state.values.get("messages", [])
+            if messages:
+                agent._flush_memories_before_trim(user_id, thread_id, messages)
+        except Exception as e:
+            logger.warning(f"Pre-clear RAG flush failed for {thread_id}: {e}")
 
         # 1. Delete metadata
         agent.thread_metadata_manager.delete_thread(user_id, thread_id)

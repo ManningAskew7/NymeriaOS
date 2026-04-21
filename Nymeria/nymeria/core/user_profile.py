@@ -126,8 +126,12 @@ class OptInSettings(BaseModel):
         description="Whether the first conversation opt-in flow has completed"
     )
     rag_enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable semantic retrieval of past conversation context (RAG)"
+    )
+    rag_migrated: bool = Field(
+        default=False,
+        description="Watermark: True once the one-time rag_enabled=True migration has run for this profile"
     )
 
 
@@ -361,6 +365,7 @@ class UserProfileManager:
                     data = json.load(f)
                 profile = UserProfile.model_validate(data)
                 logger.debug(f"Loaded profile for user: {user_id}")
+                profile = self._migrate_rag_enabled(profile)
                 return profile
             except Exception as e:
                 logger.error(f"Failed to load profile for {user_id}: {e}")
@@ -369,6 +374,32 @@ class UserProfileManager:
         else:
             logger.debug(f"Creating new profile for user: {user_id}")
             return UserProfile(user_id=user_id)
+
+    def _migrate_rag_enabled(self, profile: UserProfile) -> UserProfile:
+        """One-time migration: ensure existing profiles get rag_enabled=True.
+
+        Old profiles (pre-2026-04) were created when rag_enabled defaulted to False
+        and so silently skipped all RAG indexing. This bumps them to True once,
+        records the migration, and persists. Users who later opt out via
+        rag_settings(enabled=False) keep that choice because the watermark
+        prevents re-migration.
+        """
+        if profile.opt_in.rag_migrated:
+            return profile
+
+        lock = self._get_lock(profile.user_id)
+        with lock:
+            # Re-check inside the lock in case another thread already migrated.
+            if profile.opt_in.rag_migrated:
+                return profile
+            profile.opt_in.rag_enabled = True
+            profile.opt_in.rag_migrated = True
+            try:
+                self.save_profile(profile)
+                logger.info(f"Migrated profile {profile.user_id}: rag_enabled=True")
+            except Exception as e:
+                logger.warning(f"Failed to persist rag migration for {profile.user_id}: {e}")
+        return profile
 
     def save_profile(self, profile: UserProfile) -> bool:
         """
