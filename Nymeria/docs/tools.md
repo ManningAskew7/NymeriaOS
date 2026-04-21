@@ -348,7 +348,14 @@ rag_search(query: str, max_results: int = 5)
 
 **Returns:** Formatted results with content type, relevance score, and content. Results filtered by user's RAG preferences (`include_conversations`, `include_memories`, `include_todos`).
 
-**Requires:** RAG must be enabled for the user (`opt_in.rag_enabled`).
+**Indexing is automatic.** As of 2026-04, `opt_in.rag_enabled` defaults to `True` for new profiles, and existing profiles are migrated to `True` on first load (one-time, watermarked by `opt_in.rag_migrated`). Conversation turns are indexed in four places, in this order of frequency:
+
+1. **Per turn** — `_index_conversation_turn` runs after every chat turn (`core/agent.py`).
+2. **Pre-compact** — manual `/compact`, async auto-compact, and sync auto-compact all flush via `_pre_trim_memory_flush` before clearing messages.
+3. **Pre-clear** — `POST /threads/{id}/clear` flushes before deleting checkpoints.
+4. **Delete cleanup** — `DELETE /threads/{id}` calls `MemoryIndex.delete_by_thread` so `rag_search` doesn't surface chunks from deleted threads.
+
+To opt out, call `rag_settings(enabled=False)`. The migration watermark prevents re-flipping on subsequent loads.
 
 ---
 

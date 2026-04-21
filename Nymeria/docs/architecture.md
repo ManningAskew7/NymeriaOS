@@ -412,7 +412,7 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 | Category | Tools |
 |----------|-------|
 | Core System | bash_execute, file_read, file_write, web_search, consult, claude_code |
-| Profile & RAG | memory_save, memory_forget, personality_set, rag_search |
+| Profile & RAG | memory_save, memory_forget, personality_set, rag_search, rag_settings |
 | TODO | todo, todo_delete, todo_list |
 | Runtime / utility | consult, notify and other currently registered core utilities |
 
@@ -558,6 +558,21 @@ System Prompt = soul.md content
 ```
 
 The LLM naturally uses these memories without explicit retrieval.
+
+### RAG (Semantic Conversation Recall)
+
+`MemoryIndex` (`core/memory_index.py`) provides per-user semantic search over indexed conversation turns, profile memories, and completed TODO outcomes. Storage is per-user SQLite at `data/users/{user_id}/memory.db` using sqlite-vec (1536-dim vectors via OpenAI `text-embedding-3-small`) plus FTS5 for hybrid BM25 + vector retrieval.
+
+Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defaults to `True`; existing profiles are migrated once via the `opt_in.rag_migrated` watermark). Four hook points keep the index in sync with thread state:
+
+| Hook | Where | Function |
+|------|-------|----------|
+| Per turn | After every chat turn | `Agent._index_conversation_turn` |
+| Pre-compact | Before manual `/compact`, async + sync auto-compact | `Agent._pre_trim_memory_flush` |
+| Pre-clear | Before `POST /threads/{id}/clear` deletes checkpoints | `Agent._pre_trim_memory_flush` |
+| Delete cleanup | After `DELETE /threads/{id}` removes the thread | `MemoryIndex.delete_by_thread` |
+
+Agents query the index via the `rag_search` tool. Users can opt out at any time via `rag_settings(enabled=False)`; the migration watermark prevents re-flipping.
 
 ---
 
