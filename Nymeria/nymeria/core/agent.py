@@ -3941,8 +3941,17 @@ class NymeriaAgent:
                                     skip_until_next_human = False
                                     filtered_messages.append(msg)
                                 else:
-                                    # Skip prompt but show AI responses
+                                    # Skip prompt but show AI responses. Reset the flag
+                                    # so a prior skip-triggering internal doesn't swallow
+                                    # this wakeup's response.
+                                    skip_until_next_human = False
                                     continue
+                            elif internal_type == 'compaction_marker':
+                                # Standalone post-compact divider — hide it, but don't
+                                # suppress anything that comes after (there is no paired
+                                # AI response to skip).
+                                skip_until_next_human = False
+                                continue
                             else:
                                 # For compact_prompt, auto_resume: skip prompt AND following responses
                                 skip_until_next_human = True
