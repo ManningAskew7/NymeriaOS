@@ -20,6 +20,28 @@ Storage: JSON files in `data/custom_tools/`
 
 ---
 
+### MCP Paste-Install + Discovery (Implemented, Phase 1)
+
+Rather than filling out the MCP tool form by hand, users (and the agent) can paste an install source and Nymeria takes care of hosting.
+
+**Accepted sources:**
+- Claude Desktop `mcpServers` JSON blob
+- Bare stdio command string (`npx -y @modelcontextprotocol/server-filesystem /tmp`)
+- HTTP/SSE URL (covers Docker MCP Gateway: `docker mcp gateway run --transport streaming`)
+- Official registry id (`io.github.modelcontextprotocol/server-filesystem`)
+
+**New components:**
+- `core/mcp_installer.py` — paste parser
+- `core/mcp_registry_client.py` — clients for registry.modelcontextprotocol.io + Smithery
+- `tools/search_mcp.py` — agent-facing `mcp_search` + `mcp_install`
+- `POST /mcp-servers/install` — REST endpoint for the desktop paste box
+- HTTP transport in `core/mcp_manager.py` alongside the existing stdio path
+- Lifecycle fixes: process-group spawn + kill, stderr drain thread, per-phase timeouts (init 10s / list 30s / call 60s)
+
+**Settings:** `MCP_REGISTRY_URL`, `SMITHERY_API_KEY` (optional).
+
+---
+
 ### Callable Threads (Implemented, replaces Sub-Agent System)
 
 Any thread with `callable=True` becomes a directly invocable tool. Replaces the old sub-agent registry with a thread-based approach where each callable thread has its own system prompt, LLM overrides, and tool configuration.
@@ -81,6 +103,14 @@ Detect when to route messages to callable threads based on intent classification
 
 ### Tool Sharing / Marketplace
 Central repository for community-created custom tools and callable-thread configurations.
+
+### MCP Paste-Install Phase 2
+Follow-up work on top of the Phase 1 paste-install feature:
+- **Docker MCP Gateway control**: programmatically enable/disable catalog entries, manage secrets via `docker mcp secret`, drive the OAuth flow for remote servers — so users do not have to run the gateway themselves.
+- **DXT/MCPB bundle install**: accept `.mcpb` one-click install bundles.
+- **OS keychain secrets**: replace plain `${env:VAR}` interpolation with `keyring`-backed storage.
+- **Stdio auto-reconnect**: exponential backoff + restart on unexpected server exit (today we only mark the connection dead).
+- **venv-per-server**: opt-in wrapping for Python MCP servers to isolate dependencies on bare-metal installs.
 
 ---
 

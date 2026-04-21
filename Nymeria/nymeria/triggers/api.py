@@ -3979,6 +3979,84 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         result = registry.test_connection(server_id)
         return result
 
+    class MCPServerInstallRequest(BaseModel):
+        source: str = Field(
+            ...,
+            description="Install source: Claude Desktop JSON blob, bare stdio command, HTTP URL, or registry id",
+        )
+        name: Optional[str] = None
+        auto_enable: bool = True
+        thread_id: Optional[str] = None
+
+    @app.post("/mcp-servers/install", tags=["MCP Servers"])
+    async def install_mcp_server(
+        request: MCPServerInstallRequest,
+        _: bool = Depends(verify_api_key),
+    ):
+        """Install an MCP server from a user-pasted source string.
+
+        Parses `source` into a server definition (JSON / stdio command / HTTP
+        URL / registry id), saves it, discovers tools, and wires them into
+        the agent. Rolls back on discovery failure so we don't leave dead
+        definitions on disk.
+        """
+        from ..core.mcp_installer import (
+            MCPInstallError,
+            describe_definition,
+            parse_mcp_source,
+        )
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        try:
+            defn = parse_mcp_source(request.source, name=request.name)
+        except MCPInstallError as e:
+            raise HTTPException(400, detail=str(e))
+        except Exception as e:
+            logger.exception("install_mcp_server parse failed")
+            raise HTTPException(400, detail=f"{type(e).__name__}: {e}")
+
+        defn.enabled = bool(request.auto_enable)
+
+        registry = get_mcp_server_registry()
+        if registry.get_server(defn.id):
+            # Very unlikely (ids include a random suffix) but handle it.
+            raise HTTPException(409, detail=f"MCP server '{defn.id}' already exists")
+        registry.save_server(defn)
+
+        try:
+            discovered = registry.discover_tools(defn.id)
+        except Exception as e:
+            registry.delete_server(defn.id)
+            logger.warning("install_mcp_server discovery failed for %s: %s", defn.id, e)
+            raise HTTPException(
+                502,
+                detail=f"parsed ok ({describe_definition(defn)}) but could not reach server: {e}",
+            )
+
+        agent = get_agent()
+        agent.reload_mcp_server_tools()
+
+        if request.thread_id and discovered:
+            tc = agent.thread_config_manager.get_config(request.thread_id)
+            enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
+            for dt in discovered:
+                tool_name = f"mcp__{defn.id}__{dt.name}"
+                if tool_name not in enabled_tools:
+                    enabled_tools.append(tool_name)
+            agent.thread_config_manager.update_config(
+                request.thread_id, enabled_tools=enabled_tools
+            )
+            agent.invalidate_thread_config_cache(request.thread_id)
+
+        return {
+            "status": "ok",
+            "server": registry.get_server(defn.id).model_dump(),
+            "parsed_summary": describe_definition(defn),
+            "discovered_tools": len(discovered),
+            "tool_names": [f"mcp__{defn.id}__{t.name}" for t in discovered],
+            "thread_id": request.thread_id,
+        }
+
     # ========================================================================
     # Agent Thread Endpoints
     # ========================================================================

@@ -1,22 +1,27 @@
 """MCP Server Manager for Model Context Protocol servers.
 
-Manages the lifecycle of MCP server subprocesses:
-- Starts servers on-demand when a tool is called
-- Maintains connection pools with idle timeout
-- Handles JSON-RPC communication over stdio
-- Cleans up servers on shutdown
+Manages the lifecycle of MCP servers across two transports:
+- stdio: local subprocesses with JSON-RPC over stdin/stdout
+- http:  remote or Docker-MCP-Gateway endpoints over streamable HTTP
 
-Based on MCP SDK best practices 2025-2026:
-- Use stdio transport for local servers
-- Never write to stdout in server (corrupts JSON-RPC)
-- Implement idle timeout for resource management
-- Use SDK version 1.2.0+ for stability
+Shared behavior:
+- Starts / connects on demand when a tool is called
+- Maintains a connection pool with idle timeout
+- Cleans up on idle, on process death, or on shutdown
+
+Lifecycle hardening (2026):
+- Subprocesses spawn in their own process group; shutdown kills the group
+  so grandchildren (npx -> node -> mcp-server) do not leak.
+- stderr is drained on a dedicated thread per connection to avoid pipe
+  deadlocks on chatty servers (especially on Windows).
+- Per-phase timeouts: init / tools/list / tools/call.
 """
 
 import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -30,62 +35,66 @@ from ..tools.definitions.schema import MCPToolConfig
 
 logger = logging.getLogger(__name__)
 
+# Per-phase timeouts (seconds). MCPToolConfig.startup_timeout_seconds overrides INIT.
+INIT_TIMEOUT_DEFAULT = 10
+LIST_TIMEOUT_DEFAULT = 30
+CALL_TIMEOUT_DEFAULT = 60
+
 
 @dataclass
 class MCPConnection:
-    """Represents an active connection to an MCP server."""
+    """An active connection to an MCP server (stdio subprocess OR http endpoint)."""
 
     config: MCPToolConfig
-    process: subprocess.Popen
+    # stdio-only: the subprocess. None for http transport.
+    process: Optional[subprocess.Popen] = None
+    # http-only: the reusable client. None for stdio transport.
+    http_client: Optional[Any] = None  # httpx.Client, lazily imported
     server_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     last_used: float = field(default_factory=time.time)
     initialized: bool = False
     available_tools: List[str] = field(default_factory=list)
+    # HTTP: optional server-issued session id per the streamable-HTTP spec.
+    session_id: Optional[str] = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _request_id: int = 0
+    _stderr_thread: Optional[threading.Thread] = None
 
     def next_request_id(self) -> int:
-        """Get the next request ID for JSON-RPC."""
         with self._lock:
             self._request_id += 1
             return self._request_id
 
     def touch(self) -> None:
-        """Update last used timestamp."""
         self.last_used = time.time()
 
     def is_alive(self) -> bool:
-        """Check if the server process is still running."""
-        return self.process.poll() is None
+        if self.config.transport == "http":
+            return self.http_client is not None
+        return self.process is not None and self.process.poll() is None
 
     def is_idle(self, timeout_seconds: int) -> bool:
-        """Check if the connection has been idle for too long."""
         return (time.time() - self.last_used) > timeout_seconds
 
 
 class MCPServerManager:
-    """Manages MCP server subprocesses and connections.
+    """Manages MCP server connections (stdio subprocess or http endpoint).
 
-    Servers are started on-demand and kept alive with an idle timeout.
-    JSON-RPC messages are sent/received over stdin/stdout.
+    Connections start on demand and stay alive until their idle timeout expires.
     """
 
     def __init__(self):
-        """Initialize the MCP server manager."""
-        # Active connections: config_key -> MCPConnection
         self._connections: Dict[str, MCPConnection] = {}
         self._lock = threading.Lock()
 
         # Background cleanup thread
-        self._cleanup_interval = 30  # seconds
+        self._cleanup_interval = 30
         self._cleanup_thread: Optional[threading.Thread] = None
         self._shutdown_event = threading.Event()
 
-        # Start cleanup thread
         self._start_cleanup_thread()
 
     def _start_cleanup_thread(self) -> None:
-        """Start the background cleanup thread."""
         self._cleanup_thread = threading.Thread(
             target=self._cleanup_loop,
             name="MCPCleanup",
@@ -94,29 +103,22 @@ class MCPServerManager:
         self._cleanup_thread.start()
 
     def _cleanup_loop(self) -> None:
-        """Background thread to cleanup idle connections."""
         while not self._shutdown_event.is_set():
             try:
                 self._cleanup_idle_connections()
             except Exception as e:
                 logger.error(f"Error in MCP cleanup loop: {e}")
-
-            # Wait for cleanup interval or shutdown
             self._shutdown_event.wait(self._cleanup_interval)
 
     def _cleanup_idle_connections(self) -> None:
-        """Cleanup connections that have been idle too long."""
         with self._lock:
             to_remove = []
-
             for key, conn in self._connections.items():
-                # Check if process is dead
                 if not conn.is_alive():
                     logger.info(f"MCP server {conn.server_id} died, removing connection")
+                    self._shutdown_connection(conn)
                     to_remove.append(key)
                     continue
-
-                # Check idle timeout
                 if conn.is_idle(conn.config.idle_timeout_seconds):
                     logger.info(
                         f"MCP server {conn.server_id} idle for "
@@ -124,156 +126,180 @@ class MCPServerManager:
                     )
                     self._shutdown_connection(conn)
                     to_remove.append(key)
-
             for key in to_remove:
                 del self._connections[key]
 
     def _get_config_key(self, config: MCPToolConfig) -> str:
-        """Generate a unique key for a config to identify connections.
+        """Unique key per server, NOT per tool, so tools sharing a server share one connection.
 
-        Keys by server_command + args only (not tool_name) so all tools
-        from the same server share one subprocess connection.
+        Key includes transport so a stdio and http server with the same "identity"
+        don't collide.
         """
-        return f"{config.server_command}|{':'.join(config.server_args)}"
+        if config.transport == "http":
+            return f"http|{config.url}"
+        return f"stdio|{config.server_command}|{':'.join(config.server_args)}"
 
     def _get_or_create_connection(self, config: MCPToolConfig) -> MCPConnection:
-        """Get an existing connection or create a new one.
-
-        Args:
-            config: MCP tool configuration.
-
-        Returns:
-            Active MCP connection.
-
-        Raises:
-            RuntimeError: If server fails to start or initialize.
-        """
         key = self._get_config_key(config)
-
         with self._lock:
-            # Check for existing connection
             if key in self._connections:
                 conn = self._connections[key]
                 if conn.is_alive():
                     conn.touch()
                     return conn
-                else:
-                    # Dead connection, remove and create new
-                    del self._connections[key]
+                del self._connections[key]
 
-            # Create new connection
-            conn = self._start_server(config)
+            if config.transport == "http":
+                conn = self._start_http_connection(config)
+            else:
+                conn = self._start_server(config)
             self._connections[key] = conn
             return conn
 
+    # ---- stdio transport ----
+
     def _start_server(self, config: MCPToolConfig) -> MCPConnection:
-        """Start a new MCP server subprocess.
+        logger.info(
+            f"Starting MCP server (stdio): {config.server_command} {' '.join(config.server_args)}"
+        )
 
-        Args:
-            config: MCP tool configuration.
-
-        Returns:
-            New MCP connection.
-
-        Raises:
-            RuntimeError: If server fails to start.
-        """
-        logger.info(f"Starting MCP server: {config.server_command} {' '.join(config.server_args)}")
-
-        # Prepare environment
         env = os.environ.copy()
         for key, value in config.env_vars.items():
-            # Interpolate environment variables in values
             if value.startswith("${env:") and value.endswith("}"):
                 var_name = value[6:-1]
                 env[key] = os.environ.get(var_name, "")
             else:
                 env[key] = value
 
-        # Prepare command
         cmd = [config.server_command] + config.server_args
 
-        # Prepare working directory
         cwd = config.working_directory
         if cwd:
             cwd = os.path.expanduser(cwd)
             cwd = os.path.expandvars(cwd)
 
+        # Spawn in a new process group so we can kill the whole tree on shutdown.
+        popen_kwargs: Dict[str, Any] = dict(
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=cwd,
+            text=False,
+            bufsize=0,
+        )
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
         try:
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                cwd=cwd,
-                text=False,  # Binary mode for proper encoding
-                bufsize=0,  # Unbuffered
-            )
+            process = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError:
             raise RuntimeError(f"MCP server command not found: {config.server_command}")
         except Exception as e:
             raise RuntimeError(f"Failed to start MCP server: {e}")
 
-        # Create connection
         conn = MCPConnection(config=config, process=process)
 
-        # Initialize the server (send initialize request)
+        # Drain stderr on a background thread so the pipe never fills up.
+        conn._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            args=(conn,),
+            name=f"MCPStderr-{conn.server_id}",
+            daemon=True,
+        )
+        conn._stderr_thread.start()
+
+        init_timeout = config.startup_timeout_seconds or INIT_TIMEOUT_DEFAULT
         try:
-            self._initialize_server(conn, timeout=config.startup_timeout_seconds)
+            self._initialize_server(conn, init_timeout=init_timeout)
         except Exception as e:
-            # Cleanup on failure
-            process.kill()
+            self._shutdown_connection(conn)
             raise RuntimeError(f"MCP server initialization failed: {e}")
 
         logger.info(f"MCP server {conn.server_id} started and initialized")
         return conn
 
-    def _initialize_server(self, conn: MCPConnection, timeout: int = 30) -> None:
-        """Initialize the MCP server with the initialize request.
+    def _drain_stderr(self, conn: MCPConnection) -> None:
+        """Continuously read stderr so the pipe never fills up."""
+        if not conn.process or not conn.process.stderr:
+            return
+        try:
+            for line in iter(conn.process.stderr.readline, b""):
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").rstrip()
+                if decoded:
+                    logger.debug(f"[mcp:{conn.server_id}] {decoded}")
+        except Exception as e:
+            logger.debug(f"stderr drain ended for {conn.server_id}: {e}")
 
-        Args:
-            conn: MCP connection.
-            timeout: Initialization timeout in seconds.
+    # ---- http transport ----
 
-        Raises:
-            RuntimeError: If initialization fails.
-        """
-        # Send initialize request
+    def _start_http_connection(self, config: MCPToolConfig) -> MCPConnection:
+        try:
+            import httpx
+        except ImportError as e:
+            raise RuntimeError(
+                "httpx is required for HTTP-transport MCP servers"
+            ) from e
+
+        logger.info(f"Connecting to MCP server (http): {config.url}")
+
+        # Interpolate ${env:VAR} in headers.
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        for k, v in config.headers.items():
+            if v.startswith("${env:") and v.endswith("}"):
+                headers[k] = os.environ.get(v[6:-1], "")
+            else:
+                headers[k] = v
+
+        # Not using base_url: httpx appends a trailing slash on empty paths which
+        # some MCP servers reject. We POST directly to config.url each request.
+        client = httpx.Client(headers=headers, timeout=None)
+        conn = MCPConnection(config=config, http_client=client)
+
+        init_timeout = config.startup_timeout_seconds or INIT_TIMEOUT_DEFAULT
+        try:
+            self._initialize_server(conn, init_timeout=init_timeout)
+        except Exception as e:
+            self._shutdown_connection(conn)
+            raise RuntimeError(f"MCP HTTP server initialization failed: {e}")
+
+        logger.info(f"MCP server {conn.server_id} connected over http")
+        return conn
+
+    # ---- shared handshake ----
+
+    def _initialize_server(self, conn: MCPConnection, init_timeout: int) -> None:
         init_request = {
             "jsonrpc": "2.0",
             "id": conn.next_request_id(),
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-06-18",
                 "capabilities": {},
-                "clientInfo": {
-                    "name": "nymeria",
-                    "version": "1.0.0",
-                },
+                "clientInfo": {"name": "nymeria", "version": "1.0.0"},
             },
         }
 
-        response = self._send_request(conn, init_request, timeout=timeout)
-
+        response = self._send_request(conn, init_request, timeout=init_timeout)
         if "error" in response:
             raise RuntimeError(f"Initialize failed: {response['error']}")
 
-        # Send initialized notification
-        init_notification = {
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-        }
+        init_notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
         self._send_notification(conn, init_notification)
 
-        # Get available tools
         tools_request = {
             "jsonrpc": "2.0",
             "id": conn.next_request_id(),
             "method": "tools/list",
         }
-
-        tools_response = self._send_request(conn, tools_request, timeout=timeout)
+        tools_response = self._send_request(conn, tools_request, timeout=LIST_TIMEOUT_DEFAULT)
         if "result" in tools_response:
             tools = tools_response["result"].get("tools", [])
             conn.available_tools = [t.get("name", "") for t in tools]
@@ -285,25 +311,26 @@ class MCPServerManager:
         self,
         conn: MCPConnection,
         request: Dict[str, Any],
-        timeout: int = 30,
+        timeout: int,
     ) -> Dict[str, Any]:
-        """Send a JSON-RPC request and wait for response.
+        if conn.config.transport == "http":
+            return self._http_send_request(conn, request, timeout)
+        return self._stdio_send_request(conn, request, timeout)
 
-        Args:
-            conn: MCP connection.
-            request: JSON-RPC request object.
-            timeout: Response timeout in seconds.
+    def _send_notification(self, conn: MCPConnection, notification: Dict[str, Any]) -> None:
+        if conn.config.transport == "http":
+            self._http_send_notification(conn, notification)
+        else:
+            self._stdio_send_notification(conn, notification)
 
-        Returns:
-            JSON-RPC response object.
+    # ---- stdio JSON-RPC ----
 
-        Raises:
-            RuntimeError: If communication fails.
-        """
+    def _stdio_send_request(
+        self, conn: MCPConnection, request: Dict[str, Any], timeout: int
+    ) -> Dict[str, Any]:
         if not conn.is_alive():
             raise RuntimeError("MCP server process has died")
 
-        # Serialize and send request
         request_bytes = (json.dumps(request) + "\n").encode("utf-8")
 
         try:
@@ -312,24 +339,14 @@ class MCPServerManager:
         except (BrokenPipeError, OSError) as e:
             raise RuntimeError(f"Failed to send request: {e}")
 
-        # Read response
         start_time = time.time()
         response_line = b""
 
         while (time.time() - start_time) < timeout:
             if not conn.is_alive():
-                # Check stderr for error messages
-                stderr = conn.process.stderr.read()
-                if stderr:
-                    logger.error(f"MCP server stderr: {stderr.decode('utf-8', errors='replace')}")
                 raise RuntimeError("MCP server process died during request")
-
             try:
-                # Non-blocking read with select
-                import select
                 if sys.platform == "win32":
-                    # Windows doesn't support select on pipes
-                    # Use a small timeout read
                     conn.process.stdout.flush()
                     data = conn.process.stdout.readline()
                     if data:
@@ -337,6 +354,7 @@ class MCPServerManager:
                         break
                     time.sleep(0.01)
                 else:
+                    import select
                     readable, _, _ = select.select([conn.process.stdout], [], [], 0.1)
                     if readable:
                         response_line = conn.process.stdout.readline()
@@ -350,90 +368,129 @@ class MCPServerManager:
             raise RuntimeError(f"Timeout waiting for MCP response after {timeout}s")
 
         try:
-            response = json.loads(response_line.decode("utf-8"))
-            return response
+            return json.loads(response_line.decode("utf-8"))
         except json.JSONDecodeError as e:
             raise RuntimeError(f"Invalid JSON response: {e}")
 
-    def _send_notification(self, conn: MCPConnection, notification: Dict[str, Any]) -> None:
-        """Send a JSON-RPC notification (no response expected).
-
-        Args:
-            conn: MCP connection.
-            notification: JSON-RPC notification object.
-        """
+    def _stdio_send_notification(
+        self, conn: MCPConnection, notification: Dict[str, Any]
+    ) -> None:
         if not conn.is_alive():
             return
-
         notification_bytes = (json.dumps(notification) + "\n").encode("utf-8")
-
         try:
             conn.process.stdin.write(notification_bytes)
             conn.process.stdin.flush()
         except (BrokenPipeError, OSError):
-            pass  # Ignore errors for notifications
+            pass
+
+    # ---- http JSON-RPC (streamable HTTP transport) ----
+
+    def _http_send_request(
+        self, conn: MCPConnection, request: Dict[str, Any], timeout: int
+    ) -> Dict[str, Any]:
+        client = conn.http_client
+        if client is None:
+            raise RuntimeError("MCP HTTP client is not initialized")
+
+        headers = {}
+        if conn.session_id:
+            headers["Mcp-Session-Id"] = conn.session_id
+
+        try:
+            resp = client.post(conn.config.url, json=request, headers=headers, timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"HTTP request failed: {e}")
+
+        if resp.status_code == 404 and conn.session_id:
+            # Session expired; drop it and force a fresh connection next time.
+            conn.session_id = None
+            raise RuntimeError("MCP HTTP session expired")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+
+        # Per spec, server MAY return a session id on initialize.
+        new_session = resp.headers.get("Mcp-Session-Id")
+        if new_session and not conn.session_id:
+            conn.session_id = new_session
+
+        content_type = resp.headers.get("Content-Type", "").lower()
+
+        if content_type.startswith("application/json"):
+            return resp.json()
+
+        if content_type.startswith("text/event-stream"):
+            # Find the first SSE "data:" frame that parses as a JSON-RPC response
+            # matching our request id.
+            target_id = request.get("id")
+            for raw in resp.text.splitlines():
+                if not raw.startswith("data:"):
+                    continue
+                payload = raw[5:].strip()
+                if not payload:
+                    continue
+                try:
+                    msg = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(msg, dict) and msg.get("id") == target_id:
+                    return msg
+            raise RuntimeError("No matching JSON-RPC response in SSE stream")
+
+        # Unknown content type; try to parse as JSON anyway.
+        try:
+            return resp.json()
+        except Exception as e:
+            raise RuntimeError(f"Unexpected MCP HTTP response: {e}")
+
+    def _http_send_notification(
+        self, conn: MCPConnection, notification: Dict[str, Any]
+    ) -> None:
+        client = conn.http_client
+        if client is None:
+            return
+        headers = {}
+        if conn.session_id:
+            headers["Mcp-Session-Id"] = conn.session_id
+        try:
+            client.post(conn.config.url, json=notification, headers=headers, timeout=10)
+        except Exception as e:
+            logger.debug(f"Notification send failed (ignored): {e}")
+
+    # ---- tool call ----
 
     async def call_tool(self, config: MCPToolConfig, params: Dict[str, Any]) -> str:
-        """Call a tool on an MCP server.
-
-        This is the main entry point for MCP tool execution.
-
-        Args:
-            config: MCP tool configuration.
-            params: Tool parameters.
-
-        Returns:
-            Tool result as a string.
-        """
-        # Run in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.call_tool_sync, config, params)
 
     def call_tool_sync(self, config: MCPToolConfig, params: Dict[str, Any]) -> str:
-        """Synchronous version of call_tool.
-
-        Args:
-            config: MCP tool configuration.
-            params: Tool parameters.
-
-        Returns:
-            Tool result as a string.
-        """
         try:
             conn = self._get_or_create_connection(config)
 
-            # Check if tool is available
             if config.tool_name not in conn.available_tools:
                 available = ", ".join(conn.available_tools) if conn.available_tools else "none"
                 return f"[Error]: Tool '{config.tool_name}' not found. Available: {available}"
 
-            # Send tool call request
             request = {
                 "jsonrpc": "2.0",
                 "id": conn.next_request_id(),
                 "method": "tools/call",
-                "params": {
-                    "name": config.tool_name,
-                    "arguments": params,
-                },
+                "params": {"name": config.tool_name, "arguments": params},
             }
 
-            response = self._send_request(conn, request, timeout=60)
+            response = self._send_request(conn, request, timeout=CALL_TIMEOUT_DEFAULT)
 
             if "error" in response:
                 error = response["error"]
                 return f"[Error]: {error.get('message', 'Unknown error')}"
 
-            # Extract result content
             result = response.get("result", {})
             content = result.get("content", [])
 
-            # Format content blocks
             output_parts = []
             for block in content:
                 block_type = block.get("type", "text")
                 if block_type == "text":
-                    # Ensure text is always a string (some MCP servers return numbers)
                     text_value = block.get("text", "")
                     output_parts.append(str(text_value) if text_value is not None else "")
                 elif block_type == "image":
@@ -451,59 +508,79 @@ class MCPServerManager:
             logger.error(f"MCP tool call failed: {e}", exc_info=True)
             return f"[Error]: MCP tool call failed - {str(e)}"
 
-    def _shutdown_connection(self, conn: MCPConnection) -> None:
-        """Shutdown a single connection.
+    # ---- shutdown ----
 
-        Args:
-            conn: Connection to shutdown.
-        """
+    def _shutdown_connection(self, conn: MCPConnection) -> None:
+        if conn.config.transport == "http":
+            try:
+                if conn.http_client is not None:
+                    conn.http_client.close()
+                conn.http_client = None
+            except Exception as e:
+                logger.warning(f"Error closing MCP http client {conn.server_id}: {e}")
+            return
+
         try:
-            if conn.is_alive():
-                # Try graceful shutdown
-                conn.process.terminate()
+            if conn.process is not None and conn.process.poll() is None:
+                # Kill the whole process group so grandchildren do not leak.
+                try:
+                    if sys.platform == "win32":
+                        conn.process.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        os.killpg(os.getpgid(conn.process.pid), signal.SIGTERM)
+                except Exception as group_err:
+                    logger.debug(f"Process-group signal failed: {group_err}")
+                    conn.process.terminate()
+
                 try:
                     conn.process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    conn.process.kill()
+                    try:
+                        if sys.platform != "win32":
+                            os.killpg(os.getpgid(conn.process.pid), signal.SIGKILL)
+                        else:
+                            conn.process.kill()
+                    except Exception:
+                        conn.process.kill()
+
+            # Close pipes to unblock the stderr drain thread.
+            for stream in (conn.process.stdin, conn.process.stdout, conn.process.stderr):
+                try:
+                    if stream:
+                        stream.close()
+                except Exception:
+                    pass
 
             logger.debug(f"Shutdown MCP server {conn.server_id}")
         except Exception as e:
             logger.warning(f"Error shutting down MCP server {conn.server_id}: {e}")
 
     def shutdown_all(self) -> None:
-        """Shutdown all MCP server connections."""
         logger.info("Shutting down all MCP servers...")
-
-        # Signal cleanup thread to stop
         self._shutdown_event.set()
-
-        # Shutdown all connections
         with self._lock:
             for conn in self._connections.values():
                 self._shutdown_connection(conn)
             self._connections.clear()
-
-        # Wait for cleanup thread
         if self._cleanup_thread and self._cleanup_thread.is_alive():
             self._cleanup_thread.join(timeout=5)
-
         logger.info("All MCP servers shutdown")
 
     def get_active_servers(self) -> List[Dict[str, Any]]:
-        """Get information about active MCP servers.
-
-        Returns:
-            List of server info dicts.
-        """
         with self._lock:
-            return [
-                {
+            out = []
+            for conn in self._connections.values():
+                entry: Dict[str, Any] = {
                     "server_id": conn.server_id,
-                    "command": conn.config.server_command,
+                    "transport": conn.config.transport,
                     "tool_name": conn.config.tool_name,
                     "available_tools": conn.available_tools,
                     "last_used": conn.last_used,
                     "is_alive": conn.is_alive(),
                 }
-                for conn in self._connections.values()
-            ]
+                if conn.config.transport == "http":
+                    entry["url"] = conn.config.url
+                else:
+                    entry["command"] = conn.config.server_command
+                out.append(entry)
+            return out

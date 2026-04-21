@@ -31,6 +31,8 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 21 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
 | 22 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
 | 23 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
+| 24 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
+| 25 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude Desktop JSON, stdio command, HTTP URL, or registry id) |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. See `docs/skills.md`.
 
