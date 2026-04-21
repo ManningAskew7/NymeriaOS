@@ -847,6 +847,21 @@ export interface MCPServerListResponse {
   total: number;
 }
 
+export interface MCPInstallRequest {
+  source: string;
+  name?: string;
+  auto_enable?: boolean;
+  thread_id?: string;
+}
+
+export interface MCPInstallResponse {
+  server: MCPServer;
+  parsedSummary: string;
+  discoveredTools: number;
+  toolNames: string[];
+  threadId?: string;
+}
+
 // Trigger Types
 
 export type TriggerActionType = 'agent_prompt' | 'notify' | 'create_todo';

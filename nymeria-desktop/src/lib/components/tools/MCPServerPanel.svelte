@@ -5,6 +5,7 @@
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
   import MCPServerForm from './MCPServerForm.svelte';
+  import MCPInstallModal from './MCPInstallModal.svelte';
 
   interface Props {
     threadId?: string;
@@ -12,6 +13,7 @@
   let { threadId }: Props = $props();
 
   // UI state
+  let showInstallModal = $state(false);
   let showAddForm = $state(false);
   let expandedServer = $state<string | null>(null);
   let editingServerId = $state<string | null>(null);
@@ -179,11 +181,36 @@
       <Icon name="terminal" size={16} />
       MCP Servers
     </h4>
-    <Button size="sm" variant={showAddForm ? 'ghost' : 'primary'} onclick={() => { showAddForm = !showAddForm; addError = null; }}>
-      <Icon name={showAddForm ? 'x' : 'plus'} size={14} />
-      {showAddForm ? 'Cancel' : 'Add Server'}
-    </Button>
+    <div class="header-actions">
+      <Button
+        size="sm"
+        variant="ghost"
+        onclick={() => { showAddForm = !showAddForm; addError = null; }}
+        title="Manually enter server command, args, and environment variables"
+      >
+        <Icon name={showAddForm ? 'x' : 'edit'} size={14} />
+        {showAddForm ? 'Cancel' : 'Add manually'}
+      </Button>
+      <Button
+        size="sm"
+        variant="primary"
+        onclick={() => { showInstallModal = true; }}
+      >
+        <Icon name="bolt" size={14} />
+        Install Server
+      </Button>
+    </div>
   </div>
+
+  <p class="panel-hint">
+    Paste a server config, command, URL, or registry ID — Nymeria auto-detects the format, starts the server, and wires its tools into the agent.
+  </p>
+
+  <MCPInstallModal
+    isOpen={showInstallModal}
+    onClose={() => { showInstallModal = false; }}
+    {threadId}
+  />
 
   {#if showAddForm}
     <MCPServerForm
@@ -200,8 +227,8 @@
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
     <div class="empty-state">
       <Icon name="terminal" size={24} />
-      <p>No MCP servers configured</p>
-      <span>Add a server to auto-discover its tools</span>
+      <p>No MCP servers yet</p>
+      <span>Click <strong>Install Server</strong> above to add one — pasting a command or JSON takes 30 seconds.</span>
     </div>
   {:else}
     <div class="servers-list">
@@ -344,7 +371,8 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.75rem;
+    gap: var(--spacing-sm, 0.5rem);
+    margin-bottom: 0.4rem;
   }
 
   .panel-header h4 {
@@ -354,6 +382,21 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+
+  .header-actions {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .panel-hint {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.78rem;
+    color: var(--text-muted, #777);
+    line-height: 1.4;
   }
 
   .loading-state {
