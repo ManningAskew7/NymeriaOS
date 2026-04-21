@@ -1006,6 +1006,18 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         security_level=SecurityLevel.MODERATE,
         description="Install a skill from the marketplace into user or global scope",
     ),
+    "mcp_search": ToolMetadata(
+        name="mcp_search",
+        category=ToolCategory.MCP_SERVER,
+        security_level=SecurityLevel.SAFE,
+        description="Search public MCP server registries (official + Smithery) for installable servers",
+    ),
+    "mcp_install": ToolMetadata(
+        name="mcp_install",
+        category=ToolCategory.MCP_SERVER,
+        security_level=SecurityLevel.MODERATE,
+        description="Install an MCP server from a paste (Claude Desktop JSON, stdio command, HTTP URL, or registry id)",
+    ),
 }
 
 

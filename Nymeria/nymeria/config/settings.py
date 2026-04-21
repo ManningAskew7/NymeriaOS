@@ -243,6 +243,16 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")
     gemini_extraction_model: str = Field(default="gemini-3-flash-preview", description="Gemini model for attachment text extraction")
 
+    # MCP discovery registries
+    mcp_registry_url: str = Field(
+        default="https://registry.modelcontextprotocol.io",
+        description="Base URL of the official MCP registry used by mcp_search/mcp_install",
+    )
+    smithery_api_key: Optional[str] = Field(
+        default=None,
+        description="Optional Smithery API key; unlocks private/verified listings when set",
+    )
+
     # Database - SQLite by default, PostgreSQL optional for power users
     database_backend: Literal["sqlite", "postgres", "memory"] = Field(
         default="sqlite", description="Database backend: sqlite (default), postgres, or memory"

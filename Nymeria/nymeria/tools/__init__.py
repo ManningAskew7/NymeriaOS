@@ -74,6 +74,11 @@ from .search_skills import (
     install_skill,
     SEARCH_SKILLS_TOOLS,
 )
+from .search_mcp import (
+    mcp_search,
+    mcp_install,
+    SEARCH_MCP_TOOLS,
+)
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
@@ -146,6 +151,9 @@ ALL_TOOLS = [
     list_installed_skills,
     search_skills,
     install_skill,
+    # MCP server discovery and installation
+    mcp_search,
+    mcp_install,
 ]
 
 __all__ = [
@@ -214,6 +222,9 @@ __all__ = [
     "search_skills",
     "install_skill",
     "SEARCH_SKILLS_TOOLS",
+    "mcp_search",
+    "mcp_install",
+    "SEARCH_MCP_TOOLS",
     "activity_feed",
     "ACTIVITY_FEED_TOOLS",
     "watchdog_dispatch",

@@ -115,8 +115,11 @@ class MCPServerRegistry:
 
         # Build a temporary MCPToolConfig to trigger connection
         config = MCPToolConfig(
+            transport=defn.transport,
             server_command=defn.server_command,
             server_args=defn.server_args,
+            url=defn.url,
+            headers=defn.headers,
             tool_name="__discovery__",  # placeholder
             env_vars=defn.env_vars,
             working_directory=defn.working_directory,
@@ -208,8 +211,11 @@ class MCPServerRegistry:
         """Wrap a single discovered MCP tool as a LangChain StructuredTool."""
         # Build MCPToolConfig for execution
         config = MCPToolConfig(
+            transport=defn.transport,
             server_command=defn.server_command,
             server_args=defn.server_args,
+            url=defn.url,
+            headers=defn.headers,
             tool_name=discovered.name,
             env_vars=defn.env_vars,
             working_directory=defn.working_directory,
