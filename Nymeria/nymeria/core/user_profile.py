@@ -8,9 +8,30 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
+
+# Legacy tool renames. Historical profiles may contain the old names; values
+# from disk or inbound API requests are transparently migrated to the current
+# names so the backend accepts them and the UI stops showing ghost entries.
+LEGACY_TOOL_RENAMES: Dict[str, str] = {
+    "todo": "nym_todo",
+    "todo_delete": "nym_todo_delete",
+    "todo_list": "nym_todo_list",
+}
+
+
+def migrate_tool_names(names: List[str]) -> List[str]:
+    """Apply legacy renames and de-duplicate while preserving order."""
+    seen: set[str] = set()
+    out: List[str] = []
+    for name in names:
+        migrated = LEGACY_TOOL_RENAMES.get(name, name)
+        if migrated not in seen:
+            seen.add(migrated)
+            out.append(migrated)
+    return out
 
 # Thread-safe locks for profile operations (keyed by user_id)
 _profile_locks: Dict[str, threading.RLock] = {}
@@ -49,6 +70,15 @@ class ToolPreferences(BaseModel):
             "Can include both core and optional tool names."
         )
     )
+
+    @field_validator("default_thread_tools", mode="before")
+    @classmethod
+    def _migrate_legacy_tool_names(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, list):
+            return migrate_tool_names([str(x) for x in v])
+        return v
 
     def set_tool_config(self, tool_name: str, config: Dict[str, Any]) -> None:
         """Set configuration for a specific tool."""
