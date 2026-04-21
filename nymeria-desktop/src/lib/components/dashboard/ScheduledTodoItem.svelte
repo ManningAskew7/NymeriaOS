@@ -77,6 +77,7 @@
     display: flex;
     gap: var(--spacing-sm);
     padding: var(--spacing-sm);
+    background: var(--bg-elevated-2);
     border-radius: var(--radius-md);
     transition: background var(--transition-fast);
     border-left: 2px solid var(--accent-primary);

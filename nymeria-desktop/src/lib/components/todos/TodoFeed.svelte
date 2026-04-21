@@ -261,14 +261,14 @@
   .group-items {
     display: flex;
     flex-direction: column;
-    background: var(--bg-elevated-2);
-    border-radius: var(--radius-md);
-    overflow: hidden;
+    gap: var(--spacing-xs);
   }
 
   .group-items.highlighted {
+    padding: var(--spacing-xs);
     background: rgba(var(--accent-primary-rgb), 0.1);
     border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
+    border-radius: var(--radius-md);
   }
 
   /* Completed section scrollable like Activity feed */

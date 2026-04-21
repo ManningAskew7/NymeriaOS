@@ -120,7 +120,7 @@
 
   .hint {
     font-size: 0.75rem;
-    color: var(--text-tertiary);
+    color: var(--text-muted);
     margin: 0.25rem 0 0 0;
   }
 
@@ -147,7 +147,7 @@
   }
 
   .status-dot.stopped {
-    background: var(--text-tertiary, #5a5a70);
+    background: var(--text-muted);
   }
 
   .status-text {
@@ -172,9 +172,9 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.5rem 0.75rem;
-    background: var(--bg-secondary);
+    background: var(--bg-elevated-2);
     border-radius: 6px;
-    border: 1px solid var(--border-primary);
+    border: 1px solid var(--border-default);
   }
 
   .session-provider {
@@ -186,7 +186,7 @@
 
   .session-email {
     font-size: 0.75rem;
-    color: var(--text-tertiary);
+    color: var(--text-muted);
   }
 
   .login-buttons {

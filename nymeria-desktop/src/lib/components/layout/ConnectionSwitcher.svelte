@@ -211,10 +211,10 @@
     left: 0;
     right: 0;
     margin-bottom: 4px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--glass-border);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     z-index: 999;
     min-width: 200px;
     max-height: 300px;
