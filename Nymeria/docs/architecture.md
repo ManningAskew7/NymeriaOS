@@ -336,16 +336,23 @@ When token usage reaches the threshold (default: 80% of model's context limit):
 ```
 1. Agent generates summary (already has full context - no re-sending)
 2. Agent calls memory_save for important persistent facts
-3. All messages cleared from thread
-4. Summary injected as context for continuation
-5. Agent continues where it left off (auto-compact) OR
+3. All messages cleared from thread (RemoveMessage + a single
+   compaction_marker HumanMessage so the router can still read messages[-1])
+4. Pre-compact checkpoint rows pruned from the checkpointer via raw SQL
+   (checkpoints + checkpoint_writes + orphan checkpoint_blobs) so
+   /history calls don't keep paying to hydrate history nobody references
+5. Summary injected as context for continuation
+6. Agent continues where it left off (auto-compact) OR
    Summary attached to user's next message (manual /compact)
 ```
 
 **Key Components:**
 - `TokenTracker` (`token_tracker.py`): Tracks cumulative tokens per thread
 - `ConversationCompactor` (`compactor.py`): Generates summary prompts, formats resume context
+- `NymeriaAgent._prune_checkpoints_before()` (`core/agent.py`): raw-SQL pruner invoked by `_clear_and_reset`
 - Model limits fetched from OpenRouter API with static fallbacks
+
+See [compaction-and-checkpoints.md](./compaction-and-checkpoints.md) for the end-to-end flow, the display filter's `internal_type` branches (including the `compaction_marker` edge case), and a troubleshooting playbook.
 
 **Configuration:**
 ```bash
