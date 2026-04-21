@@ -51,6 +51,8 @@ import type {
   MCPDiscoveredTool,
   MCPServerCreateRequest,
   MCPServerUpdateRequest,
+  MCPInstallRequest,
+  MCPInstallResponse,
   MCPServerListResponse
 } from '$lib/types';
 
@@ -1414,6 +1416,26 @@ export class NymeriaAPI {
       server: this.mcpServerFromResponse(data.server),
       discoveredTools: data.discovered_tools,
       discoveryError: data.discovery_error,
+    };
+  }
+
+  async installMCPServer(request: MCPInstallRequest): Promise<MCPInstallResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/mcp-servers/install`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request)
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      server: this.mcpServerFromResponse(data.server),
+      parsedSummary: data.parsed_summary || '',
+      discoveredTools: data.discovered_tools ?? 0,
+      toolNames: data.tool_names || [],
+      threadId: data.thread_id ?? undefined,
     };
   }
 
