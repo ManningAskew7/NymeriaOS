@@ -62,6 +62,7 @@ export function createPollingStore<T>(
   let error = $state<string | null>(null);
   let lastFetch = $state<Date | null>(null);
   let pollIntervalId: ReturnType<typeof setInterval> | null = null;
+  let visibilityHandler: (() => void) | null = null;
 
   const count = $derived(() => {
     if (data && extractItems) {
@@ -85,20 +86,39 @@ export function createPollingStore<T>(
     }
   }
 
+  function isHidden(): boolean {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  }
+
   function startPolling(): void {
     if (pollIntervalId) return;
 
     // Fetch immediately
     fetch();
 
-    // Then poll at interval
-    pollIntervalId = setInterval(() => fetch(), pollInterval);
+    // Skip scheduled fetches while the tab is hidden — they just pile up CPU on the API
+    // and get fired all at once on resume anyway.
+    pollIntervalId = setInterval(() => {
+      if (!isHidden()) fetch();
+    }, pollInterval);
+
+    // Catch-up fetch when the tab becomes visible again.
+    if (typeof document !== 'undefined') {
+      visibilityHandler = () => {
+        if (!isHidden()) fetch();
+      };
+      document.addEventListener('visibilitychange', visibilityHandler);
+    }
   }
 
   function stopPolling(): void {
     if (pollIntervalId) {
       clearInterval(pollIntervalId);
       pollIntervalId = null;
+    }
+    if (visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+      visibilityHandler = null;
     }
   }
 

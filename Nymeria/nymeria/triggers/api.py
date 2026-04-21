@@ -20,9 +20,9 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
-from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, log_activity
+from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
 from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
-from ..core.notifications import NotificationStore, Notification
+from ..core.notifications import NotificationStore, Notification, get_notification_store
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
@@ -3212,7 +3212,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Returns recent activity entries, newest first.
         Optionally filter by thread_id.
         """
-        activity_log = ActivityLog(settings.data_dir)
+        activity_log = get_activity_log()
 
         # Parse activity type filter
         type_filter = None
@@ -3255,7 +3255,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         Returns all notifications with unread count.
         """
-        store = NotificationStore(settings.data_dir)
+        store = get_notification_store()
         notifications = store.get_all(user_id, limit=50)
         unread_count = store.get_unread_count(user_id)
 
@@ -3284,7 +3284,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         Mark a notification as read.
         """
-        store = NotificationStore(settings.data_dir)
+        store = get_notification_store()
         success = store.mark_read(notification_id, user_id)
 
         if not success:
@@ -3304,7 +3304,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         Mark all notifications as read for a user.
         """
-        store = NotificationStore(settings.data_dir)
+        store = get_notification_store()
         count = store.mark_all_read(user_id)
 
         return {"status": "ok", "marked_read": count}

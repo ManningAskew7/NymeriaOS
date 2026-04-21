@@ -21,6 +21,11 @@ let loading = $state(false);
 let loaded = $state(false);
 let error = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let visibilityHandler: (() => void) | null = null;
+
+function isHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
 
 // Actions
 async function loadTriggers(): Promise<void> {
@@ -74,14 +79,25 @@ async function getExecutions(triggerId: string): Promise<TriggerExecution[]> {
 function startPolling(): void {
   if (pollInterval) return;
   pollInterval = setInterval(() => {
-    loadTriggers();
-  }, 30_000);
+    if (!isHidden()) loadTriggers();
+  }, 60_000);
+
+  if (typeof document !== 'undefined') {
+    visibilityHandler = () => {
+      if (!isHidden()) loadTriggers();
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
 }
 
 function stopPolling(): void {
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
+  }
+  if (visibilityHandler && typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
   }
 }
 
