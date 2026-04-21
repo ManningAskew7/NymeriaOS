@@ -42,6 +42,7 @@ python run.py cli
 - [Tools Reference](./tools.md) - Built-in tools, optional tools, custom tools, and callable threads
 - [Configuration](./configuration.md) - Environment variables and settings
 - [API Reference](./api.md) - REST API endpoints including settings, tools, TODOs, MCP servers, voice, and callable threads
+- [Compaction & Checkpoints](./compaction-and-checkpoints.md) - How `/compact` trims state and prunes the checkpointer, the display filter's internal-message handling, and troubleshooting for blank threads or slow `/history`
 
 ## Project Structure
 

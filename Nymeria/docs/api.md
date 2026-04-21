@@ -107,6 +107,8 @@ GET /threads/{thread_id}/history
 Authorization: Bearer <token>
 ```
 
+Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups, compaction markers) that are hidden by default.
+
 **Response:**
 ```json
 {
@@ -118,6 +120,8 @@ Authorization: Bearer <token>
   ]
 }
 ```
+
+**Performance note:** latency scales with the checkpoint count for the thread. Compaction prunes pre-compact rows so healthy threads stay under ~100 ms. If you see multi-second latency, check the thread's checkpoint count and the troubleshooting section in [compaction-and-checkpoints.md](./compaction-and-checkpoints.md).
 
 ---
 
