@@ -1055,7 +1055,7 @@
 
   <!-- Tools Tab -->
   {#if activeTab === 'tools'}
-    <div class="tab-content tab-content-full">
+    <div class="tab-content tab-tools-flex">
       <ToolManagementPanel />
     </div>
   {/if}
@@ -1311,6 +1311,17 @@
     min-height: 400px;
     max-height: 60vh;
     overflow-y: auto;
+  }
+
+  /* Tools tab — pins its own footer + lets scrollbar sit flush with the Modal's right border */
+  .tab-tools-flex {
+    min-height: 0;
+    max-height: 60vh;
+    height: 60vh;
+    display: flex;
+    flex-direction: column;
+    /* Pull flush-right by defeating the parent Modal's right padding */
+    margin-right: calc(-1 * var(--spacing-lg));
   }
 
   .field {
@@ -1711,9 +1722,9 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    background: var(--bg-secondary);
+    background: var(--bg-elevated-2);
     border-radius: 6px;
-    border: 1px solid var(--border-primary);
+    border: 1px solid var(--border-default);
     font-size: 0.8125rem;
     color: var(--text-secondary);
     margin-bottom: 1rem;
