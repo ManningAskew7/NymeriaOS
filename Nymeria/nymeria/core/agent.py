@@ -10,7 +10,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
+from typing import Any, AsyncGenerator, Dict, Generator, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, RemoveMessage
 from langchain_core.tools import BaseTool
@@ -1397,6 +1397,31 @@ class NymeriaAgent:
                 f"RemoveMessage (1 compaction marker remains)"
             )
 
+            # Prune pre-compact history so get_state_history walks (and the
+            # /history endpoint) don't keep paying for hydrating 100s of MB
+            # of msgpack that no surviving checkpoint references.
+            try:
+                post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
+                floor_versions: Dict[str, Any] = {}
+                if post_cp_id:
+                    cp_tuple = await graph.checkpointer.aget_tuple({
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_id": post_cp_id,
+                        }
+                    })
+                    if cp_tuple is not None and cp_tuple.checkpoint:
+                        floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
+                    counts = self._prune_checkpoints_before(
+                        thread_id, post_cp_id, floor_versions
+                    )
+                    logger.info(
+                        f"Thread {thread_id}: Pruned pre-compact history — "
+                        f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
+                    )
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Pruning call failed: {e}")
+
         except Exception as e:
             logger.error(f"Thread {thread_id}: Failed to clear messages: {e}", exc_info=True)
             return False
@@ -1630,7 +1655,8 @@ class NymeriaAgent:
             graph.update_state(config, {"messages": remove_commands + [compaction_marker]})
 
             # Verify: should have exactly 1 message (the marker)
-            remaining = graph.get_state(config).values.get("messages", [])
+            verify_state = graph.get_state(config)
+            remaining = verify_state.values.get("messages", [])
             if len(remaining) != 1:
                 logger.error(
                     f"Thread {thread_id}: Sync clear verification failed — "
@@ -1643,12 +1669,162 @@ class NymeriaAgent:
                 f"RemoveMessage sync (1 compaction marker remains)"
             )
 
+            # Prune pre-compact history (see async path for rationale).
+            try:
+                post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
+                floor_versions: Dict[str, Any] = {}
+                if post_cp_id:
+                    cp_tuple = graph.checkpointer.get_tuple({
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_id": post_cp_id,
+                        }
+                    })
+                    if cp_tuple is not None and cp_tuple.checkpoint:
+                        floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
+                    counts = self._prune_checkpoints_before(
+                        thread_id, post_cp_id, floor_versions
+                    )
+                    logger.info(
+                        f"Thread {thread_id}: Pruned pre-compact history — "
+                        f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
+                    )
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Pruning call failed (sync): {e}")
+
         except Exception as e:
             logger.error(f"Thread {thread_id}: Sync clear failed: {e}", exc_info=True)
             return False
 
         self._token_tracker.reset_after_compact(thread_id, 0)
         return True
+
+    def _prune_checkpoints_before(
+        self,
+        thread_id: str,
+        boundary_checkpoint_id: str,
+        floor_channel_versions: Dict[str, Any],
+    ) -> Tuple[int, int, int]:
+        """Delete pre-compact checkpoint/write/blob rows for a thread.
+
+        Safe to call only while holding the thread lock AND only after the
+        compact write has been verified — we delete anything strictly older
+        than ``boundary_checkpoint_id``, plus any blob whose version is below
+        the floor referenced by the surviving (post-compact) checkpoint.
+
+        Each DELETE is wrapped individually: a prune failure must never fail
+        the compaction that already succeeded.
+
+        Returns ``(checkpoints_deleted, writes_deleted, blobs_deleted)``.
+        """
+        settings = get_settings()
+        checkpoints_deleted = 0
+        writes_deleted = 0
+        blobs_deleted = 0
+
+        if settings.database_backend == "postgres":
+            import psycopg  # type: ignore[import-untyped]
+            try:
+                with psycopg.connect(settings.postgres_uri) as conn:
+                    with conn.cursor() as cur:
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoint_writes "
+                                "WHERE thread_id = %s AND checkpoint_ns = '' "
+                                "AND checkpoint_id < %s",
+                                (thread_id, boundary_checkpoint_id),
+                            )
+                            writes_deleted = cur.rowcount or 0
+                        except Exception as e:
+                            logger.warning(
+                                f"Thread {thread_id}: prune checkpoint_writes failed: {e}"
+                            )
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoints "
+                                "WHERE thread_id = %s AND checkpoint_ns = '' "
+                                "AND checkpoint_id < %s",
+                                (thread_id, boundary_checkpoint_id),
+                            )
+                            checkpoints_deleted = cur.rowcount or 0
+                        except Exception as e:
+                            logger.warning(
+                                f"Thread {thread_id}: prune checkpoints failed: {e}"
+                            )
+                        for channel, floor_v in floor_channel_versions.items():
+                            try:
+                                floor_int = int(floor_v)
+                            except (TypeError, ValueError):
+                                continue
+                            try:
+                                cur.execute(
+                                    "DELETE FROM checkpoint_blobs "
+                                    "WHERE thread_id = %s AND channel = %s "
+                                    "AND CAST(version AS INTEGER) < %s",
+                                    (thread_id, channel, floor_int),
+                                )
+                                blobs_deleted += cur.rowcount or 0
+                            except Exception as e:
+                                logger.warning(
+                                    f"Thread {thread_id}: prune blob channel={channel} failed: {e}"
+                                )
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Checkpoint prune (postgres) failed: {e}")
+        elif settings.database_backend == "sqlite":
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(str(settings.db_path))
+                try:
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(
+                            "DELETE FROM checkpoint_writes "
+                            "WHERE thread_id = ? AND checkpoint_ns = '' "
+                            "AND checkpoint_id < ?",
+                            (thread_id, boundary_checkpoint_id),
+                        )
+                        writes_deleted = cur.rowcount or 0
+                    except Exception as e:
+                        logger.warning(
+                            f"Thread {thread_id}: prune checkpoint_writes failed: {e}"
+                        )
+                    try:
+                        cur.execute(
+                            "DELETE FROM checkpoints "
+                            "WHERE thread_id = ? AND checkpoint_ns = '' "
+                            "AND checkpoint_id < ?",
+                            (thread_id, boundary_checkpoint_id),
+                        )
+                        checkpoints_deleted = cur.rowcount or 0
+                    except Exception as e:
+                        logger.warning(
+                            f"Thread {thread_id}: prune checkpoints failed: {e}"
+                        )
+                    for channel, floor_v in floor_channel_versions.items():
+                        try:
+                            floor_int = int(floor_v)
+                        except (TypeError, ValueError):
+                            continue
+                        try:
+                            cur.execute(
+                                "DELETE FROM checkpoint_blobs "
+                                "WHERE thread_id = ? AND channel = ? "
+                                "AND CAST(version AS INTEGER) < ?",
+                                (thread_id, channel, floor_int),
+                            )
+                            blobs_deleted += cur.rowcount or 0
+                        except Exception as e:
+                            logger.warning(
+                                f"Thread {thread_id}: prune blob channel={channel} failed: {e}"
+                            )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Checkpoint prune (sqlite) failed: {e}")
+
+        return (checkpoints_deleted, writes_deleted, blobs_deleted)
 
     async def compact_now(
         self,
