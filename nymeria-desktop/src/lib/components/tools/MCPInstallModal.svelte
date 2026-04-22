@@ -88,7 +88,17 @@
       defaultToolsStore.resetLoaded();
       await defaultToolsStore.load();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Installation failed';
+      const raw = e instanceof Error ? e.message : 'Installation failed';
+      // fetch() throws TypeError: "Failed to fetch" on network-level failures
+      // (DNS, connection reset, CORS preflight abort). If the user is behind a
+      // Cloudflare/ngrok tunnel or similar, a slow install (npx download) can
+      // exceed an upstream idle timeout and the connection dies mid-response —
+      // the backend's 502 detail never reaches us. Surface that distinction.
+      if (/failed to fetch|networkerror|load failed/i.test(raw)) {
+        error = 'Network error reaching the API. The install may have taken longer than your tunnel/proxy idle timeout. Check Settings → Connection and the backend logs, then try a faster server (e.g. a registry ID) or a command whose package is already cached.';
+      } else {
+        error = raw;
+      }
       stage = 'input';
     } finally {
       if (progressTimer) {

@@ -16,8 +16,8 @@
   const recipes: Recipe[] = [
     {
       name: 'Filesystem',
-      source: 'npx -y @modelcontextprotocol/server-filesystem ~/Documents',
-      description: 'Read and write files in your Documents folder',
+      source: 'npx -y @modelcontextprotocol/server-filesystem /workspace',
+      description: 'Read/write files in /workspace. Paths must exist on the machine Nymeria runs on — edit the path before installing if you want a different folder.',
       kind: 'stdio',
     },
     {
