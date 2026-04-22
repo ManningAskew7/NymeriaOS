@@ -339,38 +339,61 @@ class MCPServerManager:
         except (BrokenPipeError, OSError) as e:
             raise RuntimeError(f"Failed to send request: {e}")
 
-        start_time = time.time()
-        response_line = b""
+        # Read JSON-RPC lines until we see a response whose id matches this
+        # request. Blank lines, notifications (no id), and unrelated responses
+        # are skipped rather than mis-parsed as our response — which would
+        # surface as "Invalid JSON response: Expecting value: line 2 column 1"
+        # (from a lone "\n") or would return another call's payload.
+        expected_id = request.get("id")
+        deadline = time.time() + timeout
 
-        while (time.time() - start_time) < timeout:
+        while time.time() < deadline:
             if not conn.is_alive():
                 raise RuntimeError("MCP server process died during request")
             try:
                 if sys.platform == "win32":
                     conn.process.stdout.flush()
-                    data = conn.process.stdout.readline()
-                    if data:
-                        response_line = data
-                        break
-                    time.sleep(0.01)
+                    line = conn.process.stdout.readline()
+                    if not line:
+                        time.sleep(0.01)
+                        continue
                 else:
                     import select
                     readable, _, _ = select.select([conn.process.stdout], [], [], 0.1)
-                    if readable:
-                        response_line = conn.process.stdout.readline()
-                        if response_line:
-                            break
+                    if not readable:
+                        continue
+                    line = conn.process.stdout.readline()
+                    if not line:
+                        continue
             except Exception as e:
                 logger.debug(f"Read error (may be temporary): {e}")
                 time.sleep(0.1)
+                continue
 
-        if not response_line:
-            raise RuntimeError(f"Timeout waiting for MCP response after {timeout}s")
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
 
-        try:
-            return json.loads(response_line.decode("utf-8"))
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Invalid JSON response: {e}")
+            try:
+                msg = json.loads(text)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    f"MCP server {conn.server_id} wrote non-JSON to stdout "
+                    f"(skipping): {text[:200]!r} ({e})"
+                )
+                continue
+
+            msg_id = msg.get("id") if isinstance(msg, dict) else None
+            if msg_id != expected_id:
+                logger.debug(
+                    f"MCP server {conn.server_id} sent unrelated message "
+                    f"(id={msg_id}, expected={expected_id}); skipping"
+                )
+                continue
+
+            return msg
+
+        raise RuntimeError(f"Timeout waiting for MCP response after {timeout}s")
 
     def _stdio_send_notification(
         self, conn: MCPConnection, notification: Dict[str, Any]
