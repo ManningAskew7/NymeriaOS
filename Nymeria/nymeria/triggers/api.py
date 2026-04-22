@@ -1978,11 +1978,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         profile.tool_preferences.default_thread_tools = tool_names
         agent.profile_manager.save_profile(profile)
 
-        # Clear graph caches and rebuild defaults so new threads pick up the change
-        agent._user_graphs.clear()
-        agent._async_user_graphs.clear()
-        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
-        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
+        agent._rebuild_default_graphs()
 
         return {
             "status": "ok",
@@ -2003,11 +1999,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         profile.tool_preferences.default_thread_tools = [t.name for t in ALL_TOOLS]
         agent.profile_manager.save_profile(profile)
 
-        # Clear graph caches and rebuild defaults
-        agent._user_graphs.clear()
-        agent._async_user_graphs.clear()
-        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
-        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
+        agent._rebuild_default_graphs()
 
         return {
             "status": "ok",

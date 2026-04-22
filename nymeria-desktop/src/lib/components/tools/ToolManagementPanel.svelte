@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { toolsStore } from '$lib/stores/tools.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -59,11 +60,15 @@
   const effectiveCoreOpen = $derived(coreOpen || isSearching);
   const effectiveAvailableOpen = $derived(availableOpen || isSearching);
 
-  // Load stores on mount
+  // Force-refresh default tools on every mount so newly-installed MCP
+  // servers (whose tools get registered in metadata) show up in the picker
+  // without a full app reload. Other stores only need a first-load fetch.
+  onMount(() => {
+    defaultToolsStore.resetLoaded();
+    defaultToolsStore.load();
+  });
+
   $effect(() => {
-    if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
-      defaultToolsStore.load();
-    }
     if (!toolsStore.loaded && !toolsStore.loading) {
       toolsStore.loadTools();
     }

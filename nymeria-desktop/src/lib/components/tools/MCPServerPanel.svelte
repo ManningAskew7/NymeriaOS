@@ -324,7 +324,12 @@
                       {#each server.discoveredTools as tool}
                         {@const mcpName = getMcpToolName(server.id, tool.name)}
                         {@const isEnabled = enabledToolNames.has(mcpName)}
-                        <div class="tool-row" class:tool-enabled={isEnabled}>
+                        <div
+                          class="tool-row"
+                          class:tool-enabled={isEnabled}
+                          class:tool-row-dormant={!server.enabled}
+                          title={!server.enabled ? 'MCP server is not running — enable the server to make this tool available' : ''}
+                        >
                           <div class="tool-info">
                             <code class="tool-name-code">{tool.name}</code>
                             {#if tool.description}
@@ -692,6 +697,11 @@
 
   .tool-row.tool-enabled {
     border-left: 2px solid var(--accent-primary, #6c9fff);
+  }
+
+  .tool-row.tool-row-dormant {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .tool-info {
