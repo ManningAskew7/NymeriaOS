@@ -57,6 +57,13 @@ class MCPConnection:
     # HTTP: optional server-issued session id per the streamable-HTTP spec.
     session_id: Optional[str] = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # Serializes full request+response cycles on the stdio pipes. MCP stdio is
+    # inherently a synchronous channel (one request in / one response out per
+    # connection), so parallel tool_calls from the agent must queue here
+    # rather than race on stdin/stdout — concurrent reads and writes tear
+    # JSON-RPC frames and manifest as "Invalid JSON response" or hangs past
+    # the call timeout.
+    _io_lock: threading.Lock = field(default_factory=threading.Lock)
     _request_id: int = 0
     _stderr_thread: Optional[threading.Thread] = None
 
@@ -326,6 +333,15 @@ class MCPServerManager:
     # ---- stdio JSON-RPC ----
 
     def _stdio_send_request(
+        self, conn: MCPConnection, request: Dict[str, Any], timeout: int
+    ) -> Dict[str, Any]:
+        # Hold the per-connection IO lock for the full write+read cycle.
+        # Parallel tool calls from the agent queue here rather than interleave
+        # bytes on stdin/stdout.
+        with conn._io_lock:
+            return self._stdio_send_request_locked(conn, request, timeout)
+
+    def _stdio_send_request_locked(
         self, conn: MCPConnection, request: Dict[str, Any], timeout: int
     ) -> Dict[str, Any]:
         if not conn.is_alive():
