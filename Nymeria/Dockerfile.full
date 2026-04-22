@@ -98,6 +98,10 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt \
         pip3 install --no-cache-dir --break-system-packages -r requirements-docker.txt; \
     fi
 
+# Install uv (provides uvx) so Python-based MCP servers pasted by users
+# (e.g. `uvx mcp-server-fetch`) can be spawned without extra setup.
+RUN pip3 install --no-cache-dir --break-system-packages uv
+
 # Install Playwright and browsers (as root for system-wide access)
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN pip3 install --no-cache-dir --break-system-packages playwright \

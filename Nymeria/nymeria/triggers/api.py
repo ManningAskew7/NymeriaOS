@@ -4028,8 +4028,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except Exception as e:
             registry.delete_server(defn.id)
             logger.warning("install_mcp_server discovery failed for %s: %s", defn.id, e)
+            # 400, not 502: this is a client-input problem (bad command, wrong
+            # path, missing runtime on the host) — we want the `detail` body to
+            # pass through reverse proxies like Cloudflare cleanly. 5xx responses
+            # can get substituted for the proxy's own branded error page, which
+            # strips our JSON detail and breaks CORS, surfacing as an opaque
+            # "Failed to fetch" on the client.
             raise HTTPException(
-                502,
+                400,
                 detail=f"parsed ok ({describe_definition(defn)}) but could not reach server: {e}",
             )
 
