@@ -9,8 +9,14 @@
 
   interface Props {
     threadId?: string;
+    // When rendered inside ToolManagementPanel, the parent owns the pending
+    // selection set and the save button. We update the parent's set via
+    // onToggleTool so the Save Changes button lights up and the parent
+    // surfaces success / error feedback through its existing save flow.
+    selectedTools?: Set<string>;
+    onToggleTool?: (name: string) => void;
   }
-  let { threadId }: Props = $props();
+  let { threadId, selectedTools, onToggleTool }: Props = $props();
 
   // UI state
   let showInstallModal = $state(false);
@@ -36,8 +42,12 @@
     }
   });
 
-  // Derive which MCP tool names are in the user's default set
-  let enabledToolNames = $derived(new Set(defaultToolsStore.defaultToolNames));
+  // Derive which MCP tool names are currently ticked. Prefer the parent's
+  // pending selection (so toggles queue up behind the Save Changes button);
+  // fall back to the saved default set if rendered stand-alone.
+  let enabledToolNames = $derived(
+    selectedTools ?? new Set(defaultToolsStore.defaultToolNames)
+  );
 
   function timeAgo(dateStr: string): string {
     const now = Date.now();
@@ -64,6 +74,12 @@
 
   async function toggleGlobalTool(serverId: string, toolName: string) {
     const mcpName = getMcpToolName(serverId, toolName);
+    if (onToggleTool) {
+      // Parent owns the pending set; let it handle reactivity + save button.
+      onToggleTool(mcpName);
+      return;
+    }
+    // Standalone fallback: save directly.
     const current = [...defaultToolsStore.defaultToolNames];
     if (current.includes(mcpName)) {
       await defaultToolsStore.save(current.filter(n => n !== mcpName));

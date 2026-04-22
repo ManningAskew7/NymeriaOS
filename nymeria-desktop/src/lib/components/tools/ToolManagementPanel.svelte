@@ -563,7 +563,7 @@
   <div class="custom-tools-divider">
     <span>MCP Servers</span>
   </div>
-  <MCPServerPanel />
+  <MCPServerPanel {selectedTools} onToggleTool={toggleTool} />
 
   <!-- Custom Tools Section -->
   <div class="custom-tools-divider">
