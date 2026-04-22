@@ -89,13 +89,12 @@
       await defaultToolsStore.load();
     } catch (e) {
       const raw = e instanceof Error ? e.message : 'Installation failed';
-      // fetch() throws TypeError: "Failed to fetch" on network-level failures
-      // (DNS, connection reset, CORS preflight abort). If the user is behind a
-      // Cloudflare/ngrok tunnel or similar, a slow install (npx download) can
-      // exceed an upstream idle timeout and the connection dies mid-response —
-      // the backend's 502 detail never reaches us. Surface that distinction.
+      // fetch() throws TypeError on network-level failures: DNS, connection
+      // reset, CORS preflight abort, or a reverse proxy swapping our JSON
+      // error body for a branded 5xx error page with missing CORS headers.
+      // In all those cases the browser never sees the backend's detail.
       if (/failed to fetch|networkerror|load failed/i.test(raw)) {
-        error = 'Network error reaching the API. The install may have taken longer than your tunnel/proxy idle timeout. Check Settings → Connection and the backend logs, then try a faster server (e.g. a registry ID) or a command whose package is already cached.';
+        error = "Couldn't reach the API — or the response was blocked by something between the app and the backend (proxy / tunnel / firewall). Check the backend logs for the real error and retry.";
       } else {
         error = raw;
       }
