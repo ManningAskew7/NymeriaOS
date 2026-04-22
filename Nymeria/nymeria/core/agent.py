@@ -2853,11 +2853,7 @@ class NymeriaAgent:
             if mcp_tools:
                 self.tool_registry.register_all(mcp_tools)
 
-            # Clear cached graphs and rebuild defaults
-            self._user_graphs.clear()
-            self._async_user_graphs.clear()
-            self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-            self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+            self._rebuild_default_graphs()
 
             tool_names = [t.name for t in mcp_tools]
             logger.info(f"MCP server tools reloaded: {tool_names}")
@@ -2865,6 +2861,19 @@ class NymeriaAgent:
         except Exception as e:
             logger.error(f"Failed to reload MCP server tools: {e}", exc_info=True)
             return []
+
+    def _rebuild_default_graphs(self) -> None:
+        """Drop cached per-thread graphs and rebuild the shared defaults.
+
+        Call after any mutation that could change the tool set visible to a
+        graph build: default_thread_tools saved, MCP server enable/install/
+        delete, custom-tool reload. Subsequent thread messages rebuild their
+        graph lazily from the up-to-date registry + profile.
+        """
+        self._user_graphs.clear()
+        self._async_user_graphs.clear()
+        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
+        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
 
     def reload_custom_tools(self) -> List[str]:
         """Reload only custom tools.
