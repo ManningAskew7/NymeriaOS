@@ -2800,10 +2800,18 @@ class NymeriaAgent:
             registry = get_mcp_server_registry()
             mcp_tools = registry.get_all_tools()
 
-            # Register metadata for each tool
+            # Metadata covers every discovered tool across every installed
+            # server — even ones whose defn.enabled is False — so that the
+            # frontend's per-tool toggle list validates against the full set.
+            # defn.enabled still gates whether the tool is actually callable
+            # (via get_all_tools()'s filter), but a name not yet "live" should
+            # still be a known name the defaults endpoint will accept.
             clear_mcp_server_tool_metadata()
-            for tool in mcp_tools:
-                register_mcp_server_tool_metadata(tool.name, tool.description)
+            for defn in registry.get_all_servers():
+                for dt in defn.discovered_tools:
+                    register_mcp_server_tool_metadata(
+                        f"mcp__{defn.id}__{dt.name}", dt.description
+                    )
 
             if mcp_tools:
                 self.tool_registry.register_all(mcp_tools)
@@ -2830,10 +2838,16 @@ class NymeriaAgent:
             registry = reload_mcp_server_registry()
             mcp_tools = registry.get_all_tools()
 
-            # Re-register metadata
+            # See _load_mcp_server_tools: register metadata for every
+            # discovered tool regardless of defn.enabled, so the UI's defaults
+            # validation accepts names for installed-but-not-yet-enabled
+            # servers.
             clear_mcp_server_tool_metadata()
-            for tool in mcp_tools:
-                register_mcp_server_tool_metadata(tool.name, tool.description)
+            for defn in registry.get_all_servers():
+                for dt in defn.discovered_tools:
+                    register_mcp_server_tool_metadata(
+                        f"mcp__{defn.id}__{dt.name}", dt.description
+                    )
 
             # Re-register tools
             if mcp_tools:
