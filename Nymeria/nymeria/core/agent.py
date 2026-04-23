@@ -377,6 +377,13 @@ class NymeriaAgent:
     MAIN_AGENT_MAX_ITERATIONS = 70
     CALLABLE_DEFAULT_MAX_ITERATIONS = 50
     SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
+    # Cap the number of in-turn graph rebuilds triggered by tool_search enable.
+    # Beyond this cap, further enables still persist to the thread config but
+    # no longer force an in-turn rebuild — the tool returns a plain string
+    # and the new binding takes effect on the next user message. This keeps
+    # token usage bounded while still letting a normal "discover → enable →
+    # use → discover another → enable → use" flow happen within one turn.
+    MAX_TOOL_RELOADS_PER_TURN = 3
 
     def __init__(
         self,
@@ -489,6 +496,18 @@ class NymeriaAgent:
         self._user_graphs: Dict[tuple, tuple] = {}
         self._async_user_graphs: Dict[tuple, tuple] = {}  # For async operations
         self._GRAPH_CACHE_MAX = 50  # LRU eviction threshold
+
+        # Mid-turn tool reload: set by tool_search(action="enable") when a
+        # genuinely new tool was added to the thread. Consumed at the end of
+        # the current astream() invocation to trigger an in-stream graph
+        # rebuild + resume (see _do_tool_reload). Capped at MAX_TOOL_RELOADS
+        # per user turn to prevent runaway enable loops.
+        self._pending_tool_reload: Dict[str, dict] = {}
+        # Per-turn reload counter, written by astream/chat and read by
+        # tool_search._enable to degrade gracefully once the cap is reached
+        # (returns a plain string instead of Command(goto=END), letting the
+        # agent respond in-turn rather than leaving an orphan tool_result).
+        self._turn_reload_count: Dict[str, int] = {}
 
         # Build default checkpointer config (shared across all graphs)
         self._checkpointer_config = self._build_checkpointer_config()
@@ -2268,17 +2287,31 @@ class NymeriaAgent:
                         if reg_tool:
                             tools.append(reg_tool)
 
-        # Apply per-thread tool filtering (remove disabled, add enabled)
+        # Apply per-thread tool filtering. disabled_tools is AUTHORITATIVE —
+        # it filters both the default-bound set AND the extras (enabled_tools
+        # ∪ live_temp). Without this, `tool_search(action="disable", ...)`
+        # would have to destructively remove from enabled_tools/temporary_tools
+        # to actually disable a tool that's in both lists, which means a
+        # subsequent un-disable couldn't restore the original state. By
+        # making disabled authoritative we let _disable just add to
+        # disabled_tools and keep the original enabled_tools/temporary_tools
+        # entries intact, so un-disable is a true restore.
         if tc:
-            if tc.disabled_tools:
-                disabled = set(tc.disabled_tools)
+            disabled = set(tc.disabled_tools) if tc.disabled_tools else set()
+            if disabled:
                 tools = [t for t in tools if t.name not in disabled]
-            if tc.enabled_tools:
+            # Merge permanent enablements (tc.enabled_tools) and TTL'd
+            # enablements (tc.temporary_tools) into the tool list. Expired
+            # TTL'd entries are evicted here (lazy cleanup). Filter extras
+            # by disabled_tools so the disabled list wins on any overlap.
+            live_temp = self._resolve_temporary_tools(tc)
+            extra_names = (set(tc.enabled_tools) | live_temp) - disabled
+            if extra_names:
                 from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
                 all_tools_dict = {t.name: t for t in ALL_TOOLS}
                 all_tools_dict.update(OPTIONAL_TOOLS)
                 existing = {t.name for t in tools}
-                for name in tc.enabled_tools:
+                for name in extra_names:
                     if name not in existing:
                         if name in all_tools_dict:
                             tools.append(all_tools_dict[name])
@@ -2356,17 +2389,20 @@ class NymeriaAgent:
                         if reg_tool:
                             tools.append(reg_tool)
 
-        # Apply per-thread tool filtering (remove disabled, add enabled)
+        # Apply per-thread tool filtering. disabled_tools is AUTHORITATIVE
+        # — mirrors the sync graph-build above. See that comment for why.
         if tc:
-            if tc.disabled_tools:
-                disabled = set(tc.disabled_tools)
+            disabled = set(tc.disabled_tools) if tc.disabled_tools else set()
+            if disabled:
                 tools = [t for t in tools if t.name not in disabled]
-            if tc.enabled_tools:
+            live_temp = self._resolve_temporary_tools(tc)
+            extra_names = (set(tc.enabled_tools) | live_temp) - disabled
+            if extra_names:
                 from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
                 all_tools_dict = {t.name: t for t in ALL_TOOLS}
                 all_tools_dict.update(OPTIONAL_TOOLS)
                 existing = {t.name for t in tools}
-                for name in tc.enabled_tools:
+                for name in extra_names:
                     if name not in existing:
                         if name in all_tools_dict:
                             tools.append(all_tools_dict[name])
@@ -2763,6 +2799,32 @@ class NymeriaAgent:
                 del self._async_user_graphs[k]
         logger.debug(f"Invalidated graph cache for thread {thread_id}")
 
+    def _resolve_temporary_tools(self, tc) -> set:
+        """Evict expired TTL'd tool entries, persist, and return the live set.
+
+        Runs at graph-build time only. Tools that were live when the current
+        graph was built stay callable for the whole invocation — no surprise
+        mid-turn eviction.
+        """
+        if tc is None or not getattr(tc, "temporary_tools", None):
+            return set()
+        from datetime import datetime as _dt
+        now = _dt.utcnow()
+        live = {
+            name: entry
+            for name, entry in tc.temporary_tools.items()
+            if entry.expires_at > now
+        }
+        if len(live) != len(tc.temporary_tools):
+            evicted = set(tc.temporary_tools) - set(live)
+            logger.info(
+                f"Thread {tc.thread_id}: TTL evicting {len(evicted)} tool(s): "
+                f"{', '.join(sorted(evicted))}"
+            )
+            tc.temporary_tools = live
+            self.thread_config_manager.save_config(tc)
+        return set(live.keys())
+
     def _load_custom_tools(self) -> int:
         """Load custom tools from the custom_tools directory.
 
@@ -3137,8 +3199,58 @@ class NymeriaAgent:
             input_state = {"messages": [human_msg]}
 
             try:
+                self._turn_reload_count[thread_id] = 0
                 result = graph.invoke(input_state, config=config)
                 messages = result.get("messages", [])
+
+                # Mirror astream()'s in-turn tool-reload loop for sync callers
+                # (MCP `nymeria_chat`, CLI). If tool_search(action="enable")
+                # flagged a new tool, rebuild a fresh graph with it bound and
+                # continue via an internal resume message. See
+                # MAX_TOOL_RELOADS_PER_TURN and docs/tools.md.
+                reload_count = 0
+                while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
+                    reload_info = self._pending_tool_reload.pop(thread_id, None)
+                    if not reload_info:
+                        break
+                    reload_count += 1
+                    self._turn_reload_count[thread_id] = reload_count
+                    new_tools = reload_info.get("new_tools", [])
+                    ttl_seconds = reload_info.get("ttl_seconds")
+                    logger.info(
+                        f"[CHAT] Thread {thread_id}: tool reload #{reload_count} — "
+                        f"{len(new_tools)} new tool(s): {', '.join(new_tools)}"
+                    )
+                    self.invalidate_thread_config_cache(thread_id)
+                    reload_graph = self._get_graph_for_user(
+                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                    )
+                    if ttl_seconds is None:
+                        ttl_phrase = "permanently"
+                    else:
+                        h, rem = divmod(ttl_seconds, 3600)
+                        m, _ = divmod(rem, 60)
+                        if h > 0 and m > 0:
+                            ttl_phrase = f"for the next {h}h {m}m"
+                        elif h > 0:
+                            ttl_phrase = f"for the next {h}h"
+                        else:
+                            ttl_phrase = f"for the next {m}m"
+                    resume_text = (
+                        f"[System: tools {', '.join(new_tools)} are now loaded "
+                        f"{ttl_phrase}. Continue the user's task using the new tools.]"
+                    )
+                    resume_msg = _create_human_message(
+                        resume_text,
+                        internal=True,
+                        internal_type="tool_reload_resume",
+                    )
+                    result = reload_graph.invoke(
+                        {"messages": [resume_msg]}, config=config
+                    )
+                    messages = result.get("messages", [])
+                    graph = reload_graph
+                self._pending_tool_reload.pop(thread_id, None)
 
                 # Extract the final AI response
                 response = "No response generated."
@@ -3187,6 +3299,8 @@ class NymeriaAgent:
                 error_event = self._classify_stream_exception(e)
                 return str(error_event.get("content") or f"An error occurred: {str(e)}")
         finally:
+            self._turn_reload_count.pop(thread_id, None)
+            self._pending_tool_reload.pop(thread_id, None)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
@@ -3876,31 +3990,31 @@ class NymeriaAgent:
                     human_msg = HumanMessage(content=message_with_context)
                 input_state = {"messages": [human_msg]}
 
-            # Track emitted events to avoid duplicates
-            emitted_tool_starts: set = set()
-            emitted_tool_ends: set = set()
-
-            # Track if we've seen any tool calls - determines if final content is thinking or response
-            seen_any_tools = False
-
-            # Track whether response text was streamed in the current LLM call.
-            # Some providers don't stream preamble text as separate chunks when the
-            # response also contains tool calls — the text only appears on the final
-            # assembled AIMessage.  We catch this in on_chat_model_end.
-            streamed_text_in_current_llm_call = False
-
-            # Track final response for RAG indexing
+            # Track final response for RAG indexing.
+            # Mutated by _drive_graph_events (closure) across every invocation
+            # in this turn — including any post-reload re-invocation.
             final_response_parts: List[str] = []
 
             # Notify UI if context summary was attached (send content for collapsible display)
             if context_summary_for_ui:
                 yield {"type": "context_attached", "summary": context_summary_for_ui}
 
-            try:
-                async for event in graph.astream_events(
-                    input_state, config=config, version="v2"
+            async def _drive_graph_events(graph_obj, in_state):
+                """Drive a single graph invocation and yield converted SSE events.
+
+                Hoisted from the original inline loop so we can run it twice
+                in the same turn: once for the user's message, and again
+                after an in-turn tool reload (see MAX_TOOL_RELOADS_PER_TURN).
+                Shared response text accumulates into final_response_parts
+                (closure) so RAG indexing sees both invocations.
+                """
+                emitted_tool_starts: set = set()
+                emitted_tool_ends: set = set()
+                streamed_text_in_current_llm_call = False
+
+                async for event in graph_obj.astream_events(
+                    in_state, config=config, version="v2"
                 ):
-                    # Check for abort signal between events
                     if abort_event.is_set():
                         logger.info(f"[ASTREAM] Thread {thread_id}: Aborted by cancel signal")
                         yield {
@@ -3908,19 +4022,16 @@ class NymeriaAgent:
                             "content": "Operation was cancelled.",
                             "code": "cancelled",
                         }
-                        break
+                        return
 
                     event_type = event.get("event")
 
-                    # Reset preamble tracking when a new LLM call starts
                     if event_type == "on_chat_model_start":
                         streamed_text_in_current_llm_call = False
 
-                    # Handle tool start - this has complete args!
                     elif event_type == "on_tool_start":
                         run_id = event.get("run_id")
                         if run_id and run_id not in emitted_tool_starts:
-                            seen_any_tools = True
                             emitted_tool_starts.add(run_id)
                             tool_name = event.get("name", "")
                             tool_input = event.get("data", {}).get("input", {})
@@ -3932,14 +4043,22 @@ class NymeriaAgent:
                                 "args": tool_input,
                             }
 
-                    # Handle tool end - result
                     elif event_type == "on_tool_end":
                         run_id = event.get("run_id")
                         if run_id and run_id not in emitted_tool_ends:
                             emitted_tool_ends.add(run_id)
                             tool_name = event.get("name", "")
                             output = event.get("data", {}).get("output", "")
-                            # Handle both string and ToolMessage outputs
+                            # Tools may return a langgraph Command (e.g. tool_search
+                            # uses Command(goto=END, update={"messages": [...]}) to
+                            # force turn-end before an auto-reload). Unwrap the
+                            # ToolMessage so the SSE shows the human-readable
+                            # content instead of the Command repr.
+                            if hasattr(output, "update") and hasattr(output, "goto"):
+                                cmd_msgs = (output.update or {}).get("messages") if isinstance(output.update, dict) else None
+                                if cmd_msgs:
+                                    last = cmd_msgs[-1]
+                                    output = last
                             if hasattr(output, "content"):
                                 result = output.content
                             else:
@@ -3959,14 +4078,13 @@ class NymeriaAgent:
                             ):
                                 yield extra_event
 
-                    # Handle chat model streaming - classify content by type
                     elif event_type == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
                         if chunk and hasattr(chunk, "content") and chunk.content:
                             content = chunk.content
 
                             if isinstance(content, list):
-                                # Extended thinking (Anthropic native): content is typed blocks
+                                # Extended thinking (Anthropic native): typed blocks
                                 for block in content:
                                     if not isinstance(block, dict):
                                         continue
@@ -3981,22 +4099,11 @@ class NymeriaAgent:
                                             streamed_text_in_current_llm_call = True
                                             final_response_parts.append(text)
                                             yield {"type": "response", "content": text}
-                                    # Skip redacted_thinking and other block types
                             elif isinstance(content, str):
-                                # String content: normal response text (OpenRouter, preamble, etc.)
                                 streamed_text_in_current_llm_call = True
                                 final_response_parts.append(content)
                                 yield {"type": "response", "content": content}
 
-                    # Handle chat model end — catch content that wasn't
-                    # streamed in chunks.  This covers two cases:
-                    # 1. Preamble text bundled into the final AIMessage
-                    #    alongside tool_calls (some providers do this).
-                    # 2. Non-streaming LLM responses (streaming=False) where
-                    #    the ENTIRE response arrives here, not via
-                    #    on_chat_model_stream.  Without this, the frontend
-                    #    shows empty bubbles because no SSE response events
-                    #    are emitted.
                     elif event_type == "on_chat_model_end":
                         if not streamed_text_in_current_llm_call:
                             output = event.get("data", {}).get("output")
@@ -4012,6 +4119,81 @@ class NymeriaAgent:
                                             if text:
                                                 final_response_parts.append(text)
                                                 yield {"type": "response", "content": text}
+
+            try:
+                # First pass: the user's message against the current graph.
+                self._turn_reload_count[thread_id] = 0
+                async for evt in _drive_graph_events(graph, input_state):
+                    yield evt
+
+                # In-turn tool reload: if tool_search(action="enable") added a
+                # genuinely new tool during the first pass, rebuild a fresh
+                # graph with the new tools bound and resume. See docs/tools.md.
+                reload_count = 0
+                while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
+                    if abort_event.is_set():
+                        break
+                    reload_info = self._pending_tool_reload.pop(thread_id, None)
+                    if not reload_info:
+                        break
+                    reload_count += 1
+                    self._turn_reload_count[thread_id] = reload_count
+                    new_tools = reload_info.get("new_tools", [])
+                    ttl_key = reload_info.get("ttl", "2h")
+                    ttl_seconds = reload_info.get("ttl_seconds")
+
+                    logger.info(
+                        f"[ASTREAM] Thread {thread_id}: tool reload #{reload_count} — "
+                        f"{len(new_tools)} new tool(s): {', '.join(new_tools)} (ttl={ttl_key})"
+                    )
+                    yield {
+                        "type": "tool_reload",
+                        "tools": new_tools,
+                        "ttl": ttl_key,
+                        "ttl_seconds": ttl_seconds,
+                    }
+
+                    # Build a fresh graph — invalidate_thread_config_cache was
+                    # already called by the enable tool, but we invalidate
+                    # again defensively in case something else cached in between.
+                    self.invalidate_thread_config_cache(thread_id)
+                    reload_graph = self._get_async_graph_for_user(
+                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                    )
+
+                    if ttl_seconds is None:
+                        ttl_phrase = "permanently"
+                    else:
+                        h, rem = divmod(ttl_seconds, 3600)
+                        m, _ = divmod(rem, 60)
+                        if h > 0 and m > 0:
+                            ttl_phrase = f"for the next {h}h {m}m"
+                        elif h > 0:
+                            ttl_phrase = f"for the next {h}h"
+                        else:
+                            ttl_phrase = f"for the next {m}m"
+                    resume_text = (
+                        f"[System: tools {', '.join(new_tools)} are now loaded "
+                        f"{ttl_phrase}. Continue the user's task using the new tools.]"
+                    )
+                    resume_msg = _create_human_message(
+                        resume_text,
+                        internal=True,
+                        internal_type="tool_reload_resume",
+                    )
+                    resume_state = {"messages": [resume_msg]}
+
+                    async for evt in _drive_graph_events(reload_graph, resume_state):
+                        yield evt
+
+                    # Reassign for the rest of astream (token tracking,
+                    # dangling-tool-call patching in finally, etc.) so they
+                    # see the most recent graph.
+                    graph = reload_graph
+
+                # Drain any residual flag so a stale entry doesn't leak
+                # into the next turn.
+                self._pending_tool_reload.pop(thread_id, None)
 
                 # Index conversation turn in RAG (if enabled)
                 if final_response_parts:
@@ -4103,6 +4285,8 @@ class NymeriaAgent:
                 pass  # abort_event/graph/config not yet assigned (early exit)
             except Exception as e:
                 logger.warning(f"[ASTREAM] Thread {thread_id}: Failed to patch dangling tool calls in finally: {e}")
+            self._turn_reload_count.pop(thread_id, None)
+            self._pending_tool_reload.pop(thread_id, None)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
@@ -4176,6 +4360,11 @@ class NymeriaAgent:
                                 # Standalone post-compact divider — hide it, but don't
                                 # suppress anything that comes after (there is no paired
                                 # AI response to skip).
+                                skip_until_next_human = False
+                                continue
+                            elif internal_type == 'tool_reload_resume':
+                                # Hide the system-generated resume prompt but show
+                                # the agent's response (tool calls + final report).
                                 skip_until_next_human = False
                                 continue
                             else:

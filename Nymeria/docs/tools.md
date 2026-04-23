@@ -514,23 +514,57 @@ notify(message: str, platform: Literal["auto", "telegram", "discord", "slack"] =
 Search, enable, and disable tools for the current thread. Allows the agent to discover tools it doesn't currently have loaded and activate them.
 
 ```python
-tool_search(action: str, query: str = "", category: str = "", tools: list[str] = None)
+tool_search(action: str, query: str = "", category: str = "", tools: list[str] = None, ttl: str = "2h", force: bool = False)
 ```
 
 **Actions:**
-- `search` — Search tools by keyword and/or category. Returns up to 15 results with name, description, category, security level, and enabled status.
-- `enable` — Enable tools by name (`tools` param) or by category (`category` param). All tools in the category are enabled at once.
-- `disable` — Disable tools for the thread (`tools` param).
+- `search` — Search tools by keyword and/or category. Returns up to 15 results with name, description, category, security level, and enabled status (including TTL remaining).
+- `enable` — Enable tools by name (`tools` param) or by category (`category` param). Triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
+- `disable` — Disable tools for the thread (`tools` param). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`). A tool like `notepad_read` is in both, so it needs `force=True` to disable; but a tool in `ALL_TOOLS` that's absent from `default_thread_tools` is still core-protected even though it isn't default-bound.
 - `list_categories` — List all tool categories with tool counts.
-- `status` — Show currently enabled/disabled tools for this thread.
+- `status` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
 **Parameters:**
 - `action` (`str`): One of: `search`, `enable`, `disable`, `list_categories`, `status`
 - `query` (`str`): Keyword to search tool names and descriptions (for `search`)
 - `category` (`str`): Category name to filter search or enable all tools in (e.g. `"email"`, `"twitch"`)
 - `tools` (`list[str]`): Specific tool names to enable or disable
+- `ttl` (`str`): For `enable` only — how long to keep the tools bound before lazy eviction. One of: `"30m"`, `"2h"` (default), `"6h"`, `"24h"`, `"permanent"`. Ignored for other actions.
+- `force` (`bool`): For `disable` only — set `True` to allow disabling core tools. Default `False`. Non-core tools are unaffected by this flag.
 
-**Note:** Due to how LangGraph works, newly enabled/disabled tools take effect on the **next message**, not the current turn.
+**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order — (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS — the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set — `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
+
+The classifier sources its default-bound set from the same place as graph-build (`agent._build_graph_with_prompt`: `profile.tool_preferences.default_thread_tools` if set, else `{t.name for t in ALL_TOOLS}`). Tools that live in `ALL_TOOLS` but are excluded from the user's `default_thread_tools` list are correctly treated as optional (priority-6 newly-loaded) rather than already-bound. Note: the bucket is called `Already bound (default set)` — not "core" — to avoid conflating it with the `disable` guard's "core" protection, which uses the broader `ALL_TOOLS` list.
+
+**`disabled_tools` is authoritative in graph-build.** The graph-build pipeline is: start with the default-bound set, filter out `disabled_tools`, then add extras from `enabled_tools ∪ live_temporary_tools` — BUT extras are also filtered by `disabled_tools` before merging. So a tool listed in both `enabled_tools` and `disabled_tools` is unbound (disable wins). This lets `disable` be non-destructive: it only appends to `disabled_tools` and leaves `enabled_tools` / `temporary_tools` alone. An `enable` on that same tool just removes it from `disabled_tools`; the preserved permanent/TTL entry comes back automatically. Without this rule, `disable` would have to destructively mutate `enabled_tools` to actually disable an overlapping tool, and a disable→enable round-trip would silently strip the permanent badge.
+
+**Status display filters disabled tools from the enabled sections.** Because `disabled_tools` is authoritative, a tool that has a preserved `enabled_tools` or `temporary_tools` entry while ALSO being in `disabled_tools` is currently unbound. The `status` and `search` renderers suppress such tools from the `Enabled (permanent)` / `Enabled (TTL)` sections and annotate them in the `Disabled` section with `(preserved: permanent)` or `(preserved: Xm left)`, so the user can still see what will round-trip back on un-disable without seeing the same tool in two places.
+
+#### In-turn auto-continue
+
+When the agent calls `tool_search(action="enable", tools=[...])` during a turn, the harness:
+
+1. Persists the enablement to the thread config (with TTL) and invalidates the cached graph.
+2. Finishes the current graph invocation normally.
+3. Emits a `tool_reload` SSE event (`{type: "tool_reload", tools, ttl, ttl_seconds}`).
+4. Builds a fresh graph with the new tools bound to the LLM.
+5. Injects an internal resume message (`internal_type="tool_reload_resume"`) and drives the new graph against it, streaming into the same SSE connection.
+
+To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` (default `3`) rebuilds per user turn to bound token usage. Once the cap is hit, `tool_search(action="enable")` detects it, stops returning `Command(goto=END)`, and instead returns a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
+
+Both `astream()` (REST/SSE) and `chat()` (MCP/CLI sync path) honor the auto-continue.
+
+#### TTL and eviction
+
+Each enablement (other than `ttl="permanent"`) gets an `expires_at` timestamp stored in `ThreadConfig.temporary_tools`. At the start of every new turn, `_build_graph_with_prompt` calls `_resolve_temporary_tools(tc)` which:
+
+1. Drops entries whose `expires_at` has passed.
+2. Persists the cleaned config back to disk.
+3. Returns the still-live set for inclusion in the tool list.
+
+Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run — there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` removes from both buckets immediately (next-message effect).
+
+Pick the shortest TTL that covers your task. `2h` is a sensible default for multi-step tasks; `30m` for one-shots; `6h`/`24h` for sustained workflows; `permanent` only if the tool should remain as a standing capability on the thread.
 
 ---
 
