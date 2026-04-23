@@ -530,6 +530,18 @@ export class NymeriaAPI {
             timestamp: new Date(),
             threadId
           };
+
+        case 'tool_reload':
+          return {
+            type: 'tool_reload',
+            data: {
+              tools: (data.tools as string[]) || [],
+              ttl: (data.ttl as string) || '',
+              ttlSeconds: (data.ttl_seconds as number | null) ?? null,
+            },
+            timestamp: new Date(),
+            threadId
+          };
       }
     }
 
@@ -724,7 +736,12 @@ export class NymeriaAPI {
               .filter((toolCall): toolCall is ToolCall => toolCall !== null)
           : undefined,
         attachments: m.attachments as Message['attachments'],
-        autonomousSource: m.autonomous_source as string | undefined
+        autonomousSource: m.autonomous_source as string | undefined,
+        toolReloadInfo: m.tool_reload_info ? {
+          tools: ((m.tool_reload_info as Record<string, unknown>).tools as string[]) || [],
+          ttl: ((m.tool_reload_info as Record<string, unknown>).ttl as string) || '',
+          resumePrompt: ((m.tool_reload_info as Record<string, unknown>).resume_prompt as string) || undefined,
+        } : undefined
       })
     );
 

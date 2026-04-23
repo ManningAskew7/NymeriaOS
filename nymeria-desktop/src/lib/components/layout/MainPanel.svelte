@@ -382,6 +382,16 @@
         break;
       }
 
+      case 'tool_reload': {
+        const data = event.data as {
+          tools: string[];
+          ttl: string;
+          ttlSeconds: number | null;
+        };
+        chatStore.handleToolReload(data.tools, data.ttl, data.ttlSeconds);
+        break;
+      }
+
       case 'iteration_limit': {
         // Agent was stopped because it hit the maximum number of steps
         const data = event.data as {
