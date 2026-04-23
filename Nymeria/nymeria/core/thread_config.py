@@ -39,6 +39,18 @@ class ThreadLLMConfig(BaseModel):
     base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
 
 
+class TemporaryToolEntry(BaseModel):
+    """A tool enabled for this thread with a time-to-live.
+
+    Eviction is lazy: expired entries are filtered out at graph-build time
+    (see agent._build_graph_with_prompt) and the cleaned config is persisted
+    back. No background scheduler is required.
+    """
+
+    enabled_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime
+
+
 class ThreadConfig(BaseModel):
     """Configuration for a specific thread."""
 
@@ -46,6 +58,11 @@ class ThreadConfig(BaseModel):
     instructions: Optional[str] = Field(default=None, max_length=5000)
     disabled_tools: List[str] = Field(default_factory=list)
     enabled_tools: List[str] = Field(default_factory=list)
+    # Agent-managed TTL'd enablements. Keyed by tool name. Separate from
+    # enabled_tools (which is permanent and user-facing via the UI/API) so that
+    # existing callers — /threads/{id}/config, spawn_thread.py, tool_search
+    # with ttl="permanent" — keep working against the simple List[str] schema.
+    temporary_tools: Dict[str, TemporaryToolEntry] = Field(default_factory=dict)
 
     @field_validator("disabled_tools", "enabled_tools", mode="before")
     @classmethod
@@ -111,6 +128,8 @@ class ThreadConfig(BaseModel):
         if self.disabled_tools:
             return True
         if self.enabled_tools:
+            return True
+        if self.temporary_tools:
             return True
         if self.enabled_skills:
             return True

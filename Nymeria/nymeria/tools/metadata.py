@@ -984,7 +984,12 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         name="tool_search",
         category=ToolCategory.CORE,
         security_level=SecurityLevel.SAFE,
-        description="Search, enable, and disable optional tools for the current thread",
+        description=(
+            "Search, enable, and disable optional tools for the current thread. "
+            "Enabling auto-continues the turn with the new tools bound (no need "
+            "to wait for the next user message). Enablements have a TTL "
+            "(default 2h) — pick shortest needed or use 'permanent'."
+        ),
     ),
 
     # Agent Skills — discovery, install, inspection
