@@ -14,54 +14,76 @@
     if (ttl === 'permanent') return 'permanent';
     return ttl || '2h';
   }
+
+  const toolNames = $derived(
+    info.tools.length > 0 ? info.tools.join(', ') : ''
+  );
+
+  const promptText = $derived(
+    info.resumePrompt ||
+    (info.tools.length > 0
+      ? `[System: tools ${info.tools.join(', ')} are now loaded ${info.ttl === 'permanent' ? 'permanently' : `for the next ${info.ttl || '2h'}`}. Continue the user's task using the new tools.]`
+      : `[System: tools reloaded ${info.ttl === 'permanent' ? 'permanently' : `for the next ${info.ttl || '2h'}`}. Continue the user's task using the new tools.]`)
+  );
 </script>
 
 <div class="reload-indicator">
-  <div class="connector-line"></div>
-  <button class="pill" onclick={() => expanded = !expanded} type="button">
-    <span class="icon">
-      <Icon name="cog" size={13} />
-    </span>
-    <span class="label">Tool Binding</span>
-    <span class="tools">{info.tools.join(', ')}</span>
-    <span class="ttl">{ttlLabel(info.ttl)}</span>
-    <span class="chevron" class:open={expanded}>
-      <Icon name="chevronRight" size={12} />
-    </span>
-  </button>
-  {#if expanded && info.resumePrompt}
+  <div class="line-with-pill">
+    <div class="line"></div>
+    <button class="pill" onclick={() => expanded = !expanded} type="button">
+      <span class="icon">
+        <Icon name="cog" size={12} />
+      </span>
+      <span class="label">Tool Binding</span>
+      {#if toolNames}
+        <span class="sep">-</span>
+        <span class="tools">{toolNames}</span>
+      {/if}
+      <span class="ttl">({ttlLabel(info.ttl)})</span>
+      <span class="chevron" class:open={expanded}>
+        <Icon name="chevronRight" size={10} />
+      </span>
+    </button>
+    <div class="line"></div>
+  </div>
+  {#if expanded}
     <div class="prompt-detail">
-      <code>{info.resumePrompt}</code>
+      <code>{promptText}</code>
     </div>
   {/if}
-  <div class="connector-line"></div>
 </div>
 
 <style>
   .reload-indicator {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: var(--spacing-xs) 0;
+    width: 100%;
+    padding: var(--spacing-sm) 0;
   }
 
-  .connector-line {
-    width: 1px;
-    height: 12px;
+  .line-with-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .line {
+    flex: 1;
+    height: 1px;
     background: var(--border-subtle);
   }
 
   .pill {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 12px;
+    gap: 5px;
+    padding: 3px 10px;
     border-radius: 999px;
     background: var(--bg-elevated-2);
     border: 1px solid var(--border-subtle);
-    color: var(--text-secondary);
-    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    font-size: 0.7rem;
     line-height: 1;
+    white-space: nowrap;
     cursor: pointer;
     transition: background var(--transition-fast), border-color var(--transition-fast);
   }
@@ -69,36 +91,35 @@
   .pill:hover {
     background: var(--bg-hover);
     border-color: var(--border-default);
+    color: var(--text-secondary);
   }
 
   .icon {
     display: flex;
     align-items: center;
-    color: var(--text-tertiary);
   }
 
   .label {
     font-weight: 600;
-    color: var(--text-secondary);
+  }
+
+  .sep {
+    opacity: 0.4;
   }
 
   .tools {
-    color: var(--text-tertiary);
-    max-width: 200px;
+    max-width: 180px;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .ttl {
-    color: var(--text-tertiary);
-    opacity: 0.7;
+    opacity: 0.6;
   }
 
   .chevron {
     display: flex;
     align-items: center;
-    color: var(--text-tertiary);
     transition: transform var(--transition-fast);
   }
 
@@ -112,12 +133,11 @@
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
-    max-width: 500px;
     animation: fadeSlide 150ms ease-out;
   }
 
   .prompt-detail code {
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     color: var(--text-tertiary);
     word-break: break-word;
     white-space: pre-wrap;
