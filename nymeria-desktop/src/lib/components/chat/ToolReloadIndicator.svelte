@@ -28,7 +28,7 @@
 </script>
 
 <div class="reload-indicator">
-  <div class="connector-line"></div>
+  <div class="connector-top"></div>
   <div class="pill-row">
     <button class="pill" onclick={() => expanded = !expanded} type="button">
       <span class="icon">
@@ -50,7 +50,7 @@
       <code>{promptText}</code>
     </div>
   {/if}
-  <div class="connector-line"></div>
+  <div class="connector-bottom"></div>
 </div>
 
 <style>
@@ -60,12 +60,19 @@
     flex-direction: column;
     align-items: center;
     max-width: 85%;
-    margin-bottom: 0;
+    margin-top: calc(-1 * var(--spacing-md));
+    margin-bottom: calc(-1 * var(--spacing-md));
   }
 
-  .connector-line {
+  .connector-top {
     width: 1px;
-    height: 14px;
+    height: 30px;
+    background: var(--border-subtle);
+  }
+
+  .connector-bottom {
+    width: 1px;
+    height: 30px;
     background: var(--border-subtle);
   }
 

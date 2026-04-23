@@ -68,14 +68,11 @@
     </div>
   {:else}
     <div class="messages">
-      {#each chatStore.messages as message, i (message.id)}
-        {@const nextHasReload = i + 1 < chatStore.messages.length && !!chatStore.messages[i + 1]?.toolReloadInfo}
+      {#each chatStore.messages as message (message.id)}
         {#if message.toolReloadInfo}
           <ToolReloadIndicator info={message.toolReloadInfo} />
         {/if}
-        <div class:before-reload={nextHasReload}>
-          <MessageBubble {message} />
-        </div>
+        <MessageBubble {message} />
       {/each}
     </div>
   {/if}
@@ -141,10 +138,6 @@
     display: flex;
     flex-direction: column;
     min-height: 100%;
-  }
-
-  .before-reload :global(.message-bubble) {
-    margin-bottom: 0;
   }
 
   @keyframes slideUp {
