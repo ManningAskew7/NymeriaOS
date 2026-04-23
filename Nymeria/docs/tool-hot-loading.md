@@ -263,15 +263,30 @@ tool_call(tool_search enable) → tool_result → tool_reload → [second invoca
 
 Current frontends ignore unknown event types, so this is invisible by default. A future UI update could show a brief "Reloading tools..." indicator.
 
-## Frontend Rendering After Refresh
+## Frontend Rendering
 
-On refresh, the frontend calls `/threads/{id}/history` which invokes `get_conversation_history()`. The second invocation's messages appear as a **separate assistant message bubble** because:
+### Live SSE Stream
+
+During streaming, the desktop frontend receives a `tool_reload` SSE event between the two graph invocations. The chat store:
+
+1. Finalizes the current assistant message (sets `toolReloadInfo` with tool names and TTL)
+2. Creates a new streaming assistant message for the second invocation
+
+A `ToolReloadIndicator` component renders between the two message bubbles — a centered pill showing the tool names and TTL, with an expandable dropdown for the system resume prompt.
+
+### After Refresh
+
+On refresh, the frontend calls `/threads/{id}/history` which invokes `get_conversation_history()`. The backend annotates the second assistant message with a `tool_reload_info` field (tools, TTL, resume prompt text). The frontend maps this to `Message.toolReloadInfo` and renders the same separator.
+
+The two bubbles appear separate because:
 
 1. The first invocation ends with `Command(goto=END)` after the `tool_search` tool result — no final AIMessage.
-2. The `tool_reload_resume` HumanMessage is filtered out (hidden).
-3. The second invocation's AIMessages start a new turn (no `current_turn` is pending from invocation #1).
+2. The `tool_reload_resume` HumanMessage is filtered out (hidden), but its metadata is captured into a queue.
+3. The second invocation's AIMessages start a new turn; the queued metadata is attached to it as `tool_reload_info`.
 
-This is correct behavior — the post-reload work is a distinct logical step and renders as its own bubble with its own steps array.
+### Other Frontends
+
+Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffered text and sending a brief indicator message (embed or HTML) between the two response segments.
 
 ## Files Changed
 

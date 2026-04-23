@@ -43,6 +43,12 @@ export interface MessageStep {
   endTime?: Date;
 }
 
+export interface ToolReloadInfo {
+  tools: string[];
+  ttl: string;
+  resumePrompt?: string;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -55,6 +61,7 @@ export interface Message {
   attachments?: FileAttachment[]; // File attachments for multimodal messages
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
+  toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
 }
 
 export interface ToolCall {
@@ -402,7 +409,8 @@ export type SSEEventType =
   | 'compact_result'
   | 'compacted'
   | 'context_attached'
-  | 'iteration_limit';
+  | 'iteration_limit'
+  | 'tool_reload';
 
 export interface SSEEvent {
   type: SSEEventType;

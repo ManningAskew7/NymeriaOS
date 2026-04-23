@@ -3216,6 +3216,7 @@ class NymeriaAgent:
                     reload_count += 1
                     self._turn_reload_count[thread_id] = reload_count
                     new_tools = reload_info.get("new_tools", [])
+                    ttl_key = reload_info.get("ttl", "2h")
                     ttl_seconds = reload_info.get("ttl_seconds")
                     logger.info(
                         f"[CHAT] Thread {thread_id}: tool reload #{reload_count} — "
@@ -3245,6 +3246,8 @@ class NymeriaAgent:
                         internal=True,
                         internal_type="tool_reload_resume",
                     )
+                    resume_msg.additional_kwargs["tool_reload_tools"] = new_tools
+                    resume_msg.additional_kwargs["tool_reload_ttl"] = ttl_key
                     result = reload_graph.invoke(
                         {"messages": [resume_msg]}, config=config
                     )
@@ -4181,6 +4184,8 @@ class NymeriaAgent:
                         internal=True,
                         internal_type="tool_reload_resume",
                     )
+                    resume_msg.additional_kwargs["tool_reload_tools"] = new_tools
+                    resume_msg.additional_kwargs["tool_reload_ttl"] = ttl_key
                     resume_state = {"messages": [resume_msg]}
 
                     async for evt in _drive_graph_events(reload_graph, resume_state):
@@ -4332,6 +4337,8 @@ class NymeriaAgent:
             # - autonomous_wakeup: Hide the prompt, but SHOW the AI response (user wants to see task output)
             # - compact_prompt: Hide both prompt AND response (internal housekeeping)
             # - auto_resume: Hide both prompt AND response (internal housekeeping)
+            _reload_info_queue = []
+
             if not include_internal:
                 filtered_messages = []
                 skip_until_next_human = False
@@ -4365,6 +4372,12 @@ class NymeriaAgent:
                             elif internal_type == 'tool_reload_resume':
                                 # Hide the system-generated resume prompt but show
                                 # the agent's response (tool calls + final report).
+                                content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                                _reload_info_queue.append({
+                                    "tools": msg.additional_kwargs.get("tool_reload_tools", []),
+                                    "ttl": msg.additional_kwargs.get("tool_reload_ttl", ""),
+                                    "resume_prompt": content_str,
+                                })
                                 skip_until_next_human = False
                                 continue
                             else:
@@ -4496,8 +4509,10 @@ class NymeriaAgent:
                                 "id": f"{thread_id}-{msg_counter}",
                                 "role": "assistant",
                                 "content": "",
-                                "steps": [],  # Ordered list of thinking + tool_call steps
+                                "steps": [],
                             }
+                            if _reload_info_queue:
+                                current_turn["tool_reload_info"] = _reload_info_queue.pop(0)
                             turn_ts = timestamp_map.get(msg.id) if msg.id else None
                             if turn_ts:
                                 current_turn["timestamp"] = turn_ts
@@ -4627,6 +4642,8 @@ class NymeriaAgent:
                                 "role": "assistant",
                                 "content": text_content,
                             }
+                            if _reload_info_queue:
+                                entry["tool_reload_info"] = _reload_info_queue.pop(0)
                             # Add thinking as steps if present
                             if thinking_blocks:
                                 entry["steps"] = [

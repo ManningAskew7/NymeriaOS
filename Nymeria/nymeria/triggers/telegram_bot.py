@@ -628,6 +628,20 @@ class NymeriaTelegramBot:
                     for attach_path in parse_attach_paths(event.get("result", "")):
                         await self._send_file_attachment(chat_id, attach_path, context)
 
+                elif etype == "tool_reload":
+                    await _flush(final=True)
+                    tools = event.get("tools", [])
+                    ttl = event.get("ttl", "")
+                    names = ", ".join(tools) if tools else "tools"
+                    try:
+                        await self._send_html(
+                            chat_id,
+                            f"<i>⚙️ Tool Binding: <b>{names}</b> ({ttl})</i>",
+                            context,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send tool reload message: {e}")
+
                 elif etype == "workspace_artifact":
                     attach_path = event.get("path")
                     if isinstance(attach_path, str) and attach_path:

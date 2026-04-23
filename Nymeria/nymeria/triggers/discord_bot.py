@@ -2300,6 +2300,21 @@ class NymeriaDiscordBot(discord.Client):
                     for attach_path in parse_attach_paths(event.get("result", "")):
                         await self._send_workspace_attachment(channel, attach_path)
 
+                elif etype == "tool_reload":
+                    await _flush_buffer(final=True)
+                    tools = event.get("tools", [])
+                    ttl = event.get("ttl", "")
+                    names = ", ".join(tools) if tools else "tools"
+                    embed = discord.Embed(
+                        description=f"**{names}** ({ttl})",
+                        color=discord.Color.dark_grey(),
+                    )
+                    embed.set_author(name="⚙️ Tool Binding")
+                    try:
+                        await channel.send(embed=embed)
+                    except Exception as e:
+                        logger.warning(f"Failed to send tool reload embed: {e}")
+
                 elif etype == "workspace_artifact":
                     attach_path = event.get("path")
                     if isinstance(attach_path, str) and attach_path:
