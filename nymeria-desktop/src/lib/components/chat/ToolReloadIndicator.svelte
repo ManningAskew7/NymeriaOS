@@ -28,8 +28,8 @@
 </script>
 
 <div class="reload-indicator">
-  <div class="line-with-pill">
-    <div class="line"></div>
+  <div class="connector-line"></div>
+  <div class="pill-row">
     <button class="pill" onclick={() => expanded = !expanded} type="button">
       <span class="icon">
         <Icon name="cog" size={12} />
@@ -44,32 +44,34 @@
         <Icon name="chevronRight" size={10} />
       </span>
     </button>
-    <div class="line"></div>
   </div>
   {#if expanded}
     <div class="prompt-detail">
       <code>{promptText}</code>
     </div>
   {/if}
+  <div class="connector-line"></div>
 </div>
 
 <style>
   .reload-indicator {
-    width: 100%;
-    padding: var(--spacing-sm) 0;
-  }
-
-  .line-with-pill {
+    align-self: flex-start;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 8px;
-    width: 100%;
+    max-width: 85%;
+    margin-bottom: 0;
   }
 
-  .line {
-    flex: 1;
-    height: 1px;
+  .connector-line {
+    width: 1px;
+    height: 14px;
     background: var(--border-subtle);
+  }
+
+  .pill-row {
+    display: flex;
+    justify-content: center;
   }
 
   .pill {
@@ -128,7 +130,7 @@
   }
 
   .prompt-detail {
-    margin-top: 4px;
+    margin-top: 2px;
     padding: 6px 12px;
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);

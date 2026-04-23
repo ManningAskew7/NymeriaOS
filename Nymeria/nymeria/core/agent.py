@@ -4337,8 +4337,6 @@ class NymeriaAgent:
             # - autonomous_wakeup: Hide the prompt, but SHOW the AI response (user wants to see task output)
             # - compact_prompt: Hide both prompt AND response (internal housekeeping)
             # - auto_resume: Hide both prompt AND response (internal housekeeping)
-            _reload_info_queue = []
-
             if not include_internal:
                 filtered_messages = []
                 skip_until_next_human = False
@@ -4370,14 +4368,10 @@ class NymeriaAgent:
                                 skip_until_next_human = False
                                 continue
                             elif internal_type == 'tool_reload_resume':
-                                # Hide the system-generated resume prompt but show
-                                # the agent's response (tool calls + final report).
-                                content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
-                                _reload_info_queue.append({
-                                    "tools": msg.additional_kwargs.get("tool_reload_tools", []),
-                                    "ttl": msg.additional_kwargs.get("tool_reload_ttl", ""),
-                                    "resume_prompt": content_str,
-                                })
+                                # Keep as a boundary marker in filtered_messages so the
+                                # consolidation pass can flush the pre-reload turn and
+                                # attach reload metadata to the post-reload turn.
+                                filtered_messages.append(msg)
                                 skip_until_next_human = False
                                 continue
                             else:
@@ -4411,6 +4405,8 @@ class NymeriaAgent:
             msg_counter = 0
             current_turn: Optional[Dict[str, Any]] = None
 
+            _pending_reload_info = None
+
             for msg in messages:
                 # Skip ToolMessages - results are attached to assistant messages
                 if isinstance(msg, ToolMessage):
@@ -4418,6 +4414,20 @@ class NymeriaAgent:
 
                 # Map LangChain types to frontend roles
                 if isinstance(msg, HumanMessage):
+                    # Check for tool_reload_resume boundary marker
+                    if (hasattr(msg, 'additional_kwargs') and
+                            msg.additional_kwargs.get('internal_type') == 'tool_reload_resume'):
+                        if current_turn:
+                            history.append(current_turn)
+                            current_turn = None
+                        content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                        _pending_reload_info = {
+                            "tools": msg.additional_kwargs.get("tool_reload_tools", []),
+                            "ttl": msg.additional_kwargs.get("tool_reload_ttl", ""),
+                            "resume_prompt": content_str,
+                        }
+                        continue
+
                     # Flush any pending turn before a new user message
                     if current_turn:
                         history.append(current_turn)
@@ -4511,8 +4521,9 @@ class NymeriaAgent:
                                 "content": "",
                                 "steps": [],
                             }
-                            if _reload_info_queue:
-                                current_turn["tool_reload_info"] = _reload_info_queue.pop(0)
+                            if _pending_reload_info:
+                                current_turn["tool_reload_info"] = _pending_reload_info
+                                _pending_reload_info = None
                             turn_ts = timestamp_map.get(msg.id) if msg.id else None
                             if turn_ts:
                                 current_turn["timestamp"] = turn_ts
@@ -4642,8 +4653,9 @@ class NymeriaAgent:
                                 "role": "assistant",
                                 "content": text_content,
                             }
-                            if _reload_info_queue:
-                                entry["tool_reload_info"] = _reload_info_queue.pop(0)
+                            if _pending_reload_info:
+                                entry["tool_reload_info"] = _pending_reload_info
+                                _pending_reload_info = None
                             # Add thinking as steps if present
                             if thinking_blocks:
                                 entry["steps"] = [
