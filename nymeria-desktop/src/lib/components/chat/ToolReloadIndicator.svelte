@@ -60,6 +60,7 @@
     flex-direction: column;
     align-items: center;
     max-width: 85%;
+    margin-top: calc(-1 * var(--spacing-md));
     margin-bottom: 0;
   }
 
