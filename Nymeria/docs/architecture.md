@@ -459,13 +459,13 @@ This enables the desktop UI to display tool call arguments in real-time for both
 
 **Content Block Classification**
 
-Anthropic models produce typed content blocks: `thinking` (internal reasoning), `text` (preamble/response), `tool_use`, `redacted_thinking`, and `signature`. Both `stream()` and `astream()` iterate content blocks in order and emit correctly typed SSE events:
+Anthropic models produce typed content blocks: `thinking` (internal reasoning), `text` (preamble/response), `tool_use`, `redacted_thinking`, and `signature`. OpenAI-compatible providers may also expose visible assistant text as bare string content blocks. Both `stream()` and `astream()` iterate content blocks in order and emit correctly typed SSE events:
 
 - `thinking` blocks → `type: "thinking"` events (rendered as collapsible ThinkingBlock)
-- `text` blocks → `type: "response"` events (rendered as inline markdown)
+- `text` blocks and bare string blocks → `type: "response"` events (rendered as inline markdown)
 - `tool_use` blocks → `type: "tool_call"` events (rendered as ToolCallCard)
 
-For OpenRouter/OpenAI models (string content, no typed blocks), all text is emitted as `type: "response"` events.
+For OpenRouter/OpenAI models (string content, no typed blocks), all text is emitted as `type: "response"` events. This includes pre-tool commentary/preamble, which should appear before the `tool_call` event rather than inside the thinking dropdown.
 
 The `get_conversation_history()` method (used for page refresh/checkpoint rebuild) applies the same classification: it iterates through stored content blocks in order, preserving interleaved thinking between tool calls.
 

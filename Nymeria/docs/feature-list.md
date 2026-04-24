@@ -133,6 +133,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ### Streaming (SSE)
 - **Real-time SSE** for chat, autonomous tasks, and trigger executions
 - **Chat events**: `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `context_attached`, `compacted`, `command_result`, `tool_reload`, `error`, `done`
+- **Ordered assistant steps**: visible pre-tool commentary streams and rehydrates as `response` steps before the matching `tool_call`, separate from hidden/expanded thinking blocks
 - **Autonomous events**: `task_started`, `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `task_completed`
 
 ### Context Management
