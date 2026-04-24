@@ -3533,21 +3533,28 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             presented = api_key
 
         authorized = False
+        firehose = False  # admin + X-Nymeria-Act-As:* streams every user's events
         if presented:
             try:
                 repo_user = get_agent().accounts_repo.verify_token(presented)
                 if repo_user is not None:
                     authorized = True
                     # Admin-role callers may use X-Nymeria-Act-As to stream
-                    # another user's events. Non-admin act-as is rejected.
+                    # another user's events — or "*" for the full firehose
+                    # (used by bot thin clients that route events to Discord /
+                    # Telegram channels by thread_id prefix, regardless of
+                    # which user's autonomous task produced them).
                     if x_nymeria_act_as:
                         if repo_user.role != "admin":
                             raise HTTPException(status_code=403, detail="Act-As requires admin")
-                        user_id = x_nymeria_act_as
+                        if x_nymeria_act_as == "*":
+                            firehose = True
+                            user_id = "*"
+                        else:
+                            user_id = x_nymeria_act_as
                     else:
-                        # Override any client-claimed ?user_id= with the
-                        # authenticated user's id — non-admins can only stream
-                        # their own events.
+                        # Non-admin clients can only stream their own events;
+                        # admins without act-as default to their own stream.
                         user_id = repo_user.id
             except HTTPException:
                 raise
@@ -3588,8 +3595,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         # Non-blocking check for events
                         event: AutonomousEvent = queue.get_nowait()
 
-                        # Filter by user_id if specified
-                        if user_id != "default" and event.user_id != user_id:
+                        # Filter by user_id unless the caller requested the
+                        # firehose (admin + X-Nymeria-Act-As: *). "default" as
+                        # a query value historically meant "all" — still
+                        # honored for backward compat with older browser
+                        # clients, but the authenticated path is authoritative.
+                        if not firehose and user_id != "default" and event.user_id != user_id:
                             continue
 
                         # Skip events that originated from this client (dedup)
