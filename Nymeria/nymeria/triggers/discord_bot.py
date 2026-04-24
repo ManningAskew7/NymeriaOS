@@ -2630,12 +2630,16 @@ class NymeriaDiscordBot(discord.Client):
         Background task that connects to the API's /autonomous/stream SSE
         endpoint to receive task completion events.
         """
-        # Carry the bearer in a header instead of a query param so the token
-        # doesn't leak into request logs. user_id=default filters the event
-        # stream; once Step 6 maps platforms to accounts, the bot will
-        # subscribe per-linked-user via X-Nymeria-Act-As.
-        url = f"{self.api.base_url}/autonomous/stream?user_id=default"
-        headers = {"Authorization": f"Bearer {self.api.api_key}"}
+        # Subscribe to the firehose — every user's autonomous events reach
+        # this listener and we route them to Discord channels by decoding
+        # the event's thread_id prefix (`discord_<guild>_<channel>`). Works
+        # because the service token is admin-role; non-admin tokens can't
+        # request the wildcard and get HTTP 403.
+        url = f"{self.api.base_url}/autonomous/stream"
+        headers = {
+            "Authorization": f"Bearer {self.api.api_key}",
+            "X-Nymeria-Act-As": "*",
+        }
 
         logger.info(f"API SSE listener connecting to {self.api.base_url}/autonomous/stream")
 

@@ -2297,11 +2297,15 @@ class NymeriaTelegramBot:
 
     async def _api_sse_listener(self) -> None:
         """Background task listening for autonomous task completion events."""
-        # Header-based auth keeps the bearer out of URL query params and
-        # request logs. Step 6 will layer X-Nymeria-Act-As for per-user
-        # event scoping once platform→account mapping lands.
-        url = f"{self.api.base_url}/autonomous/stream?user_id=default"
-        headers = {"Authorization": f"Bearer {self.api.api_key}"}
+        # Firehose subscription: the service token is admin-role, so we pass
+        # `X-Nymeria-Act-As: *` to receive every user's events. The handler
+        # filters by thread_id prefix (`telegram_<chat_id>`) to decide which
+        # chat to post to.
+        url = f"{self.api.base_url}/autonomous/stream"
+        headers = {
+            "Authorization": f"Bearer {self.api.api_key}",
+            "X-Nymeria-Act-As": "*",
+        }
         logger.info(f"Telegram SSE listener connecting to {self.api.base_url}/autonomous/stream")
 
         reconnect_delay = 3
