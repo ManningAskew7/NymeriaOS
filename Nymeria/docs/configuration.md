@@ -59,8 +59,8 @@ Set the API key for your chosen provider:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NYMERIA_API_KEY` | (required) | Legacy shared bearer token for API authentication. Being replaced by per-user tokens — see `docs/accounts.md`. Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `NYMERIA_SERVICE_TOKEN` | - | Admin-role Nymeria account token used by bots, ticker, and watchdog for act-as calls. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
+| `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
+| `NYMERIA_SERVICE_TOKEN` | (required) | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, and slash commands for X-Nymeria-Act-As calls. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
 | `NYMERIA_API_URL` | auto | Local API URL for in-process tools (e.g. `slash_command`). Defaults to `http://api:8000` in Docker, `http://localhost:8000` otherwise |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
