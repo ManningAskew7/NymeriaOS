@@ -21,11 +21,14 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import httpx
 from dotenv import load_dotenv
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+from .utils import get_user_id
 
 # Load .env so GOOGLE_OAUTH_CREDENTIALS is available via os.environ
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -33,7 +36,8 @@ load_dotenv(_ENV_PATH)
 
 logger = logging.getLogger(__name__)
 
-TOKEN_CACHE_PATH = Path.home() / ".google_docs_token_cache.json"
+# Per-user Google Docs/Drive/Sheets token cache
+_CACHE_FILENAME = "google_docs.json"
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/documents",
@@ -77,19 +81,34 @@ def get_credentials_path() -> Optional[str]:
     return None
 
 
-def load_token_cache() -> dict:
-    """Load token cache from file."""
-    if TOKEN_CACHE_PATH.exists():
+def _safe_user_id(user_id: str) -> str:
+    safe = "".join(c for c in user_id if c.isalnum() or c in "-_")
+    return safe or "default"
+
+
+def _cache_path(user_id: str) -> Path:
+    from ..config import get_settings
+    settings = get_settings()
+    path = settings.data_dir / "auth_tokens" / _safe_user_id(user_id) / _CACHE_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def load_token_cache(user_id: str) -> dict:
+    """Load a user's Google Docs/Drive/Sheets token cache."""
+    path = _cache_path(user_id)
+    if path.exists():
         try:
-            return json.loads(TOKEN_CACHE_PATH.read_text())
+            return json.loads(path.read_text())
         except Exception:
             pass
     return {}
 
 
-def save_token_cache(cache: dict) -> None:
-    """Save token cache to file."""
-    TOKEN_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+def save_token_cache(user_id: str, cache: dict) -> None:
+    """Persist a user's Google Docs/Drive/Sheets token cache."""
+    path = _cache_path(user_id)
+    path.write_text(json.dumps(cache, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +268,7 @@ def _save_account(
     email, name = _fetch_user_info(access_token)
     account_id = email.lower().replace("@", "_at_").replace(".", "_")
 
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     cache["accounts"] = cache.get("accounts", {})
     cache["accounts"][account_id] = {
         "email": email,
@@ -262,7 +281,7 @@ def _save_account(
         "scopes": list(GOOGLE_SCOPES),
         "expires_at": time.time() + expires_in,
     }
-    save_token_cache(cache)
+    save_token_cache(user_id, cache)
 
     return account_id, email, name
 
@@ -272,7 +291,7 @@ def _save_account(
 # ---------------------------------------------------------------------------
 
 @tool
-def google_docs_auth_start() -> str:
+def google_docs_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     Start Google Docs authentication using the OAuth 2.0 authorization code flow.
 
@@ -291,7 +310,8 @@ def google_docs_auth_start() -> str:
     Returns:
         Authorization URL and instructions.
     """
-    cache = load_token_cache()
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
     if accounts:
         first = next(iter(accounts.values()))
@@ -393,7 +413,7 @@ def google_docs_auth_start() -> str:
 
 
 @tool
-def google_docs_auth_complete(redirect_url: Optional[str] = None) -> str:
+def google_docs_auth_complete(redirect_url: Optional[str] = None, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     Complete Google Docs authentication.
 
@@ -412,6 +432,7 @@ def google_docs_auth_complete(redirect_url: Optional[str] = None) -> str:
     Returns:
         Success message with account info, or status if still waiting.
     """
+    user_id = get_user_id(config)
     if redirect_url:
         with _auth_state_lock:
             client_id = _auth_state.get("client_id")
@@ -533,7 +554,7 @@ def google_docs_auth_complete(redirect_url: Optional[str] = None) -> str:
 
 
 @tool
-def google_docs_list_accounts() -> str:
+def google_docs_list_accounts(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     List all authenticated Google accounts for Docs access.
 
@@ -542,7 +563,8 @@ def google_docs_list_accounts() -> str:
     Returns:
         List of authenticated accounts with their IDs and email addresses.
     """
-    cache = load_token_cache()
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:

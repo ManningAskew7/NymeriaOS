@@ -21,11 +21,14 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import httpx
 from dotenv import load_dotenv
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+from .utils import get_user_id
 
 # Load .env so GOOGLE_OAUTH_CREDENTIALS is available via os.environ
 # (Pydantic Settings only loads its own defined fields)
@@ -34,8 +37,8 @@ load_dotenv(_ENV_PATH)
 
 logger = logging.getLogger(__name__)
 
-# Token cache — analogous to ~/.microsoft_mcp_token_cache.json
-TOKEN_CACHE_PATH = Path.home() / ".google_calendar_token_cache.json"
+# Per-user Google Calendar token cache: data/auth_tokens/<user_id>/google_calendar.json
+_CACHE_FILENAME = "google_calendar.json"
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -78,19 +81,35 @@ def get_credentials_path() -> Optional[str]:
     return None
 
 
-def load_token_cache() -> dict:
-    """Load token cache from file."""
-    if TOKEN_CACHE_PATH.exists():
+def _safe_user_id(user_id: str) -> str:
+    safe = "".join(c for c in user_id if c.isalnum() or c in "-_")
+    return safe or "default"
+
+
+def _cache_path(user_id: str) -> Path:
+    """Per-user token cache path."""
+    from ..config import get_settings
+    settings = get_settings()
+    path = settings.data_dir / "auth_tokens" / _safe_user_id(user_id) / _CACHE_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def load_token_cache(user_id: str) -> dict:
+    """Load a user's Google Calendar token cache."""
+    path = _cache_path(user_id)
+    if path.exists():
         try:
-            return json.loads(TOKEN_CACHE_PATH.read_text())
+            return json.loads(path.read_text())
         except Exception:
             pass
     return {}
 
 
-def save_token_cache(cache: dict) -> None:
-    """Save token cache to file."""
-    TOKEN_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+def save_token_cache(user_id: str, cache: dict) -> None:
+    """Persist a user's Google Calendar token cache."""
+    path = _cache_path(user_id)
+    path.write_text(json.dumps(cache, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +286,7 @@ def _save_account(
     email, name = _fetch_user_info(access_token)
     account_id = email.lower().replace("@", "_at_").replace(".", "_")
 
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     cache["accounts"] = cache.get("accounts", {})
     cache["accounts"][account_id] = {
         "email": email,
@@ -280,7 +299,7 @@ def _save_account(
         "scopes": list(GOOGLE_SCOPES),
         "expires_at": time.time() + expires_in,
     }
-    save_token_cache(cache)
+    save_token_cache(user_id, cache)
 
     return account_id, email, name
 
@@ -290,7 +309,7 @@ def _save_account(
 # ---------------------------------------------------------------------------
 
 @tool
-def calendar_auth_start() -> str:
+def calendar_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     Start Google Calendar authentication using the OAuth 2.0 authorization code flow.
 
@@ -309,8 +328,9 @@ def calendar_auth_start() -> str:
     Returns:
         Authorization URL and instructions.
     """
+    user_id = get_user_id(config)
     # Check for existing valid credentials
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
     if accounts:
         first = next(iter(accounts.values()))
@@ -410,7 +430,7 @@ def calendar_auth_start() -> str:
 
 
 @tool
-def calendar_auth_complete(redirect_url: Optional[str] = None) -> str:
+def calendar_auth_complete(redirect_url: Optional[str] = None, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     Complete Google Calendar authentication.
 
@@ -430,6 +450,7 @@ def calendar_auth_complete(redirect_url: Optional[str] = None) -> str:
     Returns:
         Success message with account info, or status if still waiting.
     """
+    user_id = get_user_id(config)
     # --- Fallback path: manual redirect URL ---
     if redirect_url:
         with _auth_state_lock:
@@ -557,7 +578,7 @@ def calendar_auth_complete(redirect_url: Optional[str] = None) -> str:
 
 
 @tool
-def calendar_list_authenticated_accounts() -> str:
+def calendar_list_authenticated_accounts(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     List all authenticated Google accounts for Calendar access.
 
@@ -566,7 +587,8 @@ def calendar_list_authenticated_accounts() -> str:
     Returns:
         List of authenticated accounts with their IDs and email addresses.
     """
-    cache = load_token_cache()
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:

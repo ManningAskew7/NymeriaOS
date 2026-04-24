@@ -12,17 +12,18 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Annotated, Any, Callable, Optional
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 from .google_docs_auth import (
     GOOGLE_DOCS_AUTH_TOOLS,
     GOOGLE_SCOPES,
-    TOKEN_CACHE_PATH,
     load_token_cache,
     save_token_cache,
 )
+from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,10 @@ def _extract_document_id(doc_id_or_url: str) -> str:
 # Credential management
 # ---------------------------------------------------------------------------
 
-def get_credentials(account_id: Optional[str] = None):
+def get_credentials(user_id: str, account_id: Optional[str] = None):
     """
-    Get valid Google OAuth credentials, refreshing the access token if expired.
+    Get valid Google OAuth credentials for a Nymeria user, refreshing the
+    access token if expired.
 
     Returns:
         google.oauth2.credentials.Credentials if available, None otherwise.
@@ -62,7 +64,7 @@ def get_credentials(account_id: Optional[str] = None):
         )
         return None
 
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:
@@ -103,7 +105,7 @@ def get_credentials(account_id: Optional[str] = None):
         if creds.refresh_token:
             account["refresh_token"] = creds.refresh_token
         cache["accounts"][aid] = account
-        save_token_cache(cache)
+        save_token_cache(user_id, cache)
         return creds
     except RefreshError as e:
         logger.warning(f"Refresh token revoked or expired: {e}. User must re-authenticate.")
@@ -118,20 +120,11 @@ def get_credentials(account_id: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 def _docs_request(
+    user_id: str,
     operation: Callable,
     account_id: Optional[str] = None,
 ) -> tuple[bool, Any]:
-    """
-    Execute a Google Docs API operation with auth handling.
-
-    Args:
-        operation: A callable that takes a ``service`` object and returns
-                   the API result.
-        account_id: Optional account ID to use.
-
-    Returns:
-        ``(success, result)`` — on failure *result* is an error message string.
-    """
+    """Execute a Google Docs API operation on behalf of ``user_id``."""
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -141,7 +134,7 @@ def _docs_request(
             "Run: pip install google-api-python-client google-auth-oauthlib"
         )
 
-    creds = get_credentials(account_id)
+    creds = get_credentials(user_id, account_id)
     if not creds:
         return False, "No authenticated Google account. Use google_docs_auth_start to authenticate."
 
@@ -162,14 +155,11 @@ def _docs_request(
 
 
 def _drive_request(
+    user_id: str,
     operation: Callable,
     account_id: Optional[str] = None,
 ) -> tuple[bool, Any]:
-    """
-    Execute a Google Drive API operation with auth handling.
-
-    Same pattern as ``_docs_request`` but builds Drive v3 service.
-    """
+    """Execute a Google Drive API operation on behalf of ``user_id``."""
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -179,7 +169,7 @@ def _drive_request(
             "Run: pip install google-api-python-client google-auth-oauthlib"
         )
 
-    creds = get_credentials(account_id)
+    creds = get_credentials(user_id, account_id)
     if not creds:
         return False, "No authenticated Google account. Use google_docs_auth_start to authenticate."
 
@@ -882,8 +872,7 @@ def _execute_write_segments(
         all_requests.extend(reqs)
         if not all_requests:
             return True, "No content to write."
-        success, result = _docs_request(
-            lambda s: s.documents().batchUpdate(
+        success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
                 documentId=document_id,
                 body={"requests": all_requests},
             ).execute(),
@@ -901,8 +890,7 @@ def _execute_write_segments(
             if first_batch and prefix_requests:
                 reqs = list(prefix_requests) + reqs
             if reqs:
-                success, result = _docs_request(
-                    lambda s, r=reqs: s.documents().batchUpdate(
+                success, result = _docs_request(user_id, lambda s, r=reqs: s.documents().batchUpdate(
                         documentId=document_id,
                         body={"requests": r},
                     ).execute(),
@@ -933,8 +921,7 @@ def _execute_write_segments(
                     "location": {"index": cursor},
                 }
             })
-            success, result = _docs_request(
-                lambda s, r=batch_reqs: s.documents().batchUpdate(
+            success, result = _docs_request(user_id, lambda s, r=batch_reqs: s.documents().batchUpdate(
                     documentId=document_id,
                     body={"requests": r},
                 ).execute(),
@@ -945,8 +932,7 @@ def _execute_write_segments(
             first_batch = False
 
             # Re-read document to discover cell indices
-            success, doc = _docs_request(
-                lambda s: s.documents().get(documentId=document_id).execute(),
+            success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
                 account_id=account_id,
             )
             if not success:
@@ -973,8 +959,7 @@ def _execute_write_segments(
                         })
 
             if populate_reqs:
-                success, result = _docs_request(
-                    lambda s, r=populate_reqs: s.documents().batchUpdate(
+                success, result = _docs_request(user_id, lambda s, r=populate_reqs: s.documents().batchUpdate(
                         documentId=document_id,
                         body={"requests": r},
                     ).execute(),
@@ -984,8 +969,7 @@ def _execute_write_segments(
                     return False, result
 
             # Re-read to get fresh end index for next segment
-            success, doc = _docs_request(
-                lambda s: s.documents().get(documentId=document_id).execute(),
+            success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
                 account_id=account_id,
             )
             if not success:
@@ -996,8 +980,7 @@ def _execute_write_segments(
 
     # If prefix requests were never sent (e.g. blocks was empty), send them now
     if first_batch and prefix_requests:
-        success, result = _docs_request(
-            lambda s: s.documents().batchUpdate(
+        success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
                 documentId=document_id,
                 body={"requests": list(prefix_requests)},
             ).execute(),
@@ -1020,6 +1003,7 @@ def google_docs_read(
     max_chars: int = 50000,
     include_metadata: bool = False,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Read a Google Docs document.
@@ -1039,11 +1023,11 @@ def google_docs_read(
     Returns:
         Document content in the requested format
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_read called: document_id={document_id}, format={format}")
 
-    success, result = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, result = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -1077,6 +1061,7 @@ def google_docs_create(
     title: str,
     folder_id: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Create a new Google Docs document.
@@ -1092,6 +1077,7 @@ def google_docs_create(
     Returns:
         Document ID, URL, and title of the created document
     """
+    user_id = get_user_id(config)
     logger.info(f"google_docs_create called: title='{title}'")
 
     file_metadata: dict[str, Any] = {
@@ -1101,8 +1087,7 @@ def google_docs_create(
     if folder_id:
         file_metadata["parents"] = [folder_id]
 
-    success, result = _drive_request(
-        lambda s: s.files().create(
+    success, result = _drive_request(user_id, lambda s: s.files().create(
             body=file_metadata,
             fields="id,name,webViewLink",
         ).execute(),
@@ -1126,6 +1111,7 @@ def google_docs_create(
 def google_docs_delete(
     document_id: str,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Delete a Google Docs document from Google Drive.
@@ -1140,19 +1126,18 @@ def google_docs_delete(
     Returns:
         Confirmation of the deletion
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_delete called: document_id={document_id}")
 
     # First get the document title for the confirmation message
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     title = doc.get("title", "(untitled)") if success else "(unknown)"
 
     # Trash the file via Drive API (not permanent delete — recoverable from trash)
-    success, result = _drive_request(
-        lambda s: s.files().update(
+    success, result = _drive_request(user_id, lambda s: s.files().update(
             fileId=document_id,
             body={"trashed": True},
         ).execute(),
@@ -1169,6 +1154,7 @@ def google_docs_list(
     query: Optional[str] = None,
     max_results: int = 10,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     List or search Google Docs documents in your Drive.
@@ -1184,6 +1170,7 @@ def google_docs_list(
     Returns:
         List of matching Google Docs documents
     """
+    user_id = get_user_id(config)
     logger.info(f"google_docs_list called: query='{query}', max_results={max_results}")
 
     max_results = min(max_results, 50)
@@ -1193,8 +1180,7 @@ def google_docs_list(
         q_parts.append(f"fullText contains '{escaped}'")
     q_string = " and ".join(q_parts)
 
-    success, result = _drive_request(
-        lambda s: s.files().list(
+    success, result = _drive_request(user_id, lambda s: s.files().list(
             q=q_string,
             pageSize=max_results,
             orderBy="modifiedTime desc",
@@ -1229,6 +1215,7 @@ def google_docs_write(
     mode: str = "append",
     insert_index: Optional[int] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Write markdown-formatted content to a Google Docs document.
@@ -1253,6 +1240,7 @@ def google_docs_write(
     Returns:
         Summary of what was written (character count, element types)
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_write called: document_id={document_id}, mode={mode}, insert_index={insert_index}")
 
@@ -1263,8 +1251,7 @@ def google_docs_write(
         return "[Error]: Cannot use insert_index with mode='overwrite'."
 
     # Read document to get current state
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -1331,6 +1318,7 @@ def google_docs_append_text(
     document_id: str,
     text: str,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Append plain text to the end of a Google Docs document.
@@ -1347,6 +1335,7 @@ def google_docs_append_text(
     Returns:
         Confirmation of the append operation
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_append_text called: document_id={document_id}")
 
@@ -1381,6 +1370,7 @@ def google_docs_insert_text(
     text: str,
     index: int,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Insert text at a specific position in a Google Docs document.
@@ -1403,6 +1393,7 @@ def google_docs_insert_text(
     Returns:
         Confirmation of the insert operation
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_insert_text called: document_id={document_id}, index={index}")
 
@@ -1436,6 +1427,7 @@ def google_docs_delete_range(
     start_index: int,
     end_index: int,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Delete a range of content from a Google Docs document.
@@ -1454,6 +1446,7 @@ def google_docs_delete_range(
     Returns:
         Confirmation of the delete operation
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_delete_range called: document_id={document_id}, range={start_index}-{end_index}")
 
@@ -1493,6 +1486,7 @@ def google_docs_apply_text_style(
     foreground_color: Optional[str] = None,
     link_url: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Apply text styling to a range of text in a Google Docs document.
@@ -1515,6 +1509,7 @@ def google_docs_apply_text_style(
     Returns:
         Confirmation of the style application
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_apply_text_style called: document_id={document_id}, range={start_index}-{end_index}")
 
@@ -1583,6 +1578,7 @@ def google_docs_update_paragraph_style(
     heading_level: Optional[int] = None,
     alignment: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Update paragraph styling for a range of text in a Google Docs document.
@@ -1603,6 +1599,7 @@ def google_docs_update_paragraph_style(
     Returns:
         Confirmation of the paragraph style update
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_update_paragraph_style called: document_id={document_id}, range={start_index}-{end_index}")
 
@@ -1663,6 +1660,7 @@ def google_docs_insert_table(
     columns: int,
     index: int,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Insert an empty table into a Google Docs document.
@@ -1680,12 +1678,12 @@ def google_docs_insert_table(
     Returns:
         Confirmation of the table insertion
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_insert_table called: document_id={document_id}, {rows}x{columns} at index {index}")
 
     # Clamp index to avoid off-by-one at document end
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if success:
@@ -1723,6 +1721,7 @@ def google_docs_write_table(
     index: Optional[int] = None,
     bold_headers: bool = True,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Create a populated table in a Google Docs document in one step.
@@ -1743,6 +1742,7 @@ def google_docs_write_table(
     Returns:
         Confirmation with table dimensions
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     num_cols = len(headers)
     num_rows = len(rows) + 1  # +1 for header row
@@ -1752,8 +1752,7 @@ def google_docs_write_table(
         return "[Error]: headers list cannot be empty."
 
     # Read document to determine insertion index
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -1766,8 +1765,7 @@ def google_docs_write_table(
         index = max(1, end_idx - 1)
 
     # Insert empty table
-    success, result = _docs_request(
-        lambda s: s.documents().batchUpdate(
+    success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
             documentId=document_id,
             body={"requests": [{
                 "insertTable": {
@@ -1783,8 +1781,7 @@ def google_docs_write_table(
         return f"[Error]: {result}"
 
     # Re-read to get cell indices
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -1814,8 +1811,7 @@ def google_docs_write_table(
                 })
 
     if populate_reqs:
-        success, result = _docs_request(
-            lambda s: s.documents().batchUpdate(
+        success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
                 documentId=document_id,
                 body={"requests": populate_reqs},
             ).execute(),
@@ -1827,8 +1823,7 @@ def google_docs_write_table(
     # Bold the header row if requested
     if bold_headers and cell_indices and cell_indices[0]:
         # Re-read to get updated indices after cell population
-        success, doc = _docs_request(
-            lambda s: s.documents().get(documentId=document_id).execute(),
+        success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
             account_id=account_id,
         )
         if success:
@@ -1859,8 +1854,7 @@ def google_docs_write_table(
                                             }
                                         })
                 if bold_reqs:
-                    _docs_request(
-                        lambda s, r=bold_reqs: s.documents().batchUpdate(
+                    _docs_request(user_id, lambda s, r=bold_reqs: s.documents().batchUpdate(
                             documentId=document_id,
                             body={"requests": r},
                         ).execute(),
@@ -1875,6 +1869,7 @@ def google_docs_insert_page_break(
     document_id: str,
     index: int,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Insert a page break into a Google Docs document.
@@ -1889,6 +1884,7 @@ def google_docs_insert_page_break(
     Returns:
         Confirmation of the page break insertion
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_insert_page_break called: document_id={document_id}, index={index}")
 
@@ -1920,6 +1916,7 @@ def google_docs_replace_text(
     match_case: bool = True,
     clear_formatting: bool = False,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Find and replace all occurrences of text in a Google Docs document.
@@ -1943,11 +1940,11 @@ def google_docs_replace_text(
     Returns:
         Number of replacements made
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_replace_text called: document_id={document_id}, find='{find_text}', clear_fmt={clear_formatting}")
 
-    success, result = _docs_request(
-        lambda s: s.documents().batchUpdate(
+    success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
             documentId=document_id,
             body={"requests": [{
                 "replaceAllText": {
@@ -1966,8 +1963,7 @@ def google_docs_replace_text(
 
     if clear_formatting and count > 0 and replace_text:
         # Re-read to find the replaced text ranges, then reset their formatting
-        success, doc = _docs_request(
-            lambda s: s.documents().get(documentId=document_id).execute(),
+        success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
             account_id=account_id,
         )
         if success:
@@ -1989,8 +1985,7 @@ def google_docs_replace_text(
                             "fields": "namedStyleType",
                         }
                     })
-                _docs_request(
-                    lambda s, r=fmt_reqs: s.documents().batchUpdate(
+                _docs_request(user_id, lambda s, r=fmt_reqs: s.documents().batchUpdate(
                         documentId=document_id,
                         body={"requests": r},
                     ).execute(),
@@ -2005,6 +2000,7 @@ def google_docs_find_index(
     document_id: str,
     search_text: str,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Find the document indices of a text string in a Google Docs document.
@@ -2023,11 +2019,11 @@ def google_docs_find_index(
     Returns:
         List of matches with their start and end indices
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_find_index called: document_id={document_id}, search='{search_text}'")
 
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -2054,6 +2050,7 @@ def google_docs_table_update_cell(
     text: str,
     table_index: int = 1,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Update the content of a specific cell in an existing table.
@@ -2074,14 +2071,14 @@ def google_docs_table_update_cell(
     Returns:
         Confirmation of the cell update
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_table_update_cell called: doc={document_id}, table={table_index}, row={row}, col={col}")
 
     if row < 1 or col < 1:
         return "[Error]: row and col must be >= 1 (1-based)."
 
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -2140,8 +2137,7 @@ def google_docs_table_update_cell(
     if not reqs:
         return "[Info]: Cell is already empty and no new text provided."
 
-    success, result = _docs_request(
-        lambda s, r=reqs: s.documents().batchUpdate(
+    success, result = _docs_request(user_id, lambda s, r=reqs: s.documents().batchUpdate(
             documentId=document_id,
             body={"requests": r},
         ).execute(),
@@ -2159,6 +2155,7 @@ def google_docs_table_append_row(
     row_data: list[str],
     table_index: int = 1,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Append a new row to the end of an existing table in a Google Docs document.
@@ -2174,11 +2171,11 @@ def google_docs_table_append_row(
     Returns:
         Confirmation of the row append
     """
+    user_id = get_user_id(config)
     document_id = _extract_document_id(document_id)
     logger.info(f"google_docs_table_append_row called: doc={document_id}, table={table_index}")
 
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -2199,8 +2196,7 @@ def google_docs_table_append_row(
 
     # Insert a new row below the last row
     last_row_idx = num_rows - 1
-    success, result = _docs_request(
-        lambda s: s.documents().batchUpdate(
+    success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
             documentId=document_id,
             body={"requests": [{
                 "insertTableRow": {
@@ -2219,8 +2215,7 @@ def google_docs_table_append_row(
         return f"[Error]: {result}"
 
     # Re-read to get the new row's cell indices
-    success, doc = _docs_request(
-        lambda s: s.documents().get(documentId=document_id).execute(),
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -2253,8 +2248,7 @@ def google_docs_table_append_row(
             })
 
     if populate_reqs:
-        success, result = _docs_request(
-            lambda s, r=populate_reqs: s.documents().batchUpdate(
+        success, result = _docs_request(user_id, lambda s, r=populate_reqs: s.documents().batchUpdate(
                 documentId=document_id,
                 body={"requests": r},
             ).execute(),

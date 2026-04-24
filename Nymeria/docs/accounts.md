@@ -97,6 +97,20 @@ where `<resolved_user_id>` is the Nymeria account the platform user maps to via 
 
 Back this file up alongside `nymeria.db` — losing it locks every user out.
 
+## Per-user OAuth token caches
+
+Google (Calendar/Docs/Drive/Sheets) and Microsoft (Outlook/Graph) OAuth tokens live at `data/auth_tokens/<user_id>/` — isolated per Nymeria user so one account's bot agent can't read another's Gmail/Outlook.
+
+| Service | Cache file |
+|---|---|
+| Google Calendar | `data/auth_tokens/<user_id>/google_calendar.json` |
+| Google Docs/Drive/Sheets | `data/auth_tokens/<user_id>/google_docs.json` |
+| Microsoft Outlook/Graph | `data/auth_tokens/<user_id>/microsoft.json` |
+
+**On first boot with the per-user refactor**, existing global caches (`data/auth_tokens/.microsoft_mcp_token_cache.json` etc.) are automatically migrated to `data/auth_tokens/default/*.json`. The owner's existing Google/Outlook auth survives — other users start with empty caches and run the usual `calendar_auth_start` / `google_docs_auth_start` / `outlook_auth_start` tool flows to authenticate their own accounts independently.
+
+Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the agent sets `configurable.user_id` on every graph invocation). No tool can be tricked into loading a different user's token cache.
+
 ## Rationale for dedicated SQLite
 
 Accounts live in their own file rather than co-located with LangGraph's checkpoint database. The checkpoint backend is backend-switchable (SQLite locally, Postgres in Docker); keeping accounts SQLite-only keeps the account-layer code single-backend and avoids forcing a `psycopg` dependency path for what is fundamentally a low-volume, latency-insensitive store. The only cross-DB operation (Step 5's legacy thread backfill) reads `DISTINCT thread_id FROM checkpoints` and writes to `thread_owners` — two connections, one-shot, trivial.
