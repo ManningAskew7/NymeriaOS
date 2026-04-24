@@ -492,6 +492,48 @@ class NymeriaAgent:
         self.accounts_repo = AccountsRepo(self.settings.data_dir / "accounts.db")
         self.accounts_repo.ensure_bootstrap_admin(self.settings.data_dir)
 
+        # One-shot: migrate legacy global OAuth token caches
+        # (``data/auth_tokens/.X_token_cache.json``) into the new per-user
+        # layout (``data/auth_tokens/default/X.json``). Owner's existing
+        # Google/Outlook auth survives the refactor; other users start with
+        # empty token stores and re-auth via their own flows.
+        try:
+            auth_root = self.settings.data_dir / "auth_tokens"
+            if auth_root.exists():
+                default_dir = auth_root / "default"
+                default_dir.mkdir(parents=True, exist_ok=True)
+                legacy_map = {
+                    ".microsoft_mcp_token_cache.json": "microsoft.json",
+                    ".google_calendar_token_cache.json": "google_calendar.json",
+                    ".google_docs_token_cache.json": "google_docs.json",
+                }
+                for legacy_name, new_name in legacy_map.items():
+                    legacy = auth_root / legacy_name
+                    # Skip symlinks — docker-compose bootstrap still creates
+                    # ``/root/X`` symlinks pointing here for older container
+                    # images, so only migrate real files and leave the link
+                    # dangling (harmless, no one reads it post-refactor).
+                    if not legacy.is_file() or legacy.is_symlink():
+                        continue
+                    new_path = default_dir / new_name
+                    if new_path.exists():
+                        # Already migrated or newly auth'd — don't clobber.
+                        continue
+                    try:
+                        content = legacy.read_text()
+                        if content.strip() in ("", "{}"):
+                            # Empty placeholder from docker bootstrap — skip.
+                            continue
+                        new_path.write_text(content)
+                        legacy.unlink()
+                        logger.info(
+                            "OAuth cache migrated: %s -> %s", legacy.name, new_path,
+                        )
+                    except OSError as e:
+                        logger.warning("Failed to migrate %s: %s", legacy, e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("OAuth cache migration failed (non-fatal): %s", e)
+
         # Initialize user profile manager
         self.profile_manager = UserProfileManager(self.settings.data_dir)
 
