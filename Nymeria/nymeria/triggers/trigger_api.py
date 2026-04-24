@@ -492,7 +492,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                     with client.stream(
                         "POST",
                         f"http://localhost:{settings.api_port}/chat",
-                        headers={"Authorization": f"Bearer {settings.nymeria_api_key}"},
+                        headers={
+                            "Authorization": f"Bearer {settings.nymeria_service_token or ''}",
+                            "X-Nymeria-Act-As": user_id,
+                        },
                         json={
                             "message": prompt,
                             "thread_id": thread_id,

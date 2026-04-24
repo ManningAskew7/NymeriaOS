@@ -553,15 +553,14 @@ async def verify_api_key(
     """
     Authenticate a request and return the user it resolves to.
 
-    Accepts EITHER the legacy ``NYMERIA_API_KEY`` (resolves to the bootstrap
-    admin ``default``) or any valid per-user account token (``nym_...``).
-    ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers
-    and returns the target user; non-admin use → 403, unknown target → 404.
+    Accepts a per-user account token (``nym_...``) issued via
+    ``python run.py users add``. ``X-Nymeria-Act-As: <user_id>`` is honored
+    only for admin-role callers and returns the target user; non-admin use
+    → 403, unknown target → 404.
 
-    Every route that formerly used ``user: AuthenticatedUser = Depends(verify_api_key)``
-    should now bind ``user: AuthenticatedUser = Depends(verify_api_key)``
-    and derive ``user_id = user.id`` rather than trusting client-claimed
-    user IDs in request body or query params.
+    Routes bind ``user: AuthenticatedUser = Depends(verify_api_key)`` and
+    derive ``user_id = user.id`` rather than trusting client-claimed user
+    IDs in request body or query params.
     """
     return await resolve_authenticated_user(
         authorization=authorization,
@@ -614,28 +613,6 @@ async def resolve_authenticated_user(
     caller = None
     if agent is not None:
         caller = agent.accounts_repo.verify_token(presented)
-
-    # Legacy key fallback — resolves to the bootstrap admin so legacy
-    # deployments see a consistent identity from /me.
-    if caller is None and settings.nymeria_api_key and presented == settings.nymeria_api_key:
-        if agent is not None:
-            record = agent.accounts_repo.get_user_by_id("default")
-            if record is not None and not record.disabled:
-                caller = AuthenticatedUser(
-                    id=record.id,
-                    email=record.email,
-                    display_name=record.display_name,
-                    role=record.role,
-                )
-        if caller is None:
-            # Agent or default user missing — still let the legacy key through
-            # so the caller isn't locked out, but surface a minimal user.
-            caller = AuthenticatedUser(
-                id="default",
-                email="owner@localhost",
-                display_name="Owner",
-                role="admin",
-            )
 
     if caller is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -3556,11 +3533,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             presented = api_key
 
         authorized = False
-        if presented and settings.nymeria_api_key and presented == settings.nymeria_api_key:
-            # Legacy shared key resolves to the bootstrap admin.
-            authorized = True
-            user_id = x_nymeria_act_as or "default"
-        elif presented:
+        if presented:
             try:
                 repo_user = get_agent().accounts_repo.verify_token(presented)
                 if repo_user is not None:

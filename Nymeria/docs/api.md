@@ -10,10 +10,9 @@ Most endpoints require Bearer token authentication:
 Authorization: Bearer <token>
 ```
 
-Two token types are accepted during the multi-user rollout:
+Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Created via `python run.py users add` — see `docs/accounts.md`. Resolve to the user they were issued to.
 
-1. **Per-user account tokens** (`nym_<32-url-safe>`). Created via `python run.py users add` — see `docs/accounts.md`. Resolve to the user they were issued to.
-2. **Legacy shared key** (`NYMERIA_API_KEY`). Resolves to the bootstrap admin (`default`). Dropped in Step 3 of the multi-user rollout.
+`X-Nymeria-Act-As: <user_id>` is honored only for admin-role callers and rewrites the effective user to the target (403 for non-admin, 404 for unknown/disabled target).
 
 Exceptions without Bearer auth:
 - `GET /health`
