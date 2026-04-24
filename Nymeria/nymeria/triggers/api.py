@@ -547,42 +547,31 @@ class UnifiedToolConfigRequest(BaseModel):
 
 async def verify_api_key(
     authorization: Optional[str] = Header(None),
+    x_nymeria_act_as: Optional[str] = Header(None),
     settings: Settings = Depends(get_settings),
-) -> bool:
+) -> AuthenticatedUser:
     """
-    Verify API key from Authorization header.
+    Authenticate a request and return the user it resolves to.
 
-    Accepts EITHER the legacy ``NYMERIA_API_KEY`` (single shared secret) or any
-    valid per-user account token (``nym_...``). This lets Step 2 endpoints and
-    existing routes coexist during the multi-user rollout; Step 3 replaces
-    this with :func:`require_user` and drops the legacy key.
+    Accepts EITHER the legacy ``NYMERIA_API_KEY`` (resolves to the bootstrap
+    admin ``default``) or any valid per-user account token (``nym_...``).
+    ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers
+    and returns the target user; non-admin use → 403, unknown target → 404.
 
-    Expected format: ``Authorization: Bearer <token_or_legacy_key>``
+    Every route that formerly used ``user: AuthenticatedUser = Depends(verify_api_key)``
+    should now bind ``user: AuthenticatedUser = Depends(verify_api_key)``
+    and derive ``user_id = user.id`` rather than trusting client-claimed
+    user IDs in request body or query params.
     """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    return await resolve_authenticated_user(
+        authorization=authorization,
+        x_nymeria_act_as=x_nymeria_act_as,
+        settings=settings,
+    )
 
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(
-            status_code=401, detail="Invalid Authorization header format. Use: Bearer <api_key>"
-        )
 
-    presented = parts[1]
-
-    # Path 1: legacy shared key.
-    if settings.nymeria_api_key and presented == settings.nymeria_api_key:
-        return True
-
-    # Path 2: per-user account token (Step 1 bootstrap onwards).
-    try:
-        agent = get_agent()
-    except RuntimeError:
-        agent = None
-    if agent is not None and agent.accounts_repo.verify_token(presented) is not None:
-        return True
-
-    raise HTTPException(status_code=401, detail="Invalid API key")
+# Alias so new routes can declare their intent clearly.
+require_user = verify_api_key
 
 
 def _extract_bearer_token(authorization: Optional[str]) -> str:
@@ -676,6 +665,37 @@ async def require_admin_user(
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return user
+
+
+async def _authed_user_id(
+    user: AuthenticatedUser = Depends(verify_api_key),
+) -> str:
+    """
+    Resolve the effective user_id for a route from the authenticated user.
+
+    Drop-in replacement for ``user_id: str = Query(default="default")``:
+    routes declaring ``user_id: str = Depends(_authed_user_id)`` get the
+    authenticated user's id regardless of any client-supplied ``?user_id=``
+    query value. Admin callers impersonate via ``X-Nymeria-Act-As`` —
+    ``verify_api_key`` returns the target user in that case, so ``user.id``
+    already reflects the act-as target.
+
+    FastAPI caches ``verify_api_key`` within a request, so this adds no
+    extra auth overhead when a route declares both ``user`` and ``user_id``.
+    """
+    return user.id
+
+
+def _require_same_user_or_admin(user: AuthenticatedUser, path_user_id: str) -> None:
+    """
+    For routes where ``user_id`` is part of the URL path (e.g.
+    ``/users/{user_id}/memories``): reject if caller isn't that user. Admins
+    reach a target via ``X-Nymeria-Act-As`` which rewrites ``user.id`` to
+    the target, so the same check passes for them. Returns 404 (not 403)
+    to avoid leaking the existence of other users' resources.
+    """
+    if path_user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
 
 # ============================================================================
@@ -828,7 +848,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         return {"user_id": user_id}
 
     @app.post("/restart", tags=["System"])
-    async def restart_server(_: bool = Depends(verify_api_key)):
+    async def restart_server(user: AuthenticatedUser = Depends(verify_api_key)):
         """Restart the API server process.
 
         Spawns a new server process after a short delay, then exits the
@@ -881,7 +901,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/report", tags=["System"])
     async def report_problem(
         request: ReportRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Send an error report email to support with debug context."""
         from html import escape as html_escape
@@ -943,7 +963,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def chat_streaming(
         http_request: Request,
         request: ChatRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Send a message and receive streaming response via SSE.
@@ -960,7 +980,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         agent = get_agent()
         thread_id = request.thread_id or str(uuid.uuid4())[:8]
-        user_id = request.user_id
+        # Ignore client-claimed user_id in the body; derive from auth instead.
+        user_id = user.id
 
         # Handle slash commands (e.g., /compact)
         msg_stripped = request.message.strip().lower()
@@ -1197,7 +1218,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/chat/sync", response_model=ChatResponse, tags=["Chat"])
     async def chat_sync(
         request: ChatRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Send a message and receive a non-streaming response.
@@ -1207,7 +1228,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         agent = get_agent()
         thread_id = request.thread_id or str(uuid.uuid4())[:8]
-        user_id = request.user_id
+        # Ignore client-claimed user_id in the body; derive from auth instead.
+        user_id = user.id
 
         response = agent.chat(
             request.message,
@@ -1230,7 +1252,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             False,
             description="Include internal system messages (autonomous wake-ups, compaction prompts)"
         ),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Get conversation history for a thread.
@@ -1263,7 +1285,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/threads/{thread_id}/context", tags=["Threads"])
     async def get_thread_context_stats(
         thread_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Get context window usage statistics for a thread.
@@ -1281,7 +1303,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/threads/{thread_id}/metadata", tags=["Threads"])
     async def get_thread_metadata(
         thread_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Get platform metadata for a thread.
@@ -1365,8 +1387,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/threads", tags=["Threads"])
     async def list_threads(
-        user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         List all threads with metadata (titles, pins, platform info).
@@ -1419,8 +1441,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         http_request: Request,
         thread_id: str,
         request: ThreadMetadataUpdateRequest,
-        user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update thread metadata (title, pin status)."""
         agent = get_agent()
@@ -1485,8 +1507,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/threads/metadata/migrate", tags=["Threads"])
     async def migrate_thread_metadata(
         request: ThreadMetadataMigrateRequest,
-        user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         One-time migration: import thread metadata from frontend localStorage.
@@ -1504,8 +1526,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def delete_thread(
         http_request: Request,
         thread_id: str,
-        user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Fully delete a thread: metadata, checkpoints, and config.
@@ -1612,8 +1634,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def clear_thread(
         http_request: Request,
         thread_id: str,
-        user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Clear conversation history for a thread (checkpoints only).
@@ -1742,7 +1764,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/threads/{thread_id}/config", tags=["Threads"])
     async def get_thread_config(
         thread_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get per-thread configuration (returns defaults if none saved)."""
         agent = get_agent()
@@ -1774,7 +1796,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_thread_config(
         thread_id: str,
         request: ThreadConfigUpdateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update per-thread configuration (partial update)."""
         from ..core.thread_config import ThreadConfig, ThreadLLMConfig
@@ -1883,7 +1905,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/threads/{thread_id}/config", tags=["Threads"])
     async def delete_thread_config(
         thread_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Reset thread to global defaults (delete custom config)."""
         agent = get_agent()
@@ -1905,7 +1927,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def validate_thread_attachments(
         thread_id: str,
         request: AttachmentValidationRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Preflight-check attachment compatibility against the effective thread model.
@@ -1951,7 +1973,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def compact_thread(
         thread_id: str,
         user_id: str = "default",
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Manually trigger compaction for a thread.
@@ -1963,7 +1985,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         return result
 
     @app.post("/threads/{thread_id}/stop", tags=["Threads"])
-    async def stop_thread(thread_id: str, _=Depends(verify_api_key)):
+    async def stop_thread(thread_id: str, user: AuthenticatedUser = Depends(verify_api_key)):
         """Stop any running operation on a thread.
 
         Signals the abort event for the thread and cascades to any active
@@ -1994,7 +2016,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             }
 
     @app.get("/tools", tags=["Tools"])
-    async def list_tools(_: bool = Depends(verify_api_key)):
+    async def list_tools(user: AuthenticatedUser = Depends(verify_api_key)):
         """List all available tools and their descriptions."""
         agent = get_agent()
         tools = agent.tool_registry.list_tools()
@@ -2002,8 +2024,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/optional", tags=["Tools"])
     async def list_optional_tools(
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List tools available for per-thread enabling (not in the user's core set)."""
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
@@ -2027,8 +2049,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/defaults", tags=["Tools"])
     async def get_default_tools(
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get the default tool set for new threads.
 
@@ -2105,8 +2127,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.put("/tools/defaults", tags=["Tools"])
     async def set_default_tools(
         request: DefaultToolsUpdateRequest,
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Set which tools new threads inherit by default."""
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
@@ -2137,8 +2159,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.delete("/tools/defaults", tags=["Tools"])
     async def reset_default_tools(
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Reset default tools to all core tools."""
         from ..tools import ALL_TOOLS
@@ -2206,9 +2228,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/skills", tags=["Skills"])
     async def list_skills(
-        user_id: str = Query("default"),
+        user_id: str = Depends(_authed_user_id),
         scope: Optional[str] = Query(None, description="Filter by scope: user/global/bundled"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List all installed skills visible to *user_id*."""
         agent = get_agent()
@@ -2223,7 +2245,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def search_marketplace(
         source: str = Query("anthropic"),
         q: Optional[str] = Query(None),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Search a remote marketplace for skills."""
         from ..skills.marketplace import get_fetcher, MarketplaceError
@@ -2246,8 +2268,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/skills/{name}", response_model=SkillDetailResponse, tags=["Skills"])
     async def get_skill(
         name: str,
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Return the full body + frontmatter of an installed skill."""
         agent = get_agent()
@@ -2268,8 +2290,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/skills/install", tags=["Skills"])
     async def install_skill_endpoint(
         request: SkillInstallRequest,
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Install a skill from a marketplace into user or global scope."""
         agent = get_agent()
@@ -2305,8 +2327,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def uninstall_skill(
         name: str,
         scope: str = Query("user"),
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Remove an installed skill from disk."""
         agent = get_agent()
@@ -2341,8 +2363,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/threads/{thread_id}/skills", tags=["Skills"])
     async def get_thread_active_skills(
         thread_id: str,
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Resolved set of skills active on this thread (after scope + overrides)."""
         agent = get_agent()
@@ -2369,8 +2391,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/settings/global-skills", tags=["Skills"])
     async def get_global_skills(
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Which skills are enabled-by-default for every new thread."""
         agent = get_agent()
@@ -2380,8 +2402,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.put("/settings/global-skills", tags=["Skills"])
     async def set_global_skills(
         request: GlobalSkillsUpdateRequest,
-        user_id: str = Query("default"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Replace the user's enabled-by-default skill list."""
         agent = get_agent()
@@ -2393,7 +2415,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/settings", response_model=ServerSettingsResponse, tags=["Settings"])
     async def get_server_settings(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """Get current server settings."""
@@ -2437,7 +2459,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/settings/llm/runtime", response_model=LLMRuntimeDiagnosticsResponse, tags=["Settings"])
     async def get_llm_runtime_diagnostics(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """Get runtime LLM diagnostics including active OpenRouter key budget details."""
@@ -2520,7 +2542,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.patch("/settings", tags=["Settings"])
     async def update_server_settings(
         updates: ServerSettingsUpdate,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -2702,7 +2724,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/settings/env", tags=["Settings"])
     async def get_env_vars(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """Get all settable environment variables with masked sensitive values.
@@ -2809,7 +2831,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/settings/env/{key}", tags=["Settings"])
     async def get_env_var(
         key: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """Get a single environment variable's unmasked value."""
@@ -2829,7 +2851,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/models", tags=["Settings"])
     async def get_openrouter_models(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Return cached OpenRouter model metadata for frontend enrichment."""
         from ..config.model_capabilities import list_all_models
@@ -2856,7 +2878,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/models/available", tags=["Settings"])
     async def get_available_models(
         provider: Optional[str] = Query(default=None, description="Provider to fetch models for (anthropic, openai). Defaults to global provider."),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Fetch available models from the configured LLM provider or CLIProxy.
 
@@ -2925,8 +2947,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/todos/thread-counts", tags=["Dashboard"])
     async def get_thread_task_counts(
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """Get active task count per thread for badge display."""
@@ -2936,7 +2958,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/todos/users", tags=["Dashboard"])
     async def list_users_with_todos(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -2950,10 +2972,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/todos", response_model=TodoListResponse, tags=["Dashboard"])
     async def get_todos(
-        user_id: str = Query(default="default", description="User ID"),
+        user_id: str = Depends(_authed_user_id),
         filter_status: Optional[str] = Query(default=None, description="Filter by status"),
         thread_id: Optional[str] = Query(default=None, description="Filter by thread ID"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3085,8 +3107,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/todos", response_model=TodoItemResponse, tags=["Dashboard"])
     async def create_todo(
         request: TodoCreateRequest,
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3147,8 +3169,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_todo(
         todo_id: str,
         request: TodoUpdateRequest,
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3241,8 +3263,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/todos/{todo_id}", tags=["Dashboard"])
     async def delete_todo(
         todo_id: str,
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3269,8 +3291,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/todos/{todo_id}/complete", response_model=TodoItemResponse, tags=["Dashboard"])
     async def complete_todo(
         todo_id: str,
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3326,8 +3348,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tasks", response_model=ScheduledTasksResponse, tags=["Dashboard"])
     async def get_scheduled_tasks(
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3366,11 +3388,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/activity", response_model=ActivityLogResponse, tags=["Dashboard"])
     async def get_activity(
-        user_id: str = Query(default="default", description="User ID"),
+        user_id: str = Depends(_authed_user_id),
         limit: int = Query(default=50, le=100, description="Max entries to return"),
         activity_type: Optional[str] = Query(default=None, description="Filter by type"),
         thread_id: Optional[str] = Query(default=None, description="Filter by thread ID"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3413,8 +3435,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/notifications", response_model=NotificationsListResponse, tags=["Dashboard"])
     async def get_notifications(
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3444,8 +3466,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/notifications/{notification_id}/read", tags=["Dashboard"])
     async def mark_notification_read(
         notification_id: str,
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3464,8 +3486,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.post("/notifications/read-all", tags=["Dashboard"])
     async def mark_all_notifications_read(
-        user_id: str = Query(default="default", description="User ID"),
-        _: bool = Depends(verify_api_key),
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings),
     ):
         """
@@ -3500,7 +3522,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         authorized = False
         if presented and settings.nymeria_api_key and presented == settings.nymeria_api_key:
+            # Legacy shared key resolves to the bootstrap admin.
             authorized = True
+            user_id = x_nymeria_act_as or "default"
         elif presented:
             try:
                 repo_user = get_agent().accounts_repo.verify_token(presented)
@@ -3512,6 +3536,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         if repo_user.role != "admin":
                             raise HTTPException(status_code=403, detail="Act-As requires admin")
                         user_id = x_nymeria_act_as
+                    else:
+                        # Override any client-claimed ?user_id= with the
+                        # authenticated user's id — non-admins can only stream
+                        # their own events.
+                        user_id = repo_user.id
             except HTTPException:
                 raise
             except Exception:
@@ -3643,7 +3672,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/custom", response_model=CustomToolListResponse, tags=["Custom Tools"])
     async def list_custom_tools(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List all custom tools."""
         loader = get_custom_tool_loader()
@@ -3657,7 +3686,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/tools/custom", response_model=CustomToolResponse, tags=["Custom Tools"])
     async def create_custom_tool(
         request: CustomToolCreateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Create a new custom tool."""
         loader = get_custom_tool_loader()
@@ -3742,7 +3771,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/tools/custom/{tool_id}", response_model=CustomToolResponse, tags=["Custom Tools"])
     async def get_custom_tool(
         tool_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get a custom tool by ID."""
         loader = get_custom_tool_loader()
@@ -3760,7 +3789,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_custom_tool(
         tool_id: str,
         request: CustomToolUpdateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update an existing custom tool."""
         loader = get_custom_tool_loader()
@@ -3827,7 +3856,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/tools/custom/{tool_id}", tags=["Custom Tools"])
     async def delete_custom_tool(
         tool_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Delete a custom tool."""
         loader = get_custom_tool_loader()
@@ -3848,7 +3877,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def test_custom_tool(
         tool_id: str,
         request: CustomToolTestRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Test a custom tool with sample parameters."""
         loader = get_custom_tool_loader()
@@ -3884,7 +3913,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/custom/export", tags=["Custom Tools"])
     async def export_custom_tools(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Export all custom tools as JSON."""
         loader = get_custom_tool_loader()
@@ -3899,7 +3928,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/tools/custom/import", tags=["Custom Tools"])
     async def import_custom_tools(
         request: Request,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Import custom tools from JSON."""
         loader = get_custom_tool_loader()
@@ -3958,7 +3987,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         enabled: Optional[bool] = None
 
     @app.get("/mcp-servers", tags=["MCP Servers"])
-    async def list_mcp_servers(_: bool = Depends(verify_api_key)):
+    async def list_mcp_servers(user: AuthenticatedUser = Depends(verify_api_key)):
         """List all MCP server definitions with discovered tools."""
         from ..core.mcp_servers import get_mcp_server_registry
 
@@ -3973,7 +4002,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def create_mcp_server(
         request: MCPServerCreateRequest,
         thread_id: Optional[str] = Query(None, description="Auto-enable tools for this thread"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Add a new MCP server. Saves config and triggers tool discovery."""
         from ..core.mcp_servers import get_mcp_server_registry
@@ -4038,7 +4067,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/mcp-servers/{server_id}", tags=["MCP Servers"])
     async def get_mcp_server(
         server_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get a specific MCP server definition."""
         from ..core.mcp_servers import get_mcp_server_registry
@@ -4053,7 +4082,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_mcp_server(
         server_id: str,
         request: MCPServerUpdateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update an MCP server config. Re-discovers tools after update."""
         from ..core.mcp_servers import get_mcp_server_registry
@@ -4094,7 +4123,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/mcp-servers/{server_id}", tags=["MCP Servers"])
     async def delete_mcp_server(
         server_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Remove an MCP server and all its tools."""
         from ..core.mcp_servers import get_mcp_server_registry
@@ -4112,7 +4141,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/mcp-servers/{server_id}/discover", tags=["MCP Servers"])
     async def discover_mcp_server_tools(
         server_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Force re-discover tools from an MCP server."""
         from ..core.mcp_servers import get_mcp_server_registry
@@ -4140,7 +4169,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/mcp-servers/{server_id}/test", tags=["MCP Servers"])
     async def test_mcp_server(
         server_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Test connectivity to an MCP server."""
         from ..core.mcp_servers import get_mcp_server_registry
@@ -4164,7 +4193,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/mcp-servers/install", tags=["MCP Servers"])
     async def install_mcp_server(
         request: MCPServerInstallRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Install an MCP server from a user-pasted source string.
 
@@ -4241,12 +4270,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # ========================================================================
 
     @app.get("/agents/templates", tags=["Agent Threads"])
-    async def list_agent_templates(_: bool = Depends(verify_api_key)):
+    async def list_agent_templates(user: AuthenticatedUser = Depends(verify_api_key)):
         """List agent templates (legacy — returns empty list)."""
         return {"templates": [], "total": 0}
 
     @app.get("/agents/threads", tags=["Agent Threads"])
-    async def list_agent_threads(_: bool = Depends(verify_api_key)):
+    async def list_agent_threads(user: AuthenticatedUser = Depends(verify_api_key)):
         """List all callable thread configs (callable=True)."""
         agent = get_agent()
         threads = agent.thread_config_manager.list_callable_threads()
@@ -4271,7 +4300,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def create_agent_thread(
         http_request: Request,
         request: AgentThreadCreateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Create a new callable thread."""
         import uuid
@@ -4363,9 +4392,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/users/{user_id}/rag/settings", tags=["RAG"])
     async def get_rag_settings(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get user's RAG configuration."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
         rag_prefs = profile.get_rag_preferences()
@@ -4383,9 +4413,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_rag_settings(
         user_id: str,
         settings_update: RagSettingsUpdate,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update user's RAG configuration."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
 
         with agent.profile_manager.atomic_update(user_id) as profile:
@@ -4421,9 +4452,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/users/{user_id}/rag/stats", tags=["RAG"])
     async def get_rag_stats(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get indexing statistics for a user."""
+        _require_same_user_or_admin(user, user_id)
         from ..core.memory_index import MemoryIndex
 
         agent = get_agent()
@@ -4461,13 +4493,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/users/{user_id}/rag/reindex", tags=["RAG"])
     async def reindex_user(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Rebuild user's entire RAG index from conversation history.
 
         This clears existing index and re-indexes all conversations.
         """
+        _require_same_user_or_admin(user, user_id)
         from ..core.memory_index import MemoryIndex
 
         agent = get_agent()
@@ -4517,9 +4550,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/users/{user_id}/rag/index", tags=["RAG"])
     async def clear_index(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Clear user's RAG index."""
+        _require_same_user_or_admin(user, user_id)
         from ..core.memory_index import MemoryIndex
 
         agent = get_agent()
@@ -4564,13 +4598,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/users/{user_id}/tools", tags=["User Tools"])
     async def list_user_tools(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         List all tools with their enabled state for a specific user.
 
         Enabled state is derived from default_thread_tools membership.
         """
+        _require_same_user_or_admin(user, user_id)
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
         from ..tools.metadata import get_tool_metadata
 
@@ -4628,9 +4663,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/users/{user_id}/tools/preferences", response_model=ToolPreferencesResponse, tags=["User Tools"])
     async def get_tool_preferences(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get user's tool preferences."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
 
@@ -4644,7 +4680,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str,
         tool_name: str,
         request: ToolConfigRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Set configuration for a specific tool.
@@ -4652,6 +4688,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Configuration options depend on the tool. For example, bash_execute
         supports timeout_seconds.
         """
+        _require_same_user_or_admin(user, user_id)
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
@@ -4689,9 +4726,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/users/{user_id}/tools/reset", tags=["User Tools"])
     async def reset_tool_preferences(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Reset all tool preferences to defaults (all core tools enabled)."""
+        _require_same_user_or_admin(user, user_id)
         from ..tools import ALL_TOOLS
 
         agent = get_agent()
@@ -4720,9 +4758,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/users/{user_id}/memories", tags=["User Memories"])
     async def list_memories(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List all memories stored for a user."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
         return {
@@ -4748,9 +4787,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def save_memory(
         user_id: str,
         request: MemorySaveRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Save or update a memory for a user."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
         with agent.profile_manager.atomic_update(user_id) as profile:
             success = profile.add_memory(request.key, request.value)
@@ -4765,9 +4805,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def forget_memory(
         user_id: str,
         key: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Remove a memory by key."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
         with agent.profile_manager.atomic_update(user_id) as profile:
             removed = profile.remove_memory(key)
@@ -4779,9 +4820,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def search_memories(
         user_id: str,
         q: str = Query(..., description="Search term"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Search memories by key or value substring."""
+        _require_same_user_or_admin(user, user_id)
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
         results = profile.search_memories(q)
@@ -4797,7 +4839,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/categories", tags=["Tools"])
     async def list_tool_categories(
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List all tool categories with their tools."""
         from ..tools.metadata import get_category_tools_summary
@@ -4923,7 +4965,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/users/{user_id}/tools/unified", response_model=UnifiedToolListResponse, tags=["Unified Tools"])
     async def list_unified_tools(
         user_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         List all tools (built-in and custom) in a unified format.
@@ -4931,6 +4973,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Returns tools with consistent structure regardless of type,
         including enable status per user derived from default_thread_tools.
         """
+        _require_same_user_or_admin(user, user_id)
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
         from ..tools.metadata import get_tool_metadata
 
@@ -5045,13 +5088,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str,
         tool_id: str,
         request: UnifiedToolEnableRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Enable or disable a built-in or MCP server tool for a user by adding/removing it
         from default_thread_tools. Custom tools are not affected (they are
         always available and managed per-thread via enabled_tools).
         """
+        _require_same_user_or_admin(user, user_id)
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
         from ..tools.metadata import get_tool_metadata, get_all_tool_metadata
 
@@ -5099,7 +5143,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str,
         tool_id: str,
         request: UnifiedToolDescriptionRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Set a custom description for a tool.
@@ -5107,6 +5151,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Works for both built-in and custom tools.
         Pass null/None to clear the custom description and revert to default.
         """
+        _require_same_user_or_admin(user, user_id)
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
@@ -5147,7 +5192,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str,
         tool_id: str,
         request: UnifiedToolConfigRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Set configuration for a tool.
@@ -5155,6 +5200,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Works for both built-in and custom tools.
         The config is merged with existing config (pass empty dict to clear).
         """
+        _require_same_user_or_admin(user, user_id)
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
@@ -5193,7 +5239,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/tools/unified", response_model=UnifiedToolResponse, tags=["Unified Tools"])
     async def create_unified_tool(
         request: CustomToolCreateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Create a new custom tool via the unified API.
@@ -5247,7 +5293,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_unified_tool(
         tool_id: str,
         request: CustomToolUpdateRequest,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Update a custom tool via the unified API.
@@ -5296,7 +5342,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/tools/unified/{tool_id}", tags=["Unified Tools"])
     async def delete_unified_tool(
         tool_id: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Delete a custom tool via the unified API.
@@ -5335,7 +5381,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/devices/register", tags=["Devices"])
     async def register_device(
         request: Request,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Register a device for FCM push notifications."""
         from ..core.fcm import register_token
@@ -5364,7 +5410,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/devices/{token}", tags=["Devices"])
     async def unregister_device(
         token: str,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Unregister a device from FCM push notifications."""
         from ..core.fcm import unregister_token
@@ -5386,7 +5432,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         audio: UploadFile = File(..., description="Audio file (WAV, MP3, AAC, etc.)"),
         thread_id: Optional[str] = Form(default=None),
         user_id: str = Form(default="default"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Voice conversation: audio in, audio out.
@@ -5476,7 +5522,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/voice/tts", tags=["Voice"])
     async def voice_tts(
         request: Request,
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Text-to-Speech: accepts JSON {text: string}, returns audio bytes.
@@ -5504,7 +5550,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/voice/stt", tags=["Voice"])
     async def voice_stt(
         audio: UploadFile = File(..., description="Audio file to transcribe"),
-        _: bool = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Speech-to-Text: accepts audio file upload, returns JSON {text: string}.

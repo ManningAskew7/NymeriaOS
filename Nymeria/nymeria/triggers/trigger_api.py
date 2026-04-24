@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
+from ..core.accounts import AuthenticatedUser
 from ..core.trigger_manager import (
     TriggerAction,
     TriggerCondition,
@@ -133,9 +134,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         user_id: str = Query(default="default"),
         enabled_only: bool = Query(default=False),
         thread_id: Optional[str] = Query(default=None),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """List all triggers for a user, optionally filtered by thread."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         triggers = manager.get_triggers(user_id)
         if enabled_only:
@@ -148,9 +150,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     async def create_trigger(
         body: TriggerCreateRequest,
         user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Create a new trigger."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         action = TriggerAction(type=body.action_type, config=body.action_config)
 
@@ -202,13 +205,13 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         return TriggerResponse.from_definition(trigger)
 
     @router.get("/sources/list")
-    async def list_sources(_: bool = Depends(verify_api_key_fn)):
+    async def list_sources(user: AuthenticatedUser = Depends(verify_api_key_fn)):
         """List available trigger source types with enriched metadata."""
         from .sources import list_sources as _list
         return {"sources": _list()}
 
     @router.post("/sources/reload")
-    async def reload_sources(_: bool = Depends(verify_api_key_fn)):
+    async def reload_sources(user: AuthenticatedUser = Depends(verify_api_key_fn)):
         """Reload trigger source plugins from disk."""
         from .sources import reload_sources as _reload
         count = _reload()
@@ -218,9 +221,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     async def get_recent_executions(
         user_id: str = Query(default="default"),
         limit: int = Query(default=50, ge=1, le=200),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Get recent trigger executions across all triggers."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         return manager.get_executions(user_id, limit=limit)
 
@@ -228,9 +232,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     async def get_trigger(
         trigger_id: str,
         user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Get a single trigger by ID."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         trigger = manager.get_trigger(user_id, trigger_id)
         if trigger is None:
@@ -242,9 +247,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         trigger_id: str,
         body: TriggerUpdateRequest,
         user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Update a trigger's configuration."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
 
         kwargs: Dict[str, Any] = {}
@@ -300,9 +306,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     async def delete_trigger(
         trigger_id: str,
         user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Delete a trigger and clean up its thread metadata."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         trigger = manager.get_trigger(user_id, trigger_id)
         ok = manager.delete_trigger(user_id, trigger_id)
@@ -322,9 +329,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
         trigger_id: str,
         user_id: str = Query(default="default"),
         limit: int = Query(default=50, ge=1, le=200),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Get execution history for a specific trigger."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         return manager.get_executions(user_id, trigger_id=trigger_id, limit=limit)
 
@@ -332,9 +340,10 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     async def test_trigger(
         trigger_id: str,
         user_id: str = Query(default="default"),
-        _: bool = Depends(verify_api_key_fn),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
         """Test a trigger with sample event data (dry run, no execution)."""
+        user_id = user.id  # Override any client-claimed ?user_id=
         manager = _get_manager()
         trigger = manager.get_trigger(user_id, trigger_id)
         if trigger is None:
