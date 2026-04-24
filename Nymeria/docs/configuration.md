@@ -41,6 +41,7 @@ Set the API key for your chosen provider:
 | Variable | Provider | Required |
 |----------|----------|----------|
 | `ANTHROPIC_API_KEY` | Anthropic | If using `anthropic` provider |
+| `ANTHROPIC_DIRECT_API_KEY` | Anthropic | Optional direct Anthropic `sk-ant-*` key. Used only when the effective Anthropic base URL is empty/direct; CLIProxy Anthropic calls continue using `ANTHROPIC_API_KEY` (`cpx-*`). |
 | `OPENAI_API_KEY` | OpenAI | If using `openai` provider |
 | `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
 | `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |

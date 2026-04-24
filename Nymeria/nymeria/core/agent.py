@@ -2167,11 +2167,12 @@ class NymeriaAgent:
             frequency_penalty = None
             presence_penalty = None
 
-        # Resolve base_url: per-thread override > global.
-        # Empty string ("") = explicit "use provider default" (direct API, no proxy).
-        # None = inherit global (which may be CLIProxy or unset).
+        # Resolve base_url: per-thread override > global when the thread is using
+        # the global provider. Empty string ("") = explicit direct API.
         if tc and tc.base_url is not None:
             base_url = tc.base_url or None  # "" → None (direct API)
+        elif provider != self.settings.llm_provider:
+            base_url = None
         else:
             base_url = self.settings.llm_base_url
 
@@ -2183,15 +2184,24 @@ class NymeriaAgent:
         if tc and tc.api_key:
             api_key = tc.api_key
         else:
-            key_map = {
-                "openai": self.settings.openai_api_key,
-                "anthropic": (
-                    self.settings.anthropic_direct_api_key
-                    or self.settings.anthropic_api_key
-                ),
-                "openrouter": self.settings.openrouter_api_key,
-            }
-            api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
+            if provider == "anthropic":
+                # A configured Anthropic base_url means CLIProxy or another
+                # proxy; it expects ANTHROPIC_API_KEY (usually cpx-*). Only use
+                # ANTHROPIC_DIRECT_API_KEY for direct Anthropic calls.
+                api_key = (
+                    self.settings.anthropic_api_key
+                    if base_url
+                    else (
+                        self.settings.anthropic_direct_api_key
+                        or self.settings.anthropic_api_key
+                    )
+                )
+            else:
+                key_map = {
+                    "openai": self.settings.openai_api_key,
+                    "openrouter": self.settings.openrouter_api_key,
+                }
+                api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
 
         return LLMConfig(
             provider=provider,
