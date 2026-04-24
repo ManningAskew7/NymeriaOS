@@ -765,6 +765,10 @@ Actions:
         help="Service action to perform",
     )
 
+    # Users subcommand (account provisioning)
+    from nymeria.cli import users as users_cli
+    users_cli.build_parser(subparsers)
+
     args = parser.parse_args()
 
     # Setup logging (except for service commands which handle their own logging)
@@ -779,6 +783,10 @@ Actions:
         validate_config()
     elif args.command == "service" and args.action == "status":
         # Status check doesn't need full validation
+        validate_config(skip_api_key=True)
+    elif args.command == "users":
+        # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
+        # check so the admin can provision users before the API is configured.
         validate_config(skip_api_key=True)
 
     # Run appropriate command
@@ -800,6 +808,8 @@ Actions:
         run_mcp(args)
     elif args.command == "service":
         run_service(args)
+    elif args.command == "users":
+        sys.exit(users_cli.dispatch(args))
     else:
         parser.print_help()
         sys.exit(1)
