@@ -386,6 +386,24 @@ class NymeriaAPIClient:
 
     # ── Health ────────────────────────────────────────────────────────────
 
+    async def resolve_platform_user(self, provider: str, provider_user_id: str) -> Optional[str]:
+        """
+        Resolve a platform-native user id (Discord/Telegram/Twitch) to the
+        Nymeria account it's linked to. Returns the Nymeria user_id or None
+        if no mapping exists. Admin-only on the server side — bots carry the
+        service token (admin role), so this works for them.
+        """
+        try:
+            data = await self._get(
+                "/platform/resolve",
+                params={"provider": provider, "provider_user_id": str(provider_user_id)},
+            )
+            return data.get("user_id")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
     async def health(self) -> bool:
         """Check if the API is healthy."""
         try:

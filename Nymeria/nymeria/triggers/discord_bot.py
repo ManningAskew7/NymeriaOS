@@ -122,9 +122,20 @@ def make_thread_id(guild_id: Optional[int], channel_id: int) -> str:
     return f"discord_dm_{channel_id}"
 
 
-def make_user_id(user_id: int) -> str:
-    """Map Discord user to Nymeria user. Single-user system — always 'default'."""
+def make_user_id(user_id: int) -> str:  # noqa: D401
+    """Deprecated — use ``NymeriaDiscordBot.resolve_user_id`` for real platform mapping.
+
+    Kept as a synchronous fallback that returns ``"default"`` so any legacy
+    callsite I missed still works. New code should go through the async
+    ``bot.resolve_user_id(discord_id)`` which hits ``/platform/resolve`` and
+    returns ``None`` for unlinked Discord users.
+    """
     return "default"
+
+
+# Sentinel used by the resolve_user_id cache to distinguish "not yet checked"
+# from "checked and confirmed unlinked (None)".
+_MISSING = object()
 
 
 CONTEXT_MESSAGE_COUNT = 10
@@ -224,6 +235,11 @@ class NymeriaDiscordBot(discord.Client):
         self._start_time = time.time()
         self._context_enabled: Dict[int, bool] = {}  # channel_id -> enabled
         self._show_tool_calls: Dict[int, bool] = {}  # channel_id -> show tool embeds
+        # platform-id -> nymeria user_id cache; populated on demand via the
+        # admin-only /platform/resolve endpoint. A None entry means "we
+        # checked recently and confirmed the Discord user isn't linked" so
+        # we don't hammer the endpoint on every message from strangers.
+        self._user_cache: Dict[int, Optional[str]] = {}
 
         # Register slash commands
         self._register_commands()
@@ -2149,6 +2165,39 @@ class NymeriaDiscordBot(discord.Client):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # =========================================================================
+    # Platform identity resolution
+    # =========================================================================
+
+    async def resolve_user_id(self, discord_user_id: int) -> Optional[str]:
+        """
+        Resolve a Discord user id to the Nymeria account it's linked to.
+        Caches the result (including None) to avoid hammering the admin-only
+        ``/platform/resolve`` endpoint on every message. Returns ``None`` for
+        unlinked Discord users.
+        """
+        cached = self._user_cache.get(discord_user_id, _MISSING)
+        if cached is not _MISSING:
+            return cached  # type: ignore[return-value]
+        try:
+            user_id = await self.api.resolve_platform_user("discord", str(discord_user_id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("resolve_platform_user(discord, %s) failed: %s", discord_user_id, e)
+            return None
+        self._user_cache[discord_user_id] = user_id
+        return user_id
+
+    async def _reject_unlinked(self, message: "discord.Message") -> None:
+        """Reply to an unlinked Discord user with a polite rejection."""
+        try:
+            await message.channel.send(
+                "This Discord account isn't linked to a Nymeria user yet. "
+                "Ask the admin to run: "
+                f"`python run.py users link-platform <email> discord {message.author.id}`"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not send unlinked rejection: %s", e)
+
+    # =========================================================================
     # Streaming chat dispatcher
     # =========================================================================
 
@@ -2509,7 +2558,10 @@ class NymeriaDiscordBot(discord.Client):
 
         guild_id = message.guild.id if message.guild else None
         thread_id = make_thread_id(guild_id, message.channel.id)
-        user_id = make_user_id(message.author.id)
+        user_id = await self.resolve_user_id(message.author.id)
+        if user_id is None:
+            await self._reject_unlinked(message)
+            return
 
         # Fetch recent channel messages as context (if enabled)
         context = ""
