@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -36,6 +36,7 @@ class ThreadLLMConfig(BaseModel):
     extended_thinking: Optional[bool] = None
     reasoning_effort: Optional[str] = None
     use_model_defaults: Optional[bool] = None
+    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
     # Per-thread API key. Lets a thread point at a different CLIProxy sidecar
     # (or any OpenAI-compatible endpoint) with its own auth without touching

@@ -7,12 +7,99 @@ Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 
 import logging
 from typing import List, Optional
+from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
 from .config import LLMConfig
 
 logger = logging.getLogger(__name__)
+
+
+_LOCAL_LLM_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
+_CLIPROXY_STREAMING_PORTS = {8317, 8318}
+
+
+def _should_disable_streaming_for_local_base_url(base_url: str) -> bool:
+    """Return True for known local inference URLs with fragile tool streaming."""
+    parse_target = base_url.strip()
+    if "://" not in parse_target:
+        parse_target = f"http://{parse_target}"
+
+    try:
+        parsed = urlparse(parse_target)
+    except ValueError:
+        return False
+
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    if not host:
+        return False
+
+    # CLIProxy sidecars are OpenAI-compatible proxy servers, not local inference
+    # engines, and we rely on streaming to surface reasoning deltas.
+    if "cli-proxy" in host or "cliproxy" in host:
+        return False
+    if port in _CLIPROXY_STREAMING_PORTS:
+        return False
+
+    return host in _LOCAL_LLM_HOSTS
+
+
+def _get_chat_openai_with_reasoning():
+    """Return a ChatOpenAI subclass that preserves reasoning deltas.
+
+    langchain-openai deliberately drops provider-specific reasoning fields from
+    chat-completions streams (see langchain_openai.chat_models.base docstring,
+    which recommends a provider-specific subclass). Two wire conventions are
+    in use across the providers we care about:
+
+      - `delta.reasoning_content`  — CLIProxy Codex sidecar (gpt-5.x), DeepSeek,
+                                     and any chat-completions path that CLIProxy
+                                     translates from an upstream Responses-API
+                                     `response.reasoning_summary_text.delta`.
+      - `delta.reasoning`          — OpenRouter's unified reasoning field,
+                                     emitted when `extra_body.reasoning` is set.
+
+    We normalize both into `additional_kwargs["reasoning_content"]` so the
+    agent stream handler in core/agent.py can surface them as `thinking`
+    SSE events with a single code path.
+    """
+    from langchain_openai import ChatOpenAI
+
+    class ChatOpenAIWithReasoning(ChatOpenAI):
+        def _convert_chunk_to_generation_chunk(
+            self, chunk, default_chunk_class, base_generation_info
+        ):
+            generation_chunk = super()._convert_chunk_to_generation_chunk(
+                chunk, default_chunk_class, base_generation_info
+            )
+            if generation_chunk is None:
+                return None
+            try:
+                choices = (
+                    chunk.get("choices")
+                    or chunk.get("chunk", {}).get("choices")
+                    or []
+                )
+                if choices:
+                    delta = choices[0].get("delta") or {}
+                    reasoning = delta.get("reasoning_content") or delta.get(
+                        "reasoning"
+                    )
+                    if reasoning:
+                        generation_chunk.message.additional_kwargs[
+                            "reasoning_content"
+                        ] = reasoning
+            except (AttributeError, KeyError, IndexError, TypeError):
+                pass
+            return generation_chunk
+
+    return ChatOpenAIWithReasoning
 
 
 def create_llm(config: LLMConfig) -> BaseChatModel:
@@ -30,6 +117,13 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
     """
     if config.custom_llm is not None:
         return config.custom_llm
+
+    if config.openai_api_mode and config.provider != "openai":
+        logger.warning(
+            "[LLM] Ignoring openai_api_mode=%s for non-OpenAI provider %s",
+            config.openai_api_mode,
+            config.provider,
+        )
 
     if config.provider == "openrouter":
         return _create_openrouter_llm(config)
@@ -96,7 +190,7 @@ def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatM
 
 def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     """Create OpenRouter LLM (OpenAI-compatible API)."""
-    from langchain_openai import ChatOpenAI
+    ChatOpenAI = _get_chat_openai_with_reasoning()
 
     if not config.api_key:
         raise ValueError("OpenRouter requires OPENROUTER_API_KEY")
@@ -179,7 +273,7 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
 
 def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     """Create direct OpenAI LLM."""
-    from langchain_openai import ChatOpenAI
+    ChatOpenAI = _get_chat_openai_with_reasoning()
     import os
 
     api_key = config.api_key or os.getenv("OPENAI_API_KEY")
@@ -206,8 +300,7 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         # (see OpenClaw #5769, llama.cpp #19905/#20260/#20837).
         # Disable streaming so tool_calls are parsed from the full response
         # in one shot. Non-local providers keep streaming for the better UX.
-        _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
-        if any(h in config.base_url for h in _LOCAL_HOSTS):
+        if _should_disable_streaming_for_local_base_url(config.base_url):
             kwargs["streaming"] = False
             logger.info(
                 f"[LLM] Local base_url detected ({config.base_url}); "
@@ -223,8 +316,26 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     if config.presence_penalty is not None:
         kwargs["presence_penalty"] = config.presence_penalty
 
-    # OpenAI reasoning models use reasoning_effort via model_kwargs
-    if config.reasoning_effort is not None:
+    if config.openai_api_mode == "responses":
+        kwargs["use_responses_api"] = True
+        kwargs["output_version"] = "responses/v1"
+        kwargs["store"] = False
+
+        if config.extended_thinking or config.reasoning_effort is not None:
+            reasoning_config = {"summary": "auto"}
+            if config.reasoning_effort is not None:
+                reasoning_config["effort"] = config.reasoning_effort
+            elif config.extended_thinking:
+                reasoning_config["effort"] = "medium"
+            kwargs["reasoning"] = reasoning_config
+
+        logger.info(
+            "[LLM] OpenAI Responses API mode enabled for %s; "
+            "replaying checkpointed Responses items",
+            config.model,
+        )
+    # OpenAI chat-completions reasoning models use reasoning_effort via model_kwargs.
+    elif config.reasoning_effort is not None:
         kwargs["model_kwargs"] = {"reasoning_effort": config.reasoning_effort}
 
     return ChatOpenAI(**kwargs)

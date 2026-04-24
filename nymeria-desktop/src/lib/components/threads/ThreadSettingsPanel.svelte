@@ -150,6 +150,9 @@
       ? String(threadConfig.llmConfig.use_model_defaults) as 'true' | 'false'
       : 'default'
   );
+  let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(
+    threadConfig?.llmConfig?.openai_api_mode ?? 'default'
+  );
 
   // Model metadata (reactive lookup)
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
@@ -348,6 +351,8 @@
     const origDisabled = new Set(threadConfig?.disabledTools ?? []);
     const origProvider = threadConfig?.llmConfig?.provider ?? '';
     const origModel = threadConfig?.llmConfig?.model ?? '';
+    const origBaseUrl = threadConfig?.llmConfig?.base_url ?? '';
+    const origApiKey = threadConfig?.llmConfig?.api_key ?? '';
     const origTemp = threadConfig?.llmConfig?.temperature != null
       ? String(threadConfig.llmConfig.temperature) : '';
     const origMaxTokens = threadConfig?.llmConfig?.max_tokens != null
@@ -357,6 +362,7 @@
     const origReasoning = threadConfig?.llmConfig?.reasoning_effort ?? '';
     const origUseModelDefaults = threadConfig?.llmConfig?.use_model_defaults != null
       ? String(threadConfig.llmConfig.use_model_defaults) : 'default';
+    const origOpenAiApiMode = threadConfig?.llmConfig?.openai_api_mode ?? 'default';
 
     const origEnabled = new Set(threadConfig?.enabledTools ?? []);
     const origSystemPrompt = threadConfig?.systemPrompt ?? '';
@@ -381,11 +387,14 @@
     for (const s of threadDisabledSkills) if (!origDisabledSkills.has(s)) return true;
     if (llmProvider !== origProvider) return true;
     if (llmModel !== origModel) return true;
+    if (llmBaseUrl !== origBaseUrl) return true;
+    if (llmApiKey !== origApiKey) return true;
     if (llmTemperature !== origTemp) return true;
     if (llmMaxTokens !== origMaxTokens) return true;
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseModelDefaults) return true;
+    if (llmOpenAiApiMode !== origOpenAiApiMode) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
@@ -459,7 +468,7 @@
       // LLM config
       const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default' || llmApiKey;
+        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmApiKey;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -486,6 +495,9 @@
           // Explicitly clear to remove stale per-thread override
           llm.use_model_defaults = null;
         }
+        llm.openai_api_mode = getEffectiveProvider() === 'openai' && llmOpenAiApiMode !== 'default'
+          ? llmOpenAiApiMode
+          : null;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -836,6 +848,20 @@
               />
               <span class="field-hint">
                 Required when pointing at a CLIProxy sidecar with its own <code>api-keys</code> list (e.g. <code>cpx-latest-local-test</code> for the GPT-5.5 sidecar). Stored per-thread in the Nymeria data directory.
+              </span>
+            </div>
+          {/if}
+
+          {#if getEffectiveProvider() === 'openai'}
+            <div class="field-group">
+              <label class="field-label" for="llm-openai-api-mode">OpenAI API Mode</label>
+              <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>
+                <option value="default">Default (chat completions)</option>
+                <option value="chat_completions">Chat Completions</option>
+                <option value="responses">Responses API</option>
+              </select>
+              <span class="field-hint">
+                Use Responses API for GPT-5.5 via the CLIProxy Codex sidecar when you want native Responses reasoning blocks replayed from the checkpoint.
               </span>
             </div>
           {/if}

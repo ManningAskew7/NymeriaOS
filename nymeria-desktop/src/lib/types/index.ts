@@ -118,6 +118,7 @@ export interface ThreadLLMConfig {
   extended_thinking?: boolean | null;
   reasoning_effort?: string | null;
   use_model_defaults?: boolean | null;
+  openai_api_mode?: 'chat_completions' | 'responses' | null;
   base_url?: string | null;
   api_key?: string | null;
 }

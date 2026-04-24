@@ -97,7 +97,7 @@ Per-thread overrides also work: Thread Settings → Model tab → Provider: Loca
 
 **Root cause**: the OpenAI streaming protocol for `tool_calls` deltas is a known-fragile area for local inference servers. OpenClaw (354k-star personal AI framework) has the identical bug (openclaw/openclaw#5769). llama.cpp, Ollama, and LM Studio all have documented streaming tool-call issues. The fundamental problem is that incremental PEG parsing with grammar constraints + streaming + thinking mode creates a combinatorial explosion of edge cases that each server handles differently.
 
-**Fix** (`vendor/react_agent/providers.py`): detect when `base_url` points at a local host (`localhost`, `127.0.0.1`, `host.docker.internal`, etc.) and set `streaming=False` on the `ChatOpenAI` constructor. This makes the LLM return the full response in one shot, bypassing all incremental parsing bugs. Cloud providers (Claude, OpenAI, OpenRouter) keep `streaming=True` for the smooth token-by-token UX.
+**Fix** (`vendor/react_agent/providers.py`): detect when `base_url` points at a local host (`localhost`, `127.0.0.1`, `host.docker.internal`, etc.) and set `streaming=False` on the `ChatOpenAI` constructor. This makes the LLM return the full response in one shot, bypassing all incremental parsing bugs. CLIProxy sidecar URLs and ports `8317`/`8318` are excluded from this local-LLM heuristic because reasoning-token streaming depends on the normal streaming path.
 
 **Trade-off**: local LLM responses appear all at once after a brief wait instead of streaming token by token. At 60+ tok/s this is barely noticeable (~2-3 seconds for a typical response).
 
