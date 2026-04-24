@@ -2259,7 +2259,11 @@ class NymeriaTelegramBot:
 
     async def _api_sse_listener(self) -> None:
         """Background task listening for autonomous task completion events."""
-        url = f"{self.api.base_url}/autonomous/stream?user_id=default&api_key={self.api.api_key}"
+        # Header-based auth keeps the bearer out of URL query params and
+        # request logs. Step 6 will layer X-Nymeria-Act-As for per-user
+        # event scoping once platform→account mapping lands.
+        url = f"{self.api.base_url}/autonomous/stream?user_id=default"
+        headers = {"Authorization": f"Bearer {self.api.api_key}"}
         logger.info(f"Telegram SSE listener connecting to {self.api.base_url}/autonomous/stream")
 
         reconnect_delay = 3
@@ -2268,7 +2272,7 @@ class NymeriaTelegramBot:
         while True:
             try:
                 async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", url) as resp:
+                    async with client.stream("GET", url, headers=headers) as resp:
                         if resp.status_code != 200:
                             logger.error(f"SSE connection failed: {resp.status_code}")
                             await asyncio.sleep(reconnect_delay)

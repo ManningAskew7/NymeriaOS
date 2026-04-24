@@ -65,13 +65,30 @@ Inside Docker: `docker exec nymeria-api python run.py users <action>`.
 
 ## Service token
 
-Bots, the ticker, and the watchdog call the API as admin with `X-Nymeria-Act-As: <user_id>` to route per-user traffic without holding each user's raw token. Create the service user once:
+Bots, the ticker, and the watchdog call the API as admin with `X-Nymeria-Act-As: <user_id>` to route per-user traffic without holding each user's raw token.
+
+**Create the service user once** (on a fresh install):
 
 ```bash
 docker exec nymeria-api python run.py users add bot-service@localhost --role admin --id bot-service
 ```
 
-Copy the printed token into `.env.docker` as `NYMERIA_SERVICE_TOKEN=nym_...` and restart the relevant containers. The setting is already wired into `config/settings.py` (`nymeria_service_token`) — middleware and bot consumption land in Step 3/Step 6.
+Copy the printed token into `.env.docker`:
+
+```
+NYMERIA_SERVICE_TOKEN=nym_...
+```
+
+Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram/Watchdog print `Auth: service token` at startup when they pick it up (fall back to `legacy NYMERIA_API_KEY` if unset).
+
+**How the header is honored:** `X-Nymeria-Act-As: <user_id>` is only consumed by `/me`, `/platform/resolve`, and `/autonomous/stream` today. Non-admin callers sending it get 403. Unknown/disabled targets 404. Routes that still use the old `verify_api_key` dep ignore the header — Step 3b extends honoring to every route.
+
+**What the bots send:**
+```
+Authorization: Bearer <NYMERIA_SERVICE_TOKEN>
+X-Nymeria-Act-As: <resolved_user_id>
+```
+where `<resolved_user_id>` is the Nymeria account the platform user maps to via `platform_identities` (Step 6).
 
 ## Storage location
 

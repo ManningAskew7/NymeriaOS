@@ -19,7 +19,15 @@ _DEFAULT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 
 
 class NymeriaAPIClient:
-    """Async HTTP client for the Nymeria REST API."""
+    """Async HTTP client for the Nymeria REST API.
+
+    When the client is constructed with an admin-role service token, each
+    per-user call can attach ``X-Nymeria-Act-As: <user_id>`` so the server
+    routes the request as that user. Callers pass ``act_as=<user_id>`` on
+    the underlying ``_get``/``_post``/... helpers. Today the header is only
+    consumed by ``GET /me`` and ``GET /platform/resolve``; Step 3b's route
+    cutover will make it the authoritative identity for every endpoint.
+    """
 
     def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
@@ -29,42 +37,47 @@ class NymeriaAPIClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict:
+    def _headers_for(self, act_as: Optional[str]) -> Dict[str, str]:
+        if not act_as:
+            return self._headers
+        return {**self._headers, "X-Nymeria-Act-As": act_as}
+
+    async def _get(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.get(
-                self._url(path), headers=self._headers, params=params
+                self._url(path), headers=self._headers_for(act_as), params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> dict:
+    async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
             resp = await client.post(
-                self._url(path), headers=self._headers, json=json, params=params
+                self._url(path), headers=self._headers_for(act_as), json=json, params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> dict:
+    async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.put(
-                self._url(path), headers=self._headers, json=json, params=params
+                self._url(path), headers=self._headers_for(act_as), json=json, params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _patch(self, path: str, json: Optional[dict] = None) -> dict:
+    async def _patch(self, path: str, json: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.patch(
-                self._url(path), headers=self._headers, json=json
+                self._url(path), headers=self._headers_for(act_as), json=json
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _delete(self, path: str, params: Optional[dict] = None) -> dict:
+    async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.delete(
-                self._url(path), headers=self._headers, params=params
+                self._url(path), headers=self._headers_for(act_as), params=params
             )
             resp.raise_for_status()
             return resp.json()
@@ -101,7 +114,7 @@ class NymeriaAPIClient:
             body["attachments"] = attachments
         if force_unsupported_attachments:
             body["force_unsupported_attachments"] = True
-        return await self._post("/chat/sync", json=body)
+        return await self._post("/chat/sync", json=body, act_as=user_id)
 
     async def chat_stream(
         self,
@@ -143,7 +156,7 @@ class NymeriaAPIClient:
             async with client.stream(
                 "POST",
                 self._url("/chat"),
-                headers=self._headers,
+                headers=self._headers_for(user_id),
                 json=body,
             ) as resp:
                 resp.raise_for_status()
@@ -167,7 +180,7 @@ class NymeriaAPIClient:
     async def compact(self, thread_id: str, user_id: str) -> dict:
         """Compact conversation context."""
         return await self._post(
-            f"/threads/{thread_id}/compact", params={"user_id": user_id}
+            f"/threads/{thread_id}/compact", params={"user_id": user_id}, act_as=user_id,
         )
 
     async def delete_thread(self, thread_id: str) -> dict:
@@ -177,7 +190,7 @@ class NymeriaAPIClient:
     async def clear_thread(self, thread_id: str, user_id: str = "default") -> dict:
         """Clear conversation history only (preserve notepad + config)."""
         return await self._post(
-            f"/threads/{thread_id}/clear", params={"user_id": user_id}
+            f"/threads/{thread_id}/clear", params={"user_id": user_id}, act_as=user_id,
         )
 
     async def get_history(self, thread_id: str, include_internal: bool = False) -> dict:
@@ -214,11 +227,11 @@ class NymeriaAPIClient:
         Returns dict with 'default_tools' (list of names) and
         'available_tools' (list of tool info dicts).
         """
-        return await self._get("/tools/defaults", params={"user_id": user_id})
+        return await self._get("/tools/defaults", params={"user_id": user_id}, act_as=user_id)
 
     async def list_all_tools(self, user_id: str = "default") -> List[dict]:
         """List all tools (built-in + optional + MCP) with enabled state."""
-        data = await self._get(f"/users/{user_id}/tools")
+        data = await self._get(f"/users/{user_id}/tools", act_as=user_id)
         return data.get("tools", [])
 
     async def get_tool_categories(self) -> dict:
@@ -229,23 +242,23 @@ class NymeriaAPIClient:
 
     async def list_memories(self, user_id: str) -> List[dict]:
         """List all memories for a user."""
-        data = await self._get(f"/users/{user_id}/memories")
+        data = await self._get(f"/users/{user_id}/memories", act_as=user_id)
         return data.get("memories", [])
 
     async def save_memory(self, user_id: str, key: str, value: str) -> dict:
         """Save or update a memory."""
         return await self._post(
-            f"/users/{user_id}/memories", json={"key": key, "value": value}
+            f"/users/{user_id}/memories", json={"key": key, "value": value}, act_as=user_id,
         )
 
     async def forget_memory(self, user_id: str, key: str) -> dict:
         """Remove a memory by key."""
-        return await self._delete(f"/users/{user_id}/memories/{key}")
+        return await self._delete(f"/users/{user_id}/memories/{key}", act_as=user_id)
 
     async def search_memories(self, user_id: str, query: str) -> List[dict]:
         """Search memories by keyword."""
         data = await self._get(
-            f"/users/{user_id}/memories/search", params={"q": query}
+            f"/users/{user_id}/memories/search", params={"q": query}, act_as=user_id,
         )
         return data.get("results", [])
 
@@ -253,7 +266,7 @@ class NymeriaAPIClient:
 
     async def list_todos(self, user_id: str) -> List[dict]:
         """List all TODOs for a user."""
-        data = await self._get("/todos", params={"user_id": user_id})
+        data = await self._get("/todos", params={"user_id": user_id}, act_as=user_id)
         return data.get("items", [])
 
     async def list_users_with_todos(self) -> List[str]:
@@ -281,13 +294,14 @@ class NymeriaAPIClient:
             body["recurrence"] = recurrence
         if thread_id:
             body["thread_id"] = thread_id
-        return await self._post("/todos", json=body, params={"user_id": user_id})
+        return await self._post("/todos", json=body, params={"user_id": user_id}, act_as=user_id)
 
     async def update_todo(self, user_id: str, todo_id: str, **kwargs) -> dict:
         """Update a TODO (partial update)."""
         return await self._patch(
             f"/todos/{todo_id}",
             json=kwargs,
+            act_as=user_id,
         )
 
     async def complete_todo(self, user_id: str, todo_id: str) -> dict:
@@ -295,6 +309,7 @@ class NymeriaAPIClient:
         return await self._post(
             f"/todos/{todo_id}/complete",
             params={"user_id": user_id},
+            act_as=user_id,
         )
 
     async def delete_todo(self, user_id: str, todo_id: str) -> dict:
@@ -302,6 +317,7 @@ class NymeriaAPIClient:
         return await self._delete(
             f"/todos/{todo_id}",
             params={"user_id": user_id},
+            act_as=user_id,
         )
 
     # ── Settings Management ─────────────────────────────────────────────
