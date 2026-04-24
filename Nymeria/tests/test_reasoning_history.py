@@ -180,3 +180,36 @@ def test_history_rehydrates_responses_function_call_steps():
     assert assistant["steps"][1]["id"] == "call-1"
     assert assistant["steps"][1]["arguments"] == {"q": "nymeria"}
     assert assistant["steps"][2]["content"] == "Done"
+
+
+def test_history_treats_string_blocks_before_tool_calls_as_response_text():
+    history = _history_for([
+        HumanMessage(content="Hello"),
+        AIMessage(
+            content=[
+                "I'll check that now.",
+                {
+                    "type": "function_call",
+                    "name": "search",
+                    "call_id": "call-1",
+                    "arguments": '{"q": "nymeria"}',
+                },
+            ],
+            tool_calls=[{
+                "id": "call-1",
+                "name": "search",
+                "args": {"q": "nymeria"},
+            }],
+        ),
+        ToolMessage(content="tool result", tool_call_id="call-1"),
+        AIMessage(content="Done"),
+    ])
+
+    assistant = history[1]
+    assert [step["type"] for step in assistant["steps"]] == [
+        "response",
+        "tool_call",
+        "response",
+    ]
+    assert assistant["steps"][0]["content"] == "I'll check that now."
+    assert assistant["intermediate_content"] is None
