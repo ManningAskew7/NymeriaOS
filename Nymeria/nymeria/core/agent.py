@@ -484,6 +484,14 @@ class NymeriaAgent:
             enabled=self.settings.audit_log_enabled,
         )
 
+        # Account/token/ownership store. Created early so the bootstrap admin
+        # is minted on very first boot before anything else touches the DB.
+        # Using a dedicated SQLite file keeps this independent of the
+        # checkpoints backend (SQLite or Postgres).
+        from .accounts import AccountsRepo
+        self.accounts_repo = AccountsRepo(self.settings.data_dir / "accounts.db")
+        self.accounts_repo.ensure_bootstrap_admin(self.settings.data_dir)
+
         # Initialize user profile manager
         self.profile_manager = UserProfileManager(self.settings.data_dir)
 

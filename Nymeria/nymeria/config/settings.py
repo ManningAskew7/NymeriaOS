@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     # API Authentication (required for security)
     nymeria_api_key: Optional[str] = Field(default=None, description="API key for authentication")
 
+    # Service token — an admin-role Nymeria account token used by bots, the
+    # ticker, the watchdog, and other trusted internal callers. Combined with
+    # an ``X-Nymeria-Act-As: <user_id>`` header it lets shared infrastructure
+    # make API calls on behalf of each user without holding their raw tokens.
+    # Created via ``python run.py users add bot-service --role admin``.
+    nymeria_service_token: Optional[str] = Field(
+        default=None,
+        description="Admin-role service token used by bots/ticker/watchdog for act-as calls",
+    )
+
     # Data directory override (for Docker volumes)
     nymeria_data_dir: Optional[str] = Field(
         default=None,
