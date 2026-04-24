@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
+from ..core.accounts import AuthenticatedUser
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
 from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
 from ..core.notifications import NotificationStore, Notification, get_notification_store
@@ -597,6 +598,7 @@ def _extract_bearer_token(authorization: Optional[str]) -> str:
 
 async def resolve_authenticated_user(
     authorization: Optional[str] = Header(None),
+    x_nymeria_act_as: Optional[str] = Header(None),
     settings: Settings = Depends(get_settings),
 ):
     """
@@ -607,9 +609,11 @@ async def resolve_authenticated_user(
       2. Legacy ``NYMERIA_API_KEY`` → the bootstrap admin (``default``). This
          keeps existing clients working until the Step 3 cutover lands.
 
-    Used by the new ``/me`` and ``/platform/resolve`` endpoints so the
-    frontend can discover identity for localStorage namespacing regardless of
-    which auth mode the install is currently using.
+    ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers.
+    When present, the dep returns the target user instead of the admin, so
+    shared infrastructure (bots, ticker, watchdog) can route traffic per-user
+    without holding each user's raw token. Non-admin use → 403. Unknown or
+    disabled target → 404.
     """
     presented = _extract_bearer_token(authorization)
 
@@ -618,35 +622,51 @@ async def resolve_authenticated_user(
     except RuntimeError:
         agent = None
 
+    caller = None
     if agent is not None:
-        user = agent.accounts_repo.verify_token(presented)
-        if user is not None:
-            return user
+        caller = agent.accounts_repo.verify_token(presented)
 
     # Legacy key fallback — resolves to the bootstrap admin so legacy
     # deployments see a consistent identity from /me.
-    if settings.nymeria_api_key and presented == settings.nymeria_api_key:
+    if caller is None and settings.nymeria_api_key and presented == settings.nymeria_api_key:
         if agent is not None:
             record = agent.accounts_repo.get_user_by_id("default")
             if record is not None and not record.disabled:
-                from ..core.accounts import AuthenticatedUser
-                return AuthenticatedUser(
+                caller = AuthenticatedUser(
                     id=record.id,
                     email=record.email,
                     display_name=record.display_name,
                     role=record.role,
                 )
-        # Agent or default user missing — still let the legacy key through so
-        # the caller isn't locked out, but surface a minimal synthesized user.
-        from ..core.accounts import AuthenticatedUser
+        if caller is None:
+            # Agent or default user missing — still let the legacy key through
+            # so the caller isn't locked out, but surface a minimal user.
+            caller = AuthenticatedUser(
+                id="default",
+                email="owner@localhost",
+                display_name="Owner",
+                role="admin",
+            )
+
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if x_nymeria_act_as:
+        if caller.role != "admin":
+            raise HTTPException(status_code=403, detail="Act-As requires admin")
+        if agent is None:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+        target = agent.accounts_repo.get_user_by_id(x_nymeria_act_as)
+        if target is None or target.disabled:
+            raise HTTPException(status_code=404, detail="Act-As target not found")
         return AuthenticatedUser(
-            id="default",
-            email="owner@localhost",
-            display_name="Owner",
-            role="admin",
+            id=target.id,
+            email=target.email,
+            display_name=target.display_name,
+            role=target.role,
         )
 
-    raise HTTPException(status_code=401, detail="Invalid API key")
+    return caller
 
 
 async def require_admin_user(
@@ -3460,12 +3480,44 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def stream_autonomous_events(
         request: Request,
         user_id: str = Query(default="default", description="User ID to filter events"),
-        api_key: Optional[str] = Query(default=None, description="API key (for SSE which doesn't support headers)"),
+        api_key: Optional[str] = Query(default=None, description="API key for browser EventSource (which can't set headers). Server-side callers should use Authorization header instead."),
         client_id: Optional[str] = Query(default=None, description="Client ID for origin filtering (prevents seeing own sync events)"),
+        authorization: Optional[str] = Header(None),
+        x_nymeria_act_as: Optional[str] = Header(None),
         settings: Settings = Depends(get_settings),
     ):
-        # Verify API key from query param (SSE doesn't support custom headers)
-        if api_key != settings.nymeria_api_key:
+        # Auth: prefer Authorization header (server-side callers like the
+        # Discord/Telegram bots), fall back to ?api_key= for browser
+        # EventSource which can't set custom headers. Both paths accept any
+        # valid account token OR the legacy NYMERIA_API_KEY.
+        presented: Optional[str] = None
+        if authorization:
+            parts = authorization.split()
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                presented = parts[1]
+        if presented is None:
+            presented = api_key
+
+        authorized = False
+        if presented and settings.nymeria_api_key and presented == settings.nymeria_api_key:
+            authorized = True
+        elif presented:
+            try:
+                repo_user = get_agent().accounts_repo.verify_token(presented)
+                if repo_user is not None:
+                    authorized = True
+                    # Admin-role callers may use X-Nymeria-Act-As to stream
+                    # another user's events. Non-admin act-as is rejected.
+                    if x_nymeria_act_as:
+                        if repo_user.role != "admin":
+                            raise HTTPException(status_code=403, detail="Act-As requires admin")
+                        user_id = x_nymeria_act_as
+            except HTTPException:
+                raise
+            except Exception:
+                authorized = False
+
+        if not authorized:
             raise HTTPException(status_code=401, detail="Invalid API key")
         """
         Stream autonomous task events and cross-client sync events via Server-Sent Events.

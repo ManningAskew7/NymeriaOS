@@ -352,12 +352,15 @@ def run_discord_bot(args: argparse.Namespace) -> None:
 
     # API URL is required — the bot is a thin client
     api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
-    api_key = settings.nymeria_api_key or ""
+    # Prefer the admin-role service token (used for X-Nymeria-Act-As per-user
+    # routing). Fall back to the legacy NYMERIA_API_KEY during rollout.
+    api_key = settings.nymeria_service_token or settings.nymeria_api_key or ""
 
     print("Starting Nymeria Discord Bot (thin client)...")
     print(f"  - Mode: gateway (WebSocket)")
     print(f"  - Respond mode: {settings.discord_respond_mode}")
     print(f"  - API: {api_url}")
+    print(f"  - Auth: {'service token' if settings.nymeria_service_token else 'legacy NYMERIA_API_KEY'}")
 
     # Create API client
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
@@ -401,17 +404,19 @@ def run_watchdog(args: argparse.Namespace) -> None:
         print("[Info] Watchdog is disabled (WATCHDOG_ENABLED=false). Exiting.")
         sys.exit(0)
 
-    if not settings.nymeria_api_key:
-        print("\n[Error] NYMERIA_API_KEY is required for the watchdog worker.")
+    if not settings.nymeria_service_token and not settings.nymeria_api_key:
+        print("\n[Error] NYMERIA_SERVICE_TOKEN (preferred) or NYMERIA_API_KEY is required for the watchdog worker.")
         sys.exit(1)
 
     api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
-    api_key = settings.nymeria_api_key
+    # Prefer the admin-role service token so per-user act-as calls work.
+    api_key = settings.nymeria_service_token or settings.nymeria_api_key
 
     print("Starting Nymeria Watchdog (thin client)...")
     print(f"  - API: {api_url}")
     print(f"  - Interval: {settings.watchdog_interval_minutes}m")
     print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
+    print(f"  - Auth: {'service token' if settings.nymeria_service_token else 'legacy NYMERIA_API_KEY'}")
 
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
     worker = WatchdogWorker(client=api, settings=settings)
@@ -454,13 +459,15 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
 
     # API URL is required — the bot is a thin client
     api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
-    api_key = settings.nymeria_api_key or ""
+    # Prefer the admin-role service token for per-user act-as routing.
+    api_key = settings.nymeria_service_token or settings.nymeria_api_key or ""
 
     print("Starting Nymeria Telegram Bot (thin client)...")
     print(f"  - Mode: polling")
     print(f"  - API: {api_url}")
     if settings.telegram_default_chat_id:
         print(f"  - Default chat: {settings.telegram_default_chat_id}")
+    print(f"  - Auth: {'service token' if settings.nymeria_service_token else 'legacy NYMERIA_API_KEY'}")
 
     # Create API client
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)

@@ -2578,7 +2578,12 @@ class NymeriaDiscordBot(discord.Client):
         Background task that connects to the API's /autonomous/stream SSE
         endpoint to receive task completion events.
         """
-        url = f"{self.api.base_url}/autonomous/stream?user_id=default&api_key={self.api.api_key}"
+        # Carry the bearer in a header instead of a query param so the token
+        # doesn't leak into request logs. user_id=default filters the event
+        # stream; once Step 6 maps platforms to accounts, the bot will
+        # subscribe per-linked-user via X-Nymeria-Act-As.
+        url = f"{self.api.base_url}/autonomous/stream?user_id=default"
+        headers = {"Authorization": f"Bearer {self.api.api_key}"}
 
         logger.info(f"API SSE listener connecting to {self.api.base_url}/autonomous/stream")
 
@@ -2588,7 +2593,7 @@ class NymeriaDiscordBot(discord.Client):
         while not self.is_closed():
             try:
                 async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", url) as resp:
+                    async with client.stream("GET", url, headers=headers) as resp:
                         if resp.status_code != 200:
                             logger.error(f"SSE connection failed: {resp.status_code}")
                             await asyncio.sleep(reconnect_delay)
