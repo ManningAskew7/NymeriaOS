@@ -524,6 +524,36 @@ class NymeriaAgent:
         # Initialize thread metadata manager (server-side titles, pins, platform info)
         self.thread_metadata_manager = ThreadMetadataManager(self.settings.data_dir)
 
+        # One-shot: assign any thread known to thread_metadata that has no
+        # thread_owners row to the bootstrap admin. Protects existing installs
+        # during the multi-user rollout — otherwise a later user could first-
+        # touch-claim an existing thread they've never seen. We only backfill
+        # for users that exist in the accounts DB; legacy platform-derived
+        # user_ids (e.g. ``discord_<id>``) without a matching account are
+        # claimed under ``default`` since that's where the bootstrap admin's
+        # platform links point after Step 6.
+        try:
+            metadata_dir = self.settings.data_dir / "thread_metadata"
+            if metadata_dir.exists():
+                known_users = {u.id for u in self.accounts_repo.list_users()}
+                by_owner: Dict[str, List[str]] = {}
+                for path in metadata_dir.glob("*.json"):
+                    uid = path.stem
+                    target_uid = uid if uid in known_users else "default"
+                    store = self.thread_metadata_manager.get_store(uid)
+                    tids = list(store.threads.keys())
+                    if tids:
+                        by_owner.setdefault(target_uid, []).extend(tids)
+                for uid, tids in by_owner.items():
+                    inserted = self.accounts_repo.backfill_threads(tids, uid)
+                    if inserted:
+                        logger.info(
+                            "Thread ownership backfill: %d thread(s) assigned to %s",
+                            inserted, uid,
+                        )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Thread ownership backfill failed (non-fatal): %s", e)
+
         # Memory indexes cache for RAG (user_id -> MemoryIndex)
         # Lazily initialized per-user to avoid loading all indexes on startup
         self._memory_indexes: Dict[str, MemoryIndex] = {}

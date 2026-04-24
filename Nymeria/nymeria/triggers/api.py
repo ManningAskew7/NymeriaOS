@@ -698,6 +698,23 @@ def _require_same_user_or_admin(user: AuthenticatedUser, path_user_id: str) -> N
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
+    """
+    Enforce that ``user`` owns ``thread_id`` (or is admin acting as the
+    owner). First-touch claims the thread for the caller — if no existing
+    owner row is in ``thread_owners``, the thread is claimed atomically
+    for ``user.id``. Subsequent access by any other user resolves to 404.
+
+    Thread IDs supplied by clients can be arbitrary UUIDs, so the 404 is
+    intentional — don't leak whether a thread exists under a different
+    owner.
+    """
+    agent = get_agent()
+    owner = agent.accounts_repo.claim_thread(thread_id, user.id)
+    if owner != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
 # ============================================================================
 # API Application
 # ============================================================================
@@ -982,6 +999,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         thread_id = request.thread_id or str(uuid.uuid4())[:8]
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
+        _require_thread_access(user, thread_id)
 
         # Handle slash commands (e.g., /compact)
         msg_stripped = request.message.strip().lower()
@@ -1230,6 +1248,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         thread_id = request.thread_id or str(uuid.uuid4())[:8]
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
+        _require_thread_access(user, thread_id)
 
         response = agent.chat(
             request.message,
@@ -1261,6 +1280,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         By default, internal system messages (autonomous wake-ups, compaction prompts)
         are filtered out. Set include_internal=true for debugging to see all messages.
         """
+        _require_thread_access(user, thread_id)
         agent = get_agent()
 
         # Check per-thread config for visibility flags
@@ -1292,6 +1312,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         Returns token usage, context limit, and compaction history.
         """
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         stats = agent.get_context_stats(thread_id)
         # Include thread processing status so frontends can poll for completion
@@ -1311,6 +1332,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Parses the thread ID to detect platform origin (desktop, discord,
         telegram, slack) and returns relevant metadata.
         """
+        _require_thread_access(user, thread_id)
         if thread_id.startswith("discord_dm_"):
             return {
                 "platform": "discord",
@@ -1397,7 +1419,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         so all surfaces see the same thread list.
         """
         agent = get_agent()
-        checkpoint_ids = _get_checkpoint_thread_ids()
+        # Restrict to threads owned by the authenticated user. Admins can see
+        # any user's threads by act-as'ing as that user (X-Nymeria-Act-As);
+        # no universal "all threads" view, which is intentional.
+        owned_ids = set(agent.accounts_repo.list_threads_for_user(user_id))
+        checkpoint_ids = [t for t in _get_checkpoint_thread_ids() if t in owned_ids]
         checkpoint_set = set(checkpoint_ids)
 
         # Get stored metadata
@@ -1423,9 +1449,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     "title_source": "default",
                 })
 
-        # 2. Metadata-only threads (created by frontend but no checkpoint yet)
+        # 2. Metadata-only threads owned by this user but without checkpoints yet
         for tid, meta in store.threads.items():
-            if tid not in checkpoint_set:
+            if tid in owned_ids and tid not in checkpoint_set:
                 threads.append(meta.model_dump(mode="json"))
 
         return {"threads": threads, "total": len(threads)}
@@ -1445,6 +1471,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update thread metadata (title, pin status)."""
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         fields: Dict[str, Any] = {}
         title_source = None
@@ -1534,6 +1561,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         This is the proper way to remove a thread from all surfaces.
         """
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         settings = get_settings()
 
@@ -1644,6 +1672,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         notepad content, and metadata. Use DELETE /threads/{id} to
         remove everything.
         """
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         settings = get_settings()
 
@@ -1767,6 +1796,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get per-thread configuration (returns defaults if none saved)."""
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         tc = agent.thread_config_manager.get_config(thread_id)
         if tc:
@@ -1799,6 +1829,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Update per-thread configuration (partial update)."""
+        _require_thread_access(user, thread_id)
         from ..core.thread_config import ThreadConfig, ThreadLLMConfig
 
         agent = get_agent()
@@ -1908,6 +1939,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Reset thread to global defaults (delete custom config)."""
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         # Check if this was an agent thread before deleting
         tc = agent.thread_config_manager.get_config(thread_id)
@@ -1980,6 +2012,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         Compresses conversation history into a summary while preserving recent messages.
         """
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         result = await agent.compact_now(thread_id, user_id)
         return result
@@ -2028,6 +2061,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List tools available for per-thread enabling (not in the user's core set)."""
+        _require_thread_access(user, thread_id)
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
 
         agent = get_agent()
@@ -2367,6 +2401,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Resolved set of skills active on this thread (after scope + overrides)."""
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         if agent.skill_manager is None:
             return {"skills": []}
