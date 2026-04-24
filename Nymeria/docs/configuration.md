@@ -369,6 +369,8 @@ OPENAI_API_KEY=not-required            # Proxy ignores this, but validation requ
 LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint (with /v1 suffix)
 ```
 
+For GPT-5.5 through Codex OAuth, run the sidecar documented in `docs/cliproxy.md` and route individual threads to it from the desktop app (**Thread Settings → Model → "OpenAI (Custom base URL)"** + Base URL + Model + API Key). Keep global `.env.docker` pointed at the pinned Claude proxy. Per-thread overrides honor `provider`, `base_url`, and `api_key` — the thread-level `api_key` is the sidecar's CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI key.
+
 **Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy.
 
 **CLIProxyAPI tool name prefixing**: CLIProxyAPI can add a `proxy_` prefix to tool names with OAuth tokens. To disable this, add `"tool_prefix_disabled": true` to the Claude OAuth token file in the auth directory (e.g., `~/.cli-proxy-api/claude-<email>.json`).

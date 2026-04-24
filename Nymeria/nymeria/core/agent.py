@@ -2098,12 +2098,13 @@ class NymeriaAgent:
         else:
             base_url = self.settings.llm_base_url
 
-        # Resolve API key: proxy mode (base_url set) uses the global provider's
-        # key (same cpx- key for all providers through CLIProxy). Direct mode
-        # (no base_url) uses per-provider keys — preferring the dedicated
-        # direct key for Anthropic when available.
-        if base_url:
-            api_key = self.settings.get_api_key_for_provider()
+        # Resolve API key: per-thread override → per-provider env key →
+        # generic proxy-mode key (global provider). Lets a thread point at a
+        # different CLIProxy sidecar with its own auth without touching
+        # global settings, while preserving today's behavior when no override
+        # is set.
+        if tc and tc.api_key:
+            api_key = tc.api_key
         else:
             key_map = {
                 "openai": self.settings.openai_api_key,

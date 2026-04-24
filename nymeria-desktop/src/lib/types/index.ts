@@ -119,6 +119,7 @@ export interface ThreadLLMConfig {
   reasoning_effort?: string | null;
   use_model_defaults?: boolean | null;
   base_url?: string | null;
+  api_key?: string | null;
 }
 
 export interface ThreadConfig {

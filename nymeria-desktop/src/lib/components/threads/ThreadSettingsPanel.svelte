@@ -94,24 +94,19 @@
 
   // Display provider mapping for thread-level overrides
   // "" = Default (inherit global), "anthropic_proxy" = subscription, "anthropic_direct" = direct API,
-  // "local_openai" = openai provider pointed at a local OpenAI-compatible server
-  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'local_openai';
+  // "openai_custom" = openai provider pointed at a custom OpenAI-compatible endpoint
+  // (local server, CLIProxy sidecar, etc.)
+  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'openai_custom';
 
-  // Hostnames that indicate a local OpenAI-compatible inference server.
-  // host.docker.internal is how the Nymeria api container reaches the host.
-  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', 'host.docker.internal'];
-  const DEFAULT_LOCAL_BASE_URL = 'http://host.docker.internal:8080/v1';
-
-  function isLocalBaseUrl(baseUrl: string | null | undefined): boolean {
-    if (!baseUrl) return false;
-    return LOCAL_HOSTS.some(h => baseUrl.includes(h));
-  }
+  // Default placeholder for openai_custom — the GPT-5.5 CLIProxy sidecar is the
+  // common target on this stack. Users can edit freely.
+  const DEFAULT_CUSTOM_OPENAI_BASE_URL = 'http://cli-proxy-api-latest:8317/v1';
 
   function toThreadDisplayProvider(provider: string, baseUrl?: string | null): ThreadDisplayProvider {
     if (!provider) return '';
     if (provider === 'anthropic' && baseUrl === '') return 'anthropic_direct';
     if (provider === 'anthropic') return 'anthropic_proxy';
-    if (provider === 'openai' && isLocalBaseUrl(baseUrl)) return 'local_openai';
+    if (provider === 'openai' && baseUrl) return 'openai_custom';
     return provider as ThreadDisplayProvider;
   }
 
@@ -119,7 +114,7 @@
     if (dp === '') return { provider: '', baseUrl: null };
     if (dp === 'anthropic_proxy') return { provider: 'anthropic', baseUrl: null };
     if (dp === 'anthropic_direct') return { provider: 'anthropic', baseUrl: '' };
-    if (dp === 'local_openai') return { provider: 'openai', baseUrl: DEFAULT_LOCAL_BASE_URL };
+    if (dp === 'openai_custom') return { provider: 'openai', baseUrl: DEFAULT_CUSTOM_OPENAI_BASE_URL };
     return { provider: dp, baseUrl: null };
   }
 
@@ -133,6 +128,7 @@
   let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
   let llmModel = $state(threadConfig?.llmConfig?.model ?? '');
   let llmBaseUrl = $state(threadConfig?.llmConfig?.base_url ?? '');
+  let llmApiKey = $state(threadConfig?.llmConfig?.api_key ?? '');
   let llmTemperature = $state<string>(
     threadConfig?.llmConfig?.temperature != null
       ? String(threadConfig.llmConfig.temperature)
@@ -187,12 +183,13 @@
   }
 
   // Sync llmProvider from display provider and fetch models
-  // (skip the model fetch for local_openai — we don't want to call the real
-  // OpenAI API, and the user enters the local model alias as free text.)
+  // (skip the model fetch for openai_custom — we don't want to call the real
+  // OpenAI API through the global base URL, and the user types the model
+  // name the sidecar/local server reports as free text.)
   $effect(() => {
     const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
     llmProvider = provider;
-    if (threadDisplayProvider === 'local_openai') {
+    if (threadDisplayProvider === 'openai_custom') {
       availableModels = [];
       availableModelsProvider = '';
       return;
@@ -201,11 +198,11 @@
     fetchAvailableModels(ep);
   });
 
-  // Auto-populate the base URL field when the user picks Local LLM,
-  // unless they already have a local URL in there.
+  // Auto-populate the base URL field when the user picks "OpenAI (Custom base URL)"
+  // if empty. Don't stomp an existing value.
   $effect(() => {
-    if (threadDisplayProvider === 'local_openai' && !isLocalBaseUrl(llmBaseUrl)) {
-      llmBaseUrl = DEFAULT_LOCAL_BASE_URL;
+    if (threadDisplayProvider === 'openai_custom' && !llmBaseUrl) {
+      llmBaseUrl = DEFAULT_CUSTOM_OPENAI_BASE_URL;
     }
   });
 
@@ -462,19 +459,20 @@
       // LLM config
       const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default';
+        llmUseModelDefaults !== 'default' || llmApiKey;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
         const mapped = fromThreadDisplayProvider(threadDisplayProvider);
         llm.provider = mapped.provider || null;
-        // For local_openai, persist the user-editable base URL (not the default
+        // For openai_custom, persist the user-editable base URL (not the default
         // from fromThreadDisplayProvider, which is just a placeholder).
-        if (threadDisplayProvider === 'local_openai') {
-          llm.base_url = llmBaseUrl || DEFAULT_LOCAL_BASE_URL;
+        if (threadDisplayProvider === 'openai_custom') {
+          llm.base_url = llmBaseUrl || DEFAULT_CUSTOM_OPENAI_BASE_URL;
         } else {
           llm.base_url = mapped.baseUrl;
         }
+        llm.api_key = llmApiKey || null;
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
@@ -807,11 +805,11 @@
               <option value="anthropic_direct">Anthropic (Direct API)</option>
               <option value="openai">OpenAI</option>
               <option value="openrouter">OpenRouter</option>
-              <option value="local_openai">Local LLM (OpenAI-compatible)</option>
+              <option value="openai_custom">OpenAI (Custom base URL)</option>
             </select>
           </div>
 
-          {#if threadDisplayProvider === 'local_openai'}
+          {#if threadDisplayProvider === 'openai_custom'}
             <div class="field-group">
               <label class="field-label" for="llm-base-url">API Base URL</label>
               <input
@@ -819,26 +817,41 @@
                 class="field-input"
                 type="text"
                 bind:value={llmBaseUrl}
-                placeholder="http://host.docker.internal:8080/v1"
+                placeholder="http://cli-proxy-api-latest:8317/v1"
               />
               <span class="field-hint">
-                URL of your local OpenAI-compatible server, reachable from inside the Nymeria api container. Use <code>host.docker.internal</code> when the server runs on the host.
+                Any OpenAI-compatible endpoint reachable from inside the Nymeria api container — a CLIProxy sidecar (e.g. <code>cli-proxy-api-latest:8317/v1</code>) or a local inference server (<code>host.docker.internal:8080/v1</code>).
+              </span>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="llm-api-key">API Key (Optional)</label>
+              <input
+                id="llm-api-key"
+                class="field-input"
+                type="password"
+                bind:value={llmApiKey}
+                placeholder="Leave empty to inherit global provider key"
+                autocomplete="off"
+              />
+              <span class="field-hint">
+                Required when pointing at a CLIProxy sidecar with its own <code>api-keys</code> list (e.g. <code>cpx-latest-local-test</code> for the GPT-5.5 sidecar). Stored per-thread in the Nymeria data directory.
               </span>
             </div>
           {/if}
 
           <div class="field-group">
             <label class="field-label" for="llm-model">Model</label>
-            {#if threadDisplayProvider === 'local_openai'}
+            {#if threadDisplayProvider === 'openai_custom'}
               <input
                 id="llm-model"
                 class="field-input"
                 type="text"
                 bind:value={llmModel}
-                placeholder="Local model alias (e.g. local-llm)"
+                placeholder="Model name (e.g. gpt-5.5, local-llm)"
               />
               <span class="field-hint">
-                The model alias your local server reports (the <code>--alias</code> flag value, or the model file basename).
+                The model name the endpoint reports (e.g. <code>gpt-5.5</code> for the CLIProxy sidecar, or the <code>--alias</code> flag value for a local server).
               </span>
             {:else if availableModels.length > 0}
               <select id="llm-model" class="field-select" bind:value={llmModel}>
