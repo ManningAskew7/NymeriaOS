@@ -707,6 +707,7 @@ function createChatStore() {
      * response text (type: "response") at the SSE level.
      */
     reclassifyThinkingAsResponse() {
+      this._forceFlush();
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;

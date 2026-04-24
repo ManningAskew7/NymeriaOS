@@ -76,7 +76,7 @@ marked.use({
  */
 export function renderMarkdown(content: string): string {
   try {
-    return marked.parse(remend(content)) as string;
+    return marked.parse(content) as string;
   } catch (e) {
     console.error('Markdown rendering failed:', e);
     return content;
@@ -91,7 +91,18 @@ const CURSOR_HTML = '<span class="streaming-cursor"></span>';
  * inline at the end of the last block-level element.
  */
 export function renderMarkdownStreaming(content: string): string {
-  const html = renderMarkdown(content);
+  let html: string;
+  try {
+    // Remend's default link repair uses the placeholder URL
+    // `streamdown:incomplete-link`, which can leak into the UI while tokens are
+    // still arriving. Text-only mode keeps partial links readable without a fake
+    // href, while preserving the other useful streaming repairs.
+    html = marked.parse(remend(content, { linkMode: 'text-only' })) as string;
+  } catch (e) {
+    console.error('Streaming markdown rendering failed:', e);
+    html = content;
+  }
+
   // Insert cursor before the last closing block tag so it appears inline
   const match = html.match(/<\/[^>]+>\s*$/);
   if (match && match.index !== undefined) {
