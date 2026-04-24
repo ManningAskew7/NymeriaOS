@@ -249,9 +249,19 @@ def make_thread_id(chat_id: int) -> str:
     return f"telegram_{chat_id}"
 
 
-def make_user_id(user_id: int) -> str:
-    """Map Telegram user to Nymeria user. Single-user system — always 'default'."""
+def make_user_id(user_id: int) -> str:  # noqa: D401
+    """Deprecated fallback — use ``NymeriaTelegramBot.resolve_user_id``.
+
+    Kept as a sync fallback returning ``"default"`` so legacy callsites still
+    work; the primary message handler now resolves via ``/platform/resolve``
+    and rejects unlinked Telegram users.
+    """
     return "default"
+
+
+# Sentinel used by the resolve_user_id cache to distinguish "not yet checked"
+# from "checked and confirmed unlinked (None)".
+_MISSING = object()
 
 
 # =============================================================================
@@ -277,6 +287,22 @@ class NymeriaTelegramBot:
         # thread_id -> { chat_id, buffer (response text), tool_count }
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._application = None
+        # Telegram user_id -> Nymeria account user_id cache; None means
+        # "checked and confirmed unlinked".
+        self._user_cache: Dict[int, Optional[str]] = {}
+
+    async def resolve_user_id(self, telegram_user_id: int) -> Optional[str]:
+        """Resolve a Telegram user id to a linked Nymeria account, or None."""
+        cached = self._user_cache.get(telegram_user_id, _MISSING)
+        if cached is not _MISSING:
+            return cached  # type: ignore[return-value]
+        try:
+            user_id = await self.api.resolve_platform_user("telegram", str(telegram_user_id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("resolve_platform_user(telegram, %s) failed: %s", telegram_user_id, e)
+            return None
+        self._user_cache[telegram_user_id] = user_id
+        return user_id
 
     def run(self) -> None:
         """Build the Application, register handlers, and start polling."""
@@ -2151,8 +2177,20 @@ class NymeriaTelegramBot:
                 return
 
         chat_id = chat.id
-        user_id = update.effective_user.id
+        telegram_user_id = update.effective_user.id
         thread_id = make_thread_id(chat_id)
+
+        nymeria_user_id = await self.resolve_user_id(telegram_user_id)
+        if nymeria_user_id is None:
+            try:
+                await update.message.reply_text(
+                    "This Telegram account isn't linked to a Nymeria user yet.\n"
+                    "Ask the admin to run: "
+                    f"`python run.py users link-platform <email> telegram {telegram_user_id}`"
+                )
+            except Exception:
+                pass
+            return
 
         text = (update.message.text or update.message.caption or "").strip()
         attachments, errors = await self._collect_attachments(update, context)
@@ -2175,7 +2213,7 @@ class NymeriaTelegramBot:
             chat_id=chat_id,
             message=text,
             thread_id=thread_id,
-            user_id=make_user_id(user_id),
+            user_id=nymeria_user_id,
             context=context,
             attachments=attachments or None,
         )
