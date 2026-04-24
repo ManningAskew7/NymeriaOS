@@ -3627,7 +3627,8 @@ class NymeriaAgent:
                                     for block in msg.content:
                                         if not isinstance(block, dict):
                                             if isinstance(block, str) and block:
-                                                yield {"type": "thinking", "content": block}
+                                                final_response_parts.append(block)
+                                                yield {"type": "response", "content": block}
                                             continue
                                         block_type = block.get("type")
                                         if block_type == "thinking":
@@ -3640,6 +3641,7 @@ class NymeriaAgent:
                                         elif block_type in ("text", "output_text"):
                                             text = block.get("text", "")
                                             if text:
+                                                final_response_parts.append(text)
                                                 yield {"type": "response", "content": text}
                                         elif block_type in ("tool_use", "function_call", "custom_tool_call"):
                                             tool_id = block.get("id", "")
@@ -3675,6 +3677,7 @@ class NymeriaAgent:
                                         if thinking_text:
                                             yield {"type": "thinking", "content": thinking_text}
                                     if preamble_text:
+                                        final_response_parts.append(preamble_text)
                                         yield {"type": "response", "content": preamble_text}
                                     for tool_call in msg.tool_calls:
                                         tool_id = tool_call.get("id")
@@ -4202,6 +4205,10 @@ class NymeriaAgent:
                                     # Extended thinking (Anthropic native): typed blocks
                                     for block in content:
                                         if not isinstance(block, dict):
+                                            if isinstance(block, str) and block:
+                                                streamed_text_in_current_llm_call = True
+                                                final_response_parts.append(block)
+                                                yield {"type": "response", "content": block}
                                             continue
                                         block_type = block.get("type")
                                         if block_type == "thinking":
@@ -4233,11 +4240,16 @@ class NymeriaAgent:
                                     yield {"type": "response", "content": content}
                                 elif isinstance(content, list):
                                     for block in content:
-                                        if isinstance(block, dict) and block.get("type") == "reasoning":
+                                        if not isinstance(block, dict):
+                                            if isinstance(block, str) and block:
+                                                final_response_parts.append(block)
+                                                yield {"type": "response", "content": block}
+                                            continue
+                                        if block.get("type") == "reasoning":
                                             for text in _extract_reasoning_text_from_block(block):
                                                 if should_emit_openai_reasoning(text):
                                                     yield {"type": "thinking", "content": text}
-                                        elif isinstance(block, dict) and block.get("type") in ("text", "output_text"):
+                                        elif block.get("type") in ("text", "output_text"):
                                             text = block.get("text", "")
                                             if text:
                                                 final_response_parts.append(text)
@@ -4665,7 +4677,7 @@ class NymeriaAgent:
                                 if not isinstance(block, dict):
                                     if isinstance(block, str) and block:
                                         current_turn["steps"].append({
-                                            "type": "thinking",
+                                            "type": "response",
                                             "content": block,
                                         })
                                     continue
