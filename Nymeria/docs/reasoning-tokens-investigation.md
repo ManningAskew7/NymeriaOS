@@ -1,7 +1,11 @@
 # Reasoning Token Streaming: Investigation & Findings
 
+> **STATUS: RESOLVED (2026-04-24).** The drop described below has been fixed. See [reasoning-streaming.md](reasoning-streaming.md) for the current implementation, pipeline diagram, and debugging recipes. This document is retained as a historical record of the investigation.
+>
+> Summary of the fix: a thin `ChatOpenAIWithReasoning` subclass in `nymeria/vendor/react_agent/providers.py` overrides `_convert_chunk_to_generation_chunk` to rescue both `delta.reasoning_content` (CLIProxy Codex, DeepSeek, Qwen) and `delta.reasoning` (OpenRouter) into `additional_kwargs["reasoning_content"]`. The agent handler in `core/agent.py` then emits a `thinking` SSE event, which the existing frontend dropdown renders. No frontend change was required.
+
 > **Date:** 2026-02-08
-> **Status:** Documented for future reference — no code changes made
+> **Original status:** Documented for future reference — no code changes made
 > **Context:** Extended Thinking enabled via OpenRouter, tested with `anthropic/claude-sonnet-4.5` and `qwen/qwen3-coder-next`
 
 ## Summary

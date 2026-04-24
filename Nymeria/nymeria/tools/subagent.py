@@ -11,17 +11,17 @@ logger = logging.getLogger(__name__)
 @tool
 def reload_all() -> str:
     """
-    Reload all tools and trigger sources.
+    Reload all tools, skills, and trigger sources.
 
-    Use this after making manual changes to tool files or after
-    self-modify tools have created/modified code. This reloads all Python modules
-    and rebuilds graphs.
+    Use this after making manual changes to tool files, creating/editing skills,
+    or after self-modify tools have created/modified code. This rescans skill
+    directories, reloads all Python tool modules, and rebuilds graphs.
 
     NOTE: Due to how LangGraph works, newly created tools are NOT available
     in the same conversation turn. They will work on the next user message.
 
     Returns:
-        Number of tools and trigger sources loaded
+        Number of tools, skills, and trigger sources loaded
     """
     logger.info("reload_all called")
 
@@ -31,6 +31,17 @@ def reload_all() -> str:
         agent = get_current_agent()
         if agent is None:
             return "[Error]: No active agent found. Cannot reload."
+
+        # Reload skills BEFORE tools so the graph rebuild picks up new/changed skills
+        skill_count = 0
+        if hasattr(agent, "skill_manager") and agent.skill_manager is not None:
+            sm = agent.skill_manager
+            sm.reload()
+            with sm._lock:
+                skill_count = (
+                    len(sm._bundled) + len(sm._global)
+                    + sum(len(v) for v in sm._per_user.values())
+                )
 
         # reload_tools() handles everything: tool modules, agents, agent tools, graphs
         tool_names = agent.reload_tools()
@@ -44,7 +55,8 @@ def reload_all() -> str:
             logger.warning(f"Trigger source reload failed: {e}")
 
         return (
-            f"[Success]: Reloaded {len(tool_names)} tools, {source_count} trigger source(s).\n"
+            f"[Success]: Reloaded {len(tool_names)} tools, {skill_count} skill(s) indexed, "
+            f"{source_count} trigger source(s).\n"
             f"New tools will be available on the next message."
         )
     except Exception as e:
