@@ -1566,6 +1566,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         extended_thinking: Optional[bool] = None
         reasoning_effort: Optional[str] = None
         use_model_defaults: Optional[bool] = None
+        openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
         base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
         api_key: Optional[str] = None  # per-thread key; None = inherit env/global
 

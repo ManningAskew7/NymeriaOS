@@ -290,6 +290,29 @@ def _classify_autonomous_source(text: str) -> str:
     return "trigger"
 
 
+def _extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
+    """Extract plaintext reasoning summary from a Responses API content block."""
+    parts: List[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            parts.append(value)
+
+    add(block.get("reasoning"))
+
+    summary = block.get("summary")
+    if isinstance(summary, str):
+        add(summary)
+    elif isinstance(summary, list):
+        for part in summary:
+            if isinstance(part, str):
+                add(part)
+            elif isinstance(part, dict):
+                add(part.get("text") or part.get("content") or part.get("summary"))
+
+    return parts
+
+
 def _extract_content_parts(content) -> tuple:
     """Extract text and thinking from AIMessage.content.
 
@@ -308,16 +331,70 @@ def _extract_content_parts(content) -> tuple:
         for block in content:
             if isinstance(block, dict):
                 block_type = block.get("type")
-                if block_type == "text":
+                if block_type in ("text", "output_text"):
                     text_parts.append(block.get("text", ""))
                 elif block_type == "thinking":
                     thinking_parts.append(block.get("thinking", ""))
+                elif block_type == "reasoning":
+                    thinking_parts.extend(_extract_reasoning_text_from_block(block))
                 # Skip tool_use (handled via msg.tool_calls),
                 # redacted_thinking, signature, etc.
             elif isinstance(block, str):
                 text_parts.append(block)
         return "\n".join(text_parts), thinking_parts
     return str(content), []
+
+
+def _extract_reasoning_parts(msg) -> List[str]:
+    """Extract OpenAI-compatible reasoning saved on AIMessage metadata."""
+    additional_kwargs = getattr(msg, "additional_kwargs", None) or {}
+    parts: List[str] = []
+    seen: set[str] = set()
+
+    def add_text(value: Any) -> None:
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, dict):
+            summary = value.get("summary")
+            if isinstance(summary, list):
+                for item in summary:
+                    add_text(item)
+                return
+            text = (
+                value.get("text")
+                or value.get("content")
+                or summary
+                or value.get("reasoning")
+            )
+        elif isinstance(value, list):
+            for item in value:
+                add_text(item)
+            return
+        else:
+            text = None
+
+        if isinstance(text, str) and text and text not in seen:
+            parts.append(text)
+            seen.add(text)
+
+    for key in ("reasoning_content", "reasoning"):
+        value = additional_kwargs.get(key)
+        if isinstance(value, list):
+            for item in value:
+                add_text(item)
+        else:
+            add_text(value)
+
+    return parts
+
+
+def _thinking_steps(thinking_blocks: List[str]) -> List[Dict[str, str]]:
+    """Format thinking strings as frontend MessageStep entries."""
+    return [
+        {"type": "thinking", "content": thinking_text}
+        for thinking_text in thinking_blocks
+        if thinking_text
+    ]
 
 
 # Global reference to the current agent instance (for tools that need to trigger reload)
@@ -2129,6 +2206,7 @@ class NymeriaAgent:
             presence_penalty=presence_penalty,
             reasoning_effort=reasoning_effort,
             extended_thinking=extended_thinking,
+            openai_api_mode=tc.openai_api_mode if tc else None,
         )
 
     def _get_callable_thread_tools(self, tc) -> List[BaseTool]:
@@ -3556,14 +3634,26 @@ class NymeriaAgent:
                                             text = block.get("thinking", "")
                                             if text:
                                                 yield {"type": "thinking", "content": text}
-                                        elif block_type == "text":
+                                        elif block_type == "reasoning":
+                                            for text in _extract_reasoning_text_from_block(block):
+                                                yield {"type": "thinking", "content": text}
+                                        elif block_type in ("text", "output_text"):
                                             text = block.get("text", "")
                                             if text:
                                                 yield {"type": "response", "content": text}
-                                        elif block_type == "tool_use":
+                                        elif block_type in ("tool_use", "function_call", "custom_tool_call"):
                                             tool_id = block.get("id", "")
+                                            if block_type != "tool_use":
+                                                tool_id = block.get("call_id", tool_id)
                                             tool_name = block.get("name", "")
                                             tool_args = block.get("input", {})
+                                            if not tool_args:
+                                                tool_args = block.get("arguments", {})
+                                            if isinstance(tool_args, str):
+                                                try:
+                                                    tool_args = json.loads(tool_args)
+                                                except json.JSONDecodeError:
+                                                    tool_args = {"arguments": tool_args}
                                             if tool_name and tool_id:
                                                 pending_tool_calls[tool_id] = {
                                                     "name": tool_name,
@@ -4014,7 +4104,16 @@ class NymeriaAgent:
                 """
                 emitted_tool_starts: set = set()
                 emitted_tool_ends: set = set()
+                emitted_openai_reasoning_chunks: set = set()
                 streamed_text_in_current_llm_call = False
+
+                def should_emit_openai_reasoning(text: Any) -> bool:
+                    if not isinstance(text, str) or not text:
+                        return False
+                    if text in emitted_openai_reasoning_chunks:
+                        return False
+                    emitted_openai_reasoning_chunks.add(text)
+                    return True
 
                 async for event in graph_obj.astream_events(
                     in_state, config=config, version="v2"
@@ -4032,6 +4131,7 @@ class NymeriaAgent:
 
                     if event_type == "on_chat_model_start":
                         streamed_text_in_current_llm_call = False
+                        emitted_openai_reasoning_chunks.clear()
 
                     elif event_type == "on_tool_start":
                         run_id = event.get("run_id")
@@ -4084,29 +4184,44 @@ class NymeriaAgent:
 
                     elif event_type == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
-                        if chunk and hasattr(chunk, "content") and chunk.content:
-                            content = chunk.content
+                        if chunk:
+                            # OpenAI-compatible reasoning summaries (gpt-5.x via
+                            # CLIProxy Codex, DeepSeek-R1/Qwen via OpenRouter).
+                            # ChatOpenAIWithReasoning stashes plaintext deltas
+                            # into additional_kwargs because langchain-openai
+                            # drops the `reasoning_content` delta field by design.
+                            extras = getattr(chunk, "additional_kwargs", None) or {}
+                            reasoning = extras.get("reasoning_content")
+                            if should_emit_openai_reasoning(reasoning):
+                                yield {"type": "thinking", "content": reasoning}
 
-                            if isinstance(content, list):
-                                # Extended thinking (Anthropic native): typed blocks
-                                for block in content:
-                                    if not isinstance(block, dict):
-                                        continue
-                                    block_type = block.get("type")
-                                    if block_type == "thinking":
-                                        text = block.get("thinking", "")
-                                        if text:
-                                            yield {"type": "thinking", "content": text}
-                                    elif block_type == "text":
-                                        text = block.get("text", "")
-                                        if text:
-                                            streamed_text_in_current_llm_call = True
-                                            final_response_parts.append(text)
-                                            yield {"type": "response", "content": text}
-                            elif isinstance(content, str):
-                                streamed_text_in_current_llm_call = True
-                                final_response_parts.append(content)
-                                yield {"type": "response", "content": content}
+                            if hasattr(chunk, "content") and chunk.content:
+                                content = chunk.content
+
+                                if isinstance(content, list):
+                                    # Extended thinking (Anthropic native): typed blocks
+                                    for block in content:
+                                        if not isinstance(block, dict):
+                                            continue
+                                        block_type = block.get("type")
+                                        if block_type == "thinking":
+                                            text = block.get("thinking", "")
+                                            if text:
+                                                yield {"type": "thinking", "content": text}
+                                        elif block_type == "reasoning":
+                                            for text in _extract_reasoning_text_from_block(block):
+                                                if should_emit_openai_reasoning(text):
+                                                    yield {"type": "thinking", "content": text}
+                                        elif block_type in ("text", "output_text"):
+                                            text = block.get("text", "")
+                                            if text:
+                                                streamed_text_in_current_llm_call = True
+                                                final_response_parts.append(text)
+                                                yield {"type": "response", "content": text}
+                                elif isinstance(content, str):
+                                    streamed_text_in_current_llm_call = True
+                                    final_response_parts.append(content)
+                                    yield {"type": "response", "content": content}
 
                     elif event_type == "on_chat_model_end":
                         if not streamed_text_in_current_llm_call:
@@ -4118,7 +4233,11 @@ class NymeriaAgent:
                                     yield {"type": "response", "content": content}
                                 elif isinstance(content, list):
                                     for block in content:
-                                        if isinstance(block, dict) and block.get("type") == "text":
+                                        if isinstance(block, dict) and block.get("type") == "reasoning":
+                                            for text in _extract_reasoning_text_from_block(block):
+                                                if should_emit_openai_reasoning(text):
+                                                    yield {"type": "thinking", "content": text}
+                                        elif isinstance(block, dict) and block.get("type") in ("text", "output_text"):
                                             text = block.get("text", "")
                                             if text:
                                                 final_response_parts.append(text)
@@ -4447,7 +4566,7 @@ class NymeriaAgent:
                             text_parts = []
                             for part in msg.content:
                                 if isinstance(part, dict):
-                                    if part.get("type") == "text":
+                                    if part.get("type") in ("text", "output_text"):
                                         text_parts.append(part.get("text", ""))
                                     elif part.get("type") == "image_url":
                                         data_url = part.get("image_url", {}).get("url", "")
@@ -4510,6 +4629,7 @@ class NymeriaAgent:
 
                 elif isinstance(msg, AIMessage):
                     text_content, thinking_blocks = _extract_content_parts(msg.content)
+                    reasoning_blocks = _extract_reasoning_parts(msg)
                     has_tool_calls = bool(msg.tool_calls)
 
                     if has_tool_calls:
@@ -4531,6 +4651,7 @@ class NymeriaAgent:
 
                         # Build steps preserving content block order
                         # (supports interleaved thinking between tool calls)
+                        current_turn["steps"].extend(_thinking_steps(reasoning_blocks))
                         if isinstance(msg.content, list):
                             # Build lookup from msg.tool_calls for args (content blocks
                             # may have empty input fields, e.g. with CLIProxyAPI)
@@ -4556,17 +4677,30 @@ class NymeriaAgent:
                                             "type": "thinking",
                                             "content": thinking_text,
                                         })
-                                elif block_type == "text":
+                                elif block_type == "reasoning":
+                                    current_turn["steps"].extend(
+                                        _thinking_steps(_extract_reasoning_text_from_block(block))
+                                    )
+                                elif block_type in ("text", "output_text"):
                                     text = block.get("text", "")
                                     if text:
                                         current_turn["steps"].append({
                                             "type": "response",
                                             "content": text,
                                         })
-                                elif block_type == "tool_use":
+                                elif block_type in ("tool_use", "function_call", "custom_tool_call"):
                                     tool_call_id = block.get("id", "")
+                                    if block_type != "tool_use":
+                                        tool_call_id = block.get("call_id", tool_call_id)
                                     # Prefer content block input, fall back to tool_calls args
                                     block_input = block.get("input", {})
+                                    if not block_input:
+                                        block_input = block.get("arguments", {})
+                                    if isinstance(block_input, str):
+                                        try:
+                                            block_input = json.loads(block_input)
+                                        except json.JSONDecodeError:
+                                            block_input = {"arguments": block_input}
                                     if not block_input and tool_call_id in tc_args_by_id:
                                         block_input = tc_args_by_id[tool_call_id]
                                     step = {
@@ -4611,12 +4745,9 @@ class NymeriaAgent:
                         # AIMessage without tool_calls -> complete turn or standalone
                         if current_turn is not None:
                             # Add any thinking blocks from this final message
-                            for thinking_text in thinking_blocks:
-                                if thinking_text:
-                                    current_turn["steps"].append({
-                                        "type": "thinking",
-                                        "content": thinking_text,
-                                    })
+                            current_turn["steps"].extend(
+                                _thinking_steps(reasoning_blocks + thinking_blocks)
+                            )
 
                             # Add final response text as a step so it renders
                             # in the step loop (preamble response steps cause
@@ -4658,11 +4789,18 @@ class NymeriaAgent:
                                 entry["tool_reload_info"] = _pending_reload_info
                                 _pending_reload_info = None
                             # Add thinking as steps if present
-                            if thinking_blocks:
-                                entry["steps"] = [
-                                    {"type": "thinking", "content": t}
-                                    for t in thinking_blocks if t
-                                ]
+                            all_thinking_blocks = reasoning_blocks + thinking_blocks
+                            if all_thinking_blocks:
+                                steps = _thinking_steps(all_thinking_blocks)
+                                if text_content:
+                                    steps.append({
+                                        "type": "response",
+                                        "content": text_content,
+                                    })
+                                entry["steps"] = steps
+                                entry["intermediate_content"] = "\n".join(
+                                    s["content"] for s in steps if s["type"] == "thinking"
+                                ) or None
                             standalone_ts = timestamp_map.get(msg.id) if msg.id else None
                             if standalone_ts:
                                 entry["timestamp"] = standalone_ts

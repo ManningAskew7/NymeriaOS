@@ -7,6 +7,7 @@
   import { chatStore } from '$lib/stores/chat.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
+  import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { api } from '$lib/services/api.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Button from '$lib/components/common/Button.svelte';
@@ -47,11 +48,14 @@
   // Form state — Model
   let llmProvider = $state('');
   let llmModel = $state('');
+  let llmBaseUrl = $state('');
+  let llmApiKey = $state('');
   let llmTemperature = $state('');
   let llmMaxTokens = $state('');
   let llmExtendedThinking = $state<'default' | 'true' | 'false'>('default');
   let llmReasoningEffort = $state('');
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>('default');
+  let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>('default');
 
   // Form state — Tools
   let disabledTools = $state<Set<string>>(new Set());
@@ -65,6 +69,10 @@
 
   // Model metadata (reactive)
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
+
+  function getEffectiveProvider(): string {
+    return llmProvider || serverSettingsStore.provider || '';
+  }
 
   // Effective tool count
   const effectiveToolCount = $derived(() => {
@@ -184,6 +192,7 @@
         if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) unifiedToolsStore.loadTools();
         if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
         if (!modelsStore.loaded && !modelsStore.loading) modelsStore.loadModels();
+        if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
         if (!mcpServersStore.loaded && !mcpServersStore.loading) mcpServersStore.load();
         if (Object.keys(triggersStore.sources).length === 0) triggersStore.loadSources();
@@ -216,6 +225,8 @@
     callableDescription = cfg?.callableDescription ?? '';
     llmProvider = cfg?.llmConfig?.provider ?? '';
     llmModel = cfg?.llmConfig?.model ?? '';
+    llmBaseUrl = cfg?.llmConfig?.base_url ?? '';
+    llmApiKey = cfg?.llmConfig?.api_key ?? '';
     llmTemperature = cfg?.llmConfig?.temperature != null ? String(cfg.llmConfig.temperature) : '';
     llmMaxTokens = cfg?.llmConfig?.max_tokens != null ? String(cfg.llmConfig.max_tokens) : '';
     llmExtendedThinking = cfg?.llmConfig?.extended_thinking != null
@@ -225,6 +236,7 @@
     llmUseModelDefaults = cfg?.llmConfig?.use_model_defaults != null
       ? (String(cfg.llmConfig.use_model_defaults) as 'true' | 'false')
       : 'default';
+    llmOpenAiApiMode = cfg?.llmConfig?.openai_api_mode ?? 'default';
 
     // Tools
     if (cfg?.hasCustomizations) {
@@ -255,6 +267,8 @@
     const origEnabled = new Set(orig?.enabledTools ?? []);
     const origProvider = orig?.llmConfig?.provider ?? '';
     const origModel = orig?.llmConfig?.model ?? '';
+    const origBaseUrl = orig?.llmConfig?.base_url ?? '';
+    const origApiKey = orig?.llmConfig?.api_key ?? '';
     const origTemp = orig?.llmConfig?.temperature != null ? String(orig.llmConfig.temperature) : '';
     const origMaxTokens = orig?.llmConfig?.max_tokens != null ? String(orig.llmConfig.max_tokens) : '';
     const origExtThinking = orig?.llmConfig?.extended_thinking != null
@@ -262,6 +276,7 @@
     const origReasoning = orig?.llmConfig?.reasoning_effort ?? '';
     const origUseDefaults = orig?.llmConfig?.use_model_defaults != null
       ? String(orig.llmConfig.use_model_defaults) : 'default';
+    const origOpenAiApiMode = orig?.llmConfig?.openai_api_mode ?? 'default';
     const origSystemPrompt = orig?.systemPrompt ?? '';
     const origCallable = orig?.callable ?? false;
     const origCallableName = orig?.callableName ?? '';
@@ -280,11 +295,14 @@
     if (callableDescription !== origCallableDesc) return true;
     if (llmProvider !== origProvider) return true;
     if (llmModel !== origModel) return true;
+    if (llmBaseUrl !== origBaseUrl) return true;
+    if (llmApiKey !== origApiKey) return true;
     if (llmTemperature !== origTemp) return true;
     if (llmMaxTokens !== origMaxTokens) return true;
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseDefaults) return true;
+    if (llmOpenAiApiMode !== origOpenAiApiMode) return true;
     if (disabledTools.size !== origDisabled.size) return true;
     for (const t of disabledTools) { if (!origDisabled.has(t)) return true; }
     if (enabledTools.size !== origEnabled.size) return true;
@@ -334,12 +352,15 @@
 
       // LLM config
       const hasLlm = llmProvider || llmModel || llmTemperature || llmMaxTokens ||
+        llmBaseUrl || llmApiKey ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default';
+        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default';
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
         llm.provider = llmProvider || null;
+        llm.base_url = getEffectiveProvider() === 'openai' ? (llmBaseUrl || null) : null;
+        llm.api_key = getEffectiveProvider() === 'openai' ? (llmApiKey || null) : null;
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
@@ -352,6 +373,9 @@
         } else {
           llm.use_model_defaults = null;
         }
+        llm.openai_api_mode = getEffectiveProvider() === 'openai' && llmOpenAiApiMode !== 'default'
+          ? llmOpenAiApiMode
+          : null;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -554,6 +578,42 @@
             <option value="openai">OpenAI</option>
           </select>
         </div>
+
+        {#if getEffectiveProvider() === 'openai'}
+          <div class="setting-group">
+            <label class="setting-label" for="llm-openai-api-mode">OpenAI API Mode</label>
+            <select id="llm-openai-api-mode" class="setting-input" bind:value={llmOpenAiApiMode}>
+              <option value="default">Default (chat completions)</option>
+              <option value="chat_completions">Chat Completions</option>
+              <option value="responses">Responses API</option>
+            </select>
+            <p class="hint">Use Responses API for GPT-5.5 sidecar reasoning blocks replayed from the checkpoint.</p>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label" for="llm-base-url">API Base URL</label>
+            <input
+              id="llm-base-url"
+              type="text"
+              class="setting-input"
+              bind:value={llmBaseUrl}
+              placeholder="http://cli-proxy-api-latest:8317/v1"
+            />
+            <p class="hint">OpenAI-compatible endpoint reachable by the Nymeria backend. Leave empty to inherit global settings.</p>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label" for="llm-api-key">API Key</label>
+            <input
+              id="llm-api-key"
+              type="password"
+              class="setting-input"
+              bind:value={llmApiKey}
+              placeholder="Leave empty to inherit global key"
+              autocomplete="off"
+            />
+          </div>
+        {/if}
 
         <div class="setting-group">
           <label class="setting-label">Model</label>

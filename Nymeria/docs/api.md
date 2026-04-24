@@ -114,12 +114,22 @@ Optional query: `include_internal=true` returns system-generated messages (auton
 {
   "thread_id": "abc123",
   "messages": [
-    {"type": "HumanMessage", "content": "Hello"},
-    {"type": "AIMessage", "content": "Hi there!"},
-    {"type": "ToolMessage", "name": "web_search", "content": "..."}
+    {"id": "abc123-1", "role": "user", "content": "Hello"},
+    {
+      "id": "abc123-2",
+      "role": "assistant",
+      "content": "Hi there!",
+      "steps": [
+        {"type": "thinking", "content": "Reasoning summary..."},
+        {"type": "response", "content": "Hi there!"}
+      ],
+      "intermediate_content": "Reasoning summary..."
+    }
   ]
 }
 ```
+
+Assistant `steps` are optional. They appear when a turn has reasoning/thinking, tool calls, or interleaved response chunks. Anthropic typed thinking blocks, OpenAI-compatible `reasoning_content` metadata, and OpenAI Responses `reasoning` summary blocks are returned as `{"type": "thinking"}` steps so desktop and mobile can re-render the same thinking dropdown after history sync.
 
 **Performance note:** latency scales with the checkpoint count for the thread. Compaction prunes pre-compact rows so healthy threads stay under ~100 ms. If you see multi-second latency, check the thread's checkpoint count and the troubleshooting section in [compaction-and-checkpoints.md](./compaction-and-checkpoints.md).
 
@@ -1072,7 +1082,10 @@ Updates thread config. Key fields for callable threads:
 | `enabled_tools` | array | Optional tool names to include |
 | `llm_provider` | string | Override LLM provider |
 | `llm_model` | string | Override model |
+| `llm_config.base_url` | string | Per-thread provider base URL. For CLIProxy sidecars, this is the URL reachable from the Nymeria backend container, e.g. `http://cli-proxy-api-latest:8317/v1`. |
+| `llm_config.api_key` | string | Per-thread provider API key. For CLIProxy sidecars, this is the local sidecar gatekeeper key, not an upstream OpenAI key. |
 | `llm_temperature` | float | Override temperature |
+| `llm_config.openai_api_mode` | string | OpenAI-only API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
 
 **Callable thread naming:** The thread's sidebar title always equals `callable_name`. Renaming the thread via `PATCH /threads/{id}/metadata` automatically updates `callable_name` and rebuilds the tool registry.
 
