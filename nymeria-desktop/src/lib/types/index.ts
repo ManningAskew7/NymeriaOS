@@ -496,6 +496,15 @@ export interface DoneEvent {
 // Theme type
 export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast';
 
+// Identity of the currently connected Nymeria account, returned by GET /me.
+// Drives per-user namespacing of localStorage keys.
+export interface AccountIdentity {
+  id: string;
+  email: string;
+  display_name: string;
+  role: 'user' | 'admin';
+}
+
 // Config types
 export interface AppConfig {
   apiUrl: string;
@@ -503,6 +512,7 @@ export interface AppConfig {
   setupCompleted?: boolean;
   theme?: ThemeName;
   suppressAttachmentWarnings?: boolean;
+  identity?: AccountIdentity | null;
 }
 
 // Saved connection for quick-switching between backends

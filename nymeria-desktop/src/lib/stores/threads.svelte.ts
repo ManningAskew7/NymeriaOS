@@ -1,10 +1,19 @@
 import type { Thread, ThreadPlatform, ThreadFolder, SortMode } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
+import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 
-const STORAGE_KEY = 'nymeria-threads';
-const CURRENT_THREAD_KEY = 'nymeria-current-thread';
-const FOLDERS_KEY = 'nymeria-thread-folders';
-const SORT_MODE_KEY = 'nymeria-thread-sort-mode';
+// localStorage keys are namespaced by the currently-connected user's id
+// (resolved from GET /me). Before identity is known, these fall back to the
+// unscoped legacy names so pre-Step-2 installs keep working. See
+// `config.svelte.ts::scopedKey` for details.
+const STORAGE_KEY_BASE = 'nymeria-threads';
+const CURRENT_THREAD_KEY_BASE = 'nymeria-current-thread';
+const FOLDERS_KEY_BASE = 'nymeria-thread-folders';
+const SORT_MODE_KEY_BASE = 'nymeria-thread-sort-mode';
+const STORAGE_KEY = () => scopedKey(STORAGE_KEY_BASE);
+const CURRENT_THREAD_KEY = () => scopedKey(CURRENT_THREAD_KEY_BASE);
+const FOLDERS_KEY = () => scopedKey(FOLDERS_KEY_BASE);
+const SORT_MODE_KEY = () => scopedKey(SORT_MODE_KEY_BASE);
 
 // Guard against concurrent sync calls (e.g. Vite dev mode double-mount)
 let syncInProgress = false;
@@ -12,7 +21,7 @@ let syncInProgress = false;
 function loadCurrentThreadId(threads: Thread[]): string | null {
   if (typeof localStorage === 'undefined') return null;
   try {
-    const id = localStorage.getItem(CURRENT_THREAD_KEY);
+    const id = localStorage.getItem(CURRENT_THREAD_KEY());
     if (id && threads.some((t) => t.id === id)) return id;
   } catch (e) {
     console.error('Failed to load current thread ID:', e);
@@ -26,7 +35,7 @@ function loadThreads(): Thread[] {
   if (typeof localStorage === 'undefined') return [];
 
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STORAGE_KEY());
     if (stored) {
       const threads = JSON.parse(stored);
       return threads.map((t: Thread) => ({
@@ -47,7 +56,7 @@ function saveThreads(threads: Thread[]): void {
   if (typeof localStorage === 'undefined') return;
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
+    localStorage.setItem(STORAGE_KEY(), JSON.stringify(threads));
   } catch (e) {
     console.error('Failed to save threads:', e);
   }
@@ -56,7 +65,7 @@ function saveThreads(threads: Thread[]): void {
 function loadFolders(): ThreadFolder[] {
   if (typeof localStorage === 'undefined') return [];
   try {
-    const stored = localStorage.getItem(FOLDERS_KEY);
+    const stored = localStorage.getItem(FOLDERS_KEY());
     if (stored) {
       const folders = JSON.parse(stored);
       return folders.map((f: ThreadFolder) => ({
@@ -73,7 +82,7 @@ function loadFolders(): ThreadFolder[] {
 function saveFolders(folders: ThreadFolder[]): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+    localStorage.setItem(FOLDERS_KEY(), JSON.stringify(folders));
   } catch (e) {
     console.error('Failed to save folders:', e);
   }
@@ -82,7 +91,7 @@ function saveFolders(folders: ThreadFolder[]): void {
 function loadSortMode(): SortMode {
   if (typeof localStorage === 'undefined') return 'recent';
   try {
-    const stored = localStorage.getItem(SORT_MODE_KEY);
+    const stored = localStorage.getItem(SORT_MODE_KEY());
     if (stored && ['recent', 'oldest', 'alphabetical', 'tasks', 'active'].includes(stored)) {
       return stored as SortMode;
     }
@@ -95,7 +104,7 @@ function loadSortMode(): SortMode {
 function saveSortMode(mode: SortMode): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(SORT_MODE_KEY, mode);
+    localStorage.setItem(SORT_MODE_KEY(), mode);
   } catch (e) {
     console.error('Failed to save sort mode:', e);
   }
@@ -144,6 +153,16 @@ function createThreadsStore() {
   let folders = $state<ThreadFolder[]>(loadFolders());
   let sortMode = $state<SortMode>(loadSortMode());
 
+  // When the connected user changes (GET /me returns a different id), all
+  // four localStorage keys switch to the new user's namespace. Reload from
+  // the new scope so we don't keep the previous user's data in memory.
+  registerIdentityReloadHook(() => {
+    threads = loadThreads();
+    currentThreadId = loadCurrentThreadId(threads);
+    folders = loadFolders();
+    sortMode = loadSortMode();
+  });
+
   /**
    * Ensure any spawned- threads that aren't in a folder get filed into
    * a "Spawned by Nymeria" folder (creating it lazily). Called after
@@ -190,12 +209,12 @@ function createThreadsStore() {
         const platform = thread?.platform || detectPlatform(id);
         // Only persist desktop and callable threads — not trigger/discord/telegram/slack
         if (platform !== 'desktop' && platform !== 'callable') {
-          localStorage.removeItem(CURRENT_THREAD_KEY);
+          localStorage.removeItem(CURRENT_THREAD_KEY());
           return;
         }
-        localStorage.setItem(CURRENT_THREAD_KEY, id);
+        localStorage.setItem(CURRENT_THREAD_KEY(), id);
       } else {
-        localStorage.removeItem(CURRENT_THREAD_KEY);
+        localStorage.removeItem(CURRENT_THREAD_KEY());
       }
     } catch (e) {
       console.error('Failed to save current thread ID:', e);

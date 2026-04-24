@@ -1,4 +1,7 @@
-const STORAGE_KEY = 'nymeria-ui';
+import { scopedKey, registerIdentityReloadHook } from './config.svelte';
+
+const STORAGE_KEY_BASE = 'nymeria-ui';
+const STORAGE_KEY = () => scopedKey(STORAGE_KEY_BASE);
 
 interface UIState {
   sidebarCollapsed: boolean;
@@ -11,7 +14,7 @@ function loadUIState(): UIState {
   }
 
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STORAGE_KEY());
     if (stored) {
       const state = JSON.parse(stored);
       return {
@@ -30,7 +33,7 @@ function saveUIState(state: UIState): void {
   if (typeof localStorage === 'undefined') return;
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY(), JSON.stringify(state));
   } catch (e) {
     console.error('Failed to save UI state:', e);
   }
@@ -45,6 +48,14 @@ function createUIStore() {
 
   let sidebarCollapsed = $state(isOutlookMode ? true : initial.sidebarCollapsed);
   let rightPanelCollapsed = $state(isOutlookMode ? true : initial.rightPanelCollapsed);
+
+  // Reload UI prefs when the connected user changes — different users likely
+  // have different sidebar/panel preferences.
+  registerIdentityReloadHook(() => {
+    const next = loadUIState();
+    sidebarCollapsed = isOutlookMode ? true : next.sidebarCollapsed;
+    rightPanelCollapsed = isOutlookMode ? true : next.rightPanelCollapsed;
+  });
 
   function save() {
     saveUIState({ sidebarCollapsed, rightPanelCollapsed });
