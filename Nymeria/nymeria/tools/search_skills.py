@@ -272,6 +272,12 @@ def install_skill(
         return f"[error] {type(e).__name__}: {e}"
 
     agent.skill_manager.reload()
+    with agent._graph_cache_lock:
+        agent._user_graphs.clear()
+    try:
+        agent._async_user_graphs.clear()
+    except Exception:
+        pass
 
     details: List[str] = [
         f"Installed skill {skill.name!r} from {source} into {scope} scope.",

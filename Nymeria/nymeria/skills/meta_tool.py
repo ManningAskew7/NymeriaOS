@@ -150,23 +150,27 @@ def create_skill_meta_tool(
         Args:
             name: The exact name of one of the skills in <available_skills>.
         """
-        # Only skills active at graph-build time are reachable. This prevents
-        # a skill outside the thread's allowlist from being loaded via Skill().
-        if name not in set(active_names):
+        # Re-fetch from disk when possible so SKILL.md edits are live.
+        skill: Optional[Skill] = None
+        if name in set(active_names):
+            if skill_manager is not None:
+                skill = skill_manager.get(name, user_id=user_id)
+            if skill is None:
+                skill = snapshot_by_name.get(name)
+        elif skill_manager is not None:
+            # Not in the graph-build snapshot — check if installed/enabled
+            # after a mid-turn reload_all (skills created or enabled since
+            # the graph was built).
+            skill = skill_manager.get(name, user_id=user_id)
+            if skill is not None:
+                logger.info("skill resolved dynamically (post-reload): %s", skill.name)
+
+        if skill is None:
             available = ", ".join(sorted(active_names)) or "(none)"
             return (
                 f"[skill not found] No active skill named {name!r} on this thread. "
                 f"Active skills: {available}"
             )
-
-        # Re-fetch from disk when possible so SKILL.md edits are live.
-        skill: Optional[Skill] = None
-        if skill_manager is not None:
-            skill = skill_manager.get(name, user_id=user_id)
-        if skill is None:
-            skill = snapshot_by_name.get(name)
-        if skill is None:
-            return f"[skill not found] {name!r} was removed from disk since this session began."
 
         logger.info("skill activated: %s (scope=%s)", skill.name, skill.scope)
         body = _render_skill_body(skill)
