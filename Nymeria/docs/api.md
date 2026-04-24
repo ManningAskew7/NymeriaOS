@@ -7,10 +7,13 @@ Base URL: `http://localhost:8000`
 Most endpoints require Bearer token authentication:
 
 ```
-Authorization: Bearer <NYMERIA_API_KEY>
+Authorization: Bearer <token>
 ```
 
-The API key is configured via the `NYMERIA_API_KEY` environment variable.
+Two token types are accepted during the multi-user rollout:
+
+1. **Per-user account tokens** (`nym_<32-url-safe>`). Created via `python run.py users add` — see `docs/accounts.md`. Resolve to the user they were issued to.
+2. **Legacy shared key** (`NYMERIA_API_KEY`). Resolves to the bootstrap admin (`default`). Dropped in Step 3 of the multi-user rollout.
 
 Exceptions without Bearer auth:
 - `GET /health`
@@ -35,6 +38,59 @@ No authentication required.
   "version": "1.0.0"
 }
 ```
+
+---
+
+### Who Am I
+
+```http
+GET /me
+Authorization: Bearer <token>
+```
+
+Returns the account identity the token resolves to. Used by frontends to
+discover their own `user_id` for localStorage namespacing. Works with both
+per-user account tokens and the legacy `NYMERIA_API_KEY` (which resolves to
+the bootstrap admin `default`).
+
+**Response:**
+```json
+{
+  "id": "default",
+  "email": "owner@localhost",
+  "display_name": "Owner",
+  "role": "admin"
+}
+```
+
+Returns 401 for missing/invalid/revoked tokens.
+
+---
+
+### Resolve Platform Identity
+
+```http
+GET /platform/resolve?provider=<provider>&provider_user_id=<id>
+Authorization: Bearer <admin-token>
+```
+
+Admin-only. Resolves a Discord/Telegram/Twitch user ID to its linked Nymeria
+`user_id` via the `platform_identities` table. Used by the bot thin clients
+(Discord/Telegram/Twitch) together with `X-Nymeria-Act-As` to route per-user
+traffic without holding raw per-user tokens.
+
+| Field | Values |
+|---|---|
+| `provider` | `discord`, `telegram`, `twitch` |
+| `provider_user_id` | Platform-native user ID (string) |
+
+**Responses:**
+- `200` — `{"user_id": "bob"}`
+- `400` — `{"detail": "Unknown provider"}`
+- `403` — `{"detail": "Admin only"}` (non-admin token)
+- `404` — `{"detail": "Not linked"}`
+
+Create mappings with `python run.py users link-platform <email> <provider> <provider_user_id>`.
 
 ---
 

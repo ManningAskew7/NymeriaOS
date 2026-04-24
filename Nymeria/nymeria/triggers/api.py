@@ -551,7 +551,12 @@ async def verify_api_key(
     """
     Verify API key from Authorization header.
 
-    Expected format: "Bearer <api_key>"
+    Accepts EITHER the legacy ``NYMERIA_API_KEY`` (single shared secret) or any
+    valid per-user account token (``nym_...``). This lets Step 2 endpoints and
+    existing routes coexist during the multi-user rollout; Step 3 replaces
+    this with :func:`require_user` and drops the legacy key.
+
+    Expected format: ``Authorization: Bearer <token_or_legacy_key>``
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
@@ -562,11 +567,95 @@ async def verify_api_key(
             status_code=401, detail="Invalid Authorization header format. Use: Bearer <api_key>"
         )
 
-    api_key = parts[1]
-    if api_key != settings.nymeria_api_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    presented = parts[1]
 
-    return True
+    # Path 1: legacy shared key.
+    if settings.nymeria_api_key and presented == settings.nymeria_api_key:
+        return True
+
+    # Path 2: per-user account token (Step 1 bootstrap onwards).
+    try:
+        agent = get_agent()
+    except RuntimeError:
+        agent = None
+    if agent is not None and agent.accounts_repo.verify_token(presented) is not None:
+        return True
+
+    raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def _extract_bearer_token(authorization: Optional[str]) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=401, detail="Invalid Authorization header format. Use: Bearer <api_key>"
+        )
+    return parts[1]
+
+
+async def resolve_authenticated_user(
+    authorization: Optional[str] = Header(None),
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Resolve the caller to an :class:`AuthenticatedUser`.
+
+    Order of resolution:
+      1. Account token (``nym_...``) → the user it was issued to.
+      2. Legacy ``NYMERIA_API_KEY`` → the bootstrap admin (``default``). This
+         keeps existing clients working until the Step 3 cutover lands.
+
+    Used by the new ``/me`` and ``/platform/resolve`` endpoints so the
+    frontend can discover identity for localStorage namespacing regardless of
+    which auth mode the install is currently using.
+    """
+    presented = _extract_bearer_token(authorization)
+
+    try:
+        agent = get_agent()
+    except RuntimeError:
+        agent = None
+
+    if agent is not None:
+        user = agent.accounts_repo.verify_token(presented)
+        if user is not None:
+            return user
+
+    # Legacy key fallback — resolves to the bootstrap admin so legacy
+    # deployments see a consistent identity from /me.
+    if settings.nymeria_api_key and presented == settings.nymeria_api_key:
+        if agent is not None:
+            record = agent.accounts_repo.get_user_by_id("default")
+            if record is not None and not record.disabled:
+                from ..core.accounts import AuthenticatedUser
+                return AuthenticatedUser(
+                    id=record.id,
+                    email=record.email,
+                    display_name=record.display_name,
+                    role=record.role,
+                )
+        # Agent or default user missing — still let the legacy key through so
+        # the caller isn't locked out, but surface a minimal synthesized user.
+        from ..core.accounts import AuthenticatedUser
+        return AuthenticatedUser(
+            id="default",
+            email="owner@localhost",
+            display_name="Owner",
+            role="admin",
+        )
+
+    raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+async def require_admin_user(
+    user=Depends(resolve_authenticated_user),
+):
+    """Same as :func:`resolve_authenticated_user` but rejects non-admins."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user
 
 
 # ============================================================================
@@ -679,6 +768,44 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def health_check():
         """Health check endpoint."""
         return HealthResponse()
+
+    @app.get("/me", tags=["Auth"])
+    async def get_me(user=Depends(resolve_authenticated_user)):
+        """
+        Return the authenticated user's identity.
+
+        Frontends call this on first connect to learn their own ``user_id`` so
+        they can namespace ``localStorage`` keys (``nymeria-<user_id>-*``).
+        Works with both per-user account tokens and the legacy shared
+        ``NYMERIA_API_KEY`` — legacy callers resolve to the bootstrap admin
+        ``default`` so the frontend migration is safe before the Step 3 auth
+        cutover.
+        """
+        return {
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+        }
+
+    @app.get("/platform/resolve", tags=["Auth"])
+    async def platform_resolve(
+        provider: str,
+        provider_user_id: str,
+        _admin=Depends(require_admin_user),
+    ):
+        """
+        Resolve a platform identity (Discord/Telegram/Twitch user ID) to a
+        Nymeria ``user_id``. Admin-only — used by bot thin clients with the
+        service token to route per-user traffic without holding raw per-user
+        tokens.
+        """
+        if provider not in ("discord", "telegram", "twitch"):
+            raise HTTPException(status_code=400, detail="Unknown provider")
+        user_id = get_agent().accounts_repo.resolve_platform(provider, provider_user_id)
+        if user_id is None:
+            raise HTTPException(status_code=404, detail="Not linked")
+        return {"user_id": user_id}
 
     @app.post("/restart", tags=["System"])
     async def restart_server(_: bool = Depends(verify_api_key)):

@@ -137,6 +137,21 @@
       initializeApp();
     });
 
+    // When the window regains focus, re-verify the token — if it was rotated
+    // or revoked server-side, we want to route back to SetupWizard before any
+    // user-visible call 401s.
+    window.addEventListener('focus', () => {
+      if (configStore.isConfigured) {
+        configStore.refreshIdentity().then((id) => {
+          if (id === null && configStore.apiKey) {
+            // Token invalid — clear setup so the SetupWizard shows.
+            console.warn('[Page] Token no longer valid, routing to SetupWizard');
+            configStore.apiKey = '';
+          }
+        });
+      }
+    });
+
     // Return cleanup — SSE disconnect happens via autonomousStore
     return () => {
       console.log('[Page] Cleanup - disconnecting SSE');
@@ -148,9 +163,26 @@
   function initializeApp() {
     // Connect if configured (setupCompleted is redundant now but kept for safety)
     if (configStore.isConfigured) {
-      // Sync thread metadata from backend (server is authoritative for titles/pins).
-      // Runs in background — localStorage provides instant render, backend updates after.
-      threadsStore.syncFromBackend();
+      // Resolve identity FIRST so any subsequent localStorage reads use the
+      // correctly-scoped keys. Fires reload hooks for per-feature stores and
+      // migrates legacy unscoped data on first run. Non-blocking for the
+      // rest of initialization — if identity fetch is slow, stores fall
+      // back to whatever scope is already cached.
+      configStore.refreshIdentity().then((id) => {
+        if (id === null && configStore.apiKey) {
+          console.warn('[Page] /me returned unauthorized; clearing apiKey to route to SetupWizard');
+          configStore.apiKey = '';
+          return;
+        }
+        // Now that identity is settled, sync threads from backend. The
+        // threadsStore reload hook has already re-read localStorage under
+        // the correct scope.
+        threadsStore.syncFromBackend();
+      }).catch(() => {
+        // Network failure — fall through to syncFromBackend anyway; stores
+        // stay in legacy/unscoped mode until next successful /me call.
+        threadsStore.syncFromBackend();
+      });
 
       // Restore last thread's chat history if one was saved
       const initialThreadId = threadsStore.currentThreadId;

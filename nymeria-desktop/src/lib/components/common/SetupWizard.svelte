@@ -77,6 +77,9 @@
     configStore.apiUrl = apiUrl;
     configStore.apiKey = apiKey;
     configStore.completeSetup();
+    // Resolve /me so localStorage namespacing picks up the correct user_id
+    // before the rest of the app starts reading threads/folders.
+    configStore.refreshIdentity();
   }
 
   function canProceed(): boolean {
@@ -158,19 +161,19 @@
           </div>
         </div>
       {:else if currentStep === 3}
-        <!-- Step 3: API Key -->
+        <!-- Step 3: Account Token -->
         <div class="step">
-          <h2>API Key</h2>
-          <p>Enter the API key from your backend .env file (NYMERIA_API_KEY):</p>
+          <h2>Account Token</h2>
+          <p>Paste your personal account token. Create one with <code>python run.py users add &lt;email&gt;</code> on the backend — legacy NYMERIA_API_KEY values are still accepted during rollout.</p>
           <div class="field">
-            <label for="api-key">API Key</label>
+            <label for="api-key">Account Token</label>
             <input
               id="api-key"
               type="password"
               bind:value={apiKey}
-              placeholder="Enter your API key"
+              placeholder="nym_... or legacy NYMERIA_API_KEY"
             />
-            <p class="hint">This authenticates your desktop app with the backend</p>
+            <p class="hint">Identifies which Nymeria account this install connects as</p>
           </div>
 
           <div class="test-section">

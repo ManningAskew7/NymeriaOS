@@ -6,9 +6,12 @@
  * which panel is logically active for header/input bar behavior.
  */
 
+import { scopedKey, registerIdentityReloadHook } from './config.svelte';
+
 export type ActivePanel = 'left' | 'chat' | 'right';
 
-const STORAGE_KEY = 'nymeria-ui-mobile';
+const STORAGE_KEY_BASE = 'nymeria-ui-mobile';
+const STORAGE_KEY = () => scopedKey(STORAGE_KEY_BASE);
 
 interface MobileUIState {
   activePanel: ActivePanel;
@@ -22,7 +25,7 @@ function loadUIState(): MobileUIState {
   }
 
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STORAGE_KEY());
     if (stored) {
       const state = JSON.parse(stored);
       return {
@@ -42,7 +45,7 @@ function saveUIState(state: Pick<MobileUIState, 'activePanel'>): void {
   if (typeof localStorage === 'undefined') return;
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ activePanel: state.activePanel }));
+    localStorage.setItem(STORAGE_KEY(), JSON.stringify({ activePanel: state.activePanel }));
   } catch (e) {
     console.error('Failed to save mobile UI state:', e);
   }
@@ -54,6 +57,12 @@ function createUIStore() {
   let keyboardVisible = $state(false);
   let keyboardHeight = $state(0);
   let scrollContainer = $state<HTMLElement | null>(null);
+
+  // Reload UI prefs when the connected user changes.
+  registerIdentityReloadHook(() => {
+    const next = loadUIState();
+    activePanel = next.activePanel;
+  });
 
   function save() {
     saveUIState({ activePanel });

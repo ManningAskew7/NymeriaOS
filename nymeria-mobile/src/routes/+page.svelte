@@ -79,8 +79,19 @@
       notificationStore.startPolling();
       autonomousStore.connect();
 
-      // Sync threads from backend
-      threadsStore.syncFromBackend();
+      // Resolve identity FIRST so thread sync writes to the correct scoped
+      // localStorage keys. If /me returns unauthorized, clear apiKey so the
+      // SetupWizard shows.
+      configStore.refreshIdentity().then((id) => {
+        if (id === null && configStore.apiKey) {
+          console.warn('[Page] /me returned unauthorized; clearing apiKey');
+          configStore.apiKey = '';
+          return;
+        }
+        threadsStore.syncFromBackend();
+      }).catch(() => {
+        threadsStore.syncFromBackend();
+      });
 
       // Restore last thread
       const initialThreadId = threadsStore.currentThreadId;
