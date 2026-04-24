@@ -1567,6 +1567,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         reasoning_effort: Optional[str] = None
         use_model_defaults: Optional[bool] = None
         base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
+        api_key: Optional[str] = None  # per-thread key; None = inherit env/global
 
     class ThreadConfigUpdateRequest(BaseModel):
         instructions: Optional[str] = Field(default=None, max_length=5000)
