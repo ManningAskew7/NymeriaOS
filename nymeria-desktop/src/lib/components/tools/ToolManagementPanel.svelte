@@ -3,6 +3,7 @@
   import { toolsStore } from '$lib/stores/tools.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
@@ -37,6 +38,16 @@
   };
 
   const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'skills', 'self_modify', 'subagent', 'mcp_server', 'custom'];
+
+  // Tools whose runtime is gated by require_admin_user on the backend
+  // (Nymeria/nymeria/triggers/api.py around the optional-tool toggle path).
+  // For non-admin callers the toggle still works in the UI but the agent
+  // will get 403 trying to invoke them — surface that up-front.
+  const ADMIN_ONLY_TOOLS = new Set(['self_modify', 'claude_code']);
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
+  function isAdminOnlyTool(name: string): boolean {
+    return ADMIN_ONLY_TOOLS.has(name);
+  }
 
   // --- Custom tools state ---
   let showCreateForm = $state(false);
@@ -367,7 +378,12 @@
                   {#each categoryTools as tool (tool.name)}
                     <div class="tool-row selected">
                       <div class="tool-info">
-                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-name">
+                          {tool.name}
+                          {#if isAdminOnlyTool(tool.name)}
+                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}>admin only</span>
+                          {/if}
+                        </span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
                       <div class="tool-row-actions">
@@ -411,7 +427,12 @@
                   {#each categoryTools as tool (tool.name)}
                     <div class="tool-row selected">
                       <div class="tool-info">
-                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-name">
+                          {tool.name}
+                          {#if isAdminOnlyTool(tool.name)}
+                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}>admin only</span>
+                          {/if}
+                        </span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
                       <div class="tool-row-actions">
@@ -483,6 +504,9 @@
                           {tool.name}
                           {#if tool.is_optional}
                             <span class="optional-badge">optional</span>
+                          {/if}
+                          {#if isAdminOnlyTool(tool.name)}
+                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}>admin only</span>
                           {/if}
                         </span>
                         <span class="tool-desc">{tool.description}</span>
@@ -1184,6 +1208,19 @@
     color: var(--accent-secondary, #818cf8);
     text-transform: uppercase;
     letter-spacing: 0.3px;
+  }
+
+  .admin-only-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 5px;
+    border-radius: var(--radius-sm);
+    background: rgba(251, 191, 36, 0.12);
+    color: var(--warning, #fbbf24);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-left: 4px;
   }
 
   .tool-desc {

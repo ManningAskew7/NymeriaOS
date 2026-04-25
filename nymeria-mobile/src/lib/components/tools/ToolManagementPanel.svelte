@@ -1,9 +1,19 @@
 <script lang="ts">
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
   import MCPServerPanel from './MCPServerPanel.svelte';
   import { onMount } from 'svelte';
+
+  // Tools whose runtime is gated by require_admin_user on the backend.
+  // For non-admin callers the toggle still flips here but the agent will
+  // get 403 trying to invoke them — surface that up-front via a badge.
+  const ADMIN_ONLY_TOOLS = new Set(['self_modify', 'claude_code']);
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
+  function isAdminOnlyTool(name: string): boolean {
+    return ADMIN_ONLY_TOOLS.has(name);
+  }
 
   interface Props {
     open: boolean;
@@ -81,7 +91,19 @@
             {#each tools as tool (tool.id)}
               <div class="tool-item">
                 <div class="tool-info">
-                  <span class="tool-name">{tool.name}</span>
+                  <span class="tool-name">
+                    {tool.name}
+                    {#if isAdminOnlyTool(tool.name)}
+                      <span
+                        class="admin-only-badge"
+                        title={isAdmin
+                          ? 'Requires admin role'
+                          : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}
+                      >
+                        admin only
+                      </span>
+                    {/if}
+                  </span>
                   <span class="tool-desc">{tool.description}</span>
                 </div>
                 <label class="tool-toggle">
@@ -228,6 +250,21 @@
     font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-primary);
+  }
+
+  .admin-only-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 5px;
+    margin-left: 4px;
+    border-radius: var(--radius-sm);
+    background: rgba(251, 191, 36, 0.12);
+    color: var(--warning, #fbbf24);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    vertical-align: middle;
   }
 
   .tool-desc {

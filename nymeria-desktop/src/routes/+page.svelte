@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { AppShell, Sidebar, MainPanel, RightPanel } from '$lib/components/layout';
   import { SetupWizard } from '$lib/components/common';
+  import ErrorToast from '$lib/components/common/ErrorToast.svelte';
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
@@ -220,3 +221,8 @@
     {/snippet}
   </AppShell>
 {/if}
+
+<!-- Global toast layer — sits above every other surface so 401/403/409
+     responses from the account/admin endpoints stay visible regardless of
+     which panel/modal is on top. -->
+<ErrorToast />

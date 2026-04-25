@@ -5,6 +5,8 @@
   import Avatar from './Avatar.svelte';
   import RoleChip from './RoleChip.svelte';
   import TokenManagementSection from './TokenManagementSection.svelte';
+  import PlatformLinkingSection from './PlatformLinkingSection.svelte';
+  import { identityDisplayName } from './avatar';
 
   let identity = $derived(configStore.identity);
   let isAdmin = $derived(identity?.role === 'admin');
@@ -133,11 +135,14 @@
       <section class="section">
         <div class="section-header">
           <h3>Linked platforms</h3>
-          <span class="phase-badge">Coming soon</span>
         </div>
         <p class="section-hint">
-          Manage Discord, Telegram, and Twitch identities linked to this account.
+          Discord/Telegram/Twitch IDs that route to this account.
         </p>
+        <PlatformLinkingSection
+          userId={identity.id}
+          userLabel={identityDisplayName(identity)}
+        />
       </section>
     {/if}
 

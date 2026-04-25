@@ -6,6 +6,8 @@
   import Avatar from './Avatar.svelte';
   import RoleChip from './RoleChip.svelte';
   import TokenManagementSection from './TokenManagementSection.svelte';
+  import PlatformLinkingSection from './PlatformLinkingSection.svelte';
+  import { identityDisplayName } from './avatar';
 
   let identity = $derived(configStore.identity);
   let isAdmin = $derived(identity?.role === 'admin');
@@ -143,15 +145,20 @@
     </section>
 
     {#if isAdmin}
-      <!-- Linked platforms placeholder (Phase D) -->
+      <!-- Linked platforms — admin-only because both GET and POST go through
+           the /admin/users/{id}/platforms endpoints. -->
       <section class="section">
         <div class="section-header">
           <h3>Linked platforms</h3>
-          <span class="phase-badge">Coming soon</span>
         </div>
         <p class="section-hint">
-          See and manage Discord, Telegram, and Twitch identities linked to this account.
+          Discord/Telegram/Twitch IDs that map to this account. Bots route
+          messages from these platform users back to this Nymeria identity.
         </p>
+        <PlatformLinkingSection
+          userId={identity.id}
+          userLabel={identityDisplayName(identity)}
+        />
       </section>
     {/if}
 

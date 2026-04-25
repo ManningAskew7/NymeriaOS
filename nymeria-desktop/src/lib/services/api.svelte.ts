@@ -1,9 +1,14 @@
 import { configStore } from '$lib/stores/config.svelte';
 import { clientId } from '$lib/stores/clientId.svelte';
+import { errorsStore } from '$lib/stores/errors.svelte';
 import type {
   AccountIdentity,
+  AdminUser,
   IssuedTokenResponse,
+  PlatformIdentity,
+  RotatedTokensResponse,
   TokenInfo,
+  UserRole,
   SSEEvent,
   SSEEventType,
   ChatResponse,
@@ -92,6 +97,44 @@ export class NymeriaAPI {
 
   private getBaseUrl(): string {
     return configStore.apiUrl.replace(/\/$/, '');
+  }
+
+  /**
+   * Surface a structured toast for known account/admin failure modes and then
+   * extract a human-readable error message to throw. Called from the new
+   * /me/* and /admin/* wrappers — keeps the toast UI in sync with backend
+   * gating without forcing every component to know the status code semantics.
+   *
+   * - 401 → auth_invalid (also signs out via errorsStore.pushAuthInvalid)
+   * - 403 → forbidden_admin
+   * - 409 with last-admin / owns-resources hints → last_admin / resource_owned
+   * - any other non-2xx → generic toast
+   */
+  private async _toastAndExtractError(response: Response, fallback: string): Promise<string> {
+    const detail = await response.json().catch(() => ({}));
+    const detailMessage = typeof detail?.detail === 'string' ? detail.detail : null;
+    const message = detailMessage || `${fallback} (${response.status})`;
+
+    if (response.status === 401) {
+      errorsStore.pushAuthInvalid(detailMessage || 'Your token is no longer valid. Sign in again to continue.');
+    } else if (response.status === 403) {
+      errorsStore.push({
+        kind: 'forbidden_admin',
+        message: detailMessage || 'This action requires the admin role.',
+      });
+    } else if (response.status === 409) {
+      const lower = (detailMessage || '').toLowerCase();
+      if (lower.includes('last admin') || lower.includes('only admin') || lower.includes('only enabled admin')) {
+        errorsStore.push({ kind: 'last_admin', message });
+      } else if (lower.includes('thread') || lower.includes('todo') || lower.includes('owns')) {
+        errorsStore.push({ kind: 'resource_owned', message });
+      } else {
+        errorsStore.push({ kind: 'generic', message });
+      }
+    } else if (!response.ok) {
+      errorsStore.push({ kind: 'generic', message });
+    }
+    return message;
   }
 
   private normalizeWorkspaceArtifact(raw: unknown): WorkspaceArtifact | null {
@@ -183,8 +226,7 @@ export class NymeriaAPI {
       body: JSON.stringify({ display_name: displayName })
     });
     if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || `Failed to update profile (${response.status})`);
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update profile'));
     }
     return response.json();
   }
@@ -197,8 +239,7 @@ export class NymeriaAPI {
       headers: this.getHeaders()
     });
     if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || `Failed to list tokens (${response.status})`);
+      throw new Error(await this._toastAndExtractError(response, 'Failed to list tokens'));
     }
     return response.json();
   }
@@ -210,8 +251,7 @@ export class NymeriaAPI {
       body: JSON.stringify({ label: label ?? null })
     });
     if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || `Failed to issue token (${response.status})`);
+      throw new Error(await this._toastAndExtractError(response, 'Failed to issue token'));
     }
     return response.json();
   }
@@ -222,8 +262,163 @@ export class NymeriaAPI {
       { method: 'DELETE', headers: this.getHeaders() }
     );
     if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || `Failed to revoke token (${response.status})`);
+      throw new Error(await this._toastAndExtractError(response, 'Failed to revoke token'));
+    }
+    return response.json();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admin user management — all gated by require_admin_user. The caller's
+  // bearer token must belong to an admin account; non-admins get 403.
+  // ---------------------------------------------------------------------------
+
+  async listAdminUsers(): Promise<AdminUser[]> {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to list users'));
+    }
+    return response.json();
+  }
+
+  async createAdminUser(body: {
+    email: string;
+    display_name?: string;
+    role?: UserRole;
+    id?: string;
+    token_label?: string;
+  }): Promise<IssuedTokenResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to create user'));
+    }
+    return response.json();
+  }
+
+  async getAdminUser(userId: string): Promise<AdminUser> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to load user'));
+    }
+    return response.json();
+  }
+
+  async updateAdminUser(
+    userId: string,
+    patch: { display_name?: string; role?: UserRole; disabled?: boolean }
+  ): Promise<AdminUser> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}`,
+      { method: 'PATCH', headers: this.getHeaders(), body: JSON.stringify(patch) }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update user'));
+    }
+    return response.json();
+  }
+
+  async deleteAdminUser(userId: string): Promise<{ deleted: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to delete user'));
+    }
+    return response.json();
+  }
+
+  async listUserTokens(userId: string): Promise<TokenInfo[]> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/tokens`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to list tokens'));
+    }
+    return response.json();
+  }
+
+  async issueUserToken(userId: string, label?: string): Promise<IssuedTokenResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/tokens`,
+      { method: 'POST', headers: this.getHeaders(), body: JSON.stringify({ label: label ?? null }) }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to issue token'));
+    }
+    return response.json();
+  }
+
+  async rotateUserTokens(
+    userId: string,
+    label?: string
+  ): Promise<RotatedTokensResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/tokens/rotate`,
+      { method: 'POST', headers: this.getHeaders(), body: JSON.stringify({ label: label ?? null }) }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to rotate tokens'));
+    }
+    return response.json();
+  }
+
+  async revokeUserToken(userId: string, tokenHashPrefix: string): Promise<{ revoked: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/tokens/${encodeURIComponent(tokenHashPrefix)}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to revoke token'));
+    }
+    return response.json();
+  }
+
+  async listUserPlatforms(userId: string): Promise<PlatformIdentity[]> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/platforms`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to list platforms'));
+    }
+    return response.json();
+  }
+
+  async linkUserPlatform(
+    userId: string,
+    body: { provider: 'discord' | 'telegram' | 'twitch'; provider_user_id: string }
+  ): Promise<PlatformIdentity> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/platforms`,
+      { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(body) }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to link platform'));
+    }
+    return response.json();
+  }
+
+  async unlinkUserPlatform(
+    userId: string,
+    provider: 'discord' | 'telegram' | 'twitch',
+    providerUserId: string
+  ): Promise<{ unlinked: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/platforms/${encodeURIComponent(provider)}/${encodeURIComponent(providerUserId)}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to unlink platform'));
     }
     return response.json();
   }
