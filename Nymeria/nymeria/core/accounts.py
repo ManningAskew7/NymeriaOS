@@ -172,6 +172,23 @@ class UserAlreadyExists(ValueError):
     pass
 
 
+class LastAdminError(ValueError):
+    """Raised when an operation would leave zero enabled admins."""
+
+
+class UserHasResources(ValueError):
+    """Raised when delete_user_cascade is called on a user that still owns
+    threads. Caller should empty (or transfer) the user first."""
+
+
+class TokenNotFound(LookupError):
+    pass
+
+
+class AmbiguousTokenPrefix(ValueError):
+    pass
+
+
 class AccountsRepo:
     """Thread-safe SQLite-backed repository for users/tokens/ownership."""
 
@@ -253,6 +270,8 @@ class AccountsRepo:
 
     def set_disabled(self, user_id: str, disabled: bool) -> None:
         with self._lock, self._connect() as conn:
+            if disabled:
+                self._guard_last_admin(conn, user_id, future_role="user", future_disabled=True)
             cur = conn.execute(
                 "UPDATE users SET disabled = ?, updated_at = ? WHERE id = ?",
                 (1 if disabled else 0, _now(), user_id),
@@ -260,6 +279,113 @@ class AccountsRepo:
             if cur.rowcount == 0:
                 raise UserNotFound(user_id)
             conn.commit()
+
+    def update_user(
+        self,
+        user_id: str,
+        *,
+        display_name: Optional[str] = None,
+        role: Optional[UserRole] = None,
+    ) -> UserRecord:
+        """Partial update for display_name and/or role. Last-admin guard
+        prevents demoting the only enabled admin."""
+        if display_name is None and role is None:
+            existing = self.get_user_by_id(user_id)
+            if existing is None:
+                raise UserNotFound(user_id)
+            return existing
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if existing is None:
+                raise UserNotFound(user_id)
+            new_role = role if role is not None else existing["role"]
+            new_disabled = bool(int(existing["disabled"]))
+            if role is not None and role != existing["role"]:
+                self._guard_last_admin(conn, user_id, future_role=new_role, future_disabled=new_disabled)
+            sets = []
+            params: List[object] = []
+            if display_name is not None:
+                sets.append("display_name = ?")
+                params.append(display_name)
+            if role is not None:
+                sets.append("role = ?")
+                params.append(role)
+            sets.append("updated_at = ?")
+            params.append(_now())
+            params.append(user_id)
+            conn.execute(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            return _row_to_user(row)
+
+    def delete_user_cascade(self, user_id: str) -> None:
+        """Delete a user and all their tokens / platform identities (FK cascade
+        handles the latter). Refuses if the user still owns any threads — the
+        admin must transfer or delete those threads first.
+
+        Last-admin guard also applies: cannot delete the only enabled admin.
+        """
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if existing is None:
+                raise UserNotFound(user_id)
+            self._guard_last_admin(
+                conn, user_id, future_role="user", future_disabled=True
+            )
+            owned = conn.execute(
+                "SELECT COUNT(*) AS n FROM thread_owners WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if int(owned["n"]) > 0:
+                raise UserHasResources(
+                    f"User {user_id} still owns {int(owned['n'])} thread(s)"
+                )
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.commit()
+
+    def _guard_last_admin(
+        self,
+        conn: sqlite3.Connection,
+        target_user_id: str,
+        *,
+        future_role: UserRole,
+        future_disabled: bool,
+    ) -> None:
+        """Raise LastAdminError if applying the (future_role, future_disabled)
+        change to ``target_user_id`` would leave zero enabled admins overall.
+
+        Called inside an existing transaction. Reads only — no writes."""
+        row = conn.execute(
+            "SELECT role, disabled FROM users WHERE id = ?", (target_user_id,)
+        ).fetchone()
+        if row is None:
+            return  # caller will raise UserNotFound separately
+        current_admin_active = (
+            row["role"] == "admin" and int(row["disabled"]) == 0
+        )
+        future_admin_active = future_role == "admin" and not future_disabled
+        if not current_admin_active or future_admin_active:
+            return  # no change to admin headcount, or it stays / increases
+        # We're about to remove an enabled admin. Make sure another exists.
+        other = conn.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE role = 'admin' AND disabled = 0 AND id != ?",
+            (target_user_id,),
+        ).fetchone()
+        if int(other["n"]) == 0:
+            raise LastAdminError(
+                "Refusing to leave zero enabled admins: at least one admin "
+                "must remain enabled."
+            )
 
     # -- tokens ------------------------------------------------------------
 
@@ -304,6 +430,41 @@ class AccountsRepo:
                 display_name=row["display_name"],
                 role=row["role"],
             )
+
+    def revoke_token(self, user_id: str, token_hash_prefix: str) -> bool:
+        """Revoke a single token by the first chars of its sha256 hash.
+
+        Raw tokens aren't recoverable, so the API addresses tokens by a
+        prefix of their hash (UI shows e.g. ``a3f9b1c2``). Rejects ambiguous
+        prefixes (``AmbiguousTokenPrefix``) and unknown ones (``TokenNotFound``).
+        Returns True if a token was newly revoked, False if it was already
+        revoked.
+        """
+        prefix = (token_hash_prefix or "").strip().lower()
+        if len(prefix) < 4:
+            raise AmbiguousTokenPrefix("Token prefix must be at least 4 chars")
+        like = prefix + "%"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT token_hash, revoked_at FROM user_tokens "
+                "WHERE user_id = ? AND token_hash LIKE ?",
+                (user_id, like),
+            ).fetchall()
+            if not rows:
+                raise TokenNotFound(prefix)
+            if len(rows) > 1:
+                raise AmbiguousTokenPrefix(
+                    f"Prefix '{prefix}' matches {len(rows)} tokens; use more chars"
+                )
+            row = rows[0]
+            if row["revoked_at"] is not None:
+                return False
+            conn.execute(
+                "UPDATE user_tokens SET revoked_at = ? WHERE token_hash = ?",
+                (_now(), row["token_hash"]),
+            )
+            conn.commit()
+            return True
 
     def revoke_all_tokens(self, user_id: str) -> int:
         """Revoke every active token for a user. Returns count revoked."""

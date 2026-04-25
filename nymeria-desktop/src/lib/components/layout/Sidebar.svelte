@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { Button, Icon, Modal, SettingsPanel } from '$lib/components/common';
   import { NotificationCenter } from '$lib/components/notifications';
-  import ConnectionSwitcher from '$lib/components/layout/ConnectionSwitcher.svelte';
+  import { AccountBadge } from '$lib/components/account';
   import ThreadList from '$lib/components/threads/ThreadList.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -107,7 +107,7 @@
       {/if}
       <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
     </div>
-    <ConnectionSwitcher onOpenSettings={openSettings} />
+    <AccountBadge onOpenSettings={openSettings} />
     {#if !isCollapsed}
       <button class="footer-btn" type="button" onclick={() => openSettings()}>
         <Icon name="settings" size={18} />

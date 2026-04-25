@@ -2306,7 +2306,7 @@ class NymeriaAgent:
             presence_penalty=presence_penalty,
             reasoning_effort=reasoning_effort,
             extended_thinking=extended_thinking,
-            openai_api_mode=tc.openai_api_mode if tc else None,
+            openai_api_mode=(tc.openai_api_mode if tc else None) or self.settings.openai_api_mode,
         )
 
     def _get_callable_thread_tools(self, tc) -> List[BaseTool]:

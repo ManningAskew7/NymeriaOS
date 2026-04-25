@@ -505,6 +505,52 @@ export interface AccountIdentity {
   role: 'user' | 'admin';
 }
 
+// Account types — mirror of Pydantic models in Nymeria/nymeria/triggers/api.py.
+// Returned by /admin/users and /me/tokens endpoints.
+export type UserRole = 'user' | 'admin';
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string;
+  role: UserRole;
+  disabled: boolean;
+  created_at: string;
+  updated_at: string;
+  token_count: number;
+  last_token_use: string | null;
+  thread_count?: number;
+  todo_count?: number;
+  platform_count?: number;
+}
+
+export interface TokenInfo {
+  // First 8 hex chars of the token's sha256 — stable revoke handle.
+  token_hash_prefix: string;
+  label: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface IssuedTokenResponse {
+  // Raw token shown ONCE — UI must surface in a copy-once dialog and drop.
+  raw_token: string;
+  metadata: TokenInfo;
+}
+
+export interface RotatedTokensResponse {
+  raw_token: string;
+  metadata: TokenInfo;
+  revoked_count: number;
+}
+
+export interface PlatformIdentity {
+  provider: 'discord' | 'telegram' | 'twitch';
+  provider_user_id: string;
+  created_at: string;
+}
+
 // Config types
 export interface AppConfig {
   apiUrl: string;
@@ -515,12 +561,17 @@ export interface AppConfig {
   identity?: AccountIdentity | null;
 }
 
-// Saved connection for quick-switching between backends
+// Saved connection for quick-switching between backends. Each entry caches the
+// identity resolved from /me so the AccountSwitcher can show real account info
+// without forcing a roundtrip on every render.
 export interface SavedConnection {
   id: string;
   name: string;
   apiUrl: string;
   apiKey: string;
+  identity?: AccountIdentity | null;
+  identityCheckedAt?: string;
+  identityError?: string | null;
 }
 
 // Server settings types
