@@ -234,6 +234,32 @@ Some components moved directories between desktop and mobile:
 | `components/todos/TodoItem.svelte` | `components/dashboard/TodoItem.svelte` |
 | `components/dashboard/ConnectionStatus.svelte` | `components/common/ConnectionStatus.svelte` |
 
+### Account UI (`components/account/`)
+
+All account/identity surfaces live under `components/account/` in both apps. Most files mirror 1:1 with cosmetic mobile-touch tweaks (40px revoke buttons, larger inputs, bottom-sheet menu instead of popover). Two files are **desktop-only** because mobile is single-connection.
+
+| Component | Desktop | Mobile | Notes |
+|---|---|---|---|
+| `Avatar.svelte`, `RoleChip.svelte`, `avatar.ts` | ✓ | ✓ | Identical helpers; pure functions in `avatar.ts`. |
+| `AccountBadge.svelte` | Sidebar bottom-bar (full + collapsed icon) | LeftPanel footer-actions (40×40) | Replaces the old `ConnectionSwitcher` slot on desktop. |
+| `AccountMenu.svelte` | Anchored popover (NotificationCenter pattern) | Bottom sheet (Modal-style) | Same items: Manage account / Manage users (admin) / Switch / Add / Sign out. |
+| `AccountSwitcher.svelte` | ✓ | — | Mobile is single-connection; switching is via Settings → Connection. |
+| `AddAccountSheet.svelte` | ✓ | — | Same reason. |
+| `AccountTab.svelte` | ✓ | ✓ | Same sections (Identity / Tokens / Platforms (admin) / Sign out); mobile uses larger inputs. |
+| `UsersTab.svelte` | ✓ (admin only tab) | ✓ (admin only tab) | Same master/detail; mobile detail view stacks form fields vertically. |
+| `TokenManagementSection.svelte` | ✓ | ✓ | `mode: 'self' \| 'admin'` prop; admin mode adds Rotate-all. |
+| `PlatformLinkingSection.svelte` | ✓ | ✓ | Always uses admin endpoints — only rendered for admins. |
+| `CopyOnceTokenDialog.svelte` | ✓ | ✓ | Modal-wrapped; identical content. |
+
+**Supporting files (also mirror in both apps):**
+- `services/api.svelte.ts` — 16 new account/admin methods + `_toastAndExtractError` helper.
+- `stores/config.svelte.ts` — `signOut()`, `updateIdentityDisplayName()`.
+- `stores/connections.svelte.ts` — **desktop only**; extends `SavedConnection` with cached identity + `verifyEntry()`.
+- `stores/errors.svelte.ts` — toast queue + `pushAuthInvalid()`.
+- `components/common/ErrorToast.svelte` — mounted at `routes/+page.svelte` root in both apps.
+
+See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
+
 ---
 
 ## Change Replication Guide
@@ -277,6 +303,16 @@ Current example: `workspace_artifact` is normalized in both apps' `types/index.t
 1. Add the type to `types/index.ts` in both apps
 2. Add the API call to `services/api.svelte.ts` in both apps
 3. Add UI to `SettingsPanel.svelte` with platform-appropriate presentation
+
+### Adding a new account-related endpoint or component
+
+1. Backend first — extend `Nymeria/nymeria/triggers/api.py` with the right `Depends(require_admin_user)` or `Depends(verify_api_key)`. Use the same `HTTPException(detail=...)` shape as the existing endpoints so the frontend's `_toastAndExtractError` parser picks up the message.
+2. Add the response type to `types/index.ts` in both apps (mirror Pydantic field names exactly).
+3. Add the API method to `services/api.svelte.ts` in both apps using the existing `_toastAndExtractError` pattern — every account/admin endpoint must route 401/403/409 through it so the global toast layer stays consistent.
+4. Build / extend the component under `components/account/` in both apps. Re-use `Avatar`, `RoleChip`, `Modal`, `Button` for visual consistency.
+5. Update both apps' `components/account/index.ts` barrel.
+6. Mobile-only divergences: skip `connectionsStore` (single-connection), prefer 40px touch targets, use bottom-sheet patterns over popovers.
+7. Document — append the new component to the Account UI table above and to the component reference in [`frontend-accounts.md`](frontend-accounts.md).
 4. Check for desktop-only tabs such as proxy/integration controls before mirroring UI structure
 
 ### Adding a new chat feature (e.g., reactions, editing)

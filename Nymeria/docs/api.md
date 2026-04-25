@@ -125,8 +125,12 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
-**Issued-token response shape:**
-```json
+**Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`):
+
+```jsonc
+// IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,
+// POST /admin/users/{id}/tokens. Raw token shown ONCE; the metadata.token_hash_prefix
+// is the stable handle for revocation.
 {
   "raw_token": "nym_...",
   "metadata": {
@@ -137,9 +141,100 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
     "revoked_at": null
   }
 }
+
+// RotatedTokensResponse — returned by POST /admin/users/{id}/tokens/rotate.
+// Same as IssuedTokenResponse plus the count of tokens that were just revoked.
+{
+  "raw_token": "nym_...",
+  "metadata": { /* TokenInfo */ },
+  "revoked_count": 3
+}
+
+// TokenInfo — returned by GET /me/tokens and GET /admin/users/{id}/tokens.
+// No raw_token field — that's only ever in the issue/rotate response.
+{
+  "token_hash_prefix": "a3f9b1c2",
+  "label": "iPhone",
+  "created_at": "2026-04-25T10:00:00+00:00",
+  "last_used_at": "2026-04-25T11:42:13+00:00",
+  "revoked_at": null
+}
+
+// AdminUserResponse — returned by GET /admin/users (as a list) and
+// GET /admin/users/{id}. The thread/todo/platform counts are present on
+// the single-user GET; null in the list response (kept in sync with the
+// frontend's `thread_count?: number` shape).
+{
+  "id": "default",
+  "email": "owner@localhost",
+  "display_name": "Owner",
+  "role": "admin",
+  "disabled": false,
+  "created_at": "2026-04-24T12:07:30+00:00",
+  "updated_at": "2026-04-25T10:56:43+00:00",
+  "token_count": 1,
+  "last_token_use": "2026-04-25T13:52:39+00:00",
+  "thread_count": 12,
+  "todo_count": 3,
+  "platform_count": 2
+}
+
+// PlatformIdentityResponse — returned by GET /admin/users/{id}/platforms (as a list)
+// and POST /admin/users/{id}/platforms (single).
+{
+  "provider": "discord",
+  "provider_user_id": "699436710118817823",
+  "created_at": "2026-04-24T13:34:05+00:00"
+}
 ```
 
-See `docs/accounts.md` for the model, the bootstrap admin flow, and the service-token bootstrap recipe.
+**Common errors mapped to UI behaviour:**
+
+| Status | Body | UI behaviour |
+|---|---|---|
+| `401` | `{"detail": "Invalid or revoked token"}` | Frontend `_toastAndExtractError` triggers `pushAuthInvalid` → user signed out, routed to SetupWizard. |
+| `403` | `{"detail": "Admin role required"}` | Toast: "Admin role required". |
+| `409` | `{"detail": "Cannot demote the only enabled admin"}` | Toast: `last_admin` kind. |
+| `409` | `{"detail": "User still owns N threads / M todos"}` | Toast: `resource_owned` kind. |
+| `400` | `{"detail": "Token prefix must be at least 4 chars"}` | Generic toast. |
+| `400` | `{"detail": "Ambiguous token prefix matches N tokens"}` | Generic toast. |
+
+**curl examples:**
+
+```bash
+TOKEN=$(grep -oE 'nym_[A-Za-z0-9_-]+' Nymeria/data/BOOTSTRAP_TOKEN.txt)
+
+# Create a non-admin user and capture their first token
+curl -sX POST http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","role":"user","token_label":"initial"}' \
+  | jq
+
+# List all users + token counts
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/admin/users | jq
+
+# Issue a fresh personal token labelled "iPhone"
+curl -sX POST http://localhost:8000/me/tokens \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"label":"iPhone"}' | jq -r .raw_token
+
+# Rotate every active token for alice (revokes all + mints a new one)
+curl -sX POST "http://localhost:8000/admin/users/alice/tokens/rotate" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"label":"post-rotate"}' | jq
+
+# Link a Discord ID to alice
+curl -sX POST "http://localhost:8000/admin/users/alice/platforms" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"provider":"discord","provider_user_id":"123456789"}' | jq
+
+# Try to demote the last enabled admin (returns 409)
+curl -i -X PATCH "http://localhost:8000/admin/users/default" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"role":"user"}'
+```
+
+See [`accounts.md`](accounts.md) for the data model, bootstrap admin flow, and service-token recipe. See [`frontend-accounts.md`](frontend-accounts.md) for how each endpoint is wrapped on the client side and how errors map to toasts.
 
 ---
 
