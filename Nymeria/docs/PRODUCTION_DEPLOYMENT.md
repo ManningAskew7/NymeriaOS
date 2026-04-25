@@ -87,8 +87,8 @@ See `.env.docker.example` for all available options. Key settings:
 
 ```bash
 # Required
-NYMERIA_API_KEY=<your-api-key>
 POSTGRES_PASSWORD=<secure-password>
+NYMERIA_SERVICE_TOKEN=<admin-service-token>   # see docs/accounts.md
 
 # LLM (at least one required)
 ANTHROPIC_API_KEY=sk-ant-...
@@ -210,7 +210,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 
 ## Security Considerations
 
-1. **API Key**: Always set a strong `NYMERIA_API_KEY`
+1. **Account tokens**: Per-user bearer tokens (`nym_…`) are minted via `python run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`. Bots/ticker/watchdog authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
 2. **CORS**: Restrict origins in production
 3. **Webhook Secret**: Validate incoming webhooks
 4. **Network**: Use HTTPS in production (reverse proxy)

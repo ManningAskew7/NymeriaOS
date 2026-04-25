@@ -275,7 +275,7 @@
             bind:value={apiKey}
             placeholder="Your API key"
           />
-          <p class="hint">Found in your Nymeria .env as NYMERIA_API_KEY</p>
+          <p class="hint">Per-user account token (<code>nym_...</code>) or bootstrap token from <code>BOOTSTRAP_TOKEN.txt</code></p>
         </div>
         <div class="setting-actions">
           <Button variant="secondary" onclick={handleTestConnection}>
