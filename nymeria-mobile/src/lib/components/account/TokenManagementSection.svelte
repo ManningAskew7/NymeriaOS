@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { TokenInfo } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import { configStore } from '$lib/stores/config.svelte';
@@ -45,9 +46,14 @@
     }
   }
 
+  // load() reads `loading` to short-circuit re-entry; wrap in untrack so that
+  // read doesn't re-fire this effect every time the in-flight fetch toggles
+  // loading on/off.
   $effect(() => {
     void configStore.identity?.id;
-    void load();
+    untrack(() => {
+      void load();
+    });
   });
 
   function openIssueDialog() {
@@ -132,7 +138,7 @@
         <span class="revoked-count">· {revokedTokens.length} revoked</span>
       {/if}
     </div>
-    <Button size="sm" onclick={openIssueDialog} disabled={loading}>
+    <Button size="sm" onclick={openIssueDialog} disabled={issuing}>
       <Icon name="plus" size={14} />
       Issue
     </Button>
