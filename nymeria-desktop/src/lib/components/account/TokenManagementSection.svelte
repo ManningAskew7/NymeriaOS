@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { TokenInfo } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import { configStore } from '$lib/stores/config.svelte';
@@ -47,10 +48,14 @@
   }
 
   // Initial load + reload whenever the calling identity changes (e.g. switched
-  // accounts in the AccountSwitcher).
+  // accounts in the AccountSwitcher). load() is wrapped in untrack so its
+  // internal reads of `loading` don't establish a dependency that would re-fire
+  // this effect every time the in-flight fetch toggles loading on/off.
   $effect(() => {
-    void configStore.identity?.id; // tracked dependency
-    void load();
+    void configStore.identity?.id;
+    untrack(() => {
+      void load();
+    });
   });
 
   function openIssueDialog() {
@@ -136,7 +141,7 @@
         <span class="revoked-count">· {revokedTokens.length} revoked</span>
       {/if}
     </div>
-    <Button size="sm" onclick={openIssueDialog} disabled={loading}>
+    <Button size="sm" onclick={openIssueDialog} disabled={issuing}>
       <Icon name="plus" size={14} />
       Issue token
     </Button>
