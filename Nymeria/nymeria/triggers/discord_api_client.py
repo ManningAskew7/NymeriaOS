@@ -173,9 +173,9 @@ class NymeriaAPIClient:
 
     # ── Thread Management ─────────────────────────────────────────────────
 
-    async def stop(self, thread_id: str) -> dict:
+    async def stop(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Abort the current operation on a thread."""
-        return await self._post(f"/threads/{thread_id}/stop")
+        return await self._post(f"/threads/{thread_id}/stop", act_as=user_id)
 
     async def compact(self, thread_id: str, user_id: str) -> dict:
         """Compact conversation context."""
@@ -183,9 +183,9 @@ class NymeriaAPIClient:
             f"/threads/{thread_id}/compact", params={"user_id": user_id}, act_as=user_id,
         )
 
-    async def delete_thread(self, thread_id: str) -> dict:
+    async def delete_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Delete all history for a thread."""
-        return await self._delete(f"/threads/{thread_id}")
+        return await self._delete(f"/threads/{thread_id}", act_as=user_id)
 
     async def clear_thread(self, thread_id: str, user_id: str = "default") -> dict:
         """Clear conversation history only (preserve notepad + config)."""
@@ -193,21 +193,35 @@ class NymeriaAPIClient:
             f"/threads/{thread_id}/clear", params={"user_id": user_id}, act_as=user_id,
         )
 
-    async def get_history(self, thread_id: str, include_internal: bool = False) -> dict:
-        """Get conversation history for a thread."""
+    async def get_history(
+        self,
+        thread_id: str,
+        include_internal: bool = False,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Get conversation history for a thread.
+
+        ``user_id`` becomes ``X-Nymeria-Act-As`` so the backend's per-thread
+        access check runs against the human user, not the bot service token —
+        otherwise bot-service first-touch would claim the thread and lock the
+        real owner out.
+        """
         return await self._get(
             f"/threads/{thread_id}/history",
             params={"include_internal": str(include_internal).lower()},
+            act_as=user_id,
         )
 
-    async def get_context_stats(self, thread_id: str) -> dict:
+    async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Get token usage and context stats for a thread."""
-        return await self._get(f"/threads/{thread_id}/context")
+        return await self._get(f"/threads/{thread_id}/context", act_as=user_id)
 
-    async def get_thread_config(self, thread_id: str) -> Optional[dict]:
+    async def get_thread_config(
+        self, thread_id: str, user_id: Optional[str] = None
+    ) -> Optional[dict]:
         """Get per-thread configuration (tools, instructions, etc.)."""
         try:
-            return await self._get(f"/threads/{thread_id}/config")
+            return await self._get(f"/threads/{thread_id}/config", act_as=user_id)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return None
@@ -322,21 +336,28 @@ class NymeriaAPIClient:
 
     # ── Settings Management ─────────────────────────────────────────────
 
-    async def update_settings(self, **kwargs) -> dict:
-        """Update global server settings (PATCH /settings)."""
-        return await self._patch("/settings", json=kwargs)
+    async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
+        """Update global server settings (PATCH /settings).
 
-    async def update_thread_config(self, thread_id: str, **kwargs) -> dict:
+        ``user_id`` becomes ``X-Nymeria-Act-As`` so the API gate enforces the
+        real caller's role rather than the bot service token's admin role.
+        Slash commands and other agent-callable mutators must always pass it.
+        """
+        return await self._patch("/settings", json=kwargs, act_as=user_id)
+
+    async def update_thread_config(
+        self, thread_id: str, *, user_id: Optional[str] = None, **kwargs,
+    ) -> dict:
         """Update per-thread configuration (PATCH /threads/{id}/config)."""
-        return await self._patch(f"/threads/{thread_id}/config", json=kwargs)
+        return await self._patch(f"/threads/{thread_id}/config", json=kwargs, act_as=user_id)
 
-    async def get_env_vars(self) -> dict:
+    async def get_env_vars(self, *, user_id: Optional[str] = None) -> dict:
         """Get all settable env vars with masked values."""
-        return await self._get("/settings/env")
+        return await self._get("/settings/env", act_as=user_id)
 
-    async def get_env_var(self, key: str) -> dict:
+    async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
         """Get a single env var's unmasked value."""
-        return await self._get(f"/settings/env/{key}")
+        return await self._get(f"/settings/env/{key}", act_as=user_id)
 
     async def list_models(self) -> List[dict]:
         """List known models from the model capabilities cache."""
@@ -385,6 +406,11 @@ class NymeriaAPIClient:
             return None
 
     # ── Health ────────────────────────────────────────────────────────────
+
+    async def get_me(self, act_as: Optional[str] = None) -> dict:
+        """Return the authenticated user (or act-as target). Used by bots to
+        look up a user's role for admin-gated commands."""
+        return await self._get("/me", act_as=act_as)
 
     async def resolve_platform_user(self, provider: str, provider_user_id: str) -> Optional[str]:
         """

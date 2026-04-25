@@ -249,19 +249,10 @@ def make_thread_id(chat_id: int) -> str:
     return f"telegram_{chat_id}"
 
 
-def make_user_id(user_id: int) -> str:  # noqa: D401
-    """Deprecated fallback — use ``NymeriaTelegramBot.resolve_user_id``.
-
-    Kept as a sync fallback returning ``"default"`` so legacy callsites still
-    work; the primary message handler now resolves via ``/platform/resolve``
-    and rejects unlinked Telegram users.
-    """
-    return "default"
-
-
-# Sentinel used by the resolve_user_id cache to distinguish "not yet checked"
-# from "checked and confirmed unlinked (None)".
-_MISSING = object()
+# Platform-identity cache TTL. After 30 minutes a Telegram user's link is
+# re-fetched from /platform/resolve, so admin relinks propagate to the bot
+# without a restart. See discord_bot.py for the same constant and rationale.
+_USER_CACHE_TTL_SECONDS = 30 * 60
 
 
 # =============================================================================
@@ -287,21 +278,78 @@ class NymeriaTelegramBot:
         # thread_id -> { chat_id, buffer (response text), tool_count }
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._application = None
-        # Telegram user_id -> Nymeria account user_id cache; None means
-        # "checked and confirmed unlinked".
-        self._user_cache: Dict[int, Optional[str]] = {}
+        # Telegram user_id -> (Nymeria account user_id or None, expires_at)
+        # cache. None (still under TTL) means "checked and confirmed
+        # unlinked"; after TTL expiry the entry is re-fetched.
+        self._user_cache: Dict[int, tuple[Optional[str], float]] = {}
 
     async def resolve_user_id(self, telegram_user_id: int) -> Optional[str]:
-        """Resolve a Telegram user id to a linked Nymeria account, or None."""
-        cached = self._user_cache.get(telegram_user_id, _MISSING)
-        if cached is not _MISSING:
-            return cached  # type: ignore[return-value]
+        """Resolve a Telegram user id to a linked Nymeria account, or None.
+
+        Caches the result (including ``None`` for confirmed-unlinked users)
+        for ``_USER_CACHE_TTL_SECONDS`` so admin relinks propagate without
+        a restart.
+        """
+        now = time.monotonic()
+        cached = self._user_cache.get(telegram_user_id)
+        if cached is not None:
+            value, expires_at = cached
+            if now < expires_at:
+                return value
         try:
             user_id = await self.api.resolve_platform_user("telegram", str(telegram_user_id))
         except Exception as e:  # noqa: BLE001
             logger.warning("resolve_platform_user(telegram, %s) failed: %s", telegram_user_id, e)
             return None
-        self._user_cache[telegram_user_id] = user_id
+        self._user_cache[telegram_user_id] = (user_id, now + _USER_CACHE_TTL_SECONDS)
+        return user_id
+
+    async def _resolve_or_reject_update(
+        self,
+        update: "Update",
+        *,
+        require_admin: bool = False,
+    ) -> Optional[str]:
+        """Resolve the slash-command caller's Nymeria user_id.
+
+        Returns ``user_id`` on success. On failure (unlinked Telegram user, or
+        ``require_admin=True`` and caller isn't an admin) replies with a
+        rejection and returns ``None``. The caller should ``return``
+        immediately when this returns ``None``.
+        """
+        tg_user = update.effective_user
+        if tg_user is None:
+            return None
+        user_id = await self.resolve_user_id(tg_user.id)
+
+        async def _reply(msg: str) -> None:
+            try:
+                if update.message is not None:
+                    await update.message.reply_text(msg)
+                elif update.effective_chat is not None:
+                    await update.effective_chat.send_message(msg)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Could not send rejection: %s", e)
+
+        if user_id is None:
+            await _reply(
+                "This Telegram account isn't linked to a Nymeria user yet. "
+                "Ask the admin to run: "
+                f"`python run.py users link-platform <email> telegram {tg_user.id}`"
+            )
+            return None
+
+        if require_admin:
+            try:
+                me = await self.api.get_me(act_as=user_id)
+                if me.get("role") != "admin":
+                    await _reply("Admin only.")
+                    return None
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Admin check failed for %s: %s", user_id, e)
+                await _reply("Couldn't verify permissions; try again later.")
+                return None
+
         return user_id
 
     def run(self) -> None:
@@ -764,15 +812,18 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /ask <your message>")
             return
 
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
+
         chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
         thread_id = make_thread_id(chat_id)
 
         await self._stream_to_chat(
             chat_id=chat_id,
             message=message_text,
             thread_id=thread_id,
-            user_id=make_user_id(user_id),
+            user_id=user_id,
             context=context,
         )
 
@@ -789,7 +840,9 @@ class NymeriaTelegramBot:
     async def _cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /clear."""
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         thread_id = make_thread_id(chat_id)
         try:
             await self.api.clear_thread(thread_id, user_id)
@@ -802,7 +855,9 @@ class NymeriaTelegramBot:
     async def _cmd_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /compact."""
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         thread_id = make_thread_id(chat_id)
         try:
             result = await self.api.compact(thread_id, user_id)
@@ -840,7 +895,9 @@ class NymeriaTelegramBot:
         """Handle /status."""
         chat_id = update.effective_chat.id
         thread_id = make_thread_id(chat_id)
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             settings, ctx, tools_data, todos = await asyncio.gather(
                 self.api.get_settings(),
@@ -930,10 +987,13 @@ class NymeriaTelegramBot:
         chat_id = update.effective_chat.id
         args = context.args or []
         thread_id = make_thread_id(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             if not args:
                 settings = await self.api.get_settings()
-                tc = await self.api.get_thread_config(thread_id)
+                tc = await self.api.get_thread_config(thread_id, user_id=user_id)
                 llm_cfg = (tc or {}).get("llm_config") or {}
                 thread_model = llm_cfg.get("model")
                 lines = [f"<b>Global:</b> <code>{escape_html(settings.get('llm_model', '?'))}</code> ({escape_html(settings.get('llm_provider', '?'))})"]
@@ -947,10 +1007,13 @@ class NymeriaTelegramBot:
                 scope = args[1] if len(args) > 1 else "global"
                 if scope == "thread":
                     await self.api.update_thread_config(
-                        thread_id, llm_config={"model": name}
+                        thread_id, user_id=user_id, llm_config={"model": name}
                     )
                     await update.message.reply_text(f"Model for this chat set to {name}.")
                 else:
+                    # Global model change — admin only.
+                    if await self._resolve_or_reject_update(update, require_admin=True) is None:
+                        return
                     await self.api.update_settings(llm_model=name)
                     await update.message.reply_text(f"Global model set to {name}.")
         except httpx.HTTPStatusError as e:
@@ -991,6 +1054,11 @@ class NymeriaTelegramBot:
 
     async def _cmd_think(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /think [off|on|low|medium|high]."""
+        # /think mutates global settings via update_settings(); admin-only,
+        # otherwise any chat member could toggle reasoning effort for every
+        # Nymeria user via the bot's admin service token.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         args = context.args or []
         try:
             if not args:
@@ -1150,7 +1218,9 @@ class NymeriaTelegramBot:
     async def _cmd_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tasks [status]."""
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         filter_val = (context.args[0].lower() if context.args else "active")
         try:
             items = await self.api.list_todos(user_id)
@@ -1300,7 +1370,12 @@ class NymeriaTelegramBot:
             await update.message.reply_text(f"Error: {e}")
 
     async def _cmd_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /restart [bot|api]."""
+        """Handle /restart [bot|api] — admin-gated."""
+        # Restart affects every user, so non-admins are rejected even if
+        # they're linked Nymeria users.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
+
         target = (context.args[0].lower() if context.args else "bot")
         if target == "api":
             await update.message.reply_text("Restarting API server...")
@@ -1405,7 +1480,9 @@ class NymeriaTelegramBot:
         notes = parts[3] if len(parts) > 3 and parts[3] else None
 
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         thread_id = make_thread_id(chat_id)
         try:
             result = await self.api.add_todo(
@@ -1429,7 +1506,9 @@ class NymeriaTelegramBot:
     async def _cmd_todo_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_list [active|pending|in_progress|done|all]."""
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         filter_val = (context.args[0].lower() if context.args else "active")
         try:
             items = await self.api.list_todos(user_id)
@@ -1472,7 +1551,9 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /todo_complete <todo_id>")
             return
 
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             items = await self.api.list_todos(user_id)
             match = next(
@@ -1502,7 +1583,9 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /todo_delete <todo_id>")
             return
 
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             items = await self.api.list_todos(user_id)
             match = next(
@@ -1523,6 +1606,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_config_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_show."""
+        # Admin-gated: /config_* and /env_* touch global settings/secrets.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         chat_id = update.effective_chat.id
         try:
             settings = await self.api.get_settings()
@@ -1563,6 +1649,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_config_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_get <key>."""
+        # Admin-gated: /config_* and /env_* touch global settings/secrets.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         key = self._parse_args(context)
         if not key:
             await update.message.reply_text("Usage: /config_get <key>")
@@ -1579,6 +1668,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_config_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_set <key> <value>."""
+        # Admin-gated: /config_* and /env_* touch global settings/secrets.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         args = context.args or []
         if len(args) < 2:
             await update.message.reply_text("Usage: /config_set <key> <value>")
@@ -1644,6 +1736,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_env_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_show — show all env vars with masked secrets."""
+        # Admin-gated: /config_* and /env_* touch global settings/secrets.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         chat_id = update.effective_chat.id
         try:
             data = await self.api.get_env_vars()
@@ -1686,6 +1781,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_env_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_get <key> — get unmasked value."""
+        # Admin-gated: /config_* and /env_* touch global settings/secrets.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         key = self._parse_args(context)
         if not key:
             await update.message.reply_text("Usage: /env_get <key>")
@@ -1708,6 +1806,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_env_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_set <key> <value>."""
+        # Admin-gated: /config_* and /env_* touch global settings/secrets.
+        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+            return
         args = context.args or []
         if len(args) < 2:
             await update.message.reply_text("Usage: /env_set <key> <value>")
@@ -1886,6 +1987,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_enable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enable <name>."""
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         name = self._parse_args(context)
         if not name:
             await update.message.reply_text("Usage: /tools_enable <tool_or_category>")
@@ -1899,7 +2003,7 @@ class NymeriaTelegramBot:
                 await update.message.reply_text(error)
                 return
 
-            tc = await self.api.get_thread_config(thread_id)
+            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
             current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
             current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
             new_enabled = current_enabled | set(tool_names)
@@ -1907,6 +2011,7 @@ class NymeriaTelegramBot:
 
             await self.api.update_thread_config(
                 thread_id,
+                user_id=user_id,
                 enabled_tools=sorted(new_enabled),
                 disabled_tools=sorted(new_disabled),
             )
@@ -1922,6 +2027,9 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_disable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_disable <name>."""
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         name = self._parse_args(context)
         if not name:
             await update.message.reply_text("Usage: /tools_disable <tool_or_category>")
@@ -1935,7 +2043,7 @@ class NymeriaTelegramBot:
                 await update.message.reply_text(error)
                 return
 
-            tc = await self.api.get_thread_config(thread_id)
+            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
             current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
             current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
             new_enabled = current_enabled - set(tool_names)
@@ -1943,6 +2051,7 @@ class NymeriaTelegramBot:
 
             await self.api.update_thread_config(
                 thread_id,
+                user_id=user_id,
                 enabled_tools=sorted(new_enabled),
                 disabled_tools=sorted(new_disabled),
             )
@@ -1963,7 +2072,9 @@ class NymeriaTelegramBot:
     async def _cmd_memory_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_list."""
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             memories = await self.api.list_memories(user_id)
             if not memories:
@@ -1993,7 +2104,9 @@ class NymeriaTelegramBot:
             return
         key = args[0]
         value = " ".join(args[1:])
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             await self.api.save_memory(user_id, key, value)
             await update.message.reply_text(f"Saved memory: {key}")
@@ -2009,7 +2122,9 @@ class NymeriaTelegramBot:
         if not key:
             await update.message.reply_text("Usage: /memory_forget <key>")
             return
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             await self.api.forget_memory(user_id, key)
             await update.message.reply_text(f"Forgot memory: {key}")
@@ -2029,7 +2144,9 @@ class NymeriaTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        user_id = make_user_id(update.effective_user.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             results = await self.api.search_memories(user_id, query)
             if not results:

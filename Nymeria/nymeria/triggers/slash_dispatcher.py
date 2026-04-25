@@ -435,11 +435,11 @@ class SlashCommandDispatcher:
         scope = args[1].lower() if len(args) > 1 else "global"
         if scope == "thread":
             await self.api.update_thread_config(
-                self.thread_id, llm_config={"model": name}
+                self.thread_id, user_id=self.user_id, llm_config={"model": name}
             )
             return f"[Success]: Model for this thread set to {name}."
         if scope == "global":
-            result = await self.api.update_settings(llm_model=name)
+            result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
             msg = f"[Success]: Global model set to {name}."
             if result.get("restart_required"):
                 msg += " (restart required to take effect)"
@@ -478,15 +478,21 @@ class SlashCommandDispatcher:
         value = args[0].lower()
         if value == "off":
             await self.api.update_settings(
-                llm_extended_thinking=False, llm_reasoning_effort=None
+                user_id=self.user_id,
+                llm_extended_thinking=False,
+                llm_reasoning_effort=None,
             )
             return "[Success]: Thinking disabled."
         if value == "on":
-            await self.api.update_settings(llm_extended_thinking=True)
+            await self.api.update_settings(
+                user_id=self.user_id, llm_extended_thinking=True
+            )
             return "[Success]: Thinking enabled."
         if value in ("low", "medium", "high"):
             await self.api.update_settings(
-                llm_extended_thinking=True, llm_reasoning_effort=value
+                user_id=self.user_id,
+                llm_extended_thinking=True,
+                llm_reasoning_effort=value,
             )
             return f"[Success]: Thinking enabled, effort: {value}."
         return "[Error]: Usage: /think [off|on|low|medium|high]"
@@ -542,7 +548,7 @@ class SlashCommandDispatcher:
         key = args[0]
         value_str = " ".join(args[1:])
         parsed = _coerce(value_str)
-        result = await self.api.update_settings(**{key: parsed})
+        result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
         msg = f"[Success]: {key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
@@ -551,7 +557,7 @@ class SlashCommandDispatcher:
     # ── Env ───────────────────────────────────────────────────────────────
 
     async def _cmd_env_show(self, args: list[str], rest: str) -> str:
-        data = await self.api.get_env_vars()
+        data = await self.api.get_env_vars(user_id=self.user_id)
         entries = data.get("entries", [])
         by_cat: dict[str, list] = {}
         for e in entries:
@@ -576,7 +582,7 @@ class SlashCommandDispatcher:
             return "[Error]: Usage: /env get <key>"
         key = args[0]
         try:
-            data = await self.api.get_env_var(key)
+            data = await self.api.get_env_var(key, user_id=self.user_id)
         except httpx.HTTPStatusError as e:
             if e.response is not None and e.response.status_code == 404:
                 return f"[Error]: Unknown variable '{key}'."
@@ -595,7 +601,7 @@ class SlashCommandDispatcher:
         parsed = _coerce(value_str)
         # Mirror telegram: env set uses update_settings; the /settings model
         # maps env-var keys through.
-        result = await self.api.update_settings(**{key: parsed})
+        result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
         msg = f"[Success]: {key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
@@ -743,6 +749,7 @@ class SlashCommandDispatcher:
         new_disabled = current_disabled - set(tool_names)
         await self.api.update_thread_config(
             self.thread_id,
+            user_id=self.user_id,
             enabled_tools=sorted(new_enabled),
             disabled_tools=sorted(new_disabled),
         )
@@ -764,6 +771,7 @@ class SlashCommandDispatcher:
         new_disabled = current_disabled | set(tool_names)
         await self.api.update_thread_config(
             self.thread_id,
+            user_id=self.user_id,
             enabled_tools=sorted(new_enabled),
             disabled_tools=sorted(new_disabled),
         )
