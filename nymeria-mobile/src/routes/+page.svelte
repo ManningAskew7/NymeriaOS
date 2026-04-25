@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import MobileShell from '$lib/components/layout/MobileShell.svelte';
   import { SetupWizard } from '$lib/components/common';
+  import ErrorToast from '$lib/components/common/ErrorToast.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -116,3 +117,8 @@
 {:else}
   <MobileShell />
 {/if}
+
+<!-- Global toast layer — sits above every other surface so 401/403/409
+     responses from the account/admin endpoints stay visible regardless of
+     which panel/modal is on top. -->
+<ErrorToast />

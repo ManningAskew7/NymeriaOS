@@ -13,7 +13,7 @@
   import { ToolManagementPanel } from '../tools';
   import SkillsPanel from '../skills/SkillsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
-  import { AccountTab } from '../account';
+  import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
 
   interface Props {
@@ -651,18 +651,10 @@
     </div>
   {/if}
 
-  <!-- Users Tab (admin only — full panel ships in Phase D) -->
+  <!-- Users Tab (admin only) -->
   {#if activeTab === 'users' && isAdmin}
     <div class="tab-content">
-      <div class="users-tab-placeholder">
-        <h3>User management</h3>
-        <p>
-          The full admin panel for creating, disabling, and rotating tokens for
-          other users ships in the next phase. The backend HTTP endpoints
-          (<code>/admin/users</code>) are already in place if you'd like to use
-          them via curl in the meantime.
-        </p>
-      </div>
+      <UsersTab />
     </div>
   {/if}
 

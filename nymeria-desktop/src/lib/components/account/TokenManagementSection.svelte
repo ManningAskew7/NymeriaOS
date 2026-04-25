@@ -10,14 +10,22 @@
 
   interface Props {
     /**
-     * Whose tokens to manage. Phase C only supports 'self' (calls /me/tokens
-     * with the current Bearer). Phase D will add 'admin' (calls
-     * /admin/users/{id}/tokens) by accepting a userId here.
+     * Whose tokens to manage:
+     *   - 'self'  (default): wraps /me/tokens; uses the calling user's bearer.
+     *   - 'admin': wraps /admin/users/{userId}/tokens; the caller must hold
+     *     an admin token. When userId resolves to the calling user, this is
+     *     equivalent to 'self' but goes through the admin endpoints.
+     * The admin mode also exposes a "Rotate all" action that revokes every
+     * active token for the target user and mints a fresh one in the same call.
      */
-    mode?: 'self';
+    mode?: 'self' | 'admin';
+    /** Required when mode === 'admin'. Ignored in self mode. */
+    userId?: string;
+    /** Optional human label shown in the rotate-all confirmation. */
+    userLabel?: string;
   }
 
-  let { mode = 'self' }: Props = $props();
+  let { mode = 'self', userId, userLabel }: Props = $props();
 
   let tokens = $state<TokenInfo[]>([]);
   let loading = $state(false);
@@ -33,13 +41,18 @@
   let issuedLabel = $state<string | null>(null);
 
   let revokingPrefix = $state<string | null>(null);
+  let rotating = $state(false);
 
   async function load() {
     if (loading) return;
     loading = true;
     loadError = null;
     try {
-      tokens = await api.listMyTokens();
+      if (mode === 'admin' && userId) {
+        tokens = await api.listUserTokens(userId);
+      } else {
+        tokens = await api.listMyTokens();
+      }
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to load tokens';
     } finally {
@@ -47,12 +60,13 @@
     }
   }
 
-  // Initial load + reload whenever the calling identity changes (e.g. switched
-  // accounts in the AccountSwitcher). load() is wrapped in untrack so its
-  // internal reads of `loading` don't establish a dependency that would re-fire
-  // this effect every time the in-flight fetch toggles loading on/off.
+  // Initial load + reload whenever the calling identity changes (self mode)
+  // or the target user changes (admin mode). load() is wrapped in untrack so
+  // its internal reads of `loading` don't establish a dependency that would
+  // re-fire this effect every time the in-flight fetch toggles loading on/off.
   $effect(() => {
     void configStore.identity?.id;
+    void userId;
     untrack(() => {
       void load();
     });
@@ -74,17 +88,42 @@
     issueError = null;
     issuing = true;
     try {
-      const res = await api.issueMyToken(issueLabel.trim() || undefined);
+      const labelArg = issueLabel.trim() || undefined;
+      const res =
+        mode === 'admin' && userId
+          ? await api.issueUserToken(userId, labelArg)
+          : await api.issueMyToken(labelArg);
       issuedRawToken = res.raw_token;
       issuedLabel = res.metadata.label;
       showIssueDialog = false;
       showCopyDialog = true;
-      // Refresh list to show the new entry.
       await load();
     } catch (e) {
       issueError = e instanceof Error ? e.message : 'Failed to issue token';
     } finally {
       issuing = false;
+    }
+  }
+
+  async function handleRotateAll() {
+    if (!(mode === 'admin' && userId) || rotating) return;
+    const subject = userLabel ? `for ${userLabel}` : 'for this user';
+    const ok = window.confirm(
+      `Rotate every active token ${subject}? All current sessions will be signed out and a fresh token will be issued.`
+    );
+    if (!ok) return;
+    rotating = true;
+    loadError = null;
+    try {
+      const res = await api.rotateUserTokens(userId);
+      issuedRawToken = res.raw_token;
+      issuedLabel = res.metadata.label;
+      showCopyDialog = true;
+      await load();
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to rotate tokens';
+    } finally {
+      rotating = false;
     }
   }
 
@@ -103,7 +142,11 @@
     if (!ok) return;
     revokingPrefix = token.token_hash_prefix;
     try {
-      await api.revokeMyToken(token.token_hash_prefix);
+      if (mode === 'admin' && userId) {
+        await api.revokeUserToken(userId, token.token_hash_prefix);
+      } else {
+        await api.revokeMyToken(token.token_hash_prefix);
+      }
       await load();
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to revoke token';
@@ -141,10 +184,24 @@
         <span class="revoked-count">· {revokedTokens.length} revoked</span>
       {/if}
     </div>
-    <Button size="sm" onclick={openIssueDialog} disabled={issuing}>
-      <Icon name="plus" size={14} />
-      Issue token
-    </Button>
+    <div class="header-actions">
+      {#if mode === 'admin' && userId}
+        <Button
+          size="sm"
+          variant="ghost"
+          onclick={handleRotateAll}
+          disabled={rotating || issuing || activeTokens.length === 0}
+          title="Revoke every active token and issue a fresh one"
+        >
+          <Icon name={rotating ? 'loading' : 'refresh'} size={14} />
+          {rotating ? 'Rotating…' : 'Rotate all'}
+        </Button>
+      {/if}
+      <Button size="sm" onclick={openIssueDialog} disabled={issuing}>
+        <Icon name="plus" size={14} />
+        Issue token
+      </Button>
+    </div>
   </div>
 
   {#if loadError}
@@ -278,6 +335,12 @@
     gap: 6px;
     font-size: var(--font-size-sm);
     color: var(--text-secondary);
+  }
+
+  .header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
   }
 
   .active-count {

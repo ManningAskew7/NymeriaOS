@@ -10,13 +10,18 @@
 
   interface Props {
     /**
-     * Whose tokens to manage. Phase C only supports 'self' (calls /me/tokens
-     * with the current Bearer). Phase D adds admin mode.
+     * Whose tokens to manage:
+     *   - 'self'  (default): wraps /me/tokens; uses the calling user's bearer.
+     *   - 'admin': wraps /admin/users/{userId}/tokens. Admin mode also adds
+     *     a "Rotate all" action.
      */
-    mode?: 'self';
+    mode?: 'self' | 'admin';
+    /** Required when mode === 'admin'. */
+    userId?: string;
+    userLabel?: string;
   }
 
-  let { mode = 'self' }: Props = $props();
+  let { mode = 'self', userId, userLabel }: Props = $props();
 
   let tokens = $state<TokenInfo[]>([]);
   let loading = $state(false);
@@ -32,13 +37,18 @@
   let issuedLabel = $state<string | null>(null);
 
   let revokingPrefix = $state<string | null>(null);
+  let rotating = $state(false);
 
   async function load() {
     if (loading) return;
     loading = true;
     loadError = null;
     try {
-      tokens = await api.listMyTokens();
+      if (mode === 'admin' && userId) {
+        tokens = await api.listUserTokens(userId);
+      } else {
+        tokens = await api.listMyTokens();
+      }
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to load tokens';
     } finally {
@@ -51,6 +61,7 @@
   // loading on/off.
   $effect(() => {
     void configStore.identity?.id;
+    void userId;
     untrack(() => {
       void load();
     });
@@ -72,7 +83,11 @@
     issueError = null;
     issuing = true;
     try {
-      const res = await api.issueMyToken(issueLabel.trim() || undefined);
+      const labelArg = issueLabel.trim() || undefined;
+      const res =
+        mode === 'admin' && userId
+          ? await api.issueUserToken(userId, labelArg)
+          : await api.issueMyToken(labelArg);
       issuedRawToken = res.raw_token;
       issuedLabel = res.metadata.label;
       showIssueDialog = false;
@@ -82,6 +97,28 @@
       issueError = e instanceof Error ? e.message : 'Failed to issue token';
     } finally {
       issuing = false;
+    }
+  }
+
+  async function handleRotateAll() {
+    if (!(mode === 'admin' && userId) || rotating) return;
+    const subject = userLabel ? `for ${userLabel}` : 'for this user';
+    const ok = window.confirm(
+      `Rotate every active token ${subject}? All current sessions will be signed out and a fresh token will be issued.`
+    );
+    if (!ok) return;
+    rotating = true;
+    loadError = null;
+    try {
+      const res = await api.rotateUserTokens(userId);
+      issuedRawToken = res.raw_token;
+      issuedLabel = res.metadata.label;
+      showCopyDialog = true;
+      await load();
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to rotate tokens';
+    } finally {
+      rotating = false;
     }
   }
 
@@ -100,7 +137,11 @@
     if (!ok) return;
     revokingPrefix = token.token_hash_prefix;
     try {
-      await api.revokeMyToken(token.token_hash_prefix);
+      if (mode === 'admin' && userId) {
+        await api.revokeUserToken(userId, token.token_hash_prefix);
+      } else {
+        await api.revokeMyToken(token.token_hash_prefix);
+      }
       await load();
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to revoke token';
@@ -138,10 +179,23 @@
         <span class="revoked-count">· {revokedTokens.length} revoked</span>
       {/if}
     </div>
-    <Button size="sm" onclick={openIssueDialog} disabled={issuing}>
-      <Icon name="plus" size={14} />
-      Issue
-    </Button>
+    <div class="header-actions">
+      {#if mode === 'admin' && userId}
+        <Button
+          size="sm"
+          variant="ghost"
+          onclick={handleRotateAll}
+          disabled={rotating || issuing || activeTokens.length === 0}
+        >
+          <Icon name={rotating ? 'loading' : 'refresh'} size={14} />
+          {rotating ? 'Rotating…' : 'Rotate'}
+        </Button>
+      {/if}
+      <Button size="sm" onclick={openIssueDialog} disabled={issuing}>
+        <Icon name="plus" size={14} />
+        Issue
+      </Button>
+    </div>
   </div>
 
   {#if loadError}
@@ -268,6 +322,12 @@
     gap: 6px;
     font-size: var(--font-size-sm);
     color: var(--text-secondary);
+  }
+
+  .header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
   }
 
   .active-count {

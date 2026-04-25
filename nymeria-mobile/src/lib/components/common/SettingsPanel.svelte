@@ -11,7 +11,7 @@
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
   import { ToolManagementPanel } from '../tools';
-  import { AccountTab } from '../account';
+  import { AccountTab, UsersTab } from '../account';
 
   interface Props {
     open: boolean;
@@ -826,16 +826,9 @@
       {:else if activeTab === 'account'}
         <AccountTab />
 
-      <!-- Users Tab (admin only — full panel ships in Phase D) -->
+      <!-- Users Tab (admin only) -->
       {:else if activeTab === 'users' && isAdmin}
-        <div class="users-placeholder">
-          <h3>User management</h3>
-          <p>
-            The full admin panel for creating, disabling, and rotating tokens
-            for other users ships in the next phase. The backend HTTP endpoints
-            (<code>/admin/users</code>) are already in place.
-          </p>
-        </div>
+        <UsersTab />
       {/if}
     </div>
 
