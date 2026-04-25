@@ -10,9 +10,11 @@
     isOpen: boolean;
     onClose: () => void;
     onOpenSettings: (tab?: string) => void;
+    onOpenSwitcher: () => void;
+    onOpenAddAccount: () => void;
   }
 
-  let { isOpen, onClose, onOpenSettings }: Props = $props();
+  let { isOpen, onClose, onOpenSettings, onOpenSwitcher, onOpenAddAccount }: Props = $props();
 
   let identity = $derived(configStore.identity);
   let isAdmin = $derived(identity?.role === 'admin');
@@ -36,16 +38,13 @@
   }
 
   function handleSwitchAccount() {
-    // Phase B: Opens AccountSwitcher panel. For now, fall back to legacy
-    // connection management until that ships.
     onClose();
-    onOpenSettings('connection');
+    onOpenSwitcher();
   }
 
   function handleAddAccount() {
-    // Phase B: Opens AddAccountSheet. Fall back to connection settings for now.
     onClose();
-    onOpenSettings('connection');
+    onOpenAddAccount();
   }
 
   function handleSignOut() {

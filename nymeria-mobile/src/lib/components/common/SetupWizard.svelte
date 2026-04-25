@@ -1,9 +1,13 @@
 <script lang="ts">
+  import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
   import Spinner from './Spinner.svelte';
+  import Avatar from '$lib/components/account/Avatar.svelte';
+  import RoleChip from '$lib/components/account/RoleChip.svelte';
+  import { identityDisplayName } from '$lib/components/account/avatar';
 
   let step = $state(0);
   let apiUrl = $state('');
@@ -11,6 +15,9 @@
   let testing = $state(false);
   let testResult = $state<'success' | 'error' | null>(null);
   let testMessage = $state('');
+  // Resolved identity from /me — surfaces in the test step so the user can
+  // confirm they're signing in as the expected account before completing.
+  let resolvedIdentity = $state<AccountIdentity | null>(null);
 
   function canProceed(): boolean {
     switch (step) {
@@ -33,6 +40,7 @@
     testing = true;
     testResult = null;
     testMessage = '';
+    resolvedIdentity = null;
 
     // Temporarily set config for the API client
     const prevUrl = configStore.apiUrl;
@@ -64,6 +72,12 @@
         configStore.apiUrl = prevUrl;
         configStore.apiKey = prevKey;
         return;
+      }
+
+      try {
+        resolvedIdentity = (await authResponse.json()) as AccountIdentity;
+      } catch {
+        resolvedIdentity = null;
       }
 
       const settings = await api.getServerSettings();
@@ -181,6 +195,22 @@
             <div class="test-result error">
               <Icon name="error" size={16} />
               <span>{testMessage}</span>
+            </div>
+          {/if}
+
+          {#if resolvedIdentity}
+            <div class="identity-preview">
+              <Avatar identity={resolvedIdentity} size={40} state="connected" />
+              <div class="identity-meta">
+                <div class="identity-line">
+                  <span>You'll be signed in as</span>
+                  <strong>{identityDisplayName(resolvedIdentity)}</strong>
+                  <RoleChip role={resolvedIdentity.role} size="xs" />
+                </div>
+                {#if resolvedIdentity.email && resolvedIdentity.email !== resolvedIdentity.display_name}
+                  <span class="identity-email">{resolvedIdentity.email}</span>
+                {/if}
+              </div>
             </div>
           {/if}
         </div>
@@ -376,6 +406,46 @@
   .test-result.error {
     background: rgba(248, 113, 113, 0.1);
     color: var(--error);
+  }
+
+  .identity-preview {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    width: 100%;
+    background: var(--bg-elevated);
+    border: 1px solid var(--accent-primary);
+    border-radius: var(--radius-md);
+  }
+
+  .identity-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .identity-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
+  .identity-line strong {
+    color: var(--text-primary);
+  }
+
+  .identity-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-muted);
   }
 
   .tips {

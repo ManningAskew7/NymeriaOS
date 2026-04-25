@@ -1,8 +1,12 @@
 <script lang="ts">
+  import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
+  import Avatar from '$lib/components/account/Avatar.svelte';
+  import RoleChip from '$lib/components/account/RoleChip.svelte';
+  import { identityDisplayName } from '$lib/components/account/avatar';
 
   // Wizard state
   let currentStep = $state(1);
@@ -16,11 +20,15 @@
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
   let backendInfo = $state<{ version?: string; provider?: string } | null>(null);
+  // Resolved identity from /me — surfaces in Step 3 so the user can confirm
+  // they're signing in as the expected account before completing setup.
+  let resolvedIdentity = $state<AccountIdentity | null>(null);
 
   async function testConnection() {
     testStatus = 'testing';
     testMessage = '';
     backendInfo = null;
+    resolvedIdentity = null;
 
     // Temporarily set config for the test
     configStore.apiUrl = apiUrl;
@@ -44,6 +52,14 @@
         testStatus = 'error';
         testMessage = `Auth check failed: ${authResponse.status}`;
         return;
+      }
+
+      // Surface the resolved account so the user can sanity-check before
+      // committing — guards against accidentally pasting the wrong token.
+      try {
+        resolvedIdentity = (await authResponse.json()) as AccountIdentity;
+      } catch {
+        resolvedIdentity = null;
       }
 
       testStatus = 'success';
@@ -216,6 +232,22 @@
             {#if backendInfo}
               <div class="backend-info">
                 LLM Provider: <strong>{backendInfo.provider}</strong>
+              </div>
+            {/if}
+
+            {#if resolvedIdentity}
+              <div class="identity-preview">
+                <Avatar identity={resolvedIdentity} size={40} state="connected" />
+                <div class="identity-meta">
+                  <div class="identity-line">
+                    <span>You'll be signed in as</span>
+                    <strong>{identityDisplayName(resolvedIdentity)}</strong>
+                    <RoleChip role={resolvedIdentity.role} size="xs" />
+                  </div>
+                  {#if resolvedIdentity.email && resolvedIdentity.email !== resolvedIdentity.display_name}
+                    <span class="identity-email">{resolvedIdentity.email}</span>
+                  {/if}
+                </div>
               </div>
             {/if}
           </div>
@@ -457,6 +489,46 @@
     margin-top: var(--spacing-sm);
     font-size: var(--font-size-sm);
     color: var(--text-secondary);
+  }
+
+  .identity-preview {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--accent-primary);
+    border-radius: var(--radius-md);
+    box-shadow: 0 0 0 3px var(--accent-primary-alpha, rgba(34, 211, 238, 0.08));
+  }
+
+  .identity-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .identity-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
+  .identity-line strong {
+    color: var(--text-primary);
+  }
+
+  .identity-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-muted);
   }
 
   .complete-step {
