@@ -4,6 +4,7 @@
   import SettingsPanel from '$lib/components/common/SettingsPanel.svelte';
   import { ThreadList } from '$lib/components/threads';
   import { NotificationCenter } from '$lib/components/notifications';
+  import { AccountBadge } from '$lib/components/account';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -11,6 +12,17 @@
 
   let showNotifications = $state(false);
   let showSettings = $state(false);
+  let settingsInitialTab = $state<string | undefined>(undefined);
+
+  function openSettings(tab?: string) {
+    settingsInitialTab = tab;
+    showSettings = true;
+  }
+
+  function closeSettings() {
+    showSettings = false;
+    settingsInitialTab = undefined;
+  }
 
   function handleNewChat() {
     const thread = threadsStore.createThread();
@@ -47,7 +59,8 @@
     <ConnectionStatus />
 
     <div class="footer-actions">
-      <button class="footer-btn" title="Settings" onclick={() => (showSettings = true)}>
+      <AccountBadge onOpenSettings={openSettings} />
+      <button class="footer-btn" title="Settings" onclick={() => openSettings()}>
         <Icon name="settings" size={20} />
       </button>
       <button
@@ -72,7 +85,8 @@
 
 <SettingsPanel
   open={showSettings}
-  onClose={() => (showSettings = false)}
+  initialTab={settingsInitialTab}
+  onClose={closeSettings}
 />
 
 <style>

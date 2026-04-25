@@ -21,7 +21,15 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
-from ..core.accounts import AuthenticatedUser
+from ..core.accounts import (
+    AmbiguousTokenPrefix,
+    AuthenticatedUser,
+    LastAdminError,
+    TokenNotFound,
+    UserAlreadyExists,
+    UserHasResources,
+    UserNotFound,
+)
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
 from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
 from ..core.notifications import NotificationStore, Notification, get_notification_store
@@ -536,6 +544,76 @@ class UnifiedToolConfigRequest(BaseModel):
     config: Dict[str, Any]
 
 
+# --- Admin user/token/platform models --------------------------------------
+
+
+class AdminUserResponse(BaseModel):
+    id: str
+    email: str
+    display_name: str
+    role: Literal["user", "admin"]
+    disabled: bool
+    created_at: str
+    updated_at: str
+    token_count: int
+    last_token_use: Optional[str]
+    thread_count: Optional[int] = None
+    todo_count: Optional[int] = None
+    platform_count: Optional[int] = None
+
+
+class AdminUserCreateRequest(BaseModel):
+    email: str
+    display_name: Optional[str] = None
+    role: Literal["user", "admin"] = "user"
+    id: Optional[str] = None
+    token_label: Optional[str] = None
+
+
+class AdminUserUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[Literal["user", "admin"]] = None
+    disabled: Optional[bool] = None
+
+
+class TokenInfoResponse(BaseModel):
+    token_hash_prefix: str
+    label: Optional[str]
+    created_at: str
+    last_used_at: Optional[str]
+    revoked_at: Optional[str]
+
+
+class TokenIssueRequest(BaseModel):
+    label: Optional[str] = None
+
+
+class IssuedTokenResponse(BaseModel):
+    raw_token: str
+    metadata: TokenInfoResponse
+
+
+class RotatedTokensResponse(BaseModel):
+    raw_token: str
+    metadata: TokenInfoResponse
+    revoked_count: int
+
+
+class PlatformIdentityResponse(BaseModel):
+    provider: Literal["discord", "telegram", "twitch"]
+    provider_user_id: str
+    created_at: str
+
+
+class PlatformLinkRequest(BaseModel):
+    provider: Literal["discord", "telegram", "twitch"]
+    provider_user_id: str
+
+
+class MeUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+
+
 # Sub-Agent Models
 
 
@@ -829,6 +907,22 @@ def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+_TOKEN_HASH_PREFIX_LEN = 8
+
+
+def _token_info(record) -> "TokenInfoResponse":
+    """Project a TokenRecord onto the public TokenInfoResponse — exposing
+    only the first 8 hex chars of the sha256 hash so the UI has a stable
+    handle for revoke without ever seeing raw token material."""
+    return TokenInfoResponse(
+        token_hash_prefix=record.token_hash[:_TOKEN_HASH_PREFIX_LEN],
+        label=record.label,
+        created_at=record.created_at,
+        last_used_at=record.last_used_at,
+        revoked_at=record.revoked_at,
+    )
+
+
 # ============================================================================
 # API Application
 # ============================================================================
@@ -981,6 +1075,440 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if user_id is None:
             raise HTTPException(status_code=404, detail="Not linked")
         return {"user_id": user_id}
+
+    # ========================================================================
+    # Self (PATCH /me, /me/tokens) — any authenticated user
+    # ========================================================================
+
+    @app.patch("/me", tags=["Auth"])
+    async def patch_me(
+        body: MeUpdateRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Update the current user's own profile fields (display_name only)."""
+        if body.display_name is not None and not body.display_name.strip():
+            raise HTTPException(status_code=400, detail="display_name cannot be empty")
+        try:
+            updated = get_agent().accounts_repo.update_user(
+                user.id, display_name=body.display_name
+            )
+        except UserNotFound:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "id": updated.id,
+            "email": updated.email,
+            "display_name": updated.display_name,
+            "role": updated.role,
+        }
+
+    @app.get(
+        "/me/tokens",
+        response_model=List[TokenInfoResponse],
+        tags=["Auth"],
+    )
+    async def list_my_tokens(user: AuthenticatedUser = Depends(verify_api_key)):
+        """List the current user's own API tokens."""
+        records = get_agent().accounts_repo.list_tokens_for_user(user.id)
+        return [_token_info(r) for r in records]
+
+    @app.post(
+        "/me/tokens",
+        response_model=IssuedTokenResponse,
+        tags=["Auth"],
+    )
+    async def issue_my_token(
+        body: TokenIssueRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Issue a new token for the current user. Raw token returned ONCE."""
+        repo = get_agent().accounts_repo
+        raw = repo.issue_token(user.id, label=body.label)
+        records = repo.list_tokens_for_user(user.id)
+        # Find the freshly-issued one (matches the raw's hash).
+        import hashlib as _hashlib
+        hash_full = _hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        rec = next((r for r in records if r.token_hash == hash_full), None)
+        if rec is None:
+            raise HTTPException(status_code=500, detail="Token issued but not found")
+        return IssuedTokenResponse(raw_token=raw, metadata=_token_info(rec))
+
+    @app.delete("/me/tokens/{token_hash_prefix}", tags=["Auth"])
+    async def revoke_my_token(
+        token_hash_prefix: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Revoke one of the current user's tokens by hash prefix."""
+        try:
+            revoked = get_agent().accounts_repo.revoke_token(user.id, token_hash_prefix)
+        except TokenNotFound:
+            raise HTTPException(status_code=404, detail="Token not found")
+        except AmbiguousTokenPrefix as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"revoked": revoked}
+
+    # ========================================================================
+    # Admin: /admin/users — caller must be admin
+    # ========================================================================
+
+    @app.get(
+        "/admin/users",
+        response_model=List[AdminUserResponse],
+        tags=["Admin"],
+    )
+    async def admin_list_users(
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """List every account. Counts are summary-level (no per-user counts
+        for threads/todos/platforms — fetch via GET /admin/users/{id} for that)."""
+        repo = get_agent().accounts_repo
+        users = repo.list_users()
+        out: List[AdminUserResponse] = []
+        for u in users:
+            tokens = repo.list_tokens_for_user(u.id)
+            active = [t for t in tokens if t.revoked_at is None]
+            last_use = max(
+                (t.last_used_at for t in active if t.last_used_at), default=None
+            )
+            out.append(
+                AdminUserResponse(
+                    id=u.id,
+                    email=u.email,
+                    display_name=u.display_name,
+                    role=u.role,
+                    disabled=u.disabled,
+                    created_at=u.created_at,
+                    updated_at=u.updated_at,
+                    token_count=len(active),
+                    last_token_use=last_use,
+                )
+            )
+        return out
+
+    @app.post(
+        "/admin/users",
+        response_model=IssuedTokenResponse,
+        tags=["Admin"],
+    )
+    async def admin_create_user(
+        body: AdminUserCreateRequest,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Create a new user and issue them a first token. Raw token shown ONCE."""
+        repo = get_agent().accounts_repo
+        email = body.email.strip().lower()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="Valid email required")
+        # Derive a stable id when not supplied. Prefer the local-part of the
+        # email; sanitize to repo-safe characters; fall back to a uuid suffix
+        # on collision (admins can rename later via the path-id form).
+        import re as _re
+        import uuid as _uuid
+        if body.id:
+            user_id = body.id
+        else:
+            user_id = _re.sub(r"[^a-z0-9_-]+", "", email.split("@", 1)[0])[:32] or _uuid.uuid4().hex[:12]
+        if repo.get_user_by_id(user_id) is not None:
+            user_id = f"{user_id}-{_uuid.uuid4().hex[:6]}"
+        display_name = (body.display_name or email.split("@", 1)[0]).strip()
+        try:
+            repo.create_user(
+                user_id=user_id,
+                email=email,
+                display_name=display_name,
+                role=body.role,
+            )
+        except UserAlreadyExists as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        raw = repo.issue_token(user_id, label=body.token_label or "initial")
+        records = repo.list_tokens_for_user(user_id)
+        import hashlib as _hashlib
+        hash_full = _hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        rec = next((r for r in records if r.token_hash == hash_full), None)
+        return IssuedTokenResponse(raw_token=raw, metadata=_token_info(rec))
+
+    @app.get(
+        "/admin/users/{user_id}",
+        response_model=AdminUserResponse,
+        tags=["Admin"],
+    )
+    async def admin_get_user(
+        user_id: str,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Get a single user with full counts (threads, todos, platforms)."""
+        repo = get_agent().accounts_repo
+        u = repo.get_user_by_id(user_id)
+        if u is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        tokens = repo.list_tokens_for_user(user_id)
+        active = [t for t in tokens if t.revoked_at is None]
+        last_use = max((t.last_used_at for t in active if t.last_used_at), default=None)
+        threads = repo.list_threads_for_user(user_id)
+        platforms = repo.list_platforms_for_user(user_id)
+        try:
+            todos = TodoManager(settings.data_dir).get_todos(user_id)
+            todo_count = len(todos.items) if todos else 0
+        except Exception:
+            todo_count = 0
+        return AdminUserResponse(
+            id=u.id,
+            email=u.email,
+            display_name=u.display_name,
+            role=u.role,
+            disabled=u.disabled,
+            created_at=u.created_at,
+            updated_at=u.updated_at,
+            token_count=len(active),
+            last_token_use=last_use,
+            thread_count=len(threads),
+            todo_count=todo_count,
+            platform_count=len(platforms),
+        )
+
+    @app.patch(
+        "/admin/users/{user_id}",
+        response_model=AdminUserResponse,
+        tags=["Admin"],
+    )
+    async def admin_update_user(
+        user_id: str,
+        body: AdminUserUpdateRequest,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Update display_name / role / disabled. Last-admin guard applies."""
+        repo = get_agent().accounts_repo
+        try:
+            if body.display_name is not None or body.role is not None:
+                if body.display_name is not None and not body.display_name.strip():
+                    raise HTTPException(status_code=400, detail="display_name cannot be empty")
+                repo.update_user(
+                    user_id,
+                    display_name=body.display_name,
+                    role=body.role,
+                )
+            if body.disabled is not None:
+                repo.set_disabled(user_id, body.disabled)
+        except UserNotFound:
+            raise HTTPException(status_code=404, detail="User not found")
+        except LastAdminError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        u = repo.get_user_by_id(user_id)
+        tokens = repo.list_tokens_for_user(user_id)
+        active = [t for t in tokens if t.revoked_at is None]
+        last_use = max((t.last_used_at for t in active if t.last_used_at), default=None)
+        return AdminUserResponse(
+            id=u.id,
+            email=u.email,
+            display_name=u.display_name,
+            role=u.role,
+            disabled=u.disabled,
+            created_at=u.created_at,
+            updated_at=u.updated_at,
+            token_count=len(active),
+            last_token_use=last_use,
+        )
+
+    @app.delete("/admin/users/{user_id}", tags=["Admin"])
+    async def admin_delete_user(
+        user_id: str,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Delete a user and cascade their tokens / platform identities.
+
+        Refuses (409) if the user still owns threads or todos — admin must
+        empty those first. Last-admin guard also applies.
+        """
+        repo = get_agent().accounts_repo
+        # Pre-check todos here since AccountsRepo doesn't know about them.
+        try:
+            todos = TodoManager(settings.data_dir).get_todos(user_id)
+            if todos and todos.items:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"User still owns {len(todos.items)} todo(s); delete those first",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Todo file may not exist; that's fine.
+        try:
+            repo.delete_user_cascade(user_id)
+        except UserNotFound:
+            raise HTTPException(status_code=404, detail="User not found")
+        except UserHasResources as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except LastAdminError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"deleted": True}
+
+    # --- admin: tokens for any user --------------------------------------
+
+    @app.get(
+        "/admin/users/{user_id}/tokens",
+        response_model=List[TokenInfoResponse],
+        tags=["Admin"],
+    )
+    async def admin_list_user_tokens(
+        user_id: str,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        repo = get_agent().accounts_repo
+        if repo.get_user_by_id(user_id) is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        return [_token_info(r) for r in repo.list_tokens_for_user(user_id)]
+
+    @app.post(
+        "/admin/users/{user_id}/tokens",
+        response_model=IssuedTokenResponse,
+        tags=["Admin"],
+    )
+    async def admin_issue_user_token(
+        user_id: str,
+        body: TokenIssueRequest,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        repo = get_agent().accounts_repo
+        try:
+            raw = repo.issue_token(user_id, label=body.label)
+        except UserNotFound:
+            raise HTTPException(status_code=404, detail="User not found")
+        records = repo.list_tokens_for_user(user_id)
+        import hashlib as _hashlib
+        hash_full = _hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        rec = next((r for r in records if r.token_hash == hash_full), None)
+        return IssuedTokenResponse(raw_token=raw, metadata=_token_info(rec))
+
+    @app.post(
+        "/admin/users/{user_id}/tokens/rotate",
+        response_model=RotatedTokensResponse,
+        tags=["Admin"],
+    )
+    async def admin_rotate_user_tokens(
+        user_id: str,
+        body: TokenIssueRequest,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Revoke every active token for the user, then issue a fresh one.
+
+        WARNING: any session/bot using a previous token will get 401 on its
+        next request — including this caller if they're rotating their own.
+        """
+        repo = get_agent().accounts_repo
+        if repo.get_user_by_id(user_id) is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        revoked_count = repo.revoke_all_tokens(user_id)
+        raw = repo.issue_token(user_id, label=body.label or "rotated")
+        records = repo.list_tokens_for_user(user_id)
+        import hashlib as _hashlib
+        hash_full = _hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        rec = next((r for r in records if r.token_hash == hash_full), None)
+        return RotatedTokensResponse(
+            raw_token=raw,
+            metadata=_token_info(rec),
+            revoked_count=revoked_count,
+        )
+
+    @app.delete(
+        "/admin/users/{user_id}/tokens/{token_hash_prefix}",
+        tags=["Admin"],
+    )
+    async def admin_revoke_user_token(
+        user_id: str,
+        token_hash_prefix: str,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        repo = get_agent().accounts_repo
+        if repo.get_user_by_id(user_id) is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        try:
+            revoked = repo.revoke_token(user_id, token_hash_prefix)
+        except TokenNotFound:
+            raise HTTPException(status_code=404, detail="Token not found")
+        except AmbiguousTokenPrefix as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"revoked": revoked}
+
+    # --- admin: platform identities for any user -------------------------
+
+    @app.get(
+        "/admin/users/{user_id}/platforms",
+        response_model=List[PlatformIdentityResponse],
+        tags=["Admin"],
+    )
+    async def admin_list_user_platforms(
+        user_id: str,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        repo = get_agent().accounts_repo
+        if repo.get_user_by_id(user_id) is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        return [
+            PlatformIdentityResponse(
+                provider=p.provider,
+                provider_user_id=p.provider_user_id,
+                created_at=p.created_at,
+            )
+            for p in repo.list_platforms_for_user(user_id)
+        ]
+
+    @app.post(
+        "/admin/users/{user_id}/platforms",
+        response_model=PlatformIdentityResponse,
+        tags=["Admin"],
+    )
+    async def admin_link_user_platform(
+        user_id: str,
+        body: PlatformLinkRequest,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        repo = get_agent().accounts_repo
+        existing_owner = repo.resolve_platform(body.provider, body.provider_user_id)
+        if existing_owner is not None and existing_owner != user_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Platform identity already linked to user '{existing_owner}'",
+            )
+        try:
+            repo.link_platform(body.provider, body.provider_user_id, user_id)
+        except UserNotFound:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Round-trip to fetch the row we just wrote, so created_at is honest.
+        for p in repo.list_platforms_for_user(user_id):
+            if p.provider == body.provider and p.provider_user_id == body.provider_user_id:
+                return PlatformIdentityResponse(
+                    provider=p.provider,
+                    provider_user_id=p.provider_user_id,
+                    created_at=p.created_at,
+                )
+        raise HTTPException(status_code=500, detail="Linked but not found")
+
+    @app.delete(
+        "/admin/users/{user_id}/platforms/{provider}/{provider_user_id}",
+        tags=["Admin"],
+    )
+    async def admin_unlink_user_platform(
+        user_id: str,
+        provider: str,
+        provider_user_id: str,
+        _admin: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        if provider not in ("discord", "telegram", "twitch"):
+            raise HTTPException(status_code=400, detail="Unknown provider")
+        repo = get_agent().accounts_repo
+        # Resolve current owner first so we can give a clear error if the
+        # identity exists but belongs to a different user.
+        owner = repo.resolve_platform(provider, provider_user_id)
+        if owner is None:
+            raise HTTPException(status_code=404, detail="Not linked")
+        if owner != user_id:
+            raise HTTPException(
+                status_code=404, detail="Not linked to this user"
+            )
+        repo.unlink_platform(provider, provider_user_id)
+        return {"unlinked": True}
 
     @app.post("/restart", tags=["System"])
     async def restart_server(user: AuthenticatedUser = Depends(require_admin_user)):

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { healthStore } from '$lib/stores/health.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import { Icon } from '$lib/components/common';
 
@@ -8,6 +9,10 @@
     healthStore.startPolling();
     return () => healthStore.stopPolling();
   });
+
+  // POST /restart is gated by require_admin_user — hide the button for
+  // non-admins so the UI doesn't promise an action that will 403.
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
 
   let restarting = $state(false);
 
@@ -65,7 +70,7 @@
     {#if healthStore.connected && healthStore.latencyMs !== null && !restarting}
       <span class="latency-badge">{healthStore.latencyMs}ms</span>
     {/if}
-    {#if healthStore.connected && !restarting}
+    {#if healthStore.connected && !restarting && isAdmin}
       <button
         class="restart-btn"
         onclick={handleRestart}

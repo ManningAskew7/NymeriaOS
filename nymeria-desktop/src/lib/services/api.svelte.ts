@@ -1,6 +1,7 @@
 import { configStore } from '$lib/stores/config.svelte';
 import { clientId } from '$lib/stores/clientId.svelte';
 import type {
+  AccountIdentity,
   SSEEvent,
   SSEEventType,
   ChatResponse,
@@ -165,6 +166,25 @@ export class NymeriaAPI {
     } catch {
       return false;
     }
+  }
+
+  async verifyAuth(): Promise<Response> {
+    return fetch(`${this.getBaseUrl()}/me`, {
+      headers: this.getHeaders()
+    });
+  }
+
+  async updateMe(displayName: string): Promise<AccountIdentity> {
+    const response = await fetch(`${this.getBaseUrl()}/me`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ display_name: displayName })
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || `Failed to update profile (${response.status})`);
+    }
+    return response.json();
   }
 
   async restartServer(): Promise<boolean> {

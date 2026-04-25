@@ -216,6 +216,55 @@ function createConfigStore() {
     saveCurrentConfig();
   }
 
+  /**
+   * Sign out of the current account: clears identity + apiKey and resets
+   * setupCompleted so the SetupWizard renders again. Active connection is
+   * also unset on desktop (mobile is single-connection). Per-feature stores
+   * are notified via the identity reload hooks.
+   */
+  function signOut(): void {
+    apiKey = '';
+    setupCompleted = false;
+    identity = null;
+    currentIdentityId = null;
+    saveCurrentConfig();
+    for (const hook of reloadHooks) {
+      try {
+        hook();
+      } catch (e) {
+        console.error('signOut reload hook failed:', e);
+      }
+    }
+  }
+
+  /**
+   * Update the caller's display name via PATCH /me, then refresh the cached
+   * identity. Bubbles errors so the UI can surface them to the user.
+   */
+  async function updateIdentityDisplayName(name: string): Promise<AccountIdentity> {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Display name cannot be empty');
+    if (!apiUrl || !apiKey) throw new Error('Not connected');
+    const base = apiUrl.replace(/\/$/, '');
+    const response = await fetch(`${base}/me`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ display_name: trimmed }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || `Failed to update display name (${response.status})`);
+    }
+    const data = (await response.json()) as AccountIdentity;
+    identity = data;
+    currentIdentityId = data.id;
+    saveCurrentConfig();
+    return data;
+  }
+
   return {
     get apiUrl() {
       return apiUrl;
@@ -273,6 +322,8 @@ function createConfigStore() {
     },
     refreshIdentity,
     clearIdentity,
+    signOut,
+    updateIdentityDisplayName,
     reset() {
       apiUrl = DEFAULT_API_URL;
       apiKey = DEFAULT_API_KEY;

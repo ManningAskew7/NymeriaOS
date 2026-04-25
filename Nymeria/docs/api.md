@@ -89,7 +89,57 @@ traffic without holding raw per-user tokens.
 - `403` — `{"detail": "Admin only"}` (non-admin token)
 - `404` — `{"detail": "Not linked"}`
 
-Create mappings with `python run.py users link-platform <email> <provider> <provider_user_id>`.
+Create mappings via `POST /admin/users/{id}/platforms` (see Account & User Administration below).
+
+---
+
+### Account & User Administration
+
+Self endpoints (`/me/*`) work for any authenticated user. Admin endpoints (`/admin/users/*`) require an admin token. Raw tokens are returned **once** in the response of any creation/issue/rotate call — they cannot be retrieved later.
+
+Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex chars of the sha256, returned in token list responses). The frontend never sees raw token material for tokens it didn't just mint.
+
+**Self — any authenticated user:**
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| `PATCH` | `/me` | `{display_name?}` | Update your own display name. Empty value → 400. |
+| `GET` | `/me/tokens` | — | List your tokens (no raw values). |
+| `POST` | `/me/tokens` | `{label?}` | Issue yourself a token. Returns `{raw_token, metadata}`. |
+| `DELETE` | `/me/tokens/{prefix}` | — | Revoke. 400 on ambiguous prefix, 404 on no match. |
+
+**Admin — caller must be admin:**
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| `GET` | `/admin/users` | — | List every user with `token_count` and `last_token_use`. |
+| `POST` | `/admin/users` | `{email, display_name?, role?, id?, token_label?}` | Create + issue first token. Returns `IssuedTokenResponse`. |
+| `GET` | `/admin/users/{id}` | — | Single user with `thread_count`, `todo_count`, `platform_count`. |
+| `PATCH` | `/admin/users/{id}` | `{display_name?, role?, disabled?}` | 409 if it would leave zero enabled admins. |
+| `DELETE` | `/admin/users/{id}` | — | 409 if user owns threads or todos; clean those first. |
+| `GET` | `/admin/users/{id}/tokens` | — | List a user's tokens. |
+| `POST` | `/admin/users/{id}/tokens` | `{label?}` | Issue a token for the user. |
+| `POST` | `/admin/users/{id}/tokens/rotate` | `{label?}` | Revoke all + issue one. Returns `RotatedTokensResponse` with `revoked_count`. |
+| `DELETE` | `/admin/users/{id}/tokens/{prefix}` | — | Revoke single by hash prefix. |
+| `GET` | `/admin/users/{id}/platforms` | — | List Discord/Telegram/Twitch identities. |
+| `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
+| `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
+
+**Issued-token response shape:**
+```json
+{
+  "raw_token": "nym_...",
+  "metadata": {
+    "token_hash_prefix": "a3f9b1c2",
+    "label": "initial",
+    "created_at": "2026-04-25T10:00:00+00:00",
+    "last_used_at": null,
+    "revoked_at": null
+  }
+}
+```
+
+See `docs/accounts.md` for the model, the bootstrap admin flow, and the service-token bootstrap recipe.
 
 ---
 
