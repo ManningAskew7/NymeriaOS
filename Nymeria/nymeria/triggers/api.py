@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -592,10 +593,8 @@ async def resolve_authenticated_user(
     """
     Resolve the caller to an :class:`AuthenticatedUser`.
 
-    Order of resolution:
-      1. Account token (``nym_...``) → the user it was issued to.
-      2. Legacy ``NYMERIA_API_KEY`` → the bootstrap admin (``default``). This
-         keeps existing clients working until the Step 3 cutover lands.
+    Only per-user account tokens (``nym_...``) are accepted — the legacy
+    ``NYMERIA_API_KEY`` shared key was retired in Step 3c.
 
     ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers.
     When present, the dep returns the target user instead of the admin, so
@@ -630,6 +629,7 @@ async def resolve_authenticated_user(
             email=target.email,
             display_name=target.display_name,
             role=target.role,
+            via_act_as=True,
         )
 
     return caller
@@ -642,6 +642,61 @@ async def require_admin_user(
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return user
+
+
+async def require_admin_caller(
+    authorization: Optional[str] = Header(None),
+    x_nymeria_act_as: Optional[str] = Header(None),
+    settings: Settings = Depends(get_settings),
+) -> AuthenticatedUser:
+    """
+    Like :func:`resolve_authenticated_user` but asserts the *caller's*
+    token role is admin (pre-act-as), then returns the effective user.
+
+    Use this on routes where the caller must be admin AND should be able
+    to impersonate any user (admin OR non-admin) via ``X-Nymeria-Act-As``.
+    Subsequent ownership checks like :func:`_require_thread_access` then
+    run against the impersonated target — so an admin acting on behalf of
+    user X can mutate X's thread-bound resources without claim-jacking
+    threads owned by user Y.
+
+    Contrast with :func:`require_admin_user`, which checks *target* role
+    after act-as resolution and therefore rejects ``admin → non-admin``
+    impersonation entirely (correct for endpoints whose privilege only
+    makes sense as an admin operation, like raw MCP CRUD).
+    """
+    presented = _extract_bearer_token(authorization)
+
+    try:
+        agent = get_agent()
+    except RuntimeError:
+        agent = None
+
+    caller = None
+    if agent is not None:
+        caller = agent.accounts_repo.verify_token(presented)
+
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if caller.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    if x_nymeria_act_as:
+        if agent is None:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+        target = agent.accounts_repo.get_user_by_id(x_nymeria_act_as)
+        if target is None or target.disabled:
+            raise HTTPException(status_code=404, detail="Act-As target not found")
+        return AuthenticatedUser(
+            id=target.id,
+            email=target.email,
+            display_name=target.display_name,
+            role=target.role,
+            via_act_as=True,
+        )
+
+    return caller
 
 
 async def _authed_user_id(
@@ -675,18 +730,100 @@ def _require_same_user_or_admin(user: AuthenticatedUser, path_user_id: str) -> N
         raise HTTPException(status_code=404, detail="Not found")
 
 
+_CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _validate_callable_name(name: str) -> None:
+    """Reject callable names that would crash LLM tool/function binding.
+
+    OpenAI and Anthropic both require tool names matching
+    ``^[a-zA-Z0-9_-]{1,64}$``. We enforce here so the rejection is HTTP 400
+    at config time rather than a runtime explosion the first time the agent
+    tries to call the tool. Used by both POST /agents/threads (via Pydantic
+    field pattern) and PATCH /threads/{id}/config + the metadata-rename path
+    where Pydantic isn't sufficient because the title flows into
+    ``callable_name``.
+    """
+    if not _CALLABLE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid callable name '{name}': must match "
+                "[a-zA-Z0-9_-]{1,64} for LLM tool binding (no spaces, dots, "
+                "or punctuation)."
+            ),
+        )
+
+
+def _is_shared_channel_thread(thread_id: str) -> bool:
+    """Return True if ``thread_id`` is a multi-user shared channel — i.e.
+    Discord guild/server channel, Telegram group/supergroup, or Twitch
+    stream chat. These threads are inherently shared by every linked user
+    in the channel; ownership enforcement would just claim-jack to whoever
+    spoke first.
+
+    Convention (set by the bot ``make_thread_id`` helpers):
+      - ``discord_dm_<channel_id>``       → 1:1 DM, per-user
+      - ``discord_<guild_id>_<channel_id>`` → shared channel
+      - ``telegram_<positive_chat_id>``   → 1:1 DM
+      - ``telegram_-<digits>``            → group/supergroup/channel (Telegram
+                                            uses negative chat IDs for these)
+      - ``twitch_<channel_name>``         → shared stream chat
+    """
+    if thread_id.startswith("discord_dm_"):
+        return False
+    if thread_id.startswith("discord_"):
+        return True
+    if thread_id.startswith("telegram_-"):
+        return True
+    if thread_id.startswith("twitch_"):
+        return True
+    return False
+
+
 def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
     """
-    Enforce that ``user`` owns ``thread_id`` (or is admin acting as the
-    owner). First-touch claims the thread for the caller — if no existing
-    owner row is in ``thread_owners``, the thread is claimed atomically
-    for ``user.id``. Subsequent access by any other user resolves to 404.
+    Enforce that ``user`` owns ``thread_id`` (or is admin).
 
-    Thread IDs supplied by clients can be arbitrary UUIDs, so the 404 is
-    intentional — don't leak whether a thread exists under a different
-    owner.
+    Admins bypass ownership entirely but never claim implicitly. This covers
+    the bot service token, the bootstrap admin user, and admin callers using
+    ``X-Nymeria-Act-As`` (verify_api_key has already rewritten ``user`` to
+    the impersonated target — if that target isn't admin, normal ownership
+    rules apply). Not claiming on admin touch prevents the bot service token
+    from claim-jacking shared threads when a slash command forgets to plumb
+    ``act_as``.
+
+    Non-admin callers cannot reach shared-channel threads (Discord guild
+    channels, Telegram groups, Twitch chats) via the API. There is no
+    membership table; the only legitimate path is the bot service token
+    (admin) routing platform users via ``X-Nymeria-Act-As`` for personal
+    data attribution. Returning 404 here prevents an authenticated user
+    from guessing a ``discord_<g>_<c>`` / ``telegram_-<id>`` / ``twitch_<c>``
+    thread ID and reading, mutating, or deleting it.
+
+    For 1:1 personal thread IDs (UUIDs, ``discord_dm_*``, positive
+    ``telegram_<id>``), first touch atomically claims the thread for
+    ``user.id``; subsequent access by any other non-admin user resolves
+    to 404 (intentional — don't leak whether a thread exists under a
+    different owner).
     """
     agent = get_agent()
+    if user.role == "admin":
+        # Admins bypass ownership but never claim implicitly. The thread
+        # remains unowned (or owned by whoever it already was) so the next
+        # non-admin user touch is the one that establishes ownership.
+        return
+    if _is_shared_channel_thread(thread_id):
+        # Shared-channel threads (Discord guild channels, Telegram groups,
+        # Twitch chats) bypass ownership ONLY when reached via admin act-as
+        # — that's the bot service-token routing path (`Bearer <service>` +
+        # `X-Nymeria-Act-As: <linked_user>`) where multiple users legitimately
+        # share one thread. Direct non-admin API callers (e.g. a user's
+        # desktop) get 404 instead, so they can't guess a `discord_<g>_<c>`
+        # ID and read/mutate/delete a channel they don't belong to.
+        if user.via_act_as:
+            return
+        raise HTTPException(status_code=404, detail="Not found")
     owner = agent.accounts_repo.claim_thread(thread_id, user.id)
     if owner != user.id:
         raise HTTPException(status_code=404, detail="Not found")
@@ -759,7 +896,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     # Add trigger system router (event-driven automation)
     from .trigger_api import create_trigger_router
-    trigger_router = create_trigger_router(get_agent, verify_api_key)
+    trigger_router = create_trigger_router(
+        get_agent,
+        verify_api_key,
+        require_thread_access_fn=_require_thread_access,
+    )
     app.include_router(trigger_router)
 
     # Sync callable thread tools into the registry
@@ -810,10 +951,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         Frontends call this on first connect to learn their own ``user_id`` so
         they can namespace ``localStorage`` keys (``nymeria-<user_id>-*``).
-        Works with both per-user account tokens and the legacy shared
-        ``NYMERIA_API_KEY`` — legacy callers resolve to the bootstrap admin
-        ``default`` so the frontend migration is safe before the Step 3 auth
-        cutover.
+        Requires a per-user account token (``nym_...``); the legacy shared
+        ``NYMERIA_API_KEY`` was retired in Step 3c. Honors
+        ``X-Nymeria-Act-As: <user_id>`` for admin callers (returns the target
+        user's identity instead of the admin's).
         """
         return {
             "id": user.id,
@@ -842,8 +983,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         return {"user_id": user_id}
 
     @app.post("/restart", tags=["System"])
-    async def restart_server(user: AuthenticatedUser = Depends(verify_api_key)):
-        """Restart the API server process.
+    async def restart_server(user: AuthenticatedUser = Depends(require_admin_user)):
+        """Restart the API server process. Admin-only — affects every user.
 
         Spawns a new server process after a short delay, then exits the
         current one.  The frontend should poll /health until the new
@@ -1462,25 +1603,44 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if title_source:
             fields["title_source"] = title_source
 
-        # If renaming a callable thread, sync title → callable_name
+        # If renaming a callable thread, sync title → callable_name. Reject
+        # titles that aren't valid LLM tool names (spaces/dots/punctuation)
+        # so the rename doesn't poison the registry — same constraint POST
+        # /agents/threads applies. The user can rename via the metadata
+        # endpoint OR keep the title display-friendly and the callable_name
+        # separate via PATCH /threads/{id}/config.
         if request.title is not None:
             tc = agent.thread_config_manager.get_config(thread_id)
             if tc and tc.callable:
                 new_name = request.title.strip()
-                # Validate: no collision with core tools or other callables
+                if not new_name:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot rename callable thread to empty title",
+                    )
+                _validate_callable_name(new_name)
                 from ..tools import ALL_TOOLS
                 core_tool_names = {t.name for t in ALL_TOOLS}
-                collision = new_name in core_tool_names
-                if not collision:
-                    existing = agent.thread_config_manager.get_callable_thread_by_name(new_name)
-                    collision = existing is not None and existing.thread_id != thread_id
-                if not collision and new_name:
-                    tc.callable_name = new_name
-                    agent.thread_config_manager.save_config(tc)
-                    agent.invalidate_thread_config_cache(thread_id)
-                    agent.sync_agent_tools()
-                    # Override title_source to "callable" for callable threads
-                    fields["title_source"] = "callable"
+                if new_name in core_tool_names:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Callable name '{new_name}' conflicts with a core tool name",
+                    )
+                owned = set(agent.accounts_repo.list_threads_for_user(user_id))
+                existing = agent.thread_config_manager.get_callable_thread_by_name(
+                    new_name, owned_thread_ids=owned
+                )
+                if existing is not None and existing.thread_id != thread_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Callable name '{new_name}' is already used by thread {existing.thread_id}",
+                    )
+                tc.callable_name = new_name
+                agent.thread_config_manager.save_config(tc)
+                agent.invalidate_thread_config_cache(thread_id)
+                agent.sync_agent_tools()
+                # Override title_source to "callable" for callable threads
+                fields["title_source"] = "callable"
 
         meta = agent.thread_metadata_manager.upsert_thread(
             user_id, thread_id, **fields
@@ -1837,6 +1997,17 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.disabled_tools is not None and not request.clear_disabled_tools:
             tc.disabled_tools = request.disabled_tools
         if request.enabled_tools is not None and not request.clear_enabled_tools:
+            # Admin-only optional tools (self-modify, subagent reload) are
+            # equivalent to authenticated RCE on the shared backend — a
+            # non-admin must not be able to enable them via thread config.
+            if user.role != "admin":
+                from ..tools import ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+                blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(request.enabled_tools)
+                if blocked:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Admin-only tools cannot be enabled by this user: {sorted(blocked)}",
+                    )
             tc.enabled_tools = request.enabled_tools
         if request.enabled_skills is not None and not request.clear_enabled_skills:
             tc.enabled_skills = request.enabled_skills
@@ -1864,6 +2035,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.callable_name is not None:
             # Validate callable_name doesn't collide with core tool names
             if request.callable_name:
+                _validate_callable_name(request.callable_name)
                 from ..tools import ALL_TOOLS
                 core_tool_names = {t.name for t in ALL_TOOLS}
                 if request.callable_name in core_tool_names:
@@ -1871,8 +2043,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         status_code=400,
                         detail=f"Callable name '{request.callable_name}' conflicts with a core tool name",
                     )
-                # Check for duplicate callable_name across other threads
-                existing = agent.thread_config_manager.get_callable_thread_by_name(request.callable_name)
+                # Check for duplicate callable_name within this user's own
+                # callables. Cross-user collisions are fine: callable threads
+                # are scoped per-user at invocation time.
+                owned = set(agent.accounts_repo.list_threads_for_user(user.id))
+                existing = agent.thread_config_manager.get_callable_thread_by_name(
+                    request.callable_name, owned_thread_ids=owned
+                )
                 if existing and existing.thread_id != thread_id:
                     raise HTTPException(
                         status_code=409,
@@ -1897,10 +2074,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.callable is not None or request.callable_name is not None or request.callable_description is not None:
             agent.sync_agent_tools()
 
-        # Sync callable thread metadata (title = callable_name)
+        # Sync callable thread metadata (title = callable_name) under the
+        # caller — _require_thread_access above already proved this user owns
+        # the thread (or is admin acting-as the owner), so user.id is the
+        # right partition for the metadata store.
         if tc.callable and tc.callable_name:
             agent.thread_metadata_manager.upsert_thread(
-                "default", thread_id,
+                user.id, thread_id,
                 title=tc.callable_name,
                 title_source="callable",
                 platform="callable",
@@ -1943,7 +2123,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         This does not send content to any model. It only evaluates whether
         attachments are likely compatible and provides warnings plus force-send guidance.
+        Ownership is still enforced — the effective provider/model can leak which
+        upstream a thread is configured to use, so a guess-the-thread-id probe must
+        be denied.
         """
+        _require_thread_access(user, thread_id)
         from ..config.model_capabilities import evaluate_attachment_compatibility
 
         agent = get_agent()
@@ -1981,17 +2165,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/threads/{thread_id}/compact", tags=["Threads"])
     async def compact_thread(
         thread_id: str,
-        user_id: str = "default",
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Manually trigger compaction for a thread.
 
         Compresses conversation history into a summary while preserving recent messages.
+        Compaction always runs under the authenticated caller — admins impersonate via
+        ``X-Nymeria-Act-As``, which ``verify_api_key`` resolves before we get here.
         """
         _require_thread_access(user, thread_id)
         agent = get_agent()
-        result = await agent.compact_now(thread_id, user_id)
+        result = await agent.compact_now(thread_id, user.id)
         return result
 
     @app.post("/threads/{thread_id}/stop", tags=["Threads"])
@@ -2002,6 +2187,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable threads it has spawned. The current stream()/astream() call
         breaks at the next iteration boundary, releasing the thread lock.
         """
+        _require_thread_access(user, thread_id)
         agent = get_agent()
         lock_info = agent._thread_locks.get_lock_info(thread_id)
 
@@ -2027,18 +2213,68 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools", tags=["Tools"])
     async def list_tools(user: AuthenticatedUser = Depends(verify_api_key)):
-        """List all available tools and their descriptions."""
+        """List all available tools and their descriptions.
+
+        Core and MCP tools are visible to every user (any user can enable
+        them on a thread). Callable-thread tools come straight from the
+        caller's owned ``ThreadConfig`` rows (NOT the global ToolRegistry),
+        because the registry is name-keyed and last-write-wins on collisions
+        — two users with a "Helper" would otherwise see only the surviving
+        entry. The runtime gate in ``tool_factory.py`` blocks cross-user
+        invocations even on cache stale paths.
+        """
         agent = get_agent()
-        tools = agent.tool_registry.list_tools()
-        return {"tools": tools}
+        registry_tools = agent.tool_registry.list_tools()
+        callable_map = agent._callable_tool_thread_map or {}
+        # Names that are CURRENTLY in the registry as callable threads —
+        # filter these out wholesale, then re-add per-user from disk.
+        callable_names_in_registry = set(callable_map.keys())
+
+        is_admin = user.role == "admin"
+        result = [t for t in registry_tools if t["name"] not in callable_names_in_registry]
+
+        owned = set(agent.accounts_repo.list_threads_for_user(user.id))
+        # Per-user callable threads (filter by owned thread IDs)
+        for tc in agent.thread_config_manager.list_callable_threads(
+            owned_thread_ids=owned
+        ):
+            if not tc.callable_name:
+                continue
+            result.append({
+                "name": tc.callable_name,
+                "description": (tc.callable_description
+                                or f"Invoke the {tc.callable_name} thread"),
+                "enabled": True,
+            })
+
+        # Admins additionally see legacy unowned callables (no row in
+        # thread_owners) so they can audit/migrate them. Non-admins don't.
+        if is_admin:
+            seen_names = {t["name"] for t in result}
+            for tc in agent.thread_config_manager.list_callable_threads():
+                if not tc.callable_name or tc.callable_name in seen_names:
+                    continue
+                if agent.accounts_repo.get_thread_owner(tc.thread_id) is None:
+                    result.append({
+                        "name": tc.callable_name,
+                        "description": (tc.callable_description
+                                        or f"Invoke the {tc.callable_name} thread"),
+                        "enabled": True,
+                    })
+
+        return {"tools": result}
 
     @app.get("/tools/optional", tags=["Tools"])
     async def list_optional_tools(
         user_id: str = Depends(_authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """List tools available for per-thread enabling (not in the user's core set)."""
-        _require_thread_access(user, thread_id)
+        """List tools available for per-thread enabling (not in the user's core set).
+
+        Reads the caller's profile (user-scoped via _authed_user_id) — no
+        thread context is needed since the result depends only on the user's
+        default tool preferences, not which thread they're enabling tools on.
+        """
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
 
         agent = get_agent()
@@ -2123,7 +2359,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 })
                 seen.add(name)
 
-        callable_count = len(agent.thread_config_manager.list_callable_threads())
+        owned = set(agent.accounts_repo.list_threads_for_user(user_id))
+        callable_count = len(agent.thread_config_manager.list_callable_threads(owned_thread_ids=owned))
 
         return {
             "mode": "custom",
@@ -2142,7 +2379,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Set which tools new threads inherit by default."""
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS, ADMIN_ONLY_OPTIONAL_TOOL_NAMES
         from ..tools.metadata import MCP_SERVER_TOOL_METADATA
         from ..core.user_profile import migrate_tool_names
 
@@ -2154,6 +2391,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         unknown = set(tool_names) - known
         if unknown:
             raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
+
+        # Self-modify / subagent-reload tools rewrite the shared codebase —
+        # only admin defaults may include them.
+        if user.role != "admin":
+            blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(tool_names)
+            if blocked:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Admin-only tools cannot be set as defaults by this user: {sorted(blocked)}",
+                )
 
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
@@ -2304,13 +2551,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user_id: str = Depends(_authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Install a skill from a marketplace into user or global scope."""
+        """Install a skill from a marketplace into user or global scope.
+
+        ``scope=user`` is per-user and any caller may install for themselves.
+        ``scope=global`` writes into the shared skills directory visible to
+        every user — admin only, since a skill bundle can ship scripts that
+        the agent process can execute.
+        """
         agent = get_agent()
         if agent.skill_manager is None:
             raise HTTPException(status_code=503, detail="skills subsystem unavailable")
         from ..skills.marketplace import get_fetcher, MarketplaceError
         if request.scope not in ("user", "global"):
             raise HTTPException(status_code=400, detail="scope must be 'user' or 'global'")
+        if request.scope == "global" and user.role != "admin":
+            raise HTTPException(status_code=403, detail="Global skill install requires admin")
         try:
             fetcher = get_fetcher(request.source)
         except NotImplementedError as e:
@@ -2347,6 +2602,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="skills subsystem unavailable")
         if scope not in ("user", "global"):
             raise HTTPException(status_code=400, detail="scope must be 'user' or 'global'")
+        if scope == "global" and user.role != "admin":
+            raise HTTPException(status_code=403, detail="Global skill uninstall requires admin")
         try:
             deleted = agent.skill_manager.uninstall(
                 name, scope=scope,
@@ -2554,11 +2811,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.patch("/settings", tags=["Settings"])
     async def update_server_settings(
         updates: ServerSettingsUpdate,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
         settings: Settings = Depends(get_settings),
     ):
         """
-        Update server settings with hot-reload.
+        Update server settings with hot-reload. Admin-only — settings are
+        global (LLM provider, env vars, etc.).
 
         Changes are applied immediately - no restart required.
         LLM model/provider changes trigger graph rebuild automatically.
@@ -2736,10 +2994,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/settings/env", tags=["Settings"])
     async def get_env_vars(
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
         settings: Settings = Depends(get_settings),
     ):
         """Get all settable environment variables with masked sensitive values.
+        Admin-only — even masked values reveal the shape of every secret.
 
         Returns a list of env var entries with name, env_var, value (masked
         for secrets), and category.
@@ -2843,10 +3102,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/settings/env/{key}", tags=["Settings"])
     async def get_env_var(
         key: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
         settings: Settings = Depends(get_settings),
     ):
-        """Get a single environment variable's unmasked value."""
+        """Get a single environment variable's unmasked value. Admin-only —
+        returns raw secrets including API keys and bot tokens."""
         val = getattr(settings, key, None)
         if val is None:
             # Also try looking up by env var name (uppercase)
@@ -3523,7 +3783,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Auth: prefer Authorization header (server-side callers like the
         # Discord/Telegram bots), fall back to ?api_key= for browser
         # EventSource which can't set custom headers. Both paths accept any
-        # valid account token OR the legacy NYMERIA_API_KEY.
+        # valid account token (``nym_...``).
         presented: Optional[str] = None
         if authorization:
             parts = authorization.split()
@@ -3691,9 +3951,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/custom", response_model=CustomToolListResponse, tags=["Custom Tools"])
     async def list_custom_tools(
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """List all custom tools."""
+        """List all custom tools. Admin-only — definitions include URL
+        templates, headers (with ``${env:VAR}`` interpolation hints) and
+        local subprocess commands; non-admins should not enumerate them."""
         loader = get_custom_tool_loader()
         definitions = loader.get_all_definitions()
 
@@ -3705,9 +3967,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/tools/custom", response_model=CustomToolResponse, tags=["Custom Tools"])
     async def create_custom_tool(
         request: CustomToolCreateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Create a new custom tool."""
+        """Create a new custom tool. Admin-only — custom tools register
+        global HTTP/MCP entries that every user's agent can call, so
+        non-admins must not be able to mint them."""
         loader = get_custom_tool_loader()
 
         # Check if tool ID already exists
@@ -3790,9 +4054,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/tools/custom/{tool_id}", response_model=CustomToolResponse, tags=["Custom Tools"])
     async def get_custom_tool(
         tool_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Get a custom tool by ID."""
+        """Get a custom tool by ID. Admin-only — same secret-leakage
+        concerns as the list endpoint."""
         loader = get_custom_tool_loader()
         definition = loader.get_definition(tool_id)
 
@@ -3808,9 +4073,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_custom_tool(
         tool_id: str,
         request: CustomToolUpdateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Update an existing custom tool."""
+        """Update an existing custom tool. Admin-only — mirrors the create
+        endpoint."""
         loader = get_custom_tool_loader()
         definition = loader.get_definition(tool_id)
 
@@ -3875,9 +4141,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/tools/custom/{tool_id}", tags=["Custom Tools"])
     async def delete_custom_tool(
         tool_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Delete a custom tool."""
+        """Delete a custom tool. Admin-only — mirrors the create endpoint."""
         loader = get_custom_tool_loader()
 
         if not loader.delete_definition(tool_id):
@@ -3896,9 +4162,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def test_custom_tool(
         tool_id: str,
         request: CustomToolTestRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Test a custom tool with sample parameters."""
+        """Test a custom tool with sample parameters. Admin-only — this
+        actually executes the upstream HTTP call or MCP subprocess, so it
+        must not be reachable by a non-admin who could probe arbitrary
+        URLs/commands."""
         loader = get_custom_tool_loader()
         definition = loader.get_definition(tool_id)
 
@@ -3932,9 +4201,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/tools/custom/export", tags=["Custom Tools"])
     async def export_custom_tools(
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Export all custom tools as JSON."""
+        """Export all custom tools as JSON. Admin-only — exports include
+        full HTTP/MCP configs."""
         loader = get_custom_tool_loader()
         definitions = loader.get_all_definitions()
 
@@ -3947,9 +4217,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/tools/custom/import", tags=["Custom Tools"])
     async def import_custom_tools(
         request: Request,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Import custom tools from JSON."""
+        """Import custom tools from JSON. Admin-only — same as create."""
         loader = get_custom_tool_loader()
         body = await request.json()
 
@@ -4006,8 +4276,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         enabled: Optional[bool] = None
 
     @app.get("/mcp-servers", tags=["MCP Servers"])
-    async def list_mcp_servers(user: AuthenticatedUser = Depends(verify_api_key)):
-        """List all MCP server definitions with discovered tools."""
+    async def list_mcp_servers(user: AuthenticatedUser = Depends(require_admin_user)):
+        """List all MCP server definitions with discovered tools.
+
+        Admin-only — server definitions include ``env_vars``, ``headers``,
+        ``server_command``, and ``working_directory``, which can hold
+        credentials and host paths. Per-thread MCP enablement uses the
+        per-tool unified API; non-admin discovery has no need for raw
+        configs.
+        """
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -4021,9 +4298,19 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def create_mcp_server(
         request: MCPServerCreateRequest,
         thread_id: Optional[str] = Query(None, description="Auto-enable tools for this thread"),
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_caller),
     ):
-        """Add a new MCP server. Saves config and triggers tool discovery."""
+        """Add a new MCP server. Admin-only — saves config and triggers tool
+        discovery. MCP server install runs local stdio commands; allowing every
+        authenticated user to register one would let non-admin users execute
+        arbitrary commands via the agent process.
+
+        Uses :func:`require_admin_caller` so the admin can use
+        ``X-Nymeria-Act-As`` to bind tools to a specific user's thread —
+        ``_require_thread_access`` below then runs ownership against that
+        target (admin direct still bypasses because admin role survives
+        act-as for admin-as-admin).
+        """
         from ..core.mcp_servers import get_mcp_server_registry
         from ..tools.definitions.schema import MCPServerDefinition
 
@@ -4060,8 +4347,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent = get_agent()
         agent.reload_mcp_server_tools()
 
-        # If thread_id provided, auto-enable all discovered tools for that thread
+        # If thread_id provided, auto-enable all discovered tools for that thread.
+        # Admin-only endpoint already, but still gate the thread mutation: an
+        # admin acting on behalf of a user (or just typo'ing a thread ID) shouldn't
+        # be able to mutate a thread the caller doesn't own.
         if thread_id and discovered:
+            _require_thread_access(user, thread_id)
             tc = agent.thread_config_manager.get_config(thread_id)
             enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
             for dt in discovered:
@@ -4086,9 +4377,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/mcp-servers/{server_id}", tags=["MCP Servers"])
     async def get_mcp_server(
         server_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Get a specific MCP server definition."""
+        """Get a specific MCP server definition. Admin-only — same secret
+        leakage concerns as the list endpoint."""
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -4101,9 +4393,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_mcp_server(
         server_id: str,
         request: MCPServerUpdateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Update an MCP server config. Re-discovers tools after update."""
+        """Update an MCP server config. Admin-only — re-discovers tools after update."""
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -4142,9 +4434,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.delete("/mcp-servers/{server_id}", tags=["MCP Servers"])
     async def delete_mcp_server(
         server_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Remove an MCP server and all its tools."""
+        """Remove an MCP server and all its tools. Admin-only."""
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -4160,9 +4452,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/mcp-servers/{server_id}/discover", tags=["MCP Servers"])
     async def discover_mcp_server_tools(
         server_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Force re-discover tools from an MCP server."""
+        """Force re-discover tools from an MCP server. Admin-only — discovery starts the server process."""
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -4188,9 +4480,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/mcp-servers/{server_id}/test", tags=["MCP Servers"])
     async def test_mcp_server(
         server_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Test connectivity to an MCP server."""
+        """Test connectivity to an MCP server. Admin-only — connects/launches the server."""
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -4212,14 +4504,17 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/mcp-servers/install", tags=["MCP Servers"])
     async def install_mcp_server(
         request: MCPServerInstallRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Install an MCP server from a user-pasted source string.
+        """Install an MCP server from a user-pasted source string. Admin-only.
 
         Parses `source` into a server definition (JSON / stdio command / HTTP
         URL / registry id), saves it, discovers tools, and wires them into
         the agent. Rolls back on discovery failure so we don't leave dead
         definitions on disk.
+
+        Admin-only because install can launch arbitrary stdio commands inside
+        the agent process.
         """
         from ..core.mcp_installer import (
             MCPInstallError,
@@ -4264,6 +4559,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent.reload_mcp_server_tools()
 
         if request.thread_id and discovered:
+            # Same ownership check as create_mcp_server above — installing
+            # admin can't accidentally (or intentionally) attach the new tools
+            # to a thread they don't own.
+            _require_thread_access(user, request.thread_id)
             tc = agent.thread_config_manager.get_config(request.thread_id)
             enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
             for dt in discovered:
@@ -4295,9 +4594,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     @app.get("/agents/threads", tags=["Agent Threads"])
     async def list_agent_threads(user: AuthenticatedUser = Depends(verify_api_key)):
-        """List all callable thread configs (callable=True)."""
+        """List the caller's callable threads (callable=True). Admins see only
+        their own callable threads here; act-as via X-Nymeria-Act-As to see
+        another user's set."""
         agent = get_agent()
-        threads = agent.thread_config_manager.list_callable_threads()
+        owned = set(agent.accounts_repo.list_threads_for_user(user.id))
+        threads = agent.thread_config_manager.list_callable_threads(owned_thread_ids=owned)
         result = []
         for tc in threads:
             data = tc.model_dump(mode="json")
@@ -4307,7 +4609,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     class AgentThreadCreateRequest(BaseModel):
         """Request to create a new callable thread."""
-        callable_name: str = Field(..., min_length=1, max_length=64)
+        # callable_name becomes the LangChain tool name and is bound to the
+        # LLM via tool/function specs. OpenAI and Anthropic both reject names
+        # outside ^[a-zA-Z0-9_-]{1,64}$, so reject early instead of crashing
+        # on the first invocation attempt.
+        callable_name: str = Field(
+            ..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$"
+        )
         callable_description: str = Field(default="", max_length=500)
         system_prompt: str = Field(default="", max_length=50000)
         llm_provider: Optional[str] = None
@@ -4336,8 +4644,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 detail=f"Callable name '{request.callable_name}' conflicts with a core tool name",
             )
 
-        # Check if a callable thread with this name already exists
-        existing = agent.thread_config_manager.get_callable_thread_by_name(request.callable_name)
+        # Check if a callable thread with this name already exists for THIS
+        # user. Two users can each have a "Helper" — invocation is gated by
+        # ownership at runtime so there's no actual conflict.
+        owned = set(agent.accounts_repo.list_threads_for_user(user.id))
+        existing = agent.thread_config_manager.get_callable_thread_by_name(
+            request.callable_name, owned_thread_ids=owned
+        )
         if existing:
             raise HTTPException(
                 status_code=409,
@@ -4370,9 +4683,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to create agent thread")
 
-        # Create thread metadata with callable_name as title
+        # Claim the thread for the creator so the runtime ownership gate
+        # in create_callable_thread_tool() lets the creator invoke it but
+        # rejects anyone else.
+        agent.accounts_repo.claim_thread(thread_id, user.id)
+
+        # Create thread metadata with callable_name as title (under creator)
         agent.thread_metadata_manager.upsert_thread(
-            "default", thread_id,
+            user.id, thread_id,
             title=request.callable_name,
             title_source="callable",
             platform="callable",
@@ -4386,7 +4704,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         publish_sync_event(
             event_type="thread_created",
             thread_id=thread_id,
-            user_id="default",
+            user_id=user.id,
             data={"title": request.callable_name, "title_source": "callable", "platform": "callable"},
             origin_client_id=client_id,
         )
@@ -4923,32 +5241,39 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         tool_preferences: Optional["ToolPreferences"] = None,
     ) -> UnifiedToolResponse:
         """Convert custom tool definition to unified response format."""
-        # Determine implementation type
-        impl_type = None
+        impl_type = defn.implementation_type
         http_config = None
         mcp_config = None
 
-        if defn.http:
-            impl_type = "http"
+        if impl_type == "http" and defn.http_config is not None:
             http_config = {
-                "url": defn.http.url,
-                "method": defn.http.method,
-                "headers": defn.http.headers,
-                "body_template": defn.http.body_template,
-                "timeout": defn.http.timeout,
-                "retries": defn.http.retries,
+                "method": defn.http_config.method,
+                "url": defn.http_config.url,
+                "headers": defn.http_config.headers,
+                "body_template": defn.http_config.body_template,
+                "query_params": defn.http_config.query_params,
+                "timeout_seconds": defn.http_config.timeout_seconds,
+                "response_path": defn.http_config.response_path,
+                "response_format": defn.http_config.response_format,
             }
-        elif defn.mcp:
-            impl_type = "mcp"
+        elif impl_type == "mcp" and defn.mcp_config is not None:
             mcp_config = {
-                "server": defn.mcp.server,
-                "tool": defn.mcp.tool,
+                "transport": defn.mcp_config.transport,
+                "server_command": defn.mcp_config.server_command,
+                "server_args": defn.mcp_config.server_args,
+                "url": defn.mcp_config.url,
+                "headers": defn.mcp_config.headers,
+                "tool_name": defn.mcp_config.tool_name,
+                "env_vars": defn.mcp_config.env_vars,
+                "working_directory": defn.mcp_config.working_directory,
+                "idle_timeout_seconds": defn.mcp_config.idle_timeout_seconds,
+                "startup_timeout_seconds": defn.mcp_config.startup_timeout_seconds,
             }
 
-        # Convert parameters to dict
+        # Parameters is Dict[str, ToolParameter] — preserve names as keys.
         params = None
         if defn.parameters:
-            params = {p.name: p.model_dump() for p in defn.parameters}
+            params = {k: p.model_dump() for k, p in defn.parameters.items()}
 
         # Get description (custom tools can also have description overrides)
         default_desc = defn.description
@@ -5052,11 +5377,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             unified_tools.append(_builtin_to_unified(tool_info, user_id, tool_prefs))
             seen.add(name)
 
-        # Custom tools: always available (managed per-thread, not via global toggle)
-        custom_definitions = loader.get_all_definitions()
-        for defn in custom_definitions:
-            user_config = tool_prefs.get_tool_config(defn.id)
-            unified_tools.append(_custom_to_unified(defn, True, "default", user_config, tool_prefs))
+        # Custom tools: always available (managed per-thread, not via global toggle).
+        # Only admins see them in the unified list — definitions include
+        # full HTTP/MCP config (URLs, headers, subprocess commands), which
+        # would leak credentials/hosts to non-admin tool browsers.
+        if user.role == "admin":
+            custom_definitions = loader.get_all_definitions()
+            for defn in custom_definitions:
+                user_config = tool_prefs.get_tool_config(defn.id)
+                unified_tools.append(_custom_to_unified(defn, True, "default", user_config, tool_prefs))
 
         # MCP server tools: appear with category "mcp_server"
         from ..tools.metadata import MCP_SERVER_TOOL_METADATA
@@ -5115,7 +5444,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         always available and managed per-thread via enabled_tools).
         """
         _require_same_user_or_admin(user, user_id)
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS, ADMIN_ONLY_OPTIONAL_TOOL_NAMES
         from ..tools.metadata import get_tool_metadata, get_all_tool_metadata
 
         agent = get_agent()
@@ -5126,6 +5455,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(
                 status_code=404,
                 detail=f"Tool '{tool_id}' not found",
+            )
+
+        # Admin-only optional tools — self-modify, subagent reload — must
+        # not be enableable by a non-admin via the unified toggle.
+        if (
+            request.enabled
+            and tool_id in ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+            and user.role != "admin"
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Tool '{tool_id}' is admin-only",
             )
 
         with agent.profile_manager.atomic_update(user_id) as profile:
@@ -5258,12 +5599,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/tools/unified", response_model=UnifiedToolResponse, tags=["Unified Tools"])
     async def create_unified_tool(
         request: CustomToolCreateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
         """
-        Create a new custom tool via the unified API.
-
-        Same as POST /tools/custom but returns unified response format.
+        Create a new custom tool via the unified API. Admin-only — mirrors
+        ``POST /tools/custom``.
         """
         loader = get_custom_tool_loader()
 
@@ -5274,37 +5614,69 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 detail=f"Tool '{request.id}' already exists",
             )
 
-        # Build parameters list
-        params = None
-        if request.parameters:
-            from ..tools.definitions.schema import ToolParameter
-            params = [ToolParameter(**p) for p in request.parameters]
+        # Build parameters dict (CustomToolDefinition.parameters is Dict[str, ToolParameter]).
+        params: Dict[str, ToolParameter] = {
+            k: ToolParameter(
+                type=v.type,
+                description=v.description,
+                required=v.required,
+                default=v.default,
+                enum=v.enum,
+            )
+            for k, v in (request.parameters or {}).items()
+        }
 
-        # Build HTTP config
         http_config = None
-        if request.http:
-            http_config = HTTPToolConfig(**request.http)
-
-        # Build MCP config
         mcp_config = None
-        if request.mcp:
-            from ..tools.definitions.schema import MCPToolConfig
-            mcp_config = MCPToolConfig(**request.mcp)
+        if request.implementation_type == "http":
+            if not request.http_config:
+                raise HTTPException(
+                    status_code=400,
+                    detail="http_config is required for HTTP tools",
+                )
+            http_config = HTTPToolConfig(
+                method=request.http_config.method,
+                url=request.http_config.url,
+                headers=request.http_config.headers,
+                body_template=request.http_config.body_template,
+                query_params=request.http_config.query_params,
+                timeout_seconds=request.http_config.timeout_seconds,
+                response_path=request.http_config.response_path,
+                response_format=request.http_config.response_format,
+            )
+        elif request.implementation_type == "mcp":
+            if not request.mcp_config:
+                raise HTTPException(
+                    status_code=400,
+                    detail="mcp_config is required for MCP tools",
+                )
+            mcp_config = MCPToolConfig(
+                server_command=request.mcp_config.server_command,
+                server_args=request.mcp_config.server_args,
+                tool_name=request.mcp_config.tool_name,
+                env_vars=request.mcp_config.env_vars,
+                working_directory=request.mcp_config.working_directory,
+                idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
+                startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
+            )
 
         definition = CustomToolDefinition(
             id=request.id,
             name=request.name,
             description=request.description,
             parameters=params,
-            http=http_config,
-            mcp=mcp_config,
+            implementation_type=request.implementation_type,
+            http_config=http_config,
+            mcp_config=mcp_config,
+            enabled=request.enabled,
             tags=request.tags,
         )
 
         loader.save_definition(definition)
 
-        # Reload custom tools
-        reload_custom_tools()
+        # Reload tools so the new definition is bound on the agent graphs.
+        agent = get_agent()
+        agent.reload_tools()
 
         return _custom_to_unified(definition, True, "default", {})
 
@@ -5312,10 +5684,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def update_unified_tool(
         tool_id: str,
         request: CustomToolUpdateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
         """
-        Update a custom tool via the unified API.
+        Update a custom tool via the unified API. Admin-only — mirrors
+        ``PUT /tools/custom/{tool_id}``.
 
         Only custom tools can be updated. Built-in tools return 400.
         """
@@ -5343,28 +5716,57 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.description is not None:
             definition.description = request.description
         if request.parameters is not None:
-            from ..tools.definitions.schema import ToolParameter
-            definition.parameters = [ToolParameter(**p) for p in request.parameters]
-        if request.http is not None:
-            definition.http = HTTPToolConfig(**request.http)
-        if request.mcp is not None:
-            from ..tools.definitions.schema import MCPToolConfig
-            definition.mcp = MCPToolConfig(**request.mcp)
+            definition.parameters = {
+                k: ToolParameter(
+                    type=v.type,
+                    description=v.description,
+                    required=v.required,
+                    default=v.default,
+                    enum=v.enum,
+                )
+                for k, v in request.parameters.items()
+            }
+        if request.http_config is not None and definition.implementation_type == "http":
+            definition.http_config = HTTPToolConfig(
+                method=request.http_config.method,
+                url=request.http_config.url,
+                headers=request.http_config.headers,
+                body_template=request.http_config.body_template,
+                query_params=request.http_config.query_params,
+                timeout_seconds=request.http_config.timeout_seconds,
+                response_path=request.http_config.response_path,
+                response_format=request.http_config.response_format,
+            )
+        if request.mcp_config is not None and definition.implementation_type == "mcp":
+            definition.mcp_config = MCPToolConfig(
+                server_command=request.mcp_config.server_command,
+                server_args=request.mcp_config.server_args,
+                tool_name=request.mcp_config.tool_name,
+                env_vars=request.mcp_config.env_vars,
+                working_directory=request.mcp_config.working_directory,
+                idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
+                startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
+            )
+        if request.enabled is not None:
+            definition.enabled = request.enabled
         if request.tags is not None:
             definition.tags = request.tags
 
         loader.save_definition(definition)
-        reload_custom_tools()
+
+        agent = get_agent()
+        agent.reload_tools()
 
         return _custom_to_unified(definition, True, "default", {})
 
     @app.delete("/tools/unified/{tool_id}", tags=["Unified Tools"])
     async def delete_unified_tool(
         tool_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
         """
-        Delete a custom tool via the unified API.
+        Delete a custom tool via the unified API. Admin-only — mirrors
+        ``DELETE /tools/custom/{tool_id}``.
 
         Only custom tools can be deleted. Built-in tools return 400.
         """
@@ -5402,13 +5804,19 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         request: Request,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Register a device for FCM push notifications."""
+        """Register a device for FCM push notifications.
+
+        The device is bound to the authenticated caller — any client-supplied
+        ``user_id`` in the body is ignored. Without this, a linked user
+        could register their FCM token under another user's id and start
+        receiving that user's pushes (``send_to_all_devices`` filters
+        only on the stored ``user_id``).
+        """
         from ..core.fcm import register_token
 
         body = await request.json()
         token = body.get("token", "").strip()
         platform = body.get("platform", "unknown")
-        user_id = body.get("user_id", "default")
         thread_ids = body.get("thread_ids")
 
         if not token:
@@ -5420,7 +5828,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         settings = get_settings()
         data_dir = str(settings.data_dir)
 
-        is_new = register_token(data_dir, token, platform, user_id, thread_ids=thread_ids)
+        is_new = register_token(data_dir, token, platform, user.id, thread_ids=thread_ids)
         return {
             "status": "registered" if is_new else "updated",
             "platform": platform,
@@ -5431,11 +5839,30 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         token: str,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Unregister a device from FCM push notifications."""
-        from ..core.fcm import unregister_token
+        """Unregister a device from FCM push notifications.
+
+        Non-admins can only unregister tokens registered under their own
+        ``user_id`` — otherwise any authenticated user could enumerate or
+        delete other users' device registrations. Admins (including bots
+        via service-token act-as) keep unrestricted unregister access for
+        cleanup of stale tokens.
+        """
+        from ..core.fcm import load_tokens, unregister_token
 
         settings = get_settings()
         data_dir = str(settings.data_dir)
+
+        if user.role != "admin":
+            tokens = load_tokens(data_dir)
+            owner_id = next(
+                (t.get("user_id") for t in tokens if t.get("token") == token),
+                None,
+            )
+            if owner_id is None:
+                # Don't leak existence — same 404 as admin path on unknown.
+                raise HTTPException(status_code=404, detail="Token not found")
+            if owner_id != user.id:
+                raise HTTPException(status_code=404, detail="Token not found")
 
         removed = unregister_token(data_dir, token)
         if not removed:
@@ -5450,7 +5877,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def voice_chat(
         audio: UploadFile = File(..., description="Audio file (WAV, MP3, AAC, etc.)"),
         thread_id: Optional[str] = Form(default=None),
-        user_id: str = Form(default="default"),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
@@ -5458,10 +5884,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         Accepts an audio file, transcribes it (STT), sends the text through
         the Nymeria agent, then synthesizes the response (TTS) and returns audio.
+
+        Runs under the authenticated caller. The legacy ``user_id`` form field
+        was removed in the multi-user refactor — admins impersonate via
+        ``X-Nymeria-Act-As``, which ``verify_api_key`` resolves before we get
+        here.
         """
         from ..core.voice import get_stt_service, get_tts_service, VoiceServiceError
 
         settings = get_settings()
+
+        # Resolve target thread + enforce ownership BEFORE STT/TTS so a
+        # cross-user probe doesn't waste an STT API call (and so non-admin
+        # callers can't infer thread existence from STT vs 404 timing).
+        tid = thread_id or settings.voice_default_thread_id or "watch-default"
+        _require_thread_access(user, tid)
 
         try:
             stt = get_stt_service(settings)
@@ -5495,12 +5932,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         # Agent: text -> response (use async streaming path for speed)
         agent = get_agent()
-        tid = thread_id or settings.voice_default_thread_id or "watch-default"
         t1 = _time.monotonic()
         try:
             response_text = ""
             async for event in agent.astream(
-                transcription, thread_id=tid, user_id=user_id,
+                transcription, thread_id=tid, user_id=user.id,
                 _trigger_override=(
                     "Smartwatch — respond concisely (1-2 sentences max), "
                     "your reply will be spoken aloud via TTS"
@@ -5601,8 +6037,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.get("/workspace/download", tags=["Workspace"])
     async def download_workspace_file(
         path: str = Query(..., description="Absolute file path within the workspace"),
+        user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Download a file from the workspace directory (used by bot clients for file attachments)."""
+        """Download a file from the workspace directory (used by bot clients for file attachments).
+
+        Admin-only — the workspace contains files generated by autonomous
+        agent runs across all users; without auth, any caller could
+        enumerate paths and exfiltrate. Bot clients use the admin service
+        token, so they keep working.
+        """
         from pathlib import Path as _Path
         import mimetypes
 

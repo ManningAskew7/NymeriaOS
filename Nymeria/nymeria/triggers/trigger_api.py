@@ -104,12 +104,23 @@ class TriggerResponse(BaseModel):
 # Router factory
 # ---------------------------------------------------------------------------
 
-def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
+def create_trigger_router(
+    get_agent_fn,
+    verify_api_key_fn,
+    require_thread_access_fn=None,
+) -> APIRouter:
     """Create the trigger system router.
 
     Args:
         get_agent_fn: Callable returning the global NymeriaAgent.
         verify_api_key_fn: FastAPI dependency for API key verification.
+        require_thread_access_fn: Optional callable ``(user, thread_id)`` that
+            raises HTTPException if ``user`` cannot legitimately bind a
+            trigger to ``thread_id``. Required to prevent webhook triggers
+            from claim-jacking shared-channel threads or guessing
+            personal-thread IDs (the ``/triggers/fire`` path posts to
+            ``/chat`` with the admin service token + Act-As, which would
+            otherwise satisfy ``_require_thread_access`` for any thread).
 
     Returns:
         Configured APIRouter with trigger CRUD + fire endpoints.
@@ -154,6 +165,15 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
     ):
         """Create a new trigger."""
         user_id = user.id  # Override any client-claimed ?user_id=
+        # If the trigger is bound to an existing thread, the caller must
+        # legitimately own that thread — otherwise a linked non-admin user
+        # could create a webhook trigger pointing at a guessed
+        # ``discord_<g>_<c>`` / ``telegram_-<id>`` / ``twitch_<c>`` ID and
+        # later use the unauthenticated ``/triggers/fire/{id}`` endpoint to
+        # inject prompts via the admin service token + Act-As (which the
+        # downstream ``/chat`` route honors for shared channels).
+        if body.thread_id and require_thread_access_fn is not None:
+            require_thread_access_fn(user, body.thread_id)
         manager = _get_manager()
         action = TriggerAction(type=body.action_type, config=body.action_config)
 
@@ -487,13 +507,23 @@ def create_trigger_router(get_agent_fn, verify_api_key_fn) -> APIRouter:
                 events_summary=str(event)[:200],
                 action_type=action_type,
             )
+            service_token = settings.nymeria_service_token
+            if not service_token:
+                logger.error(
+                    "Trigger %s (%s) cannot fire: NYMERIA_SERVICE_TOKEN is not "
+                    "set. Trigger fires authenticate as the admin service "
+                    "account and act-as the trigger's user; configure the "
+                    "token in .env / .env.docker.",
+                    trigger_id, trigger_name,
+                )
+                return
             try:
                 with httpx.Client(timeout=300) as client:
                     with client.stream(
                         "POST",
                         f"http://localhost:{settings.api_port}/chat",
                         headers={
-                            "Authorization": f"Bearer {settings.nymeria_service_token or ''}",
+                            "Authorization": f"Bearer {service_token}",
                             "X-Nymeria-Act-As": user_id,
                         },
                         json={
