@@ -5,6 +5,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
   import RoleChip from './RoleChip.svelte';
+  import TokenManagementSection from './TokenManagementSection.svelte';
 
   let identity = $derived(configStore.identity);
   let isAdmin = $derived(identity?.role === 'admin');
@@ -129,15 +130,16 @@
       </div>
     </section>
 
-    <!-- Tokens placeholder (Phase C) -->
+    <!-- API tokens -->
     <section class="section">
       <div class="section-header">
         <h3>API tokens</h3>
-        <span class="phase-badge">Coming soon</span>
       </div>
       <p class="section-hint">
-        Issue and revoke personal access tokens for this account. Wires up in the next phase.
+        Each token is a separate sign-in. Issue one for every device or
+        script — you can revoke them individually if anything goes missing.
       </p>
+      <TokenManagementSection mode="self" />
     </section>
 
     {#if isAdmin}

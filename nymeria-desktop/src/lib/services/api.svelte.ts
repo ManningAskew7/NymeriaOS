@@ -2,6 +2,8 @@ import { configStore } from '$lib/stores/config.svelte';
 import { clientId } from '$lib/stores/clientId.svelte';
 import type {
   AccountIdentity,
+  IssuedTokenResponse,
+  TokenInfo,
   SSEEvent,
   SSEEventType,
   ChatResponse,
@@ -183,6 +185,45 @@ export class NymeriaAPI {
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
       throw new Error(detail.detail || `Failed to update profile (${response.status})`);
+    }
+    return response.json();
+  }
+
+  // Self-scoped token management — wraps GET/POST/DELETE /me/tokens. The raw
+  // token from issueMyToken is returned ONCE; the UI must surface it in a
+  // copy-once dialog and drop the value.
+  async listMyTokens(): Promise<TokenInfo[]> {
+    const response = await fetch(`${this.getBaseUrl()}/me/tokens`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || `Failed to list tokens (${response.status})`);
+    }
+    return response.json();
+  }
+
+  async issueMyToken(label?: string): Promise<IssuedTokenResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/me/tokens`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ label: label ?? null })
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || `Failed to issue token (${response.status})`);
+    }
+    return response.json();
+  }
+
+  async revokeMyToken(tokenHashPrefix: string): Promise<{ revoked: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/tokens/${encodeURIComponent(tokenHashPrefix)}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || `Failed to revoke token (${response.status})`);
     }
     return response.json();
   }
