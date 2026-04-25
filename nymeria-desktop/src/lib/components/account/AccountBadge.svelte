@@ -5,6 +5,8 @@
   import Avatar from './Avatar.svelte';
   import RoleChip from './RoleChip.svelte';
   import AccountMenu from './AccountMenu.svelte';
+  import AccountSwitcher from './AccountSwitcher.svelte';
+  import AddAccountSheet from './AddAccountSheet.svelte';
   import { identityDisplayName } from './avatar';
 
   interface Props {
@@ -14,6 +16,27 @@
   let { onOpenSettings }: Props = $props();
 
   let showMenu = $state(false);
+  let showSwitcher = $state(false);
+  let showAddAccount = $state(false);
+
+  function openSwitcher() {
+    showMenu = false;
+    showSwitcher = true;
+  }
+
+  function closeSwitcher() {
+    showSwitcher = false;
+  }
+
+  function openAddAccount() {
+    showMenu = false;
+    showSwitcher = false;
+    showAddAccount = true;
+  }
+
+  function closeAddAccount() {
+    showAddAccount = false;
+  }
 
   let identity = $derived(configStore.identity);
   let activeEntry = $derived(connectionsStore.activeConnection);
@@ -43,6 +66,11 @@
 
   function toggleMenu(e: MouseEvent) {
     e.stopPropagation();
+    if (showSwitcher) {
+      // Clicking the trigger while the switcher is open should also close it.
+      showSwitcher = false;
+      return;
+    }
     showMenu = !showMenu;
   }
 
@@ -55,7 +83,7 @@
   {#if !uiStore.sidebarCollapsed}
     <button
       class="account-trigger"
-      class:menu-open={showMenu}
+      class:menu-open={showMenu || showSwitcher}
       type="button"
       onclick={toggleMenu}
       aria-haspopup="menu"
@@ -81,7 +109,7 @@
   {:else}
     <button
       class="account-trigger collapsed"
-      class:menu-open={showMenu}
+      class:menu-open={showMenu || showSwitcher}
       type="button"
       onclick={toggleMenu}
       aria-haspopup="menu"
@@ -93,8 +121,21 @@
     </button>
   {/if}
 
-  <AccountMenu isOpen={showMenu} onClose={closeMenu} {onOpenSettings} />
+  <AccountMenu
+    isOpen={showMenu}
+    onClose={closeMenu}
+    {onOpenSettings}
+    onOpenSwitcher={openSwitcher}
+    onOpenAddAccount={openAddAccount}
+  />
+  <AccountSwitcher
+    isOpen={showSwitcher}
+    onClose={closeSwitcher}
+    onAddAccount={openAddAccount}
+  />
 </div>
+
+<AddAccountSheet isOpen={showAddAccount} onClose={closeAddAccount} />
 
 <style>
   .account-wrapper {
