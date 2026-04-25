@@ -279,6 +279,17 @@ def run_worker(args: argparse.Namespace) -> None:
 
     settings = get_settings()
 
+    # The ticker fires triggers via trigger_api.py, which authenticates with
+    # the service token + X-Nymeria-Act-As. Without the token every trigger
+    # fire silently 401s — fail loud at boot rather than starting "successfully".
+    if not settings.nymeria_service_token:
+        print("\n[Error] NYMERIA_SERVICE_TOKEN is required for the worker (ticker).")
+        print("  Provision the bot-service admin once:")
+        print("    docker exec nymeria-api python run.py users add bot-service@localhost \\")
+        print("        --role admin --id bot-service")
+        print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.")
+        sys.exit(1)
+
     print("Starting Nymeria Worker (ticker mode)...")
     print(f"  - Ticker poll interval: {settings.ticker_poll_interval}s")
     print(f"  - Watchdog enabled: {settings.watchdog_enabled}")
@@ -352,15 +363,25 @@ def run_discord_bot(args: argparse.Namespace) -> None:
 
     # API URL is required — the bot is a thin client
     api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
-    # Prefer the admin-role service token (used for X-Nymeria-Act-As per-user
-    # routing). Fall back to the legacy NYMERIA_API_KEY during rollout.
-    api_key = settings.nymeria_service_token or settings.nymeria_api_key or ""
+    # Admin service token is required: bots authenticate as the bot-service
+    # admin user and route per-user traffic via X-Nymeria-Act-As. Legacy
+    # NYMERIA_API_KEY was retired (Step 3c) and the API rejects it now —
+    # fail loud at boot rather than starting "successfully" and 401-ing every
+    # request.
+    if not settings.nymeria_service_token:
+        print("\n[Error] NYMERIA_SERVICE_TOKEN is not set.")
+        print("  Provision the bot-service admin once:")
+        print("    docker exec nymeria-api python run.py users add bot-service@localhost \\")
+        print("        --role admin --id bot-service")
+        print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.")
+        sys.exit(1)
+    api_key = settings.nymeria_service_token
 
     print("Starting Nymeria Discord Bot (thin client)...")
     print(f"  - Mode: gateway (WebSocket)")
     print(f"  - Respond mode: {settings.discord_respond_mode}")
     print(f"  - API: {api_url}")
-    print(f"  - Auth: {'service token' if settings.nymeria_service_token else 'legacy NYMERIA_API_KEY'}")
+    print(f"  - Auth: service token")
 
     # Create API client
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
@@ -404,19 +425,25 @@ def run_watchdog(args: argparse.Namespace) -> None:
         print("[Info] Watchdog is disabled (WATCHDOG_ENABLED=false). Exiting.")
         sys.exit(0)
 
-    if not settings.nymeria_service_token and not settings.nymeria_api_key:
-        print("\n[Error] NYMERIA_SERVICE_TOKEN (preferred) or NYMERIA_API_KEY is required for the watchdog worker.")
+    # Same rationale as the Discord/Telegram bots: NYMERIA_API_KEY was retired
+    # in Step 3c and the API rejects it. Require the admin service token so
+    # per-user act-as routing works and the worker doesn't silently 401.
+    if not settings.nymeria_service_token:
+        print("\n[Error] NYMERIA_SERVICE_TOKEN is required for the watchdog worker.")
+        print("  Provision the bot-service admin once:")
+        print("    docker exec nymeria-api python run.py users add bot-service@localhost \\")
+        print("        --role admin --id bot-service")
+        print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.")
         sys.exit(1)
 
     api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
-    # Prefer the admin-role service token so per-user act-as calls work.
-    api_key = settings.nymeria_service_token or settings.nymeria_api_key
+    api_key = settings.nymeria_service_token
 
     print("Starting Nymeria Watchdog (thin client)...")
     print(f"  - API: {api_url}")
     print(f"  - Interval: {settings.watchdog_interval_minutes}m")
     print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
-    print(f"  - Auth: {'service token' if settings.nymeria_service_token else 'legacy NYMERIA_API_KEY'}")
+    print(f"  - Auth: service token")
 
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
     worker = WatchdogWorker(client=api, settings=settings)
@@ -459,15 +486,21 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
 
     # API URL is required — the bot is a thin client
     api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
-    # Prefer the admin-role service token for per-user act-as routing.
-    api_key = settings.nymeria_service_token or settings.nymeria_api_key or ""
+    if not settings.nymeria_service_token:
+        print("\n[Error] NYMERIA_SERVICE_TOKEN is not set.")
+        print("  Provision the bot-service admin once:")
+        print("    docker exec nymeria-api python run.py users add bot-service@localhost \\")
+        print("        --role admin --id bot-service")
+        print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.")
+        sys.exit(1)
+    api_key = settings.nymeria_service_token
 
     print("Starting Nymeria Telegram Bot (thin client)...")
     print(f"  - Mode: polling")
     print(f"  - API: {api_url}")
     if settings.telegram_default_chat_id:
         print(f"  - Default chat: {settings.telegram_default_chat_id}")
-    print(f"  - Auth: {'service token' if settings.nymeria_service_token else 'legacy NYMERIA_API_KEY'}")
+    print(f"  - Auth: service token")
 
     # Create API client
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
@@ -517,6 +550,16 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         print("\n  1. Create an app at https://dev.twitch.tv/console/apps")
         print("  2. Add credentials to .env or .env.docker")
         print("  3. Run again: python run.py twitch-bot")
+        sys.exit(1)
+
+    # The Twitch bot's agent invokes slash_command and trigger fires that
+    # need the service token to call back into the API. Fail loud at boot.
+    if not settings.nymeria_service_token:
+        print("\n[Error] NYMERIA_SERVICE_TOKEN is required for the Twitch bot.")
+        print("  Provision the bot-service admin once:")
+        print("    docker exec nymeria-api python run.py users add bot-service@localhost \\")
+        print("        --role admin --id bot-service")
+        print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.")
         sys.exit(1)
 
     print("Starting Nymeria Twitch Bot...")
