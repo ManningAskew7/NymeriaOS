@@ -120,6 +120,42 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SPAWN_THREAD_TOOLS
 )}
 
+# Tools that mutate the running codebase (read/write/delete project source,
+# reload modules, roll back self-modifications, run arbitrary bash via
+# claude_code). In multi-user mode these are admin-only — a non-admin
+# enabling them on their own thread would effectively be authenticated
+# remote code modification of the shared backend. Enforced at every API
+# write boundary (thread config, default tool set, unified enable), at
+# every agent-callable write site (tool_search, spawn_thread, slash
+# /tools), and as defense-in-depth at graph-build time. Names — not tool
+# objects — so the gate survives reload_all().
+ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
+    [t.name for t in (SELF_AGENT_TOOLS + SUBAGENT_TOOLS)] + [claude_code.name]
+)
+
+
+def filter_admin_only_tools(
+    tool_names,
+    user_role: str,
+) -> tuple[set, set]:
+    """Filter admin-only tool names out for non-admin users.
+
+    Returns ``(allowed, blocked)`` — the input names split into a set the
+    caller may have, and a set the caller is not allowed to enable.
+    Admins see everything allowed; for any other role, names in
+    ``ADMIN_ONLY_OPTIONAL_TOOL_NAMES`` are stripped into ``blocked``.
+
+    This is the single chokepoint shared by tool_search, spawn_thread, the
+    REST gate at PATCH /threads/{id}/config, and the graph-build defense-
+    in-depth filter. Keeping the logic here means a future addition to the
+    admin-only set propagates everywhere.
+    """
+    names = set(tool_names)
+    if user_role == "admin":
+        return names, set()
+    blocked = names & ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+    return names - blocked, blocked
+
 # All available tools
 ALL_TOOLS = [
     # Core system tools
@@ -200,6 +236,8 @@ __all__ = [
     "CALENDAR_TOOLS",
     "SELF_AGENT_TOOLS",
     "OPTIONAL_TOOLS",
+    "ADMIN_ONLY_OPTIONAL_TOOL_NAMES",
+    "filter_admin_only_tools",
     "ALL_TOOLS",
     "get_all_tools_with_agents",
     "hello_test",

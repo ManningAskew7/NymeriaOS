@@ -81,8 +81,24 @@ class Settings(BaseSettings):
                     values[key] = None
         return values
 
-    # API Authentication (required for security)
-    nymeria_api_key: Optional[str] = Field(default=None, description="API key for authentication")
+    # API Authentication — legacy shared key, retired. Kept as a field so
+    # existing `.env.docker` values don't raise validation errors, but the
+    # server no longer accepts it; authentication is per-user account
+    # tokens only. See docs/accounts.md.
+    nymeria_api_key: Optional[str] = Field(
+        default=None,
+        description="Deprecated — per-user account tokens are authoritative. Safe to delete from .env.",
+    )
+
+    # Service token — an admin-role Nymeria account token used by bots, the
+    # ticker, the watchdog, and other trusted internal callers. Combined with
+    # an ``X-Nymeria-Act-As: <user_id>`` header it lets shared infrastructure
+    # make API calls on behalf of each user without holding their raw tokens.
+    # Created via ``python run.py users add bot-service --role admin``.
+    nymeria_service_token: Optional[str] = Field(
+        default=None,
+        description="Admin-role service token used by bots/ticker/watchdog for act-as calls",
+    )
 
     # Data directory override (for Docker volumes)
     nymeria_data_dir: Optional[str] = Field(
@@ -549,12 +565,19 @@ class Settings(BaseSettings):
         errors: List[str] = []
         warnings: List[str] = []
 
-        # Check for NYMERIA_API_KEY (required for security)
-        if not self.nymeria_api_key:
-            errors.append(
-                "NYMERIA_API_KEY not set. This is required for API authentication.\n"
-                "  Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\"\n"
-                "  Then add it to your .env file."
+        # NYMERIA_API_KEY is retired — authentication uses per-user account
+        # tokens minted via ``python run.py users add``. The bootstrap admin
+        # token is written to data/BOOTSTRAP_TOKEN.txt on first run. See
+        # docs/accounts.md.
+        #
+        # Internal callers (bots, ticker, watchdog, slash_command, triggers)
+        # need NYMERIA_SERVICE_TOKEN to call the API with X-Nymeria-Act-As.
+        if not self.nymeria_service_token:
+            warnings.append(
+                "NYMERIA_SERVICE_TOKEN not set. Internal callers (bots, ticker, "
+                "watchdog, trigger fires, slash commands) will be unable to "
+                "authenticate. Create an admin account and paste its token:\n"
+                "  python run.py users add bot-service@localhost --role admin --id bot-service"
             )
 
         # Check for LLM provider API key

@@ -59,17 +59,10 @@ services:
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
-    # Symlink OAuth token caches to /data so they survive container rebuilds
-    command: >-
-      bash -c "
-        mkdir -p /data/auth_tokens &&
-        for f in .microsoft_mcp_token_cache.json .google_docs_token_cache.json .google_calendar_token_cache.json; do
-          [ ! -f /data/auth_tokens/$$f ] && [ ! -L /root/$$f ] && [ -f /root/$$f ] && mv /root/$$f /data/auth_tokens/$$f;
-          [ ! -f /data/auth_tokens/$$f ] && echo '{}' > /data/auth_tokens/$$f;
-          ln -sf /data/auth_tokens/$$f /root/$$f;
-        done &&
-        exec python run.py api
-      "
+    # OAuth token caches are now per-user at /data/auth_tokens/<user_id>/
+    # (see docs/accounts.md). Existing global caches in /data/auth_tokens/
+    # get migrated to /data/auth_tokens/default/ by the agent at boot.
+    command: ["python", "run.py", "api"]
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -84,7 +77,11 @@ services:
       # System timezone (matches USER_TIMEZONE for consistent bash/OS time)
       TZ: ${USER_TIMEZONE:-UTC}
       # Required
-      NYMERIA_API_KEY: ${NYMERIA_API_KEY:?NYMERIA_API_KEY is required}
+      # NYMERIA_API_KEY is deprecated — authentication is per-user account
+      # tokens only. Passed through if set (silently ignored by the server)
+      # so existing .env.docker values don't break compose validation.
+      NYMERIA_API_KEY: ${NYMERIA_API_KEY:-}
+      NYMERIA_SERVICE_TOKEN: ${NYMERIA_SERVICE_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

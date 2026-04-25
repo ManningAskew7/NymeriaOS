@@ -25,8 +25,37 @@ Available profiles:
 
 import logging
 import os
+import re
 import sys
 from typing import Dict, List, Optional
+
+
+_TOKEN_PATTERN = re.compile(r"nym_[A-Za-z0-9_-]{16,}")
+_TOKEN_REDACTED = "nym_<redacted>"
+
+
+class _TokenRedactingFilter(logging.Filter):
+    """Redact raw Nymeria account tokens (``nym_...``) anywhere in a log record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        try:
+            if isinstance(record.msg, str):
+                record.msg = _TOKEN_PATTERN.sub(_TOKEN_REDACTED, record.msg)
+            if record.args:
+                if isinstance(record.args, dict):
+                    record.args = {
+                        k: _TOKEN_PATTERN.sub(_TOKEN_REDACTED, v) if isinstance(v, str) else v
+                        for k, v in record.args.items()
+                    }
+                elif isinstance(record.args, tuple):
+                    record.args = tuple(
+                        _TOKEN_PATTERN.sub(_TOKEN_REDACTED, a) if isinstance(a, str) else a
+                        for a in record.args
+                    )
+        except Exception:  # noqa: BLE001
+            # Never let redaction kill a log line.
+            pass
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +214,17 @@ def configure_logging(
         handler.close()
         root_logger.removeHandler(handler)
 
+    # Shared filter — belt and suspenders. Tokens should never be logged, but
+    # if one slips into a log line we redact it before the formatter runs.
+    token_filter = _TokenRedactingFilter()
+
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
     formatter = NymeriaFormatter(use_color=use_color and is_tty, short_names=short_names)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(logging.DEBUG)
+    console_handler.addFilter(token_filter)
     root_logger.addHandler(console_handler)
 
     # Optional file handler (service mode)
@@ -198,6 +232,7 @@ def configure_logging(
         file_formatter = NymeriaFormatter(use_color=False, short_names=short_names)
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(logging.DEBUG)
+        file_handler.addFilter(token_filter)
         root_logger.addHandler(file_handler)
 
     # Nymeria base logger

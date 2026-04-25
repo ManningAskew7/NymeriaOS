@@ -9,10 +9,14 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional, List
+from typing import Annotated, Optional, List
 
 import httpx
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+from .outlook_auth import load_token_cache, save_token_cache
+from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -47,34 +51,18 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-# Token cache location (same as outlook_auth.py)
-TOKEN_CACHE_PATH = Path.home() / ".microsoft_mcp_token_cache.json"
-
 # Token refresh endpoint
 TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 
 
-def load_token_cache() -> dict:
-    """Load token cache from file."""
-    if TOKEN_CACHE_PATH.exists():
-        try:
-            return json.loads(TOKEN_CACHE_PATH.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def save_token_cache(cache: dict) -> None:
-    """Save token cache to file."""
-    TOKEN_CACHE_PATH.write_text(json.dumps(cache, indent=2))
-
-
-def get_account(account_id: Optional[str] = None) -> Optional[dict]:
+def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict]:
     """Get account info from cache.
 
     Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first account.
+    All reads are scoped to the Nymeria ``user_id`` — another user's Microsoft
+    accounts are invisible.
     """
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:
@@ -96,7 +84,7 @@ def get_account(account_id: Optional[str] = None) -> Optional[dict]:
     return next(iter(accounts.values()), None)
 
 
-def try_complete_pending_auth() -> bool:
+def try_complete_pending_auth(user_id: str) -> bool:
     """
     Try to complete a pending device code auth if user already signed in.
 
@@ -108,7 +96,7 @@ def try_complete_pending_auth() -> bool:
     """
     import os
 
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     pending = cache.get("pending_auth")
 
     if not pending:
@@ -173,7 +161,7 @@ def try_complete_pending_auth() -> bool:
             if "pending_auth" in cache:
                 del cache["pending_auth"]
 
-            save_token_cache(cache)
+            save_token_cache(user_id, cache)
             logger.info(f"Auto-completed pending auth for {email}")
             return True
 
@@ -183,16 +171,16 @@ def try_complete_pending_auth() -> bool:
     return False
 
 
-def get_access_token(account_id: Optional[str] = None) -> Optional[str]:
-    """Get a valid access token, refreshing if needed."""
-    cache = load_token_cache()
+def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional[str]:
+    """Get a valid access token for this Nymeria user, refreshing if needed."""
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:
         # Try to complete any pending auth first
-        if try_complete_pending_auth():
+        if try_complete_pending_auth(user_id):
             # Reload cache after completing auth
-            cache = load_token_cache()
+            cache = load_token_cache(user_id)
             accounts = cache.get("accounts", {})
 
         if not accounts:
@@ -250,7 +238,7 @@ def get_access_token(account_id: Optional[str] = None) -> Optional[str]:
             account["expires_at"] = time.time() + data.get("expires_in", 3600)
 
             cache["accounts"][aid] = account
-            save_token_cache(cache)
+            save_token_cache(user_id, cache)
 
             return account["access_token"]
     except Exception as e:
@@ -260,14 +248,15 @@ def get_access_token(account_id: Optional[str] = None) -> Optional[str]:
 
 
 def graph_request(
+    user_id: str,
     method: str,
     endpoint: str,
     account_id: Optional[str] = None,
     json_data: Optional[dict] = None,
     params: Optional[dict] = None,
 ) -> tuple[bool, dict | str]:
-    """Make a Graph API request."""
-    token = get_access_token(account_id)
+    """Make a Graph API request on behalf of ``user_id``."""
+    token = get_access_token(user_id, account_id)
     if not token:
         return False, "No authenticated account. Use outlook_auth_start to authenticate."
 
@@ -343,6 +332,7 @@ def outlook_list_emails(
     limit: int = 10,
     folder: str = "inbox",
     unread_only: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     List recent emails from Outlook.
@@ -356,6 +346,7 @@ def outlook_list_emails(
     Returns:
         List of emails with sender, subject, date, and ID for each.
     """
+    user_id = get_user_id(config)
     limit = min(max(1, limit), 50)
 
     # Build filter
@@ -384,8 +375,7 @@ def outlook_list_emails(
     }
     folder_name = folder_map.get(folder.lower(), folder)
 
-    success, result = graph_request(
-        "GET",
+    success, result = graph_request(user_id, "GET",
         f"/me/mailFolders/{folder_name}/messages",
         account_id=account_id,
         params=params,
@@ -478,6 +468,7 @@ def outlook_get_email(
     email_id: str = "",
     email_ids: str = "",
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Get full details of email(s) by ID.
@@ -492,6 +483,7 @@ def outlook_get_email(
         Full email details including body content.
         In batch mode, results are grouped per email with === delimiters.
     """
+    user_id = get_user_id(config)
     # Parse IDs
     if email_ids.strip():
         ids = [eid.strip() for eid in email_ids.split(",") if eid.strip()]
@@ -507,8 +499,7 @@ def outlook_get_email(
 
     # Single email — return directly (identical to previous behavior)
     if len(ids) == 1:
-        success, result = graph_request(
-            "GET",
+        success, result = graph_request(user_id, "GET",
             f"/me/messages/{ids[0]}",
             account_id=account_id,
             params={"$select": _SELECT, "$expand": _EXPAND},
@@ -521,8 +512,7 @@ def outlook_get_email(
     total = len(ids)
     sections = []
     for i, eid in enumerate(ids, 1):
-        success, result = graph_request(
-            "GET",
+        success, result = graph_request(user_id, "GET",
             f"/me/messages/{eid}",
             account_id=account_id,
             params={"$select": _SELECT, "$expand": _EXPAND},
@@ -611,8 +601,7 @@ def _search_single_query(
     elif "$filter" not in params:
         return "[Error]: No search criteria provided."
 
-    success, result = graph_request(
-        "GET",
+    success, result = graph_request(user_id, "GET",
         endpoint,
         account_id=account_id,
         params=params,
@@ -631,8 +620,7 @@ def _search_single_query(
                 del params["$filter"]
                 if "$orderby" in params:
                     del params["$orderby"]
-            success, result = graph_request(
-                "GET",
+            success, result = graph_request(user_id, "GET",
                 endpoint,
                 account_id=account_id,
                 params=params,
@@ -669,6 +657,7 @@ def outlook_search_emails(
     kql: str = "",
     account_id: Optional[str] = None,
     limit: int = 10,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Search emails in Outlook with optional filters.
@@ -723,6 +712,7 @@ def outlook_search_emails(
         List of matching emails with sender, subject, date, preview, thread ID.
         In batch mode, results are grouped per query with === delimiters.
     """
+    user_id = get_user_id(config)
     limit = min(max(1, limit), 25)
 
     # Thread lookup mode — get all messages in a conversation
@@ -733,8 +723,7 @@ def outlook_search_emails(
             "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
             "$filter": f"conversationId eq '{tid}'",
         }
-        success, result = graph_request(
-            "GET", "/me/messages", account_id=account_id, params=params,
+        success, result = graph_request(user_id, "GET", "/me/messages", account_id=account_id, params=params,
         )
         if not success:
             return f"[Error]: {result}"
@@ -801,6 +790,7 @@ def outlook_send_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     is_html: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Send a new email.
@@ -817,6 +807,7 @@ def outlook_send_email(
     Returns:
         Success or error message.
     """
+    user_id = get_user_id(config)
     def parse_recipients(addr_str: str) -> List[dict]:
         addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
         return [{"emailAddress": {"address": a}} for a in addresses]
@@ -835,8 +826,7 @@ def outlook_send_email(
     if bcc:
         message["bccRecipients"] = parse_recipients(bcc)
 
-    success, result = graph_request(
-        "POST",
+    success, result = graph_request(user_id, "POST",
         "/me/sendMail",
         account_id=account_id,
         json_data={"message": message},
@@ -854,6 +844,7 @@ def outlook_reply_email(
     body: str,
     account_id: Optional[str] = None,
     reply_all: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Reply to an email.
@@ -867,10 +858,10 @@ def outlook_reply_email(
     Returns:
         Success or error message.
     """
+    user_id = get_user_id(config)
     endpoint = f"/me/messages/{email_id}/replyAll" if reply_all else f"/me/messages/{email_id}/reply"
 
-    success, result = graph_request(
-        "POST",
+    success, result = graph_request(user_id, "POST",
         endpoint,
         account_id=account_id,
         json_data={
@@ -892,6 +883,7 @@ def outlook_draft_reply(
     reply_all: bool = False,
     is_html: bool = False,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Create a draft reply to an email (does NOT send it).
@@ -913,11 +905,11 @@ def outlook_draft_reply(
     Returns:
         Draft ID and subject for confirmation.
     """
+    user_id = get_user_id(config)
     # Step 1: Create the reply draft (pre-populates recipients and thread headers)
     endpoint = f"/me/messages/{email_id}/createReplyAll" if reply_all else f"/me/messages/{email_id}/createReply"
 
-    success, result = graph_request(
-        "POST",
+    success, result = graph_request(user_id, "POST",
         endpoint,
         account_id=account_id,
     )
@@ -933,8 +925,7 @@ def outlook_draft_reply(
 
     # Step 2: Update the draft body with the agent's content
     content_type = "html" if is_html else "text"
-    success, patch_result = graph_request(
-        "PATCH",
+    success, patch_result = graph_request(user_id, "PATCH",
         f"/me/messages/{draft_id}",
         account_id=account_id,
         json_data={
@@ -968,6 +959,7 @@ def outlook_create_draft(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     is_html: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Create an email draft without sending it.
@@ -986,6 +978,7 @@ def outlook_create_draft(
     Returns:
         Success message with draft ID and recipient counts.
     """
+    user_id = get_user_id(config)
     def parse_recipients(addr_str: str) -> List[dict]:
         addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
         return [{"emailAddress": {"address": a}} for a in addresses]
@@ -1008,8 +1001,7 @@ def outlook_create_draft(
         bcc_count = len(bcc_recipients)
         message["bccRecipients"] = bcc_recipients
 
-    success, result = graph_request(
-        "POST",
+    success, result = graph_request(user_id, "POST",
         "/me/messages",
         account_id=account_id,
         json_data=message,
@@ -1033,6 +1025,7 @@ def outlook_edit_draft(
     bcc: str = "",
     is_html: bool = False,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Edit an existing email draft. Only provided fields are updated.
@@ -1054,6 +1047,7 @@ def outlook_edit_draft(
     Returns:
         Success message confirming the update.
     """
+    user_id = get_user_id(config)
     def parse_recipients(addr_str: str) -> List[dict]:
         addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
         return [{"emailAddress": {"address": a}} for a in addresses]
@@ -1076,8 +1070,7 @@ def outlook_edit_draft(
     if not updates:
         return "[Error]: No fields to update. Provide at least one of: body, subject, to, cc, bcc."
 
-    success, result = graph_request(
-        "PATCH",
+    success, result = graph_request(user_id, "PATCH",
         f"/me/messages/{draft_id}",
         account_id=account_id,
         json_data=updates,
@@ -1095,6 +1088,7 @@ def outlook_delete_email(
     email_id: str,
     account_id: Optional[str] = None,
     permanent: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Delete an email (moves to Deleted Items, or permanently deletes).
@@ -1107,16 +1101,15 @@ def outlook_delete_email(
     Returns:
         Success or error message.
     """
+    user_id = get_user_id(config)
     if permanent:
-        success, result = graph_request(
-            "DELETE",
+        success, result = graph_request(user_id, "DELETE",
             f"/me/messages/{email_id}",
             account_id=account_id,
         )
     else:
         # Move to deleted items
-        success, result = graph_request(
-            "POST",
+        success, result = graph_request(user_id, "POST",
             f"/me/messages/{email_id}/move",
             account_id=account_id,
             json_data={"destinationId": "deleteditems"},
@@ -1134,6 +1127,7 @@ def outlook_mark_email(
     email_id: str,
     is_read: bool,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Mark an email as read or unread.
@@ -1146,8 +1140,8 @@ def outlook_mark_email(
     Returns:
         Success or error message.
     """
-    success, result = graph_request(
-        "PATCH",
+    user_id = get_user_id(config)
+    success, result = graph_request(user_id, "PATCH",
         f"/me/messages/{email_id}",
         account_id=account_id,
         json_data={"isRead": is_read},
@@ -1165,6 +1159,7 @@ def outlook_move_email(
     email_id: str,
     folder: str,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Move an email to a different folder.
@@ -1177,6 +1172,7 @@ def outlook_move_email(
     Returns:
         Success or error message.
     """
+    user_id = get_user_id(config)
     # Map common folder names
     folder_map = {
         "inbox": "inbox",
@@ -1190,8 +1186,7 @@ def outlook_move_email(
     }
     folder_id = folder_map.get(folder.lower(), folder)
 
-    success, result = graph_request(
-        "POST",
+    success, result = graph_request(user_id, "POST",
         f"/me/messages/{email_id}/move",
         account_id=account_id,
         json_data={"destinationId": folder_id},
@@ -1209,6 +1204,7 @@ def outlook_forward_email(
     to: str,
     comment: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Forward an email to another recipient.
@@ -1222,6 +1218,7 @@ def outlook_forward_email(
     Returns:
         Success or error message.
     """
+    user_id = get_user_id(config)
     def parse_recipients(addr_str: str) -> List[dict]:
         addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
         return [{"emailAddress": {"address": a}} for a in addresses]
@@ -1232,8 +1229,7 @@ def outlook_forward_email(
     if comment:
         data["comment"] = comment
 
-    success, result = graph_request(
-        "POST",
+    success, result = graph_request(user_id, "POST",
         f"/me/messages/{email_id}/forward",
         account_id=account_id,
         json_data=data,
@@ -1251,6 +1247,7 @@ def outlook_set_category(
     category: str,
     action: str = "add",
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Add or remove a category tag on an email.
@@ -1268,6 +1265,7 @@ def outlook_set_category(
     Returns:
         Success or error message.
     """
+    user_id = get_user_id(config)
     if action not in ("add", "remove"):
         return "[Error]: action must be 'add' or 'remove'."
 
@@ -1275,8 +1273,7 @@ def outlook_set_category(
         return "[Error]: category name is required."
 
     # First get current categories on the email
-    success, result = graph_request(
-        "GET",
+    success, result = graph_request(user_id, "GET",
         f"/me/messages/{email_id}",
         account_id=account_id,
         params={"$select": "categories"},
@@ -1297,8 +1294,7 @@ def outlook_set_category(
             return f"[Info]: Email does not have category '{cat}'."
         updated = [c for c in current if c != cat]
 
-    success, result = graph_request(
-        "PATCH",
+    success, result = graph_request(user_id, "PATCH",
         f"/me/messages/{email_id}",
         account_id=account_id,
         json_data={"categories": updated},

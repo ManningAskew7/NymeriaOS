@@ -190,7 +190,7 @@ This means TODOs created via `/todos add` in a Discord channel will have their r
 
 - **Chat timeout**: 300s read (accommodates long LLM calls)
 - **Default timeout**: 30s read
-- **Bearer token auth** via `NYMERIA_API_KEY`
+- **Bearer token auth** via the admin `NYMERIA_SERVICE_TOKEN`, with `X-Nymeria-Act-As: <resolved_user_id>` set per request so each call runs under the linked Nymeria account (see `docs/accounts.md`).
 
 The client covers all API endpoints: chat, thread management, settings, tools, memories, TODOs, and models. It could be reused by other async integrations.
 

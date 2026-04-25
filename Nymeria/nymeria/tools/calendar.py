@@ -11,17 +11,18 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Annotated, Any, Callable, Optional
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 from .calendar_auth import (
     CALENDAR_AUTH_TOOLS,
     GOOGLE_SCOPES,
-    TOKEN_CACHE_PATH,
     load_token_cache,
     save_token_cache,
 )
+from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,10 @@ logger = logging.getLogger(__name__)
 # Credential management
 # ---------------------------------------------------------------------------
 
-def get_credentials(account_id: Optional[str] = None):
+def get_credentials(user_id: str, account_id: Optional[str] = None):
     """
-    Get valid Google OAuth credentials, refreshing the access token if expired.
+    Get valid Google OAuth credentials for a Nymeria user, refreshing the
+    access token if expired.
 
     Mirrors get_access_token() in outlook_email.py — checks expiry with a
     60-second buffer and auto-refreshes via the stored refresh token.
@@ -52,7 +54,7 @@ def get_credentials(account_id: Optional[str] = None):
         )
         return None
 
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:
@@ -97,7 +99,7 @@ def get_credentials(account_id: Optional[str] = None):
         if creds.refresh_token:
             account["refresh_token"] = creds.refresh_token
         cache["accounts"][aid] = account
-        save_token_cache(cache)
+        save_token_cache(user_id, cache)
         return creds
     except RefreshError as e:
         logger.warning(f"Refresh token revoked or expired: {e}. User must re-authenticate.")
@@ -112,6 +114,7 @@ def get_credentials(account_id: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 def _calendar_request(
+    user_id: str,
     operation: Callable,
     account_id: Optional[str] = None,
 ) -> tuple[bool, Any]:
@@ -119,6 +122,7 @@ def _calendar_request(
     Execute a Google Calendar API operation with auth handling.
 
     Args:
+        user_id: Nymeria account making the request.
         operation: A callable that takes a ``service`` object and returns
                    the API result, e.g. ``lambda s: s.calendarList().list().execute()``.
         account_id: Optional account ID to use.
@@ -135,7 +139,7 @@ def _calendar_request(
             "Run: pip install google-api-python-client google-auth-oauthlib"
         )
 
-    creds = get_credentials(account_id)
+    creds = get_credentials(user_id, account_id)
     if not creds:
         return False, "No authenticated Google account. Use calendar_auth_start to authenticate."
 
@@ -231,7 +235,7 @@ def _format_event_detail(evt: dict) -> str:
 # ---------------------------------------------------------------------------
 
 @tool
-def calendar_list_calendars(account_id: Optional[str] = None) -> str:
+def calendar_list_calendars(account_id: Optional[str] = None, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     List all available Google calendars for the authenticated account.
 
@@ -244,10 +248,10 @@ def calendar_list_calendars(account_id: Optional[str] = None) -> str:
     Returns:
         List of calendars with id, summary, and accessRole
     """
+    user_id = get_user_id(config)
     logger.info("calendar_list_calendars called")
 
-    success, result = _calendar_request(
-        lambda s: s.calendarList().list().execute(),
+    success, result = _calendar_request(user_id, lambda s: s.calendarList().list().execute(),
         account_id=account_id,
     )
     if not success:
@@ -276,6 +280,7 @@ def calendar_list_events(
     time_min: Optional[str] = None,
     time_max: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     List events from a Google Calendar.
@@ -290,6 +295,7 @@ def calendar_list_events(
     Returns:
         List of events with their details (id, summary, start, end, etc.)
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_list_events called: calendar_id={calendar_id}, max_results={max_results}")
 
     def _op(s):
@@ -325,6 +331,7 @@ def calendar_get_event(
     event_id: str,
     calendar_id: str = "primary",
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Get detailed information about a specific calendar event.
@@ -337,10 +344,10 @@ def calendar_get_event(
     Returns:
         Full event details including description, attendees, location, etc.
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_get_event called: event_id={event_id}, calendar_id={calendar_id}")
 
-    success, result = _calendar_request(
-        lambda s: s.events().get(calendarId=calendar_id, eventId=event_id).execute(),
+    success, result = _calendar_request(user_id, lambda s: s.events().get(calendarId=calendar_id, eventId=event_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -355,6 +362,7 @@ def calendar_search_events(
     calendar_id: str = "primary",
     max_results: int = 10,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Search for events by text query.
@@ -370,10 +378,10 @@ def calendar_search_events(
     Returns:
         List of matching events
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_search_events called: query={query}, calendar_id={calendar_id}")
 
-    success, result = _calendar_request(
-        lambda s: s.events().list(
+    success, result = _calendar_request(user_id, lambda s: s.events().list(
             calendarId=calendar_id,
             q=query,
             maxResults=max_results,
@@ -407,6 +415,7 @@ def calendar_create_event(
     attendees: Optional[str] = None,
     timezone: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Create a new calendar event.
@@ -427,6 +436,7 @@ def calendar_create_event(
     Returns:
         Created event details including the event ID
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_create_event called: summary={summary}, start={start_time}, end={end_time}")
 
     def _op(s):
@@ -475,6 +485,7 @@ def calendar_update_event(
     description: Optional[str] = None,
     location: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Update an existing calendar event.
@@ -494,6 +505,7 @@ def calendar_update_event(
     Returns:
         Updated event details
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_update_event called: event_id={event_id}")
 
     def _op(s):
@@ -534,6 +546,7 @@ def calendar_delete_event(
     event_id: str,
     calendar_id: str = "primary",
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Delete a calendar event.
@@ -546,10 +559,10 @@ def calendar_delete_event(
     Returns:
         Confirmation of deletion
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_delete_event called: event_id={event_id}, calendar_id={calendar_id}")
 
-    success, result = _calendar_request(
-        lambda s: s.events().delete(calendarId=calendar_id, eventId=event_id).execute(),
+    success, result = _calendar_request(user_id, lambda s: s.events().delete(calendarId=calendar_id, eventId=event_id).execute(),
         account_id=account_id,
     )
     if not success:
@@ -564,6 +577,7 @@ def calendar_respond_to_event(
     response: str,
     calendar_id: str = "primary",
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Respond to a calendar event invitation.
@@ -577,6 +591,7 @@ def calendar_respond_to_event(
     Returns:
         Confirmation of response
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_respond_to_event called: event_id={event_id}, response={response}")
 
     valid_responses = ["accepted", "declined", "tentative"]
@@ -631,6 +646,7 @@ def calendar_get_freebusy(
     time_max: str,
     calendars: Optional[str] = None,
     account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Get free/busy information for calendars.
@@ -646,6 +662,7 @@ def calendar_get_freebusy(
     Returns:
         Free/busy information showing busy time ranges
     """
+    user_id = get_user_id(config)
     logger.info(f"calendar_get_freebusy called: time_min={time_min}, time_max={time_max}")
 
     def _op(s):
@@ -684,7 +701,7 @@ def calendar_get_freebusy(
 
 
 @tool
-def calendar_get_current_time() -> str:
+def calendar_get_current_time(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     Get the current time in ISO 8601 format.
 
@@ -694,13 +711,14 @@ def calendar_get_current_time() -> str:
     Returns:
         Current time as ISO 8601 string with timezone offset.
     """
+    user_id = get_user_id(config)
     logger.info("calendar_get_current_time called")
     now = datetime.now(timezone.utc).astimezone()
     return f"[Success]: Current time: {now.isoformat()}"
 
 
 @tool
-def calendar_list_colors(account_id: Optional[str] = None) -> str:
+def calendar_list_colors(account_id: Optional[str] = None, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """
     List available calendar and event colors.
 
@@ -712,10 +730,10 @@ def calendar_list_colors(account_id: Optional[str] = None) -> str:
     Returns:
         Available color IDs and their corresponding colors
     """
+    user_id = get_user_id(config)
     logger.info("calendar_list_colors called")
 
-    success, result = _calendar_request(
-        lambda s: s.colors().get().execute(),
+    success, result = _calendar_request(user_id, lambda s: s.colors().get().execute(),
         account_id=account_id,
     )
     if not success:

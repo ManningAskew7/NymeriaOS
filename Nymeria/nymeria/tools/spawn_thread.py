@@ -77,12 +77,20 @@ def _check_rate_limit(parent_thread_id: str) -> Optional[str]:
     return None
 
 
-def _get_parent_spawn_depth(parent_thread_id: Optional[str], agent) -> int:
-    """Read parent's spawn_depth from thread metadata. Returns 0 if not set."""
+def _get_parent_spawn_depth(
+    parent_thread_id: Optional[str], agent, user_id: str = "default"
+) -> int:
+    """Read parent's spawn_depth from thread metadata. Returns 0 if not set.
+
+    Reads under the caller's ``user_id`` partition because spawn_thread saves
+    metadata under the actual user_id (not always "default") since the
+    multi-user refactor — a hardcoded "default" lookup here weakened the
+    max-depth guard for non-default users.
+    """
     if not parent_thread_id or not agent:
         return 0
     try:
-        meta = agent.thread_metadata_manager.get_thread("default", parent_thread_id)
+        meta = agent.thread_metadata_manager.get_thread(user_id, parent_thread_id)
         if meta and meta.platform_meta:
             return int(meta.platform_meta.get("spawn_depth", "0"))
     except Exception:
@@ -353,7 +361,7 @@ def spawn_thread(
     max_depth = int(
         os.environ.get("NYMERIA_MAX_SPAWN_DEPTH", DEFAULT_MAX_SPAWN_DEPTH)
     )
-    parent_depth = _get_parent_spawn_depth(parent_thread_id, agent)
+    parent_depth = _get_parent_spawn_depth(parent_thread_id, agent, user_id=user_id)
     new_depth = parent_depth + 1
     if new_depth > max_depth:
         return (
@@ -399,6 +407,21 @@ def spawn_thread(
                 unknown_tools.append(name)
         if unknown_tools:
             warnings.append(f"unknown tool(s): {', '.join(unknown_tools)}")
+
+    # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config and
+    # the tool_search gate — without this, a non-admin could spawn a child
+    # thread seeded with reload_all/claude_code/self_modify and escalate via
+    # the child. Block category-expansion AND named optional_tools.
+    from . import filter_admin_only_tools
+    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+    user_role = user.role if user else "user"
+    _, blocked = filter_admin_only_tools(enabled_set, user_role)
+    if blocked:
+        return (
+            f"[Error]: Admin-only tools cannot be enabled on a spawned thread "
+            f"by this user: {sorted(blocked)}. Drop them from optional_tools / "
+            f"tool_categories or ask an administrator to spawn the thread."
+        )
 
     disabled_list: List[str] = []
     if disabled_tools:
@@ -484,6 +507,15 @@ def spawn_thread(
         except Exception:
             pass
         return f"[Error]: Failed to save thread metadata: {str(e)}"
+
+    # Claim ownership for the spawning user. Without this, callable spawns
+    # land in the "legacy unowned" bucket and the per-user graph filter drops
+    # them — the parent thread's LLM gets told the new tool exists but can't
+    # actually invoke it. The runtime gate in tool_factory.py checks this row.
+    try:
+        agent.accounts_repo.claim_thread(new_thread_id, user_id)
+    except Exception as e:
+        logger.warning(f"spawn_thread: claim_thread failed for {new_thread_id}: {e}")
 
     agent.invalidate_thread_config_cache(new_thread_id)
 

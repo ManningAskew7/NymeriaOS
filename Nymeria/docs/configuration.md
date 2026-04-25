@@ -41,6 +41,7 @@ Set the API key for your chosen provider:
 | Variable | Provider | Required |
 |----------|----------|----------|
 | `ANTHROPIC_API_KEY` | Anthropic | If using `anthropic` provider |
+| `ANTHROPIC_DIRECT_API_KEY` | Anthropic | Optional direct Anthropic `sk-ant-*` key. Used only when the effective Anthropic base URL is empty/direct; CLIProxy Anthropic calls continue using `ANTHROPIC_API_KEY` (`cpx-*`). |
 | `OPENAI_API_KEY` | OpenAI | If using `openai` provider |
 | `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
 | `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
@@ -58,7 +59,8 @@ Set the API key for your chosen provider:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NYMERIA_API_KEY` | (required) | Bearer token for API authentication. Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
+| `NYMERIA_SERVICE_TOKEN` | (required) | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, and slash commands for X-Nymeria-Act-As calls. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
 | `NYMERIA_API_URL` | auto | Local API URL for in-process tools (e.g. `slash_command`). Defaults to `http://api:8000` in Docker, `http://localhost:8000` otherwise |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
@@ -259,7 +261,11 @@ DATABASE_BACKEND=sqlite
 # SQLITE_PATH=data/nymeria.db  # Uncomment to customize path
 
 # API Server
-NYMERIA_API_KEY=my-secret-key
+# Authentication uses per-user account tokens; the bootstrap admin token is
+# written to <data_dir>/BOOTSTRAP_TOKEN.txt on first boot. See docs/accounts.md.
+# NYMERIA_SERVICE_TOKEN is the admin service token used by bots/ticker/watchdog
+# (with X-Nymeria-Act-As) for per-user routing.
+NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
 API_HOST=0.0.0.0
 API_PORT=8000
 

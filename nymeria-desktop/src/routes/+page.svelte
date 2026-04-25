@@ -137,6 +137,21 @@
       initializeApp();
     });
 
+    // When the window regains focus, re-verify the token — if it was rotated
+    // or revoked server-side, we want to route back to SetupWizard before any
+    // user-visible call 401s.
+    window.addEventListener('focus', () => {
+      if (configStore.isConfigured) {
+        configStore.refreshIdentity().then((id) => {
+          if (id === null && configStore.apiKey) {
+            // Token invalid — clear setup so the SetupWizard shows.
+            console.warn('[Page] Token no longer valid, routing to SetupWizard');
+            configStore.apiKey = '';
+          }
+        });
+      }
+    });
+
     // Return cleanup — SSE disconnect happens via autonomousStore
     return () => {
       console.log('[Page] Cleanup - disconnecting SSE');
@@ -145,11 +160,27 @@
     };
   });
 
-  function initializeApp() {
+  async function initializeApp() {
     // Connect if configured (setupCompleted is redundant now but kept for safety)
     if (configStore.isConfigured) {
-      // Sync thread metadata from backend (server is authoritative for titles/pins).
-      // Runs in background — localStorage provides instant render, backend updates after.
+      // Resolve identity FIRST so subsequent localStorage reads use the
+      // correctly-scoped keys. Awaited — without this, the unscoped read of
+      // threadsStore.currentThreadId below races the identity refresh and
+      // momentarily flashes the previous user's thread on a returning user.
+      try {
+        const id = await configStore.refreshIdentity();
+        if (id === null && configStore.apiKey) {
+          console.warn('[Page] /me returned unauthorized; clearing apiKey to route to SetupWizard');
+          configStore.apiKey = '';
+          return;
+        }
+      } catch (e) {
+        // Network failure — fall through; stores stay in legacy/unscoped
+        // mode until the next successful /me call (window-focus listener).
+        console.warn('[Page] refreshIdentity failed, continuing with cached scope:', e);
+      }
+
+      // Identity settled. Now safe to read scoped state and kick off backend sync.
       threadsStore.syncFromBackend();
 
       // Restore last thread's chat history if one was saved

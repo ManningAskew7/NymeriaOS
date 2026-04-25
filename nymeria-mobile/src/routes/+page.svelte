@@ -79,14 +79,27 @@
       notificationStore.startPolling();
       autonomousStore.connect();
 
-      // Sync threads from backend
-      threadsStore.syncFromBackend();
-
-      // Restore last thread
-      const initialThreadId = threadsStore.currentThreadId;
-      if (initialThreadId) {
-        loadThreadHistory(initialThreadId);
-      }
+      // Resolve identity FIRST so subsequent reads use the correctly-scoped
+      // localStorage keys. Awaited — otherwise the unscoped read of
+      // threadsStore.currentThreadId below races the identity refresh and
+      // momentarily renders the previous user's thread on a returning user.
+      (async () => {
+        try {
+          const id = await configStore.refreshIdentity();
+          if (id === null && configStore.apiKey) {
+            console.warn('[Page] /me returned unauthorized; clearing apiKey');
+            configStore.apiKey = '';
+            return;
+          }
+        } catch (e) {
+          console.warn('[Page] refreshIdentity failed, continuing with cached scope:', e);
+        }
+        threadsStore.syncFromBackend();
+        const initialThreadId = threadsStore.currentThreadId;
+        if (initialThreadId) {
+          loadThreadHistory(initialThreadId);
+        }
+      })();
     }
 
     return () => {
