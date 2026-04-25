@@ -97,7 +97,17 @@ async def _dispatch_command(command: str, config: RunnableConfig) -> str:
     from ..config import get_settings
 
     settings = get_settings()
-    api_key = settings.nymeria_api_key or ""
+    # Use the admin-role service token for internal API calls — slash
+    # commands run on behalf of the current thread's user, so we act-as
+    # that user via headers inside NymeriaAPIClient on each call.
+    api_key = settings.nymeria_service_token
+    if not api_key:
+        return (
+            "[Error]: slash_command requires NYMERIA_SERVICE_TOKEN to be set "
+            "(it authenticates as the admin service account and acts-as the "
+            "current user). Ask an administrator to provision the bot-service "
+            "admin and paste its token into the server's environment."
+        )
     base_url = _resolve_base_url()
 
     client = NymeriaAPIClient(base_url=base_url, api_key=api_key)

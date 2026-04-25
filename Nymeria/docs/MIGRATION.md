@@ -28,18 +28,22 @@ The Docker deployment provides:
 
 2. Fill in required values:
    ```bash
-   # Generate API key if you don't have one
-   python -c "import secrets; print(secrets.token_urlsafe(32))"
-
    # Generate PostgreSQL password
    python -c "import secrets; print(secrets.token_urlsafe(24))"
    ```
 
+   The legacy shared `NYMERIA_API_KEY` was retired. The first API boot
+   auto-creates a `default` admin and writes the bootstrap token to
+   `<data_dir>/BOOTSTRAP_TOKEN.txt` — see `docs/accounts.md`. Provision the
+   admin service token used by bots/ticker/watchdog with
+   `python run.py users add bot-service@localhost --role admin --id bot-service`
+   and put the printed token into `NYMERIA_SERVICE_TOKEN`.
+
 3. Edit `.env.docker` with your values:
    ```env
-   NYMERIA_API_KEY=<your-generated-key>
    POSTGRES_PASSWORD=<your-generated-password>
    ANTHROPIC_API_KEY=<your-api-key>
+   NYMERIA_SERVICE_TOKEN=<bot-service-token>
    ```
 
 ### Step 2: Export Existing Data (Optional)

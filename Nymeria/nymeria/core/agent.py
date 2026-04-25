@@ -484,6 +484,66 @@ class NymeriaAgent:
             enabled=self.settings.audit_log_enabled,
         )
 
+        # Account/token/ownership store. Created early so the bootstrap admin
+        # is minted on very first boot before anything else touches the DB.
+        # Using a dedicated SQLite file keeps this independent of the
+        # checkpoints backend (SQLite or Postgres).
+        from .accounts import AccountsRepo
+        self.accounts_repo = AccountsRepo(self.settings.data_dir / "accounts.db")
+        self.accounts_repo.ensure_bootstrap_admin(self.settings.data_dir)
+
+        # One-shot: migrate legacy global OAuth token caches
+        # (``data/auth_tokens/.X_token_cache.json``) into the new per-user
+        # layout (``data/auth_tokens/default/X.json``). Owner's existing
+        # Google/Outlook auth survives the refactor; other users start with
+        # empty token stores and re-auth via their own flows.
+        try:
+            auth_root = self.settings.data_dir / "auth_tokens"
+            if auth_root.exists():
+                default_dir = auth_root / "default"
+                default_dir.mkdir(parents=True, exist_ok=True)
+                legacy_map = {
+                    ".microsoft_mcp_token_cache.json": "microsoft.json",
+                    ".google_calendar_token_cache.json": "google_calendar.json",
+                    ".google_docs_token_cache.json": "google_docs.json",
+                }
+                for legacy_name, new_name in legacy_map.items():
+                    legacy = auth_root / legacy_name
+                    # Skip symlinks — docker-compose bootstrap still creates
+                    # ``/root/X`` symlinks pointing here for older container
+                    # images, so only migrate real files and leave the link
+                    # dangling (harmless, no one reads it post-refactor).
+                    if not legacy.is_file() or legacy.is_symlink():
+                        continue
+                    new_path = default_dir / new_name
+                    if new_path.exists():
+                        # New path already authoritative — clean up the legacy
+                        # file so it doesn't linger as confusing debris (and
+                        # so a future leak doesn't expose a stale token blob).
+                        try:
+                            legacy.unlink()
+                            logger.info(
+                                "OAuth legacy cache removed (new path already in use): %s",
+                                legacy.name,
+                            )
+                        except OSError as e:
+                            logger.warning("Failed to remove legacy cache %s: %s", legacy, e)
+                        continue
+                    try:
+                        content = legacy.read_text()
+                        if content.strip() in ("", "{}"):
+                            # Empty placeholder from docker bootstrap — skip.
+                            continue
+                        new_path.write_text(content)
+                        legacy.unlink()
+                        logger.info(
+                            "OAuth cache migrated: %s -> %s", legacy.name, new_path,
+                        )
+                    except OSError as e:
+                        logger.warning("Failed to migrate %s: %s", legacy, e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("OAuth cache migration failed (non-fatal): %s", e)
+
         # Initialize user profile manager
         self.profile_manager = UserProfileManager(self.settings.data_dir)
 
@@ -515,6 +575,36 @@ class NymeriaAgent:
 
         # Initialize thread metadata manager (server-side titles, pins, platform info)
         self.thread_metadata_manager = ThreadMetadataManager(self.settings.data_dir)
+
+        # One-shot: assign any thread known to thread_metadata that has no
+        # thread_owners row to the bootstrap admin. Protects existing installs
+        # during the multi-user rollout — otherwise a later user could first-
+        # touch-claim an existing thread they've never seen. We only backfill
+        # for users that exist in the accounts DB; legacy platform-derived
+        # user_ids (e.g. ``discord_<id>``) without a matching account are
+        # claimed under ``default`` since that's where the bootstrap admin's
+        # platform links point after Step 6.
+        try:
+            metadata_dir = self.settings.data_dir / "thread_metadata"
+            if metadata_dir.exists():
+                known_users = {u.id for u in self.accounts_repo.list_users()}
+                by_owner: Dict[str, List[str]] = {}
+                for path in metadata_dir.glob("*.json"):
+                    uid = path.stem
+                    target_uid = uid if uid in known_users else "default"
+                    store = self.thread_metadata_manager.get_store(uid)
+                    tids = list(store.threads.keys())
+                    if tids:
+                        by_owner.setdefault(target_uid, []).extend(tids)
+                for uid, tids in by_owner.items():
+                    inserted = self.accounts_repo.backfill_threads(tids, uid)
+                    if inserted:
+                        logger.info(
+                            "Thread ownership backfill: %d thread(s) assigned to %s",
+                            inserted, uid,
+                        )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Thread ownership backfill failed (non-fatal): %s", e)
 
         # Memory indexes cache for RAG (user_id -> MemoryIndex)
         # Lazily initialized per-user to avoid loading all indexes on startup
@@ -2167,11 +2257,12 @@ class NymeriaAgent:
             frequency_penalty = None
             presence_penalty = None
 
-        # Resolve base_url: per-thread override > global.
-        # Empty string ("") = explicit "use provider default" (direct API, no proxy).
-        # None = inherit global (which may be CLIProxy or unset).
+        # Resolve base_url: per-thread override > global when the thread is using
+        # the global provider. Empty string ("") = explicit direct API.
         if tc and tc.base_url is not None:
             base_url = tc.base_url or None  # "" → None (direct API)
+        elif provider != self.settings.llm_provider:
+            base_url = None
         else:
             base_url = self.settings.llm_base_url
 
@@ -2183,15 +2274,24 @@ class NymeriaAgent:
         if tc and tc.api_key:
             api_key = tc.api_key
         else:
-            key_map = {
-                "openai": self.settings.openai_api_key,
-                "anthropic": (
-                    self.settings.anthropic_direct_api_key
-                    or self.settings.anthropic_api_key
-                ),
-                "openrouter": self.settings.openrouter_api_key,
-            }
-            api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
+            if provider == "anthropic":
+                # A configured Anthropic base_url means CLIProxy or another
+                # proxy; it expects ANTHROPIC_API_KEY (usually cpx-*). Only use
+                # ANTHROPIC_DIRECT_API_KEY for direct Anthropic calls.
+                api_key = (
+                    self.settings.anthropic_api_key
+                    if base_url
+                    else (
+                        self.settings.anthropic_direct_api_key
+                        or self.settings.anthropic_api_key
+                    )
+                )
+            else:
+                key_map = {
+                    "openai": self.settings.openai_api_key,
+                    "openrouter": self.settings.openrouter_api_key,
+                }
+                api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
 
         return LLMConfig(
             provider=provider,
@@ -2212,17 +2312,18 @@ class NymeriaAgent:
     def _get_callable_thread_tools(self, tc) -> List[BaseTool]:
         """Get tools for a callable thread.
 
-        Gives the standard tool set plus other callable thread tools,
-        excluding only this thread's own callable tool to prevent
-        self-invocation loops.
+        Gives the standard tool set plus the callable thread's *owner's* other
+        callable thread tools, excluding only this thread's own callable tool
+        to prevent self-invocation loops. Cross-user callables are excluded
+        so the second user's "Helper" doesn't appear in Owner's callable thread, even when
+        the callable thread itself runs as a sub-agent.
         """
         from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
 
-        # Only exclude this thread's own callable tool (prevent self-invocation)
         own_callable_name = tc.callable_name
+        owner_id = self.accounts_repo.get_thread_owner(tc.thread_id) or "default"
 
-        # Use default_thread_tools as the base set
-        profile = self.profile_manager.get_profile("default")
+        profile = self.profile_manager.get_profile(owner_id)
         default_tools = profile.tool_preferences.default_thread_tools
 
         all_tools_dict = {t.name: t for t in ALL_TOOLS}
@@ -2234,13 +2335,27 @@ class NymeriaAgent:
             if name in all_tools_dict
         ]
 
-        # Include other callable thread tools (excluding self to prevent loops)
+        # Include the owner's other callable thread tools (excluding self).
         existing_names = {t.name for t in tools}
-        for t in self.tool_registry.get_all_tools():
-            if (t.name not in existing_names
-                    and t.name in self._callable_tool_thread_map
-                    and t.name != own_callable_name):
-                tools.append(t)
+        owned = set(self.accounts_repo.list_threads_for_user(owner_id))
+        owned_callables = self.thread_config_manager.list_callable_threads(
+            owned_thread_ids=owned
+        )
+        from ..agents.tool_factory import create_callable_thread_tool
+        for callable_tc in owned_callables:
+            if (
+                not callable_tc.callable_name
+                or callable_tc.callable_name == own_callable_name
+                or callable_tc.callable_name in existing_names
+            ):
+                continue
+            try:
+                tools.append(create_callable_thread_tool(callable_tc))
+                existing_names.add(callable_tc.callable_name)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to build sibling callable tool for {callable_tc.thread_id}: {e}"
+                )
 
         return tools
 
@@ -2350,12 +2465,31 @@ class NymeriaAgent:
             core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
             tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
-            # Always include callable thread tools (they live in the registry,
-            # not in ALL_TOOLS/OPTIONAL_TOOLS, so default_thread_tools would drop them)
+            # Per-user callable thread tools. Built fresh from the caller's
+            # owned callable threads (NOT from self.tool_registry) so that:
+            #   1. Owner doesn't see the second user's callable names/descriptions in their
+            #      tool list — descriptions are part of the system prompt.
+            #   2. Two users can each name a callable "Helper" without the
+            #      global registry's last-write-wins collision rewriting one
+            #      of them — each user's graph binds their own version.
+            # The runtime ownership gate in create_callable_thread_tool is the
+            # second line of defense; this filter is the first.
             existing_names = {t.name for t in tools}
-            for t in self.tool_registry.get_all_tools():
-                if t.name not in existing_names and t.name in self._callable_tool_thread_map:
-                    tools.append(t)
+            owned = set(self.accounts_repo.list_threads_for_user(user_id))
+            owned_callables = self.thread_config_manager.list_callable_threads(
+                owned_thread_ids=owned
+            )
+            from ..agents.tool_factory import create_callable_thread_tool
+            for callable_tc in owned_callables:
+                if not callable_tc.callable_name or callable_tc.callable_name in existing_names:
+                    continue
+                try:
+                    tools.append(create_callable_thread_tool(callable_tc))
+                    existing_names.add(callable_tc.callable_name)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to build callable tool for {callable_tc.thread_id}: {e}"
+                    )
 
             # Include MCP server tools that are in default_thread_tools
             if default_tools is not None:
@@ -2385,20 +2519,51 @@ class NymeriaAgent:
             # by disabled_tools so the disabled list wins on any overlap.
             live_temp = self._resolve_temporary_tools(tc)
             extra_names = (set(tc.enabled_tools) | live_temp) - disabled
+            # Defense-in-depth admin-only filter. Even with the gates at
+            # tool_search/spawn_thread/REST, stale tc.enabled_tools entries
+            # from before the gates were added — or any path the audit
+            # missed — can carry admin-only names. Drop them here for
+            # non-admin thread owners so the graph never binds them.
+            if extra_names:
+                from ..tools import filter_admin_only_tools
+                owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
+                owner_role = owner.role if owner else "user"
+                allowed_extras, blocked_extras = filter_admin_only_tools(
+                    extra_names, owner_role
+                )
+                if blocked_extras:
+                    logger.warning(
+                        "Graph build for thread=%s user=%s: stripped admin-only "
+                        "tools %s from enabled_tools (non-admin owner)",
+                        thread_id, user_id, sorted(blocked_extras),
+                    )
+                extra_names = allowed_extras
             if extra_names:
                 from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
                 all_tools_dict = {t.name: t for t in ALL_TOOLS}
                 all_tools_dict.update(OPTIONAL_TOOLS)
+                # Callable-thread names from the global registry — these are
+                # the leak surface: a user who guesses another user's
+                # callable_name and adds it to their enabled_tools would bind
+                # the description into the system prompt. Filter them out;
+                # the per-user callable list was already added above.
+                callable_names = set((self._callable_tool_thread_map or {}).keys())
                 existing = {t.name for t in tools}
                 for name in extra_names:
-                    if name not in existing:
-                        if name in all_tools_dict:
-                            tools.append(all_tools_dict[name])
-                        else:
-                            # Fall back to tool_registry (MCP server tools, custom tools)
-                            reg_tool = self.tool_registry.get_tool(name)
-                            if reg_tool:
-                                tools.append(reg_tool)
+                    if name in existing:
+                        continue
+                    if name in all_tools_dict:
+                        tools.append(all_tools_dict[name])
+                        continue
+                    if name in callable_names:
+                        # Callable threads only resolve through the per-user
+                        # owned-set above — never via enabled_tools registry
+                        # fallback. Skip silently.
+                        continue
+                    # Fall back to tool_registry (MCP server tools, custom tools)
+                    reg_tool = self.tool_registry.get_tool(name)
+                    if reg_tool:
+                        tools.append(reg_tool)
 
         # Inject the Skill meta-tool if any skills are active on this thread.
         skill_tool = self._build_skill_meta_tool(user_id, tc, tools)
@@ -2452,12 +2617,25 @@ class NymeriaAgent:
             core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
             tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
-            # Always include callable thread tools (they live in the registry,
-            # not in ALL_TOOLS/OPTIONAL_TOOLS, so default_thread_tools would drop them)
+            # Per-user callable thread tools — see _build_graph_with_prompt()
+            # for the rationale. Builds fresh closures from the caller's
+            # owned callable threads so cross-user descriptions don't leak.
             existing_names = {t.name for t in tools}
-            for t in self.tool_registry.get_all_tools():
-                if t.name not in existing_names and t.name in self._callable_tool_thread_map:
-                    tools.append(t)
+            owned = set(self.accounts_repo.list_threads_for_user(user_id))
+            owned_callables = self.thread_config_manager.list_callable_threads(
+                owned_thread_ids=owned
+            )
+            from ..agents.tool_factory import create_callable_thread_tool
+            for callable_tc in owned_callables:
+                if not callable_tc.callable_name or callable_tc.callable_name in existing_names:
+                    continue
+                try:
+                    tools.append(create_callable_thread_tool(callable_tc))
+                    existing_names.add(callable_tc.callable_name)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to build callable tool for {callable_tc.thread_id}: {e}"
+                    )
 
             # Include MCP server tools that are in default_thread_tools
             if default_tools is not None:
@@ -2476,20 +2654,51 @@ class NymeriaAgent:
                 tools = [t for t in tools if t.name not in disabled]
             live_temp = self._resolve_temporary_tools(tc)
             extra_names = (set(tc.enabled_tools) | live_temp) - disabled
+            # Defense-in-depth admin-only filter. Even with the gates at
+            # tool_search/spawn_thread/REST, stale tc.enabled_tools entries
+            # from before the gates were added — or any path the audit
+            # missed — can carry admin-only names. Drop them here for
+            # non-admin thread owners so the graph never binds them.
+            if extra_names:
+                from ..tools import filter_admin_only_tools
+                owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
+                owner_role = owner.role if owner else "user"
+                allowed_extras, blocked_extras = filter_admin_only_tools(
+                    extra_names, owner_role
+                )
+                if blocked_extras:
+                    logger.warning(
+                        "Graph build for thread=%s user=%s: stripped admin-only "
+                        "tools %s from enabled_tools (non-admin owner)",
+                        thread_id, user_id, sorted(blocked_extras),
+                    )
+                extra_names = allowed_extras
             if extra_names:
                 from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
                 all_tools_dict = {t.name: t for t in ALL_TOOLS}
                 all_tools_dict.update(OPTIONAL_TOOLS)
+                # Callable-thread names from the global registry — these are
+                # the leak surface: a user who guesses another user's
+                # callable_name and adds it to their enabled_tools would bind
+                # the description into the system prompt. Filter them out;
+                # the per-user callable list was already added above.
+                callable_names = set((self._callable_tool_thread_map or {}).keys())
                 existing = {t.name for t in tools}
                 for name in extra_names:
-                    if name not in existing:
-                        if name in all_tools_dict:
-                            tools.append(all_tools_dict[name])
-                        else:
-                            # Fall back to tool_registry (MCP server tools, custom tools)
-                            reg_tool = self.tool_registry.get_tool(name)
-                            if reg_tool:
-                                tools.append(reg_tool)
+                    if name in existing:
+                        continue
+                    if name in all_tools_dict:
+                        tools.append(all_tools_dict[name])
+                        continue
+                    if name in callable_names:
+                        # Callable threads only resolve through the per-user
+                        # owned-set above — never via enabled_tools registry
+                        # fallback. Skip silently.
+                        continue
+                    # Fall back to tool_registry (MCP server tools, custom tools)
+                    reg_tool = self.tool_registry.get_tool(name)
+                    if reg_tool:
+                        tools.append(reg_tool)
 
         # Inject the Skill meta-tool if any skills are active on this thread.
         skill_tool = self._build_skill_meta_tool(user_id, tc, tools)
@@ -2549,8 +2758,28 @@ class NymeriaAgent:
         )
 
         if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
-            # Use default graph (no customization)
-            return self._default_graph
+            # No-customization path: cannot reuse self._default_graph because
+            # it was built without a user_id at startup, so its callable tool
+            # list contains every user's callables (a leak — GF would see
+            # Owner's callable descriptions in her bound tool spec). Build a
+            # per-user graph with the base prompt and cache it under the
+            # sentinel thread_id "" so all of this user's no-customization
+            # threads share one graph.
+            no_cust_key = (user_id, "")
+            with self._graph_cache_lock:
+                if no_cust_key in self._user_graphs:
+                    cached_hash, cached_graph = self._user_graphs[no_cust_key]
+                    if cached_hash == memory_hash:
+                        return cached_graph
+            graph = self._build_graph_with_prompt(
+                self._base_system_prompt, user_id=user_id
+            )
+            with self._graph_cache_lock:
+                if len(self._user_graphs) >= self._GRAPH_CACHE_MAX:
+                    oldest_key = next(iter(self._user_graphs))
+                    del self._user_graphs[oldest_key]
+                self._user_graphs[no_cust_key] = (memory_hash, graph)
+            return graph
 
         # Build new graph with user's context and tool preferences
         logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
@@ -2615,8 +2844,24 @@ class NymeriaAgent:
         )
 
         if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
-            # Use default async graph (no customization)
-            return self._default_async_graph
+            # See _get_graph_for_user for rationale: self._default_async_graph
+            # was built without user_id so it leaks every user's callables.
+            # Build per-user, cache under (user_id, "") sentinel.
+            no_cust_key = (user_id, "")
+            with self._graph_cache_lock:
+                if no_cust_key in self._async_user_graphs:
+                    cached_hash, cached_graph = self._async_user_graphs[no_cust_key]
+                    if cached_hash == memory_hash:
+                        return cached_graph
+            graph = self._build_async_graph_with_prompt(
+                self._base_system_prompt, user_id=user_id
+            )
+            with self._graph_cache_lock:
+                if len(self._async_user_graphs) >= self._GRAPH_CACHE_MAX:
+                    oldest_key = next(iter(self._async_user_graphs))
+                    del self._async_user_graphs[oldest_key]
+                self._async_user_graphs[no_cust_key] = (memory_hash, graph)
+            return graph
 
         # Build new async graph with user's context and tool preferences
         logger.debug(f"Building new async graph for user {user_id}, thread {thread_id} (context or tools changed)")
@@ -2827,6 +3072,15 @@ class NymeriaAgent:
 
         Rebuilds the registry with ALL_TOOLS + callable thread tools + custom tools.
         Call this after creating/deleting callable threads.
+
+        Note: per-user graph builds source callable thread tools directly from
+        the per-user-filtered ``thread_config_manager`` (see
+        ``_build_graph_with_prompt``), so the global registry's role for
+        callable threads is just to keep ``_callable_tool_thread_map``
+        warm for ``_on_tool_timeout``. Cross-user callable_name collisions
+        in the registry/map use last-write-wins — a residual edge case where
+        the wrong thread might be auto-aborted on tool timeout. Acceptable
+        until per-user maps are wired through the timeout callback.
 
         Returns:
             List of callable thread tool names now in the registry

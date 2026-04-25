@@ -9,10 +9,13 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import httpx
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +35,10 @@ SCOPES = [
     "ChannelMessage.Send",
 ]
 
-# Token cache location (same as microsoft-mcp uses)
-TOKEN_CACHE_PATH = Path.home() / ".microsoft_mcp_token_cache.json"
+# Token cache is per-user: data/auth_tokens/<user_id>/microsoft.json. Each
+# Nymeria account authenticates Microsoft independently — Aria's tokens
+# live in a different file than yours, so she can't read your Outlook.
+_CACHE_FILENAME = "microsoft.json"
 
 
 def get_client_id() -> str:
@@ -45,23 +50,41 @@ def get_client_id() -> str:
     return client_id
 
 
-def load_token_cache() -> dict:
-    """Load token cache from file."""
-    if TOKEN_CACHE_PATH.exists():
+def _safe_user_id(user_id: str) -> str:
+    safe = "".join(c for c in user_id if c.isalnum() or c in "-_")
+    return safe or "default"
+
+
+def _cache_path(user_id: str) -> Path:
+    """Per-user token cache path under ``data/auth_tokens/<user_id>/``."""
+    from ..config import get_settings
+    settings = get_settings()
+    path = settings.data_dir / "auth_tokens" / _safe_user_id(user_id) / _CACHE_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def load_token_cache(user_id: str) -> dict:
+    """Load a user's Microsoft token cache. Returns ``{}`` if not yet auth'd."""
+    path = _cache_path(user_id)
+    if path.exists():
         try:
-            return json.loads(TOKEN_CACHE_PATH.read_text())
+            return json.loads(path.read_text())
         except Exception:
             pass
     return {}
 
 
-def save_token_cache(cache: dict) -> None:
-    """Save token cache to file."""
-    TOKEN_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+def save_token_cache(user_id: str, cache: dict) -> None:
+    """Persist a user's Microsoft token cache."""
+    path = _cache_path(user_id)
+    path.write_text(json.dumps(cache, indent=2))
 
 
 @tool
-def outlook_auth_start() -> str:
+def outlook_auth_start(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
     """
     Start Microsoft account authentication using device code flow.
 
@@ -71,8 +94,9 @@ def outlook_auth_start() -> str:
     Returns:
         Instructions with the device code and URL for the user to visit.
     """
+    user_id = get_user_id(config)
     # Check if there's already a pending auth
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     pending = cache.get("pending_auth")
 
     if pending:
@@ -80,7 +104,7 @@ def outlook_auth_start() -> str:
         if time.time() < expires_at:
             # There's a valid pending auth - try to complete it first
             # (in case user already signed in)
-            result = _try_complete_pending()
+            result = _try_complete_pending(user_id)
             if result:
                 return result  # Auth completed successfully!
 
@@ -120,14 +144,14 @@ The current authentication will expire in about {remaining} minutes.
         interval = data.get("interval", 5)
 
         # Store device code info for completion
-        cache = load_token_cache()
+        cache = load_token_cache(user_id)
         cache["pending_auth"] = {
             "device_code": device_code,
             "user_code": user_code,  # Also store user code for reference
             "interval": interval,
             "expires_at": time.time() + expires_in,
         }
-        save_token_cache(cache)
+        save_token_cache(user_id, cache)
 
         return f"""[Success]: Authentication started!
 
@@ -144,14 +168,14 @@ The code expires in {expires_in // 60} minutes."""
         return f"[Error]: Failed to start authentication: {str(e)}"
 
 
-def _try_complete_pending() -> Optional[str]:
+def _try_complete_pending(user_id: str) -> Optional[str]:
     """
     Try to complete pending auth (non-blocking single attempt).
 
     Returns success message if auth completed, None if still pending.
     """
     client_id = get_client_id()
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
     pending = cache.get("pending_auth")
 
     if not pending:
@@ -198,7 +222,7 @@ def _try_complete_pending() -> Optional[str]:
             if "pending_auth" in cache:
                 del cache["pending_auth"]
 
-            save_token_cache(cache)
+            save_token_cache(user_id, cache)
 
             return f"""[Success]: Authentication complete!
 
@@ -214,7 +238,9 @@ You can now use the Outlook tools."""
 
 
 @tool
-def outlook_auth_complete() -> str:
+def outlook_auth_complete(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
     """
     Complete the Microsoft authentication after the user has signed in.
 
@@ -224,8 +250,9 @@ def outlook_auth_complete() -> str:
     Returns:
         Success message with account info, or error if authentication failed.
     """
+    user_id = get_user_id(config)
     client_id = get_client_id()
-    cache = load_token_cache()
+    cache = load_token_cache(user_id)
 
     pending = cache.get("pending_auth")
     if not pending:
@@ -237,7 +264,7 @@ def outlook_auth_complete() -> str:
 
     if time.time() > expires_at:
         del cache["pending_auth"]
-        save_token_cache(cache)
+        save_token_cache(user_id, cache)
         return "[Error]: Authentication expired. Please call outlook_auth_start to begin again."
 
     # Poll for token
@@ -284,7 +311,7 @@ def outlook_auth_complete() -> str:
                 if "pending_auth" in cache:
                     del cache["pending_auth"]
 
-                save_token_cache(cache)
+                save_token_cache(user_id, cache)
 
                 return f"""[Success]: Authentication complete!
 
@@ -309,12 +336,12 @@ You can now use the Outlook tools. Use this account_id when calling other Outloo
             elif error == "expired_token":
                 if "pending_auth" in cache:
                     del cache["pending_auth"]
-                save_token_cache(cache)
+                save_token_cache(user_id, cache)
                 return "[Error]: Authentication expired. Please call outlook_auth_start to begin again."
             elif error == "access_denied":
                 if "pending_auth" in cache:
                     del cache["pending_auth"]
-                save_token_cache(cache)
+                save_token_cache(user_id, cache)
                 return "[Error]: Authentication was denied. The user may have declined the consent."
             else:
                 return f"[Error]: Authentication failed: {error} - {data.get('error_description', '')}"
@@ -343,14 +370,17 @@ def get_user_info(access_token: str) -> dict:
 
 
 @tool
-def outlook_list_authenticated_accounts() -> str:
+def outlook_list_authenticated_accounts(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
     """
     List all authenticated Microsoft accounts.
 
     Returns:
         List of authenticated accounts with their IDs and email addresses.
     """
-    cache = load_token_cache()
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
     accounts = cache.get("accounts", {})
 
     if not accounts:

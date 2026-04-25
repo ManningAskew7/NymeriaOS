@@ -7,10 +7,12 @@ Base URL: `http://localhost:8000`
 Most endpoints require Bearer token authentication:
 
 ```
-Authorization: Bearer <NYMERIA_API_KEY>
+Authorization: Bearer <token>
 ```
 
-The API key is configured via the `NYMERIA_API_KEY` environment variable.
+Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Created via `python run.py users add` — see `docs/accounts.md`. Resolve to the user they were issued to.
+
+`X-Nymeria-Act-As: <user_id>` is honored only for admin-role callers and rewrites the effective user to the target (403 for non-admin, 404 for unknown/disabled target).
 
 Exceptions without Bearer auth:
 - `GET /health`
@@ -35,6 +37,59 @@ No authentication required.
   "version": "1.0.0"
 }
 ```
+
+---
+
+### Who Am I
+
+```http
+GET /me
+Authorization: Bearer <token>
+```
+
+Returns the account identity the token resolves to. Used by frontends to
+discover their own `user_id` for localStorage namespacing. Requires a per-user
+account token (`nym_...`); the legacy `NYMERIA_API_KEY` was retired in Step 3c.
+Admins can pass `X-Nymeria-Act-As: <user_id>` to read another user's identity.
+
+**Response:**
+```json
+{
+  "id": "default",
+  "email": "owner@localhost",
+  "display_name": "Owner",
+  "role": "admin"
+}
+```
+
+Returns 401 for missing/invalid/revoked tokens.
+
+---
+
+### Resolve Platform Identity
+
+```http
+GET /platform/resolve?provider=<provider>&provider_user_id=<id>
+Authorization: Bearer <admin-token>
+```
+
+Admin-only. Resolves a Discord/Telegram/Twitch user ID to its linked Nymeria
+`user_id` via the `platform_identities` table. Used by the bot thin clients
+(Discord/Telegram/Twitch) together with `X-Nymeria-Act-As` to route per-user
+traffic without holding raw per-user tokens.
+
+| Field | Values |
+|---|---|
+| `provider` | `discord`, `telegram`, `twitch` |
+| `provider_user_id` | Platform-native user ID (string) |
+
+**Responses:**
+- `200` — `{"user_id": "bob"}`
+- `400` — `{"detail": "Unknown provider"}`
+- `403` — `{"detail": "Admin only"}` (non-admin token)
+- `404` — `{"detail": "Not linked"}`
+
+Create mappings with `python run.py users link-platform <email> <provider> <provider_user_id>`.
 
 ---
 
@@ -1033,7 +1088,7 @@ Import tools from a JSON array.
 
 ## Callable Threads API
 
-Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool visible to other threads.
+Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool — but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.
 
 ### List Callable Threads
 

@@ -7,29 +7,39 @@ helper used by the dedicated _PRV_A wrapper tools.
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Sheet cache (per spreadsheet_id+sheet_name, 5-minute TTL)
+# Sheet cache (per user_id+spreadsheet_id+sheet_name, 5-minute TTL)
 # ---------------------------------------------------------------------------
+#
+# Key format: ``f"{user_id}::{spreadsheet_id}::{sheet_name}::{gid}"``. Without
+# the user_id prefix two users querying the same sheet would share the same
+# cache slot — a stale read by user A could be served to user B even though
+# they may have authenticated with different Google accounts and have
+# different row-level permissions on the sheet.
 
 _sheet_cache: Dict[str, Tuple[float, List[str], List[List[str]]]] = {}
 _CACHE_TTL = 300  # seconds
 
 
-def _invalidate_cache(spreadsheet_id: str) -> None:
-    """Remove all cached entries for a spreadsheet after a write operation."""
-    keys_to_remove = [k for k in _sheet_cache if k.startswith(f"{spreadsheet_id}::")]
+def _invalidate_cache(user_id: str, spreadsheet_id: str) -> None:
+    """Remove this user's cached entries for a spreadsheet after a write."""
+    prefix = f"{user_id}::{spreadsheet_id}::"
+    keys_to_remove = [k for k in _sheet_cache if k.startswith(prefix)]
     for k in keys_to_remove:
         del _sheet_cache[k]
 
 
-def _get_sheets_service():
-    """Build a Google Sheets API v4 service using existing Google auth."""
+def _get_sheets_service(user_id: str):
+    """Build a Google Sheets API v4 service for the given Nymeria user."""
     try:
         from googleapiclient.discovery import build
     except ImportError:
@@ -41,7 +51,7 @@ def _get_sheets_service():
 
     from .google_docs import get_credentials
 
-    creds = get_credentials()
+    creds = get_credentials(user_id)
     if not creds:
         return None
 
@@ -49,6 +59,7 @@ def _get_sheets_service():
 
 
 def _fetch_sheet(
+    user_id: str,
     spreadsheet_id: str,
     sheet_name: str = "",
     gid: Optional[int] = None,
@@ -59,7 +70,7 @@ def _fetch_sheet(
     Returns (headers, rows) where headers is row 1 (or row 2 if row 1 looks
     like a category grouping row) and rows is everything after headers.
     """
-    cache_key = f"{spreadsheet_id}::{sheet_name}::{gid}"
+    cache_key = f"{user_id}::{spreadsheet_id}::{sheet_name}::{gid}"
     now = time.time()
 
     if cache_key in _sheet_cache:
@@ -67,7 +78,7 @@ def _fetch_sheet(
         if now - ts < _CACHE_TTL:
             return headers, rows
 
-    service = _get_sheets_service()
+    service = _get_sheets_service(user_id)
     if not service:
         raise RuntimeError(
             "[Error]: Google Sheets API not available. "
@@ -138,6 +149,7 @@ def _fetch_sheet(
 
 
 def search_sheet_data(
+    user_id: str,
     spreadsheet_id: str,
     query: str,
     sheet_name: str = "",
@@ -149,10 +161,11 @@ def search_sheet_data(
     """
     Internal search function used by both the generic tool and dedicated wrappers.
 
+    Scoped to a Nymeria user_id so each user's Google auth is used.
     Returns a formatted string with matching rows.
     """
     try:
-        headers, rows = _fetch_sheet(spreadsheet_id, sheet_name, gid)
+        headers, rows = _fetch_sheet(user_id, spreadsheet_id, sheet_name, gid)
     except RuntimeError as e:
         return str(e)
 
@@ -267,6 +280,7 @@ def google_sheets_search(
     sheet_name: str = "",
     column: str = "",
     max_results: int = 20,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Search a Google Sheet for rows matching a query.
@@ -284,12 +298,14 @@ def google_sheets_search(
     Returns:
         Matching rows formatted as key-value pairs, or an error message.
     """
+    user_id = get_user_id(config)
     if not spreadsheet_id.strip():
         return "[Error]: spreadsheet_id is required."
     if not query.strip():
         return "[Error]: query is required."
 
     return search_sheet_data(
+        user_id=user_id,
         spreadsheet_id=spreadsheet_id.strip(),
         query=query,
         sheet_name=sheet_name,
@@ -303,6 +319,7 @@ def google_sheets_append(
     spreadsheet_id: str,
     data: str,
     sheet_name: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Append one or more rows to a Google Sheet.
@@ -320,12 +337,13 @@ def google_sheets_append(
     Returns:
         Confirmation with number of rows appended and range.
     """
+    user_id = get_user_id(config)
     if not spreadsheet_id.strip():
         return "[Error]: spreadsheet_id is required."
     if not data.strip():
         return "[Error]: data is required."
 
-    service = _get_sheets_service()
+    service = _get_sheets_service(user_id)
     if not service:
         return "[Error]: Google Sheets API not available. Run google_docs_auth_start."
 
@@ -350,7 +368,7 @@ def google_sheets_append(
         updated_range = updated.get("updatedRange", "unknown")
         updated_rows = updated.get("updatedRows", len(rows))
 
-        _invalidate_cache(spreadsheet_id.strip())
+        _invalidate_cache(user_id, spreadsheet_id.strip())
 
         return (
             f"[Success]: {updated_rows} row(s) appended to sheet.\n"
@@ -375,6 +393,7 @@ def google_sheets_update(
     column_updates: str,
     search_column: str = "A",
     sheet_name: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Update cells in an existing row by finding it first via a search value.
@@ -397,6 +416,7 @@ def google_sheets_update(
     Returns:
         Confirmation of what was updated.
     """
+    user_id = get_user_id(config)
     if not spreadsheet_id.strip():
         return "[Error]: spreadsheet_id is required."
     if not search_value.strip():
@@ -404,7 +424,7 @@ def google_sheets_update(
     if not column_updates.strip():
         return "[Error]: column_updates is required."
 
-    service = _get_sheets_service()
+    service = _get_sheets_service(user_id)
     if not service:
         return "[Error]: Google Sheets API not available. Run google_docs_auth_start."
 
@@ -499,7 +519,7 @@ def google_sheets_update(
             },
         ).execute()
 
-        _invalidate_cache(spreadsheet_id.strip())
+        _invalidate_cache(user_id, spreadsheet_id.strip())
 
         return (
             f"[Success]: Updated row {row_num} (matched '{search_value}'):\n"

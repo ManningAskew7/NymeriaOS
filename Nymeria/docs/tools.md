@@ -104,7 +104,7 @@ Any thread with `callable=True` in its thread config becomes a tool that other t
 - **System prompt**: Custom `system_prompt` or `instructions` per-thread
 - **Name**: The tool name equals the thread's sidebar title (synced via `callable_name` in thread config)
 
-Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The thread becomes available as a tool to all other threads after `sync_agent_tools()` runs.
+Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The thread becomes available as a tool to **the creator's own threads** after `sync_agent_tools()` runs — callables are scoped to their owner (the user who created them) and the `_thread_owners` table determines visibility. Two users can independently create callables with the same `callable_name`; each user's graph binds their own version, and the runtime ownership gate in `agents/tool_factory.py` blocks cross-user invocation.
 
 ---
 
@@ -756,9 +756,9 @@ slash_command(command: str)
 
 **Requirements:**
 - `NYMERIA_API_URL` — defaults to `http://api:8000` inside Docker or `http://localhost:8000` outside.
-- `NYMERIA_API_KEY` — read from settings automatically (same key the backend serves with), so no separate configuration needed.
+- Authenticates with `NYMERIA_SERVICE_TOKEN` (admin service token) plus `X-Nymeria-Act-As: <caller_user_id>` so each invocation runs under the requesting user. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`.
 
-**Security note:** The tool runs in-process against the local API using the same bearer token the backend validates against. `/env get` returns unmasked secrets — the agent is considered trusted within its own thread, and anyone who can invoke the tool can already call the underlying endpoint.
+**Security note:** The tool runs in-process against the local API as the calling user (via act-as routing). `/env get` returns unmasked secrets and is admin-only at the API layer — non-admin callers will get 403 if they try to invoke admin-gated slash commands like `/env_get`, `/restart`, or `/config_*`.
 
 **Implementation:** See `nymeria/tools/slash_command.py` (parser + denylist + tool entry point) and `nymeria/triggers/slash_dispatcher.py` (command → API-method routing and plain-text formatting). Mirrors the Telegram bot's command handlers but emits plain text instead of HTML.
 
@@ -861,7 +861,7 @@ spawn_thread(
 - `optional_tools`: List of optional tool names to enable (e.g. `["sticky_note", "browser_navigate"]`). Core tools are inherited automatically — only list extras.
 - `tool_categories`: List of categories (e.g. `["email", "browser"]`) to bulk-enable every optional tool in that category. Merged with `optional_tools`.
 - `disabled_tools`: List of core tool names to EXCLUDE from the new thread.
-- `make_callable` (default `True`): If `True`, the new thread is registered as a globally callable tool with an auto-derived name (`spawned_{slug}_{rand8}`). Any thread (including the parent) can invoke it by calling that tool name. Set `False` for a single-use thread.
+- `make_callable` (default `True`): If `True`, the new thread is registered as a callable tool with an auto-derived name (`spawned_{slug}_{rand8}`) and ownership is **claimed for the spawning user** in `thread_owners`. Threads owned by that same user (including the parent) can invoke it; threads owned by any other user cannot — the runtime gate in `agents/tool_factory.py` rejects cross-user invocations. Set `False` for a single-use thread.
 - `llm_*`: Optional LLM overrides. Omit to inherit global settings.
 - `initial_message`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
 
@@ -904,7 +904,7 @@ Any thread with `callable=True` in its thread config becomes a callable tool —
 - **Tools**: Enable/disable any optional tools per-thread
 - **System prompt**: Custom `system_prompt` or `instructions` per-thread
 
-Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The thread becomes available as a tool to all other threads after `sync_agent_tools()` runs.
+Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The callable becomes available as a tool to **threads owned by the same user** after `sync_agent_tools()` runs. Other users do not see the callable in their tool list, and the runtime ownership gate rejects any invocation attempt by a non-owner. Admins can act-as the owning user via `X-Nymeria-Act-As` to test or trigger another user's callable.
 
 The tool signature for any callable thread is:
 

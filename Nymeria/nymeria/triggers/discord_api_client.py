@@ -19,7 +19,15 @@ _DEFAULT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 
 
 class NymeriaAPIClient:
-    """Async HTTP client for the Nymeria REST API."""
+    """Async HTTP client for the Nymeria REST API.
+
+    When the client is constructed with an admin-role service token, each
+    per-user call can attach ``X-Nymeria-Act-As: <user_id>`` so the server
+    routes the request as that user. Callers pass ``act_as=<user_id>`` on
+    the underlying ``_get``/``_post``/... helpers. Today the header is only
+    consumed by ``GET /me`` and ``GET /platform/resolve``; Step 3b's route
+    cutover will make it the authoritative identity for every endpoint.
+    """
 
     def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
@@ -29,42 +37,47 @@ class NymeriaAPIClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict:
+    def _headers_for(self, act_as: Optional[str]) -> Dict[str, str]:
+        if not act_as:
+            return self._headers
+        return {**self._headers, "X-Nymeria-Act-As": act_as}
+
+    async def _get(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.get(
-                self._url(path), headers=self._headers, params=params
+                self._url(path), headers=self._headers_for(act_as), params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> dict:
+    async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
             resp = await client.post(
-                self._url(path), headers=self._headers, json=json, params=params
+                self._url(path), headers=self._headers_for(act_as), json=json, params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> dict:
+    async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.put(
-                self._url(path), headers=self._headers, json=json, params=params
+                self._url(path), headers=self._headers_for(act_as), json=json, params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _patch(self, path: str, json: Optional[dict] = None) -> dict:
+    async def _patch(self, path: str, json: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.patch(
-                self._url(path), headers=self._headers, json=json
+                self._url(path), headers=self._headers_for(act_as), json=json
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def _delete(self, path: str, params: Optional[dict] = None) -> dict:
+    async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.delete(
-                self._url(path), headers=self._headers, params=params
+                self._url(path), headers=self._headers_for(act_as), params=params
             )
             resp.raise_for_status()
             return resp.json()
@@ -101,7 +114,7 @@ class NymeriaAPIClient:
             body["attachments"] = attachments
         if force_unsupported_attachments:
             body["force_unsupported_attachments"] = True
-        return await self._post("/chat/sync", json=body)
+        return await self._post("/chat/sync", json=body, act_as=user_id)
 
     async def chat_stream(
         self,
@@ -143,7 +156,7 @@ class NymeriaAPIClient:
             async with client.stream(
                 "POST",
                 self._url("/chat"),
-                headers=self._headers,
+                headers=self._headers_for(user_id),
                 json=body,
             ) as resp:
                 resp.raise_for_status()
@@ -160,41 +173,55 @@ class NymeriaAPIClient:
 
     # ── Thread Management ─────────────────────────────────────────────────
 
-    async def stop(self, thread_id: str) -> dict:
+    async def stop(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Abort the current operation on a thread."""
-        return await self._post(f"/threads/{thread_id}/stop")
+        return await self._post(f"/threads/{thread_id}/stop", act_as=user_id)
 
     async def compact(self, thread_id: str, user_id: str) -> dict:
         """Compact conversation context."""
         return await self._post(
-            f"/threads/{thread_id}/compact", params={"user_id": user_id}
+            f"/threads/{thread_id}/compact", params={"user_id": user_id}, act_as=user_id,
         )
 
-    async def delete_thread(self, thread_id: str) -> dict:
+    async def delete_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Delete all history for a thread."""
-        return await self._delete(f"/threads/{thread_id}")
+        return await self._delete(f"/threads/{thread_id}", act_as=user_id)
 
     async def clear_thread(self, thread_id: str, user_id: str = "default") -> dict:
         """Clear conversation history only (preserve notepad + config)."""
         return await self._post(
-            f"/threads/{thread_id}/clear", params={"user_id": user_id}
+            f"/threads/{thread_id}/clear", params={"user_id": user_id}, act_as=user_id,
         )
 
-    async def get_history(self, thread_id: str, include_internal: bool = False) -> dict:
-        """Get conversation history for a thread."""
+    async def get_history(
+        self,
+        thread_id: str,
+        include_internal: bool = False,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Get conversation history for a thread.
+
+        ``user_id`` becomes ``X-Nymeria-Act-As`` so the backend's per-thread
+        access check runs against the human user, not the bot service token —
+        otherwise bot-service first-touch would claim the thread and lock the
+        real owner out.
+        """
         return await self._get(
             f"/threads/{thread_id}/history",
             params={"include_internal": str(include_internal).lower()},
+            act_as=user_id,
         )
 
-    async def get_context_stats(self, thread_id: str) -> dict:
+    async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Get token usage and context stats for a thread."""
-        return await self._get(f"/threads/{thread_id}/context")
+        return await self._get(f"/threads/{thread_id}/context", act_as=user_id)
 
-    async def get_thread_config(self, thread_id: str) -> Optional[dict]:
+    async def get_thread_config(
+        self, thread_id: str, user_id: Optional[str] = None
+    ) -> Optional[dict]:
         """Get per-thread configuration (tools, instructions, etc.)."""
         try:
-            return await self._get(f"/threads/{thread_id}/config")
+            return await self._get(f"/threads/{thread_id}/config", act_as=user_id)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return None
@@ -214,11 +241,11 @@ class NymeriaAPIClient:
         Returns dict with 'default_tools' (list of names) and
         'available_tools' (list of tool info dicts).
         """
-        return await self._get("/tools/defaults", params={"user_id": user_id})
+        return await self._get("/tools/defaults", params={"user_id": user_id}, act_as=user_id)
 
     async def list_all_tools(self, user_id: str = "default") -> List[dict]:
         """List all tools (built-in + optional + MCP) with enabled state."""
-        data = await self._get(f"/users/{user_id}/tools")
+        data = await self._get(f"/users/{user_id}/tools", act_as=user_id)
         return data.get("tools", [])
 
     async def get_tool_categories(self) -> dict:
@@ -229,23 +256,23 @@ class NymeriaAPIClient:
 
     async def list_memories(self, user_id: str) -> List[dict]:
         """List all memories for a user."""
-        data = await self._get(f"/users/{user_id}/memories")
+        data = await self._get(f"/users/{user_id}/memories", act_as=user_id)
         return data.get("memories", [])
 
     async def save_memory(self, user_id: str, key: str, value: str) -> dict:
         """Save or update a memory."""
         return await self._post(
-            f"/users/{user_id}/memories", json={"key": key, "value": value}
+            f"/users/{user_id}/memories", json={"key": key, "value": value}, act_as=user_id,
         )
 
     async def forget_memory(self, user_id: str, key: str) -> dict:
         """Remove a memory by key."""
-        return await self._delete(f"/users/{user_id}/memories/{key}")
+        return await self._delete(f"/users/{user_id}/memories/{key}", act_as=user_id)
 
     async def search_memories(self, user_id: str, query: str) -> List[dict]:
         """Search memories by keyword."""
         data = await self._get(
-            f"/users/{user_id}/memories/search", params={"q": query}
+            f"/users/{user_id}/memories/search", params={"q": query}, act_as=user_id,
         )
         return data.get("results", [])
 
@@ -253,7 +280,7 @@ class NymeriaAPIClient:
 
     async def list_todos(self, user_id: str) -> List[dict]:
         """List all TODOs for a user."""
-        data = await self._get("/todos", params={"user_id": user_id})
+        data = await self._get("/todos", params={"user_id": user_id}, act_as=user_id)
         return data.get("items", [])
 
     async def list_users_with_todos(self) -> List[str]:
@@ -281,13 +308,14 @@ class NymeriaAPIClient:
             body["recurrence"] = recurrence
         if thread_id:
             body["thread_id"] = thread_id
-        return await self._post("/todos", json=body, params={"user_id": user_id})
+        return await self._post("/todos", json=body, params={"user_id": user_id}, act_as=user_id)
 
     async def update_todo(self, user_id: str, todo_id: str, **kwargs) -> dict:
         """Update a TODO (partial update)."""
         return await self._patch(
             f"/todos/{todo_id}",
             json=kwargs,
+            act_as=user_id,
         )
 
     async def complete_todo(self, user_id: str, todo_id: str) -> dict:
@@ -295,6 +323,7 @@ class NymeriaAPIClient:
         return await self._post(
             f"/todos/{todo_id}/complete",
             params={"user_id": user_id},
+            act_as=user_id,
         )
 
     async def delete_todo(self, user_id: str, todo_id: str) -> dict:
@@ -302,25 +331,33 @@ class NymeriaAPIClient:
         return await self._delete(
             f"/todos/{todo_id}",
             params={"user_id": user_id},
+            act_as=user_id,
         )
 
     # ── Settings Management ─────────────────────────────────────────────
 
-    async def update_settings(self, **kwargs) -> dict:
-        """Update global server settings (PATCH /settings)."""
-        return await self._patch("/settings", json=kwargs)
+    async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
+        """Update global server settings (PATCH /settings).
 
-    async def update_thread_config(self, thread_id: str, **kwargs) -> dict:
+        ``user_id`` becomes ``X-Nymeria-Act-As`` so the API gate enforces the
+        real caller's role rather than the bot service token's admin role.
+        Slash commands and other agent-callable mutators must always pass it.
+        """
+        return await self._patch("/settings", json=kwargs, act_as=user_id)
+
+    async def update_thread_config(
+        self, thread_id: str, *, user_id: Optional[str] = None, **kwargs,
+    ) -> dict:
         """Update per-thread configuration (PATCH /threads/{id}/config)."""
-        return await self._patch(f"/threads/{thread_id}/config", json=kwargs)
+        return await self._patch(f"/threads/{thread_id}/config", json=kwargs, act_as=user_id)
 
-    async def get_env_vars(self) -> dict:
+    async def get_env_vars(self, *, user_id: Optional[str] = None) -> dict:
         """Get all settable env vars with masked values."""
-        return await self._get("/settings/env")
+        return await self._get("/settings/env", act_as=user_id)
 
-    async def get_env_var(self, key: str) -> dict:
+    async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
         """Get a single env var's unmasked value."""
-        return await self._get(f"/settings/env/{key}")
+        return await self._get(f"/settings/env/{key}", act_as=user_id)
 
     async def list_models(self) -> List[dict]:
         """List known models from the model capabilities cache."""
@@ -369,6 +406,29 @@ class NymeriaAPIClient:
             return None
 
     # ── Health ────────────────────────────────────────────────────────────
+
+    async def get_me(self, act_as: Optional[str] = None) -> dict:
+        """Return the authenticated user (or act-as target). Used by bots to
+        look up a user's role for admin-gated commands."""
+        return await self._get("/me", act_as=act_as)
+
+    async def resolve_platform_user(self, provider: str, provider_user_id: str) -> Optional[str]:
+        """
+        Resolve a platform-native user id (Discord/Telegram/Twitch) to the
+        Nymeria account it's linked to. Returns the Nymeria user_id or None
+        if no mapping exists. Admin-only on the server side — bots carry the
+        service token (admin role), so this works for them.
+        """
+        try:
+            data = await self._get(
+                "/platform/resolve",
+                params={"provider": provider, "provider_user_id": str(provider_user_id)},
+            )
+            return data.get("user_id")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
 
     async def health(self) -> bool:
         """Check if the API is healthy."""

@@ -122,9 +122,12 @@ def make_thread_id(guild_id: Optional[int], channel_id: int) -> str:
     return f"discord_dm_{channel_id}"
 
 
-def make_user_id(user_id: int) -> str:
-    """Map Discord user to Nymeria user. Single-user system — always 'default'."""
-    return "default"
+# Platform-identity cache TTL. After 30 minutes a Discord user's link is
+# re-fetched from /platform/resolve, so admin relinks propagate to the bot
+# without a restart. Long enough that lookup cost stays out of the hot path
+# (each chat hit is otherwise an extra REST round-trip), short enough that
+# operator changes don't require restarts in normal operation.
+_USER_CACHE_TTL_SECONDS = 30 * 60
 
 
 CONTEXT_MESSAGE_COUNT = 10
@@ -224,6 +227,13 @@ class NymeriaDiscordBot(discord.Client):
         self._start_time = time.time()
         self._context_enabled: Dict[int, bool] = {}  # channel_id -> enabled
         self._show_tool_calls: Dict[int, bool] = {}  # channel_id -> show tool embeds
+        # platform-id -> (nymeria user_id or None, expires_at) cache;
+        # populated on demand via the admin-only /platform/resolve endpoint.
+        # A None value (still under TTL) means "we checked recently and
+        # confirmed the Discord user isn't linked" so we don't hammer the
+        # endpoint on every message from strangers. After TTL expiry the
+        # entry is treated as a miss and re-fetched.
+        self._user_cache: Dict[int, tuple[Optional[str], float]] = {}
 
         # Register slash commands
         self._register_commands()
@@ -238,8 +248,9 @@ class NymeriaDiscordBot(discord.Client):
             thread_id = make_thread_id(
                 interaction.guild_id, interaction.channel_id
             )
-            user_id = make_user_id(interaction.user.id)
-
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             context = ""
             if self._context_enabled.get(interaction.channel_id, True):
                 bot_id = self.user.id if self.user else None
@@ -265,7 +276,9 @@ class NymeriaDiscordBot(discord.Client):
             thread_id = make_thread_id(
                 interaction.guild_id, interaction.channel_id
             )
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 await self.api.clear_thread(thread_id, user_id)
                 await interaction.followup.send(
@@ -284,7 +297,9 @@ class NymeriaDiscordBot(discord.Client):
             thread_id = make_thread_id(
                 interaction.guild_id, interaction.channel_id
             )
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 result = await self.api.compact(thread_id, user_id)
                 if result.get("success"):
@@ -321,7 +336,9 @@ class NymeriaDiscordBot(discord.Client):
             filter: app_commands.Choice[str] = None,
         ):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 items = await self.api.list_todos(user_id)
                 filter_val = filter.value if filter else "active"
@@ -400,7 +417,9 @@ class NymeriaDiscordBot(discord.Client):
             notes: Optional[str] = None,
         ):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             thread_id = make_thread_id(
                 interaction.guild_id, interaction.channel_id
             )
@@ -437,7 +456,9 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.describe(todo_id="The TODO ID (first 8 chars)")
         async def cmd_todos_complete(interaction: discord.Interaction, todo_id: str):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 items = await self.api.list_todos(user_id)
                 match = None
@@ -474,7 +495,9 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.describe(todo_id="The TODO ID (first 8 chars)")
         async def cmd_todos_delete(interaction: discord.Interaction, todo_id: str):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 items = await self.api.list_todos(user_id)
                 match = None
@@ -527,8 +550,9 @@ class NymeriaDiscordBot(discord.Client):
                 thread_id = make_thread_id(
                     interaction.guild_id, interaction.channel_id
                 )
-                user_id = make_user_id(interaction.user.id)
-
+                user_id = await self._resolve_or_reject_interaction(interaction)
+                if user_id is None:
+                    return
                 # Fetch all data in parallel
                 settings, context, tools_data, todos = await asyncio.gather(
                     self.api.get_settings(),
@@ -695,12 +719,15 @@ class NymeriaDiscordBot(discord.Client):
             scope: app_commands.Choice[str] = None,
         ):
             await interaction.response.defer(ephemeral=True)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 if name is None:
                     # Show current model
                     settings = await self.api.get_settings()
                     thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
-                    tc = await self.api.get_thread_config(thread_id)
+                    tc = await self.api.get_thread_config(thread_id, user_id=user_id)
                     llm_cfg = (tc or {}).get("llm_config") or {}
                     thread_model = llm_cfg.get("model")
 
@@ -716,12 +743,17 @@ class NymeriaDiscordBot(discord.Client):
                     if target == "thread":
                         thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
                         await self.api.update_thread_config(
-                            thread_id, llm_config={"model": name}
+                            thread_id, user_id=user_id, llm_config={"model": name}
                         )
                         await interaction.followup.send(
                             f"Model for this channel set to `{name}`.", ephemeral=True
                         )
                     else:
+                        # Global model change — admin only.
+                        if await self._resolve_or_reject_interaction(
+                            interaction, require_admin=True
+                        ) is None:
+                            return
                         await self.api.update_settings(llm_model=name)
                         await interaction.followup.send(
                             f"Global model set to `{name}`.", ephemeral=True
@@ -786,6 +818,14 @@ class NymeriaDiscordBot(discord.Client):
             mode: app_commands.Choice[str] = None,
         ):
             await interaction.response.defer(ephemeral=True)
+            # /think mutates global settings via update_settings(); without
+            # this gate any platform user could toggle reasoning effort for
+            # every Nymeria user, since the bot calls the API with the admin
+            # service token.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 if mode is None:
                     # Show current
@@ -837,6 +877,11 @@ class NymeriaDiscordBot(discord.Client):
         @config_group.command(name="show", description="Show all current settings")
         async def cmd_config_show(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
+            # Admin-gated: /config and /env touch global settings/secrets.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 settings = await self.api.get_settings()
 
@@ -889,6 +934,11 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.describe(key="Setting name (e.g., llm_model, context_management)")
         async def cmd_config_get(interaction: discord.Interaction, key: str):
             await interaction.response.defer(ephemeral=True)
+            # Admin-gated: /config and /env touch global settings/secrets.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 settings = await self.api.get_settings()
                 if key in settings:
@@ -912,6 +962,11 @@ class NymeriaDiscordBot(discord.Client):
         )
         async def cmd_config_set(interaction: discord.Interaction, key: str, value: str):
             await interaction.response.defer(ephemeral=True)
+            # Admin-gated: /config and /env touch global settings/secrets.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 # Auto-convert value types
                 if value.lower() in ("true", "false"):
@@ -948,6 +1003,11 @@ class NymeriaDiscordBot(discord.Client):
         @env_group.command(name="show", description="Show all environment variables (secrets masked)")
         async def cmd_env_show(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
+            # Admin-gated: /config and /env touch global settings/secrets.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 data = await self.api.get_env_vars()
                 entries = data.get("entries", [])
@@ -989,6 +1049,11 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.describe(key="Variable name (e.g., perplexity_api_key)")
         async def cmd_env_get(interaction: discord.Interaction, key: str):
             await interaction.response.defer(ephemeral=True)
+            # Admin-gated: /config and /env touch global settings/secrets.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 data = await self.api.get_env_var(key)
                 val = data.get("value")
@@ -1018,6 +1083,11 @@ class NymeriaDiscordBot(discord.Client):
         )
         async def cmd_env_set(interaction: discord.Interaction, key: str, value: str):
             await interaction.response.defer(ephemeral=True)
+            # Admin-gated: /config and /env touch global settings/secrets.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
             try:
                 # Auto-convert types
                 if value.lower() in ("true", "false"):
@@ -1221,7 +1291,9 @@ class NymeriaDiscordBot(discord.Client):
             status: app_commands.Choice[str] = None,
         ):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 items = await self.api.list_todos(user_id)
                 filter_val = status.value if status else "active"
@@ -1505,6 +1577,13 @@ class NymeriaDiscordBot(discord.Client):
             interaction: discord.Interaction,
             target: app_commands.Choice[str] = None,
         ):
+            # Admin-gated: restart affects every user, so non-admins are
+            # rejected even if they're linked Nymeria users.
+            if await self._resolve_or_reject_interaction(
+                interaction, require_admin=True
+            ) is None:
+                return
+
             target_value = target.value if target else "bot"
 
             if target_value == "api":
@@ -1818,6 +1897,9 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.autocomplete(name=_tool_name_autocomplete)
         async def cmd_tools_enable(interaction: discord.Interaction, name: str):
             await interaction.response.defer(ephemeral=True)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 thread_id = make_thread_id(
                     interaction.guild_id, interaction.channel_id
@@ -1828,7 +1910,7 @@ class NymeriaDiscordBot(discord.Client):
                     return
 
                 # Read current thread config
-                tc = await self.api.get_thread_config(thread_id)
+                tc = await self.api.get_thread_config(thread_id, user_id=user_id)
                 current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
                 current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
 
@@ -1838,6 +1920,7 @@ class NymeriaDiscordBot(discord.Client):
 
                 await self.api.update_thread_config(
                     thread_id,
+                    user_id=user_id,
                     enabled_tools=sorted(new_enabled),
                     disabled_tools=sorted(new_disabled),
                 )
@@ -1868,6 +1951,9 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.autocomplete(name=_tool_name_autocomplete)
         async def cmd_tools_disable(interaction: discord.Interaction, name: str):
             await interaction.response.defer(ephemeral=True)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 thread_id = make_thread_id(
                     interaction.guild_id, interaction.channel_id
@@ -1878,7 +1964,7 @@ class NymeriaDiscordBot(discord.Client):
                     return
 
                 # Read current thread config
-                tc = await self.api.get_thread_config(thread_id)
+                tc = await self.api.get_thread_config(thread_id, user_id=user_id)
                 current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
                 current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
 
@@ -1888,6 +1974,7 @@ class NymeriaDiscordBot(discord.Client):
 
                 await self.api.update_thread_config(
                     thread_id,
+                    user_id=user_id,
                     enabled_tools=sorted(new_enabled),
                     disabled_tools=sorted(new_disabled),
                 )
@@ -1920,7 +2007,9 @@ class NymeriaDiscordBot(discord.Client):
         @memory_group.command(name="list", description="List all saved memories")
         async def cmd_memory_list(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 memories = await self.api.list_memories(user_id)
                 if not memories:
@@ -1952,7 +2041,9 @@ class NymeriaDiscordBot(discord.Client):
         )
         async def cmd_memory_save(interaction: discord.Interaction, key: str, value: str):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 await self.api.save_memory(user_id, key, value)
                 await interaction.followup.send(f"Saved memory **{key}**.", ephemeral=True)
@@ -1969,7 +2060,9 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.describe(key="The memory key to remove")
         async def cmd_memory_forget(interaction: discord.Interaction, key: str):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 await self.api.forget_memory(user_id, key)
                 await interaction.followup.send(f"Forgot memory **{key}**.", ephemeral=True)
@@ -1988,7 +2081,9 @@ class NymeriaDiscordBot(discord.Client):
         @app_commands.describe(query="Search term (matches key and value)")
         async def cmd_memory_search(interaction: discord.Interaction, query: str):
             await interaction.response.defer(ephemeral=True)
-            user_id = make_user_id(interaction.user.id)
+            user_id = await self._resolve_or_reject_interaction(interaction)
+            if user_id is None:
+                return
             try:
                 results = await self.api.search_memories(user_id, query)
                 if not results:
@@ -2147,6 +2242,92 @@ class NymeriaDiscordBot(discord.Client):
             embed.add_field(name="/show-tools", value="Toggle whether tool calls are shown in chat (off by default)", inline=False)
             embed.add_field(name="/channel-context", value="Toggle whether Nymeria reads recent channel messages", inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # =========================================================================
+    # Platform identity resolution
+    # =========================================================================
+
+    async def resolve_user_id(self, discord_user_id: int) -> Optional[str]:
+        """
+        Resolve a Discord user id to the Nymeria account it's linked to.
+        Caches the result (including None for confirmed-unlinked users) for
+        ``_USER_CACHE_TTL_SECONDS`` to avoid hammering the admin-only
+        ``/platform/resolve`` endpoint on every message. Returns ``None``
+        for unlinked Discord users (or transient lookup failures).
+        """
+        now = time.monotonic()
+        cached = self._user_cache.get(discord_user_id)
+        if cached is not None:
+            value, expires_at = cached
+            if now < expires_at:
+                return value
+        try:
+            user_id = await self.api.resolve_platform_user("discord", str(discord_user_id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("resolve_platform_user(discord, %s) failed: %s", discord_user_id, e)
+            return None
+        self._user_cache[discord_user_id] = (user_id, now + _USER_CACHE_TTL_SECONDS)
+        return user_id
+
+    async def _reject_unlinked(self, message: "discord.Message") -> None:
+        """Reply to an unlinked Discord user with a polite rejection."""
+        try:
+            await message.channel.send(
+                "This Discord account isn't linked to a Nymeria user yet. "
+                "Ask the admin to run: "
+                f"`python run.py users link-platform <email> discord {message.author.id}`"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not send unlinked rejection: %s", e)
+
+    async def _resolve_or_reject_interaction(
+        self,
+        interaction: "discord.Interaction",
+        *,
+        require_admin: bool = False,
+    ) -> Optional[str]:
+        """Resolve the slash-command caller's Nymeria user_id.
+
+        Returns ``user_id`` on success. On failure (unlinked Discord user, or
+        ``require_admin=True`` and caller isn't an admin) sends an ephemeral
+        rejection through the interaction and returns ``None``. The caller
+        should ``return`` immediately when this returns ``None``.
+
+        Handles both pre-defer and post-defer states — if the interaction has
+        already been responded to (e.g. ``defer(ephemeral=True)``), uses
+        followup; otherwise responds directly.
+        """
+        user_id = await self.resolve_user_id(interaction.user.id)
+
+        async def _send(msg: str) -> None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Could not send rejection: %s", e)
+
+        if user_id is None:
+            await _send(
+                "This Discord account isn't linked to a Nymeria user yet. "
+                "Ask the admin to run: "
+                f"`python run.py users link-platform <email> discord {interaction.user.id}`"
+            )
+            return None
+
+        if require_admin:
+            try:
+                me = await self.api.get_me(act_as=user_id)
+                if me.get("role") != "admin":
+                    await _send("Admin only.")
+                    return None
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Admin check failed for %s: %s", user_id, e)
+                await _send("Couldn't verify permissions; try again later.")
+                return None
+
+        return user_id
 
     # =========================================================================
     # Streaming chat dispatcher
@@ -2509,7 +2690,10 @@ class NymeriaDiscordBot(discord.Client):
 
         guild_id = message.guild.id if message.guild else None
         thread_id = make_thread_id(guild_id, message.channel.id)
-        user_id = make_user_id(message.author.id)
+        user_id = await self.resolve_user_id(message.author.id)
+        if user_id is None:
+            await self._reject_unlinked(message)
+            return
 
         # Fetch recent channel messages as context (if enabled)
         context = ""
@@ -2578,7 +2762,16 @@ class NymeriaDiscordBot(discord.Client):
         Background task that connects to the API's /autonomous/stream SSE
         endpoint to receive task completion events.
         """
-        url = f"{self.api.base_url}/autonomous/stream?user_id=default&api_key={self.api.api_key}"
+        # Subscribe to the firehose — every user's autonomous events reach
+        # this listener and we route them to Discord channels by decoding
+        # the event's thread_id prefix (`discord_<guild>_<channel>`). Works
+        # because the service token is admin-role; non-admin tokens can't
+        # request the wildcard and get HTTP 403.
+        url = f"{self.api.base_url}/autonomous/stream"
+        headers = {
+            "Authorization": f"Bearer {self.api.api_key}",
+            "X-Nymeria-Act-As": "*",
+        }
 
         logger.info(f"API SSE listener connecting to {self.api.base_url}/autonomous/stream")
 
@@ -2588,7 +2781,7 @@ class NymeriaDiscordBot(discord.Client):
         while not self.is_closed():
             try:
                 async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", url) as resp:
+                    async with client.stream("GET", url, headers=headers) as resp:
                         if resp.status_code != 200:
                             logger.error(f"SSE connection failed: {resp.status_code}")
                             await asyncio.sleep(reconnect_delay)

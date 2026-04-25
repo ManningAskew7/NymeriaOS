@@ -61,10 +61,15 @@
     }
   }
 
-  function completeSetup() {
+  async function completeSetup() {
     configStore.apiUrl = apiUrl.trim().replace(/\/$/, '');
     configStore.apiKey = apiKey.trim();
     configStore.completeSetup();
+    // Resolve /me so localStorage namespacing picks up the correct user_id
+    // before the rest of the app starts reading threads/folders. Without
+    // the await, scoped store reads can fire against legacy unscoped keys
+    // and momentarily render the previous user's data.
+    await configStore.refreshIdentity();
   }
 </script>
 
@@ -122,15 +127,15 @@
 
     {:else if step === 2}
       <div class="step">
-        <h2>API Key</h2>
-        <p>Enter your NYMERIA_API_KEY from the .env file.</p>
+        <h2>Account Token</h2>
+        <p>Paste your personal account token (create one with <code>python run.py users add &lt;email&gt;</code>) — or use the bootstrap admin token from <code>BOOTSTRAP_TOKEN.txt</code> on first run.</p>
         <div class="input-group">
-          <label for="api-key">API Key</label>
+          <label for="api-key">Account Token</label>
           <input
             id="api-key"
             type="password"
             bind:value={apiKey}
-            placeholder="your-api-key"
+            placeholder="nym_..."
           />
         </div>
 

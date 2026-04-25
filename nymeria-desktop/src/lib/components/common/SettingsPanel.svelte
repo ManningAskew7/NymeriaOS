@@ -584,7 +584,7 @@
             bind:value={apiKey}
             placeholder="Enter your API key"
           />
-          <p class="hint">Found in your Nymeria .env file as NYMERIA_API_KEY</p>
+          <p class="hint">Per-user account token (<code>nym_...</code>) minted via <code>python run.py users add</code>, or the bootstrap admin token from <code>BOOTSTRAP_TOKEN.txt</code></p>
         </div>
 
         <div class="actions">
