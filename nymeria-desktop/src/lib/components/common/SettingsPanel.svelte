@@ -314,15 +314,28 @@
 
     try {
       const isHealthy = await api.healthCheck();
-      if (isHealthy) {
-        testStatus = 'success';
-        testMessage = 'Connection successful!';
-        // Load server settings after successful connection
-        await loadServerSettings();
-      } else {
+      if (!isHealthy) {
         testStatus = 'error';
-        testMessage = 'API returned unhealthy status';
+        testMessage = 'Cannot connect to server. Is the backend running?';
+        return;
       }
+
+      const authResponse = await api.verifyAuth();
+      if (authResponse.status === 401 || authResponse.status === 403) {
+        testStatus = 'error';
+        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
+        return;
+      }
+      if (!authResponse.ok) {
+        testStatus = 'error';
+        testMessage = `Auth check failed: ${authResponse.status}`;
+        return;
+      }
+
+      testStatus = 'success';
+      testMessage = 'Connection successful!';
+      // Load server settings after successful connection
+      await loadServerSettings();
     } catch (e) {
       testStatus = 'error';
       testMessage = e instanceof Error ? e.message : 'Connection failed';

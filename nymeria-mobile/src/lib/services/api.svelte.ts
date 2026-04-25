@@ -162,6 +162,12 @@ export class NymeriaAPI {
     }
   }
 
+  async verifyAuth(): Promise<Response> {
+    return fetch(`${this.getBaseUrl()}/me`, {
+      headers: this.getHeaders()
+    });
+  }
+
   async restartServer(): Promise<boolean> {
     try {
       const response = await fetch(`${this.getBaseUrl()}/restart`, {

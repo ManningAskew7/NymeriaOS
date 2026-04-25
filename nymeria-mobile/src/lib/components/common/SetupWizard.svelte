@@ -42,14 +42,33 @@
 
     try {
       const healthy = await api.healthCheck();
-      if (healthy) {
-        const settings = await api.getServerSettings();
-        testResult = 'success';
-        testMessage = `Connected! Provider: ${settings.llm_provider}, Model: ${settings.llm_model}`;
-      } else {
+      if (!healthy) {
         testResult = 'error';
-        testMessage = 'Server returned unhealthy response';
+        testMessage = 'Cannot connect to server. Is the backend running?';
+        configStore.apiUrl = prevUrl;
+        configStore.apiKey = prevKey;
+        return;
       }
+
+      const authResponse = await api.verifyAuth();
+      if (authResponse.status === 401 || authResponse.status === 403) {
+        testResult = 'error';
+        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
+        configStore.apiUrl = prevUrl;
+        configStore.apiKey = prevKey;
+        return;
+      }
+      if (!authResponse.ok) {
+        testResult = 'error';
+        testMessage = `Auth check failed: ${authResponse.status}`;
+        configStore.apiUrl = prevUrl;
+        configStore.apiKey = prevKey;
+        return;
+      }
+
+      const settings = await api.getServerSettings();
+      testResult = 'success';
+      testMessage = `Connected! Provider: ${settings.llm_provider}, Model: ${settings.llm_model}`;
     } catch (e) {
       testResult = 'error';
       testMessage = `Connection failed: ${e instanceof Error ? e.message : 'Unknown error'}`;

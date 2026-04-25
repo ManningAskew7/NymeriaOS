@@ -28,29 +28,40 @@
 
     try {
       const isHealthy = await api.healthCheck();
-      if (isHealthy) {
-        testStatus = 'success';
-        testMessage = 'Connected successfully!';
-
-        // Try to get server settings to confirm full access
-        try {
-          const settings = await api.getServerSettings();
-          backendInfo = {
-            provider: settings.llm_provider,
-          };
-        } catch {
-          // Server settings not available, but basic health is OK
-        }
-      } else {
+      if (!isHealthy) {
         testStatus = 'error';
-        testMessage = 'Server returned unhealthy status';
+        testMessage = 'Cannot connect to server. Is the backend running?';
+        return;
+      }
+
+      const authResponse = await api.verifyAuth();
+      if (authResponse.status === 401 || authResponse.status === 403) {
+        testStatus = 'error';
+        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
+        return;
+      }
+      if (!authResponse.ok) {
+        testStatus = 'error';
+        testMessage = `Auth check failed: ${authResponse.status}`;
+        return;
+      }
+
+      testStatus = 'success';
+      testMessage = 'Connected successfully!';
+
+      // Try to get server settings to confirm full access
+      try {
+        const settings = await api.getServerSettings();
+        backendInfo = {
+          provider: settings.llm_provider,
+        };
+      } catch {
+        // Server settings not available, but auth is verified
       }
     } catch (e) {
       testStatus = 'error';
       if (e instanceof Error) {
-        if (e.message.includes('401') || e.message.includes('403')) {
-          testMessage = 'Invalid API key. Check that it matches your backend .env file.';
-        } else if (e.message.includes('fetch') || e.message.includes('network')) {
+        if (e.message.includes('fetch') || e.message.includes('network')) {
           testMessage = 'Cannot connect to server. Is the backend running?';
         } else {
           testMessage = e.message;
