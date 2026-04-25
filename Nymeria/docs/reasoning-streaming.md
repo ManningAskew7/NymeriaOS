@@ -218,8 +218,9 @@ Open devtools → Network → the `/chat` EventSource. Confirm `event: thinking`
 Load the thread history and inspect assistant `steps`:
 
 ```bash
+# $NYMERIA_TOKEN is your per-user account token (`nym_…`); see docs/accounts.md.
 curl -s http://localhost:8000/threads/<thread_id>/history \
-  -H "Authorization: Bearer $NYMERIA_API_KEY" \
+  -H "Authorization: Bearer $NYMERIA_TOKEN" \
   | jq '.messages[] | select(.role=="assistant") | {content_len:(.content|length), steps}'
 ```
 

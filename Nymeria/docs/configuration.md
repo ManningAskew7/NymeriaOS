@@ -261,7 +261,11 @@ DATABASE_BACKEND=sqlite
 # SQLITE_PATH=data/nymeria.db  # Uncomment to customize path
 
 # API Server
-NYMERIA_API_KEY=my-secret-key
+# Authentication uses per-user account tokens; the bootstrap admin token is
+# written to <data_dir>/BOOTSTRAP_TOKEN.txt on first boot. See docs/accounts.md.
+# NYMERIA_SERVICE_TOKEN is the admin service token used by bots/ticker/watchdog
+# (with X-Nymeria-Act-As) for per-user routing.
+NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
 API_HOST=0.0.0.0
 API_PORT=8000
 

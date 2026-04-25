@@ -31,13 +31,9 @@ Or create `.env` manually for a lighter local setup. The runtime loads both `.en
 
 Edit `.env` or `.env.docker` and fill in the required values:
 
-### Generate NYMERIA_API_KEY
+### Account token
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-Copy the output to `NYMERIA_API_KEY=` in your environment file.
+The legacy shared `NYMERIA_API_KEY` was retired in the multi-user refactor. The first time the API boots with an empty accounts DB it auto-creates a `default` admin user, prints the raw token to the API log at WARNING level, and writes it to `<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600). Paste that token into the desktop/mobile Setup Wizard, then delete the file. See `docs/accounts.md` for the full account model and the `python run.py users …` CLI for provisioning additional users.
 
 ### Set Your LLM Provider API Key
 
@@ -77,7 +73,8 @@ Starting Nymeria API server on 0.0.0.0:8000...
 1. Open the Nymeria desktop app
 2. The setup wizard will guide you through:
    - Entering the backend URL (default: `http://localhost:8000`)
-   - Entering your `NYMERIA_API_KEY`
+   - Pasting the bootstrap account token from `<data_dir>/BOOTSTRAP_TOKEN.txt`
+     (also logged at WARNING level on first API boot)
    - Testing the connection
 
 ## You're Done!
@@ -92,12 +89,9 @@ Start chatting with Nymeria. Here are some things to try:
 
 ## Troubleshooting
 
-### "NYMERIA_API_KEY not set"
+### "Invalid API key" / 401 from the desktop app
 
-Generate a key and add it to your `.env`:
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
+The legacy `NYMERIA_API_KEY` shared key was retired. Authentication now uses per-user account tokens. Read `<data_dir>/BOOTSTRAP_TOKEN.txt` (written automatically on the first API boot) for the bootstrap admin token. To mint another user's token: `python run.py users add <email> --role user --id <slug>`. Both flows are documented in `docs/accounts.md`.
 
 ### "No API key for LLM provider"
 
@@ -111,10 +105,6 @@ Make sure you've set the API key for your chosen provider in your environment fi
 1. Check the backend is running: `python run.py api`
 2. Check the URL in the desktop app matches the backend
 3. Check firewall isn't blocking port 8000
-
-### "Invalid API key"
-
-The `NYMERIA_API_KEY` in your backend environment file must match exactly what you enter in the desktop app.
 
 ### Desktop app shows blank screen
 

@@ -78,7 +78,9 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 
    On first launch, the app displays a setup wizard that guides you through:
    - Configuring the backend URL (defaults to `http://localhost:8000`)
-   - Entering your API key (the `NYMERIA_API_KEY` from Nymeria's `.env`)
+   - Pasting your account token — the bootstrap admin token from
+     `<data_dir>/BOOTSTRAP_TOKEN.txt`, or any per-user token minted via
+     `python run.py users add <email>` (see `Nymeria/docs/accounts.md`)
    - Testing the connection
 
    After completing setup, you'll be taken directly to the chat interface.
@@ -86,7 +88,7 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 5. **Manual Configuration (if needed):**
    - Click the ⚙️ settings icon in the sidebar
    - Enter API URL: `http://localhost:8000`
-   - Enter API Key: your `NYMERIA_API_KEY` value
+   - Enter Account Token: your `nym_…` token (bootstrap or per-user)
    - Click "Test Connection" to verify
 
 ## Settings

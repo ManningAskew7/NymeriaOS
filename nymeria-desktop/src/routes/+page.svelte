@@ -160,29 +160,28 @@
     };
   });
 
-  function initializeApp() {
+  async function initializeApp() {
     // Connect if configured (setupCompleted is redundant now but kept for safety)
     if (configStore.isConfigured) {
-      // Resolve identity FIRST so any subsequent localStorage reads use the
-      // correctly-scoped keys. Fires reload hooks for per-feature stores and
-      // migrates legacy unscoped data on first run. Non-blocking for the
-      // rest of initialization — if identity fetch is slow, stores fall
-      // back to whatever scope is already cached.
-      configStore.refreshIdentity().then((id) => {
+      // Resolve identity FIRST so subsequent localStorage reads use the
+      // correctly-scoped keys. Awaited — without this, the unscoped read of
+      // threadsStore.currentThreadId below races the identity refresh and
+      // momentarily flashes the previous user's thread on a returning user.
+      try {
+        const id = await configStore.refreshIdentity();
         if (id === null && configStore.apiKey) {
           console.warn('[Page] /me returned unauthorized; clearing apiKey to route to SetupWizard');
           configStore.apiKey = '';
           return;
         }
-        // Now that identity is settled, sync threads from backend. The
-        // threadsStore reload hook has already re-read localStorage under
-        // the correct scope.
-        threadsStore.syncFromBackend();
-      }).catch(() => {
-        // Network failure — fall through to syncFromBackend anyway; stores
-        // stay in legacy/unscoped mode until next successful /me call.
-        threadsStore.syncFromBackend();
-      });
+      } catch (e) {
+        // Network failure — fall through; stores stay in legacy/unscoped
+        // mode until the next successful /me call (window-focus listener).
+        console.warn('[Page] refreshIdentity failed, continuing with cached scope:', e);
+      }
+
+      // Identity settled. Now safe to read scoped state and kick off backend sync.
+      threadsStore.syncFromBackend();
 
       // Restore last thread's chat history if one was saved
       const initialThreadId = threadsStore.currentThreadId;

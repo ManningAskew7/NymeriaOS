@@ -48,9 +48,9 @@ Authorization: Bearer <token>
 ```
 
 Returns the account identity the token resolves to. Used by frontends to
-discover their own `user_id` for localStorage namespacing. Works with both
-per-user account tokens and the legacy `NYMERIA_API_KEY` (which resolves to
-the bootstrap admin `default`).
+discover their own `user_id` for localStorage namespacing. Requires a per-user
+account token (`nym_...`); the legacy `NYMERIA_API_KEY` was retired in Step 3c.
+Admins can pass `X-Nymeria-Act-As: <user_id>` to read another user's identity.
 
 **Response:**
 ```json
@@ -1088,7 +1088,7 @@ Import tools from a JSON array.
 
 ## Callable Threads API
 
-Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool visible to other threads.
+Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool — but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.
 
 ### List Callable Threads
 

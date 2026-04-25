@@ -1,73 +1,70 @@
-//! First-run auto-configuration: generates NYMERIA_API_KEY and ensures .env exists.
+//! First-run auto-configuration: reads the bootstrap admin token from
+//! `<data_dir>/BOOTSTRAP_TOKEN.txt` (created by the agent on first launch
+//! against an empty users table), and ensures a minimal `.env` exists.
+//!
+//! The legacy `NYMERIA_API_KEY` shared key was retired in Step 3c — the
+//! backend only accepts per-user `nym_...` tokens now, so we no longer
+//! generate one.
 
 use std::fs;
 use std::path::Path;
 
-/// Ensure the .env file exists and contains a NYMERIA_API_KEY.
-/// Returns the API key (existing or newly generated).
+/// Ensure the `.env` file exists, then return the bootstrap admin token
+/// from `data/BOOTSTRAP_TOKEN.txt` if present (empty string otherwise —
+/// the user is expected to paste a token via the Setup Wizard).
 pub fn ensure_env_file(project_root: &Path) -> Result<String, String> {
     let env_path = project_root.join("Nymeria").join(".env");
 
-    if env_path.exists() {
-        // Try to read existing API key
-        let contents = fs::read_to_string(&env_path)
-            .map_err(|e| format!("Failed to read .env: {}", e))?;
+    if !env_path.exists() {
+        // Create a minimal .env so the backend has something to load.
+        // No auto-generated API key — the backend mints per-user tokens
+        // out-of-band via `python run.py users add` and the bootstrap
+        // admin token written to data/BOOTSTRAP_TOKEN.txt.
+        let content = "# Nymeria Configuration (auto-generated)\n\
+                       # See .env.example for all available options\n\
+                       \n\
+                       # LLM Provider (anthropic, openai, openrouter)\n\
+                       LLM_PROVIDER=anthropic\n\
+                       \n\
+                       # Add your API key here, or use CLIProxy for subscription-based access\n\
+                       # ANTHROPIC_API_KEY=\n";
 
-        for line in contents.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("NYMERIA_API_KEY=") {
-                let key = trimmed
-                    .strip_prefix("NYMERIA_API_KEY=")
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'');
-                if !key.is_empty() {
-                    return Ok(key.to_string());
+        if let Some(parent) = env_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+
+        fs::write(&env_path, content)
+            .map_err(|e| format!("Failed to create .env: {}", e))?;
+    }
+
+    // Pick up the bootstrap admin token if the agent has written one.
+    // The file is a multi-line note, not a raw token — the actual token
+    // lives on a `Token: nym_<...>` line. Returning the whole trimmed file
+    // would produce an invalid Bearer value and silently 401 every request.
+    let bootstrap_path = project_root
+        .join("Nymeria")
+        .join("data")
+        .join("BOOTSTRAP_TOKEN.txt");
+    if bootstrap_path.exists() {
+        if let Ok(content) = fs::read_to_string(&bootstrap_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("Token:") {
+                    let token = value.trim().to_string();
+                    if token.starts_with("nym_") {
+                        return Ok(token);
+                    }
+                }
+                // Fallback: if the file ever shrinks back to a raw token
+                // (no "Token:" prefix), accept a bare nym_-prefixed line.
+                if trimmed.starts_with("nym_") {
+                    return Ok(trimmed.to_string());
                 }
             }
         }
-
-        // .env exists but no NYMERIA_API_KEY — append one
-        let api_key = generate_api_key();
-        let mut contents = contents;
-        if !contents.ends_with('\n') {
-            contents.push('\n');
-        }
-        contents.push_str(&format!("NYMERIA_API_KEY={}\n", api_key));
-        fs::write(&env_path, contents)
-            .map_err(|e| format!("Failed to update .env: {}", e))?;
-        return Ok(api_key);
     }
 
-    // No .env at all — create a minimal one
-    let api_key = generate_api_key();
-    let content = format!(
-        "# Nymeria Configuration (auto-generated)\n\
-         # See .env.example for all available options\n\
-         \n\
-         NYMERIA_API_KEY={}\n\
-         \n\
-         # LLM Provider (anthropic, openai, openrouter)\n\
-         LLM_PROVIDER=anthropic\n\
-         \n\
-         # Add your API key here, or use CLIProxy for subscription-based access\n\
-         # ANTHROPIC_API_KEY=\n",
-        api_key
-    );
-
-    // Ensure parent directory exists
-    if let Some(parent) = env_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-
-    fs::write(&env_path, content)
-        .map_err(|e| format!("Failed to create .env: {}", e))?;
-
-    Ok(api_key)
-}
-
-fn generate_api_key() -> String {
-    format!("nymeria-{}", uuid::Uuid::new_v4())
+    // No bootstrap token yet — the Setup Wizard will prompt for one.
+    Ok(String::new())
 }

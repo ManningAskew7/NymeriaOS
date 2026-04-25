@@ -61,13 +61,15 @@
     }
   }
 
-  function completeSetup() {
+  async function completeSetup() {
     configStore.apiUrl = apiUrl.trim().replace(/\/$/, '');
     configStore.apiKey = apiKey.trim();
     configStore.completeSetup();
     // Resolve /me so localStorage namespacing picks up the correct user_id
-    // before the rest of the app starts reading threads/folders.
-    configStore.refreshIdentity();
+    // before the rest of the app starts reading threads/folders. Without
+    // the await, scoped store reads can fire against legacy unscoped keys
+    // and momentarily render the previous user's data.
+    await configStore.refreshIdentity();
   }
 </script>
 
@@ -126,14 +128,14 @@
     {:else if step === 2}
       <div class="step">
         <h2>Account Token</h2>
-        <p>Paste your personal account token (create one with <code>python run.py users add &lt;email&gt;</code>). Legacy NYMERIA_API_KEY values are still accepted during rollout.</p>
+        <p>Paste your personal account token (create one with <code>python run.py users add &lt;email&gt;</code>) — or use the bootstrap admin token from <code>BOOTSTRAP_TOKEN.txt</code> on first run.</p>
         <div class="input-group">
           <label for="api-key">Account Token</label>
           <input
             id="api-key"
             type="password"
             bind:value={apiKey}
-            placeholder="nym_... or legacy NYMERIA_API_KEY"
+            placeholder="nym_..."
           />
         </div>
 

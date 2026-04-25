@@ -79,9 +79,9 @@ Copy the printed token into `.env.docker`:
 NYMERIA_SERVICE_TOKEN=nym_...
 ```
 
-Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram/Watchdog print `Auth: service token` at startup when they pick it up (fall back to `legacy NYMERIA_API_KEY` if unset).
+Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram/Watchdog print `Auth: service token` at startup when they pick it up — `NYMERIA_API_KEY` was retired in Step 3c, so the service token is now the only way for shared infrastructure to authenticate.
 
-**How the header is honored:** `X-Nymeria-Act-As: <user_id>` is only consumed by `/me`, `/platform/resolve`, and `/autonomous/stream` today. Non-admin callers sending it get 403. Unknown/disabled targets 404. Routes that still use the old `verify_api_key` dep ignore the header — Step 3b extends honoring to every route.
+**How the header is honored:** Every authenticated route now resolves the caller via `verify_api_key`/`require_user`, which honors `X-Nymeria-Act-As: <user_id>` for admin callers. Non-admin callers sending it get 403; unknown/disabled targets get 404. Bots and the watchdog rely on this everywhere — they hold the admin service token and act-as the resolved per-user identity per request.
 
 **What the bots send:**
 ```
