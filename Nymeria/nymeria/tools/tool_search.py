@@ -21,7 +21,7 @@ from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.graph import END
 from langgraph.types import Command
 
-from .utils import get_thread_id
+from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,7 @@ def _enable(
     tool_names: List[str],
     category: str,
     thread_id: str,
+    user_id: str,
     ttl: str = DEFAULT_TTL,
     tool_call_id: Optional[str] = None,
 ) -> Union[str, Command]:
@@ -322,6 +323,22 @@ def _enable(
                 err += f"\n[Not found]: {', '.join(invalid)}"
             return err
         return f"[Error]: No valid tools to enable. Unknown: {', '.join(invalid)}"
+
+    # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config —
+    # without this, an agent could call tool_search(action="enable",
+    # tools=["reload_all"]) to escalate to admin-only tools that are
+    # equivalent to authenticated RCE on the shared backend.
+    from . import filter_admin_only_tools
+    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+    user_role = user.role if user else "user"
+    allowed, blocked = filter_admin_only_tools(valid, user_role)
+    if blocked:
+        return (
+            f"[Error]: Admin-only tools cannot be enabled by this user: "
+            f"{sorted(blocked)}. Ask an administrator to enable them on this "
+            f"thread, or pick a non-admin alternative."
+        )
+    valid = [n for n in valid if n in allowed]
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
@@ -819,6 +836,7 @@ def tool_search(
     """
     action = action.strip().lower()
     thread_id = get_thread_id(config)
+    user_id = get_user_id(config)
     logger.info(
         f"tool_search: action={action}, query={query!r}, category={category!r}, "
         f"tools={tools}, ttl={ttl!r}"
@@ -827,7 +845,7 @@ def tool_search(
     if action == "search":
         return _search(query, category, thread_id)
     elif action == "enable":
-        return _enable(tools or [], category, thread_id, ttl=ttl, tool_call_id=tool_call_id)
+        return _enable(tools or [], category, thread_id, user_id, ttl=ttl, tool_call_id=tool_call_id)
     elif action == "disable":
         return _disable(tools or [], thread_id, force=force)
     elif action == "list_categories":

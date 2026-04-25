@@ -42,12 +42,20 @@ Provider = Literal["discord", "telegram", "twitch"]
 
 @dataclass
 class AuthenticatedUser:
-    """A user resolved from a bearer token. Returned by the auth dependency."""
+    """A user resolved from a bearer token. Returned by the auth dependency.
+
+    ``via_act_as`` is True when the caller is an admin who used
+    ``X-Nymeria-Act-As`` to impersonate this user. Used by
+    ``_require_thread_access`` to allow shared-channel routing through the
+    bot service token (admin) while still rejecting non-admin direct API
+    callers from guessing shared-channel thread IDs.
+    """
 
     id: str
     email: str
     display_name: str
     role: UserRole
+    via_act_as: bool = False
 
 
 @dataclass
