@@ -11,16 +11,26 @@
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
   import { ToolManagementPanel } from '../tools';
+  import { AccountTab } from '../account';
 
   interface Props {
     open: boolean;
     onClose: () => void;
+    initialTab?: string;
   }
 
-  let { open, onClose }: Props = $props();
+  let { open, onClose, initialTab }: Props = $props();
 
-  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice';
+  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'account' | 'users';
   let activeTab = $state<Tab>('connection');
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
+
+  // When the panel re-opens with a requested tab, jump to it.
+  $effect(() => {
+    if (open && initialTab) {
+      activeTab = initialTab as Tab;
+    }
+  });
 
   // Connection settings
   let apiUrl = $state(configStore.apiUrl);
@@ -254,7 +264,9 @@
         { id: 'llm', label: 'LLM', disabled: !serverSettings },
         { id: 'agent', label: 'Agent', disabled: !serverSettings },
         { id: 'tools', label: 'Tools', disabled: !serverSettings },
-        { id: 'voice', label: 'Voice', disabled: !serverSettings }
+        { id: 'voice', label: 'Voice', disabled: !serverSettings },
+        { id: 'account', label: 'Account', disabled: false },
+        ...(isAdmin ? [{ id: 'users', label: 'Users', disabled: false }] : [])
       ] as tab}
         <button
           class="tab-btn"
@@ -809,6 +821,21 @@
             {savingSettings ? 'Saving...' : 'Save Voice Settings'}
           </Button>
         {/if}
+
+      <!-- Account Tab (current user identity + sign out) -->
+      {:else if activeTab === 'account'}
+        <AccountTab />
+
+      <!-- Users Tab (admin only — full panel ships in Phase D) -->
+      {:else if activeTab === 'users' && isAdmin}
+        <div class="users-placeholder">
+          <h3>User management</h3>
+          <p>
+            The full admin panel for creating, disabling, and rotating tokens
+            for other users ships in the next phase. The backend HTTP endpoints
+            (<code>/admin/users</code>) are already in place.
+          </p>
+        </div>
       {/if}
     </div>
 
@@ -875,14 +902,38 @@
   }
 
   .tab-btn {
-    flex: 1;
-    min-width: 0;
-    padding: var(--spacing-sm) var(--spacing-xs);
+    flex: 0 0 auto;
+    padding: var(--spacing-sm) var(--spacing-md);
     font-size: var(--font-size-sm);
     color: var(--text-muted);
     border-bottom: 2px solid transparent;
     white-space: nowrap;
     min-height: 44px;
+  }
+
+  .users-placeholder {
+    padding: var(--spacing-md);
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+  }
+  .users-placeholder h3 {
+    margin: 0 0 var(--spacing-sm);
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+  }
+  .users-placeholder p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+    line-height: 1.55;
+  }
+  .users-placeholder code {
+    background: var(--bg-base);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-size: 12px;
   }
 
   .tab-btn.active {

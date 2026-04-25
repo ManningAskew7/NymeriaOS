@@ -13,6 +13,7 @@
   import { ToolManagementPanel } from '../tools';
   import SkillsPanel from '../skills/SkillsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
+  import { AccountTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
 
   interface Props {
@@ -169,8 +170,9 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'skills' | 'voice' | 'proxy';
+  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'skills' | 'voice' | 'proxy' | 'account' | 'users';
   let activeTab = $state<SettingsTab>((initialTab as SettingsTab) || 'connection');
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
   let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
@@ -469,6 +471,22 @@
         Proxy
       </button>
     {/if}
+    <button
+      class="tab"
+      class:active={activeTab === 'account'}
+      onclick={() => (activeTab = 'account')}
+    >
+      Account
+    </button>
+    {#if isAdmin}
+      <button
+        class="tab"
+        class:active={activeTab === 'users'}
+        onclick={() => (activeTab = 'users')}
+      >
+        Users
+      </button>
+    {/if}
   </div>
 
   <!-- Connection Tab -->
@@ -624,6 +642,28 @@
   <!-- Proxy Tab (CLIProxy management, Tauri only) -->
   {#if activeTab === 'proxy'}
     <CLIProxyPanel />
+  {/if}
+
+  <!-- Account Tab (current user identity + sign out) -->
+  {#if activeTab === 'account'}
+    <div class="tab-content">
+      <AccountTab />
+    </div>
+  {/if}
+
+  <!-- Users Tab (admin only — full panel ships in Phase D) -->
+  {#if activeTab === 'users' && isAdmin}
+    <div class="tab-content">
+      <div class="users-tab-placeholder">
+        <h3>User management</h3>
+        <p>
+          The full admin panel for creating, disabling, and rotating tokens for
+          other users ships in the next phase. The backend HTTP endpoints
+          (<code>/admin/users</code>) are already in place if you'd like to use
+          them via curl in the meantime.
+        </p>
+      </div>
+    </div>
   {/if}
 
   <!-- Appearance Tab -->
@@ -1282,9 +1322,35 @@
 
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--spacing-xs);
     border-bottom: 1px solid var(--border-subtle);
     padding-bottom: var(--spacing-sm);
+  }
+
+  .users-tab-placeholder {
+    padding: var(--spacing-md);
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+  }
+  .users-tab-placeholder h3 {
+    margin: 0 0 var(--spacing-sm);
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+  }
+  .users-tab-placeholder p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+    line-height: 1.55;
+  }
+  .users-tab-placeholder code {
+    background: var(--bg-base);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-size: 12px;
   }
 
   .tab {
