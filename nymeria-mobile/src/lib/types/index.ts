@@ -434,7 +434,7 @@ export interface DoneEvent {
 }
 
 // Theme type
-export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast';
+export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast' | 'platinum';
 
 // Config types
 export interface AppConfig {

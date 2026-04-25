@@ -374,3 +374,13 @@ pre code {
   100% { transform: scale(1); }
 }
 
+/* ============================================================
+ * PLATINUM THEME — Title override.
+ * All other accent elements inherit #e0f0ff via --accent-primary.
+ * ============================================================ */
+
+html[data-theme="platinum"] .sidebar-header .logo {
+  color: #e0f0ff;
+  letter-spacing: 0.02em;
+}
+
