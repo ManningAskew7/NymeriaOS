@@ -112,6 +112,25 @@ def mcp_install(
     )
     from ..core.mcp_servers import get_mcp_server_registry
 
+    # Admin-only: installing an MCP server can launch arbitrary stdio commands
+    # in the agent process. Resolve the caller via the injected RunnableConfig
+    # and reject non-admin users (e.g. a second user) even if they enabled this tool.
+    user_id = (config or {}).get("configurable", {}).get("user_id", "default") if config else "default"
+    try:
+        from ..core.agent import get_current_agent
+        _agent_ref = get_current_agent()
+        if _agent_ref is not None:
+            caller = _agent_ref.accounts_repo.get_user_by_id(user_id)
+            if not caller or caller.role != "admin":
+                return (
+                    "[error] mcp_install requires admin role. "
+                    "Ask the workspace admin to install the server via the desktop UI "
+                    "(Settings → MCP) or `POST /mcp-servers/install`."
+                )
+    except Exception as e:
+        logger.warning("mcp_install: admin check failed: %s", e)
+        return f"[error] mcp_install: caller verification failed: {e}"
+
     try:
         defn = parse_mcp_source(source, name=name)
     except MCPInstallError as e:

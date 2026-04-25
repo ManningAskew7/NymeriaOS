@@ -250,6 +250,23 @@ def install_skill(
 
     user_id = get_user_id(config)
 
+    # ``scope=user`` is per-user (every caller can install for themselves);
+    # ``scope=global`` writes into the shared skills directory visible to all
+    # users. Skill bundles can ship scripts the agent process can execute, so
+    # global install is admin-only — same gate as POST /skills/install.
+    if scope == "global":
+        try:
+            caller = agent.accounts_repo.get_user_by_id(user_id)
+            if not caller or caller.role != "admin":
+                return (
+                    "[error] install_skill scope=global requires admin role. "
+                    "Install with scope='user' (default) or ask the workspace "
+                    "admin to install it globally."
+                )
+        except Exception as e:
+            logger.warning("install_skill: admin check failed: %s", e)
+            return f"[error] install_skill: caller verification failed: {e}"
+
     try:
         from ..skills.marketplace import get_fetcher, MarketplaceError
         fetcher = get_fetcher(source)

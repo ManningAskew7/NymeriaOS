@@ -239,18 +239,47 @@ class ThreadConfigManager:
                     result.append(path.stem)
         return sorted(result)
 
-    def list_callable_threads(self) -> List[ThreadConfig]:
-        """Return all ThreadConfig entries where callable=True."""
+    def list_callable_threads(
+        self,
+        owned_thread_ids: Optional[set] = None,
+    ) -> List[ThreadConfig]:
+        """Return all ThreadConfig entries where callable=True.
+
+        If ``owned_thread_ids`` is provided, only return callable threads whose
+        thread_id is in that set. Used by the API to scope the callable-thread
+        list to the authenticated user (the set comes from
+        ``accounts_repo.list_threads_for_user``). Pass ``None`` to get the full
+        unfiltered list — callers that build the global tool registry still
+        need the full list since registry rebuild is not per-user.
+
+        Important: ``list_configured_threads()`` returns sanitized filename
+        stems, but ``owned_thread_ids`` (from the accounts DB) holds the
+        original unsanitized thread IDs. So we load the config first and
+        filter on the loaded ``tc.thread_id`` — otherwise callable_names with
+        spaces or punctuation would be silently excluded.
+        """
         result = []
-        for thread_id in self.list_configured_threads():
-            tc = self.get_config(thread_id)
-            if tc and tc.callable:
-                result.append(tc)
+        for stem in self.list_configured_threads():
+            tc = self.get_config(stem)
+            if not (tc and tc.callable):
+                continue
+            if owned_thread_ids is not None and tc.thread_id not in owned_thread_ids:
+                continue
+            result.append(tc)
         return result
 
-    def get_callable_thread_by_name(self, name: str) -> Optional[ThreadConfig]:
-        """Find a callable thread by its callable_name."""
-        for tc in self.list_callable_threads():
+    def get_callable_thread_by_name(
+        self,
+        name: str,
+        owned_thread_ids: Optional[set] = None,
+    ) -> Optional[ThreadConfig]:
+        """Find a callable thread by its callable_name.
+
+        With ``owned_thread_ids``, restricts the search to the caller's own
+        callable threads — used for rename-collision checks so two users can
+        each have a callable named "Helper" without conflict.
+        """
+        for tc in self.list_callable_threads(owned_thread_ids=owned_thread_ids):
             if tc.callable_name == name:
                 return tc
         return None

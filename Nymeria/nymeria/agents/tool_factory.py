@@ -63,6 +63,50 @@ description and it will execute autonomously.
         from ..core.agent import get_current_agent
         _agent = get_current_agent()
 
+        # Cross-user ownership gate: the global tool registry is shared
+        # across users (sync_agent_tools rebuilds one default graph), so a
+        # callable thread created by user A would otherwise be invocable
+        # from user B's chat. Reject mismatched ownership at runtime.
+        # Admins are allowed through (X-Nymeria-Act-As impersonation and
+        # service-token routing keep working) AND admins can also touch
+        # legacy unowned callables for migration. Non-admin invocation of an
+        # unowned callable is rejected — the per-user graph filter usually
+        # prevents the binding from existing in the first place, but if it
+        # leaked via a stale cache or guessed name, fail closed here.
+        if _agent and user_id:
+            try:
+                owner = _agent.accounts_repo.get_thread_owner(_thread_id)
+                caller = _agent.accounts_repo.get_user_by_id(user_id)
+                caller_is_admin = bool(caller and caller.role == "admin")
+                if not caller_is_admin:
+                    if owner is None:
+                        logger.warning(
+                            f"{_name}: invocation blocked — legacy unowned callable "
+                            f"thread {_thread_id} can only be invoked by an admin"
+                        )
+                        return (
+                            f"[Error]: {_name} is not available to this user. "
+                            f"Callable threads are scoped to the user who created them."
+                        )
+                    if owner != user_id:
+                        logger.warning(
+                            f"{_name}: invocation blocked — caller user_id={user_id} "
+                            f"does not own callable thread {_thread_id} (owned by {owner})"
+                        )
+                        return (
+                            f"[Error]: {_name} is not available to this user. "
+                            f"Callable threads are scoped to the user who created them."
+                        )
+            except Exception as e:  # noqa: BLE001
+                # Fail closed: this is an auth boundary, not a best-effort
+                # lookup. If ownership can't be verified, refuse rather than
+                # let an unverified caller through.
+                logger.warning(f"{_name}: ownership check failed: {e}")
+                return (
+                    f"[Error]: {_name} ownership could not be verified. "
+                    f"Refusing invocation."
+                )
+
         # Detect circular calls: if the target thread is an ancestor waiting
         # for this thread's output, invoking it would deadlock.
         if _agent and parent_thread_id:

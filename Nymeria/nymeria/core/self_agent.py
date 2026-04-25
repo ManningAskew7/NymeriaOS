@@ -7,9 +7,10 @@ Optional tools — enable per-thread via thread config.
 import json
 import logging
 from pathlib import Path
-from typing import List
+from typing import Annotated, List
 
-from langchain_core.tools import BaseTool, tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool, InjectedToolArg, tool
 
 from .backup import BackupManager
 from .validator import CodeValidator
@@ -281,7 +282,12 @@ def self_reload() -> str:
 
 
 @tool
-def self_invoke_tool(tool_name: str, arguments_json: str) -> str:
+def self_invoke_tool(
+    tool_name: str,
+    arguments_json: str,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
     """
     Test a tool by invoking it with the given arguments.
 
@@ -314,8 +320,13 @@ def self_invoke_tool(tool_name: str, arguments_json: str) -> str:
         except json.JSONDecodeError as e:
             return f"[Error]: Invalid JSON arguments: {e}"
 
-        # Invoke the tool
-        result = tool_obj.invoke(args)
+        # Forward the caller's RunnableConfig so InjectedToolArg-bearing tools
+        # (notably the callable-thread closures in agents/tool_factory.py) see
+        # the real user_id/thread_id and the runtime ownership gate fires
+        # correctly. Without this, callable closures default user_id="default"
+        # — which is admin — so any user with self_invoke_tool enabled could
+        # invoke another user's callable as the bootstrap admin.
+        result = tool_obj.invoke(args, config=config)
         return f"[Test result]: {result}"
 
     except Exception as e:
