@@ -36,9 +36,9 @@ The raw token is:
 
 Paste the token into the Desktop/Mobile Setup Wizard in place of the old `NYMERIA_API_KEY`, then delete the file. The `default` user ID lines up with existing per-user file paths (`data/todos/default.json`, `data/profiles/default.json`, etc.) so no data migration is needed for the first user.
 
-## CLI
+## CLI (legacy — unmaintained)
 
-All account ops use `python run.py users <action>`. The CLI operates directly on the accounts DB — no running API required, so you can provision accounts even when the API is down.
+> **Status:** the `users` CLI predates the HTTP Admin API and is no longer actively tested. Prefer the HTTP endpoints (next section) for anything beyond first-boot bootstrap. The CLI is kept around because it operates directly on the accounts DB and so still works when the API is down.
 
 ```bash
 # Create a user, mint a token
@@ -62,6 +62,54 @@ python run.py users unlink-platform discord 123456789
 ```
 
 Inside Docker: `docker exec nymeria-api python run.py users <action>`.
+
+## HTTP Admin API
+
+Every account operation is exposed as a REST endpoint, gated by `require_admin_user`. Pass an admin token (the bootstrap token works for first-time setup) as `Authorization: Bearer nym_...`. Raw tokens are returned **once**, in the response body of a creation/issue/rotate call — there is no way to retrieve them later.
+
+### Self (`/me`, `/me/tokens`) — any authenticated user
+
+| Method | Path | Body | Purpose |
+|---|---|---|---|
+| `GET` | `/me` | — | Resolve the calling token to its user (`id`, `email`, `display_name`, `role`). |
+| `PATCH` | `/me` | `{display_name?}` | Update your own display name. |
+| `GET` | `/me/tokens` | — | List your active and revoked tokens (no raw values). |
+| `POST` | `/me/tokens` | `{label?}` | Issue yourself a new token. Raw shown ONCE. |
+| `DELETE` | `/me/tokens/{prefix}` | — | Revoke one of your tokens by hash prefix. |
+
+### Admin (`/admin/users`) — caller must be admin
+
+| Method | Path | Body | Purpose |
+|---|---|---|---|
+| `GET` | `/admin/users` | — | List every account with role, status, token count, last token use. |
+| `POST` | `/admin/users` | `{email, display_name?, role?, id?, token_label?}` | Create a user and mint a first token. Raw shown ONCE. |
+| `GET` | `/admin/users/{id}` | — | Full user record + thread/todo/platform counts. |
+| `PATCH` | `/admin/users/{id}` | `{display_name?, role?, disabled?}` | Update fields. Demoting / disabling the only enabled admin → 409. |
+| `DELETE` | `/admin/users/{id}` | — | Cascade delete (tokens, platform identities). 409 if user owns threads or todos — clean those up first. |
+| `GET` | `/admin/users/{id}/tokens` | — | List a user's tokens (no raw). |
+| `POST` | `/admin/users/{id}/tokens` | `{label?}` | Issue a token for the user. Raw shown ONCE. |
+| `POST` | `/admin/users/{id}/tokens/rotate` | `{label?}` | Revoke every active token for the user, mint a fresh one. Raw shown ONCE. |
+| `DELETE` | `/admin/users/{id}/tokens/{prefix}` | — | Revoke a single token by hash prefix. |
+| `GET` | `/admin/users/{id}/platforms` | — | List a user's linked Discord/Telegram/Twitch identities. |
+| `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link a platform identity. 409 if already linked to another user. |
+| `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
+
+The `prefix` in token revoke paths is the first 8 hex chars of the token's sha256 (returned in the `token_hash_prefix` field of `GET /me/tokens` and the admin token list). Prefixes shorter than 4 chars are rejected; ambiguous prefixes return 400.
+
+### Bootstrapping the service token via HTTP
+
+```bash
+TOKEN=$(grep -oE 'nym_[A-Za-z0-9_-]+' Nymeria/data/BOOTSTRAP_TOKEN.txt)
+
+# Create the bot service user and capture its raw token
+curl -sX POST http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"bot-service@localhost","role":"admin","id":"bot-service","token_label":"service"}' \
+  | jq -r .raw_token
+```
+
+Paste that into `NYMERIA_SERVICE_TOKEN` in `.env.docker`, then `docker compose up -d` to propagate.
 
 ## Service token
 
