@@ -1,4 +1,4 @@
-import type { SavedConnection } from '$lib/types';
+import type { AccountIdentity, SavedConnection } from '$lib/types';
 import { configStore } from '$lib/stores/config.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { threadsStore } from '$lib/stores/threads.svelte';
@@ -148,7 +148,76 @@ function createConnectionsStore() {
       activeConnectionId = null;
       saveActiveId(null);
     },
+
+    /**
+     * Hit GET /me against an entry's URL+token to resolve the real account
+     * identity, then cache the result on the entry. Called on app boot for
+     * the active entry (so the badge shows immediately), and on demand from
+     * the AccountSwitcher when the user wants to refresh stale info.
+     */
+    async verifyEntry(id: string): Promise<AccountIdentity | null> {
+      const entry = connections.find((c) => c.id === id);
+      if (!entry) return null;
+      const base = entry.apiUrl.replace(/\/$/, '');
+      try {
+        const response = await fetch(`${base}/me`, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${entry.apiKey}`,
+          },
+        });
+        const checkedAt = new Date().toISOString();
+        if (!response.ok) {
+          const errMessage =
+            response.status === 401
+              ? 'Token revoked or expired'
+              : response.status === 403
+              ? 'Account disabled'
+              : `Auth check failed (${response.status})`;
+          connections = connections.map((c) =>
+            c.id === id
+              ? { ...c, identity: null, identityCheckedAt: checkedAt, identityError: errMessage }
+              : c
+          );
+          persist();
+          return null;
+        }
+        const data = (await response.json()) as AccountIdentity;
+        connections = connections.map((c) =>
+          c.id === id
+            ? { ...c, identity: data, identityCheckedAt: checkedAt, identityError: null }
+            : c
+        );
+        persist();
+        return data;
+      } catch (e) {
+        connections = connections.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                identity: null,
+                identityCheckedAt: new Date().toISOString(),
+                identityError: e instanceof Error ? e.message : 'Network error',
+              }
+            : c
+        );
+        persist();
+        return null;
+      }
+    },
   };
 }
 
 export const connectionsStore = createConnectionsStore();
+
+// On boot, refresh the active entry's identity in the background so the badge
+// reflects the current account state (in case the token was revoked, role
+// changed, or account was disabled while we were away).
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    const activeId = connectionsStore.activeConnectionId;
+    if (activeId) {
+      void connectionsStore.verifyEntry(activeId);
+    }
+  }, 500);
+}

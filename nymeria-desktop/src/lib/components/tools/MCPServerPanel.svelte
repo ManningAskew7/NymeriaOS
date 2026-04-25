@@ -1,6 +1,7 @@
 <script lang="ts">
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import type { MCPServer, MCPServerCreateRequest } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
@@ -17,6 +18,11 @@
     onToggleTool?: (name: string) => void;
   }
   let { threadId, selectedTools, onToggleTool }: Props = $props();
+
+  // POST /mcp-servers/install (and the manual create form) are gated by
+  // require_admin_user. Hide the buttons for non-admins so the UI doesn't
+  // promise actions that will 403.
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
 
   // UI state
   let showInstallModal = $state(false);
@@ -198,23 +204,30 @@
       MCP Servers
     </h4>
     <div class="header-actions">
-      <Button
-        size="sm"
-        variant="ghost"
-        onclick={() => { showAddForm = !showAddForm; addError = null; }}
-        title="Manually enter server command, args, and environment variables"
-      >
-        <Icon name={showAddForm ? 'x' : 'edit'} size={14} />
-        {showAddForm ? 'Cancel' : 'Add manually'}
-      </Button>
-      <Button
-        size="sm"
-        variant="primary"
-        onclick={() => { showInstallModal = true; }}
-      >
-        <Icon name="bolt" size={14} />
-        Install Server
-      </Button>
+      {#if isAdmin}
+        <Button
+          size="sm"
+          variant="ghost"
+          onclick={() => { showAddForm = !showAddForm; addError = null; }}
+          title="Manually enter server command, args, and environment variables"
+        >
+          <Icon name={showAddForm ? 'x' : 'edit'} size={14} />
+          {showAddForm ? 'Cancel' : 'Add manually'}
+        </Button>
+        <Button
+          size="sm"
+          variant="primary"
+          onclick={() => { showInstallModal = true; }}
+        >
+          <Icon name="bolt" size={14} />
+          Install Server
+        </Button>
+      {:else}
+        <span class="admin-only-hint" title="Admin role required">
+          <Icon name="info" size={14} />
+          Admin only
+        </span>
+      {/if}
     </div>
   </div>
 
@@ -411,6 +424,17 @@
     align-items: center;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .admin-only-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 4px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
   }
 
   .panel-hint {
