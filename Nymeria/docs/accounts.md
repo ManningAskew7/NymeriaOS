@@ -1,6 +1,6 @@
 # Accounts & Authentication
 
-Nymeria is transitioning from implicit-single-user to a real multi-user model. This doc covers the account/token layer (Step 1 of the rollout). Thread-ownership enforcement, the `require_user` middleware, and bot platform mapping land in later steps — see `ROADMAP.md`.
+Nymeria is transitioning from implicit-single-user to a real multi-user model. This doc covers the **backend** account/token layer: the `AccountsRepo` data model, bootstrap flow, the `/me` and `/admin/users` HTTP surface, and the service-token pattern bots and bots use. The **frontend** UX that wraps these endpoints (sidebar avatar, account menu / switcher, Settings → Account / Users tabs, copy-once token dialog, error-toast layer) is documented separately in [`frontend-accounts.md`](frontend-accounts.md). Read that one if you're touching `nymeria-{desktop,mobile}/src/lib/components/account/`.
 
 ## Model
 
@@ -95,6 +95,20 @@ Every account operation is exposed as a REST endpoint, gated by `require_admin_u
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
 The `prefix` in token revoke paths is the first 8 hex chars of the token's sha256 (returned in the `token_hash_prefix` field of `GET /me/tokens` and the admin token list). Prefixes shorter than 4 chars are rejected; ambiguous prefixes return 400.
+
+### Frontend integration (summary)
+
+Every endpoint above has a wrapper in `nymeria-{desktop,mobile}/src/lib/services/api.svelte.ts`. The wrappers all route their non-2xx responses through a single private `_toastAndExtractError()` helper that pushes a structured toast to the global `errorsStore` queue. Status-code mapping:
+
+| Status | Toast kind | Side effect |
+|---|---|---|
+| 401 | `auth_invalid` | Auto-signs the user out and clears the active connection so SetupWizard renders. |
+| 403 | `forbidden_admin` | Toast only. |
+| 409 (last-admin) | `last_admin` | Toast only. |
+| 409 (owns threads/todos) | `resource_owned` | Toast only. |
+| Other non-2xx | `generic` | Toast only. |
+
+The toast layer (`stores/errors.svelte.ts` + `components/common/ErrorToast.svelte`) is mounted at the app root in `routes/+page.svelte` so it survives modal switching. See [`frontend-accounts.md`](frontend-accounts.md) for the full data flow, component reference, and a debugging table mapping common symptoms to source files.
 
 ### Bootstrapping the service token via HTTP
 
