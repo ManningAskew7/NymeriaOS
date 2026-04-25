@@ -17,16 +17,23 @@ from .utils import get_user_id
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Sheet cache (per spreadsheet_id+sheet_name, 5-minute TTL)
+# Sheet cache (per user_id+spreadsheet_id+sheet_name, 5-minute TTL)
 # ---------------------------------------------------------------------------
+#
+# Key format: ``f"{user_id}::{spreadsheet_id}::{sheet_name}::{gid}"``. Without
+# the user_id prefix two users querying the same sheet would share the same
+# cache slot — a stale read by user A could be served to user B even though
+# they may have authenticated with different Google accounts and have
+# different row-level permissions on the sheet.
 
 _sheet_cache: Dict[str, Tuple[float, List[str], List[List[str]]]] = {}
 _CACHE_TTL = 300  # seconds
 
 
-def _invalidate_cache(spreadsheet_id: str) -> None:
-    """Remove all cached entries for a spreadsheet after a write operation."""
-    keys_to_remove = [k for k in _sheet_cache if k.startswith(f"{spreadsheet_id}::")]
+def _invalidate_cache(user_id: str, spreadsheet_id: str) -> None:
+    """Remove this user's cached entries for a spreadsheet after a write."""
+    prefix = f"{user_id}::{spreadsheet_id}::"
+    keys_to_remove = [k for k in _sheet_cache if k.startswith(prefix)]
     for k in keys_to_remove:
         del _sheet_cache[k]
 
@@ -63,7 +70,7 @@ def _fetch_sheet(
     Returns (headers, rows) where headers is row 1 (or row 2 if row 1 looks
     like a category grouping row) and rows is everything after headers.
     """
-    cache_key = f"{spreadsheet_id}::{sheet_name}::{gid}"
+    cache_key = f"{user_id}::{spreadsheet_id}::{sheet_name}::{gid}"
     now = time.time()
 
     if cache_key in _sheet_cache:
@@ -361,7 +368,7 @@ def google_sheets_append(
         updated_range = updated.get("updatedRange", "unknown")
         updated_rows = updated.get("updatedRows", len(rows))
 
-        _invalidate_cache(spreadsheet_id.strip())
+        _invalidate_cache(user_id, spreadsheet_id.strip())
 
         return (
             f"[Success]: {updated_rows} row(s) appended to sheet.\n"
@@ -512,7 +519,7 @@ def google_sheets_update(
             },
         ).execute()
 
-        _invalidate_cache(spreadsheet_id.strip())
+        _invalidate_cache(user_id, spreadsheet_id.strip())
 
         return (
             f"[Success]: Updated row {row_num} (matched '{search_value}'):\n"
