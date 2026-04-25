@@ -5,7 +5,7 @@
  * Themes are applied instantly by updating CSS variables on the document root.
  */
 
-export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast';
+export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast' | 'platinum';
 
 export interface ThemeColors {
   // Backgrounds
@@ -182,6 +182,33 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       borderDefault: '#525252',
     },
   },
+
+  platinum: {
+    name: 'Platinum',
+    description: 'Premium monochrome with platinum silver accents',
+    colors: {
+      bgBase: '#0a0a0c',
+      bgElevated: '#141418',
+      bgElevated2: '#1e1e23',
+      bgHover: '#2a2a30',
+      bgActive: '#36363d',
+      textPrimary: '#f0f0f2',
+      textSecondary: '#a8a8b0',
+      textMuted: '#6e6e75',
+      accentPrimary: '#e0f0ff',
+      accentSecondary: '#8291a8',
+      accentHover: '#f0f8ff',
+      success: '#86efac',
+      warning: '#fcd34d',
+      error: '#f87171',
+      info: '#a5b4fc',
+      bubbleUser: '#2a2d36',
+      bubbleAi: '#141418',
+      bubbleTool: '#1c1e24',
+      borderSubtle: '#1e1e23',
+      borderDefault: '#3a3a40',
+    },
+  },
 };
 
 /**
@@ -229,6 +256,8 @@ export function applyTheme(themeName: ThemeName): void {
   const colors = theme.colors;
   const root = document.documentElement;
   const light = isLightTheme(colors.bgBase);
+
+  root.setAttribute('data-theme', themeName);
 
   // Backgrounds
   root.style.setProperty('--bg-base', colors.bgBase);

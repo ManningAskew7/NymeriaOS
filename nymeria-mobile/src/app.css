@@ -278,3 +278,13 @@ pre code {
 .animate-pulse { animation: pulse 2s ease-in-out infinite; }
 .animate-fadeIn { animation: fadeIn var(--transition-normal); }
 .animate-slideUp { animation: slideUp var(--transition-normal); }
+
+/* ============================================================
+ * PLATINUM THEME — Title override.
+ * All other accent elements inherit #e0f0ff via --accent-primary.
+ * ============================================================ */
+
+html[data-theme="platinum"] .sidebar-header .logo {
+  color: #e0f0ff;
+  letter-spacing: 0.02em;
+}
