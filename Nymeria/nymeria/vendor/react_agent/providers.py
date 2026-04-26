@@ -20,8 +20,8 @@ _LOCAL_LLM_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 _CLIPROXY_STREAMING_PORTS = {8317, 8318}
 
 
-def _should_disable_streaming_for_local_base_url(base_url: str) -> bool:
-    """Return True for known local inference URLs with fragile tool streaming."""
+def _looks_like_cliproxy_base_url(base_url: str) -> bool:
+    """Return True for CLIProxy hostnames or the local ports used by CLIProxy."""
     parse_target = base_url.strip()
     if "://" not in parse_target:
         parse_target = f"http://{parse_target}"
@@ -36,15 +36,49 @@ def _should_disable_streaming_for_local_base_url(base_url: str) -> bool:
         port = parsed.port
     except ValueError:
         port = None
+    if not host:
+        return False
+    return "cli-proxy" in host or "cliproxy" in host or port in _CLIPROXY_STREAMING_PORTS
 
+
+def _normalize_openai_base_url(base_url: str) -> str:
+    """Normalize OpenAI-compatible CLIProxy URLs to include the required /v1 path."""
+    clean = base_url.strip().rstrip("/")
+    if not clean or not _looks_like_cliproxy_base_url(clean):
+        return clean
+
+    parse_target = clean
+    if "://" not in parse_target:
+        parse_target = f"http://{parse_target}"
+
+    try:
+        parsed = urlparse(parse_target)
+    except ValueError:
+        return clean
+
+    if (parsed.path or "").rstrip("/") == "/v1":
+        return clean
+    return f"{clean}/v1"
+
+
+def _should_disable_streaming_for_local_base_url(base_url: str) -> bool:
+    """Return True for known local inference URLs with fragile tool streaming."""
+    parse_target = base_url.strip()
+    if "://" not in parse_target:
+        parse_target = f"http://{parse_target}"
+
+    try:
+        parsed = urlparse(parse_target)
+    except ValueError:
+        return False
+
+    host = (parsed.hostname or "").lower()
     if not host:
         return False
 
     # CLIProxy sidecars are OpenAI-compatible proxy servers, not local inference
     # engines, and we rely on streaming to surface reasoning deltas.
-    if "cli-proxy" in host or "cliproxy" in host:
-        return False
-    if port in _CLIPROXY_STREAMING_PORTS:
+    if _looks_like_cliproxy_base_url(base_url):
         return False
 
     return host in _LOCAL_LLM_HOSTS
@@ -292,7 +326,14 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["timeout"] = config.request_timeout
 
     if config.base_url:
-        kwargs["base_url"] = config.base_url
+        base_url = _normalize_openai_base_url(config.base_url)
+        kwargs["base_url"] = base_url
+        if base_url != config.base_url.strip().rstrip("/"):
+            logger.info(
+                "[LLM] Normalized OpenAI CLIProxy base_url from %s to %s",
+                config.base_url,
+                base_url,
+            )
 
         # Local LLM servers (llama.cpp, KoboldCpp, LM Studio, Ollama) have
         # unreliable tool-call streaming — the OpenAI streaming protocol's
@@ -300,10 +341,10 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         # (see OpenClaw #5769, llama.cpp #19905/#20260/#20837).
         # Disable streaming so tool_calls are parsed from the full response
         # in one shot. Non-local providers keep streaming for the better UX.
-        if _should_disable_streaming_for_local_base_url(config.base_url):
+        if _should_disable_streaming_for_local_base_url(base_url):
             kwargs["streaming"] = False
             logger.info(
-                f"[LLM] Local base_url detected ({config.base_url}); "
+                f"[LLM] Local base_url detected ({base_url}); "
                 f"streaming=False for reliable tool-call parsing"
             )
 

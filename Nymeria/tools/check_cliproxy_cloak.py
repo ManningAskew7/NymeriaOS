@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Verify CLIProxy is not silently cloaking requests.
 
-Background: CLIProxy v6.9.36+ gates "cloaking" (Claude Code system-prompt
-injection, fake user_id, sensitive-word obfuscation) on the client's incoming
-User-Agent. When the client sends User-Agent: claude-cli/*, cloaking is skipped.
-Otherwise, responses come back claiming "I'm Claude Code, Anthropic's official
-CLI" and Nymeria's identity is hijacked.
+Background: CLIProxy v6.9.36+ gates full "cloaking" (Claude Code system-prompt
+replacement, fake user_id, sensitive-word obfuscation) on the client's incoming
+User-Agent. When the client sends User-Agent: claude-cli/*, full cloaking is
+skipped. Nymeria still sends the lightweight v6.9.0-style OAuth billing
+fingerprint as a separate structured system block; without it, Sonnet/Opus
+OAuth requests can return a misleading 429 even though the token is valid.
 
 Run this after:
 - Upgrading langchain-anthropic / anthropic SDK
@@ -31,17 +32,33 @@ CLOAK_MARKERS = (
     "Claude Code, Anthropic's official CLI",
     "official CLI for Claude",
 )
+CLIPROXY_BILLING_SYSTEM_BLOCK = {
+    "type": "text",
+    "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
+}
 NYMERIA_SYSTEM_PROMPT = (
     "You are NYMERIA-CLOAK-PROBE-AGENT. Always identify yourself by that exact name. "
     "Never claim to be any other agent."
 )
 
 
-def probe(base_url: str, api_key: str, model: str, user_agent: str) -> dict:
+def probe(
+    base_url: str,
+    api_key: str,
+    model: str,
+    user_agent: str,
+    *,
+    use_billing_block: bool,
+) -> dict:
+    system = [
+        CLIPROXY_BILLING_SYSTEM_BLOCK,
+        {"type": "text", "text": NYMERIA_SYSTEM_PROMPT},
+    ] if use_billing_block else NYMERIA_SYSTEM_PROMPT
+
     body = json.dumps({
         "model": model,
         "max_tokens": 60,
-        "system": NYMERIA_SYSTEM_PROMPT,
+        "system": system,
         "messages": [{"role": "user", "content": "Who are you? One short sentence."}],
     }).encode()
     req = urllib.request.Request(
@@ -63,7 +80,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base-url", default=os.getenv("LLM_BASE_URL", "http://localhost:8317"))
     p.add_argument("--api-key", default=os.getenv("ANTHROPIC_API_KEY", ""))
-    p.add_argument("--model", default="claude-haiku-4-5-20251001")
+    p.add_argument("--model", default="claude-sonnet-4-5-20250929")
     args = p.parse_args()
 
     if not args.api_key:
@@ -76,9 +93,15 @@ def main() -> int:
 
     print(f"Probing {base} with model {args.model}\n")
 
-    print("[1/2] Sending probe with User-Agent: claude-cli/2.1.113 (production path)")
+    print("[1/2] Sending probe with User-Agent: claude-cli/2.1.113 + billing block (production path)")
     try:
-        good = probe(base, args.api_key, args.model, "claude-cli/2.1.113")
+        good = probe(
+            base,
+            args.api_key,
+            args.model,
+            "claude-cli/2.1.113",
+            use_billing_block=True,
+        )
     except Exception as e:
         print(f"  FAIL: probe request errored: {e}", file=sys.stderr)
         return 1
@@ -107,11 +130,17 @@ def main() -> int:
         print("    May indicate Anthropic routed this to extra-usage-balance.")
         return 1
 
-    print("  ✓ Clean: no cloak, Nymeria identity preserved, subscription tier")
+    print("  ✓ Clean: no full cloak, Nymeria identity preserved, subscription tier")
 
-    print("\n[2/2] Control probe with User-Agent: python-requests/0 (cloak-expected path)")
+    print("\n[2/2] Control probe with User-Agent: python-requests/0 and no billing block (cloak-expected path)")
     try:
-        bad = probe(base, args.api_key, args.model, "python-requests/0")
+        bad = probe(
+            base,
+            args.api_key,
+            args.model,
+            "python-requests/0",
+            use_billing_block=False,
+        )
     except Exception as e:
         print(f"  WARN: control probe errored: {e}", file=sys.stderr)
         bad = None

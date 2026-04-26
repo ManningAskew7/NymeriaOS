@@ -33,8 +33,8 @@
   let editingName = $state('');
 
   // Display provider: splits "anthropic" into proxy vs direct based on base_url,
-  // and "openai" into hosted vs local based on whether base_url points at a local host.
-  type DisplayProvider = 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'local_openai';
+  // and "openai" into hosted, custom proxy, or local based on base_url.
+  type DisplayProvider = 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openai_custom' | 'openrouter' | 'local_openai';
 
   // Hostnames that indicate a local OpenAI-compatible inference server
   // (llama.cpp llama-server, LM Studio, Ollama, etc.). host.docker.internal is
@@ -46,16 +46,36 @@
   // picks Anthropic (Subscription) but llmBaseUrl is empty (e.g. they were
   // previously on Direct API which stores base_url as "").
   const DEFAULT_CLIPROXY_BASE_URL = 'http://cli-proxy-api:8317';
+  const DEFAULT_OPENAI_CLIPROXY_BASE_URL = 'http://cli-proxy-api-latest:8317/v1';
+  const MANAGED_BASE_URLS = [
+    DEFAULT_CLIPROXY_BASE_URL,
+    DEFAULT_OPENAI_CLIPROXY_BASE_URL,
+    DEFAULT_LOCAL_BASE_URL,
+  ];
 
   function isLocalBaseUrl(baseUrl: string | null | undefined): boolean {
     if (!baseUrl) return false;
     return LOCAL_HOSTS.some(h => baseUrl.includes(h));
   }
 
+  function normalizeBaseUrl(baseUrl: string | null | undefined): string {
+    return (baseUrl || '').trim().replace(/\/+$/, '');
+  }
+
+  function isManagedBaseUrl(baseUrl: string | null | undefined): boolean {
+    const normalized = normalizeBaseUrl(baseUrl);
+    return !!normalized && MANAGED_BASE_URLS.some(url => normalizeBaseUrl(url) === normalized);
+  }
+
+  function shouldReplaceBaseUrlForProvider(): boolean {
+    return !llmBaseUrl || isManagedBaseUrl(llmBaseUrl);
+  }
+
   function toDisplayProvider(provider: LLMProvider, baseUrl: string): DisplayProvider {
     if (provider === 'anthropic' && !baseUrl) return 'anthropic_direct';
     if (provider === 'anthropic') return 'anthropic_proxy';
     if (provider === 'openai' && isLocalBaseUrl(baseUrl)) return 'local_openai';
+    if (provider === 'openai' && baseUrl) return 'openai_custom';
     return provider as DisplayProvider;
   }
 
@@ -63,6 +83,8 @@
     if (dp === 'anthropic_proxy') return { provider: 'anthropic', clearBaseUrl: false };
     if (dp === 'anthropic_direct') return { provider: 'anthropic', clearBaseUrl: true };
     if (dp === 'local_openai') return { provider: 'openai', clearBaseUrl: false };
+    if (dp === 'openai_custom') return { provider: 'openai', clearBaseUrl: false };
+    if (dp === 'openai') return { provider: 'openai', clearBaseUrl: true };
     return { provider: dp as LLMProvider, clearBaseUrl: false };
   }
 
@@ -139,12 +161,12 @@
   }
 
   // Sync llmProvider from displayProvider and fetch models
-  // (skip the model fetch for local_openai — we don't want to call the real
-  // OpenAI API, and the user enters the local model alias as free text.)
+  // (skip the model fetch for local/custom OpenAI — those endpoints may not
+  // be hosted OpenAI, and the user can type the model ID directly.)
   $effect(() => {
     const { provider } = fromDisplayProvider(displayProvider);
     llmProvider = provider;
-    if (displayProvider === 'local_openai') {
+    if (displayProvider === 'local_openai' || displayProvider === 'openai_custom') {
       availableModels = [];
       availableModelsProvider = '';
       return;
@@ -155,17 +177,37 @@
   // Auto-populate the base URL field when the user picks Local LLM,
   // unless they already have a local URL in there.
   $effect(() => {
-    if (displayProvider === 'local_openai' && !isLocalBaseUrl(llmBaseUrl)) {
+    if (displayProvider === 'local_openai' && (!isLocalBaseUrl(llmBaseUrl) || isManagedBaseUrl(llmBaseUrl))) {
       llmBaseUrl = DEFAULT_LOCAL_BASE_URL;
     }
   });
 
-  // Auto-populate the base URL field when the user picks Anthropic (Subscription)
-  // and the field is empty. Without this, switching from Direct API → Subscription
-  // saves an empty base_url, which gets interpreted as Direct on reload.
+  // Auto-populate the base URL field when the user picks OpenAI custom.
+  // This is the Codex OAuth path through CLIProxy, which requires /v1.
   $effect(() => {
-    if (displayProvider === 'anthropic_proxy' && !llmBaseUrl) {
+    if (displayProvider === 'openai_custom' && shouldReplaceBaseUrlForProvider()) {
+      llmBaseUrl = DEFAULT_OPENAI_CLIPROXY_BASE_URL;
+    }
+  });
+
+  // Auto-populate the base URL field when the user picks Anthropic (Subscription)
+  // and the field is empty or contains another managed default. Without this,
+  // switching between Direct/API/OpenAI-custom can save the wrong URL shape.
+  $effect(() => {
+    if (displayProvider === 'anthropic_proxy' && shouldReplaceBaseUrlForProvider()) {
       llmBaseUrl = DEFAULT_CLIPROXY_BASE_URL;
+    }
+  });
+
+  // Hosted/direct providers should not retain one of our managed proxy URLs.
+  // Custom user-entered URLs are preserved until save, where the provider
+  // mapping decides whether to clear them.
+  $effect(() => {
+    if (
+      (displayProvider === 'openai' || displayProvider === 'anthropic_direct' || displayProvider === 'openrouter')
+      && isManagedBaseUrl(llmBaseUrl)
+    ) {
+      llmBaseUrl = '';
     }
   });
 
@@ -350,7 +392,11 @@
 
     try {
       const { provider: actualProvider, clearBaseUrl } = fromDisplayProvider(displayProvider);
-      const effectiveBaseUrl = clearBaseUrl ? '' : llmBaseUrl;
+      const effectiveBaseUrl = clearBaseUrl
+        ? ''
+        : displayProvider === 'openai_custom'
+          ? (llmBaseUrl || DEFAULT_OPENAI_CLIPROXY_BASE_URL)
+          : llmBaseUrl;
 
       const result = await api.updateServerSettings({
         llm_provider: actualProvider,
@@ -699,6 +745,7 @@
             <option value="anthropic_proxy">Anthropic (Subscription)</option>
             <option value="anthropic_direct">Anthropic (Direct API)</option>
             <option value="openai">OpenAI</option>
+            <option value="openai_custom">OpenAI (Custom base URL)</option>
             <option value="openrouter">OpenRouter</option>
             <option value="local_openai">Local LLM (OpenAI-compatible)</option>
           </select>
@@ -709,6 +756,8 @@
               Direct Anthropic API — pay-per-token (requires ANTHROPIC_API_KEY)
             {:else if displayProvider === 'local_openai'}
               Local OpenAI-compatible server (e.g. llama.cpp llama-server, LM Studio). Edit the API Base URL under Advanced Settings.
+            {:else if displayProvider === 'openai_custom'}
+              OpenAI-compatible endpoint such as CLIProxy Codex OAuth. Edit the API Base URL under Advanced Settings.
             {:else}
               LLM provider (requires API key in server .env)
             {/if}
@@ -969,11 +1018,11 @@
                 <input
                   id="llm-base-url"
                   type="text"
-                  placeholder="Default (provider's standard URL)"
+                  placeholder={displayProvider === 'openai_custom' ? DEFAULT_OPENAI_CLIPROXY_BASE_URL : "Default (provider's standard URL)"}
                   bind:value={llmBaseUrl}
                 />
                 <p class="hint">
-                  Override the API endpoint (e.g., <code>http://localhost:8317/v1</code> for a local proxy).
+                  Override the API endpoint (e.g., <code>http://cli-proxy-api-latest:8317/v1</code> for OpenAI/Codex CLIProxy).
                   Leave empty to use the provider's default URL.
                 </p>
               </div>

@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
+    _normalize_openai_base_url,
     _should_disable_streaming_for_local_base_url,
     create_llm,
 )
@@ -107,11 +108,31 @@ def test_openai_chat_completions_mode_stays_on_messages_payload():
 def test_local_cliproxy_sidecar_does_not_disable_streaming():
     llm = create_llm(
         _openai_config(
-            base_url="http://localhost:8318/v1",
+            base_url="http://localhost:8318",
         )
     )
 
     assert "streaming" not in llm.model_fields_set
+    assert str(llm.openai_api_base).rstrip("/") == "http://localhost:8318/v1"
+
+
+def test_openai_cliproxy_base_url_normalizes_to_v1():
+    assert (
+        _normalize_openai_base_url("http://cli-proxy-api:8317")
+        == "http://cli-proxy-api:8317/v1"
+    )
+    assert (
+        _normalize_openai_base_url("http://cli-proxy-api-latest:8317/v1")
+        == "http://cli-proxy-api-latest:8317/v1"
+    )
+    assert (
+        _normalize_openai_base_url("localhost:8318")
+        == "localhost:8318/v1"
+    )
+    assert (
+        _normalize_openai_base_url("http://localhost:8080")
+        == "http://localhost:8080"
+    )
 
 
 def test_local_llm_base_url_still_disables_streaming():

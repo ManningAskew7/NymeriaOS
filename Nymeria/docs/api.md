@@ -595,6 +595,8 @@ Authorization: Bearer <token>
 
 **Response:** includes LLM settings plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
+Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user.
+
 ### LLM Runtime Diagnostics
 
 ```http
@@ -652,7 +654,7 @@ Authorization: Bearer <token>
 }
 ```
 
-**Note:** Changes are written to `.env`/`.env.docker` and hot-reloaded immediately.
+**Note:** This endpoint is admin-only. Changes are written to `.env`/`.env.docker`, hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override.
 
 ---
 
