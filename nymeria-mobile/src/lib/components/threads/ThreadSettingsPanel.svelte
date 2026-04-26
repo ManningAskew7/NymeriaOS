@@ -75,9 +75,9 @@
   }
 
   // Effective tool count
-  const effectiveToolCount = $derived(() => {
-    const coreTools = unifiedToolsStore.tools.filter(t => t.toolType === 'builtin');
-    const activeCore = coreTools.filter(t => !disabledTools.has(t.name)).length;
+  const effectiveToolCount = $derived.by(() => {
+    const coreNames = defaultToolsStore.defaultToolNames;
+    const activeCore = coreNames.filter(n => !disabledTools.has(n)).length;
     return activeCore + enabledTools.size;
   });
 
@@ -155,12 +155,15 @@
   }
 
   // Filtered core tools
-  const filteredTools = $derived(() => {
-    let allTools = unifiedToolsStore.tools;
-    if (defaultToolsStore.loaded && defaultToolsStore.defaultToolNames.length > 0) {
-      const coreSet = new Set(defaultToolsStore.defaultToolNames);
-      allTools = allTools.filter(t => coreSet.has(t.name));
-    }
+  const toolsLoadError = $derived(unifiedToolsStore.error || defaultToolsStore.error);
+  const toolsReady = $derived(unifiedToolsStore.loaded && defaultToolsStore.loaded);
+  const toolsLoading = $derived(unifiedToolsStore.loading || defaultToolsStore.loading || !toolsReady);
+
+  const filteredTools = $derived.by(() => {
+    if (!defaultToolsStore.loaded) return [];
+
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name));
     if (!toolSearch.trim()) return allTools;
     const q = toolSearch.toLowerCase();
     return allTools.filter(
@@ -311,7 +314,7 @@
   }
 
   function checkToolCountAndSave() {
-    const toolCount = effectiveToolCount();
+    const toolCount = effectiveToolCount;
     const callableCount = defaultToolsStore.callableThreadCount;
     if (toolCount + callableCount > 25 && !showToolWarning) {
       showToolWarning = true;
@@ -708,26 +711,34 @@
           />
         </div>
 
-        {#if unifiedToolsStore.loading}
+        {#if toolsLoadError}
+          <div class="loading-state">{toolsLoadError}</div>
+        {:else if toolsLoading}
           <div class="loading-state">Loading tools...</div>
         {:else}
           <div class="tools-list">
-            {#each filteredTools() as tool (tool.id)}
-              <div class="tool-row" class:tool-disabled={disabledTools.has(tool.name)}>
-                <div class="tool-info">
-                  <span class="tool-name">{tool.name}</span>
-                  <span class="tool-desc">{tool.description}</span>
-                </div>
-                <button
-                  class="toggle-btn"
-                  class:off={disabledTools.has(tool.name)}
-                  onclick={() => toggleTool(tool.name)}
-                  type="button"
-                >
-                  <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                </button>
+            {#if filteredTools.length === 0}
+              <div class="loading-state">
+                {toolSearch.trim() ? 'No core tools match your search.' : 'No core tools enabled by default.'}
               </div>
-            {/each}
+            {:else}
+              {#each filteredTools as tool (tool.id)}
+                <div class="tool-row" class:tool-disabled={disabledTools.has(tool.name)}>
+                  <div class="tool-info">
+                    <span class="tool-name">{tool.name}</span>
+                    <span class="tool-desc">{tool.description}</span>
+                  </div>
+                  <button
+                    class="toggle-btn"
+                    class:off={disabledTools.has(tool.name)}
+                    onclick={() => toggleTool(tool.name)}
+                    type="button"
+                  >
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                  </button>
+                </div>
+              {/each}
+            {/if}
           </div>
 
           {#if optionalTools().length > 0}
@@ -856,7 +867,7 @@
 
   {#if showToolWarning}
     <ToolCountWarning
-      toolCount={effectiveToolCount()}
+      toolCount={effectiveToolCount}
       callableCount={defaultToolsStore.callableThreadCount}
       onContinue={() => { showToolWarning = false; handleSave(); }}
       onGoBack={() => { showToolWarning = false; }}

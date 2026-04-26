@@ -260,7 +260,7 @@
   let showToolWarning = $state(false);
 
   // Effective tool count for this thread (default tools minus disabled, plus optional enabled)
-  const effectiveToolCount = $derived(() => {
+  const effectiveToolCount = $derived.by(() => {
     const coreNames = defaultToolsStore.defaultToolNames;
     const activeCore = coreNames.filter(n => !disabledTools.has(n)).length;
     return activeCore + enabledTools.size;
@@ -338,13 +338,15 @@
     threadDisabledSkills = next;
   }
 
-  const filteredTools = $derived(() => {
-    let allTools = unifiedToolsStore.tools;
-    // Show only tools in the user's current default set (core tools for this thread)
-    if (defaultToolsStore.loaded && defaultToolsStore.defaultToolNames.length > 0) {
-      const coreSet = new Set(defaultToolsStore.defaultToolNames);
-      allTools = allTools.filter(t => coreSet.has(t.name));
-    }
+  const toolsLoadError = $derived(unifiedToolsStore.error || defaultToolsStore.error);
+  const toolsReady = $derived(unifiedToolsStore.loaded && defaultToolsStore.loaded);
+  const toolsLoading = $derived(unifiedToolsStore.loading || defaultToolsStore.loading || !toolsReady);
+
+  const filteredTools = $derived.by(() => {
+    if (!defaultToolsStore.loaded) return [];
+
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name));
     if (!toolSearch.trim()) return allTools;
     const q = toolSearch.toLowerCase();
     return allTools.filter(
@@ -446,7 +448,7 @@
   }
 
   function checkToolCountAndSave() {
-    const toolCount = effectiveToolCount();
+    const toolCount = effectiveToolCount;
     const callableCount = defaultToolsStore.callableThreadCount;
     if (toolCount + callableCount > 25 && !showToolWarning) {
       showToolWarning = true;
@@ -1041,51 +1043,21 @@
             />
           </div>
 
-          {#if unifiedToolsStore.loading}
+          {#if toolsLoadError}
+            <div class="tools-loading">{toolsLoadError}</div>
+          {:else if toolsLoading}
             <div class="tools-loading">Loading tools...</div>
           {:else}
             <div class="tools-list">
-              {#each filteredTools() as tool (tool.id)}
-                <div
-                  class="tool-row"
-                  class:disabled={disabledTools.has(tool.name)}
-                >
-                  <div class="tool-info">
-                    <span class="tool-name">{tool.name}</span>
-                    <span class="tool-desc">{tool.description}</span>
-                  </div>
-                  <button
-                    class="tool-toggle"
-                    class:off={disabledTools.has(tool.name)}
-                    onclick={() => toggleTool(tool.name)}
-                    type="button"
-                    title={disabledTools.has(tool.name) ? 'Enable tool' : 'Disable tool'}
-                  >
-                    <span class="toggle-track">
-                      <span class="toggle-thumb"></span>
-                    </span>
-                  </button>
+              {#if filteredTools.length === 0}
+                <div class="tools-loading">
+                  {toolSearch.trim() ? 'No core tools match your search.' : 'No core tools enabled by default.'}
                 </div>
-              {/each}
-            </div>
-          {/if}
-
-          {#if optionalTools().length > 0}
-            <div class="optional-tools-section">
-              <span class="field-label">
-                Optional Tools
-                {#if enabledToolCount > 0}
-                  <span class="tab-badge">{enabledToolCount}</span>
-                {/if}
-              </span>
-              <p class="field-hint">
-                These tools are not in your core set. Enable them for this thread only.
-              </p>
-              <div class="tools-list">
-                {#each optionalTools() as tool (tool.name)}
+              {:else}
+                {#each filteredTools as tool (tool.id)}
                   <div
                     class="tool-row"
-                    class:optional-enabled={enabledTools.has(tool.name)}
+                    class:disabled={disabledTools.has(tool.name)}
                   >
                     <div class="tool-info">
                       <span class="tool-name">{tool.name}</span>
@@ -1093,10 +1065,10 @@
                     </div>
                     <button
                       class="tool-toggle"
-                      class:off={!enabledTools.has(tool.name)}
-                      onclick={() => toggleOptionalTool(tool.name)}
+                      class:off={disabledTools.has(tool.name)}
+                      onclick={() => toggleTool(tool.name)}
                       type="button"
-                      title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
+                      title={disabledTools.has(tool.name) ? 'Enable tool' : 'Disable tool'}
                     >
                       <span class="toggle-track">
                         <span class="toggle-thumb"></span>
@@ -1104,87 +1076,125 @@
                     </button>
                   </div>
                 {/each}
-              </div>
+              {/if}
             </div>
-          {/if}
 
-          <!-- MCP Servers subsection -->
-          {#if mcpServersForThread.length > 0}
-            <div class="optional-tools-section">
-              <span class="field-label">
-                <Icon name="terminal" size={14} />
-                MCP Servers
-              </span>
-              <p class="field-hint">
-                Tools from installed MCP servers. Enable them for this thread,
-                or tick them in <strong>Settings → Tools</strong> to make them
-                core across every thread. Add, enable, or remove servers from
-                that same panel.
-              </p>
-
-              {#each mcpServersForThread as server (server.id)}
-                <div class="mcp-server-group" class:mcp-server-group-dormant={!server.enabled}>
-                  <div class="mcp-server-header-row">
-                    <button
-                      class="mcp-server-header"
-                      type="button"
-                      onclick={() => expandedMcpServer = expandedMcpServer === server.id ? null : server.id}
-                    >
-                      <span
-                        class="mcp-status-dot"
-                        class:mcp-status-running={server.enabled && server.discoveredCount > 0}
-                        class:mcp-status-warning={server.enabled && server.discoveredCount === 0}
-                        class:mcp-status-stopped={!server.enabled}
-                        title={server.enabled ? (server.discoveredCount > 0 ? 'Running' : 'Running, no tools discovered') : 'Stopped — enable the server in Settings → Tools to make its tools available'}
-                      ></span>
-                      <span class="mcp-server-name">{server.name}</span>
-                      <span class="mcp-tool-count">
-                        {#if server.tools.length === 0}
-                          all in defaults
-                        {:else}
-                          {server.tools.filter(t => enabledTools.has(t.mcpName)).length}/{server.tools.length}
-                        {/if}
-                      </span>
-                    </button>
-                  </div>
-                  {#if expandedMcpServer === server.id}
-                    <div class="mcp-tool-list">
-                      {#if server.tools.length === 0}
-                        <div class="mcp-empty-tools">
-                          All tools from this server are already in your default set.
-                          Edit them in the Core Tools section above.
-                        </div>
-                      {:else}
-                        {#each server.tools as tool (tool.mcpName)}
-                          <div
-                            class="tool-row"
-                            class:optional-enabled={enabledTools.has(tool.mcpName)}
-                            class:tool-row-dormant={!server.enabled}
-                            title={!server.enabled ? 'MCP server is not running — enable it in Settings → Tools to make this tool available' : ''}
-                          >
-                            <div class="tool-info">
-                              <span class="tool-name">{tool.shortName}</span>
-                              <span class="tool-desc">{tool.description}</span>
-                            </div>
-                            <button
-                              class="tool-toggle"
-                              class:off={!enabledTools.has(tool.mcpName)}
-                              onclick={() => toggleOptionalTool(tool.mcpName)}
-                              type="button"
-                              title={enabledTools.has(tool.mcpName) ? 'Disable for this thread' : 'Enable for this thread'}
-                            >
-                              <span class="toggle-track">
-                                <span class="toggle-thumb"></span>
-                              </span>
-                            </button>
-                          </div>
-                        {/each}
-                      {/if}
-                    </div>
+            {#if optionalTools().length > 0}
+              <div class="optional-tools-section">
+                <span class="field-label">
+                  Optional Tools
+                  {#if enabledToolCount > 0}
+                    <span class="tab-badge">{enabledToolCount}</span>
                   {/if}
+                </span>
+                <p class="field-hint">
+                  These tools are not in your core set. Enable them for this thread only.
+                </p>
+                <div class="tools-list">
+                  {#each optionalTools() as tool (tool.name)}
+                    <div
+                      class="tool-row"
+                      class:optional-enabled={enabledTools.has(tool.name)}
+                    >
+                      <div class="tool-info">
+                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-desc">{tool.description}</span>
+                      </div>
+                      <button
+                        class="tool-toggle"
+                        class:off={!enabledTools.has(tool.name)}
+                        onclick={() => toggleOptionalTool(tool.name)}
+                        type="button"
+                        title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
+                      >
+                        <span class="toggle-track">
+                          <span class="toggle-thumb"></span>
+                        </span>
+                      </button>
+                    </div>
+                  {/each}
                 </div>
-              {/each}
-            </div>
+              </div>
+            {/if}
+
+            <!-- MCP Servers subsection -->
+            {#if mcpServersForThread.length > 0}
+              <div class="optional-tools-section">
+                <span class="field-label">
+                  <Icon name="terminal" size={14} />
+                  MCP Servers
+                </span>
+                <p class="field-hint">
+                  Tools from installed MCP servers. Enable them for this thread,
+                  or tick them in <strong>Settings → Tools</strong> to make them
+                  core across every thread. Add, enable, or remove servers from
+                  that same panel.
+                </p>
+
+                {#each mcpServersForThread as server (server.id)}
+                  <div class="mcp-server-group" class:mcp-server-group-dormant={!server.enabled}>
+                    <div class="mcp-server-header-row">
+                      <button
+                        class="mcp-server-header"
+                        type="button"
+                        onclick={() => expandedMcpServer = expandedMcpServer === server.id ? null : server.id}
+                      >
+                        <span
+                          class="mcp-status-dot"
+                          class:mcp-status-running={server.enabled && server.discoveredCount > 0}
+                          class:mcp-status-warning={server.enabled && server.discoveredCount === 0}
+                          class:mcp-status-stopped={!server.enabled}
+                          title={server.enabled ? (server.discoveredCount > 0 ? 'Running' : 'Running, no tools discovered') : 'Stopped — enable the server in Settings → Tools to make this tool available'}
+                        ></span>
+                        <span class="mcp-server-name">{server.name}</span>
+                        <span class="mcp-tool-count">
+                          {#if server.tools.length === 0}
+                            all in defaults
+                          {:else}
+                            {server.tools.filter(t => enabledTools.has(t.mcpName)).length}/{server.tools.length}
+                          {/if}
+                        </span>
+                      </button>
+                    </div>
+                    {#if expandedMcpServer === server.id}
+                      <div class="mcp-tool-list">
+                        {#if server.tools.length === 0}
+                          <div class="mcp-empty-tools">
+                            All tools from this server are already in your default set.
+                            Edit them in the Core Tools section above.
+                          </div>
+                        {:else}
+                          {#each server.tools as tool (tool.mcpName)}
+                            <div
+                              class="tool-row"
+                              class:optional-enabled={enabledTools.has(tool.mcpName)}
+                              class:tool-row-dormant={!server.enabled}
+                              title={!server.enabled ? 'MCP server is not running — enable it in Settings → Tools to make this tool available' : ''}
+                            >
+                              <div class="tool-info">
+                                <span class="tool-name">{tool.shortName}</span>
+                                <span class="tool-desc">{tool.description}</span>
+                              </div>
+                              <button
+                                class="tool-toggle"
+                                class:off={!enabledTools.has(tool.mcpName)}
+                                onclick={() => toggleOptionalTool(tool.mcpName)}
+                                type="button"
+                                title={enabledTools.has(tool.mcpName) ? 'Disable for this thread' : 'Enable for this thread'}
+                              >
+                                <span class="toggle-track">
+                                  <span class="toggle-thumb"></span>
+                                </span>
+                              </button>
+                            </div>
+                          {/each}
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {/if}
         </div>
 
@@ -1343,7 +1353,7 @@
 
 {#if showToolWarning}
   <ToolCountWarning
-    toolCount={effectiveToolCount()}
+    toolCount={effectiveToolCount}
     callableCount={defaultToolsStore.callableThreadCount}
     onContinue={() => { showToolWarning = false; handleSave(); }}
     onGoBack={() => { showToolWarning = false; }}

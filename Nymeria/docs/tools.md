@@ -1045,8 +1045,11 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
 2. Per-thread config has an `enabled_tools` list (tool names)
-3. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
-4. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
+3. The profile-level `default_thread_tools` list is the default-bound core set for each thread; an empty list means no core tools
+4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
+5. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
+
+The desktop/mobile Thread Settings tools tab mirrors this split: the first list only shows tools in `default_thread_tools`, and the optional/MCP sections show tools outside that default set.
 
 **Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains tools like `claude_code`, `sticky_note`, `hello_test`, `reload_all`, and `self_modify_rollback`.
 
