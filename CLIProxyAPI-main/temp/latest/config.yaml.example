@@ -1,0 +1,23 @@
+host: "0.0.0.0"
+port: 8317
+
+auth-dir: "/root/.cli-proxy-api"
+
+api-keys:
+  # Replace these with your own secret strings. Each value is an opaque
+  # gatekeeper key for clients (e.g. Nymeria) to authenticate to CLIProxy.
+  # They are NOT upstream provider keys — provider auth happens via the
+  # OAuth tokens stored in ./auths/.
+  - "cpx-<sidecar-key-for-codex-or-per-thread-overrides>"
+  - "cpx-<claude-oauth-key-for-the-anthropic-api-key-env-var>"
+
+debug: true
+commercial-mode: false
+logging-to-file: false
+
+request-retry: 1
+
+# Note: do NOT set claude-header-defaults here. v6.9.36's cloak gate is the
+# *client's* incoming User-Agent (set by Nymeria's `_create_anthropic_llm()`),
+# not this config value. Setting it here only changes the outbound UA to
+# Anthropic, which we leave to the binary's default (`claude-cli/2.1.44 (...)`).
