@@ -238,6 +238,17 @@ The reload loop checks `abort_event.is_set()` before each iteration (`:4134`). I
 
 `_turn_reload_count` is cleaned up in `finally` at `:4288`.
 
+At the start of every new `chat()`, `stream()`, and `astream()` turn, Nymeria
+also discards any pre-existing pending reload for that thread before resetting
+the per-turn counter. A pending reload is only valid inside the top-level turn
+that created it; carrying it into the next user message would attach a stale
+Tool Binding event to unrelated output.
+
+The legacy sync `stream()` path is used by callable thread execution. It does
+not run the in-turn reload loop; if a tool enable queues a reload there, the
+enablement is still persisted to thread config for the next turn, and the
+in-memory pending flag is cleared when the sync stream exits.
+
 ### Dangling Tool Calls
 
 The `finally` block at `:4280` patches dangling tool calls for **both** invocations, since `graph` was reassigned to `reload_graph` (`:4192`).

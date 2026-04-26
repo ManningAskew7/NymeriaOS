@@ -728,6 +728,54 @@ class NymeriaAgent:
             f"model={self.settings.llm_model}, tools={self.tool_registry.list_tools()}"
         )
 
+    def _prepare_tool_reload_state_for_turn(self, thread_id: str, caller: str) -> None:
+        """Reset per-turn reload counters and discard stale reload requests.
+
+        A pending reload should only be consumed by the same top-level turn that
+        created it. If one is present before a new chat/stream invocation starts,
+        it leaked from an older path and must not be applied to the new user
+        message.
+        """
+        pending = getattr(self, "_pending_tool_reload", None)
+        if isinstance(pending, dict):
+            stale = pending.pop(thread_id, None)
+            if stale:
+                logger.warning(
+                    "%s: discarded stale pending tool reload before new %s turn: %s",
+                    thread_id,
+                    caller,
+                    stale.get("new_tools", []),
+                )
+
+        turn_counts = getattr(self, "_turn_reload_count", None)
+        if isinstance(turn_counts, dict):
+            turn_counts[thread_id] = 0
+
+    def _clear_tool_reload_state_after_stream(self, thread_id: str) -> None:
+        """Drop reload state after the legacy sync stream path finishes.
+
+        ``stream()`` is used by callable thread execution and does not run the
+        in-turn reload loop that ``chat()`` and ``astream()`` run. If a tool
+        enable queues a reload there, the enablement is already persisted to the
+        thread config for the next turn; leaving the in-memory pending flag set
+        would cause the next unrelated ``astream()``/``chat()`` turn to consume
+        it and display a bogus Tool Binding event.
+        """
+        turn_counts = getattr(self, "_turn_reload_count", None)
+        if isinstance(turn_counts, dict):
+            turn_counts.pop(thread_id, None)
+
+        pending = getattr(self, "_pending_tool_reload", None)
+        if isinstance(pending, dict):
+            stale = pending.pop(thread_id, None)
+            if stale:
+                logger.warning(
+                    "%s: cleared unconsumed sync stream tool reload; "
+                    "tools will be available on the next turn: %s",
+                    thread_id,
+                    stale.get("new_tools", []),
+                )
+
     def _build_checkpointer_config(self) -> CheckpointerConfig:
         """Build the checkpointer configuration."""
         backend = self.settings.database_backend
@@ -3532,7 +3580,7 @@ class NymeriaAgent:
             input_state = {"messages": [human_msg]}
 
             try:
-                self._turn_reload_count[thread_id] = 0
+                self._prepare_tool_reload_state_for_turn(thread_id, "chat")
                 result = graph.invoke(input_state, config=config)
                 messages = result.get("messages", [])
 
@@ -3842,6 +3890,7 @@ class NymeriaAgent:
             try:
                 logger.debug(f"[STREAM] Calling graph.stream() with stream_mode='updates' config={config}")
                 stream_chunk_count = 0
+                self._prepare_tool_reload_state_for_turn(thread_id, "stream")
 
                 # Use stream_mode="updates" to get complete node outputs with full tool_calls
                 # This provides populated args unlike stream_mode="messages" which has empty args
@@ -4080,6 +4129,7 @@ class NymeriaAgent:
                 pass  # abort_event/graph/config not yet assigned (early exit)
             except Exception as e:
                 logger.warning(f"[STREAM] Thread {thread_id}: Failed to patch dangling tool calls in finally: {e}")
+            self._clear_tool_reload_state_after_stream(thread_id)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
@@ -4511,7 +4561,7 @@ class NymeriaAgent:
 
             try:
                 # First pass: the user's message against the current graph.
-                self._turn_reload_count[thread_id] = 0
+                self._prepare_tool_reload_state_for_turn(thread_id, "astream")
                 async for evt in _drive_graph_events(graph, input_state):
                     yield evt
 
