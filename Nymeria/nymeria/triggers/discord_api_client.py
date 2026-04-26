@@ -521,3 +521,50 @@ class NymeriaAPIClient:
                 "platform_user_id": str(platform_user_id),
             },
         )
+
+    async def claim_thread_bind_code_via_bot(
+        self,
+        *,
+        code: str,
+        provider: str,
+        platform_chat_id: str,
+        via_user_telegram_bot_id: int,
+    ) -> dict:
+        """User-owned-bot variant of ``claim_thread_bind_code``. The bot's
+        registration record is the credential here, so we don't pass a
+        Telegram user id — the API verifies that the bind code's issuer
+        matches the bot's owner.
+        """
+        return await self._post(
+            "/admin/chatapp/bindings/claim-via-bot",
+            json={
+                "code": code,
+                "provider": provider,
+                "platform_chat_id": str(platform_chat_id),
+                "via_user_telegram_bot_id": via_user_telegram_bot_id,
+            },
+        )
+
+    # ── User-owned Telegram bots (admin-only, for supervisor) ─────────────
+
+    async def list_admin_telegram_bots(self) -> List[dict]:
+        """List every enabled user-owned bot **with decrypted tokens**.
+
+        The supervisor process inside ``nymeria-telegram-bot`` calls this
+        every ~15s to refresh the set of polling loops. Each entry has
+        ``{id, owner_user_id, bot_username, bot_token, enabled, created_at,
+        last_seen_at}``. Returns ``[]`` cleanly when ``NYMERIA_SECRETS_KEY``
+        isn't configured (no bots could exist in that case anyway).
+        """
+        return await self._get("/admin/telegram-bots")
+
+    async def report_telegram_bot_seen(self, bot_id: int) -> None:
+        """Heartbeat ping to bump ``last_seen_at`` after a successful
+        refresh of this bot's polling loop.
+        """
+        try:
+            await self._post(f"/admin/telegram-bots/{bot_id}/seen")
+        except httpx.HTTPStatusError:
+            # Heartbeat failure is non-fatal — don't crash the supervisor
+            # if the API is briefly unhappy.
+            return

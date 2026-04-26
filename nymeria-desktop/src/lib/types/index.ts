@@ -552,13 +552,30 @@ export interface PlatformIdentity {
 }
 
 // Per-thread chat-app binding (e.g. desktop thread <-> Telegram chat).
-// Returned by GET /threads/{id}/chatapp/bindings.
+// Returned by GET /threads/{id}/chatapp/bindings. ``user_telegram_bot_id``
+// is null for bindings served by the shared Nymeria bot, and an integer
+// row id for bindings served by the user's own (BYO) Telegram bot.
 export interface ChatAppBinding {
   id: number;
   thread_id: string;
   provider: 'discord' | 'telegram' | 'twitch';
   platform_chat_id: string;
   created_at: string;
+  user_telegram_bot_id?: number | null;
+}
+
+// User-owned Telegram bot registered via BotFather token paste. The token
+// itself is never exposed by the API after registration — only the
+// public-facing metadata. ``last_seen_at`` is set the first time the
+// supervisor process successfully starts a polling loop for this bot;
+// the BYO wizard polls until it's non-null before showing the bind step
+// (otherwise users would type /bind into a bot that isn't online yet).
+export interface MyTelegramBot {
+  id: number;
+  bot_username: string;
+  enabled: boolean;
+  created_at: string;
+  last_seen_at: string | null;
 }
 
 // Response for the bind-code and platform-link-code endpoints. The wizard

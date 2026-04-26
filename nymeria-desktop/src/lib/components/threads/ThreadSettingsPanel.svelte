@@ -16,6 +16,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
+  import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
 
   interface Props {
     thread: Thread;
@@ -31,6 +32,7 @@
 
   // Chat App tab state — binding count is reactive via chatAppBindingsStore
   let showChatAppWizard = $state(false);
+  let showMyBotWizard = $state(false);
   let chatAppLoaded = $state(false);
   let chatAppLoadError = $state<string | null>(null);
 
@@ -1264,13 +1266,26 @@
           {/if}
 
           {#if chatAppBindings.length === 0}
-            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
-              <p style="margin: 0 0 1rem;">No chats bound to this thread yet.</p>
-              <button
-                class="btn btn-primary"
-                type="button"
-                onclick={() => (showChatAppWizard = true)}
-              >Connect Telegram</button>
+            <div class="chatapp-cta">
+              <p style="margin: 0;">No chats bound to this thread yet. Pick how you want to connect:</p>
+              <div class="chatapp-cta-buttons">
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  onclick={() => (showChatAppWizard = true)}
+                >Connect via shared bot</button>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  onclick={() => (showMyBotWizard = true)}
+                >Use my own bot</button>
+              </div>
+              <p class="field-hint" style="margin: 0.25rem 0 0;">
+                <strong>Shared:</strong> use the existing Nymeria bot — fastest
+                setup, no BotFather required.
+                <br />
+                <strong>My own bot:</strong> paste a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> for a branded bot you control. Requires <code>NYMERIA_SECRETS_KEY</code> on the server.
+              </p>
             </div>
           {:else}
             <ul class="binding-list">
@@ -1279,7 +1294,10 @@
                   <div class="binding-meta">
                     <span class="binding-provider">{binding.provider}</span>
                     <code class="binding-chat">chat {binding.platform_chat_id}</code>
-                    <span class="binding-when">since {new Date(binding.created_at).toLocaleString()}</span>
+                    <span class="binding-when">
+                      via {binding.user_telegram_bot_id ? 'your bot' : 'shared bot'}
+                      &middot; since {new Date(binding.created_at).toLocaleString()}
+                    </span>
                   </div>
                   <button
                     class="btn btn-ghost"
@@ -1290,8 +1308,7 @@
               {/each}
             </ul>
             <p class="field-hint" style="margin-top: 0.5rem;">
-              Only one chat per provider can be bound to a thread at a time. Unbind
-              first to switch the chat.
+              Only one chat per thread at a time. Unbind first to switch.
             </p>
           {/if}
         </div>
@@ -1341,6 +1358,20 @@
         onClose={() => (showChatAppWizard = false)}
         onBound={() => {
           // Refresh the panel's binding list so the row appears immediately.
+          chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
+        }}
+      />
+    </div>
+  </div>
+{/if}
+
+{#if showMyBotWizard}
+  <div class="chatapp-wizard-backdrop" role="dialog" aria-modal="true">
+    <div class="chatapp-wizard-card">
+      <ConnectMyTelegramBotWizard
+        threadId={thread.id}
+        onClose={() => (showMyBotWizard = false)}
+        onBound={() => {
           chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
         }}
       />
@@ -2024,5 +2055,22 @@
     border-radius: var(--radius-lg);
     box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
     overflow: hidden;
+  }
+
+  .chatapp-cta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    padding: var(--spacing-lg);
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    text-align: left;
+  }
+
+  .chatapp-cta-buttons {
+    display: flex;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
   }
 </style>

@@ -227,7 +227,7 @@ Modal-wrapped warning + monospace token block + Copy button. Resets its `copied`
 
 ### `ConnectTelegramWizard.svelte` (per-thread, not per-account)
 
-Lives at `components/threads/ConnectTelegramWizard.svelte`. Three-step modal opened from the **Chat App tab** of `ThreadSettingsPanel` ("Connect Telegram" button). Steps:
+Lives at `components/threads/ConnectTelegramWizard.svelte`. Three-step modal opened from the **Chat App tab** of `ThreadSettingsPanel` ("Connect via shared bot" button). Steps:
 
 1. **link** — Calls `api.listMyPlatforms()`. If the user has no telegram identity yet, calls `api.requestSelfPlatformLinkCode('telegram')` and shows the 8-char code with a `t.me/<bot>?start=link_<code>` deep link (when `bot_username` is configured server-side). Polls `/me/platforms` every 2s; auto-advances when the bot has consumed the code.
 2. **bind** — Calls `api.issueChatAppBindCode(threadId, 'telegram')`. Same UX: code + deep link. Polls `/threads/{id}/chatapp/bindings` every 2s; auto-advances when the binding row appears.
@@ -236,6 +236,17 @@ Lives at `components/threads/ConnectTelegramWizard.svelte`. Three-step modal ope
 Skips step 1 entirely when the user is already linked. Uses `chatAppBindingsStore` (`stores/chatAppBindings.svelte.ts`) for the binding cache so the parent `ThreadSettingsPanel` shows the new row immediately on close.
 
 The store + endpoints are intentionally provider-agnostic (`provider: 'telegram'` is a parameter throughout) so future Discord / WhatsApp wizards can be sibling components without backend changes — they slot into the same `thread_platform_bindings` table.
+
+### `ConnectMyTelegramBotWizard.svelte` (BYO bot, sibling of the shared-bot wizard)
+
+Lives at `components/threads/ConnectMyTelegramBotWizard.svelte`. Opens from the same Chat App tab via the **"Use my own bot"** button. Three-step flow:
+
+1. **token** — Paste a `@BotFather` token. Calls `api.registerMyTelegramBot(token)` which validates via Telegram's `getMe`, encrypts with `NYMERIA_SECRETS_KEY`, persists to `user_telegram_bots`. Auto-skipped if the user already has a registered bot (the wizard reuses it).
+2. **starting** — Polls `api.getMyTelegramBot(id)` every 2s waiting for `last_seen_at` to become non-null (proof the supervisor inside `nymeria-telegram-bot` started the polling loop, ~15s typical). Shows "Starting your bot…" spinner.
+3. **bind** — Issues a thread-bind code via `api.issueChatAppBindCode`. The user types `/bind <code>` into their *own* bot from the chat they want bound. The bot's handler calls `claim_thread_bind_code_via_bot` which authorizes by matching the bind code's issuer against the bot's `owner_user_id` — no `platform_identities` lookup needed.
+4. **done** — Shows the binding and a Close button.
+
+UI affordance: the Chat App tab shows two buttons in its empty state — "Connect via shared bot" and "Use my own bot" — with a one-line explanation of when to pick which. Once a binding exists, the row labels itself as "via shared bot" or "via your bot" based on `binding.user_telegram_bot_id`.
 
 ---
 

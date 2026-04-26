@@ -278,6 +278,13 @@ _USER_CACHE_TTL_SECONDS = 30 * 60
 # feel instant; this loop catches bindings created from the desktop wizard.
 _BINDING_REFRESH_INTERVAL_SECONDS = 60
 
+# How often the shared bot reconciles its set of running user-owned bots
+# against the API. Determines how long a freshly-registered BYO bot takes
+# to come online (the wizard polls /me/telegram-bots/{id} for last_seen_at
+# during this window). 15s is the floor that keeps the wizard's UX snappy
+# without hammering the API.
+_USER_BOT_SUPERVISOR_INTERVAL_SECONDS = 15
+
 
 # =============================================================================
 # Telegram Bot Client
@@ -292,10 +299,20 @@ class NymeriaTelegramBot:
         api: NymeriaAPIClient,
         bot_token: str,
         default_chat_id: Optional[str] = None,
+        *,
+        user_telegram_bot_id: Optional[int] = None,
+        bot_owner_user_id: Optional[str] = None,
     ):
         self.api = api
         self.bot_token = bot_token
         self.default_chat_id = default_chat_id
+        # Multi-bot identity. ``user_telegram_bot_id is None`` is the shared
+        # bot; non-None means this instance serves a user-owned BYO bot
+        # whose token came from the wizard. The shared bot also acts as the
+        # supervisor for user-owned bots — it owns the SSE listener and the
+        # ``_user_bots`` registry; user-owned bots skip those.
+        self.user_telegram_bot_id = user_telegram_bot_id
+        self.bot_owner_user_id = bot_owner_user_id
         self._start_time = time.time()
         self._show_tool_calls: Dict[int, bool] = {}  # chat_id -> show
         # Per-thread streaming state for autonomous task delivery.
@@ -310,8 +327,16 @@ class NymeriaTelegramBot:
         # startup and refreshed every _BINDING_REFRESH_INTERVAL_SECONDS to
         # absorb bindings created from the desktop wizard. Direct mutation
         # in /bind and /unbind handlers makes those changes feel instant.
+        # Filtered to bindings served by THIS bot (user_telegram_bot_id matches).
         self._bindings: Dict[int, str] = {}              # chat_id -> thread_id
         self._reverse_bindings: Dict[str, int] = {}      # thread_id -> chat_id
+        # Shared-bot only: subordinate user-owned bots, keyed by row id.
+        # Always empty on user-owned bot instances.
+        self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
+
+    @property
+    def is_shared_bot(self) -> bool:
+        return self.user_telegram_bot_id is None
 
     async def resolve_user_id(self, telegram_user_id: int) -> Optional[str]:
         """Resolve a Telegram user id to a linked Nymeria account, or None.
@@ -361,6 +386,11 @@ class NymeriaTelegramBot:
     async def _refresh_bindings(self) -> None:
         """Pull the current chat<->thread map from the API into local cache.
 
+        Each bot only caches bindings it serves: the shared bot keeps rows
+        with ``user_telegram_bot_id IS NULL``; a user-owned bot keeps rows
+        with its own id. This keeps inbound resolution clean — a chat from
+        a different bot's polling never resolves to anything in this cache.
+
         Builds new dicts locally and atomically swaps them in to avoid
         partial-state reads from concurrent lookups.
         """
@@ -372,6 +402,11 @@ class NymeriaTelegramBot:
         new_chat_to_thread: Dict[int, str] = {}
         new_thread_to_chat: Dict[str, int] = {}
         for e in entries:
+            # Filter to bindings this bot serves. The API returns
+            # user_telegram_bot_id as None or an integer.
+            entry_bot_id = e.get("user_telegram_bot_id")
+            if entry_bot_id != self.user_telegram_bot_id:
+                continue
             try:
                 chat_id = int(e.get("platform_chat_id"))
             except (TypeError, ValueError):
@@ -384,7 +419,11 @@ class NymeriaTelegramBot:
         # Atomic swap (no awaits between the two assignments).
         self._bindings = new_chat_to_thread
         self._reverse_bindings = new_thread_to_chat
-        logger.debug("chat-app bindings refreshed: %d entries", len(new_chat_to_thread))
+        logger.debug(
+            "chat-app bindings refreshed for bot=%s: %d entries",
+            self.user_telegram_bot_id,
+            len(new_chat_to_thread),
+        )
 
     async def _bindings_refresh_loop(self) -> None:
         """Background task: refresh the binding cache every minute."""
@@ -396,6 +435,116 @@ class NymeriaTelegramBot:
                 return
             except Exception:  # noqa: BLE001
                 logger.exception("bindings refresh loop tick failed")
+
+    # =========================================================================
+    # User-owned bot supervision (shared-bot only)
+    # =========================================================================
+
+    async def _user_bots_supervisor_loop(self) -> None:
+        """Periodically reconcile our running set of user-owned bots with
+        the API's view of registered bots. Runs only on the shared bot.
+        """
+        if not self.is_shared_bot:
+            return
+        while True:
+            try:
+                await self._refresh_user_bots()
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001
+                logger.exception("user-bot supervisor refresh failed")
+            await asyncio.sleep(_USER_BOT_SUPERVISOR_INTERVAL_SECONDS)
+
+    async def _refresh_user_bots(self) -> None:
+        """Diff registered bots against the running set; start new bots,
+        stop deleted ones, leave unchanged ones alone.
+        """
+        try:
+            entries = await self.api.list_admin_telegram_bots()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to list user-owned bots from API")
+            return
+        wanted = {int(e["id"]): e for e in entries if e.get("enabled")}
+        # Stop bots that have disappeared
+        for bot_id in list(self._user_bots.keys()):
+            if bot_id not in wanted:
+                logger.info("Stopping user-owned bot id=%s (removed)", bot_id)
+                try:
+                    await self._user_bots[bot_id].stop_async()
+                except Exception:  # noqa: BLE001
+                    logger.exception("Error stopping user-owned bot id=%s", bot_id)
+                self._user_bots.pop(bot_id, None)
+        # Start bots that appeared
+        for bot_id, entry in wanted.items():
+            if bot_id in self._user_bots:
+                continue
+            sub = NymeriaTelegramBot(
+                api=self.api,
+                bot_token=entry["bot_token"],
+                user_telegram_bot_id=bot_id,
+                bot_owner_user_id=entry.get("owner_user_id"),
+            )
+            try:
+                await sub.start_async()
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to start user-owned bot id=%s @%s",
+                    bot_id,
+                    entry.get("bot_username"),
+                )
+                continue
+            self._user_bots[bot_id] = sub
+            logger.info(
+                "Started user-owned bot id=%s @%s",
+                bot_id,
+                entry.get("bot_username"),
+            )
+            # Heartbeat so the wizard can detect "bot is alive"
+            try:
+                await self.api.report_telegram_bot_seen(bot_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("Heartbeat after start failed for bot=%s", bot_id)
+
+    # =========================================================================
+    # Async lifecycle for non-blocking bot startup (used by sub-bots)
+    # =========================================================================
+
+    async def start_async(self) -> None:
+        """Build the Application and start polling, non-blocking.
+
+        Used for user-owned bots managed by a supervisor. The shared bot
+        still uses the blocking ``run()`` path because it owns the asyncio
+        event loop. This method assumes it's called from inside an already-
+        running event loop.
+        """
+        if self._application is not None:
+            return  # already started
+        app = (
+            ApplicationBuilder()
+            .token(self.bot_token)
+            .rate_limiter(AIORateLimiter())
+            .build()
+        )
+        self._application = app
+        self._register_handlers(app)
+        await app.initialize()
+        await self._post_init(app)
+        await app.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    async def stop_async(self) -> None:
+        """Graceful teardown — opposite of ``start_async``."""
+        app = self._application
+        if app is None:
+            return
+        try:
+            if app.updater is not None:
+                await app.updater.stop()
+            if app.running:
+                await app.stop()
+            await app.shutdown()
+        finally:
+            self._application = None
 
     async def _resolve_or_reject_update(
         self,
@@ -503,20 +652,29 @@ class NymeriaTelegramBot:
             BotCommand("unbind", "Remove this chat's thread binding"),
         ]
         await application.bot.set_my_commands(commands)
-        logger.info(f"Registered {len(commands)} bot commands with Telegram")
-
-        # Populate the chat-app binding cache before the SSE listener starts
-        # consuming events; otherwise the very first autonomous event for a
-        # bound thread could miss its destination chat.
-        await self._refresh_bindings()
         logger.info(
-            "Loaded %d chat-app binding(s) from API",
-            len(self._bindings),
+            "Registered %d bot commands with Telegram (bot=%s)",
+            len(commands),
+            self.user_telegram_bot_id if not self.is_shared_bot else "shared",
         )
 
-        # Start the periodic refresh + autonomous SSE listener.
+        # Populate this bot's binding cache before any listener starts.
+        await self._refresh_bindings()
+        logger.info(
+            "Loaded %d chat-app binding(s) for bot=%s",
+            len(self._bindings),
+            self.user_telegram_bot_id if not self.is_shared_bot else "shared",
+        )
+
+        # Start the per-bot binding refresh.
         asyncio.create_task(self._bindings_refresh_loop())
-        asyncio.create_task(self._api_sse_listener())
+
+        # The SSE listener and the user-bot supervisor live ONLY on the
+        # shared bot. User-owned bots receive autonomous events via the
+        # shared bot dispatching to their `_handle_sse_event`.
+        if self.is_shared_bot:
+            asyncio.create_task(self._api_sse_listener())
+            asyncio.create_task(self._user_bots_supervisor_loop())
 
     def _register_handlers(self, app) -> None:
         """Register all command and message handlers."""
@@ -1007,12 +1165,28 @@ class NymeriaTelegramBot:
             return
         chat_id = update.effective_chat.id
         try:
-            result = await self.api.claim_thread_bind_code(
-                code=code,
-                provider="telegram",
-                platform_chat_id=str(chat_id),
-                expected_provider_user_id=str(tg_user.id),
-            )
+            if self.is_shared_bot:
+                # Shared-bot path: the API verifies the issuing Nymeria user
+                # matches the calling Telegram user via platform_identities.
+                result = await self.api.claim_thread_bind_code(
+                    code=code,
+                    provider="telegram",
+                    platform_chat_id=str(chat_id),
+                    expected_provider_user_id=str(tg_user.id),
+                )
+            else:
+                # User-owned-bot path: the bot's registration is the
+                # credential — the API verifies the bind code's issuer
+                # matches the bot's owner_user_id, no platform_identity
+                # needed. This means the wizard's "paste token → bind"
+                # flow works even for users with no Telegram identity
+                # linked to their Nymeria account.
+                result = await self.api.claim_thread_bind_code_via_bot(
+                    code=code,
+                    provider="telegram",
+                    platform_chat_id=str(chat_id),
+                    via_user_telegram_bot_id=int(self.user_telegram_bot_id),
+                )
         except httpx.HTTPStatusError as e:
             detail = _safe_error_detail(e)
             status = e.response.status_code
@@ -2722,7 +2896,19 @@ class NymeriaTelegramBot:
                             except _json.JSONDecodeError:
                                 continue
 
-                            await self._handle_sse_event(event)
+                            # Multi-bot dispatch: an event for a thread bound
+                            # via a user-owned bot must be delivered through
+                            # *that* bot's Application (so the message lands
+                            # in @YourBot, not @NymeriaaaaaBot). The shared
+                            # bot's _handle_sse_event handles the legacy
+                            # `telegram_<chat_id>` default and its own
+                            # bindings; subordinate bots handle theirs.
+                            target = self._dispatch_bot_for_thread(
+                                event.get("thread_id", "")
+                            )
+                            if target is None:
+                                continue
+                            await target._handle_sse_event(event)
 
             except httpx.ReadTimeout:
                 logger.debug("SSE read timeout, reconnecting...")
@@ -2737,6 +2923,26 @@ class NymeriaTelegramBot:
 
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_delay)
+
+    def _dispatch_bot_for_thread(
+        self, thread_id: str
+    ) -> Optional["NymeriaTelegramBot"]:
+        """Pick which bot instance should deliver an SSE event for ``thread_id``.
+
+        The legacy ``telegram_<chat_id>`` default goes through the shared
+        bot. A bound thread routes through the bot whose ``_reverse_bindings``
+        contains the thread id (filtered per-bot in ``_refresh_bindings``).
+        Returns ``None`` for events on threads handled by another integration
+        (Discord etc.) — caller drops the event.
+        """
+        if thread_id.startswith("telegram_"):
+            return self
+        if thread_id in self._reverse_bindings:
+            return self
+        for sub in self._user_bots.values():
+            if thread_id in sub._reverse_bindings:
+                return sub
+        return None
 
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
         """Stream an autonomous-task event to the matching Telegram chat.

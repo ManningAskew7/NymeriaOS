@@ -7,6 +7,7 @@ import type {
   ChatAppBinding,
   ChatAppBindCodeResponse,
   IssuedTokenResponse,
+  MyTelegramBot,
   PlatformIdentity,
   RotatedTokensResponse,
   TokenInfo,
@@ -630,6 +631,81 @@ export class NymeriaAPI {
     if (!response.ok) {
       throw new Error(
         await this._toastAndExtractError(response, 'Failed to unbind chat')
+      );
+    }
+    return response.json();
+  }
+
+  // ── BYO Telegram bots (user-owned, paste-token wizard) ────────────────
+
+  /** List the current user's registered BYO Telegram bots. Tokens are never
+   * surfaced — just metadata. The Chat App tab shows this list with the
+   * bot username and last-seen timestamp. */
+  async listMyTelegramBots(): Promise<MyTelegramBot[]> {
+    const response = await fetch(`${this.getBaseUrl()}/me/telegram-bots`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to list Telegram bots'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  /** Single-bot fetch. The wizard polls this after registration to wait
+   * for the supervisor's first heartbeat (``last_seen_at`` becomes non-null)
+   * before showing the bind-code step. */
+  async getMyTelegramBot(botId: number): Promise<MyTelegramBot> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/telegram-bots/${botId}`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to load bot status')
+      );
+    }
+    return response.json();
+  }
+
+  /** Register a BYO bot from a BotFather token. The server validates via
+   * ``getMe``, encrypts the token, and starts polling on the next
+   * supervisor tick (~15s). Idempotent — re-pasting the same token returns
+   * the existing record rather than failing. */
+  async registerMyTelegramBot(botToken: string): Promise<MyTelegramBot> {
+    const response = await fetch(`${this.getBaseUrl()}/me/telegram-bots`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ bot_token: botToken })
+    });
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to register Telegram bot'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  /** Remove a BYO bot. Cascades to its bindings — chats served by this bot
+   * lose their thread routing immediately. */
+  async removeMyTelegramBot(botId: number): Promise<{ deleted: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/telegram-bots/${botId}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to remove Telegram bot'
+        )
       );
     }
     return response.json();

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..core.user_profile import ToolPreferences
 
+import httpx
 from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response, FileResponse
@@ -26,12 +27,14 @@ from ..core.accounts import (
     AuthenticatedUser,
     BindCodeInvalid,
     BindingAlreadyExists,
+    BotAlreadyRegistered,
     LastAdminError,
     TokenNotFound,
     UserAlreadyExists,
     UserHasResources,
     UserNotFound,
 )
+from ..core import secrets as nymeria_secrets
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
 from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
 from ..core.notifications import NotificationStore, Notification, get_notification_store
@@ -649,6 +652,10 @@ class ChatAppBindingResponse(BaseModel):
     provider: Literal["discord", "telegram", "twitch"]
     platform_chat_id: str
     created_at: str
+    # None when the binding is served by the shared global bot; the row id
+    # of a user_telegram_bots entry when served by a user-owned bot. The
+    # Chat App UI can use this to label "via @YourBot" vs "via shared bot".
+    user_telegram_bot_id: Optional[int] = None
 
 
 # --- Admin chat-app endpoints (called by bots with the service token) ----
@@ -661,6 +668,7 @@ class AdminBindingLookupResponse(BaseModel):
     platform_chat_id: str
     user_id: str
     created_at: str
+    user_telegram_bot_id: Optional[int] = None
 
 
 class AdminChatAppBindClaimRequest(BaseModel):
@@ -690,6 +698,53 @@ class AdminPlatformLinkClaimResponse(BaseModel):
     provider: Literal["telegram"]
     provider_user_id: str
     created_at: str
+
+
+# --- BYO Telegram bots (user-owned, paste-token wizard) -----------------
+
+
+class MyTelegramBotResponse(BaseModel):
+    """User-facing bot record. The token is never exposed here."""
+
+    id: int
+    bot_username: str
+    enabled: bool
+    created_at: str
+    last_seen_at: Optional[str]
+
+
+class RegisterTelegramBotRequest(BaseModel):
+    """Body for ``POST /me/telegram-bots``: the raw token from BotFather.
+
+    The server validates the token via Telegram's ``getMe`` API, encrypts
+    it with ``NYMERIA_SECRETS_KEY``, stores the ciphertext, and returns the
+    bot's metadata. Plaintext never crosses the response boundary.
+    """
+
+    bot_token: str
+
+
+class AdminTelegramBotResponse(BaseModel):
+    """Admin-only bot record including the **decrypted** token. Consumed
+    by the supervisor process to start polling loops."""
+
+    id: int
+    owner_user_id: str
+    bot_username: str
+    bot_token: str  # decrypted; only this endpoint surfaces it
+    enabled: bool
+    created_at: str
+    last_seen_at: Optional[str]
+
+
+# Extends the existing AdminChatAppBindClaimRequest path with an optional
+# bot id so the bot's /bind handler can prove it consumed the code from
+# inside a user-owned bot, bypassing the platform_identities check.
+class AdminChatAppBindClaimViaBotRequest(BaseModel):
+    code: str
+    provider: Literal["telegram"]
+    platform_chat_id: str
+    via_user_telegram_bot_id: int
 
 
 # Sub-Agent Models
@@ -1660,6 +1715,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 platform_chat_id=b.platform_chat_id,
                 user_id=b.user_id,
                 created_at=b.created_at,
+                user_telegram_bot_id=b.user_telegram_bot_id,
             )
             for b in repo.list_thread_bindings_global(provider=provider)
         ]
@@ -1704,6 +1760,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             platform_chat_id=binding.platform_chat_id,
             user_id=binding.user_id,
             created_at=binding.created_at,
+            user_telegram_bot_id=binding.user_telegram_bot_id,
         )
 
     @app.post(
@@ -1779,6 +1836,120 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # path is operating on behalf of whoever owns it.
         repo.delete_thread_binding(binding.id, user_id=binding.user_id)
         return {"unbound": True, "thread_id": binding.thread_id}
+
+    @app.post(
+        "/admin/chatapp/bindings/claim-via-bot",
+        response_model=AdminChatAppBindClaimResponse,
+        tags=["Admin"],
+    )
+    async def admin_claim_thread_bind_code_via_bot(
+        body: AdminChatAppBindClaimViaBotRequest,
+        _admin=Depends(require_admin_user),
+    ):
+        """Variant of /claim used by user-owned bots.
+
+        The bot is registered to a Nymeria user via ``user_telegram_bots``,
+        so the bot itself is the credential — we don't need a
+        ``platform_identities`` lookup. We require the bot's owner to match
+        the bind code's issuer (prevents user A's bot from claiming user B's
+        code if the code somehow leaked). The created binding records
+        ``user_telegram_bot_id`` so outbound delivery routes through the
+        right bot's token.
+        """
+        repo = get_agent().accounts_repo
+        bot = repo.get_user_telegram_bot(body.via_user_telegram_bot_id)
+        if bot is None or not bot.enabled:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        try:
+            claim = repo.claim_bind_code(
+                body.code, kind="thread_bind", provider=body.provider
+            )
+        except BindCodeInvalid as e:
+            raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
+        if claim.thread_id is None:
+            raise HTTPException(status_code=500, detail="Code has no thread_id")
+        if bot.owner_user_id != claim.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Bind code was issued by a different Nymeria account "
+                    "than this bot's owner."
+                ),
+            )
+        try:
+            binding = repo.create_thread_binding(
+                thread_id=claim.thread_id,
+                provider=body.provider,
+                platform_chat_id=body.platform_chat_id,
+                user_id=claim.user_id,
+                user_telegram_bot_id=bot.id,
+            )
+        except BindingAlreadyExists as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return AdminChatAppBindClaimResponse(
+            binding_id=binding.id,
+            thread_id=binding.thread_id,
+            user_id=binding.user_id,
+        )
+
+    @app.get(
+        "/admin/telegram-bots",
+        response_model=List[AdminTelegramBotResponse],
+        tags=["Admin"],
+    )
+    async def admin_list_telegram_bots(_admin=Depends(require_admin_user)):
+        """List every enabled user-owned bot **with decrypted tokens**.
+
+        Consumed by the supervisor process inside the telegram-bot container
+        on a periodic refresh — it diffs the result against its current set
+        of polling tasks, starting new bots and tearing down removed ones.
+        Returns an empty list if ``NYMERIA_SECRETS_KEY`` isn't configured
+        (in which case no bots could have been registered anyway).
+        """
+        if not nymeria_secrets.has_secrets_key():
+            return []
+        repo = get_agent().accounts_repo
+        out: List[AdminTelegramBotResponse] = []
+        for bot, ciphertext in repo.list_user_telegram_bots_with_ciphertext():
+            try:
+                token = nymeria_secrets.decrypt(ciphertext)
+            except (
+                nymeria_secrets.InvalidToken,
+                nymeria_secrets.SecretsKeyMissing,
+                nymeria_secrets.SecretsKeyInvalid,
+            ) as e:
+                # Token is unrecoverable (e.g. key was rotated without
+                # re-encrypting). Skip this bot rather than 500-ing the
+                # whole supervisor refresh.
+                logger.error(
+                    "Couldn't decrypt token for bot id=%s username=@%s: %s",
+                    bot.id, bot.bot_username, e,
+                )
+                continue
+            out.append(
+                AdminTelegramBotResponse(
+                    id=bot.id,
+                    owner_user_id=bot.owner_user_id,
+                    bot_username=bot.bot_username,
+                    bot_token=token,
+                    enabled=bot.enabled,
+                    created_at=bot.created_at,
+                    last_seen_at=bot.last_seen_at,
+                )
+            )
+        return out
+
+    @app.post("/admin/telegram-bots/{bot_id}/seen", tags=["Admin"])
+    async def admin_telegram_bot_seen(
+        bot_id: int,
+        _admin=Depends(require_admin_user),
+    ):
+        """Heartbeat ping from the supervisor after a successful poll cycle."""
+        repo = get_agent().accounts_repo
+        if repo.get_user_telegram_bot(bot_id) is None:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        repo.update_user_telegram_bot_seen(bot_id)
+        return {"updated": True}
 
     @app.post(
         "/admin/platform/link-codes/claim",
@@ -1964,6 +2135,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 provider=b.provider,
                 platform_chat_id=b.platform_chat_id,
                 created_at=b.created_at,
+                user_telegram_bot_id=b.user_telegram_bot_id,
             )
             for b in repo.list_thread_bindings(thread_id)
         ]
@@ -1987,6 +2159,184 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if not ok:
             raise HTTPException(status_code=404, detail="Binding not found")
         return {"unbound": True}
+
+    # --- self-service BYO Telegram bots -----------------------------------
+
+    @app.get(
+        "/me/telegram-bots",
+        response_model=List[MyTelegramBotResponse],
+        tags=["Auth"],
+    )
+    async def list_my_telegram_bots(
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """List the current user's registered Telegram bots (no token material)."""
+        repo = get_agent().accounts_repo
+        return [
+            MyTelegramBotResponse(
+                id=b.id,
+                bot_username=b.bot_username,
+                enabled=b.enabled,
+                created_at=b.created_at,
+                last_seen_at=b.last_seen_at,
+            )
+            for b in repo.list_user_telegram_bots(user.id)
+        ]
+
+    @app.get(
+        "/me/telegram-bots/{bot_id}",
+        response_model=MyTelegramBotResponse,
+        tags=["Auth"],
+    )
+    async def get_my_telegram_bot(
+        bot_id: int,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Single-bot fetch. The wizard polls this after registration to wait
+        for the supervisor's first heartbeat (``last_seen_at`` becomes
+        non-null) before showing the bind-code step — that way users don't
+        try to ``/bind`` a bot that isn't online yet.
+        """
+        repo = get_agent().accounts_repo
+        bot = repo.get_user_telegram_bot(bot_id, owner_user_id=user.id)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        return MyTelegramBotResponse(
+            id=bot.id,
+            bot_username=bot.bot_username,
+            enabled=bot.enabled,
+            created_at=bot.created_at,
+            last_seen_at=bot.last_seen_at,
+        )
+
+    @app.post(
+        "/me/telegram-bots",
+        response_model=MyTelegramBotResponse,
+        tags=["Auth"],
+    )
+    async def register_my_telegram_bot(
+        body: RegisterTelegramBotRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Paste a BotFather token to register a user-owned Telegram bot.
+
+        Validates the token via Telegram's ``getMe`` (cheap, no side effects),
+        encrypts it with ``NYMERIA_SECRETS_KEY``, and persists the ciphertext.
+        The supervisor process picks the new bot up on its next refresh tick
+        and starts a polling loop for it. Idempotent: pasting a token that's
+        already registered to the same user returns the existing record.
+        """
+        if not nymeria_secrets.has_secrets_key():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "NYMERIA_SECRETS_KEY is not configured on the server. "
+                    "Add it to .env.docker (generate with `python3 -c \"from "
+                    "cryptography.fernet import Fernet; print(Fernet."
+                    "generate_key().decode())\"`) and restart the api "
+                    "container before registering BYO bots."
+                ),
+            )
+        token = (body.bot_token or "").strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="bot_token is required")
+
+        # Validate via Telegram's getMe before persisting anything.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            try:
+                resp = await client.get(
+                    f"https://api.telegram.org/bot{token}/getMe"
+                )
+            except httpx.HTTPError as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Couldn't reach Telegram: {e}",
+                )
+        if resp.status_code != 200:
+            # Surface Telegram's response body so the user sees the real
+            # reason (typically "Unauthorized" for a wrong/revoked token).
+            try:
+                detail = resp.json().get("description") or resp.text[:200]
+            except Exception:  # noqa: BLE001
+                detail = resp.text[:200]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Telegram rejected the token: {detail}",
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail="Bad JSON from Telegram")
+        if not data.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Token invalid: {data.get('description', 'unknown')}",
+            )
+        result = data.get("result") or {}
+        bot_username = result.get("username")
+        if not bot_username:
+            raise HTTPException(
+                status_code=400,
+                detail="Telegram didn't return a username for this token",
+            )
+
+        try:
+            ciphertext = nymeria_secrets.encrypt(token)
+        except (
+            nymeria_secrets.SecretsKeyMissing,
+            nymeria_secrets.SecretsKeyInvalid,
+        ) as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        repo = get_agent().accounts_repo
+        try:
+            bot = repo.register_user_telegram_bot(
+                owner_user_id=user.id,
+                bot_username=bot_username,
+                bot_token_ciphertext=ciphertext,
+            )
+        except BotAlreadyRegistered:
+            # Same username already exists — idempotent if it's this user's,
+            # 409 if it belongs to someone else.
+            existing = repo.get_user_telegram_bot_by_username(bot_username)
+            if existing is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Bot @{bot_username} is already registered",
+                )
+            if existing.owner_user_id != user.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Bot @{bot_username} is registered to a different "
+                        "account. Use BotFather to revoke + reissue the token, "
+                        "then paste the new token."
+                    ),
+                )
+            bot = existing
+        return MyTelegramBotResponse(
+            id=bot.id,
+            bot_username=bot.bot_username,
+            enabled=bot.enabled,
+            created_at=bot.created_at,
+            last_seen_at=bot.last_seen_at,
+        )
+
+    @app.delete("/me/telegram-bots/{bot_id}", tags=["Auth"])
+    async def delete_my_telegram_bot(
+        bot_id: int,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Remove one of your registered bots. Cascade-deletes any bindings
+        served by it (the binding's chat falls off the bot's reach when the
+        bot stops polling). The actual polling loop is torn down on the
+        supervisor's next refresh.
+        """
+        repo = get_agent().accounts_repo
+        ok = repo.delete_user_telegram_bot(bot_id, owner_user_id=user.id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        return {"deleted": True}
 
     @app.post("/restart", tags=["System"])
     async def restart_server(user: AuthenticatedUser = Depends(require_admin_user)):
