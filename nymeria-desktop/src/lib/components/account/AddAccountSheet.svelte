@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AccountIdentity } from '$lib/types';
   import { connectionsStore } from '$lib/stores/connections.svelte';
+  import { probeConnection } from '$lib/services/api.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
@@ -58,49 +59,19 @@
   }
 
   async function handleTest() {
-    const url = trimmedUrl();
-    const key = apiKey.trim();
-    if (!url || !key) {
-      testStatus = 'error';
-      testMessage = 'Both URL and token are required.';
-      return;
-    }
     testStatus = 'testing';
     testMessage = '';
     resolvedIdentity = null;
 
-    try {
-      const health = await fetch(`${url}/health`).catch(() => null);
-      if (!health || !health.ok) {
-        testStatus = 'error';
-        testMessage = 'Cannot reach this server. Check the URL and that the backend is running.';
-        return;
-      }
-
-      const me = await fetch(`${url}/me`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-        },
-      });
-      if (me.status === 401 || me.status === 403) {
-        testStatus = 'error';
-        testMessage = 'Token rejected — check it matches one issued by this backend.';
-        return;
-      }
-      if (!me.ok) {
-        testStatus = 'error';
-        testMessage = `Identity check failed (${me.status}).`;
-        return;
-      }
-      const data = (await me.json()) as AccountIdentity;
-      resolvedIdentity = data;
-      testStatus = 'success';
-      testMessage = '';
-    } catch (e) {
+    const result = await probeConnection(trimmedUrl(), apiKey.trim());
+    if (!result.ok) {
       testStatus = 'error';
-      testMessage = e instanceof Error ? e.message : 'Network error';
+      testMessage = result.message;
+      return;
     }
+    resolvedIdentity = result.identity;
+    testStatus = 'success';
+    testMessage = '';
   }
 
   function defaultName(): string {

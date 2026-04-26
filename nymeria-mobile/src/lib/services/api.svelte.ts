@@ -82,6 +82,117 @@ export function hasActiveStreamForThread(threadId: string): boolean {
   return currentAbortController !== null && currentStreamThreadId === threadId;
 }
 
+export type ConnectionProbeResult =
+  | { ok: true; identity: AccountIdentity; provider?: string }
+  | {
+      ok: false;
+      reason: 'unreachable' | 'unauthorized' | 'identity_failed' | 'error';
+      status?: number;
+      message: string;
+    };
+
+/**
+ * Stateless connection probe used by SetupWizard and AddAccountSheet to
+ * validate a backend URL + token combination *before* committing them to the
+ * configStore. Module-level on purpose: NymeriaAPI methods all read from
+ * configStore, and routing this through the class would invite a future
+ * maintainer to "helpfully" use this.getHeaders() and reintroduce the bug
+ * where the wizard's render gate (configStore.isFirstRun) flips mid-test.
+ *
+ * No configStore reads. No errorsStore writes (a wrong-token-while-typing
+ * must not trip pushAuthInvalid and sign the user out).
+ */
+export async function probeConnection(
+  url: string,
+  key: string
+): Promise<ConnectionProbeResult> {
+  const base = url.trim().replace(/\/$/, '');
+  if (!base) {
+    return { ok: false, reason: 'error', message: 'Server URL is required.' };
+  }
+  if (!key) {
+    return { ok: false, reason: 'error', message: 'Account token is required.' };
+  }
+
+  const authHeaders = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${key}`,
+  };
+
+  let health: Response | null = null;
+  try {
+    health = await fetch(`${base}/health`);
+  } catch {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      message: 'Cannot reach this server. Check the URL and that the backend is running.',
+    };
+  }
+  if (!health.ok) {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      status: health.status,
+      message: `Server is reachable but /health returned ${health.status}.`,
+    };
+  }
+
+  let me: Response;
+  try {
+    me = await fetch(`${base}/me`, { headers: authHeaders });
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'error',
+      message: e instanceof Error ? e.message : 'Network error contacting /me.',
+    };
+  }
+  if (me.status === 401 || me.status === 403) {
+    return {
+      ok: false,
+      reason: 'unauthorized',
+      status: me.status,
+      message: 'Token rejected — check it matches one issued by this backend.',
+    };
+  }
+  if (!me.ok) {
+    return {
+      ok: false,
+      reason: 'identity_failed',
+      status: me.status,
+      message: `Identity check failed (${me.status}).`,
+    };
+  }
+  let identity: AccountIdentity;
+  try {
+    identity = (await me.json()) as AccountIdentity;
+  } catch {
+    return {
+      ok: false,
+      reason: 'identity_failed',
+      status: me.status,
+      message: 'Identity response was not valid JSON.',
+    };
+  }
+
+  // Best-effort: surface the LLM provider for the wizard's backend-info line.
+  // Failures here are silent so a backend that gates /settings doesn't block
+  // an otherwise-successful probe.
+  let provider: string | undefined;
+  try {
+    const settings = await fetch(`${base}/settings`, { headers: authHeaders });
+    if (settings.ok) {
+      const data = (await settings.json()) as { llm_provider?: string };
+      provider = data.llm_provider;
+    }
+  } catch {
+    // ignore
+  }
+
+  return { ok: true, identity, provider };
+}
+
 export class NymeriaAPI {
   private getHeaders(): HeadersInit {
     return {
