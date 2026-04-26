@@ -886,18 +886,19 @@
                   <option value={model.id}>{model.name || model.id}</option>
                 {/each}
               </select>
-            {:else if loadingAvailableModels}
-              <select id="llm-model" class="field-select" disabled>
-                <option>Loading models...</option>
-              </select>
             {:else}
               <input
                 id="llm-model"
                 class="field-input"
                 type="text"
                 bind:value={llmModel}
-                placeholder="Leave empty for global default"
+                placeholder={loadingAvailableModels
+                  ? 'Loading models… or type one (e.g. claude-opus-4-7)'
+                  : 'Leave empty for global default'}
               />
+              {#if loadingAvailableModels}
+                <span class="field-hint">Fetching available models from {getEffectiveProvider()}…</span>
+              {/if}
             {/if}
             {#if threadModelMeta && llmModel}
               <div class="model-meta-hint">

@@ -3718,9 +3718,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "anthropic-version": "2023-06-01",
         }
 
+        # OpenAI-style base URLs end in `/v1`; Anthropic-style don't. Normalize
+        # so `/v1/models` is appended exactly once regardless of which provider
+        # the global LLM_BASE_URL was configured for.
+        clean_base = base_url.rstrip("/")
+        if clean_base.endswith("/v1"):
+            clean_base = clean_base[:-3]
+
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                url = f"{base_url.rstrip('/')}/v1/models"
+                url = f"{clean_base}/v1/models"
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
