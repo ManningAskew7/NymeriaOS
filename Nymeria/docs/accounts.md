@@ -12,8 +12,9 @@ Six tables in a dedicated SQLite database at `<data_dir>/accounts.db`:
 | `user_tokens` | Bearer tokens (one user can have many, each independently revocable) |
 | `thread_owners` | Maps `thread_id → user_id`; populated on first-touch (Step 5) |
 | `platform_identities` | Maps Discord/Telegram/Twitch user IDs to Nymeria accounts (Step 6) |
-| `thread_platform_bindings` | Per-thread chat-app bindings (e.g. `desktop thread <-> Telegram chat`). Unique on `(provider, thread_id)` and `(provider, platform_chat_id)`. Used by the Chat App wizard so a user can pick which thread a Telegram chat routes into. |
+| `thread_platform_bindings` | Per-thread chat-app bindings (e.g. `desktop thread <-> Telegram chat`). Unique on `(provider, thread_id)` and `(provider, platform_chat_id)`. The optional `user_telegram_bot_id` column is null when the binding is served by the shared bot, or the row id of a `user_telegram_bots` entry when served by a user-owned (BYO) bot. |
 | `bind_codes` | Short-lived single-use codes the desktop wizard mints and the bot consumes. Discriminated by `kind` — `platform_link` (link a Telegram identity to a Nymeria account) or `thread_bind` (attach a chat to a thread). 10-min TTL, hashed at rest. |
+| `user_telegram_bots` | User-owned BYO Telegram bots. Tokens are stored as Fernet ciphertext (`bot_token_ciphertext`); plaintext is only handed to the supervisor process inside the `nymeria-telegram-bot` container via the admin endpoint. Encrypted with `NYMERIA_SECRETS_KEY`. |
 
 Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header (Step 3) to call the API on behalf of another user — used by bots, the ticker, and the watchdog.
 
@@ -80,6 +81,10 @@ Every account operation is exposed as a REST endpoint, gated by `require_admin_u
 | `DELETE` | `/me/tokens/{prefix}` | — | Revoke one of your tokens by hash prefix. |
 | `GET` | `/me/platforms` | — | List your linked Discord/Telegram/Twitch identities. Self-service equivalent of `/admin/users/{id}/platforms`. |
 | `POST` | `/me/platform-link-codes` | `{provider}` | Issue a short-lived code (8 chars, 10-min TTL) the bot consumes to link your platform identity to your Nymeria account. The response includes a `t.me/<bot>?start=link_<code>` deep link when `TELEGRAM_BOT_USERNAME` is set. |
+| `GET` | `/me/telegram-bots` | — | List your BYO Telegram bots (token-paste registrations). No token material returned. |
+| `GET` | `/me/telegram-bots/{id}` | — | Single-bot fetch. The wizard polls this after registration to wait for the supervisor's first heartbeat (`last_seen_at` becomes non-null) before showing the bind step. |
+| `POST` | `/me/telegram-bots` | `{bot_token}` | Register a BYO bot from a BotFather token. Validates via `getMe`, encrypts with `NYMERIA_SECRETS_KEY`, stores ciphertext. Idempotent: re-pasting the same token returns the existing record. Returns 503 if `NYMERIA_SECRETS_KEY` isn't set. |
+| `DELETE` | `/me/telegram-bots/{id}` | — | Remove a BYO bot. Cascades to its bindings; supervisor stops its polling loop on the next refresh. |
 
 ### Self thread bindings (`/threads/{id}/chatapp`) — caller must own the thread
 
@@ -99,9 +104,12 @@ without holding per-user tokens. They're not called by the frontend.
 |---|---|---|---|
 | `GET` | `/admin/chatapp/bindings` | `?provider=` | Bulk list bindings (filtered by provider). Bot startup uses this to populate its `chat_id <-> thread_id` cache. |
 | `GET` | `/admin/chatapp/bindings/lookup` | `?provider=&platform_chat_id=` or `?provider=&thread_id=` | Resolve a single binding for inbound or outbound routing. |
-| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Atomic claim: consume the bind code, verify the platform user matches the issuing Nymeria account, create the binding row. |
+| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Atomic claim used by the **shared** bot: consume the bind code, verify the platform user matches the issuing Nymeria account, create the binding row. |
+| `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | Atomic claim used by **user-owned** bots: skips the platform identity check (the bot is the credential), verifies the bind code's issuer matches the bot's `owner_user_id`, creates the binding with `user_telegram_bot_id` set. |
 | `DELETE` | `/admin/chatapp/bindings/by-chat` | `?provider=&platform_chat_id=` | Bot's `/unbind` handler. |
 | `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Bot's `/start link_<code>` handler. Atomically consumes a `platform_link` code and creates the `platform_identities` row. |
+| `GET` | `/admin/telegram-bots` | — | Used by the supervisor in `nymeria-telegram-bot`. Lists all enabled BYO bots **with decrypted tokens**. Returns `[]` when `NYMERIA_SECRETS_KEY` isn't configured. |
+| `POST` | `/admin/telegram-bots/{id}/seen` | — | Heartbeat from the supervisor after a successful refresh of this bot's polling loop; updates `last_seen_at`. |
 
 ### Admin (`/admin/users`) — caller must be admin
 

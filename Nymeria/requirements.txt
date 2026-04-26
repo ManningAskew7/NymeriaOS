@@ -50,6 +50,11 @@ twitchio>=3.2.1
 # Telegram bot (two-way communication)
 python-telegram-bot[rate-limiter]>=22.0
 
+# Symmetric encryption for at-rest secrets (BYO Telegram bot tokens, etc).
+# Already a transitive dep via langchain/google-auth, but pinned explicitly
+# so the secrets layer never silently breaks if upstream drops it.
+cryptography>=42.0.0
+
 # Optional: PostgreSQL support (for multi-user deployments)
 # Uncomment if you want to use PostgreSQL instead of SQLite:
 # langgraph-checkpoint-postgres>=0.2.0

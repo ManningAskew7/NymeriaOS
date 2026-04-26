@@ -174,6 +174,52 @@ Setting `TELEGRAM_BOT_USERNAME=<bot>` (no `@`) in `.env.docker` lets the wizard
 produce one-tap `t.me/<bot>?start=...` deep links. With it unset, the wizard
 shows the raw `/bind` and `/start` commands the user types manually.
 
+## BYO bots — "Use my own bot" wizard
+
+In addition to the shared bot, users can register their own Telegram bot from
+a BotFather token. The Chat App tab has a second button, **Use my own bot**,
+that walks through:
+
+1. **Token paste** — the user pastes a token from `@BotFather`. The API
+   validates it via Telegram's `getMe`, encrypts it with `NYMERIA_SECRETS_KEY`
+   (Fernet symmetric encryption — see `nymeria/core/secrets.py`), and stores
+   the ciphertext on `user_telegram_bots`.
+2. **Starting** — the supervisor inside the `nymeria-telegram-bot` container
+   refreshes its registered-bot list every ~15s. On the next tick it builds
+   a fresh `python-telegram-bot` `Application` for the new bot, wires it
+   into the same handlers as the shared bot, and starts polling. The wizard
+   polls `GET /me/telegram-bots/{id}` until `last_seen_at` becomes non-null,
+   then advances.
+3. **Bind code** — same as the shared-bot flow except the bot is the
+   user's own. The bot's `/bind <code>` handler calls
+   `POST /admin/chatapp/bindings/claim-via-bot`, which authorizes by
+   matching the bind code's issuing Nymeria user against the bot's
+   `owner_user_id`. No `platform_identities` lookup needed — the bot
+   itself is the credential.
+4. **Done.**
+
+Removing a registered bot (`DELETE /me/telegram-bots/{id}`) cascade-deletes
+its bindings; the supervisor stops the polling loop on its next refresh.
+
+### Requirements
+- `NYMERIA_SECRETS_KEY` must be set in `.env.docker`. Without it the
+  `POST /me/telegram-bots` endpoint returns 503 with instructions on how
+  to mint one.
+- The supervisor uses one asyncio task and ~25-50 MB RAM per registered
+  bot. On the 2 GB VPS this is fine for ~10 bots; if you ever scale higher,
+  watch RAM via `docker stats nymeria-telegram-bot`.
+
+### Bot routing
+- **Inbound**: each bot's polling sees only chats it's a member of. The
+  per-bot binding cache (filtered by `user_telegram_bot_id`) resolves
+  `chat_id → thread_id`. Unbound chats on a user-owned bot have no
+  fallback (unlike the shared bot's `telegram_<chat_id>` default) — for
+  v1 the bot replies "this chat isn't bound to a thread; use `/bind <code>`".
+- **Outbound**: the shared bot's SSE listener is the single subscriber.
+  Each event's `thread_id` is matched against every bot's
+  `_reverse_bindings`; the matching bot's `_handle_sse_event` handles
+  delivery, so messages flow through the bot whose token owns the chat.
+
 ## Streaming Responses
 
 Chat responses (`/ask` and plain text DMs) are streamed via SSE. Users see text appear progressively as the model generates it, with edits every ~1.5 seconds.

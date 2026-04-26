@@ -102,6 +102,11 @@ class ThreadPlatformBinding:
     Today only ``provider='telegram'`` is wired end-to-end, but the table is
     provider-agnostic so future providers (Discord, WhatsApp, ...) plug in
     without a schema change.
+
+    ``user_telegram_bot_id`` is None for bindings served by the shared bot
+    (``@NymeriaaaaaBot`` etc.), and the row id of a ``user_telegram_bots``
+    entry for bindings served by a user-owned bot. The supervisor's outbound
+    routing reads this to pick which bot's token to send a reply through.
     """
 
     id: int
@@ -110,6 +115,7 @@ class ThreadPlatformBinding:
     platform_chat_id: str
     user_id: str
     created_at: str
+    user_telegram_bot_id: Optional[int] = None
 
 
 @dataclass
@@ -120,6 +126,24 @@ class BindCodeClaim:
     provider: Provider
     user_id: str
     thread_id: Optional[str]  # None for platform_link codes
+
+
+@dataclass
+class UserTelegramBot:
+    """A user-owned Telegram bot (BYO bot via @BotFather token paste).
+
+    The token itself is **never** put on this dataclass — it lives only in
+    ciphertext on ``user_telegram_bots.bot_token_ciphertext``. The
+    supervisor uses :meth:`AccountsRepo.list_user_telegram_bots_for_runtime`
+    to fetch (metadata, decrypted_token) pairs explicitly.
+    """
+
+    id: int
+    owner_user_id: str
+    bot_username: str
+    enabled: bool
+    created_at: str
+    last_seen_at: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +238,18 @@ CREATE TABLE IF NOT EXISTS bind_codes (
 CREATE INDEX IF NOT EXISTS idx_bind_codes_user ON bind_codes(user_id);
 CREATE INDEX IF NOT EXISTS idx_bind_codes_expires ON bind_codes(expires_at);
 
+CREATE TABLE IF NOT EXISTS user_telegram_bots (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    bot_username         TEXT NOT NULL UNIQUE,
+    bot_token_ciphertext TEXT NOT NULL,
+    enabled              INTEGER NOT NULL DEFAULT 1,
+    created_at           TEXT NOT NULL,
+    last_seen_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_telegram_bots_owner ON user_telegram_bots(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_user_telegram_bots_enabled ON user_telegram_bots(enabled);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -261,6 +297,10 @@ class BindCodeInvalid(LookupError):
     """Bind code is unknown, expired, or already consumed."""
 
 
+class BotAlreadyRegistered(ValueError):
+    """Same bot username already registered (likely a re-registration of the same bot)."""
+
+
 class AccountsRepo:
     """Thread-safe SQLite-backed repository for users/tokens/ownership."""
 
@@ -282,7 +322,36 @@ class AccountsRepo:
     def _init_schema(self) -> None:
         with self._lock, self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_schema(conn)
             conn.commit()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Idempotent in-place migrations for additions to existing tables.
+
+        ``CREATE TABLE IF NOT EXISTS`` only creates missing tables — it
+        doesn't reconcile column lists. For columns we add later we
+        ``PRAGMA table_info`` first and ``ALTER TABLE ADD COLUMN`` only
+        when missing, so re-running the schema script is safe.
+        """
+        cols = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(thread_platform_bindings)"
+            ).fetchall()
+        }
+        if "user_telegram_bot_id" not in cols:
+            # NULL = served by the shared bot. Non-null = served by the
+            # user-owned bot at user_telegram_bots.id (cascade-delete on
+            # bot removal so orphaned bindings can't outlive their bot).
+            conn.execute(
+                "ALTER TABLE thread_platform_bindings "
+                "ADD COLUMN user_telegram_bot_id INTEGER REFERENCES "
+                "user_telegram_bots(id) ON DELETE CASCADE"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_thread_platform_bindings_user_bot "
+                "ON thread_platform_bindings(user_telegram_bot_id)"
+            )
 
     # -- users -------------------------------------------------------------
 
@@ -683,12 +752,18 @@ class AccountsRepo:
         provider: Provider,
         platform_chat_id: str,
         user_id: str,
+        user_telegram_bot_id: Optional[int] = None,
     ) -> ThreadPlatformBinding:
         """Bind a Nymeria thread to a chat on a chat-app provider.
 
         Raises ``BindingAlreadyExists`` if either the thread or the chat is
         already bound for this provider (the table has unique constraints on
         both ``(provider, thread_id)`` and ``(provider, platform_chat_id)``).
+
+        ``user_telegram_bot_id`` records *which* bot saw the chat. ``None``
+        means the shared bot (existing behavior); a row id means a
+        user-owned bot. The supervisor uses this to route outbound replies
+        through the right bot's token.
         """
         if self.get_user_by_id(user_id) is None:
             raise UserNotFound(user_id)
@@ -697,9 +772,17 @@ class AccountsRepo:
             try:
                 cur = conn.execute(
                     "INSERT INTO thread_platform_bindings "
-                    "(thread_id, provider, platform_chat_id, user_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (thread_id, provider, str(platform_chat_id), user_id, now),
+                    "(thread_id, provider, platform_chat_id, user_id, "
+                    " user_telegram_bot_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        thread_id,
+                        provider,
+                        str(platform_chat_id),
+                        user_id,
+                        user_telegram_bot_id,
+                        now,
+                    ),
                 )
                 conn.commit()
             except sqlite3.IntegrityError as e:
@@ -711,6 +794,7 @@ class AccountsRepo:
                 platform_chat_id=str(platform_chat_id),
                 user_id=user_id,
                 created_at=now,
+                user_telegram_bot_id=user_telegram_bot_id,
             )
 
     def lookup_thread_binding_by_chat(
@@ -886,6 +970,126 @@ class AccountsRepo:
             conn.commit()
             return cur.rowcount
 
+    # -- user-owned Telegram bots (BYO bot via @BotFather token paste) ----
+
+    def register_user_telegram_bot(
+        self,
+        *,
+        owner_user_id: str,
+        bot_username: str,
+        bot_token_ciphertext: str,
+    ) -> UserTelegramBot:
+        """Store a new user-owned Telegram bot. The token must already be
+        encrypted by the caller (the API layer owns the cipher; the repo
+        deals only in opaque ciphertext strings).
+
+        Raises ``BotAlreadyRegistered`` if a bot with the same username is
+        already registered (Telegram bot usernames are globally unique, so
+        this also catches "same user pasting the same token twice").
+        """
+        if self.get_user_by_id(owner_user_id) is None:
+            raise UserNotFound(owner_user_id)
+        now = _now()
+        with self._lock, self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO user_telegram_bots "
+                    "(owner_user_id, bot_username, bot_token_ciphertext, "
+                    " enabled, created_at) "
+                    "VALUES (?, ?, ?, 1, ?)",
+                    (owner_user_id, bot_username, bot_token_ciphertext, now),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise BotAlreadyRegistered(str(e)) from e
+            return UserTelegramBot(
+                id=int(cur.lastrowid),
+                owner_user_id=owner_user_id,
+                bot_username=bot_username,
+                enabled=True,
+                created_at=now,
+                last_seen_at=None,
+            )
+
+    def list_user_telegram_bots(self, owner_user_id: str) -> List[UserTelegramBot]:
+        """Bots owned by a user (no token material in the result)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM user_telegram_bots WHERE owner_user_id = ? "
+                "ORDER BY created_at ASC",
+                (owner_user_id,),
+            ).fetchall()
+            return [_row_to_user_telegram_bot(r) for r in rows]
+
+    def get_user_telegram_bot(
+        self, bot_id: int, *, owner_user_id: Optional[str] = None
+    ) -> Optional[UserTelegramBot]:
+        """Single-bot fetch. ``owner_user_id`` scopes the lookup to a user
+        (returns None if the bot exists but belongs to someone else) — pass
+        None for admin / supervisor paths."""
+        with self._lock, self._connect() as conn:
+            if owner_user_id is None:
+                row = conn.execute(
+                    "SELECT * FROM user_telegram_bots WHERE id = ?",
+                    (bot_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM user_telegram_bots WHERE id = ? AND owner_user_id = ?",
+                    (bot_id, owner_user_id),
+                ).fetchone()
+            return _row_to_user_telegram_bot(row) if row else None
+
+    def get_user_telegram_bot_by_username(
+        self, bot_username: str
+    ) -> Optional[UserTelegramBot]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_telegram_bots WHERE bot_username = ?",
+                (bot_username,),
+            ).fetchone()
+            return _row_to_user_telegram_bot(row) if row else None
+
+    def list_user_telegram_bots_with_ciphertext(
+        self,
+    ) -> List[tuple[UserTelegramBot, str]]:
+        """All enabled bots with their (still-encrypted) tokens. The admin
+        endpoint decrypts before returning to the supervisor process; the
+        plaintext never leaves the API boundary in user-facing responses.
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM user_telegram_bots WHERE enabled = 1 "
+                "ORDER BY created_at ASC"
+            ).fetchall()
+            return [
+                (_row_to_user_telegram_bot(r), r["bot_token_ciphertext"])
+                for r in rows
+            ]
+
+    def update_user_telegram_bot_seen(self, bot_id: int) -> None:
+        """Heartbeat — supervisor calls this after each successful poll/refresh
+        of this bot so the UI can show last-active time."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE user_telegram_bots SET last_seen_at = ? WHERE id = ?",
+                (_now(), bot_id),
+            )
+            conn.commit()
+
+    def delete_user_telegram_bot(
+        self, bot_id: int, *, owner_user_id: str
+    ) -> bool:
+        """Owner-scoped delete. Bindings cascade-delete via the FK on
+        ``thread_platform_bindings.user_telegram_bot_id``."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_telegram_bots WHERE id = ? AND owner_user_id = ?",
+                (bot_id, owner_user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     # -- bootstrap ---------------------------------------------------------
 
     def ensure_bootstrap_admin(self, data_dir: Path) -> Optional[str]:
@@ -949,6 +1153,13 @@ def _row_to_user(row: sqlite3.Row) -> UserRecord:
 
 
 def _row_to_binding(row: sqlite3.Row) -> ThreadPlatformBinding:
+    # The user_telegram_bot_id column was added in a later migration. Read
+    # tolerantly so historical rows (where the column may not have existed
+    # at insert time) still deserialize cleanly.
+    try:
+        ub = row["user_telegram_bot_id"]
+    except (KeyError, IndexError):
+        ub = None
     return ThreadPlatformBinding(
         id=int(row["id"]),
         thread_id=row["thread_id"],
@@ -956,4 +1167,16 @@ def _row_to_binding(row: sqlite3.Row) -> ThreadPlatformBinding:
         platform_chat_id=row["platform_chat_id"],
         user_id=row["user_id"],
         created_at=row["created_at"],
+        user_telegram_bot_id=int(ub) if ub is not None else None,
+    )
+
+
+def _row_to_user_telegram_bot(row: sqlite3.Row) -> UserTelegramBot:
+    return UserTelegramBot(
+        id=int(row["id"]),
+        owner_user_id=row["owner_user_id"],
+        bot_username=row["bot_username"],
+        enabled=bool(int(row["enabled"])),
+        created_at=row["created_at"],
+        last_seen_at=row["last_seen_at"],
     )
