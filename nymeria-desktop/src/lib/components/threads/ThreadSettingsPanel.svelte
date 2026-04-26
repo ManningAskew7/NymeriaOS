@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, AvailableModel } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -291,10 +292,10 @@
   // Force-refresh MCP servers + default tools on panel mount so changes made
   // in the global Settings → Tools panel (new server installed, defaults
   // edited) are reflected here without a full app reload.
-  $effect(() => {
+  onMount(() => {
     mcpServersStore.refresh();
     defaultToolsStore.resetLoaded();
-    defaultToolsStore.load();
+    void defaultToolsStore.load();
   });
 
   // Per-thread skill resolution: (global ∪ enabled) − disabled
