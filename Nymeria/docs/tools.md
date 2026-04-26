@@ -519,7 +519,7 @@ tool_search(action: str, query: str = "", category: str = "", tools: list[str] =
 
 **Actions:**
 - `search` — Search tools by keyword and/or category. Returns up to 15 results with name, description, category, security level, and enabled status (including TTL remaining).
-- `enable` — Enable tools by name (`tools` param) or by category (`category` param). Triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
+- `enable` — Enable tools by name (`tools` param) or by category (`category` param). In `astream()` (REST/SSE) and `chat()` (MCP/CLI sync path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
 - `disable` — Disable tools for the thread (`tools` param). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`). A tool like `notepad_read` is in both, so it needs `force=True` to disable; but a tool in `ALL_TOOLS` that's absent from `default_thread_tools` is still core-protected even though it isn't default-bound.
 - `list_categories` — List all tool categories with tool counts.
 - `status` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
@@ -552,7 +552,7 @@ When the agent calls `tool_search(action="enable", tools=[...])` during a turn, 
 
 To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` (default `3`) rebuilds per user turn to bound token usage. Once the cap is hit, `tool_search(action="enable")` detects it, stops returning `Command(goto=END)`, and instead returns a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
 
-Both `astream()` (REST/SSE) and `chat()` (MCP/CLI sync path) honor the auto-continue.
+Both `astream()` (REST/SSE) and `chat()` (MCP/CLI sync path) honor the auto-continue. The legacy sync `stream()` path used by callable thread execution persists the enablement for the next turn but does not auto-continue; it clears any unconsumed pending reload when the stream exits so a stale Tool Binding event cannot attach to a later unrelated turn.
 
 #### TTL and eviction
 
