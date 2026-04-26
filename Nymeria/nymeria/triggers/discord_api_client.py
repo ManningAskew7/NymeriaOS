@@ -437,3 +437,87 @@ class NymeriaAPIClient:
             return data.get("status") == "ok"
         except Exception:
             return False
+
+    # ── Chat-app bindings (admin-only) ────────────────────────────────────
+
+    async def list_chatapp_bindings(self, provider: str) -> List[dict]:
+        """List every chat-app binding for the given provider. Admin-only.
+
+        Bots call this on startup and periodically to populate their local
+        ``chat_id <-> thread_id`` cache so message routing doesn't need a
+        per-message HTTP lookup.
+        """
+        return await self._get(
+            "/admin/chatapp/bindings", params={"provider": provider}
+        )
+
+    async def lookup_chatapp_binding(
+        self,
+        *,
+        provider: str,
+        platform_chat_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Look up a single binding by either chat_id or thread_id.
+
+        Returns the binding dict, or None if no binding exists.
+        """
+        params: Dict[str, str] = {"provider": provider}
+        if platform_chat_id is not None:
+            params["platform_chat_id"] = str(platform_chat_id)
+        if thread_id is not None:
+            params["thread_id"] = thread_id
+        try:
+            return await self._get("/admin/chatapp/bindings/lookup", params=params)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
+    async def claim_thread_bind_code(
+        self,
+        *,
+        code: str,
+        provider: str,
+        platform_chat_id: str,
+        expected_provider_user_id: str,
+    ) -> dict:
+        """Atomically consume a /bind <code> and create the thread binding.
+
+        Returns ``{binding_id, thread_id, user_id}`` on success; raises an
+        ``httpx.HTTPStatusError`` on 400 (invalid/expired code), 403
+        (code issued by a different account), or 409 (chat already bound).
+        """
+        return await self._post(
+            "/admin/chatapp/bindings/claim",
+            json={
+                "code": code,
+                "provider": provider,
+                "platform_chat_id": str(platform_chat_id),
+                "expected_provider_user_id": str(expected_provider_user_id),
+            },
+        )
+
+    async def unbind_chatapp_by_chat(
+        self, *, provider: str, platform_chat_id: str
+    ) -> dict:
+        """Remove the binding for (provider, chat_id). Returns ``{unbound: bool, thread_id?}``."""
+        return await self._delete(
+            "/admin/chatapp/bindings/by-chat",
+            params={"provider": provider, "platform_chat_id": str(platform_chat_id)},
+        )
+
+    async def claim_platform_link_code(
+        self, *, code: str, provider: str, platform_user_id: str
+    ) -> dict:
+        """Atomically consume a /start link_<code> and create the
+        ``platform_identities`` row. Returns ``{user_id, provider, provider_user_id, created_at}``.
+        """
+        return await self._post(
+            "/admin/platform/link-codes/claim",
+            json={
+                "code": code,
+                "provider": provider,
+                "platform_user_id": str(platform_user_id),
+            },
+        )

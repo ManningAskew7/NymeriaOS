@@ -4,7 +4,7 @@ Nymeria is transitioning from implicit-single-user to a real multi-user model. T
 
 ## Model
 
-Four tables in a dedicated SQLite database at `<data_dir>/accounts.db`:
+Six tables in a dedicated SQLite database at `<data_dir>/accounts.db`:
 
 | Table | Purpose |
 |---|---|
@@ -12,6 +12,8 @@ Four tables in a dedicated SQLite database at `<data_dir>/accounts.db`:
 | `user_tokens` | Bearer tokens (one user can have many, each independently revocable) |
 | `thread_owners` | Maps `thread_id → user_id`; populated on first-touch (Step 5) |
 | `platform_identities` | Maps Discord/Telegram/Twitch user IDs to Nymeria accounts (Step 6) |
+| `thread_platform_bindings` | Per-thread chat-app bindings (e.g. `desktop thread <-> Telegram chat`). Unique on `(provider, thread_id)` and `(provider, platform_chat_id)`. Used by the Chat App wizard so a user can pick which thread a Telegram chat routes into. |
+| `bind_codes` | Short-lived single-use codes the desktop wizard mints and the bot consumes. Discriminated by `kind` — `platform_link` (link a Telegram identity to a Nymeria account) or `thread_bind` (attach a chat to a thread). 10-min TTL, hashed at rest. |
 
 Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header (Step 3) to call the API on behalf of another user — used by bots, the ticker, and the watchdog.
 
@@ -76,6 +78,30 @@ Every account operation is exposed as a REST endpoint, gated by `require_admin_u
 | `GET` | `/me/tokens` | — | List your active and revoked tokens (no raw values). |
 | `POST` | `/me/tokens` | `{label?}` | Issue yourself a new token. Raw shown ONCE. |
 | `DELETE` | `/me/tokens/{prefix}` | — | Revoke one of your tokens by hash prefix. |
+| `GET` | `/me/platforms` | — | List your linked Discord/Telegram/Twitch identities. Self-service equivalent of `/admin/users/{id}/platforms`. |
+| `POST` | `/me/platform-link-codes` | `{provider}` | Issue a short-lived code (8 chars, 10-min TTL) the bot consumes to link your platform identity to your Nymeria account. The response includes a `t.me/<bot>?start=link_<code>` deep link when `TELEGRAM_BOT_USERNAME` is set. |
+
+### Self thread bindings (`/threads/{id}/chatapp`) — caller must own the thread
+
+| Method | Path | Body | Purpose |
+|---|---|---|---|
+| `POST` | `/threads/{id}/chatapp/bind-code` | `{provider}` | Issue a single-use code the user types (or deep-links via `/start bind_<code>`) into the bot to attach the chat to this thread. Returns 409 if the thread is already bound. |
+| `GET` | `/threads/{id}/chatapp/bindings` | — | List active bindings for the thread (today only one per provider). |
+| `DELETE` | `/threads/{id}/chatapp/bindings/{binding_id}` | — | Unbind. |
+
+### Admin chat-app routes (`/admin/chatapp`, `/admin/platform/link-codes`) — bots only
+
+These admin endpoints exist so chat-app bots (Telegram, future Discord) can
+consume the codes the desktop wizard mints and look up the routing map
+without holding per-user tokens. They're not called by the frontend.
+
+| Method | Path | Body / Query | Purpose |
+|---|---|---|---|
+| `GET` | `/admin/chatapp/bindings` | `?provider=` | Bulk list bindings (filtered by provider). Bot startup uses this to populate its `chat_id <-> thread_id` cache. |
+| `GET` | `/admin/chatapp/bindings/lookup` | `?provider=&platform_chat_id=` or `?provider=&thread_id=` | Resolve a single binding for inbound or outbound routing. |
+| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Atomic claim: consume the bind code, verify the platform user matches the issuing Nymeria account, create the binding row. |
+| `DELETE` | `/admin/chatapp/bindings/by-chat` | `?provider=&platform_chat_id=` | Bot's `/unbind` handler. |
+| `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Bot's `/start link_<code>` handler. Atomically consumes a `platform_link` code and creates the `platform_identities` row. |
 
 ### Admin (`/admin/users`) — caller must be admin
 

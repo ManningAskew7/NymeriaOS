@@ -225,6 +225,18 @@ Always uses the admin endpoints (`GET / POST / DELETE /admin/users/{userId}/plat
 
 Modal-wrapped warning + monospace token block + Copy button. Resets its `copied` and `copyError` state every time it re-opens (`$effect` on `isOpen`). The optional `forUser` prop changes the wording from "use this token in another browser…" to "issued for X — hand it off securely…" for admin-issued tokens.
 
+### `ConnectTelegramWizard.svelte` (per-thread, not per-account)
+
+Lives at `components/threads/ConnectTelegramWizard.svelte`. Three-step modal opened from the **Chat App tab** of `ThreadSettingsPanel` ("Connect Telegram" button). Steps:
+
+1. **link** — Calls `api.listMyPlatforms()`. If the user has no telegram identity yet, calls `api.requestSelfPlatformLinkCode('telegram')` and shows the 8-char code with a `t.me/<bot>?start=link_<code>` deep link (when `bot_username` is configured server-side). Polls `/me/platforms` every 2s; auto-advances when the bot has consumed the code.
+2. **bind** — Calls `api.issueChatAppBindCode(threadId, 'telegram')`. Same UX: code + deep link. Polls `/threads/{id}/chatapp/bindings` every 2s; auto-advances when the binding row appears.
+3. **done** — Shows the bound chat ID and a Close button.
+
+Skips step 1 entirely when the user is already linked. Uses `chatAppBindingsStore` (`stores/chatAppBindings.svelte.ts`) for the binding cache so the parent `ThreadSettingsPanel` shows the new row immediately on close.
+
+The store + endpoints are intentionally provider-agnostic (`provider: 'telegram'` is a parameter throughout) so future Discord / WhatsApp wizards can be sibling components without backend changes — they slot into the same `thread_platform_bindings` table.
+
 ---
 
 ## Routing through the API service

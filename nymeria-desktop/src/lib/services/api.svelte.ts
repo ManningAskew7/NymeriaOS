@@ -4,6 +4,8 @@ import { errorsStore } from '$lib/stores/errors.svelte';
 import type {
   AccountIdentity,
   AdminUser,
+  ChatAppBinding,
+  ChatAppBindCodeResponse,
   IssuedTokenResponse,
   PlatformIdentity,
   RotatedTokensResponse,
@@ -530,6 +532,105 @@ export class NymeriaAPI {
     );
     if (!response.ok) {
       throw new Error(await this._toastAndExtractError(response, 'Failed to unlink platform'));
+    }
+    return response.json();
+  }
+
+  // ── Self-service platform identities & per-thread chat-app bindings ──
+
+  /** List the current user's own linked platform identities. Self-service
+   * equivalent of `listUserPlatforms` (which is admin-only). Used by the
+   * Chat App wizard to skip the link step when the user is already linked. */
+  async listMyPlatforms(): Promise<PlatformIdentity[]> {
+    const response = await fetch(`${this.getBaseUrl()}/me/platforms`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to list platforms')
+      );
+    }
+    return response.json();
+  }
+
+  /** Issue a short-lived code the user types into the bot (or taps a
+   * deep link) to associate their Telegram identity with their Nymeria
+   * account. Replaces the previously admin-only `users link-platform` CLI. */
+  async requestSelfPlatformLinkCode(
+    provider: 'telegram'
+  ): Promise<ChatAppBindCodeResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/platform-link-codes`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({ provider })
+      }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to issue platform-link code'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  /** Issue a short-lived code the user types into the bot to bind a chat
+   * to this thread. The wizard polls `listThreadBindings` until the code is
+   * consumed and the binding row appears. */
+  async issueChatAppBindCode(
+    threadId: string,
+    provider: 'telegram'
+  ): Promise<ChatAppBindCodeResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bind-code`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({ provider })
+      }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to issue bind code'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  /** List chat-app bindings for the given thread. Caller must own the thread. */
+  async listThreadBindings(threadId: string): Promise<ChatAppBinding[]> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bindings`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to list bindings')
+      );
+    }
+    return response.json();
+  }
+
+  /** Remove a chat-app binding. Caller must own the thread. */
+  async unbindThreadChatApp(
+    threadId: string,
+    bindingId: number
+  ): Promise<{ unbound: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bindings/${bindingId}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to unbind chat')
+      );
     }
     return response.json();
   }

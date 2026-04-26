@@ -154,6 +154,26 @@ You can also send plain text in DMs without any command prefix.
 | `/notepad_write <content>` | Append to notepad. Use `replace:<content>` to overwrite |
 | `/notepad_clear` | Clear this chat's notepad |
 
+### Per-thread chat binding
+
+| Command | Description |
+|---------|-------------|
+| `/bind <code>` | Attach this Telegram chat to the desktop thread that issued the code. Codes are minted by the desktop "Connect Telegram" wizard (Thread Settings → Chat App → Connect Telegram). Single-use, 10-min TTL. |
+| `/unbind` | Remove this chat's thread binding. Future messages here revert to the default `telegram_<chat_id>` thread. |
+| `/start link_<code>` | Auto-handled when you tap a `t.me/<bot>?start=link_<code>` deep link from the desktop wizard's first step. Self-service alternative to `python run.py users link-platform`. |
+| `/start bind_<code>` | Auto-handled when you tap a `t.me/<bot>?start=bind_<code>` deep link. Equivalent to `/bind <code>` in the chat the deep link opens. |
+
+The desktop **Chat App tab** (Thread Settings → Chat App) is the canonical entry
+point for non-admin users. The flow is fully self-service: the wizard issues a
+self-link code if the user hasn't linked their Telegram identity yet, then
+issues a per-thread bind code, then polls until the bot has consumed both. The
+bot caches the chat↔thread map in process and refreshes it from the API every
+60 seconds, so bindings created from the wizard take effect within that window.
+
+Setting `TELEGRAM_BOT_USERNAME=<bot>` (no `@`) in `.env.docker` lets the wizard
+produce one-tap `t.me/<bot>?start=...` deep links. With it unset, the wizard
+shows the raw `/bind` and `/start` commands the user types manually.
+
 ## Streaming Responses
 
 Chat responses (`/ask` and plain text DMs) are streamed via SSE. Users see text appear progressively as the model generates it, with edits every ~1.5 seconds.

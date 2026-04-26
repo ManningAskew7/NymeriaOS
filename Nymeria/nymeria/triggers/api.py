@@ -24,6 +24,8 @@ from ..core.agent import NymeriaAgent
 from ..core.accounts import (
     AmbiguousTokenPrefix,
     AuthenticatedUser,
+    BindCodeInvalid,
+    BindingAlreadyExists,
     LastAdminError,
     TokenNotFound,
     UserAlreadyExists,
@@ -614,6 +616,82 @@ class MeUpdateRequest(BaseModel):
     display_name: Optional[str] = None
 
 
+# --- Chat-app bindings (per-thread Telegram/Discord/etc routing) ----------
+
+
+class ChatAppProviderField(BaseModel):
+    """Body fragment shared by chatapp endpoints — only telegram is wired today."""
+
+    provider: Literal["telegram"]
+
+
+class ChatAppBindCodeRequest(ChatAppProviderField):
+    """Request a short-lived code the user types into the bot to bind a chat
+    to a Nymeria thread."""
+
+
+class ChatAppBindCodeResponse(BaseModel):
+    code: str
+    expires_at: str
+    bot_username: Optional[str] = None
+    deep_link: Optional[str] = None  # populated only if bot_username is configured
+
+
+class PlatformLinkCodeRequest(ChatAppProviderField):
+    """Request a short-lived code the user types into the bot via /start
+    link_<code> to associate their Telegram identity with their Nymeria
+    account. Self-service alternative to ``users link-platform``."""
+
+
+class ChatAppBindingResponse(BaseModel):
+    id: int
+    thread_id: str
+    provider: Literal["discord", "telegram", "twitch"]
+    platform_chat_id: str
+    created_at: str
+
+
+# --- Admin chat-app endpoints (called by bots with the service token) ----
+
+
+class AdminBindingLookupResponse(BaseModel):
+    id: int
+    thread_id: str
+    provider: Literal["discord", "telegram", "twitch"]
+    platform_chat_id: str
+    user_id: str
+    created_at: str
+
+
+class AdminChatAppBindClaimRequest(BaseModel):
+    code: str
+    provider: Literal["telegram"]
+    platform_chat_id: str
+    # The platform's user_id (e.g. Telegram from.id) — must match the
+    # Nymeria user that issued the code, after platform_identities resolution.
+    expected_provider_user_id: str
+
+
+class AdminChatAppBindClaimResponse(BaseModel):
+    binding_id: int
+    thread_id: str
+    user_id: str
+
+
+class AdminPlatformLinkClaimRequest(BaseModel):
+    code: str
+    provider: Literal["telegram"]
+    # The platform's user_id to link to the Nymeria account that issued the code.
+    platform_user_id: str
+
+
+class AdminPlatformLinkClaimResponse(BaseModel):
+    user_id: str
+    provider: Literal["telegram"]
+    provider_user_id: str
+    created_at: str
+
+
 # Sub-Agent Models
 
 
@@ -908,6 +986,50 @@ def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
 
 
 _TOKEN_HASH_PREFIX_LEN = 8
+
+
+def _bot_username_for(provider: str, settings: Settings) -> Optional[str]:
+    """Return the bot's public @username if configured, else None.
+
+    Today only telegram is wired; others can plug in by adding fields to
+    Settings (e.g. ``discord_bot_username``).
+    """
+    if provider == "telegram":
+        # Strip a leading '@' if the user copy-pasted with it.
+        raw = (settings.telegram_bot_username or "").lstrip("@").strip()
+        return raw or None
+    return None
+
+
+def _build_chatapp_link_payload(
+    *,
+    code: str,
+    expires_at: str,
+    provider: str,
+    kind: str,  # 'thread_bind' or 'platform_link'
+    settings: Settings,
+) -> Dict[str, Any]:
+    """Shape the response for issue-bind-code endpoints.
+
+    Builds a Telegram deep link of the form ``t.me/<bot>?start=<prefix>_<code>``
+    when the bot username is known (so a single tap pre-fills the right
+    command). The bot interprets the ``start`` payload in its ``/start``
+    handler. Falls back to just the code when bot_username isn't configured —
+    the wizard then renders manual instructions.
+    """
+    bot_username = _bot_username_for(provider, settings)
+    deep_link: Optional[str] = None
+    if bot_username:
+        if kind == "platform_link":
+            deep_link = f"https://t.me/{bot_username}?start=link_{code}"
+        elif kind == "thread_bind":
+            deep_link = f"https://t.me/{bot_username}?start=bind_{code}"
+    return {
+        "code": code,
+        "expires_at": expires_at,
+        "bot_username": bot_username,
+        "deep_link": deep_link,
+    }
 
 
 def _token_info(record) -> "TokenInfoResponse":
@@ -1509,6 +1631,362 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             )
         repo.unlink_platform(provider, provider_user_id)
         return {"unlinked": True}
+
+    # --- admin: chat-app bindings (called by bots via service token) -----
+
+    @app.get(
+        "/admin/chatapp/bindings",
+        response_model=List[AdminBindingLookupResponse],
+        tags=["Admin"],
+    )
+    async def admin_list_chatapp_bindings(
+        provider: Optional[str] = None,
+        _admin=Depends(require_admin_user),
+    ):
+        """List every chat-app binding (optionally filtered by provider).
+
+        Called by chat-app bots on startup to populate their in-memory
+        ``chat_id <-> thread_id`` lookup cache; also called periodically
+        to absorb desktop-wizard binding changes the bot hasn't seen.
+        """
+        if provider is not None and provider not in ("discord", "telegram", "twitch"):
+            raise HTTPException(status_code=400, detail="Unknown provider")
+        repo = get_agent().accounts_repo
+        return [
+            AdminBindingLookupResponse(
+                id=b.id,
+                thread_id=b.thread_id,
+                provider=b.provider,
+                platform_chat_id=b.platform_chat_id,
+                user_id=b.user_id,
+                created_at=b.created_at,
+            )
+            for b in repo.list_thread_bindings_global(provider=provider)
+        ]
+
+    @app.get(
+        "/admin/chatapp/bindings/lookup",
+        response_model=AdminBindingLookupResponse,
+        tags=["Admin"],
+    )
+    async def admin_lookup_chatapp_binding(
+        provider: str,
+        platform_chat_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        _admin=Depends(require_admin_user),
+    ):
+        """Look up a thread<->chat binding by either chat_id or thread_id.
+
+        Used by chat-app bots (Telegram, future Discord) to:
+          * resolve inbound messages from a chat to the bound thread, and
+          * resolve outbound SSE events on a non-default thread to the
+            destination chat.
+        """
+        if provider not in ("discord", "telegram", "twitch"):
+            raise HTTPException(status_code=400, detail="Unknown provider")
+        if (platform_chat_id is None) == (thread_id is None):
+            raise HTTPException(
+                status_code=400,
+                detail="Provide exactly one of 'platform_chat_id' or 'thread_id'",
+            )
+        repo = get_agent().accounts_repo
+        binding = (
+            repo.lookup_thread_binding_by_chat(provider, platform_chat_id)
+            if platform_chat_id is not None
+            else repo.lookup_thread_binding_by_thread(provider, thread_id)
+        )
+        if binding is None:
+            raise HTTPException(status_code=404, detail="No binding")
+        return AdminBindingLookupResponse(
+            id=binding.id,
+            thread_id=binding.thread_id,
+            provider=binding.provider,
+            platform_chat_id=binding.platform_chat_id,
+            user_id=binding.user_id,
+            created_at=binding.created_at,
+        )
+
+    @app.post(
+        "/admin/chatapp/bindings/claim",
+        response_model=AdminChatAppBindClaimResponse,
+        tags=["Admin"],
+    )
+    async def admin_claim_thread_bind_code(
+        body: AdminChatAppBindClaimRequest,
+        _admin=Depends(require_admin_user),
+    ):
+        """Atomically consume a thread-bind code and create the binding.
+
+        Called by the bot's ``/bind <code>`` handler. Verifies that the
+        Telegram (or other platform) user invoking the command resolves —
+        via ``platform_identities`` — to the same Nymeria user that issued
+        the code. Prevents user A from binding user B's thread by simply
+        knowing the code.
+        """
+        repo = get_agent().accounts_repo
+        try:
+            claim = repo.claim_bind_code(
+                body.code, kind="thread_bind", provider=body.provider
+            )
+        except BindCodeInvalid as e:
+            raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
+        # Sanity: thread_id should always be set for thread_bind kind.
+        if claim.thread_id is None:
+            raise HTTPException(status_code=500, detail="Code has no thread_id")
+        # Verify the platform-user matches the issuing Nymeria user.
+        resolved_user = repo.resolve_platform(
+            body.provider, body.expected_provider_user_id
+        )
+        if resolved_user != claim.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Code was issued by a different Nymeria account",
+            )
+        try:
+            binding = repo.create_thread_binding(
+                thread_id=claim.thread_id,
+                provider=body.provider,
+                platform_chat_id=body.platform_chat_id,
+                user_id=claim.user_id,
+            )
+        except BindingAlreadyExists as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return AdminChatAppBindClaimResponse(
+            binding_id=binding.id,
+            thread_id=binding.thread_id,
+            user_id=binding.user_id,
+        )
+
+    @app.delete(
+        "/admin/chatapp/bindings/by-chat",
+        tags=["Admin"],
+    )
+    async def admin_unbind_chatapp_by_chat(
+        provider: str,
+        platform_chat_id: str,
+        _admin=Depends(require_admin_user),
+    ):
+        """Remove the binding for a given (provider, chat_id). Called by the
+        bot's ``/unbind`` handler. Returns ``{unbound: bool}``.
+        """
+        if provider not in ("discord", "telegram", "twitch"):
+            raise HTTPException(status_code=400, detail="Unknown provider")
+        repo = get_agent().accounts_repo
+        binding = repo.lookup_thread_binding_by_chat(provider, platform_chat_id)
+        if binding is None:
+            return {"unbound": False}
+        # Bypass the user_id check by passing the binding's owner — admin
+        # path is operating on behalf of whoever owns it.
+        repo.delete_thread_binding(binding.id, user_id=binding.user_id)
+        return {"unbound": True, "thread_id": binding.thread_id}
+
+    @app.post(
+        "/admin/platform/link-codes/claim",
+        response_model=AdminPlatformLinkClaimResponse,
+        tags=["Admin"],
+    )
+    async def admin_claim_platform_link_code(
+        body: AdminPlatformLinkClaimRequest,
+        _admin=Depends(require_admin_user),
+    ):
+        """Atomically consume a platform-link code and link the platform user
+        to the issuing Nymeria account. Called by the bot's
+        ``/start link_<code>`` handler so non-admin users can self-service
+        their initial Telegram-to-account link without an admin running
+        ``users link-platform``.
+        """
+        repo = get_agent().accounts_repo
+        try:
+            claim = repo.claim_bind_code(
+                body.code, kind="platform_link", provider=body.provider
+            )
+        except BindCodeInvalid as e:
+            raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
+        # Block hijacking an existing link: if this platform user_id is
+        # already linked to a *different* Nymeria account, refuse rather
+        # than silently overwriting.
+        existing = repo.resolve_platform(body.provider, body.platform_user_id)
+        if existing is not None and existing != claim.user_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Platform identity already linked to user '{existing}'",
+            )
+        try:
+            repo.link_platform(body.provider, body.platform_user_id, claim.user_id)
+        except UserNotFound:
+            raise HTTPException(status_code=404, detail="User not found")
+        for p in repo.list_platforms_for_user(claim.user_id):
+            if p.provider == body.provider and p.provider_user_id == body.platform_user_id:
+                return AdminPlatformLinkClaimResponse(
+                    user_id=claim.user_id,
+                    provider=body.provider,
+                    provider_user_id=body.platform_user_id,
+                    created_at=p.created_at,
+                )
+        raise HTTPException(status_code=500, detail="Linked but not found")
+
+    # ========================================================================
+    # Self-service chat-app linking & per-thread chat bindings
+    # ========================================================================
+
+    @app.get(
+        "/me/platforms",
+        response_model=List[PlatformIdentityResponse],
+        tags=["Auth"],
+    )
+    async def list_my_platforms(
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """List the current user's linked platform identities (Discord/Telegram/Twitch).
+
+        Self-service equivalent of ``GET /admin/users/{id}/platforms`` — used by
+        the desktop wizard to decide whether the user already has a Telegram
+        identity linked, or whether step 1 of the wizard (link via deep code)
+        is needed.
+        """
+        repo = get_agent().accounts_repo
+        return [
+            PlatformIdentityResponse(
+                provider=p.provider,
+                provider_user_id=p.provider_user_id,
+                created_at=p.created_at,
+            )
+            for p in repo.list_platforms_for_user(user.id)
+        ]
+
+    @app.post(
+        "/me/platform-link-codes",
+        response_model=ChatAppBindCodeResponse,
+        tags=["Auth"],
+    )
+    async def issue_my_platform_link_code(
+        body: PlatformLinkCodeRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Issue a short-lived code so the user can self-service-link their
+        chat-app identity (e.g. Telegram user_id) to their Nymeria account.
+
+        Flow: code is shown in the wizard, user taps the deep link or types
+        ``/start link_<code>`` into the bot, the bot's ``/start`` handler
+        claims the code (atomic) and writes the ``platform_identities`` row.
+        Replaces the previously admin-only ``users link-platform`` CLI step.
+        """
+        repo = get_agent().accounts_repo
+        raw = repo.issue_bind_code(
+            kind="platform_link",
+            provider=body.provider,
+            user_id=user.id,
+            ttl_seconds=600,
+        )
+        # Round-trip: read back the row so the response carries the canonical
+        # expiry timestamp (avoids drift from clock formatting).
+        # We don't expose a get-by-hash repo method (codes are write-once and
+        # consumed by the bot, not the API), so compute expiry locally.
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=600)).isoformat(
+            timespec="seconds"
+        )
+        return ChatAppBindCodeResponse(
+            **_build_chatapp_link_payload(
+                code=raw,
+                expires_at=expires,
+                provider=body.provider,
+                kind="platform_link",
+                settings=settings,
+            )
+        )
+
+    @app.post(
+        "/threads/{thread_id}/chatapp/bind-code",
+        response_model=ChatAppBindCodeResponse,
+        tags=["Threads"],
+    )
+    async def issue_thread_chatapp_bind_code(
+        thread_id: str,
+        body: ChatAppBindCodeRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+        settings: Settings = Depends(get_settings),
+    ):
+        """Issue a short-lived code the user types into the bot to bind a
+        chat to this thread.
+
+        Caller must own the thread. The wizard polls
+        ``GET /threads/{id}/chatapp/bindings`` to detect when the bot has
+        consumed the code and the binding is in place.
+        """
+        _require_thread_access(user, thread_id)
+        # Don't pre-issue if a binding already exists — the user should
+        # unbind first. Surfaces a clear 409 instead of a confusing
+        # double-bind UX.
+        repo = get_agent().accounts_repo
+        existing = repo.lookup_thread_binding_by_thread(body.provider, thread_id)
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Thread already bound to {body.provider} chat {existing.platform_chat_id}",
+            )
+        raw = repo.issue_bind_code(
+            kind="thread_bind",
+            provider=body.provider,
+            user_id=user.id,
+            thread_id=thread_id,
+            ttl_seconds=600,
+        )
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=600)).isoformat(
+            timespec="seconds"
+        )
+        return ChatAppBindCodeResponse(
+            **_build_chatapp_link_payload(
+                code=raw,
+                expires_at=expires,
+                provider=body.provider,
+                kind="thread_bind",
+                settings=settings,
+            )
+        )
+
+    @app.get(
+        "/threads/{thread_id}/chatapp/bindings",
+        response_model=List[ChatAppBindingResponse],
+        tags=["Threads"],
+    )
+    async def list_thread_chatapp_bindings(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """List chat-app bindings on this thread. Caller must own the thread."""
+        _require_thread_access(user, thread_id)
+        repo = get_agent().accounts_repo
+        return [
+            ChatAppBindingResponse(
+                id=b.id,
+                thread_id=b.thread_id,
+                provider=b.provider,
+                platform_chat_id=b.platform_chat_id,
+                created_at=b.created_at,
+            )
+            for b in repo.list_thread_bindings(thread_id)
+        ]
+
+    @app.delete(
+        "/threads/{thread_id}/chatapp/bindings/{binding_id}",
+        tags=["Threads"],
+    )
+    async def delete_thread_chatapp_binding(
+        thread_id: str,
+        binding_id: int,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Unbind a chat from this thread. Caller must own the thread, and the
+        binding row must belong to the caller (extra guard alongside thread
+        ownership).
+        """
+        _require_thread_access(user, thread_id)
+        repo = get_agent().accounts_repo
+        ok = repo.delete_thread_binding(binding_id, user_id=user.id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Binding not found")
+        return {"unbound": True}
 
     @app.post("/restart", tags=["System"])
     async def restart_server(user: AuthenticatedUser = Depends(require_admin_user)):
