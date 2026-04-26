@@ -2310,7 +2310,22 @@ class NymeriaAgent:
         if tc and tc.base_url is not None:
             base_url = tc.base_url or None  # "" → None (direct API)
         elif provider != self.settings.llm_provider:
-            base_url = None
+            # Per-thread provider differs from global. CLIProxy hosts both the
+            # anthropic OAuth path (port 8317 root) and the openai-compat path
+            # (port 8317 + /v1) on the same container, so derive the matching
+            # URL from the global one when it points at CLIProxy. Without this,
+            # the "Anthropic (Subscription)" per-thread option silently falls
+            # through to api.anthropic.com direct + ANTHROPIC_DIRECT_API_KEY,
+            # billing per-token instead of using the subscription.
+            global_url = (self.settings.llm_base_url or "").rstrip("/")
+            if (
+                provider == "anthropic"
+                and global_url
+                and ("cli-proxy" in global_url or "cliproxy" in global_url)
+            ):
+                base_url = global_url[:-3] if global_url.endswith("/v1") else global_url
+            else:
+                base_url = None
         else:
             base_url = self.settings.llm_base_url
 

@@ -1859,12 +1859,30 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         repo = get_agent().accounts_repo
         bot = repo.get_user_telegram_bot(body.via_user_telegram_bot_id)
         if bot is None or not bot.enabled:
+            logger.warning(
+                "claim-via-bot: bot id=%s not found / disabled",
+                body.via_user_telegram_bot_id,
+            )
             raise HTTPException(status_code=404, detail="Bot not found")
         try:
             claim = repo.claim_bind_code(
                 body.code, kind="thread_bind", provider=body.provider
             )
         except BindCodeInvalid as e:
+            # Log enough to diagnose without leaking the full code value.
+            redacted = (
+                (body.code[:2] + "*" * max(0, len(body.code) - 4) + body.code[-2:])
+                if body.code else "(empty)"
+            )
+            logger.warning(
+                "claim-via-bot: BindCodeInvalid for code=%s len=%d kind=thread_bind "
+                "provider=%s bot_id=%s reason=%s",
+                redacted,
+                len(body.code or ""),
+                body.provider,
+                body.via_user_telegram_bot_id,
+                e,
+            )
             raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
         if claim.thread_id is None:
             raise HTTPException(status_code=500, detail="Code has no thread_id")

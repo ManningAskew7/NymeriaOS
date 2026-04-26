@@ -7,22 +7,132 @@ Modular node creation that accepts configuration for easy framework integration.
 import asyncio
 import concurrent.futures
 import logging
-from typing import List, Callable, Optional
-from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
+from typing import Any, List, Callable, Optional
+from urllib.parse import urlparse
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.prebuilt import ToolNode
 
 from .state import AgentState
-from .config import AgentConfig, default_config
+from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
 
 logger = logging.getLogger(__name__)
+
+_CLIPROXY_PORTS = {8317, 8318}
+_CLIPROXY_BILLING_SYSTEM_BLOCK = {
+    "type": "text",
+    "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
+}
+
+
+def _uses_cliproxy_anthropic(llm_config: Optional[LLMConfig]) -> bool:
+    """Return True for Anthropic requests routed through CLIProxy."""
+    if not llm_config or llm_config.provider != "anthropic" or not llm_config.base_url:
+        return False
+
+    parse_target = llm_config.base_url.strip()
+    if "://" not in parse_target:
+        parse_target = f"http://{parse_target}"
+
+    try:
+        parsed = urlparse(parse_target)
+    except ValueError:
+        return False
+
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    return "cli-proxy" in host or "cliproxy" in host or port in _CLIPROXY_PORTS
+
+
+def _format_system_prompt(
+    system_prompt: str,
+    llm_config: Optional[LLMConfig],
+) -> str | list[dict[str, Any]]:
+    """Add CLIProxy's lightweight OAuth fingerprint without replacing Nymeria."""
+    if not _uses_cliproxy_anthropic(llm_config):
+        return system_prompt
+
+    if isinstance(system_prompt, list):
+        blocks = list(system_prompt)
+    else:
+        blocks = [{"type": "text", "text": system_prompt}]
+
+    has_billing_block = any(
+        isinstance(block, dict)
+        and str(block.get("text", "")).startswith("x-anthropic-billing-header:")
+        for block in blocks
+    )
+    if has_billing_block:
+        return blocks
+
+    return [dict(_CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
+
+
+def _strip_malformed_anthropic_thinking_blocks(content: Any) -> tuple[Any, int]:
+    """Remove Anthropic thinking blocks that cannot be replayed."""
+    if not isinstance(content, list):
+        return content, 0
+
+    cleaned = []
+    removed = 0
+    for block in content:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "thinking"
+            and "thinking" not in block
+            and "redacted_thinking" not in block
+        ):
+            removed += 1
+            continue
+        cleaned.append(block)
+
+    if not removed:
+        return content, 0
+    return cleaned, removed
+
+
+def _copy_message_with_content(message: BaseMessage, content: Any) -> BaseMessage:
+    if hasattr(message, "model_copy"):
+        return message.model_copy(update={"content": content})
+    return message.copy(update={"content": content})
+
+
+def _sanitize_messages_for_anthropic(
+    messages: List[BaseMessage],
+    llm_config: Optional[LLMConfig],
+) -> List[BaseMessage]:
+    """Drop invalid signature-only thinking blocks before Anthropic replay."""
+    if not llm_config or llm_config.provider != "anthropic":
+        return messages
+
+    sanitized: List[BaseMessage] = []
+    removed_total = 0
+    for message in messages:
+        if isinstance(message, AIMessage):
+            content, removed = _strip_malformed_anthropic_thinking_blocks(message.content)
+            if removed:
+                message = _copy_message_with_content(message, content)
+                removed_total += removed
+        sanitized.append(message)
+
+    if removed_total:
+        logger.warning(
+            "[LLM] Dropped %d malformed Anthropic thinking block(s) before replay",
+            removed_total,
+        )
+    return sanitized
 
 
 def create_agent_node(
     llm_with_tools: BaseChatModel,
     system_prompt: str,
+    llm_config: Optional[LLMConfig] = None,
 ) -> Callable[[AgentState], dict]:
     """
     Factory function to create an agent node with custom LLM and prompt.
@@ -43,7 +153,7 @@ def create_agent_node(
         - Has tool_calls (instructions to call tools)
         - Has both (explaining what it's about to do)
         """
-        messages = state["messages"]
+        messages = _sanitize_messages_for_anthropic(state["messages"], llm_config)
 
         # Summary line at INFO (always visible)
         tool_rounds = sum(1 for m in messages if isinstance(m, AIMessage) and m.tool_calls)
@@ -64,7 +174,9 @@ def create_agent_node(
                 logger.debug(f"[LLM]   [{i}] {msg_type}{tool_info}: {content_preview}...")
 
         # Prepend system prompt (not stored in state)
-        messages_with_system = [SystemMessage(content=system_prompt)] + messages
+        messages_with_system = [
+            SystemMessage(content=_format_system_prompt(system_prompt, llm_config))
+        ] + messages
 
         # Call the LLM
         response = llm_with_tools.invoke(messages_with_system)
@@ -322,7 +434,8 @@ class NodeFactory:
         """Create the agent reasoning node."""
         return create_agent_node(
             self.llm_with_tools,
-            self.config.system_prompt
+            self.config.system_prompt,
+            self.config.llm,
         )
 
     def create_tools_node(self) -> ToolNode:
