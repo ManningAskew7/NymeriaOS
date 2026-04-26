@@ -787,6 +787,33 @@ Aborts a running stream on the thread. Cascades to any active callable child thr
 
 ---
 
+### Claim Thread Ownership
+
+```http
+POST /threads/{thread_id}/claim
+Authorization: Bearer <token>
+```
+
+Eagerly registers the calling user as the owner of `thread_id` in the `thread_owners` table. The desktop frontend calls this from `threadsStore.createThread()` immediately after generating a UUID, so the backend has an ownership row before any chat-app routing (Telegram/Discord via `X-Nymeria-Act-As`) can hit `/chat` and TOFU-claim the thread for someone else.
+
+Idempotent — safe to call multiple times.
+
+**Response (200):**
+```json
+{
+  "thread_id": "abc123",
+  "owner": "default"
+}
+```
+
+**Errors:**
+- `400` — `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `twitch_<c>`). These are inherently multi-user and cannot be per-user-claimed.
+- `404` — Non-admin caller and the thread is owned by someone else. Mirrors `_require_thread_access`'s leak surface so callers can't probe ownership under other users. Admin callers always get `200` with the actual owner instead.
+
+See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the full lifecycle.
+
+---
+
 ## TODO Management API
 
 Manage TODO items with optional scheduling for autonomous execution.

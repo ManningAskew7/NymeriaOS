@@ -111,9 +111,8 @@ AccountBadge renders the resolved identity reactively
 Each saved entry (`SavedConnection` in `types/index.ts`) has a cached `identity?` field plus `identityCheckedAt` and `identityError`. On boot the active entry is auto-verified (`connectionsStore.verifyEntry(id)` runs in a 500ms-deferred `setTimeout` at the bottom of `connections.svelte.ts`). Each row in the switcher shows the cached identity; the per-row "⋯ → Re-verify" menu re-hits `/me` against that entry's URL+token.
 
 When the user clicks a different account:
-1. `connectionsStore.switchTo(id)` — disconnects SSE/polling, clears chat, sets new apiUrl/apiKey, reloads threads
-2. `configStore.refreshIdentity()` — fetches `/me` for the new account
-3. `connectionsStore.verifyEntry(id)` — refreshes the cached identity for the just-activated entry
+1. `connectionsStore.switchTo(id)` — disconnects SSE/polling, clears chat, sets new apiUrl/apiKey, **awaits `configStore.refreshIdentity()`** so `currentIdentityId` updates to the new user before any scoped-localStorage I/O, then reloads threads. The identity refresh is awaited specifically because `threadsStore.reset()` and `syncFromBackend()` write through `scopedKey()` (`config.svelte.ts`); without the await the stale `currentIdentityId` would route reads/writes to the previous user's `nymeria-*-<old-id>` namespace. The await is wrapped in `.catch(() => {})` so a network/401 failure mid-switch doesn't strand the user.
+2. `connectionsStore.verifyEntry(id)` — refreshes the cached identity for the just-activated entry
 
 ### Token issuance flow
 
