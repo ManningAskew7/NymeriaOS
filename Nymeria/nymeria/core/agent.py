@@ -606,6 +606,41 @@ class NymeriaAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("Thread ownership backfill failed (non-fatal): %s", e)
 
+        # Second pass: sweep checkpoint thread_ids for personal-pattern threads
+        # that have no thread_owners row and assign them to the bootstrap admin.
+        # Catches UUIDs created in the desktop where admin sent the first
+        # message before the eager-claim flow existed (admin used to skip
+        # claim entirely, leaving such threads ownerless and invisible to
+        # /threads). Idempotent — backfill_threads is INSERT OR IGNORE.
+        try:
+            checkpoint_tids = self._enumerate_checkpoint_thread_ids()
+            if checkpoint_tids:
+                # Inline shared-channel pattern check (avoids importing
+                # from triggers.api which would be circular).
+                def _is_shared(tid: str) -> bool:
+                    if tid.startswith("discord_dm_"):
+                        return False
+                    if tid.startswith("discord_"):
+                        return True
+                    if tid.startswith("telegram_-"):
+                        return True
+                    if tid.startswith("twitch_"):
+                        return True
+                    return False
+
+                personal_tids = [t for t in checkpoint_tids if not _is_shared(t)]
+                if personal_tids:
+                    inserted = self.accounts_repo.backfill_threads(
+                        personal_tids, "default"
+                    )
+                    if inserted:
+                        logger.info(
+                            "Checkpoint orphan backfill: %d personal thread(s) assigned to default",
+                            inserted,
+                        )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Checkpoint orphan backfill failed (non-fatal): %s", e)
+
         # Memory indexes cache for RAG (user_id -> MemoryIndex)
         # Lazily initialized per-user to avoid loading all indexes on startup
         self._memory_indexes: Dict[str, MemoryIndex] = {}
@@ -727,6 +762,39 @@ class NymeriaAgent:
             f"NymeriaAgent initialized with provider={self.settings.llm_provider}, "
             f"model={self.settings.llm_model}, tools={self.tool_registry.list_tools()}"
         )
+
+    def _enumerate_checkpoint_thread_ids(self) -> List[str]:
+        """Return distinct thread_ids present in the checkpoint database.
+
+        Used by the startup ownership backfill. Tolerates missing tables
+        and connection errors (returns empty list with a warning).
+        """
+        backend = self.settings.database_backend
+        if backend == "sqlite":
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(str(self.settings.db_path))
+                try:
+                    rows = conn.execute(
+                        "SELECT DISTINCT thread_id FROM checkpoints"
+                    ).fetchall()
+                    return [r[0] for r in rows]
+                finally:
+                    conn.close()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Enumerate checkpoint thread_ids (sqlite) failed: %s", e)
+                return []
+        if backend == "postgres":
+            import psycopg  # type: ignore[import-untyped]
+            try:
+                with psycopg.connect(self.settings.postgres_uri) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
+                        return [row[0] for row in cur.fetchall()]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Enumerate checkpoint thread_ids (postgres) failed: %s", e)
+                return []
+        return []
 
     def _prepare_tool_reload_state_for_turn(self, thread_id: str, caller: str) -> None:
         """Reset per-turn reload counters and discard stale reload requests.

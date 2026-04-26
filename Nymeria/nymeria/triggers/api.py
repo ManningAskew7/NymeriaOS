@@ -996,33 +996,43 @@ def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
     """
     Enforce that ``user`` owns ``thread_id`` (or is admin).
 
-    Admins bypass ownership entirely but never claim implicitly. This covers
-    the bot service token, the bootstrap admin user, and admin callers using
-    ``X-Nymeria-Act-As`` (verify_api_key has already rewritten ``user`` to
-    the impersonated target — if that target isn't admin, normal ownership
-    rules apply). Not claiming on admin touch prevents the bot service token
-    from claim-jacking shared threads when a slash command forgets to plumb
-    ``act_as``.
+    Admins bypass ownership for already-owned threads but DO claim on first
+    touch for personal threads (UUIDs, ``discord_dm_*``, positive
+    ``telegram_<id>``). Without this, a thread an admin opened but never
+    sent a message in stayed ownerless — the first non-admin user (or
+    bot-routed act-as caller) to touch it would TOFU-claim, silently
+    transferring ownership away from the creator.
 
-    Non-admin callers cannot reach shared-channel threads (Discord guild
-    channels, Telegram groups, Twitch chats) via the API. There is no
-    membership table; the only legitimate path is the bot service token
-    (admin) routing platform users via ``X-Nymeria-Act-As`` for personal
-    data attribution. Returning 404 here prevents an authenticated user
-    from guessing a ``discord_<g>_<c>`` / ``telegram_-<id>`` / ``twitch_<c>``
-    thread ID and reading, mutating, or deleting it.
+    Shared-channel threads (Discord guild channels, Telegram groups,
+    Twitch chats) are NEVER claimed by admin — those are inherently
+    multi-user and per-user ownership rows would just claim-jack to
+    whichever admin spoke first. The bot-service token routing them
+    via ``X-Nymeria-Act-As`` for individual users still works because
+    act-as targets arrive with ``role="user"`` and never enter this
+    admin branch (verify_api_key rewrites both id and role).
 
-    For 1:1 personal thread IDs (UUIDs, ``discord_dm_*``, positive
-    ``telegram_<id>``), first touch atomically claims the thread for
-    ``user.id``; subsequent access by any other non-admin user resolves
-    to 404 (intentional — don't leak whether a thread exists under a
-    different owner).
+    Non-admin callers cannot reach shared-channel threads via the API.
+    There is no membership table; the only legitimate path is the bot
+    service token routing platform users via ``X-Nymeria-Act-As``.
+    Returning 404 prevents an authenticated user from guessing a
+    ``discord_<g>_<c>`` / ``telegram_-<id>`` / ``twitch_<c>`` ID.
+
+    For 1:1 personal thread IDs, first touch atomically claims the
+    thread; subsequent access by any other non-admin resolves to 404
+    (intentional — don't leak whether a thread exists under a different
+    owner).
     """
     agent = get_agent()
     if user.role == "admin":
-        # Admins bypass ownership but never claim implicitly. The thread
-        # remains unowned (or owned by whoever it already was) so the next
-        # non-admin user touch is the one that establishes ownership.
+        if _is_shared_channel_thread(thread_id):
+            # Never per-user-claim a shared channel for an admin. The bot
+            # service token routing without act_as lands here too — leaving
+            # the thread unowned is correct.
+            return
+        # Personal thread: claim on first touch so the admin owns what they
+        # created. claim_thread is INSERT OR IGNORE — already-owned threads
+        # are not disturbed; admin still bypasses the ownership check.
+        agent.accounts_repo.claim_thread(thread_id, user.id)
         return
     if _is_shared_channel_thread(thread_id):
         # Shared-channel threads (Discord guild channels, Telegram groups,
@@ -3059,6 +3069,43 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             user_id, request.threads
         )
         return {"migrated_threads": count}
+
+    @app.post("/threads/{thread_id}/claim", tags=["Threads"])
+    async def claim_thread_endpoint(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Eagerly claim ownership of a thread for the calling user.
+
+        Used by the desktop frontend after locally generating a UUID for a
+        new thread, so the thread_owners row exists before any chat-app
+        binding (Telegram/Discord) routes a message into it. Without this,
+        the first non-admin caller to hit /chat for the UUID would TOFU-claim
+        and silently transfer ownership.
+
+        Idempotent. Honors ``X-Nymeria-Act-As`` like all thread routes.
+
+        - 400 if the thread id matches a shared-channel pattern
+          (``discord_<g>_<c>``, ``telegram_-<id>``, ``twitch_<c>``) — these
+          are inherently multi-user and not claimable per-user.
+        - 200 ``{thread_id, owner}`` if the caller is the owner (fresh claim
+          or already-owned-by-self), or if the caller is admin (admin always
+          sees the truth even when someone else owns it).
+        - 404 for non-admin callers when another user owns the thread.
+          Mirrors the leak surface of ``_require_thread_access`` so callers
+          can't probe for thread existence under other users.
+        """
+        if _is_shared_channel_thread(thread_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Shared-channel threads cannot be claimed",
+            )
+        agent = get_agent()
+        owner = agent.accounts_repo.claim_thread(thread_id, user.id)
+        if owner != user.id and user.role != "admin":
+            raise HTTPException(status_code=404, detail="Not found")
+        return {"thread_id": thread_id, "owner": owner}
 
     @app.delete("/threads/{thread_id}", tags=["Threads"])
     async def delete_thread(

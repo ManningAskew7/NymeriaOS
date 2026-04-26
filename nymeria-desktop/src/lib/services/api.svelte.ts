@@ -1246,6 +1246,29 @@ export class NymeriaAPI {
     );
   }
 
+  /**
+   * Eagerly claim ownership of a locally-generated thread id. Called from
+   * `threadsStore.createThread()` so the backend has a `thread_owners` row
+   * before any chat-app binding (Telegram/Discord) routes a message into
+   * the thread. Without this, the first non-admin caller to hit /chat for
+   * the UUID would TOFU-claim and silently transfer ownership.
+   *
+   * Idempotent on the backend; safe to call multiple times.
+   */
+  async claimThread(threadId: string): Promise<{ thread_id: string; owner: string }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/claim`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to claim thread'));
+    }
+    return response.json();
+  }
+
   async getThreadHistory(threadId: string): Promise<ThreadHistory> {
     const response = await fetch(
       `${this.getBaseUrl()}/threads/${threadId}/history`,

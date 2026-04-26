@@ -10,7 +10,7 @@ Six tables in a dedicated SQLite database at `<data_dir>/accounts.db`:
 |---|---|
 | `users` | Accounts (`id`, `email`, `display_name`, `role`, `disabled`) |
 | `user_tokens` | Bearer tokens (one user can have many, each independently revocable) |
-| `thread_owners` | Maps `thread_id → user_id`; populated on first-touch (Step 5) |
+| `thread_owners` | Maps `thread_id → user_id`. Populated by (a) the desktop's eager `POST /threads/{id}/claim` on new-thread creation, (b) admin first-touch on `/chat` for personal-pattern threads, (c) non-admin first-touch on `/chat` (TOFU), and (d) the startup orphan-backfill sweep. See [Thread ownership](#thread-ownership) below. |
 | `platform_identities` | Maps Discord/Telegram/Twitch user IDs to Nymeria accounts (Step 6) |
 | `thread_platform_bindings` | Per-thread chat-app bindings (e.g. `desktop thread <-> Telegram chat`). Unique on `(provider, thread_id)` and `(provider, platform_chat_id)`. The optional `user_telegram_bot_id` column is null when the binding is served by the shared bot, or the row id of a `user_telegram_bots` entry when served by a user-owned (BYO) bot. |
 | `bind_codes` | Short-lived single-use codes the desktop wizard mints and the bot consumes. Discriminated by `kind` — `platform_link` (link a Telegram identity to a Nymeria account) or `thread_bind` (attach a chat to a thread). 10-min TTL, hashed at rest. |
@@ -206,6 +206,42 @@ Google (Calendar/Docs/Drive/Sheets) and Microsoft (Outlook/Graph) OAuth tokens l
 **On first boot with the per-user refactor**, existing global caches (`data/auth_tokens/.microsoft_mcp_token_cache.json` etc.) are automatically migrated to `data/auth_tokens/default/*.json`. The owner's existing Google/Outlook auth survives — other users start with empty caches and run the usual `calendar_auth_start` / `google_docs_auth_start` / `outlook_auth_start` tool flows to authenticate their own accounts independently.
 
 Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the agent sets `configurable.user_id` on every graph invocation). No tool can be tricked into loading a different user's token cache.
+
+If an OAuth token becomes stale, revoked, or attached to the wrong account, use the matching clear tool instead of deleting legacy home-directory files: `calendar_auth_clear`, `google_docs_auth_clear`, or `outlook_auth_clear`. With no `account_id`, each clear tool removes all cached accounts for the current Nymeria user and clears any pending auth flow for that provider; with `account_id`, it removes only that saved account. `calendar_auth_start` and `google_docs_auth_start` also prune expired Google accounts automatically when Google rejects the stored refresh token.
+
+## Thread ownership
+
+`thread_owners` enforces "who can read/mutate this thread". `/threads` (sidebar list) is strictly filtered by ownership for everyone, **including admins** — admins must `X-Nymeria-Act-As: <user>` to see another user's threads. There is no universal "all threads" view.
+
+### Lifecycle
+
+A thread becomes owned in one of four ways:
+
+1. **Eager claim from the desktop.** `threadsStore.createThread()` (`nymeria-desktop/src/lib/stores/threads.svelte.ts`) generates a UUID and immediately fires `POST /threads/{id}/claim` (fire-and-forget) so the backend has an ownership row before any chat-app binding can route a message into the thread. Without this, an admin who created a UUID, bound it to a Telegram chat, and let the bound user send the first message would silently transfer ownership to that user (the bug at `/home/nymeria/.claude/plans/verify-the-bugs-and-snoopy-hickey.md`).
+2. **Admin first-touch on `/chat`.** `_require_thread_access` (`triggers/api.py`) claims personal-pattern threads on first touch when `user.role == "admin"`. Bot service token + missing `act_as` lands here too, which is fine — the thread becomes service-owned rather than ownerless.
+3. **Non-admin first-touch on `/chat`.** TOFU via `claim_thread` (`core/accounts.py`, `INSERT OR IGNORE`, race-safe). Subsequent access by any other non-admin user resolves to 404.
+4. **Startup orphan-backfill.** `NymeriaAgent.__init__` enumerates checkpoint thread_ids, filters to personal patterns (NOT shared-channel), and assigns any without a `thread_owners` row to the bootstrap admin. Idempotent across restarts.
+
+### Personal vs shared patterns
+
+`_is_shared_channel_thread` (`triggers/api.py`) classifies thread IDs:
+
+| Pattern | Type | Claimable per-user? |
+|---|---|---|
+| UUIDv4 (`abc-123-...`), `agent-*`, `spawned-*`, plain strings | Personal | Yes |
+| `discord_dm_<channel_id>` | Personal (1:1 DM) | Yes |
+| `telegram_<positive_id>` | Personal (1:1 DM) | Yes |
+| `discord_<guild_id>_<channel_id>` | Shared channel | **No** (400 from `/claim`) |
+| `telegram_-<group_id>` | Shared group | **No** |
+| `twitch_<channel_name>` | Shared chat | **No** |
+
+Shared-channel threads are inherently multi-user — per-user ownership rows would just claim-jack to whichever user spoke first. The bot service token routes per-user attribution through `X-Nymeria-Act-As` instead (act-as targets arrive with `role="user"` and never enter the admin-claim branch). Direct non-admin API calls to a shared-channel thread always 404.
+
+### Operator notes
+
+- A thread can be reassigned by direct DB write: `UPDATE thread_owners SET user_id=<new> WHERE thread_id=<id>`. The checkpoint-metadata `user_id` field on existing messages is **not** rewritten — it reflects who was authenticated when each message was sent. Future messages will attribute to the new owner.
+- Deleting a thread (`DELETE /threads/{id}`) cascades through `thread_owners`, checkpoints, metadata, and config.
+- The orphan-backfill sweep on every restart is cheap and idempotent. If you don't want it (e.g. you intentionally hold ownerless threads), comment out the second pass in `NymeriaAgent.__init__`.
 
 ## Rationale for dedicated SQLite
 

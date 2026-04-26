@@ -130,7 +130,15 @@ function createConnectionsStore() {
         activeConnectionId = id;
         saveActiveId(id);
 
-        // 5. Reset and reload threads from new backend
+        // 5. Refresh identity FIRST so scoped-localStorage keys resolve
+        // to the new user's namespace before threads I/O. Without this,
+        // currentIdentityId stays stale and reset/sync read & write the
+        // previous user's `nymeria-*-<old-id>` keys. .catch keeps the
+        // switch going on a network/401 failure — better to land in the
+        // new backend with a stale namespace than to abort mid-switch.
+        await configStore.refreshIdentity().catch(() => {});
+
+        // 6. Reset and reload threads from new backend
         threadsStore.reset();
         await threadsStore.syncFromBackend();
 
