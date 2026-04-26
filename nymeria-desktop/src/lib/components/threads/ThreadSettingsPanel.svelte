@@ -14,6 +14,8 @@
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
   import { skillsStore } from '$lib/stores/skills.svelte';
+  import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
+  import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
 
   interface Props {
     thread: Thread;
@@ -25,7 +27,36 @@
   let { thread, threadConfig, onClose, onSaved }: Props = $props();
 
   // Active tab
-  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'skills' | 'triggers'>('instructions');
+  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'skills' | 'triggers' | 'chatapp'>('instructions');
+
+  // Chat App tab state — binding count is reactive via chatAppBindingsStore
+  let showChatAppWizard = $state(false);
+  let chatAppLoaded = $state(false);
+  let chatAppLoadError = $state<string | null>(null);
+
+  $effect(() => {
+    // Load bindings the first time the user opens the Chat App tab. The
+    // wizard refreshes on its own when it completes a bind, so we only
+    // need to populate once for the initial render.
+    if (activeTab === 'chatapp' && !chatAppLoaded) {
+      chatAppLoaded = true;
+      chatAppBindingsStore
+        .loadBindings(thread.id)
+        .catch((err) => {
+          chatAppLoadError = err instanceof Error ? err.message : String(err);
+        });
+    }
+  });
+
+  let chatAppBindings = $derived(chatAppBindingsStore.getBindings(thread.id));
+
+  async function handleUnbindChatApp(bindingId: number) {
+    try {
+      await chatAppBindingsStore.unbind(thread.id, bindingId);
+    } catch (err) {
+      chatAppLoadError = err instanceof Error ? err.message : String(err);
+    }
+  }
 
   // Per-thread skill overrides
   let threadEnabledSkills = $state<Set<string>>(new Set(threadConfig?.enabledSkills ?? []));
@@ -693,6 +724,17 @@
           <span class="tab-badge">{triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length}</span>
         {/if}
       </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'chatapp'}
+        onclick={() => (activeTab = 'chatapp')}
+        type="button"
+      >
+        Chat App
+        {#if chatAppBindings.length > 0}
+          <span class="tab-badge">{chatAppBindings.length}</span>
+        {/if}
+      </button>
     </div>
 
     <div class="tab-content">
@@ -1208,6 +1250,52 @@
             <p style="margin: 0.5rem 0 0; font-size: var(--font-size-xs);">Use the "Triggers" section in the right panel to manage automations.</p>
           </div>
         </div>
+
+      {:else if activeTab === 'chatapp'}
+        <div class="tab-panel">
+          <p class="field-hint">
+            Bind this thread to a chat-app conversation so messages flow both ways.
+            You can keep using the desktop app for the same thread; nothing changes
+            here when you chat from the bound chat instead.
+          </p>
+
+          {#if chatAppLoadError}
+            <div class="error-bar">{chatAppLoadError}</div>
+          {/if}
+
+          {#if chatAppBindings.length === 0}
+            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+              <p style="margin: 0 0 1rem;">No chats bound to this thread yet.</p>
+              <button
+                class="btn btn-primary"
+                type="button"
+                onclick={() => (showChatAppWizard = true)}
+              >Connect Telegram</button>
+            </div>
+          {:else}
+            <ul class="binding-list">
+              {#each chatAppBindings as binding (binding.id)}
+                <li class="binding-row">
+                  <div class="binding-meta">
+                    <span class="binding-provider">{binding.provider}</span>
+                    <code class="binding-chat">chat {binding.platform_chat_id}</code>
+                    <span class="binding-when">since {new Date(binding.created_at).toLocaleString()}</span>
+                  </div>
+                  <button
+                    class="btn btn-ghost"
+                    type="button"
+                    onclick={() => handleUnbindChatApp(binding.id)}
+                  >Unbind</button>
+                </li>
+              {/each}
+            </ul>
+            <p class="field-hint" style="margin-top: 0.5rem;">
+              Only one chat per provider can be bound to a thread at a time. Unbind
+              first to switch the chat.
+            </p>
+          {/if}
+        </div>
+
       {/if}
     </div>
 
@@ -1243,6 +1331,21 @@
     onContinue={() => { showToolWarning = false; handleSave(); }}
     onGoBack={() => { showToolWarning = false; }}
   />
+{/if}
+
+{#if showChatAppWizard}
+  <div class="chatapp-wizard-backdrop" role="dialog" aria-modal="true">
+    <div class="chatapp-wizard-card">
+      <ConnectTelegramWizard
+        threadId={thread.id}
+        onClose={() => (showChatAppWizard = false)}
+        onBound={() => {
+          // Refresh the panel's binding list so the row appears immediately.
+          chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
+        }}
+      />
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -1858,5 +1961,68 @@
     color: var(--danger, #ef4444);
     border-color: color-mix(in srgb, var(--danger, #ef4444) 40%, transparent);
     background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+  }
+
+  /* Chat App tab + wizard overlay */
+  .binding-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .binding-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+  }
+
+  .binding-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .binding-provider {
+    font-weight: 600;
+    text-transform: capitalize;
+    font-size: var(--font-size-sm);
+  }
+
+  .binding-chat {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-sm);
+  }
+
+  .binding-when {
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  .chatapp-wizard-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100;
+  }
+
+  .chatapp-wizard-card {
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
   }
 </style>

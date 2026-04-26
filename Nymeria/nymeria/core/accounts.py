@@ -20,7 +20,7 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -33,6 +33,12 @@ TOKEN_PATTERN = re.compile(r"nym_[A-Za-z0-9_-]{32,}")
 
 UserRole = Literal["user", "admin"]
 Provider = Literal["discord", "telegram", "twitch"]
+BindCodeKind = Literal["thread_bind", "platform_link"]
+
+# Short bind codes use an unambiguous 32-char alphabet (no 0/O, 1/I/L). 8 chars
+# at ~5 bits each gives ~40 bits of entropy — enough for the 10-minute TTL.
+_BIND_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+BIND_CODE_LENGTH = 8
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,33 @@ class PlatformIdentity:
     created_at: str
 
 
+@dataclass
+class ThreadPlatformBinding:
+    """A binding between a Nymeria thread and a chat on a chat-app provider.
+
+    Today only ``provider='telegram'`` is wired end-to-end, but the table is
+    provider-agnostic so future providers (Discord, WhatsApp, ...) plug in
+    without a schema change.
+    """
+
+    id: int
+    thread_id: str
+    provider: Provider
+    platform_chat_id: str
+    user_id: str
+    created_at: str
+
+
+@dataclass
+class BindCodeClaim:
+    """Result of successfully claiming a bind code."""
+
+    kind: BindCodeKind
+    provider: Provider
+    user_id: str
+    thread_id: Optional[str]  # None for platform_link codes
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -105,6 +138,11 @@ def _hash_token(raw: str) -> str:
 def generate_raw_token() -> str:
     """Generate a fresh raw token. Only shown once; hash is what gets stored."""
     return f"{TOKEN_PREFIX}{secrets.token_urlsafe(TOKEN_BYTES)}"
+
+
+def generate_bind_code() -> str:
+    """Short alphanumeric code typed by the user into a chat-app bot."""
+    return "".join(secrets.choice(_BIND_CODE_ALPHABET) for _ in range(BIND_CODE_LENGTH))
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +188,32 @@ CREATE TABLE IF NOT EXISTS platform_identities (
 );
 CREATE INDEX IF NOT EXISTS idx_platform_identities_user ON platform_identities(user_id);
 
+CREATE TABLE IF NOT EXISTS thread_platform_bindings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id        TEXT NOT NULL,
+    provider         TEXT NOT NULL,
+    platform_chat_id TEXT NOT NULL,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at       TEXT NOT NULL,
+    UNIQUE(provider, thread_id),
+    UNIQUE(provider, platform_chat_id)
+);
+CREATE INDEX IF NOT EXISTS idx_thread_platform_bindings_thread ON thread_platform_bindings(thread_id);
+CREATE INDEX IF NOT EXISTS idx_thread_platform_bindings_user ON thread_platform_bindings(user_id);
+
+CREATE TABLE IF NOT EXISTS bind_codes (
+    code_hash    TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    provider     TEXT NOT NULL,
+    thread_id    TEXT,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    consumed_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bind_codes_user ON bind_codes(user_id);
+CREATE INDEX IF NOT EXISTS idx_bind_codes_expires ON bind_codes(expires_at);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -187,6 +251,14 @@ class TokenNotFound(LookupError):
 
 class AmbiguousTokenPrefix(ValueError):
     pass
+
+
+class BindingAlreadyExists(ValueError):
+    """A binding for the given (provider, thread_id) or (provider, chat_id) already exists."""
+
+
+class BindCodeInvalid(LookupError):
+    """Bind code is unknown, expired, or already consumed."""
 
 
 class AccountsRepo:
@@ -602,6 +674,218 @@ class AccountsRepo:
                 for r in rows
             ]
 
+    # -- thread <-> chat-app bindings -------------------------------------
+
+    def create_thread_binding(
+        self,
+        *,
+        thread_id: str,
+        provider: Provider,
+        platform_chat_id: str,
+        user_id: str,
+    ) -> ThreadPlatformBinding:
+        """Bind a Nymeria thread to a chat on a chat-app provider.
+
+        Raises ``BindingAlreadyExists`` if either the thread or the chat is
+        already bound for this provider (the table has unique constraints on
+        both ``(provider, thread_id)`` and ``(provider, platform_chat_id)``).
+        """
+        if self.get_user_by_id(user_id) is None:
+            raise UserNotFound(user_id)
+        now = _now()
+        with self._lock, self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO thread_platform_bindings "
+                    "(thread_id, provider, platform_chat_id, user_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (thread_id, provider, str(platform_chat_id), user_id, now),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise BindingAlreadyExists(str(e)) from e
+            return ThreadPlatformBinding(
+                id=int(cur.lastrowid),
+                thread_id=thread_id,
+                provider=provider,
+                platform_chat_id=str(platform_chat_id),
+                user_id=user_id,
+                created_at=now,
+            )
+
+    def lookup_thread_binding_by_chat(
+        self, provider: Provider, platform_chat_id: str
+    ) -> Optional[ThreadPlatformBinding]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM thread_platform_bindings "
+                "WHERE provider = ? AND platform_chat_id = ?",
+                (provider, str(platform_chat_id)),
+            ).fetchone()
+            return _row_to_binding(row) if row else None
+
+    def lookup_thread_binding_by_thread(
+        self, provider: Provider, thread_id: str
+    ) -> Optional[ThreadPlatformBinding]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM thread_platform_bindings "
+                "WHERE provider = ? AND thread_id = ?",
+                (provider, thread_id),
+            ).fetchone()
+            return _row_to_binding(row) if row else None
+
+    def list_thread_bindings(self, thread_id: str) -> List[ThreadPlatformBinding]:
+        """All chat-app bindings for a single thread (across providers)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM thread_platform_bindings WHERE thread_id = ? "
+                "ORDER BY provider ASC, created_at ASC",
+                (thread_id,),
+            ).fetchall()
+            return [_row_to_binding(r) for r in rows]
+
+    def list_bound_thread_ids(self, provider: Provider) -> List[str]:
+        """Every thread_id that has a binding on this provider.
+
+        Used by the bot's outbound SSE filter to decide which non-default
+        thread IDs (i.e. not ``telegram_<chat_id>``) it should also dispatch.
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT thread_id FROM thread_platform_bindings WHERE provider = ?",
+                (provider,),
+            ).fetchall()
+            return [r["thread_id"] for r in rows]
+
+    def list_thread_bindings_global(
+        self, provider: Optional[Provider] = None
+    ) -> List[ThreadPlatformBinding]:
+        """All bindings, optionally filtered by provider. Used by chat-app bots
+        on startup to bulk-populate their local ``chat_id <-> thread_id`` cache.
+        """
+        with self._lock, self._connect() as conn:
+            if provider is not None:
+                rows = conn.execute(
+                    "SELECT * FROM thread_platform_bindings WHERE provider = ? "
+                    "ORDER BY created_at ASC",
+                    (provider,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM thread_platform_bindings ORDER BY created_at ASC"
+                ).fetchall()
+            return [_row_to_binding(r) for r in rows]
+
+    def delete_thread_binding(self, binding_id: int, *, user_id: str) -> bool:
+        """Delete a binding the caller owns. Returns True if a row was deleted.
+
+        Returns False if no row matched (either the id doesn't exist or it
+        belongs to a different user). The caller is expected to surface a 404
+        in either case — we don't distinguish, by design.
+        """
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM thread_platform_bindings WHERE id = ? AND user_id = ?",
+                (binding_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    # -- short-lived bind codes -------------------------------------------
+
+    def issue_bind_code(
+        self,
+        *,
+        kind: BindCodeKind,
+        provider: Provider,
+        user_id: str,
+        thread_id: Optional[str] = None,
+        ttl_seconds: int = 600,
+    ) -> str:
+        """Mint a fresh short bind code and store its hash. Returns the raw code.
+
+        ``thread_id`` is required for ``kind='thread_bind'``; ignored for
+        ``kind='platform_link'``. The code is single-use: ``claim_bind_code``
+        atomically marks ``consumed_at``.
+        """
+        if kind == "thread_bind" and not thread_id:
+            raise ValueError("thread_id is required for kind='thread_bind'")
+        if self.get_user_by_id(user_id) is None:
+            raise UserNotFound(user_id)
+        raw = generate_bind_code()
+        created = datetime.now(timezone.utc)
+        expires = created + timedelta(seconds=int(ttl_seconds))
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO bind_codes "
+                "(code_hash, kind, provider, thread_id, user_id, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _hash_token(raw),
+                    kind,
+                    provider,
+                    thread_id,
+                    user_id,
+                    created.isoformat(timespec="seconds"),
+                    expires.isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+        return raw
+
+    def claim_bind_code(
+        self, raw_code: str, *, kind: BindCodeKind, provider: Provider
+    ) -> BindCodeClaim:
+        """Atomically consume a bind code. Raises ``BindCodeInvalid`` if the
+        code is unknown, expired, already consumed, or has the wrong kind /
+        provider for this caller.
+        """
+        if not raw_code:
+            raise BindCodeInvalid("empty code")
+        code_hash = _hash_token(raw_code.strip().upper())
+        now = _now()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM bind_codes WHERE code_hash = ?",
+                (code_hash,),
+            ).fetchone()
+            if row is None:
+                raise BindCodeInvalid("unknown code")
+            if row["consumed_at"] is not None:
+                raise BindCodeInvalid("already used")
+            if row["expires_at"] < now:
+                raise BindCodeInvalid("expired")
+            if row["kind"] != kind or row["provider"] != provider:
+                # Don't tell the caller why — looks the same as "unknown".
+                raise BindCodeInvalid("unknown code")
+            cur = conn.execute(
+                "UPDATE bind_codes SET consumed_at = ? "
+                "WHERE code_hash = ? AND consumed_at IS NULL",
+                (now, code_hash),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                # Lost the race to another consumer.
+                raise BindCodeInvalid("already used")
+            return BindCodeClaim(
+                kind=row["kind"],
+                provider=row["provider"],
+                user_id=row["user_id"],
+                thread_id=row["thread_id"],
+            )
+
+    def purge_expired_bind_codes(self) -> int:
+        """Delete expired & unconsumed codes. Optional housekeeping."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM bind_codes "
+                "WHERE consumed_at IS NULL AND expires_at < ?",
+                (_now(),),
+            )
+            conn.commit()
+            return cur.rowcount
+
     # -- bootstrap ---------------------------------------------------------
 
     def ensure_bootstrap_admin(self, data_dir: Path) -> Optional[str]:
@@ -661,4 +945,15 @@ def _row_to_user(row: sqlite3.Row) -> UserRecord:
         disabled=bool(int(row["disabled"])),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_binding(row: sqlite3.Row) -> ThreadPlatformBinding:
+    return ThreadPlatformBinding(
+        id=int(row["id"]),
+        thread_id=row["thread_id"],
+        provider=row["provider"],
+        platform_chat_id=row["platform_chat_id"],
+        user_id=row["user_id"],
+        created_at=row["created_at"],
     )

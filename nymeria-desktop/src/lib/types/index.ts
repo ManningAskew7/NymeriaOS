@@ -551,6 +551,26 @@ export interface PlatformIdentity {
   created_at: string;
 }
 
+// Per-thread chat-app binding (e.g. desktop thread <-> Telegram chat).
+// Returned by GET /threads/{id}/chatapp/bindings.
+export interface ChatAppBinding {
+  id: number;
+  thread_id: string;
+  provider: 'discord' | 'telegram' | 'twitch';
+  platform_chat_id: string;
+  created_at: string;
+}
+
+// Response for the bind-code and platform-link-code endpoints. The wizard
+// shows `code` to the user; if `bot_username` is configured server-side,
+// `deep_link` is a one-tap Telegram URL that pre-fills the right command.
+export interface ChatAppBindCodeResponse {
+  code: string;
+  expires_at: string;
+  bot_username?: string | null;
+  deep_link?: string | null;
+}
+
 // Config types
 export interface AppConfig {
   apiUrl: string;

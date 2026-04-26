@@ -143,6 +143,12 @@ class Settings(BaseSettings):
         default=None,
         description="Default Telegram chat ID for notifications"
     )
+    telegram_bot_username: Optional[str] = Field(
+        default=None,
+        description="Public username of the Telegram bot (without @). Used to "
+                    "build t.me/<bot>?start=... deep links in the desktop wizard. "
+                    "Optional — the bot reports it on startup if not set.",
+    )
 
     # Messaging Platform Credentials - Discord
     discord_webhook_url: Optional[str] = Field(

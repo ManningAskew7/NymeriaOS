@@ -249,10 +249,34 @@ def make_thread_id(chat_id: int) -> str:
     return f"telegram_{chat_id}"
 
 
+def _safe_error_detail(e: "httpx.HTTPStatusError") -> str:
+    """Extract a human-readable ``detail`` from a FastAPI error response.
+
+    Falls back to the raw response text (truncated) and finally to the
+    string-form of the exception so users get a useful message even when
+    the upstream isn't FastAPI / doesn't return JSON.
+    """
+    try:
+        body = e.response.json()
+        if isinstance(body, dict) and "detail" in body:
+            return str(body["detail"])
+    except Exception:  # noqa: BLE001
+        pass
+    text = (e.response.text or "").strip()
+    if text:
+        return text[:200]
+    return str(e)
+
+
 # Platform-identity cache TTL. After 30 minutes a Telegram user's link is
 # re-fetched from /platform/resolve, so admin relinks propagate to the bot
 # without a restart. See discord_bot.py for the same constant and rationale.
 _USER_CACHE_TTL_SECONDS = 30 * 60
+
+# How often to re-fetch the full per-thread chat<->thread binding map from
+# the API. Direct cache mutation on /bind and /unbind makes those changes
+# feel instant; this loop catches bindings created from the desktop wizard.
+_BINDING_REFRESH_INTERVAL_SECONDS = 60
 
 
 # =============================================================================
@@ -282,6 +306,12 @@ class NymeriaTelegramBot:
         # cache. None (still under TTL) means "checked and confirmed
         # unlinked"; after TTL expiry the entry is re-fetched.
         self._user_cache: Dict[int, tuple[Optional[str], float]] = {}
+        # Per-thread chat-app bindings — populated by _refresh_bindings on
+        # startup and refreshed every _BINDING_REFRESH_INTERVAL_SECONDS to
+        # absorb bindings created from the desktop wizard. Direct mutation
+        # in /bind and /unbind handlers makes those changes feel instant.
+        self._bindings: Dict[int, str] = {}              # chat_id -> thread_id
+        self._reverse_bindings: Dict[str, int] = {}      # thread_id -> chat_id
 
     async def resolve_user_id(self, telegram_user_id: int) -> Optional[str]:
         """Resolve a Telegram user id to a linked Nymeria account, or None.
@@ -303,6 +333,69 @@ class NymeriaTelegramBot:
             return None
         self._user_cache[telegram_user_id] = (user_id, now + _USER_CACHE_TTL_SECONDS)
         return user_id
+
+    # =========================================================================
+    # Per-thread chat-app bindings (Telegram chat <-> Nymeria thread)
+    # =========================================================================
+
+    def resolve_thread_id_for_chat(self, chat_id: int) -> str:
+        """Return the thread id for inbound messages from this chat.
+
+        If the chat has been bound via the desktop wizard or the ``/bind``
+        command, returns the bound thread. Otherwise falls back to the
+        legacy ``telegram_<chat_id>`` default — so chats with no explicit
+        binding keep working exactly as before.
+        """
+        bound = self._bindings.get(int(chat_id))
+        return bound if bound is not None else make_thread_id(chat_id)
+
+    def resolve_chat_id_for_thread(self, thread_id: str) -> Optional[int]:
+        """Reverse lookup: bound chat_id for an outbound thread, or None.
+
+        Used by the autonomous-event SSE listener to dispatch events whose
+        ``thread_id`` is a non-default UUID (i.e. a desktop-created thread
+        bound to a Telegram chat).
+        """
+        return self._reverse_bindings.get(thread_id)
+
+    async def _refresh_bindings(self) -> None:
+        """Pull the current chat<->thread map from the API into local cache.
+
+        Builds new dicts locally and atomically swaps them in to avoid
+        partial-state reads from concurrent lookups.
+        """
+        try:
+            entries = await self.api.list_chatapp_bindings(provider="telegram")
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to refresh chat-app bindings; keeping current cache")
+            return
+        new_chat_to_thread: Dict[int, str] = {}
+        new_thread_to_chat: Dict[str, int] = {}
+        for e in entries:
+            try:
+                chat_id = int(e.get("platform_chat_id"))
+            except (TypeError, ValueError):
+                continue
+            thread_id = e.get("thread_id")
+            if not thread_id:
+                continue
+            new_chat_to_thread[chat_id] = thread_id
+            new_thread_to_chat[thread_id] = chat_id
+        # Atomic swap (no awaits between the two assignments).
+        self._bindings = new_chat_to_thread
+        self._reverse_bindings = new_thread_to_chat
+        logger.debug("chat-app bindings refreshed: %d entries", len(new_chat_to_thread))
+
+    async def _bindings_refresh_loop(self) -> None:
+        """Background task: refresh the binding cache every minute."""
+        while True:
+            try:
+                await asyncio.sleep(_BINDING_REFRESH_INTERVAL_SECONDS)
+                await self._refresh_bindings()
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001
+                logger.exception("bindings refresh loop tick failed")
 
     async def _resolve_or_reject_update(
         self,
@@ -406,11 +499,23 @@ class NymeriaTelegramBot:
             BotCommand("notepad_read", "Read channel notepad"),
             BotCommand("notepad_write", "Write to notepad"),
             BotCommand("notepad_clear", "Clear notepad"),
+            BotCommand("bind", "Bind this chat to a desktop thread"),
+            BotCommand("unbind", "Remove this chat's thread binding"),
         ]
         await application.bot.set_my_commands(commands)
         logger.info(f"Registered {len(commands)} bot commands with Telegram")
 
-        # Start autonomous SSE listener
+        # Populate the chat-app binding cache before the SSE listener starts
+        # consuming events; otherwise the very first autonomous event for a
+        # bound thread could miss its destination chat.
+        await self._refresh_bindings()
+        logger.info(
+            "Loaded %d chat-app binding(s) from API",
+            len(self._bindings),
+        )
+
+        # Start the periodic refresh + autonomous SSE listener.
+        asyncio.create_task(self._bindings_refresh_loop())
         asyncio.create_task(self._api_sse_listener())
 
     def _register_handlers(self, app) -> None:
@@ -467,6 +572,10 @@ class NymeriaTelegramBot:
         app.add_handler(CommandHandler("notepad_read", self._cmd_notepad_read))
         app.add_handler(CommandHandler("notepad_write", self._cmd_notepad_write))
         app.add_handler(CommandHandler("notepad_clear", self._cmd_notepad_clear))
+
+        # Chat-app binding commands
+        app.add_handler(CommandHandler("bind", self._cmd_bind))
+        app.add_handler(CommandHandler("unbind", self._cmd_unbind))
 
         # Callback query handler (stop button)
         app.add_handler(CallbackQueryHandler(self._on_stop_button, pattern=r"^stop:"))
@@ -797,12 +906,173 @@ class NymeriaTelegramBot:
     # =========================================================================
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start — Telegram's default entry point."""
+        """Handle /start — Telegram's default entry point.
+
+        Deep-link payloads (passed by the desktop wizard's ``t.me/<bot>?start=...``
+        URLs) get dispatched here:
+
+          * ``/start link_<code>`` — claim a self-service Telegram-account link
+            code so the user becomes a recognized Nymeria account on this bot.
+          * ``/start bind_<code>`` — claim a thread-bind code, attaching the
+            current Telegram chat to a desktop thread.
+
+        With no payload, behave as the original welcome message.
+        """
+        args = context.args or []
+        if args:
+            payload = args[0]
+            if payload.startswith("link_"):
+                await self._handle_link_payload(update, payload[len("link_"):])
+                return
+            if payload.startswith("bind_"):
+                await self._handle_bind_payload(update, payload[len("bind_"):])
+                return
+
         await update.message.reply_text(
             "Hello! I'm <b>Nymeria</b>, your AI assistant.\n\n"
             "Send me a message or use /ask to start chatting.\n"
             "Use /help to see all available commands.",
             parse_mode=ParseMode.HTML,
+        )
+
+    async def _handle_link_payload(self, update: Update, code: str) -> None:
+        """Claim a self-service platform-link code (from /start link_<code>).
+
+        The code was issued by the desktop wizard; consuming it links the
+        invoking Telegram user to the issuing Nymeria account, replacing
+        the previously admin-only ``users link-platform`` CLI step.
+        """
+        tg_user = update.effective_user
+        if tg_user is None or update.message is None:
+            return
+        try:
+            result = await self.api.claim_platform_link_code(
+                code=code.strip(),
+                provider="telegram",
+                platform_user_id=str(tg_user.id),
+            )
+        except httpx.HTTPStatusError as e:
+            detail = _safe_error_detail(e)
+            if e.response.status_code == 400:
+                await update.message.reply_text(
+                    f"That link code is invalid or expired: {detail}\n"
+                    "Open the desktop app and try again."
+                )
+            elif e.response.status_code == 409:
+                await update.message.reply_text(
+                    "Your Telegram account is already linked to a different "
+                    "Nymeria user. Ask an admin to resolve the conflict."
+                )
+            else:
+                await update.message.reply_text(f"Couldn't link account: {detail}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("link_payload claim failed")
+            await update.message.reply_text(f"Unexpected error: {e}")
+            return
+        # Invalidate any cached "not linked" entry for this Telegram user so
+        # the next message uses the fresh link.
+        self._user_cache.pop(tg_user.id, None)
+        await update.message.reply_text(
+            f"Linked! Your Telegram account is now connected to Nymeria user "
+            f"<b>{result.get('user_id')}</b>.\n\n"
+            "You can now use the bot freely, or finish the desktop wizard's "
+            "next step to bind a specific thread to a chat.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def _handle_bind_payload(self, update: Update, code: str) -> None:
+        """Claim a thread-bind code (from /start bind_<code> or /bind <code>)."""
+        await self._do_bind(update, code.strip())
+
+    async def _cmd_bind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /bind <code>. Attach this Telegram chat to a desktop thread."""
+        if update.message is None:
+            return
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Usage: /bind <code>\n\n"
+                "Get a code from the desktop app: open Thread Settings → "
+                "Chat App → Connect Telegram."
+            )
+            return
+        await self._do_bind(update, args[0].strip())
+
+    async def _do_bind(self, update: Update, code: str) -> None:
+        if update.message is None or update.effective_chat is None:
+            return
+        tg_user = update.effective_user
+        if tg_user is None:
+            return
+        chat_id = update.effective_chat.id
+        try:
+            result = await self.api.claim_thread_bind_code(
+                code=code,
+                provider="telegram",
+                platform_chat_id=str(chat_id),
+                expected_provider_user_id=str(tg_user.id),
+            )
+        except httpx.HTTPStatusError as e:
+            detail = _safe_error_detail(e)
+            status = e.response.status_code
+            if status == 400:
+                await update.message.reply_text(
+                    f"That bind code is invalid or expired: {detail}\n"
+                    "Open the desktop app's Connect Telegram wizard and try again."
+                )
+            elif status == 403:
+                await update.message.reply_text(
+                    "That bind code was issued by a different Nymeria account. "
+                    "Make sure you're using the code from your own desktop app."
+                )
+            elif status == 409:
+                await update.message.reply_text(
+                    f"Already bound: {detail}\n"
+                    "Use /unbind first if you want to bind a different thread."
+                )
+            else:
+                await update.message.reply_text(f"Couldn't bind: {detail}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("bind claim failed")
+            await update.message.reply_text(f"Unexpected error: {e}")
+            return
+        thread_id = result.get("thread_id", "?")
+        # Update local cache immediately so the very next message routes to
+        # the bound thread without waiting for the periodic refresh.
+        self._bindings[int(chat_id)] = thread_id
+        self._reverse_bindings[thread_id] = int(chat_id)
+        await update.message.reply_text(
+            f"Bound this chat to thread <code>{thread_id}</code>.\n\n"
+            "Messages here now feed into your desktop thread, and replies "
+            "stream both ways.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def _cmd_unbind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /unbind. Remove this chat's thread binding."""
+        if update.message is None or update.effective_chat is None:
+            return
+        chat_id = int(update.effective_chat.id)
+        try:
+            result = await self.api.unbind_chatapp_by_chat(
+                provider="telegram", platform_chat_id=str(chat_id)
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("unbind failed")
+            await update.message.reply_text(f"Couldn't unbind: {e}")
+            return
+        if not result.get("unbound"):
+            await update.message.reply_text("This chat isn't bound to a desktop thread.")
+            return
+        thread_id = result.get("thread_id")
+        if isinstance(thread_id, str):
+            self._reverse_bindings.pop(thread_id, None)
+        self._bindings.pop(chat_id, None)
+        await update.message.reply_text(
+            "Unbound. Future messages here will use the default Telegram "
+            "thread again."
         )
 
     async def _cmd_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -817,7 +1087,7 @@ class NymeriaTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
 
         await self._stream_to_chat(
             chat_id=chat_id,
@@ -830,7 +1100,7 @@ class NymeriaTelegramBot:
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             await self.api.stop(thread_id)
             await update.message.reply_text("Abort signal sent.")
@@ -843,7 +1113,7 @@ class NymeriaTelegramBot:
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
             return
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             await self.api.clear_thread(thread_id, user_id)
             await update.message.reply_text(
@@ -858,7 +1128,7 @@ class NymeriaTelegramBot:
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
             return
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             result = await self.api.compact(thread_id, user_id)
             if result.get("success"):
@@ -875,7 +1145,7 @@ class NymeriaTelegramBot:
     async def _cmd_thread(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /thread."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             stats = await self.api.get_context_stats(thread_id)
             text = (
@@ -894,7 +1164,7 @@ class NymeriaTelegramBot:
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
             return
@@ -986,7 +1256,7 @@ class NymeriaTelegramBot:
         """Handle /model [name] [scope]."""
         chat_id = update.effective_chat.id
         args = context.args or []
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
             return
@@ -1098,7 +1368,7 @@ class NymeriaTelegramBot:
     async def _cmd_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /context — detailed context breakdown."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             ctx, thread_cfg, settings, categories, tools_data = await asyncio.gather(
                 self.api.get_context_stats(thread_id),
@@ -1259,7 +1529,7 @@ class NymeriaTelegramBot:
     async def _cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export [markdown|json|txt]."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         fmt = (context.args[0].lower() if context.args else "markdown")
         if fmt not in ("markdown", "json", "txt"):
             await update.message.reply_text("Usage: /export [markdown|json|txt]")
@@ -1483,7 +1753,7 @@ class NymeriaTelegramBot:
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
             return
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             result = await self.api.add_todo(
                 user_id=user_id, task=task, scheduled_for=schedule,
@@ -1867,7 +2137,7 @@ class NymeriaTelegramBot:
     async def _cmd_tools_optional(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_optional."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             data = await self.api.get_default_tools()
             default_names = set(data.get("default_tools", []))
@@ -1901,7 +2171,7 @@ class NymeriaTelegramBot:
     async def _cmd_tools_enabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enabled."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             data = await self.api.get_default_tools()
             default_names = set(data.get("default_tools", []))
@@ -1945,7 +2215,7 @@ class NymeriaTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             data = await self.api.get_default_tools()
             default_names = set(data.get("default_tools", []))
@@ -1996,7 +2266,7 @@ class NymeriaTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
             if error:
@@ -2036,7 +2306,7 @@ class NymeriaTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
             if error:
@@ -2172,7 +2442,7 @@ class NymeriaTelegramBot:
     async def _cmd_notepad_read(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /notepad_read."""
         chat_id = update.effective_chat.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
             from ..tools.thread_notes import read_notepad
             content = read_notepad(thread_id)
@@ -2200,7 +2470,7 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /notepad_write <content>")
             return
 
-        thread_id = make_thread_id(update.effective_chat.id)
+        thread_id = self.resolve_thread_id_for_chat(update.effective_chat.id)
 
         # Check for replace: prefix
         if raw.lower().startswith("replace:"):
@@ -2238,7 +2508,7 @@ class NymeriaTelegramBot:
 
     async def _cmd_notepad_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /notepad_clear."""
-        thread_id = make_thread_id(update.effective_chat.id)
+        thread_id = self.resolve_thread_id_for_chat(update.effective_chat.id)
         try:
             from ..tools.thread_notes import delete_notepad
             if delete_notepad(thread_id):
@@ -2295,7 +2565,7 @@ class NymeriaTelegramBot:
 
         chat_id = chat.id
         telegram_user_id = update.effective_user.id
-        thread_id = make_thread_id(chat_id)
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
 
         nymeria_user_id = await self.resolve_user_id(telegram_user_id)
         if nymeria_user_id is None:
@@ -2476,17 +2746,29 @@ class NymeriaTelegramBot:
         get flushed at every tool_call boundary, so preamble text, tool
         announcements, and post-tool replies each land in their own bubble.
         No wrapper header — bubbles look identical to regular chat.
+
+        Two routing cases:
+          1. ``thread_id`` starts with ``telegram_`` — the legacy default;
+             chat_id is encoded in the suffix.
+          2. ``thread_id`` is in ``self._reverse_bindings`` — the user has
+             bound a desktop-created thread to a Telegram chat; chat_id
+             comes from the binding map.
+        Anything else is dispatched by another integration (Discord, etc.),
+        so we silently drop it.
         """
         event_type = event.get("type", "")
         thread_id = event.get("thread_id", "")
 
-        if not thread_id.startswith("telegram_"):
-            return
-
-        try:
-            chat_id = int(thread_id[len("telegram_"):])
-        except ValueError:
-            return
+        chat_id: Optional[int] = None
+        if thread_id.startswith("telegram_"):
+            try:
+                chat_id = int(thread_id[len("telegram_"):])
+            except ValueError:
+                return
+        else:
+            chat_id = self.resolve_chat_id_for_thread(thread_id)
+            if chat_id is None:
+                return
 
         state = self._autonomous_state.get(thread_id)
 
