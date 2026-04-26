@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { probeConnection } from '$lib/services/api.svelte';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
   import Spinner from './Spinner.svelte';
@@ -36,59 +36,30 @@
     if (step > 0) step -= 1;
   }
 
+  // Validates URL+token via probeConnection — a stateless module-level helper
+  // that does NOT touch configStore. Writing apiUrl/apiKey here (as the
+  // pre-fix code did) flipped configStore.isFirstRun → false and unmounted
+  // the wizard mid-await, dropping the user into the half-initialised app.
+  // Only completeSetup() persists to configStore.
   async function testConnection() {
     testing = true;
     testResult = null;
     testMessage = '';
     resolvedIdentity = null;
 
-    // Temporarily set config for the API client
-    const prevUrl = configStore.apiUrl;
-    const prevKey = configStore.apiKey;
-    configStore.apiUrl = apiUrl.trim().replace(/\/$/, '');
-    configStore.apiKey = apiKey.trim();
-
     try {
-      const healthy = await api.healthCheck();
-      if (!healthy) {
+      const result = await probeConnection(apiUrl, apiKey);
+      if (!result.ok) {
         testResult = 'error';
-        testMessage = 'Cannot connect to server. Is the backend running?';
-        configStore.apiUrl = prevUrl;
-        configStore.apiKey = prevKey;
+        testMessage = result.message;
         return;
       }
 
-      const authResponse = await api.verifyAuth();
-      if (authResponse.status === 401 || authResponse.status === 403) {
-        testResult = 'error';
-        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
-        configStore.apiUrl = prevUrl;
-        configStore.apiKey = prevKey;
-        return;
-      }
-      if (!authResponse.ok) {
-        testResult = 'error';
-        testMessage = `Auth check failed: ${authResponse.status}`;
-        configStore.apiUrl = prevUrl;
-        configStore.apiKey = prevKey;
-        return;
-      }
-
-      try {
-        resolvedIdentity = (await authResponse.json()) as AccountIdentity;
-      } catch {
-        resolvedIdentity = null;
-      }
-
-      const settings = await api.getServerSettings();
+      resolvedIdentity = result.identity;
       testResult = 'success';
-      testMessage = `Connected! Provider: ${settings.llm_provider}, Model: ${settings.llm_model}`;
-    } catch (e) {
-      testResult = 'error';
-      testMessage = `Connection failed: ${e instanceof Error ? e.message : 'Unknown error'}`;
-      // Restore previous config on failure
-      configStore.apiUrl = prevUrl;
-      configStore.apiKey = prevKey;
+      testMessage = result.provider
+        ? `Connected! Provider: ${result.provider}`
+        : 'Connected!';
     } finally {
       testing = false;
     }

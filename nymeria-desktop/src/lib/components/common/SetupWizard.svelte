@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { probeConnection } from '$lib/services/api.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import Avatar from '$lib/components/account/Avatar.svelte';
@@ -24,68 +24,28 @@
   // they're signing in as the expected account before completing setup.
   let resolvedIdentity = $state<AccountIdentity | null>(null);
 
+  // Validates URL+token via probeConnection — a stateless module-level helper
+  // that does NOT touch configStore. Writing apiUrl/apiKey here (as the
+  // pre-fix code did) flips configStore.isFirstRun → false and unmounts the
+  // wizard mid-await, destroying its $state and dropping the user into the
+  // half-initialised app. Only handleComplete() persists to configStore.
   async function testConnection() {
     testStatus = 'testing';
     testMessage = '';
     backendInfo = null;
     resolvedIdentity = null;
 
-    // Temporarily set config for the test
-    configStore.apiUrl = apiUrl;
-    configStore.apiKey = apiKey;
-
-    try {
-      const isHealthy = await api.healthCheck();
-      if (!isHealthy) {
-        testStatus = 'error';
-        testMessage = 'Cannot connect to server. Is the backend running?';
-        return;
-      }
-
-      const authResponse = await api.verifyAuth();
-      if (authResponse.status === 401 || authResponse.status === 403) {
-        testStatus = 'error';
-        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
-        return;
-      }
-      if (!authResponse.ok) {
-        testStatus = 'error';
-        testMessage = `Auth check failed: ${authResponse.status}`;
-        return;
-      }
-
-      // Surface the resolved account so the user can sanity-check before
-      // committing — guards against accidentally pasting the wrong token.
-      try {
-        resolvedIdentity = (await authResponse.json()) as AccountIdentity;
-      } catch {
-        resolvedIdentity = null;
-      }
-
-      testStatus = 'success';
-      testMessage = 'Connected successfully!';
-
-      // Try to get server settings to confirm full access
-      try {
-        const settings = await api.getServerSettings();
-        backendInfo = {
-          provider: settings.llm_provider,
-        };
-      } catch {
-        // Server settings not available, but auth is verified
-      }
-    } catch (e) {
+    const result = await probeConnection(apiUrl, apiKey);
+    if (!result.ok) {
       testStatus = 'error';
-      if (e instanceof Error) {
-        if (e.message.includes('fetch') || e.message.includes('network')) {
-          testMessage = 'Cannot connect to server. Is the backend running?';
-        } else {
-          testMessage = e.message;
-        }
-      } else {
-        testMessage = 'Connection failed';
-      }
+      testMessage = result.message;
+      return;
     }
+
+    resolvedIdentity = result.identity;
+    backendInfo = result.provider ? { provider: result.provider } : null;
+    testStatus = 'success';
+    testMessage = 'Connected successfully!';
   }
 
   function handleNext() {
