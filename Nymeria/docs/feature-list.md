@@ -340,7 +340,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Thread Management
 - Unlimited threads with folders, pinning, search/filter
-- Per-thread configuration panel: instructions, system prompt, tools, LLM, skills, callable settings
+- Per-thread configuration panel: instructions, system prompt, Agent/callable settings, tools, LLM, and skills
 
 ### Tool Management
 - Built-in tool browser by category, custom HTTP/MCP tool creation

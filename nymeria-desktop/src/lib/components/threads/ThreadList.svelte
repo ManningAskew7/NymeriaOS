@@ -12,6 +12,7 @@
 
   let loadError = $state<string | null>(null);
   let configureThread = $state<Thread | null>(null);
+  let configureInitialTab = $state<'instructions' | 'agent'>('instructions');
   let deleteConfirmThreadId = $state<string | null>(null);
   let deleteConfirmTitle = $state('');
 
@@ -166,9 +167,22 @@
     threadsStore.renameThread(threadId, newTitle);
   }
 
-  function handleConfigureThread(thread: Thread) {
-    threadConfigStore.loadConfig(thread.id);
+  async function openThreadSettings(thread: Thread, initialTab: 'instructions' | 'agent') {
+    configureInitialTab = initialTab;
+    try {
+      await threadConfigStore.loadConfig(thread.id);
+    } catch {
+      // Let the settings panel open with its empty fallback state; saving will surface API errors.
+    }
     configureThread = thread;
+  }
+
+  function handleConfigureThread(thread: Thread) {
+    void openThreadSettings(thread, 'instructions');
+  }
+
+  function handleOpenAgentConfig(thread: Thread) {
+    void openThreadSettings(thread, 'agent');
   }
 
   function handleConfigSaved(config: ThreadConfig) {
@@ -313,6 +327,7 @@
         onDeleteThread={handleDeleteThread}
         onRenameThread={handleRenameThread}
         onConfigureThread={handleConfigureThread}
+        onOpenAgentConfigThread={handleOpenAgentConfig}
         onToggleCollapse={() => threadsStore.toggleFolderCollapse(folder.id)}
         onRenameFolder={(name) => threadsStore.renameFolder(folder.id, name)}
         onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
@@ -345,6 +360,7 @@
                 onDelete={() => handleDeleteThread(thread.id)}
                 onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
                 onConfigure={() => handleConfigureThread(thread)}
+                onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
                 onTogglePin={() => threadsStore.togglePinThread(thread.id)}
               />
             {/each}
@@ -367,6 +383,7 @@
             onDelete={() => handleDeleteThread(thread.id)}
             onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
             onConfigure={() => handleConfigureThread(thread)}
+            onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
             onTogglePin={() => threadsStore.togglePinThread(thread.id)}
           />
         {/each}
@@ -439,6 +456,7 @@
   <ThreadSettingsPanel
     thread={configureThread}
     threadConfig={threadConfigStore.getConfig(configureThread.id) ?? null}
+    initialTab={configureInitialTab}
     onClose={() => (configureThread = null)}
     onSaved={handleConfigSaved}
   />

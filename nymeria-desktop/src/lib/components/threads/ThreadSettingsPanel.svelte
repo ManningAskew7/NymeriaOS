@@ -19,17 +19,24 @@
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
 
+  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'model' | 'tools' | 'skills' | 'triggers' | 'chatapp';
+
   interface Props {
     thread: Thread;
     threadConfig: ThreadConfig | null;
+    initialTab?: ThreadSettingsTab;
     onClose: () => void;
     onSaved: (config: ThreadConfig) => void;
   }
 
-  let { thread, threadConfig, onClose, onSaved }: Props = $props();
+  let { thread, threadConfig, initialTab = 'instructions', onClose, onSaved }: Props = $props();
 
   // Active tab
-  let activeTab = $state<'instructions' | 'system-prompt' | 'model' | 'tools' | 'skills' | 'triggers' | 'chatapp'>('instructions');
+  let activeTab = $state<ThreadSettingsTab>('instructions');
+
+  $effect(() => {
+    activeTab = initialTab;
+  });
 
   // Chat App tab state — binding count is reactive via chatAppBindingsStore
   let showChatAppWizard = $state(false);
@@ -762,6 +769,17 @@
       </button>
       <button
         class="tab"
+        class:active={activeTab === 'agent'}
+        onclick={() => (activeTab = 'agent')}
+        type="button"
+      >
+        Agent
+        {#if isCallable}
+          <span class="tab-badge">1</span>
+        {/if}
+      </button>
+      <button
+        class="tab"
         class:active={activeTab === 'model'}
         onclick={() => (activeTab = 'model')}
         type="button"
@@ -872,7 +890,7 @@
           </label>
           <p class="field-hint">
             Replaces the base system prompt (soul.md) entirely for this thread.
-            Leave empty to use the default. For agent threads, this defines the agent's personality and capabilities.
+            Leave empty to use the default.
           </p>
           <textarea
             id="system-prompt-input"
@@ -883,7 +901,10 @@
             rows={12}
           ></textarea>
           <span class="char-count">{systemPrompt.length} / 50000</span>
+        </div>
 
+      {:else if activeTab === 'agent'}
+        <div class="tab-panel">
           <div class="agent-config-section">
             <h3 class="section-title">Agent Configuration</h3>
             <p class="field-hint">
@@ -1692,9 +1713,9 @@
   }
 
   .agent-config-section {
-    margin-top: var(--spacing-lg);
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--border-default);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
   }
 
   .section-title {
