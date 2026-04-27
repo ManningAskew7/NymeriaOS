@@ -46,7 +46,7 @@ This is what CLIProxy's GPT-5.5 sidecar, OpenRouter, DeepSeek, and Qwen-via-Open
 
 ### Responses API (`/v1/responses`)
 
-The newer OpenAI endpoint used automatically by langchain-openai for models whose name starts with `gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`, or contains `codex` (see `_model_prefers_responses_api` in `langchain_openai/chat_models/base.py:559`). Nymeria can also force this path per thread with `llm_config.openai_api_mode="responses"` for OpenAI-compatible endpoints such as the CLIProxy Codex OAuth sidecar.
+The newer OpenAI endpoint used automatically by langchain-openai for models whose name starts with `gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`, or contains `codex` (see `_model_prefers_responses_api` in `langchain_openai/chat_models/base.py:559`). Nymeria now defaults `provider=openai` to this path with `openai_api_mode="responses"` for OpenAI-compatible endpoints such as the CLIProxy Codex OAuth sidecar.
 
 Reasoning arrives as typed blocks with `type: "reasoning"`. Nymeria streams and rehydrates plaintext `summary` text as frontend thinking. Raw encrypted reasoning (`encrypted_content`) is preserved in the LangGraph `AIMessage` if the provider returns it, but is never displayed or logged. On later turns, Nymeria sends the checkpointed Responses items back through `input` rather than `previous_response_id`, so compaction and prompt/context rewrites are respected by the next model call.
 
@@ -148,13 +148,13 @@ All under `/opt/NymeriaOS/Nymeria/`:
 | --- | --- | --- | --- |
 | Anthropic direct | `/v1/messages` | typed blocks in `content` | ✅ yes (existing Anthropic path) |
 | Anthropic via pinned CLIProxy | `/v1/messages` | typed blocks in `content` | ✅ yes |
-| CLIProxy GPT-5.5 sidecar (`gpt-5.5`, Codex OAuth) | `/v1/chat/completions` | `delta.reasoning_content` (plaintext summary, translated from upstream) | ✅ yes, via subclass |
-| CLIProxy GPT-5.5 sidecar with `openai_api_mode="responses"` | `/v1/responses` | typed `reasoning` summary blocks + `resp_*` id | ✅ yes, with checkpoint replay |
+| CLIProxy GPT-5.5 sidecar with `openai_api_mode="chat_completions"` | `/v1/chat/completions` | `delta.reasoning_content` (plaintext summary, translated from upstream) | ✅ yes, via subclass; not recommended if thinking is enabled |
+| CLIProxy GPT-5.5 sidecar with default `openai_api_mode="responses"` | `/v1/responses` | typed `reasoning` summary blocks + `resp_*` id | ✅ yes, with checkpoint replay |
 | OpenRouter DeepSeek-R1 / Qwen thinking / Claude-via-OR with `reasoning.enabled=true` | `/chat/completions` | `delta.reasoning` (plaintext) | ✅ yes, via subclass |
-| Pure OpenAI reasoning models via `openai.com` (o1, o3, o4-mini, gpt-5 chat) | `/v1/chat/completions` | Typically no streamed reasoning; summaries require Responses API | ⚠️ no live reasoning stream (provider limitation, not our bug) |
+| Pure OpenAI reasoning models via `openai.com` with default `openai_api_mode="responses"` | `/v1/responses` | Typed reasoning blocks; summary optional and often empty | ✅ surfaces plaintext summaries when present |
 | gpt-5-pro family, gpt-5.2-pro, gpt-5.4-pro, any `*codex*` name — direct (not via CLIProxy) | `/v1/responses` (auto-switched by langchain-openai `_model_prefers_responses_api`) | Typed reasoning blocks; summary optional and often empty; raw reasoning is encrypted | ✅ surfaces plaintext summaries when present |
 
-The CLIProxy sidecar deliberately avoids the "responses-api" langchain auto-switch for `gpt-5.5` because the model name doesn't match any prefix in `_RESPONSES_API_ONLY_PREFIXES` (`gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`) and doesn't contain `codex`. That keeps it on the chat-completions path where our subclass runs.
+The CLIProxy sidecar does not trigger langchain-openai's built-in Responses auto-switch for `gpt-5.5` because the model name does not match any prefix in `_RESPONSES_API_ONLY_PREFIXES` (`gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`) and does not contain `codex`. Nymeria's default `openai_api_mode="responses"` forces the correct endpoint anyway; `chat_completions` remains available as a compatibility override.
 
 ## Sidecar requirements for reasoning to keep working
 

@@ -639,7 +639,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, and `openai_api_mode`, plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user.
 
@@ -674,7 +674,8 @@ Authorization: Bearer <token>
   "llm_frequency_penalty": 0.5,
   "llm_presence_penalty": 0.3,
   "llm_reasoning_effort": "medium",
-  "llm_use_model_defaults": false
+  "llm_use_model_defaults": false,
+  "openai_api_mode": "responses"
 }
 ```
 
@@ -690,6 +691,7 @@ Authorization: Bearer <token>
 | `llm_presence_penalty` | float | -2.0-2.0 | Encourage new topics |
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
+| `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI provider API mode. `responses` is the default; `chat_completions` is a compatibility override and is not recommended if thinking is enabled. |
 
 **Response:**
 ```json

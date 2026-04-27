@@ -152,7 +152,11 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
     if config.custom_llm is not None:
         return config.custom_llm
 
-    if config.openai_api_mode and config.provider != "openai":
+    if (
+        config.openai_api_mode
+        and config.provider != "openai"
+        and config.openai_api_mode != "responses"
+    ):
         logger.warning(
             "[LLM] Ignoring openai_api_mode=%s for non-OpenAI provider %s",
             config.openai_api_mode,
