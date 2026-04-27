@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import type { BuiltInTool, ToolCategory, ToolPreferences } from '$lib/types';
 
 // State
@@ -15,6 +16,17 @@ let preferences = $state<ToolPreferences | null>(null);
 let loading = $state(false);
 let loaded = $state(false);
 let error = $state<string | null>(null);
+let identityGeneration = 0;
+
+registerIdentityReloadHook(() => {
+  identityGeneration += 1;
+  tools = [];
+  byCategory = {} as Record<ToolCategory, BuiltInTool[]>;
+  preferences = null;
+  loading = false;
+  loaded = false;
+  error = null;
+});
 
 const CATEGORY_INFO: Record<ToolCategory, { name: string; icon: string; description: string }> = {
   core: { name: 'Core', icon: 'terminal', description: 'Essential system tools like bash, file operations, and web search' },
@@ -42,26 +54,35 @@ function getDisabledTools(): BuiltInTool[] {
   return tools.filter((t) => !t.enabled);
 }
 
-async function loadTools(userId: string = 'default'): Promise<void> {
+async function loadTools(userId?: string): Promise<void> {
   if (loading) return;
+  const requestGeneration = identityGeneration;
   loading = true;
   error = null;
   try {
     const response = await api.getBuiltInTools(userId);
+    if (requestGeneration !== identityGeneration) return;
     tools = response.tools;
     byCategory = response.byCategory;
     loaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     error = e instanceof Error ? e.message : 'Failed to load built-in tools';
     console.error('Failed to load built-in tools:', e);
+    loaded = true;
   } finally {
-    loading = false;
+    if (requestGeneration === identityGeneration) {
+      loading = false;
+    }
   }
 }
 
-async function loadPreferences(userId: string = 'default'): Promise<void> {
+async function loadPreferences(userId?: string): Promise<void> {
+  const requestGeneration = identityGeneration;
   try {
-    preferences = await api.getToolPreferences(userId);
+    const nextPreferences = await api.getToolPreferences(userId);
+    if (requestGeneration !== identityGeneration) return;
+    preferences = nextPreferences;
   } catch (e) {
     console.error('Failed to load tool preferences:', e);
   }
@@ -71,7 +92,7 @@ function resetLoaded(): void {
   loaded = false;
 }
 
-async function setToolEnabled(toolName: string, enabled: boolean, userId: string = 'default'): Promise<boolean> {
+async function setToolEnabled(toolName: string, enabled: boolean, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
@@ -86,7 +107,7 @@ async function setToolEnabled(toolName: string, enabled: boolean, userId: string
   }
 }
 
-async function clearToolOverride(toolName: string, userId: string = 'default'): Promise<boolean> {
+async function clearToolOverride(toolName: string, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
@@ -101,7 +122,7 @@ async function clearToolOverride(toolName: string, userId: string = 'default'): 
   }
 }
 
-async function setCategoryEnabled(category: string, enabled: boolean, userId: string = 'default'): Promise<boolean> {
+async function setCategoryEnabled(category: string, enabled: boolean, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
@@ -116,7 +137,7 @@ async function setCategoryEnabled(category: string, enabled: boolean, userId: st
   }
 }
 
-async function setToolConfig(toolName: string, config: Record<string, unknown>, userId: string = 'default'): Promise<boolean> {
+async function setToolConfig(toolName: string, config: Record<string, unknown>, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
@@ -131,7 +152,7 @@ async function setToolConfig(toolName: string, config: Record<string, unknown>, 
   }
 }
 
-async function resetToDefaults(userId: string = 'default'): Promise<boolean> {
+async function resetToDefaults(userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {

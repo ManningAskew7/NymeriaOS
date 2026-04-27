@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import type { DefaultToolInfo } from '$lib/types';
 
 function createDefaultToolsStore() {
@@ -9,6 +10,18 @@ function createDefaultToolsStore() {
   let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let identityGeneration = 0;
+
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    tools = [];
+    defaultToolNames = [];
+    callableThreadCount = 0;
+    loading = false;
+    loaded = false;
+    saving = false;
+    error = null;
+  });
 
   return {
     get tools() { return tools; },
@@ -34,26 +47,32 @@ function createDefaultToolsStore() {
       return result;
     },
 
-    async load(userId: string = 'default'): Promise<void> {
+    async load(userId?: string): Promise<void> {
       if (loading) return;
+      const requestGeneration = identityGeneration;
       loading = true;
       error = null;
       try {
         const response = await api.getDefaultTools(userId);
+        if (requestGeneration !== identityGeneration) return;
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
         loaded = true;
       } catch (e) {
+        if (requestGeneration !== identityGeneration) return;
         error = e instanceof Error ? e.message : 'Failed to load default tools';
+        loaded = true;
       } finally {
-        loading = false;
+        if (requestGeneration === identityGeneration) {
+          loading = false;
+        }
       }
     },
 
     resetLoaded() { loaded = false; },
 
-    async save(toolNames: string[], userId: string = 'default'): Promise<boolean> {
+    async save(toolNames: string[], userId?: string): Promise<boolean> {
       saving = true;
       error = null;
       try {
@@ -69,7 +88,7 @@ function createDefaultToolsStore() {
       }
     },
 
-    async reset(userId: string = 'default'): Promise<boolean> {
+    async reset(userId?: string): Promise<boolean> {
       saving = true;
       error = null;
       try {

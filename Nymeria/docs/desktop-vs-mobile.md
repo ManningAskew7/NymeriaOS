@@ -54,6 +54,8 @@ The default `apiUrl` still differs by platform, but this is no longer the only d
 
 **When changing**: replicate configuration logic carefully, while preserving platform-specific defaults and any mobile setup behavior tied to first-run connection flow.
 
+User-scoped API helpers and stores must stay in sync across both apps. `services/api.svelte.ts` resolves optional `userId` arguments from `configStore.identity?.id`; per-user tool/skill/trigger stores register `registerIdentityReloadHook` and guard async loads with an identity generation so stale responses from the previous account cannot repopulate state after a switch.
+
 #### `routes/+layout.ts`
 
 Functionally identical — both export `ssr = false`. Only the comment differs (Tauri vs Capacitor).

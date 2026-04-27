@@ -48,7 +48,12 @@ function createAutonomousStore() {
 
   function getStreamUrl(): string {
     const baseUrl = configStore.apiUrl.replace(/\/$/, '');
-    return `${baseUrl}/autonomous/stream?user_id=default&api_key=${configStore.apiKey}`;
+    const userId = configStore.identity?.id;
+    if (!userId) {
+      throw new Error('Cannot build stream URL: no identity resolved yet');
+    }
+    const params = new URLSearchParams({ user_id: userId, api_key: configStore.apiKey });
+    return `${baseUrl}/autonomous/stream?${params}`;
   }
 
   async function connect() {
@@ -59,7 +64,13 @@ function createAutonomousStore() {
       return;
     }
 
-    const url = getStreamUrl();
+    let url: string;
+    try {
+      url = getStreamUrl();
+    } catch {
+      scheduleReconnect();
+      return;
+    }
     console.log('[Autonomous] Connecting via fetch:', url);
 
     abortController = new AbortController();
@@ -126,6 +137,10 @@ function createAutonomousStore() {
   }
 
   function disconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (abortController) {
       abortController.abort();
       abortController = null;

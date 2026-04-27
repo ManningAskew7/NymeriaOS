@@ -33,10 +33,12 @@ let marketplaceQuery = $state('');
 
 // Install/uninstall progress (skill name -> 'installing' | 'uninstalling')
 let pending = $state<Record<string, 'installing' | 'uninstalling'>>({});
+let identityGeneration = 0;
 
 // Reset on account switch / sign-out — installed skills + global skills are
 // per-user, so the next consumer must re-fetch under the new identity.
 registerIdentityReloadHook(() => {
+  identityGeneration += 1;
   installed = [];
   installedLoaded = false;
   installedLoading = false;
@@ -54,34 +56,46 @@ registerIdentityReloadHook(() => {
 async function loadInstalled(force = false): Promise<void> {
   if (installedLoading) return;
   if (installedLoaded && !force) return;
+  const requestGeneration = identityGeneration;
   installedLoading = true;
   installedError = null;
   try {
-    installed = await api.listSkills();
+    const nextInstalled = await api.listSkills();
+    if (requestGeneration !== identityGeneration) return;
+    installed = nextInstalled;
     installedLoaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     installedError = e instanceof Error ? e.message : 'Failed to load skills';
     console.error('skills: loadInstalled failed', e);
     // Mark loaded so callers don't re-fire indefinitely on a 404/auth error.
     installedLoaded = true;
   } finally {
-    installedLoading = false;
+    if (requestGeneration === identityGeneration) {
+      installedLoading = false;
+    }
   }
 }
 
 async function loadGlobal(force = false): Promise<void> {
   if (enabledGlobalLoading) return;
   if (enabledGlobalLoaded && !force) return;
+  const requestGeneration = identityGeneration;
   enabledGlobalLoading = true;
   try {
-    enabledGlobal = await api.getGlobalSkills();
+    const nextEnabledGlobal = await api.getGlobalSkills();
+    if (requestGeneration !== identityGeneration) return;
+    enabledGlobal = nextEnabledGlobal;
     enabledGlobalLoaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     console.error('skills: loadGlobal failed', e);
     // Mark loaded so callers don't re-fire indefinitely on a 404/auth error.
     enabledGlobalLoaded = true;
   } finally {
-    enabledGlobalLoading = false;
+    if (requestGeneration === identityGeneration) {
+      enabledGlobalLoading = false;
+    }
   }
 }
 

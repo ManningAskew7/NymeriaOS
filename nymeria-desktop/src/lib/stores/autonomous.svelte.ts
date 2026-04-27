@@ -157,6 +157,10 @@ function createAutonomousStore() {
   }
 
   function disconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (eventSource) {
       eventSource.close();
       eventSource = null;
