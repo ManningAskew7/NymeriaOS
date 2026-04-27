@@ -95,6 +95,7 @@ services:
       LLM_EXTENDED_THINKING: ${LLM_EXTENDED_THINKING:-false}
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
       LLM_USE_MODEL_DEFAULTS: ${LLM_USE_MODEL_DEFAULTS:-false}
+      OPENAI_API_MODE: ${OPENAI_API_MODE:-responses}
       # Database
       DATABASE_BACKEND: postgres
       POSTGRES_URI: postgresql://${POSTGRES_USER:-nymeria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nymeria}
