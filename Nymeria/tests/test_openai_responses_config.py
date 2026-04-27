@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
@@ -20,6 +20,18 @@ def _openai_config(**overrides) -> LLMConfig:
         "model": "gpt-5.5",
         "api_key": "test-key",
         "base_url": "http://example.test/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _openrouter_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "openrouter",
+        "model": "qwen/qwen3.6-flash",
+        "api_key": "test-key",
+        "base_url": "https://openrouter.ai/api/v1",
         "temperature": None,
     }
     values.update(overrides)
@@ -116,6 +128,113 @@ def test_openai_chat_completions_mode_stays_on_messages_payload():
     assert "messages" in payload
     assert "input" not in payload
     assert payload["reasoning_effort"] == "high"
+
+
+def test_openai_chat_completions_does_not_replay_reasoning_metadata():
+    llm = create_llm(
+        _openai_config(openai_api_mode="chat_completions")
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Hi"),
+        AIMessage(
+            content="Hello",
+            additional_kwargs={"reasoning_content": "Private thought"},
+        ),
+        HumanMessage(content="Again"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert "reasoning" not in assistant
+    assert "reasoning_details" not in assistant
+
+
+def test_openrouter_streaming_chunk_preserves_reasoning_details_metadata():
+    llm = create_llm(
+        _openrouter_config(extended_thinking=True, reasoning_effort="low")
+    )
+
+    chunk = {
+        "choices": [
+            {
+                "delta": {
+                    "role": "assistant",
+                    "reasoning_details": [
+                        {
+                            "type": "reasoning.text",
+                            "text": "Need context",
+                            "format": "unknown",
+                            "index": 0,
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    generation_chunk = llm._convert_chunk_to_generation_chunk(
+        chunk,
+        AIMessageChunk,
+        {},
+    )
+
+    extras = generation_chunk.message.additional_kwargs
+    assert extras["reasoning_content"] == "Need context"
+    assert extras["reasoning_details"] == [
+        {
+            "type": "reasoning.text",
+            "text": "Need context",
+            "format": "unknown",
+        }
+    ]
+
+
+def test_openrouter_replays_reasoning_details_in_chat_payload():
+    llm = create_llm(
+        _openrouter_config(extended_thinking=True, reasoning_effort="low")
+    )
+    details = [
+        {
+            "type": "reasoning.text",
+            "text": "Prior thought",
+            "format": "unknown",
+            "index": 0,
+        }
+    ]
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Hi"),
+        AIMessage(
+            content="Hello",
+            additional_kwargs={
+                "reasoning_content": "Prior thought",
+                "reasoning_details": details,
+            },
+        ),
+        HumanMessage(content="Again"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert assistant["reasoning_details"] == details
+    assert "reasoning" not in assistant
+
+
+def test_openrouter_replays_reasoning_string_when_details_absent():
+    llm = create_llm(
+        _openrouter_config(extended_thinking=True, reasoning_effort="low")
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Hi"),
+        AIMessage(
+            content="Hello",
+            additional_kwargs={"reasoning_content": "Prior thought"},
+        ),
+        HumanMessage(content="Again"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert assistant["reasoning"] == "Prior thought"
 
 
 def test_local_cliproxy_sidecar_does_not_disable_streaming():

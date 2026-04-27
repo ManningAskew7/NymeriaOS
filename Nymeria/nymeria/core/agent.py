@@ -319,6 +319,31 @@ def _extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
     return parts
 
 
+def _extract_reasoning_text_from_details(details: Any) -> List[str]:
+    """Extract displayable plaintext from OpenRouter reasoning_details metadata."""
+    parts: List[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            parts.append(value)
+        elif isinstance(value, dict):
+            if value.get("type") == "reasoning.encrypted":
+                return
+            add(
+                value.get("text")
+                or value.get("content")
+                or value.get("reasoning")
+                or value.get("summary")
+            )
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+
+    add(details)
+    joined = "".join(parts)
+    return [joined] if joined else []
+
+
 def _extract_content_parts(content) -> tuple:
     """Extract text and thinking from AIMessage.content.
 
@@ -382,6 +407,11 @@ def _extract_reasoning_parts(msg) -> List[str]:
         if isinstance(text, str) and text and text not in seen:
             parts.append(text)
             seen.add(text)
+
+    for text in _extract_reasoning_text_from_details(
+        additional_kwargs.get("reasoning_details")
+    ):
+        add_text(text)
 
     for key in ("reasoning_content", "reasoning"):
         value = additional_kwargs.get(key)
