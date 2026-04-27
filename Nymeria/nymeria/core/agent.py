@@ -303,8 +303,21 @@ def _extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
     def add(value: Any) -> None:
         if isinstance(value, str) and value:
             parts.append(value)
+        elif isinstance(value, dict):
+            if value.get("type") == "reasoning.encrypted":
+                return
+            add(
+                value.get("text")
+                or value.get("content")
+                or value.get("reasoning")
+                or value.get("summary")
+            )
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
 
     add(block.get("reasoning"))
+    add(block.get("content"))
 
     summary = block.get("summary")
     if isinstance(summary, str):
@@ -344,6 +357,154 @@ def _extract_reasoning_text_from_details(details: Any) -> List[str]:
     return [joined] if joined else []
 
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _strip_inline_thinking_text(text: str) -> str:
+    """Remove provider-leaked inline thinking tags from assistant text.
+
+    Some OpenRouter Responses models emit empty typed reasoning items while
+    placing raw Qwen/DeepSeek ``<think>`` output in the normal text field. That
+    text is not reliable provider-native reasoning, so it must not be displayed
+    as answer text or replayed as assistant history.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    if _THINK_OPEN not in text and _THINK_CLOSE not in text:
+        return text
+
+    response_parts: List[str] = []
+    i = 0
+
+    while i < len(text):
+        open_idx = text.find(_THINK_OPEN, i)
+        close_idx = text.find(_THINK_CLOSE, i)
+
+        # OpenRouter/Qwen has been observed dropping the opening tag while
+        # preserving the close marker. In that shape, everything before the
+        # dangling close marker is leaked reasoning.
+        if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+            i = close_idx + len(_THINK_CLOSE)
+            while i < len(text) and text[i].isspace():
+                i += 1
+            continue
+
+        if open_idx == -1:
+            response_parts.append(text[i:])
+            break
+
+        response_parts.append(text[i:open_idx])
+        i = open_idx + len(_THINK_OPEN)
+
+        close_after_open = text.find(_THINK_CLOSE, i)
+        if close_after_open == -1:
+            break
+
+        i = close_after_open + len(_THINK_CLOSE)
+        while i < len(text) and text[i].isspace():
+            i += 1
+
+    return "".join(response_parts)
+
+
+def _trailing_marker_prefix_length(text: str) -> int:
+    """Return suffix length that may be the start of a think marker."""
+    max_keep = min(len(text), max(len(_THINK_OPEN), len(_THINK_CLOSE)) - 1)
+    for length in range(max_keep, 0, -1):
+        suffix = text[-length:]
+        if _THINK_OPEN.startswith(suffix) or _THINK_CLOSE.startswith(suffix):
+            return length
+    return 0
+
+
+class _InlineThinkingTextStripper:
+    """Streaming sanitizer for provider-leaked inline thinking text."""
+
+    def __init__(self) -> None:
+        self._inside_thinking = False
+        self._maybe_dangling_thinking = False
+        self._buffer = ""
+
+    def mark_possible_inline_thinking(self) -> None:
+        """Buffer text after an empty reasoning placeholder until safe."""
+        if not self._inside_thinking and not self._buffer:
+            self._maybe_dangling_thinking = True
+
+    def process_text(self, text: str) -> str:
+        if not isinstance(text, str) or not text:
+            return ""
+
+        self._buffer += text
+
+        if self._maybe_dangling_thinking:
+            open_idx = self._buffer.find(_THINK_OPEN)
+            close_idx = self._buffer.find(_THINK_CLOSE)
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                self._buffer = self._buffer[close_idx + len(_THINK_CLOSE):].lstrip()
+                self._maybe_dangling_thinking = False
+            elif open_idx != -1:
+                self._maybe_dangling_thinking = False
+            else:
+                return ""
+
+        return self._drain()
+
+    def flush(self) -> str:
+        self._maybe_dangling_thinking = False
+        return self._drain(final=True)
+
+    def _drain(self, final: bool = False) -> str:
+        output: List[str] = []
+
+        while self._buffer:
+            if self._inside_thinking:
+                close_idx = self._buffer.find(_THINK_CLOSE)
+                if close_idx == -1:
+                    if final:
+                        self._buffer = ""
+                    else:
+                        keep = _trailing_marker_prefix_length(self._buffer)
+                        self._buffer = self._buffer[-keep:] if keep else ""
+                    break
+                self._buffer = self._buffer[close_idx + len(_THINK_CLOSE):].lstrip()
+                self._inside_thinking = False
+                continue
+
+            open_idx = self._buffer.find(_THINK_OPEN)
+            close_idx = self._buffer.find(_THINK_CLOSE)
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                self._buffer = self._buffer[close_idx + len(_THINK_CLOSE):].lstrip()
+                continue
+
+            if open_idx != -1:
+                output.append(self._buffer[:open_idx])
+                self._buffer = self._buffer[open_idx + len(_THINK_OPEN):]
+                self._inside_thinking = True
+                continue
+
+            if final:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+
+            keep = _trailing_marker_prefix_length(self._buffer)
+            if keep:
+                output.append(self._buffer[:-keep])
+                self._buffer = self._buffer[-keep:]
+            else:
+                output.append(self._buffer)
+                self._buffer = ""
+            break
+
+        return "".join(output)
+
+    def reset(self) -> None:
+        self._inside_thinking = False
+        self._maybe_dangling_thinking = False
+        self._buffer = ""
+
+
 def _extract_content_parts(content) -> tuple:
     """Extract text and thinking from AIMessage.content.
 
@@ -355,7 +516,7 @@ def _extract_content_parts(content) -> tuple:
         and thinking_blocks is a list of thinking text strings.
     """
     if isinstance(content, str):
-        return content, []
+        return _strip_inline_thinking_text(content), []
     if isinstance(content, list):
         text_parts = []
         thinking_parts = []
@@ -363,7 +524,9 @@ def _extract_content_parts(content) -> tuple:
             if isinstance(block, dict):
                 block_type = block.get("type")
                 if block_type in ("text", "output_text"):
-                    text_parts.append(block.get("text", ""))
+                    text = _strip_inline_thinking_text(block.get("text", ""))
+                    if text:
+                        text_parts.append(text)
                 elif block_type == "thinking":
                     thinking_parts.append(block.get("thinking", ""))
                 elif block_type == "reasoning":
@@ -371,7 +534,9 @@ def _extract_content_parts(content) -> tuple:
                 # Skip tool_use (handled via msg.tool_calls),
                 # redacted_thinking, signature, etc.
             elif isinstance(block, str):
-                text_parts.append(block)
+                text = _strip_inline_thinking_text(block)
+                if text:
+                    text_parts.append(text)
         return "\n".join(text_parts), thinking_parts
     return str(content), []
 
@@ -4140,8 +4305,10 @@ class NymeriaAgent:
                                     for block in msg.content:
                                         if not isinstance(block, dict):
                                             if isinstance(block, str) and block:
-                                                final_response_parts.append(block)
-                                                yield {"type": "response", "content": block}
+                                                text = _strip_inline_thinking_text(block)
+                                                if text:
+                                                    final_response_parts.append(text)
+                                                    yield {"type": "response", "content": text}
                                             continue
                                         block_type = block.get("type")
                                         if block_type == "thinking":
@@ -4152,7 +4319,7 @@ class NymeriaAgent:
                                             for text in _extract_reasoning_text_from_block(block):
                                                 yield {"type": "thinking", "content": text}
                                         elif block_type in ("text", "output_text"):
-                                            text = block.get("text", "")
+                                            text = _strip_inline_thinking_text(block.get("text", ""))
                                             if text:
                                                 final_response_parts.append(text)
                                                 yield {"type": "response", "content": text}
@@ -4610,6 +4777,7 @@ class NymeriaAgent:
                 emitted_tool_ends: set = set()
                 emitted_openai_reasoning_chunks: set = set()
                 streamed_text_in_current_llm_call = False
+                inline_text_stripper = _InlineThinkingTextStripper()
 
                 def should_emit_openai_reasoning(text: Any) -> bool:
                     if not isinstance(text, str) or not text:
@@ -4636,6 +4804,7 @@ class NymeriaAgent:
                     if event_type == "on_chat_model_start":
                         streamed_text_in_current_llm_call = False
                         emitted_openai_reasoning_chunks.clear()
+                        inline_text_stripper.reset()
 
                     elif event_type == "on_tool_start":
                         run_id = event.get("run_id")
@@ -4697,6 +4866,7 @@ class NymeriaAgent:
                             extras = getattr(chunk, "additional_kwargs", None) or {}
                             reasoning = extras.get("reasoning_content")
                             if should_emit_openai_reasoning(reasoning):
+                                inline_text_stripper.reset()
                                 yield {"type": "thinking", "content": reasoning}
 
                             if hasattr(chunk, "content") and chunk.content:
@@ -4708,50 +4878,70 @@ class NymeriaAgent:
                                         if not isinstance(block, dict):
                                             if isinstance(block, str) and block:
                                                 streamed_text_in_current_llm_call = True
-                                                final_response_parts.append(block)
-                                                yield {"type": "response", "content": block}
+                                                text = inline_text_stripper.process_text(block)
+                                                if text:
+                                                    final_response_parts.append(text)
+                                                    yield {"type": "response", "content": text}
                                             continue
                                         block_type = block.get("type")
                                         if block_type == "thinking":
                                             text = block.get("thinking", "")
                                             if text:
+                                                inline_text_stripper.reset()
                                                 yield {"type": "thinking", "content": text}
                                         elif block_type == "reasoning":
-                                            for text in _extract_reasoning_text_from_block(block):
+                                            reasoning_texts = _extract_reasoning_text_from_block(block)
+                                            if reasoning_texts:
+                                                inline_text_stripper.reset()
+                                            else:
+                                                inline_text_stripper.mark_possible_inline_thinking()
+                                            for text in reasoning_texts:
                                                 if should_emit_openai_reasoning(text):
                                                     yield {"type": "thinking", "content": text}
                                         elif block_type in ("text", "output_text"):
                                             text = block.get("text", "")
                                             if text:
                                                 streamed_text_in_current_llm_call = True
-                                                final_response_parts.append(text)
-                                                yield {"type": "response", "content": text}
+                                                clean_text = inline_text_stripper.process_text(text)
+                                                if clean_text:
+                                                    final_response_parts.append(clean_text)
+                                                    yield {"type": "response", "content": clean_text}
                                 elif isinstance(content, str):
                                     streamed_text_in_current_llm_call = True
-                                    final_response_parts.append(content)
-                                    yield {"type": "response", "content": content}
+                                    clean_text = inline_text_stripper.process_text(content)
+                                    if clean_text:
+                                        final_response_parts.append(clean_text)
+                                        yield {"type": "response", "content": clean_text}
 
                     elif event_type == "on_chat_model_end":
+                        clean_text = inline_text_stripper.flush()
+                        if clean_text:
+                            final_response_parts.append(clean_text)
+                            yield {"type": "response", "content": clean_text}
                         if not streamed_text_in_current_llm_call:
                             output = event.get("data", {}).get("output")
                             if output and hasattr(output, "content") and output.content:
                                 content = output.content
                                 if isinstance(content, str) and content.strip():
-                                    final_response_parts.append(content)
-                                    yield {"type": "response", "content": content}
+                                    text = _strip_inline_thinking_text(content)
+                                    if text:
+                                        final_response_parts.append(text)
+                                        yield {"type": "response", "content": text}
                                 elif isinstance(content, list):
                                     for block in content:
                                         if not isinstance(block, dict):
                                             if isinstance(block, str) and block:
-                                                final_response_parts.append(block)
-                                                yield {"type": "response", "content": block}
+                                                text = _strip_inline_thinking_text(block)
+                                                if text:
+                                                    final_response_parts.append(text)
+                                                    yield {"type": "response", "content": text}
                                             continue
                                         if block.get("type") == "reasoning":
                                             for text in _extract_reasoning_text_from_block(block):
                                                 if should_emit_openai_reasoning(text):
                                                     yield {"type": "thinking", "content": text}
                                         elif block.get("type") in ("text", "output_text"):
-                                            text = block.get("text", "")
+                                            text = _strip_inline_thinking_text(block.get("text", ""))
                                             if text:
                                                 final_response_parts.append(text)
                                                 yield {"type": "response", "content": text}
@@ -5170,10 +5360,12 @@ class NymeriaAgent:
                             for block in msg.content:
                                 if not isinstance(block, dict):
                                     if isinstance(block, str) and block:
-                                        current_turn["steps"].append({
-                                            "type": "response",
-                                            "content": block,
-                                        })
+                                        text = _strip_inline_thinking_text(block)
+                                        if text:
+                                            current_turn["steps"].append({
+                                                "type": "response",
+                                                "content": text,
+                                            })
                                     continue
                                 block_type = block.get("type")
                                 if block_type == "thinking":
@@ -5188,7 +5380,7 @@ class NymeriaAgent:
                                         _thinking_steps(_extract_reasoning_text_from_block(block))
                                     )
                                 elif block_type in ("text", "output_text"):
-                                    text = block.get("text", "")
+                                    text = _strip_inline_thinking_text(block.get("text", ""))
                                     if text:
                                         current_turn["steps"].append({
                                             "type": "response",
