@@ -27,7 +27,7 @@ Nymeria wraps LangGraph's ReAct (Reasoning + Acting) agent pattern with addition
 │                           │                                          │
 │                           ▼                                          │
 │  ┌───────────────────────────────────────────────────────────────┐  │
-│  │              LangGraph ReAct Loop (max 70 iterations)         │  │
+│  │          LangGraph ReAct Loop (500-call safety budget)        │  │
 │  │                                                                │  │
 │  │   ┌─────────┐    ┌─────────┐    ┌─────────────────┐          │  │
 │  │   │   LLM   │───▶│ Router  │───▶│     Tools       │          │  │
@@ -534,7 +534,7 @@ Input interfaces and event-driven adapters that route messages to the agent:
 6. LLM decides: respond directly OR call tools
 7. If tools needed: execute tools, feed results back to LLM
 8. All tool calls logged to audit log
-9. Loop until LLM generates final response (max 70 iterations)
+9. Loop until LLM generates final response, hits the turn tool-call budget, or repeats the same tool call/result 5 times in a row
 10. State saved to SQLite for conversation continuity
 11. Response returned to user
 

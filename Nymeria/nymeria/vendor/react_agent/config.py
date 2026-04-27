@@ -92,8 +92,9 @@ Guidelines:
 - Get straight to the answer without unnecessary preamble"""))
 
     # Execution settings
-    max_iterations: int = 70  # Max ReAct loops before forcing stop
-    recursion_limit: int = 150  # LangGraph recursion limit (must exceed 2x max_iterations)
+    max_iterations: int = 500  # Max tool calls per turn before forcing stop
+    recursion_limit: int = 1025  # LangGraph recursion limit (must exceed 2x max_iterations)
+    repeated_tool_result_limit: int = 5  # Stop repeated same tool+args+result loops
     tool_timeout: int = 300  # Per-tool-node timeout in seconds (5 minutes)
     on_timeout: Optional[object] = field(default=None, repr=False)  # Callback for tool timeout: fn(input_dict) -> None
 

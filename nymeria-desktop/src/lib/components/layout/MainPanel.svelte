@@ -397,9 +397,12 @@
         const data = event.data as {
           message: string;
           maxIterations: number;
+          reason?: 'max_iterations' | 'repeated_tool_result';
           scope?: 'main_agent' | 'sub_agent';
           agentName?: string;
           toolCallCount?: number;
+          repeatedToolName?: string;
+          repeatedCount?: number;
         };
 
         if (data.scope === 'sub_agent') {
@@ -407,9 +410,17 @@
           const countText = data.toolCallCount
             ? `${data.toolCallCount}/${data.maxIterations}`
             : `${data.maxIterations}`;
+          const title = data.reason === 'repeated_tool_result'
+            ? `${agentName} stopped a repeated tool loop`
+            : `${agentName} hit its iteration limit`;
           chatStore.addResponseStep(
-            `\n\n---\n**${agentName} hit its iteration limit (${countText} steps).** ` +
+            `\n\n---\n**${title} (${countText} steps).** ` +
             `${data.message || 'The sub-agent was stopped before finishing.'}`
+          );
+        } else if (data.reason === 'repeated_tool_result') {
+          chatStore.addResponseStep(
+            `\n\n---\n**Repeated tool loop stopped.** ` +
+            `${data.message || 'The agent repeated the same tool call and result too many times.'}`
           );
         } else {
           chatStore.addResponseStep(

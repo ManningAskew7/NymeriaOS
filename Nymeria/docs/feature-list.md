@@ -21,7 +21,7 @@ The core differentiating feature. Any conversation thread can be made "callable"
 - **LLM model**: Different threads can use different models and providers (e.g., Opus for reasoning, Haiku for fast tasks)
 - **Extended thinking**: Per-thread reasoning effort (off, on, low, medium, high)
 - **Skills**: Per-thread skill enablement/disablement
-- **Iteration limit**: 1–200 ReAct iterations per callable (default 50)
+- **Turn safety**: 500 main-agent tool calls, 300 default callable tool calls, configurable callables up to 1000, plus repeated tool/result loop detection
 - **Profile injection**: Toggle whether user memories and TODOs appear in this thread's prompt
 
 ### Thread Spawning
@@ -123,7 +123,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ## 4. Core Agent Architecture
 
 ### LangGraph ReAct Agent
-- **Reasoning + Acting loop** — LangGraph-based ReAct pattern with configurable iteration limits (default 70, callable threads default 50, configurable 1–200)
+- **Reasoning + Acting loop** — LangGraph-based ReAct pattern with higher tool-call budgets (default 500 main, 300 callable, configurable callables up to 1000) and exact repeated tool/result loop detection
 - **Per-user graph compilation** — Graphs compiled per user/thread based on memory hash, tool set, and thread config; LRU-cached (max 50 entries)
 - **Dynamic tool binding** — Tools resolved at graph-build time from core + optional + callable + MCP + skill sources
 - **Multi-provider LLM support** — Anthropic (native), OpenAI, OpenRouter, local LLMs (llama.cpp, KoboldCpp, LM Studio, Ollama) via OpenAI-compatible API
@@ -465,7 +465,7 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 | Thread notepad | 50 KB | No |
 | Thread instructions | 5000 chars | No |
 | System prompt override | 50,000 chars | No |
-| Agent iterations | 70 (main), 50 (callable) | Yes (1–200) |
+| Agent tool calls per turn | 500 (main), 300 (callable) | Callable override 1–1000 |
 | Spawn depth | 3 levels | Yes |
 | Spawns per hour | 10 per parent | Yes |
 | Tool reloads per turn | 3 | No |

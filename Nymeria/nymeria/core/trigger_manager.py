@@ -861,6 +861,7 @@ class TriggerManager:
                 logger.warning(
                     f"[TRIGGER] Iteration limit on thread {thread_id}: "
                     f"scope={chunk.get('scope')}, "
+                    f"reason={chunk.get('reason')}, "
                     f"max_iterations={chunk.get('max_iterations')}. "
                     f"Using partial response."
                 )

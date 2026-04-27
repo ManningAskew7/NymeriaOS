@@ -92,8 +92,8 @@ class ThreadConfig(BaseModel):
     callable_max_iterations: Optional[int] = Field(
         default=None,
         ge=1,
-        le=200,
-        description="Max ReAct iterations for this callable thread (1-200). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
+        le=1000,
+        description="Max ReAct tool calls for this callable thread (1-1000). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
     )
     # Inject user profile (saved facts, personality) into the system prompt
     inject_profile_in_prompt: bool = False
@@ -153,6 +153,8 @@ class ThreadConfig(BaseModel):
         if self.system_prompt:
             return True
         if self.callable:
+            return True
+        if self.callable_max_iterations is not None:
             return True
         if self.inject_todos_in_prompt:
             return True

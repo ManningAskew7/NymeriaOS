@@ -191,7 +191,17 @@
         break;
 
       case 'iteration_limit':
-        chatStore.setLastMessageError((event.data as { message: string }).message);
+        {
+          const data = event.data as {
+            message: string;
+            reason?: 'max_iterations' | 'repeated_tool_result';
+          };
+          chatStore.setLastMessageError(
+            data.reason === 'repeated_tool_result'
+              ? `Repeated tool loop stopped. ${data.message}`
+              : data.message
+          );
+        }
         break;
     }
   }

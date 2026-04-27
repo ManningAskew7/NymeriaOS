@@ -3435,6 +3435,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable: Optional[bool] = None
         callable_name: Optional[str] = Field(default=None, max_length=64)
         callable_description: Optional[str] = Field(default=None, max_length=500)
+        callable_max_iterations: Optional[int] = Field(default=None, ge=1, le=1000)
         inject_todos_in_prompt: Optional[bool] = None
         show_autonomous_prompts: Optional[bool] = None
         show_prompt_metadata: Optional[bool] = None
@@ -3472,6 +3473,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "callable": False,
             "callable_name": None,
             "callable_description": None,
+            "callable_max_iterations": None,
             "inject_todos_in_prompt": False,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
@@ -3581,6 +3583,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.callable_name = request.callable_name
         if request.callable_description is not None:
             tc.callable_description = request.callable_description
+        if request.callable_max_iterations is not None:
+            tc.callable_max_iterations = request.callable_max_iterations
         if request.inject_todos_in_prompt is not None:
             tc.inject_todos_in_prompt = request.inject_todos_in_prompt
         if request.show_autonomous_prompts is not None:
@@ -3598,7 +3602,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent.invalidate_thread_config_cache(thread_id)
 
         # If this is an agent thread config change, rebuild agent tools
-        if request.callable is not None or request.callable_name is not None or request.callable_description is not None:
+        if (
+            request.callable is not None
+            or request.callable_name is not None
+            or request.callable_description is not None
+            or request.callable_max_iterations is not None
+        ):
             agent.sync_agent_tools()
 
         # Sync callable thread metadata (title = callable_name) under the

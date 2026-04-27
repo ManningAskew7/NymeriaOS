@@ -23,6 +23,12 @@ from ..vendor.react_agent import (
     ToolRegistry,
     create_graph,
 )
+from ..vendor.react_agent.nodes import (
+    TURN_SAFETY_REASON_MAX_ITERATIONS,
+    TURN_SAFETY_REASON_REPEATED_TOOL_RESULT,
+    TurnSafetyResult,
+    analyze_turn_safety,
+)
 
 from ..config import Settings, get_settings
 from ..config.model_capabilities import get_context_limit
@@ -451,8 +457,9 @@ class NymeriaAgent:
     - User memories automatically injected into system prompt
     """
 
-    MAIN_AGENT_MAX_ITERATIONS = 70
-    CALLABLE_DEFAULT_MAX_ITERATIONS = 50
+    MAIN_AGENT_MAX_ITERATIONS = 500
+    CALLABLE_DEFAULT_MAX_ITERATIONS = 300
+    TURN_SAME_TOOL_RESULT_LIMIT = 5
     SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
     # Cap the number of in-turn graph rebuilds triggered by tool_search enable.
     # Beyond this cap, further enables still persist to the thread config but
@@ -1273,14 +1280,88 @@ class NymeriaAgent:
     @classmethod
     def _check_iteration_limit_hit(cls, messages: List, max_iterations: int) -> bool:
         """Check if routing stopped because the turn exceeded max_iterations."""
-        if not messages:
-            return False
+        return cls._analyze_turn_safety(messages, max_iterations).should_stop
 
-        last_msg = messages[-1]
-        if not (isinstance(last_msg, AIMessage) and bool(last_msg.tool_calls)):
-            return False
+    @classmethod
+    def _analyze_turn_safety(
+        cls,
+        messages: List,
+        max_iterations: int,
+    ) -> TurnSafetyResult:
+        """Return turn safety status using the same logic as the graph router."""
+        return analyze_turn_safety(
+            messages,
+            max_iterations=max_iterations,
+            repeated_tool_result_limit=cls.TURN_SAME_TOOL_RESULT_LIMIT,
+        )
 
-        return cls._count_current_turn_tool_calls(messages) > max_iterations
+    @staticmethod
+    def _recursion_limit_for_iterations(max_iterations: int) -> int:
+        """LangGraph recursion must have room for agent/tool node pairs."""
+        return max(150, (max_iterations * 2) + 25)
+
+    def _max_iterations_for_thread(self, thread_id: Optional[str]) -> int:
+        if not thread_id:
+            return self.MAIN_AGENT_MAX_ITERATIONS
+        try:
+            tc = self.thread_config_manager.get_config(thread_id)
+            if tc and tc.callable and tc.callable_name:
+                return tc.callable_max_iterations or self.CALLABLE_DEFAULT_MAX_ITERATIONS
+        except Exception as e:
+            logger.debug(f"Could not resolve max iterations for thread {thread_id}: {e}")
+        return self.MAIN_AGENT_MAX_ITERATIONS
+
+    def _graph_run_config(
+        self,
+        thread_id: str,
+        user_id: str,
+        callbacks: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        max_iterations = self._max_iterations_for_thread(thread_id)
+        config: Dict[str, Any] = {
+            "recursion_limit": self._recursion_limit_for_iterations(max_iterations),
+            "configurable": {"thread_id": thread_id, "user_id": user_id},
+        }
+        if callbacks is not None:
+            config["callbacks"] = callbacks
+        return config
+
+    @classmethod
+    def _turn_safety_content(cls, safety: TurnSafetyResult) -> str:
+        if safety.reason == TURN_SAFETY_REASON_REPEATED_TOOL_RESULT:
+            tool_name = safety.repeated_tool_name or "a tool"
+            repeat_count = safety.repeated_count or cls.TURN_SAME_TOOL_RESULT_LIMIT
+            return (
+                f"Stopped because `{tool_name}` was called with the same arguments "
+                f"and returned the same result {repeat_count} times in a row. "
+                "This looks like a runaway tool loop, so I stopped before running it again."
+            )
+
+        return (
+            f"I reached the maximum number of steps "
+            f"({safety.max_iterations}) and had to stop. "
+            "My task may be incomplete — you can ask me to continue where I left off."
+        )
+
+    @classmethod
+    def _turn_safety_event(
+        cls,
+        safety: TurnSafetyResult,
+        scope: str = "main_agent",
+    ) -> Dict[str, Any]:
+        event: Dict[str, Any] = {
+            "type": "iteration_limit",
+            "scope": scope,
+            "reason": safety.reason or TURN_SAFETY_REASON_MAX_ITERATIONS,
+            "content": cls._turn_safety_content(safety),
+            "max_iterations": safety.max_iterations,
+            "tool_call_count": safety.tool_call_count,
+        }
+        if safety.repeated_tool_name:
+            event["repeated_tool_name"] = safety.repeated_tool_name
+        if safety.repeated_count:
+            event["repeated_count"] = safety.repeated_count
+        return event
 
     @staticmethod
     def _extract_http_status_code(error: Exception) -> Optional[int]:
@@ -1496,16 +1577,24 @@ class NymeriaAgent:
                 max_iterations = metadata.get("max_iterations", 0)
                 tool_call_count = metadata.get("tool_call_count", 0)
                 agent_name = metadata.get("agent_name") or tool_name
+                reason = metadata.get("reason") or TURN_SAFETY_REASON_MAX_ITERATIONS
+                repeated_tool_name = metadata.get("repeated_tool_name")
+                repeated_count = metadata.get("repeated_count")
 
                 event = {
                     "type": "iteration_limit",
                     "scope": "sub_agent",
                     "agent_name": agent_name,
+                    "reason": reason if isinstance(reason, str) and reason else TURN_SAFETY_REASON_MAX_ITERATIONS,
                     "max_iterations": max_iterations if isinstance(max_iterations, int) and max_iterations > 0 else 0,
                     "tool_call_count": tool_call_count if isinstance(tool_call_count, int) and tool_call_count > 0 else None,
                     "content": message if isinstance(message, str) and message.strip()
                     else f"{agent_name} hit its iteration limit.",
                 }
+                if isinstance(repeated_tool_name, str) and repeated_tool_name:
+                    event["repeated_tool_name"] = repeated_tool_name
+                if isinstance(repeated_count, int) and repeated_count > 0:
+                    event["repeated_count"] = repeated_count
 
                 if event["max_iterations"] <= 0:
                     event["max_iterations"] = 30
@@ -2576,6 +2665,7 @@ class NymeriaAgent:
             checkpointer=self._checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=max_iters,
+            repeated_tool_result_limit=self.TURN_SAME_TOOL_RESULT_LIMIT,
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
             on_timeout=self._on_tool_timeout,
@@ -2728,6 +2818,7 @@ class NymeriaAgent:
             checkpointer=self._async_checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=max_iters,
+            repeated_tool_result_limit=self.TURN_SAME_TOOL_RESULT_LIMIT,
             tool_timeout=self.settings.tool_timeout,
             verbose=self.settings.log_level == "DEBUG",
             on_timeout=self._on_tool_timeout,
@@ -3645,11 +3736,7 @@ class NymeriaAgent:
             # Pass user_id through config for tools to access
             # callbacks=[] prevents LLM events from leaking into a parent
             # astream_events() when chat() is called from inside a tool
-            config = {
-                "recursion_limit": 150,
-                "configurable": {"thread_id": thread_id, "user_id": user_id},
-                "callbacks": [],
-            }
+            config = self._graph_run_config(thread_id, user_id, callbacks=[])
 
             # Create message - mark autonomous wake-ups as internal so they're filtered from user history
             if _is_self_invoke:
@@ -3739,17 +3826,24 @@ class NymeriaAgent:
                 if input_tok or output_tok:
                     self._token_tracker.record_usage(thread_id, input_tok, output_tok)
 
-                # Detect if the agent was stopped by the iteration limit
-                if self._check_iteration_limit_hit(messages, self.MAIN_AGENT_MAX_ITERATIONS):
-                    tool_call_count = self._count_current_turn_tool_calls(messages)
+                # Detect if the agent was stopped by a turn safety guard.
+                max_iterations = self._max_iterations_for_thread(thread_id)
+                safety = self._analyze_turn_safety(messages, max_iterations)
+                if safety.should_stop:
                     logger.warning(
-                        f"Thread {thread_id}: Agent hit iteration limit "
-                        f"({tool_call_count}/{self.MAIN_AGENT_MAX_ITERATIONS} steps)"
+                        f"Thread {thread_id}: Agent stopped by turn safety "
+                        f"(reason={safety.reason}, "
+                        f"tool_calls={safety.tool_call_count}/{safety.max_iterations})"
                     )
+                    try:
+                        self._patch_dangling_tool_calls(graph, config)
+                    except Exception as e:
+                        logger.warning(
+                            f"Thread {thread_id}: Failed to patch dangling tool calls "
+                            f"after turn safety stop: {e}"
+                        )
                     response += (
-                        f"\n\n---\n**Note:** I was stopped because I reached the maximum number of steps "
-                        f"({self.MAIN_AGENT_MAX_ITERATIONS}). "
-                        "My task may be incomplete — you can ask me to continue where I left off."
+                        f"\n\n---\n**Note:** {self._turn_safety_content(safety)}"
                     )
 
                 # Store tool call count from this turn for callers that need metadata
@@ -3873,10 +3967,7 @@ class NymeriaAgent:
                 logger.info(f"Thread {thread_id}: Attached pending notepad to user message (stream)")
 
             # Pass user_id through config for tools to access
-            config = {
-                "recursion_limit": 150,
-                "configurable": {"thread_id": thread_id, "user_id": user_id},
-            }
+            config = self._graph_run_config(thread_id, user_id)
 
             # Build message content -- multimodal if attachments provided
             msg_content: Any = message_with_context
@@ -4160,24 +4251,17 @@ class NymeriaAgent:
                     if input_tok or output_tok:
                         self._token_tracker.record_usage(thread_id, input_tok, output_tok)
 
-                    # Detect if the agent was stopped by the iteration limit
-                    if self._check_iteration_limit_hit(result_messages, self.MAIN_AGENT_MAX_ITERATIONS):
-                        tool_call_count = self._count_current_turn_tool_calls(result_messages)
+                    # Detect if the agent was stopped by a turn safety guard.
+                    max_iterations = self._max_iterations_for_thread(thread_id)
+                    safety = self._analyze_turn_safety(result_messages, max_iterations)
+                    if safety.should_stop:
                         logger.warning(
-                            f"Thread {thread_id}: Agent hit iteration limit "
-                            f"({tool_call_count}/{self.MAIN_AGENT_MAX_ITERATIONS} steps) in stream()"
+                            f"Thread {thread_id}: Agent stopped by turn safety "
+                            f"(reason={safety.reason}, "
+                            f"tool_calls={safety.tool_call_count}/{safety.max_iterations}) "
+                            "in stream()"
                         )
-                        yield {
-                            "type": "iteration_limit",
-                            "scope": "main_agent",
-                            "content": (
-                                f"I reached the maximum number of steps "
-                                f"({self.MAIN_AGENT_MAX_ITERATIONS}) and had to stop. "
-                                "My task may be incomplete — you can ask me to continue where I left off."
-                            ),
-                            "max_iterations": self.MAIN_AGENT_MAX_ITERATIONS,
-                            "tool_call_count": tool_call_count,
-                        }
+                        yield self._turn_safety_event(safety)
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage in stream: {e}")
 
@@ -4288,10 +4372,7 @@ class NymeriaAgent:
             )
 
             # Pre-flight: patch any dangling tool calls from previous aborted runs
-            config = {
-                "recursion_limit": 150,
-                "configurable": {"thread_id": thread_id, "user_id": user_id},
-            }
+            config = self._graph_run_config(thread_id, user_id)
             try:
                 patched = self._patch_dangling_tool_calls(graph, config)
                 if patched:
@@ -4342,10 +4423,7 @@ class NymeriaAgent:
                 logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
 
             # Pass user_id through config for tools to access
-            config = {
-                "recursion_limit": 150,
-                "configurable": {"thread_id": thread_id, "user_id": user_id},
-            }
+            config = self._graph_run_config(thread_id, user_id)
 
             # Merge legacy images into attachments for unified handling
             all_attachments = list(attachments or [])
@@ -4742,24 +4820,17 @@ class NymeriaAgent:
                             f"cumulative: {self._token_tracker.get_usage(thread_id).total_tokens})"
                         )
 
-                    # Detect if the agent was stopped by the iteration limit
-                    if self._check_iteration_limit_hit(result_messages, self.MAIN_AGENT_MAX_ITERATIONS):
-                        tool_call_count = self._count_current_turn_tool_calls(result_messages)
+                    # Detect if the agent was stopped by a turn safety guard.
+                    max_iterations = self._max_iterations_for_thread(thread_id)
+                    safety = self._analyze_turn_safety(result_messages, max_iterations)
+                    if safety.should_stop:
                         logger.warning(
-                            f"Thread {thread_id}: Agent hit iteration limit "
-                            f"({tool_call_count}/{self.MAIN_AGENT_MAX_ITERATIONS} steps) in astream()"
+                            f"Thread {thread_id}: Agent stopped by turn safety "
+                            f"(reason={safety.reason}, "
+                            f"tool_calls={safety.tool_call_count}/{safety.max_iterations}) "
+                            "in astream()"
                         )
-                        yield {
-                            "type": "iteration_limit",
-                            "scope": "main_agent",
-                            "content": (
-                                f"I reached the maximum number of steps "
-                                f"({self.MAIN_AGENT_MAX_ITERATIONS}) and had to stop. "
-                                "My task may be incomplete — you can ask me to continue where I left off."
-                            ),
-                            "max_iterations": self.MAIN_AGENT_MAX_ITERATIONS,
-                            "tool_call_count": tool_call_count,
-                        }
+                        yield self._turn_safety_event(safety)
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage: {e}")
 

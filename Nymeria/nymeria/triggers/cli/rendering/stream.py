@@ -209,9 +209,8 @@ class StreamRenderer:
                     if spinner:
                         spinner.stop()
                         spinner = None
-                    self.console.print(
-                        "[yellow]Reached iteration limit.[/yellow]"
-                    )
+                    message = chunk.get("content") or "Reached turn safety limit."
+                    self.console.print(f"[yellow]{message}[/yellow]")
 
                 elif chunk_type == "done":
                     model_info = chunk.get("model", "")
