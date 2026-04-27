@@ -262,7 +262,7 @@ class Settings(BaseSettings):
     )
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = Field(
         default="responses",
-        description="Default OpenAI API mode when no per-thread override is set: 'responses' or 'chat_completions'"
+        description="Default OpenAI-compatible API mode when no per-thread override is set: 'responses' or 'chat_completions'"
     )
 
     # API Keys

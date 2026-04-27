@@ -8,7 +8,9 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
+    _convert_openrouter_responses_chunk_to_generation_chunk,
     _normalize_openai_base_url,
+    _normalize_openrouter_responses_payload,
     _should_disable_streaming_for_local_base_url,
     create_llm,
 )
@@ -106,6 +108,42 @@ def test_openai_default_mode_uses_responses_payload():
     assert payload["store"] is False
 
 
+def test_openrouter_default_mode_uses_responses_payload():
+    llm = create_llm(
+        _openrouter_config(
+            extended_thinking=True,
+            reasoning_effort="high",
+            max_tokens=1234,
+        )
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "input" in payload
+    assert "messages" not in payload
+    assert "previous_response_id" not in payload
+    assert payload["store"] is False
+    assert payload["max_output_tokens"] == 1234
+    assert payload["reasoning"] == {"summary": "auto", "effort": "high"}
+
+
+def test_openrouter_chat_completions_mode_stays_on_messages_payload():
+    llm = create_llm(
+        _openrouter_config(openai_api_mode="chat_completions")
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "messages" in payload
+    assert "input" not in payload
+
+
 def test_openai_chat_completions_mode_stays_on_messages_payload():
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -151,7 +189,11 @@ def test_openai_chat_completions_does_not_replay_reasoning_metadata():
 
 def test_openrouter_streaming_chunk_preserves_reasoning_details_metadata():
     llm = create_llm(
-        _openrouter_config(extended_thinking=True, reasoning_effort="low")
+        _openrouter_config(
+            openai_api_mode="chat_completions",
+            extended_thinking=True,
+            reasoning_effort="low",
+        )
     )
 
     chunk = {
@@ -191,7 +233,11 @@ def test_openrouter_streaming_chunk_preserves_reasoning_details_metadata():
 
 def test_openrouter_replays_reasoning_details_in_chat_payload():
     llm = create_llm(
-        _openrouter_config(extended_thinking=True, reasoning_effort="low")
+        _openrouter_config(
+            openai_api_mode="chat_completions",
+            extended_thinking=True,
+            reasoning_effort="low",
+        )
     )
     details = [
         {
@@ -221,7 +267,11 @@ def test_openrouter_replays_reasoning_details_in_chat_payload():
 
 def test_openrouter_replays_reasoning_string_when_details_absent():
     llm = create_llm(
-        _openrouter_config(extended_thinking=True, reasoning_effort="low")
+        _openrouter_config(
+            openai_api_mode="chat_completions",
+            extended_thinking=True,
+            reasoning_effort="low",
+        )
     )
 
     payload = llm._get_request_payload([
@@ -235,6 +285,67 @@ def test_openrouter_replays_reasoning_string_when_details_absent():
 
     assistant = payload["messages"][1]
     assert assistant["reasoning"] == "Prior thought"
+
+
+def test_openrouter_responses_payload_normalization_adds_required_ids():
+    payload = {
+        "previous_response_id": "resp_old",
+        "input": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Hello"}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_123",
+                "name": "todo_add",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "{}",
+            },
+        ],
+    }
+
+    normalized = _normalize_openrouter_responses_payload(payload)
+    first_ids = [item["id"] for item in normalized["input"]]
+    normalized_again = _normalize_openrouter_responses_payload(normalized)
+
+    assert "previous_response_id" not in normalized
+    assert normalized["input"][0]["status"] == "completed"
+    assert normalized["input"][0]["id"].startswith("msg_")
+    assert normalized["input"][1]["id"].startswith("fc_")
+    assert normalized["input"][2]["id"].startswith("fc_output_")
+    assert [item["id"] for item in normalized_again["input"]] == first_ids
+
+
+def test_openrouter_responses_reasoning_delta_becomes_content_block():
+    _, _, _, generation_chunk = (
+        _convert_openrouter_responses_chunk_to_generation_chunk(
+            {
+                "type": "response.reasoning.delta",
+                "delta": "Need context",
+                "output_index": 0,
+            },
+            -1,
+            -1,
+            -1,
+        )
+    )
+
+    assert generation_chunk is not None
+    assert generation_chunk.message.content == [
+        {
+            "type": "reasoning",
+            "summary": [
+                {"index": 0, "type": "summary_text", "text": "Need context"}
+            ],
+            "index": 0,
+        }
+    ]
 
 
 def test_local_cliproxy_sidecar_does_not_disable_streaming():

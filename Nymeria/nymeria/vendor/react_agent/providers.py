@@ -6,6 +6,8 @@ Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 """
 
 import logging
+import hashlib
+import json
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
@@ -23,6 +25,171 @@ _CLIPROXY_STREAMING_PORTS = {8317, 8318}
 def _looks_like_openrouter_base_url(base_url: Any) -> bool:
     """Return True for OpenRouter-compatible base URLs."""
     return "openrouter.ai" in str(base_url or "").lower()
+
+
+def _stable_openrouter_responses_id(prefix: str, item: dict[str, Any], index: int) -> str:
+    """Generate a deterministic OpenRouter Responses item id."""
+    seed = dict(item)
+    seed.pop("id", None)
+    serialized = json.dumps(seed, sort_keys=True, default=str, separators=(",", ":"))
+    digest = hashlib.sha256(f"{index}:{serialized}".encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}_{digest}"
+
+
+def _normalize_openrouter_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fill OpenRouter-required Responses history fields LangChain can omit."""
+    payload.pop("previous_response_id", None)
+
+    input_items = payload.get("input")
+    if not isinstance(input_items, list):
+        return payload
+
+    for index, item in enumerate(input_items):
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+        if item_type == "message" and item.get("role") == "assistant":
+            item.setdefault("status", "completed")
+            if not item.get("id"):
+                item["id"] = _stable_openrouter_responses_id("msg", item, index)
+        elif item_type == "function_call":
+            if not item.get("id"):
+                item["id"] = _stable_openrouter_responses_id("fc", item, index)
+        elif item_type == "function_call_output":
+            if not item.get("id"):
+                item["id"] = _stable_openrouter_responses_id(
+                    "fc_output", item, index
+                )
+
+    return payload
+
+
+def _openrouter_event_value(event: Any, key: str, default: Any = None) -> Any:
+    """Read a field from OpenAI SDK event objects or raw event dictionaries."""
+    if isinstance(event, dict):
+        return event.get(key, default)
+
+    value = getattr(event, key, default)
+    if value is not default:
+        return value
+
+    model_extra = getattr(event, "model_extra", None)
+    if isinstance(model_extra, dict):
+        return model_extra.get(key, default)
+
+    return default
+
+
+def _advance_responses_content_index(
+    current_index: int,
+    current_output_index: int,
+    current_sub_index: int,
+    output_index: int,
+    content_index: int | None = None,
+) -> tuple[int, int, int]:
+    """Mirror LangChain's Responses stream index advancement for fallback events."""
+    if content_index is None:
+        if current_output_index != output_index:
+            current_index += 1
+    else:
+        if (
+            current_output_index != output_index
+            or current_sub_index != content_index
+        ):
+            current_index += 1
+        current_sub_index = content_index
+    current_output_index = output_index
+    return current_index, current_output_index, current_sub_index
+
+
+def _convert_openrouter_responses_chunk_to_generation_chunk(
+    chunk: Any,
+    current_index: int,
+    current_output_index: int,
+    current_sub_index: int,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[int, int, int, Any | None]:
+    """Convert OpenRouter-specific Responses stream events LangChain may skip."""
+    event_type = _openrouter_event_value(chunk, "type")
+    if event_type not in {
+        "response.reasoning_text.delta",
+        "response.reasoning.delta",
+        "response.content_part.delta",
+    }:
+        return current_index, current_output_index, current_sub_index, None
+
+    delta = _openrouter_event_value(chunk, "delta", "")
+    if not delta:
+        return current_index, current_output_index, current_sub_index, None
+
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk
+
+    output_index = _openrouter_event_value(chunk, "output_index", 0) or 0
+    content_index = _openrouter_event_value(chunk, "content_index", 0) or 0
+
+    if event_type == "response.content_part.delta":
+        (
+            current_index,
+            current_output_index,
+            current_sub_index,
+        ) = _advance_responses_content_index(
+            current_index,
+            current_output_index,
+            current_sub_index,
+            output_index,
+            content_index,
+        )
+        content = [{"type": "text", "text": delta, "index": current_index}]
+        additional_kwargs: dict[str, Any] = {}
+    else:
+        (
+            current_index,
+            current_output_index,
+            current_sub_index,
+        ) = _advance_responses_content_index(
+            current_index,
+            current_output_index,
+            current_sub_index,
+            output_index,
+        )
+        reasoning_block: dict[str, Any] = {
+            "type": "reasoning",
+            "summary": [
+                {
+                    "index": _openrouter_event_value(chunk, "summary_index", 0) or 0,
+                    "type": "summary_text",
+                    "text": delta,
+                }
+            ],
+            "index": current_index,
+        }
+        item_id = (
+            _openrouter_event_value(chunk, "item_id")
+            or _openrouter_event_value(chunk, "response_id")
+            or _openrouter_event_value(chunk, "id")
+        )
+        if item_id:
+            reasoning_block["id"] = item_id
+        content = [reasoning_block]
+        additional_kwargs = {}
+
+    response_metadata = metadata or {}
+    response_metadata["model_provider"] = "openai"
+
+    return (
+        current_index,
+        current_output_index,
+        current_sub_index,
+        ChatGenerationChunk(
+            message=AIMessageChunk(
+                content=content,
+                response_metadata=response_metadata,
+                additional_kwargs=additional_kwargs,
+            )
+        ),
+    )
 
 
 def _extract_reasoning_text_from_reasoning_details(details: Any) -> str:
@@ -203,11 +370,17 @@ def _get_chat_openai_with_reasoning():
             # `message.reasoning` or `message.reasoning_details`. LangChain
             # stores provider-specific data in `additional_kwargs`, but its
             # OpenAI-compatible serializer drops those fields by default.
-            # Keep this scoped to OpenRouter chat-completions payloads so
-            # direct OpenAI/local providers don't receive unknown message keys.
-            if "messages" not in payload or not _looks_like_openrouter_base_url(
+            # Keep this scoped to OpenRouter payloads so direct OpenAI/local
+            # providers don't receive unknown message/history keys.
+            if not _looks_like_openrouter_base_url(
                 getattr(self, "openai_api_base", None)
             ):
+                return payload
+
+            if "input" in payload:
+                return _normalize_openrouter_responses_payload(payload)
+
+            if "messages" not in payload:
                 return payload
 
             source_messages = self._convert_input(input_).to_messages()
@@ -270,6 +443,129 @@ def _get_chat_openai_with_reasoning():
                 pass
             return generation_chunk
 
+        def _stream_responses(
+            self,
+            messages: list[Any],
+            stop: list[str] | None = None,
+            run_manager: Any | None = None,
+            **kwargs: Any,
+        ):
+            """Route OpenRouter Responses stream events through LangChain first."""
+            try:
+                import openai
+                from langchain_openai.chat_models import base as lc_openai_base
+
+                convert_chunk = (
+                    lc_openai_base._convert_responses_chunk_to_generation_chunk
+                )
+                handle_bad_request = getattr(
+                    lc_openai_base, "_handle_openai_bad_request", None
+                )
+                handle_api_error = getattr(
+                    lc_openai_base, "_handle_openai_api_error", None
+                )
+            except Exception:
+                yield from super()._stream_responses(  # type: ignore[attr-defined]
+                    messages,
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
+                )
+                return
+
+            self._ensure_sync_client_available()
+            kwargs["stream"] = True
+            payload = self._get_request_payload(messages, stop=stop, **kwargs)
+            try:
+                if self.include_response_headers:
+                    raw_context_manager = (
+                        self.root_client.with_raw_response.responses.create(**payload)
+                    )
+                    context_manager = raw_context_manager.parse()
+                    headers = {"headers": dict(raw_context_manager.headers)}
+                else:
+                    context_manager = self.root_client.responses.create(**payload)
+                    headers = {}
+                original_schema_obj = kwargs.get("response_format")
+
+                with context_manager as response:
+                    is_first_chunk = True
+                    current_index = -1
+                    current_output_index = -1
+                    current_sub_index = -1
+                    has_reasoning = False
+                    is_openrouter = _looks_like_openrouter_base_url(
+                        getattr(self, "openai_api_base", None)
+                    )
+                    for chunk in response:
+                        metadata = headers if is_first_chunk else {}
+                        try:
+                            (
+                                current_index,
+                                current_output_index,
+                                current_sub_index,
+                                generation_chunk,
+                            ) = convert_chunk(
+                                chunk,
+                                current_index,
+                                current_output_index,
+                                current_sub_index,
+                                schema=original_schema_obj,
+                                metadata=metadata,
+                                has_reasoning=has_reasoning,
+                                output_version=self.output_version,
+                            )
+                        except (AttributeError, KeyError, TypeError):
+                            if not is_openrouter:
+                                raise
+                            generation_chunk = None
+
+                        if generation_chunk is None and is_openrouter:
+                            (
+                                current_index,
+                                current_output_index,
+                                current_sub_index,
+                                generation_chunk,
+                            ) = _convert_openrouter_responses_chunk_to_generation_chunk(
+                                chunk,
+                                current_index,
+                                current_output_index,
+                                current_sub_index,
+                                metadata=metadata,
+                            )
+
+                        if generation_chunk:
+                            if run_manager:
+                                run_manager.on_llm_new_token(
+                                    generation_chunk.text,
+                                    chunk=generation_chunk,
+                                )
+                            is_first_chunk = False
+                            chunk_content = generation_chunk.message.content
+                            if (
+                                "reasoning" in generation_chunk.message.additional_kwargs
+                                or (
+                                    isinstance(chunk_content, list)
+                                    and any(
+                                        isinstance(block, dict)
+                                        and block.get("type") == "reasoning"
+                                        for block in chunk_content
+                                    )
+                                )
+                            ):
+                                has_reasoning = True
+                            yield generation_chunk
+            except openai.BadRequestError as e:
+                if handle_bad_request:
+                    handle_bad_request(e)
+                else:
+                    raise
+            except openai.APIError as e:
+                if handle_api_error:
+                    handle_api_error(e)
+                else:
+                    raise
+
     return ChatOpenAIWithReasoning
 
 
@@ -291,11 +587,11 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
 
     if (
         config.openai_api_mode
-        and config.provider != "openai"
+        and config.provider not in ("openai", "openrouter")
         and config.openai_api_mode != "responses"
     ):
         logger.warning(
-            "[LLM] Ignoring openai_api_mode=%s for non-OpenAI provider %s",
+            "[LLM] Ignoring openai_api_mode=%s for non-OpenAI-compatible provider %s",
             config.openai_api_mode,
             config.provider,
         )
@@ -370,6 +666,7 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     if not config.api_key:
         raise ValueError("OpenRouter requires OPENROUTER_API_KEY")
 
+    api_mode = config.openai_api_mode or "responses"
     kwargs = {
         "model": config.model,
         "api_key": config.api_key,
@@ -421,10 +718,36 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     except Exception as e:
         logger.debug(f"Could not fetch supported_parameters: {e}")
 
-    # Build OpenRouter reasoning config for extra_body.
+    reasoning_requested = (
+        config.extended_thinking or config.reasoning_effort is not None
+    )
+
+    if api_mode == "responses":
+        kwargs["use_responses_api"] = True
+        kwargs["output_version"] = "responses/v1"
+        kwargs["store"] = False
+
+        if reasoning_requested:
+            if not has_support_data or "reasoning" in supported:
+                kwargs["reasoning"] = {
+                    "summary": "auto",
+                    "effort": config.reasoning_effort or "medium",
+                }
+            else:
+                logger.warning(
+                    f"[LLM] Skipping reasoning config for {config.model} — "
+                    f"'reasoning' not in supported_parameters"
+                )
+
+        logger.info(
+            "[LLM] OpenRouter Responses API mode enabled for %s; "
+            "replaying full checkpointed history",
+            config.model,
+        )
+    # Build OpenRouter chat-completions reasoning config for extra_body.
     # Only send when extended thinking is explicitly enabled AND the model
     # supports reasoning (or we have no support data to say otherwise).
-    if config.extended_thinking:
+    elif config.extended_thinking:
         if not has_support_data or "reasoning" in supported:
             reasoning_config = {"enabled": True}
             if config.reasoning_effort is not None:

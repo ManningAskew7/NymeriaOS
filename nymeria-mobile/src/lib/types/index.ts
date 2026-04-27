@@ -511,6 +511,7 @@ export interface AppConfig {
 
 // Server settings types
 export type LLMProvider = 'openrouter' | 'openai' | 'anthropic';
+export type OpenAIApiMode = 'chat_completions' | 'responses';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
 // OpenRouter model metadata (from GET /models)
@@ -542,6 +543,7 @@ export interface ServerSettings {
   llm_extended_thinking: boolean;
   llm_use_model_defaults: boolean;
   llm_base_url: string | null;
+  openai_api_mode: OpenAIApiMode | null;
   context_management: string;
   compact_threshold: number;
   compact_keep_messages: number;
@@ -580,6 +582,7 @@ export interface ServerSettingsUpdate {
   llm_extended_thinking?: boolean;
   llm_use_model_defaults?: boolean;
   llm_base_url?: string | null;
+  openai_api_mode?: OpenAIApiMode | null;
   context_management?: string;
   compact_threshold?: number;
   compact_keep_messages?: number;

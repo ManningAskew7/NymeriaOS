@@ -32,7 +32,7 @@ class LLMConfig:
     reasoning_effort: Optional[str] = None  # For reasoning models: "low", "medium", "high"
     extended_thinking: bool = False  # Enable extended thinking/reasoning tokens
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = "responses"
-    # OpenAI provider only. Use "chat_completions" to opt out for compatibility.
+    # OpenAI-compatible providers. Use "chat_completions" to opt out for compatibility.
 
     # HTTP timeout for LLM API calls (seconds). Prevents hanging on stalled connections.
     # Applies as the read timeout — if the server sends no data for this long, the call fails.
