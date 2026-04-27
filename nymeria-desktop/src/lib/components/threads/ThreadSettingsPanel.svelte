@@ -62,11 +62,23 @@
   }
 
   // Per-thread skill overrides
-  let threadEnabledSkills = $state<Set<string>>(new Set(threadConfig?.enabledSkills ?? []));
-  let threadDisabledSkills = $state<Set<string>>(new Set(threadConfig?.disabledSkills ?? []));
+  function getInitialThreadEnabledSkills(): Set<string> {
+    return new Set(threadConfig?.enabledSkills ?? []);
+  }
+
+  function getInitialThreadDisabledSkills(): Set<string> {
+    return new Set(threadConfig?.disabledSkills ?? []);
+  }
+
+  let threadEnabledSkills = $state<Set<string>>(getInitialThreadEnabledSkills());
+  let threadDisabledSkills = $state<Set<string>>(getInitialThreadDisabledSkills());
 
   // Form state — initialized from threadConfig
-  let instructions = $state(threadConfig?.instructions ?? '');
+  function getInitialInstructions(): string {
+    return threadConfig?.instructions ?? '';
+  }
+
+  let instructions = $state(getInitialInstructions());
 
   // Derive initial tool state: if no per-thread config exists and global defaults
   // are customized, compute disabled/enabled from the default tool set so the UI
@@ -152,41 +164,73 @@
     return { provider: dp, baseUrl: null };
   }
 
-  // LLM form state
-  let threadDisplayProvider = $state<ThreadDisplayProvider>(
-    toThreadDisplayProvider(
+  function getInitialThreadDisplayProvider(): ThreadDisplayProvider {
+    return toThreadDisplayProvider(
       threadConfig?.llmConfig?.provider ?? '',
       threadConfig?.llmConfig?.base_url
-    )
-  );
-  let llmProvider = $state(threadConfig?.llmConfig?.provider ?? '');
-  let llmModel = $state(threadConfig?.llmConfig?.model ?? '');
-  let llmBaseUrl = $state(threadConfig?.llmConfig?.base_url ?? '');
-  let llmApiKey = $state(threadConfig?.llmConfig?.api_key ?? '');
-  let llmTemperature = $state<string>(
-    threadConfig?.llmConfig?.temperature != null
+    );
+  }
+
+  function getInitialLlmProvider(): string {
+    return threadConfig?.llmConfig?.provider ?? '';
+  }
+
+  function getInitialLlmModel(): string {
+    return threadConfig?.llmConfig?.model ?? '';
+  }
+
+  function getInitialLlmBaseUrl(): string {
+    return threadConfig?.llmConfig?.base_url ?? '';
+  }
+
+  function getInitialLlmApiKey(): string {
+    return threadConfig?.llmConfig?.api_key ?? '';
+  }
+
+  function getInitialLlmTemperature(): string {
+    return threadConfig?.llmConfig?.temperature != null
       ? String(threadConfig.llmConfig.temperature)
-      : ''
-  );
-  let llmMaxTokens = $state<string>(
-    threadConfig?.llmConfig?.max_tokens != null
+      : '';
+  }
+
+  function getInitialLlmMaxTokens(): string {
+    return threadConfig?.llmConfig?.max_tokens != null
       ? String(threadConfig.llmConfig.max_tokens)
-      : ''
-  );
-  let llmExtendedThinking = $state<'default' | 'true' | 'false'>(
-    threadConfig?.llmConfig?.extended_thinking != null
+      : '';
+  }
+
+  function getInitialLlmExtendedThinking(): 'default' | 'true' | 'false' {
+    return threadConfig?.llmConfig?.extended_thinking != null
       ? String(threadConfig.llmConfig.extended_thinking) as 'true' | 'false'
-      : 'default'
-  );
-  let llmReasoningEffort = $state(threadConfig?.llmConfig?.reasoning_effort ?? '');
-  let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(
-    threadConfig?.llmConfig?.use_model_defaults != null
+      : 'default';
+  }
+
+  function getInitialLlmReasoningEffort(): string {
+    return threadConfig?.llmConfig?.reasoning_effort ?? '';
+  }
+
+  function getInitialLlmUseModelDefaults(): 'default' | 'true' | 'false' {
+    return threadConfig?.llmConfig?.use_model_defaults != null
       ? String(threadConfig.llmConfig.use_model_defaults) as 'true' | 'false'
-      : 'default'
-  );
-  let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(
-    threadConfig?.llmConfig?.openai_api_mode ?? 'default'
-  );
+      : 'default';
+  }
+
+  function getInitialLlmOpenAiApiMode(): 'default' | 'chat_completions' | 'responses' {
+    return threadConfig?.llmConfig?.openai_api_mode ?? 'default';
+  }
+
+  // LLM form state
+  let threadDisplayProvider = $state<ThreadDisplayProvider>(getInitialThreadDisplayProvider());
+  let llmProvider = $state(getInitialLlmProvider());
+  let llmModel = $state(getInitialLlmModel());
+  let llmBaseUrl = $state(getInitialLlmBaseUrl());
+  let llmApiKey = $state(getInitialLlmApiKey());
+  let llmTemperature = $state<string>(getInitialLlmTemperature());
+  let llmMaxTokens = $state<string>(getInitialLlmMaxTokens());
+  let llmExtendedThinking = $state<'default' | 'true' | 'false'>(getInitialLlmExtendedThinking());
+  let llmReasoningEffort = $state(getInitialLlmReasoningEffort());
+  let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(getInitialLlmUseModelDefaults());
+  let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(getInitialLlmOpenAiApiMode());
 
   // Model metadata (reactive lookup)
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
@@ -244,15 +288,43 @@
   });
 
   // System prompt & agent fields
-  let systemPrompt = $state(threadConfig?.systemPrompt ?? '');
-  let isCallable = $state(threadConfig?.callable ?? false);
-  let callableName = $state(threadConfig?.callableName ?? '');
-  let callableDescription = $state(threadConfig?.callableDescription ?? '');
+  function getInitialSystemPrompt(): string {
+    return threadConfig?.systemPrompt ?? '';
+  }
+
+  function getInitialCallable(): boolean {
+    return threadConfig?.callable ?? false;
+  }
+
+  function getInitialCallableName(): string {
+    return threadConfig?.callableName ?? '';
+  }
+
+  function getInitialCallableDescription(): string {
+    return threadConfig?.callableDescription ?? '';
+  }
+
+  let systemPrompt = $state(getInitialSystemPrompt());
+  let isCallable = $state(getInitialCallable());
+  let callableName = $state(getInitialCallableName());
+  let callableDescription = $state(getInitialCallableDescription());
 
   // Visibility / advanced
-  let injectTodosInPrompt = $state(threadConfig?.injectTodosInPrompt ?? false);
-  let showAutonomousPrompts = $state(threadConfig?.showAutonomousPrompts ?? false);
-  let showPromptMetadata = $state(threadConfig?.showPromptMetadata ?? false);
+  function getInitialInjectTodosInPrompt(): boolean {
+    return threadConfig?.injectTodosInPrompt ?? false;
+  }
+
+  function getInitialShowAutonomousPrompts(): boolean {
+    return threadConfig?.showAutonomousPrompts ?? false;
+  }
+
+  function getInitialShowPromptMetadata(): boolean {
+    return threadConfig?.showPromptMetadata ?? false;
+  }
+
+  let injectTodosInPrompt = $state(getInitialInjectTodosInPrompt());
+  let showAutonomousPrompts = $state(getInitialShowAutonomousPrompts());
+  let showPromptMetadata = $state(getInitialShowPromptMetadata());
 
   // Search
   let toolSearch = $state('');
