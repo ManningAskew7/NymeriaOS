@@ -10,55 +10,119 @@
 
   let { tool, onSubmit, onCancel }: Props = $props();
 
-  // Form state — intentionally captures initial prop values for form editing
-  // svelte-ignore state_referenced_locally
-  let id = $state(tool?.id || '');
-  let name = $state(tool?.name || '');
-  let description = $state(tool?.description || '');
-  let implementationType = $state<'http' | 'mcp'>(tool?.implementationType || 'http');
-  let enabled = $state(tool?.enabled ?? true);
-  let tagsInput = $state(tool?.tags?.join(', ') || '');
+  function getInitialHttpHeaders(): string {
+    return Object.entries(tool?.httpConfig?.headers || {})
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
+  }
+
+  function getInitialMcpEnvVars(): string {
+    return Object.entries(tool?.mcpConfig?.envVars || {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+  }
+
+  function getInitialParametersJson(): string {
+    if (!tool?.parameters) return '{}';
+    return JSON.stringify(
+      Object.fromEntries(
+        Object.entries(tool.parameters).map(([k, v]) => [
+          k,
+          { type: v.type, description: v.description, required: v.required }
+        ])
+      ),
+      null,
+      2
+    );
+  }
+
+  // Form state — intentionally captures initial prop values for form editing.
+  function getInitialId(): string {
+    return tool?.id || '';
+  }
+
+  function getInitialName(): string {
+    return tool?.name || '';
+  }
+
+  function getInitialDescription(): string {
+    return tool?.description || '';
+  }
+
+  function getInitialImplementationType(): 'http' | 'mcp' {
+    return tool?.implementationType || 'http';
+  }
+
+  function getInitialEnabled(): boolean {
+    return tool?.enabled ?? true;
+  }
+
+  function getInitialTagsInput(): string {
+    return tool?.tags?.join(', ') || '';
+  }
+
+  let id = $state(getInitialId());
+  let name = $state(getInitialName());
+  let description = $state(getInitialDescription());
+  let implementationType = $state<'http' | 'mcp'>(getInitialImplementationType());
+  let enabled = $state(getInitialEnabled());
+  let tagsInput = $state(getInitialTagsInput());
 
   // HTTP config
+  function getInitialHttpMethod(): 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' {
+    return tool?.httpConfig?.method || 'GET';
+  }
+
+  function getInitialHttpUrl(): string {
+    return tool?.httpConfig?.url || '';
+  }
+
+  function getInitialHttpBodyTemplate(): string {
+    return tool?.httpConfig?.bodyTemplate || '';
+  }
+
+  function getInitialHttpTimeoutSeconds(): number {
+    return tool?.httpConfig?.timeoutSeconds || 30;
+  }
+
+  function getInitialHttpResponsePath(): string {
+    return tool?.httpConfig?.responsePath || '';
+  }
+
   let httpMethod = $state<'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'>(
-    tool?.httpConfig?.method || 'GET'
+    getInitialHttpMethod()
   );
-  let httpUrl = $state(tool?.httpConfig?.url || '');
-  let httpHeaders = $state(
-    Object.entries(tool?.httpConfig?.headers || {})
-      .map(([k, v]) => `${k}: ${v}`)
-      .join('\n')
-  );
-  let httpBodyTemplate = $state(tool?.httpConfig?.bodyTemplate || '');
-  let httpTimeoutSeconds = $state(tool?.httpConfig?.timeoutSeconds || 30);
-  let httpResponsePath = $state(tool?.httpConfig?.responsePath || '');
+  let httpUrl = $state(getInitialHttpUrl());
+  let httpHeaders = $state(getInitialHttpHeaders());
+  let httpBodyTemplate = $state(getInitialHttpBodyTemplate());
+  let httpTimeoutSeconds = $state(getInitialHttpTimeoutSeconds());
+  let httpResponsePath = $state(getInitialHttpResponsePath());
 
   // MCP config
-  let mcpServerCommand = $state(tool?.mcpConfig?.serverCommand || '');
-  let mcpServerArgs = $state(tool?.mcpConfig?.serverArgs?.join(' ') || '');
-  let mcpToolName = $state(tool?.mcpConfig?.toolName || '');
-  let mcpEnvVars = $state(
-    Object.entries(tool?.mcpConfig?.envVars || {})
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n')
-  );
-  let mcpIdleTimeout = $state(tool?.mcpConfig?.idleTimeoutSeconds || 300);
+  function getInitialMcpServerCommand(): string {
+    return tool?.mcpConfig?.serverCommand || '';
+  }
+
+  function getInitialMcpServerArgs(): string {
+    return tool?.mcpConfig?.serverArgs?.join(' ') || '';
+  }
+
+  function getInitialMcpToolName(): string {
+    return tool?.mcpConfig?.toolName || '';
+  }
+
+  function getInitialMcpIdleTimeout(): number {
+    return tool?.mcpConfig?.idleTimeoutSeconds || 300;
+  }
+
+  let mcpServerCommand = $state(getInitialMcpServerCommand());
+  let mcpServerArgs = $state(getInitialMcpServerArgs());
+  let mcpToolName = $state(getInitialMcpToolName());
+  let mcpEnvVars = $state(getInitialMcpEnvVars());
+  let mcpIdleTimeout = $state(getInitialMcpIdleTimeout());
 
   // Parameters
-  let parametersJson = $state(
-    tool?.parameters
-      ? JSON.stringify(
-          Object.fromEntries(
-            Object.entries(tool.parameters).map(([k, v]) => [
-              k,
-              { type: v.type, description: v.description, required: v.required }
-            ])
-          ),
-          null,
-          2
-        )
-      : '{}'
-  );
+  let parametersJson = $state(getInitialParametersJson());
   let parametersError = $state('');
 
   function parseHeaders(input: string): Record<string, string> {

@@ -9,11 +9,15 @@
 
   let { content, isActivelyStreaming = false }: Props = $props();
 
+  function getInitialStreamingState() {
+    return isActivelyStreaming;
+  }
+
   // Start open only if actively streaming when first mounted
-  let isOpen = $state(isActivelyStreaming);
+  let isOpen = $state(getInitialStreamingState());
 
   // Track previous streaming state for auto-collapse transition
-  let wasStreaming = $state(isActivelyStreaming);
+  let wasStreaming = $state(getInitialStreamingState());
 
   $effect(() => {
     if (isActivelyStreaming && !wasStreaming) {

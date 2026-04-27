@@ -176,7 +176,7 @@
           action_config: actionConfig,
           cooldown_seconds: formCooldown,
           enabled: formEnabled,
-          thread_id: thread.id,
+          thread_id: threadId,
         };
         await triggersStore.createTrigger(request);
       } else if (view === 'edit' && editingTrigger) {

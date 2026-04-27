@@ -78,6 +78,10 @@
     return `mcp__${serverId}__${toolName}`;
   }
 
+  function toggleExpanded(serverId: string) {
+    expandedServer = expandedServer === serverId ? null : serverId;
+  }
+
   async function toggleGlobalTool(serverId: string, toolName: string) {
     const mcpName = getMcpToolName(serverId, toolName);
     if (onToggleTool) {
@@ -263,18 +267,22 @@
     <div class="servers-list">
       {#each mcpServersStore.servers as server (server.id)}
         <div class="server-card" class:expanded={expandedServer === server.id} class:disabled-server={!server.enabled}>
-          <button
-            class="server-header"
-            onclick={() => expandedServer = expandedServer === server.id ? null : server.id}
-          >
-            <span class="status-dot" style="background: {getStatusColor(server)}"></span>
-            <div class="server-meta">
-              <span class="server-name">{server.name}</span>
-              <span class="server-id">{server.id}</span>
-            </div>
-            <span class="tool-badge">{server.discoveredTools.length} tools</span>
-            <span class="updated-at">{timeAgo(server.updatedAt)}</span>
-            <label class="enable-toggle" onclick={(e) => e.stopPropagation()}>
+          <div class="server-header">
+            <button
+              type="button"
+              class="server-summary"
+              onclick={() => toggleExpanded(server.id)}
+            >
+              <span class="status-dot" style="background: {getStatusColor(server)}"></span>
+              <div class="server-meta">
+                <span class="server-name">{server.name}</span>
+                <span class="server-id">{server.id}</span>
+              </div>
+              <span class="tool-badge">{server.discoveredTools.length} tools</span>
+              <span class="updated-at">{timeAgo(server.updatedAt)}</span>
+              <Icon name={expandedServer === server.id ? 'chevronDown' : 'chevronRight'} size={16} />
+            </button>
+            <label class="enable-toggle">
               <input
                 type="checkbox"
                 checked={server.enabled}
@@ -282,8 +290,7 @@
               />
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
             </label>
-            <Icon name={expandedServer === server.id ? 'chevronDown' : 'chevronRight'} size={16} />
-          </button>
+          </div>
 
           {#if expandedServer === server.id}
             <div class="server-body">
@@ -349,7 +356,7 @@
                               <span class="tool-description">{tool.description}</span>
                             {/if}
                           </div>
-                          <label class="tool-toggle" onclick={(e) => e.stopPropagation()}>
+                          <label class="tool-toggle">
                             <input
                               type="checkbox"
                               checked={isEnabled}
@@ -507,6 +514,27 @@
 
   .server-header:hover {
     background: var(--bg-hover, #333);
+  }
+
+  .server-summary {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+  }
+
+  .server-summary:focus-visible {
+    outline: 2px solid var(--accent-primary, #6c9fff);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm, 4px);
   }
 
   .status-dot {
