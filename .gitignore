@@ -36,6 +36,8 @@ __pycache__/
 *.pyo
 *.egg-info/
 *.egg
+.venv/
+venv/
 dist/
 build/
 *.whl
