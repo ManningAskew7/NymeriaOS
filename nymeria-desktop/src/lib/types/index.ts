@@ -94,6 +94,8 @@ export interface Thread {
   };
   hasCustomConfig?: boolean;
   pinned?: boolean;
+  recovered?: boolean;
+  recoverySources?: string[];
 }
 
 // Thread organization types
@@ -482,6 +484,7 @@ export interface ContextStats {
   compactionCount: number;
   lastCompaction: string | null;
   contextManagement: string;
+  processing?: boolean;
 }
 
 export interface DoneEvent {

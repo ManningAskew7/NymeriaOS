@@ -218,6 +218,25 @@ class ThreadMetadataManager:
                 return True
         return False
 
+    def delete_thread_globally(self, thread_id: str) -> int:
+        """Remove a thread's metadata from every per-user metadata file."""
+        deleted = 0
+        if not self.metadata_dir.exists():
+            return deleted
+
+        for path in self.metadata_dir.iterdir():
+            if not path.is_file() or path.suffix != ".json":
+                continue
+            user_id = path.stem
+            store = self.get_store(user_id)
+            if thread_id not in store.threads:
+                continue
+            with self.atomic_update(user_id) as locked_store:
+                if thread_id in locked_store.threads:
+                    del locked_store.threads[thread_id]
+                    deleted += 1
+        return deleted
+
     def list_threads(self, user_id: str = "default") -> List[ThreadMetadata]:
         """Return all thread metadata for a user."""
         store = self.get_store(user_id)

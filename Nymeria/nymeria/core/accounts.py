@@ -689,6 +689,16 @@ class AccountsRepo:
             conn.commit()
         return inserted
 
+    def delete_thread_owner(self, thread_id: str) -> bool:
+        """Delete the ownership row for a thread."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM thread_owners WHERE thread_id = ?",
+                (thread_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     # -- platform identities ----------------------------------------------
 
     def link_platform(
@@ -861,6 +871,16 @@ class AccountsRepo:
                 ).fetchall()
             return [_row_to_binding(r) for r in rows]
 
+    def list_thread_bindings_for_user(self, user_id: str) -> List[ThreadPlatformBinding]:
+        """All chat-app bindings owned by a user."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM thread_platform_bindings WHERE user_id = ? "
+                "ORDER BY provider ASC, created_at ASC",
+                (user_id,),
+            ).fetchall()
+            return [_row_to_binding(r) for r in rows]
+
     def delete_thread_binding(self, binding_id: int, *, user_id: str) -> bool:
         """Delete a binding the caller owns. Returns True if a row was deleted.
 
@@ -875,6 +895,37 @@ class AccountsRepo:
             )
             conn.commit()
             return cur.rowcount > 0
+
+    def delete_thread_bindings_for_thread(self, thread_id: str) -> int:
+        """Delete all chat-app bindings for a thread."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM thread_platform_bindings WHERE thread_id = ?",
+                (thread_id,),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+
+    def delete_bind_codes_for_thread(self, thread_id: str) -> int:
+        """Delete pending or consumed bind-code rows tied to a thread."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM bind_codes WHERE thread_id = ?",
+                (thread_id,),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+
+    def list_bind_code_thread_ids_for_user(self, user_id: str) -> List[str]:
+        """Thread IDs referenced by this user's unexpired thread-bind codes."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT thread_id FROM bind_codes "
+                "WHERE user_id = ? AND thread_id IS NOT NULL "
+                "AND consumed_at IS NULL AND expires_at >= ?",
+                (user_id, _now()),
+            ).fetchall()
+            return [r["thread_id"] for r in rows if r["thread_id"]]
 
     # -- short-lived bind codes -------------------------------------------
 

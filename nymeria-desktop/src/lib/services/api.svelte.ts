@@ -996,6 +996,7 @@ export class NymeriaAPI {
             compactionCount: rawStats.compaction_count as number,
             lastCompaction: rawStats.last_compaction as string | null,
             contextManagement: rawStats.context_management as string,
+            processing: rawStats.processing as boolean | undefined,
           } : undefined;
           return {
             type: 'done',
@@ -1179,6 +1180,8 @@ export class NymeriaAPI {
       created_at: string | null;
       updated_at: string | null;
       title_source: string;
+      recovered?: boolean;
+      recovery_sources?: string[];
     }>;
     total: number;
   }> {
@@ -1351,6 +1354,7 @@ export class NymeriaAPI {
         compactionCount: data.compaction_count as number,
         lastCompaction: data.last_compaction as string | null,
         contextManagement: data.context_management as string,
+        processing: data.processing as boolean | undefined,
       };
     } catch {
       return null;

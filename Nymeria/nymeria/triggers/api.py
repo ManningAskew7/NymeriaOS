@@ -40,6 +40,7 @@ from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_
 from ..core.notifications import NotificationStore, Notification, get_notification_store
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
+from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
 from ..tools.definitions.schema import (
     CustomToolDefinition,
@@ -2909,6 +2910,120 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         return thread_ids
 
+    def _add_thread_source(
+        sources: dict[str, set[str]],
+        thread_id: Optional[str],
+        source: str,
+    ) -> None:
+        if not thread_id:
+            return
+        normalized = str(thread_id).strip()
+        if not normalized:
+            return
+        sources.setdefault(normalized, set()).add(source)
+
+    def _can_show_orphan_checkpoint_thread(
+        user: AuthenticatedUser,
+        user_id: str,
+        thread_id: str,
+    ) -> bool:
+        """Return True when a checkpoint-only thread can be safely listed."""
+        if user.role == "admin":
+            return True
+        if thread_id.startswith("telegram_") and not thread_id.startswith("telegram_-"):
+            provider_user_id = thread_id[len("telegram_"):]
+            return get_agent().accounts_repo.resolve_platform("telegram", provider_user_id) == user_id
+        return False
+
+    def _collect_recoverable_thread_sources(
+        *,
+        user: AuthenticatedUser,
+        user_id: str,
+        owned_ids: set[str],
+        checkpoint_ids: list[str],
+        metadata_thread_ids: set[str],
+    ) -> dict[str, set[str]]:
+        """
+        Find thread IDs referenced by thread-bound resources that can wake,
+        route, or explain a thread even if ordinary metadata/owner rows are
+        missing. These are shown by GET /threads so the desktop can surface and
+        delete old partially-deleted threads.
+        """
+        agent = get_agent()
+        settings = get_settings()
+        sources: dict[str, set[str]] = {}
+
+        for tid in metadata_thread_ids:
+            if tid not in owned_ids:
+                _add_thread_source(sources, tid, "metadata")
+
+        for tid in checkpoint_ids:
+            if tid not in owned_ids and _can_show_orphan_checkpoint_thread(user, user_id, tid):
+                _add_thread_source(sources, tid, "checkpoint")
+
+        try:
+            if user_id in agent.todo_manager.get_all_users_with_todos():
+                todo_list = agent.todo_manager.get_todos(user_id)
+                for item in todo_list.items:
+                    _add_thread_source(sources, item.thread_id, "todo")
+        except Exception as e:
+            logger.warning("Failed to collect TODO thread references for %s: %s", user_id, e)
+
+        try:
+            schedule_db = getattr(agent, "_schedule_db", None)
+            if schedule_db is not None:
+                for entry in schedule_db.get_for_user(user_id):
+                    _add_thread_source(sources, entry.thread_id, "scheduled_todo")
+        except Exception as e:
+            logger.warning("Failed to collect scheduled TODO thread references for %s: %s", user_id, e)
+
+        try:
+            from ..core.trigger_manager import TriggerManager
+
+            manager = getattr(agent, "trigger_manager", None) or TriggerManager(settings.data_dir)
+            for trigger in manager.get_triggers(user_id):
+                _add_thread_source(sources, trigger.thread_id, "trigger")
+        except Exception as e:
+            logger.warning("Failed to collect trigger thread references for %s: %s", user_id, e)
+
+        try:
+            for binding in agent.accounts_repo.list_thread_bindings_for_user(user_id):
+                _add_thread_source(sources, binding.thread_id, "chat_binding")
+        except Exception as e:
+            logger.warning("Failed to collect chat binding thread references for %s: %s", user_id, e)
+
+        try:
+            for tid in agent.accounts_repo.list_bind_code_thread_ids_for_user(user_id):
+                _add_thread_source(sources, tid, "bind_code")
+        except Exception as e:
+            logger.warning("Failed to collect bind-code thread references for %s: %s", user_id, e)
+
+        return sources
+
+    def _thread_list_payload(
+        thread_id: str,
+        meta,
+        *,
+        recovered: bool = False,
+        recovery_sources: Optional[set[str]] = None,
+    ) -> dict:
+        if meta:
+            payload = meta.model_dump(mode="json")
+        else:
+            payload = {
+                "thread_id": thread_id,
+                "title": "Recovered thread" if recovered else "New Chat",
+                "pinned": False,
+                "platform": _classify_thread_platform(thread_id),
+                "platform_meta": None,
+                "created_at": None,
+                "updated_at": None,
+                "title_source": "recovered" if recovered else "default",
+            }
+        payload["recovered"] = recovered
+        payload["recovery_sources"] = sorted(recovery_sources or [])
+        return payload
+
     @app.get("/threads", tags=["Threads"])
     async def list_threads(
         user_id: str = Depends(_authed_user_id),
@@ -2917,44 +3032,60 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         List all threads with metadata (titles, pins, platform info).
 
-        Merges thread IDs from the checkpoint database with stored metadata
-        so all surfaces see the same thread list.
+        Merges thread IDs from the checkpoint database, stored metadata, and
+        thread-bound resources so all surfaces see the same thread list. The
+        resource pass intentionally surfaces old partially-deleted threads so
+        the desktop can show and delete them instead of hiding wake-up paths.
         """
         agent = get_agent()
         # Restrict to threads owned by the authenticated user. Admins can see
         # any user's threads by act-as'ing as that user (X-Nymeria-Act-As);
         # no universal "all threads" view, which is intentional.
         owned_ids = set(agent.accounts_repo.list_threads_for_user(user_id))
-        checkpoint_ids = [t for t in _get_checkpoint_thread_ids() if t in owned_ids]
+        all_checkpoint_ids = _get_checkpoint_thread_ids()
+        checkpoint_ids = [t for t in all_checkpoint_ids if t in owned_ids]
         checkpoint_set = set(checkpoint_ids)
 
         # Get stored metadata
         store = agent.thread_metadata_manager.get_store(user_id)
+        recovery_sources = _collect_recoverable_thread_sources(
+            user=user,
+            user_id=user_id,
+            owned_ids=owned_ids,
+            checkpoint_ids=all_checkpoint_ids,
+            metadata_thread_ids=set(store.threads),
+        )
 
         threads = []
+        seen: set[str] = set()
 
         # 1. Threads in checkpoints (with metadata if available)
         for tid in checkpoint_ids:
             meta = store.threads.get(tid)
-            if meta:
-                threads.append(meta.model_dump(mode="json"))
-            else:
-                # Thread exists in checkpoints but has no metadata yet
-                threads.append({
-                    "thread_id": tid,
-                    "title": "New Chat",
-                    "pinned": False,
-                    "platform": _classify_thread_platform(tid),
-                    "platform_meta": None,
-                    "created_at": None,
-                    "updated_at": None,
-                    "title_source": "default",
-                })
+            threads.append(_thread_list_payload(tid, meta))
+            seen.add(tid)
 
         # 2. Metadata-only threads owned by this user but without checkpoints yet
         for tid, meta in store.threads.items():
             if tid in owned_ids and tid not in checkpoint_set:
-                threads.append(meta.model_dump(mode="json"))
+                threads.append(_thread_list_payload(tid, meta))
+                seen.add(tid)
+
+        # 3. Recoverable resource-only/orphaned threads. These are the
+        # "zombie" cases: a thread-bound resource survived while the normal
+        # metadata/owner/checkpoint path is incomplete.
+        for tid in sorted(recovery_sources):
+            if tid in seen:
+                continue
+            threads.append(
+                _thread_list_payload(
+                    tid,
+                    store.threads.get(tid),
+                    recovered=True,
+                    recovery_sources=recovery_sources[tid],
+                )
+            )
+            seen.add(tid)
 
         return {"threads": threads, "total": len(threads)}
 
@@ -3115,94 +3246,29 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
-        Fully delete a thread: metadata, checkpoints, and config.
+        Fully delete a thread and all resources that can recreate it.
 
-        This is the proper way to remove a thread from all surfaces.
+        This is the proper way to remove a thread from all surfaces. It
+        cascades into checkpoints, metadata, config, notepad, RAG chunks,
+        TODOs/schedule rows, triggers, chat bindings, bind codes, owner rows,
+        activity entries, notifications, and device thread filters.
         """
         _require_thread_access(user, thread_id)
         agent = get_agent()
         settings = get_settings()
-
-        # 1. Delete metadata
-        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
-
-        # 2. Delete checkpoints
-        if settings.database_backend == "sqlite":
-            import sqlite3 as _sqlite3
-            try:
-                conn = _sqlite3.connect(str(settings.db_path))
-                conn.execute(
-                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-                )
-                # Also clean checkpoint_writes and checkpoint_blobs
-                for table in ("checkpoint_writes", "checkpoint_blobs"):
-                    try:
-                        conn.execute(
-                            f"DELETE FROM {table} WHERE thread_id = ?",
-                            (thread_id,),
-                        )
-                    except Exception:
-                        pass  # Table may not exist
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
-        elif settings.database_backend == "postgres":
-            import psycopg  # type: ignore[import-untyped]
-            try:
-                with psycopg.connect(settings.postgres_uri) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "DELETE FROM checkpoints WHERE thread_id = %s",
-                            (thread_id,),
-                        )
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_writes WHERE thread_id = %s",
-                                (thread_id,),
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
-                                (thread_id,),
-                            )
-                        except Exception:
-                            pass
-                    conn.commit()
-            except Exception as e:
-                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
-
-        # 3. Delete thread config (if any)
         try:
-            tc = agent.thread_config_manager.get_config(thread_id)
-            was_callable = tc.callable if tc else False
-            agent.thread_config_manager.delete_config(thread_id)
-            agent.invalidate_thread_config_cache(thread_id)
-            if was_callable:
-                agent.sync_agent_tools()
+            deletion = cascade_delete_thread(agent, settings, user_id, thread_id)
+        except ThreadDeletionBusy as e:
+            raise HTTPException(status_code=409, detail=str(e))
         except Exception as e:
-            logger.warning(f"Failed to delete thread config for {thread_id}: {e}")
+            logger.error(f"Thread {thread_id} deletion failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
-        # 4. Delete thread notepad (if any)
-        try:
-            from ..tools.thread_notes import delete_notepad
-            delete_notepad(thread_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete notepad for {thread_id}: {e}")
-
-        # 5. Remove RAG chunks for this thread so rag_search doesn't return
-        # stale results pointing at a thread that no longer exists.
-        try:
-            idx = agent._get_memory_index(user_id)
-            if idx:
-                deleted = idx.delete_by_thread(user_id, thread_id)
-                logger.info(f"Thread {thread_id}: removed {deleted} RAG chunk(s)")
-        except Exception as e:
-            logger.warning(f"Failed to delete RAG chunks for {thread_id}: {e}")
-
-        logger.info(f"Thread {thread_id} fully deleted")
+        logger.info(
+            "Thread %s fully deleted: %s",
+            thread_id,
+            deletion.deleted,
+        )
 
         # Publish sync event so other clients remove the thread
         client_id = http_request.headers.get("x-nymeria-client-id", "")
@@ -3214,7 +3280,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             origin_client_id=client_id,
         )
 
-        return {"status": "ok", "thread_id": thread_id}
+        return deletion.model_dump()
 
     @app.post("/threads/{thread_id}/clear", tags=["Threads"])
     async def clear_thread(

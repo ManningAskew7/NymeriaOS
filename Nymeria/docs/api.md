@@ -362,6 +362,49 @@ Get context window usage statistics for a thread.
 
 ---
 
+### Delete Thread
+
+```http
+DELETE /threads/{thread_id}
+Authorization: Bearer <token>
+```
+
+Fully deletes a thread and all thread-bound resources that could wake, route,
+or recreate it later. The cascade removes checkpoints, metadata, config,
+notepad content, RAG chunks, TODOs and schedule rows, triggers and execution
+logs, chat-app bindings, pending bind codes, owner rows, activity entries,
+notifications, and FCM device thread filters.
+
+Account-level resources are preserved: users, tokens, platform identities,
+registered Telegram bots, profile memories, global skills, and custom tools are
+not deleted.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "thread_id": "abc123",
+  "deleted": {
+    "checkpoints_deleted": 4,
+    "todos_deleted": 1,
+    "scheduled_todos_deleted": 1,
+    "triggers_deleted": 0,
+    "chat_bindings_deleted": 1,
+    "thread_owners_deleted": 1,
+    "checkpoint_rows_remaining": 0
+  },
+  "warnings": []
+}
+```
+
+`deleted` is a count map by storage surface. The request fails if an active
+wake/routing surface (TODOs, schedule rows, triggers, chat bindings, owner
+rows, callable config) cannot be cleaned, or if checkpoint deletion cannot be
+verified. A non-empty `warnings` list means a non-critical display/search
+surface failed after the critical cleanup completed.
+
+---
+
 ### Compact Thread
 
 ```http
@@ -712,6 +755,11 @@ Authorization: Bearer <token>
 ```
 
 Returns all threads with server-authoritative metadata (titles, pins, platform).
+The list also includes recoverable thread IDs referenced by thread-bound
+resources such as TODOs, scheduled TODO rows, triggers, chat bindings, bind
+codes, and safe orphan checkpoints. Those rows are marked with
+`recovered=true` so clients can surface partially-deleted threads for cleanup
+instead of hiding them.
 
 **Response:**
 ```json
@@ -724,7 +772,9 @@ Returns all threads with server-authoritative metadata (titles, pins, platform).
       "pinned": false,
       "platform": "desktop",
       "created_at": "2026-02-27T10:00:00Z",
-      "updated_at": "2026-02-27T10:30:00Z"
+      "updated_at": "2026-02-27T10:30:00Z",
+      "recovered": false,
+      "recovery_sources": []
     }
   ]
 }
@@ -736,6 +786,8 @@ Returns all threads with server-authoritative metadata (titles, pins, platform).
 | `title_source` | `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name) |
 | `pinned` | Whether thread is pinned to top |
 | `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"webhook"` |
+| `recovered` | `true` when this row was included because a resource survived without the normal complete thread listing path |
+| `recovery_sources` | Storage surfaces that referenced the recovered thread, e.g. `"todo"`, `"scheduled_todo"`, `"trigger"`, `"chat_binding"`, `"bind_code"`, `"checkpoint"` |
 
 ---
 
@@ -1334,7 +1386,7 @@ Manage RAG (Retrieval Augmented Generation) settings and indexes per user.
 
 `rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the `rag_settings` tool — the watermark prevents re-flipping.
 
-Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and chunks for a thread are removed when the thread is deleted. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
+Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
 
 ### Get RAG Settings
 
