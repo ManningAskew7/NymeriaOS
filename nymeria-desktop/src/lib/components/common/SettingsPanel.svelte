@@ -213,7 +213,12 @@
 
   // UI state
   type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'skills' | 'voice' | 'proxy' | 'account' | 'users';
-  let activeTab = $state<SettingsTab>((initialTab as SettingsTab) || 'connection');
+
+  function getInitialTab(): SettingsTab {
+    return (initialTab as SettingsTab) || 'connection';
+  }
+
+  let activeTab = $state<SettingsTab>(getInitialTab());
   let isAdmin = $derived(configStore.identity?.role === 'admin');
   let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -1367,31 +1372,6 @@
     gap: var(--spacing-xs);
     border-bottom: 1px solid var(--border-subtle);
     padding-bottom: var(--spacing-sm);
-  }
-
-  .users-tab-placeholder {
-    padding: var(--spacing-md);
-    border: 1px dashed var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-  }
-  .users-tab-placeholder h3 {
-    margin: 0 0 var(--spacing-sm);
-    font-size: var(--font-size-md);
-    color: var(--text-primary);
-  }
-  .users-tab-placeholder p {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: var(--font-size-sm);
-    line-height: 1.55;
-  }
-  .users-tab-placeholder code {
-    background: var(--bg-base);
-    padding: 1px 6px;
-    border-radius: var(--radius-sm);
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
-    font-size: 12px;
   }
 
   .tab {

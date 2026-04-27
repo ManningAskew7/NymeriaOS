@@ -80,7 +80,7 @@
         <Avatar {identity} size={56} state="connected" />
         <div class="identity-fields">
           <div class="field">
-            <label class="field-label">Email</label>
+            <span class="field-label">Email</span>
             <div class="field-value readonly">{identity.email}</div>
           </div>
 
@@ -125,7 +125,7 @@
           </div>
 
           <div class="field">
-            <label class="field-label">Account ID</label>
+            <span class="field-label">Account ID</span>
             <div class="field-value readonly mono">{identity.id}</div>
           </div>
         </div>
@@ -316,18 +316,6 @@
     font-size: 11px;
     color: var(--success, #22c55e);
     font-weight: 500;
-  }
-
-  .phase-badge {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
-    padding: 2px 6px;
-    border-radius: 4px;
   }
 
   .danger-section .section-header h3 {

@@ -42,7 +42,7 @@ export function startSyncPoll(threadId: string, initialMessageCount?: number) {
       if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
 
       const messageCountChanged = history.messages.length !== lastKnownMessageCount;
-      const isProcessing = !!(stats as Record<string, unknown>)?.processing;
+      const isProcessing = stats?.processing ?? false;
       const processingJustFinished = wasProcessing && !isProcessing;
 
       // Refresh if: new messages, thread is processing, or processing just finished

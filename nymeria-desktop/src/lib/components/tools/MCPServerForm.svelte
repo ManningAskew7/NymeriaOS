@@ -30,17 +30,43 @@
   ];
 
   // Form state
-  let formName = $state(initialData?.name ?? '');
-  let formId = $state(initialData?.id ?? '');
-  let idManuallyEdited = $state(mode === 'edit');
-  let formDescription = $state(initialData?.description ?? '');
-  let formCommand = $state(initialData?.server_command ?? '');
-  let formArgs = $state<string[]>(initialData?.server_args?.length ? [...initialData.server_args] : ['']);
-  let formEnvVars = $state(
-    initialData?.env_vars
+  function getInitialName(): string {
+    return initialData?.name ?? '';
+  }
+
+  function getInitialId(): string {
+    return initialData?.id ?? '';
+  }
+
+  function getInitialIdEdited(): boolean {
+    return mode === 'edit';
+  }
+
+  function getInitialDescription(): string {
+    return initialData?.description ?? '';
+  }
+
+  function getInitialCommand(): string {
+    return initialData?.server_command ?? '';
+  }
+
+  function getInitialArgs(): string[] {
+    return initialData?.server_args?.length ? [...initialData.server_args] : [''];
+  }
+
+  function getInitialEnvVars(): string {
+    return initialData?.env_vars
       ? Object.entries(initialData.env_vars).map(([k, v]) => `${k}=${v}`).join('\n')
-      : ''
-  );
+      : '';
+  }
+
+  let formName = $state(getInitialName());
+  let formId = $state(getInitialId());
+  let idManuallyEdited = $state(getInitialIdEdited());
+  let formDescription = $state(getInitialDescription());
+  let formCommand = $state(getInitialCommand());
+  let formArgs = $state<string[]>(getInitialArgs());
+  let formEnvVars = $state(getInitialEnvVars());
   let touched = $state(false);
 
   // Auto-generate ID from name

@@ -16,11 +16,20 @@
 
   const isCallable = $derived(threadConfig?.callable ?? false);
 
+  type OfficeBridge = {
+    context?: {
+      ui?: {
+        openBrowserWindow?: (url: string) => void;
+      };
+    };
+  };
+
   function openInBrowser() {
     const url = window.location.origin + window.location.pathname;
+    const office = (globalThis as typeof globalThis & { Office?: OfficeBridge }).Office;
     // In Outlook, use Office.js to open in the system default browser
-    if (typeof Office !== 'undefined' && Office.context?.ui?.openBrowserWindow) {
-      Office.context.ui.openBrowserWindow(url);
+    if (office?.context?.ui?.openBrowserWindow) {
+      office.context.ui.openBrowserWindow(url);
     } else {
       window.open(url, '_blank');
     }

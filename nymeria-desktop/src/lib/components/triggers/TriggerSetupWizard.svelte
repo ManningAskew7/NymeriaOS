@@ -27,18 +27,55 @@
   // Wizard steps
   type WizardStep = 'source' | 'configure' | 'conditions' | 'action' | 'review';
   const steps: WizardStep[] = ['source', 'configure', 'conditions', 'action', 'review'];
-  let currentStep = $state<WizardStep>(editTrigger ? 'configure' : 'source');
+
+  function getInitialStep(): WizardStep {
+    return editTrigger ? 'configure' : 'source';
+  }
+
+  let currentStep = $state<WizardStep>(getInitialStep());
   let stepIndex = $derived(steps.indexOf(currentStep));
 
   // Form state
-  let selectedSource = $state<string>(editTrigger?.source_type || '');
-  let sourceConfig = $state<Record<string, unknown>>(editTrigger?.source_config ? { ...editTrigger.source_config } : {});
-  let conditions = $state<TriggerCondition[]>(editTrigger?.conditions ? [...editTrigger.conditions] : []);
-  let actionType = $state<TriggerActionType>(editTrigger?.action.type || 'agent_prompt');
-  let actionConfig = $state<Record<string, unknown>>(editTrigger?.action.config ? { ...editTrigger.action.config } : {});
-  let triggerName = $state(editTrigger?.name || '');
-  let cooldownSeconds = $state(editTrigger?.cooldown_seconds || 0);
-  let enabled = $state(editTrigger?.enabled ?? true);
+  function getInitialSelectedSource(): string {
+    return editTrigger?.source_type || '';
+  }
+
+  function getInitialSourceConfig(): Record<string, unknown> {
+    return editTrigger?.source_config ? { ...editTrigger.source_config } : {};
+  }
+
+  function getInitialConditions(): TriggerCondition[] {
+    return editTrigger?.conditions ? [...editTrigger.conditions] : [];
+  }
+
+  function getInitialActionType(): TriggerActionType {
+    return editTrigger?.action.type || 'agent_prompt';
+  }
+
+  function getInitialActionConfig(): Record<string, unknown> {
+    return editTrigger?.action.config ? { ...editTrigger.action.config } : {};
+  }
+
+  function getInitialTriggerName(): string {
+    return editTrigger?.name || '';
+  }
+
+  function getInitialCooldownSeconds(): number {
+    return editTrigger?.cooldown_seconds || 0;
+  }
+
+  function getInitialEnabled(): boolean {
+    return editTrigger?.enabled ?? true;
+  }
+
+  let selectedSource = $state<string>(getInitialSelectedSource());
+  let sourceConfig = $state<Record<string, unknown>>(getInitialSourceConfig());
+  let conditions = $state<TriggerCondition[]>(getInitialConditions());
+  let actionType = $state<TriggerActionType>(getInitialActionType());
+  let actionConfig = $state<Record<string, unknown>>(getInitialActionConfig());
+  let triggerName = $state(getInitialTriggerName());
+  let cooldownSeconds = $state(getInitialCooldownSeconds());
+  let enabled = $state(getInitialEnabled());
 
   let saving = $state(false);
   let saveError = $state<string | null>(null);
