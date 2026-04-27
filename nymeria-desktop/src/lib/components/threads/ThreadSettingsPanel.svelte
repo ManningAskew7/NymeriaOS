@@ -254,6 +254,10 @@
     return llmProvider || serverSettingsStore.provider || '';
   }
 
+  function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
+    return provider === 'openai' || provider === 'openrouter';
+  }
+
   async function fetchAvailableModels(provider: string) {
     if (provider !== 'anthropic' && provider !== 'openai') {
       availableModels = [];
@@ -628,7 +632,7 @@
           // Explicitly clear to remove stale per-thread override
           llm.use_model_defaults = null;
         }
-        llm.openai_api_mode = getEffectiveProvider() === 'openai' && llmOpenAiApiMode !== 'default'
+        llm.openai_api_mode = supportsApiMode() && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
         updates.llm_config = llm;
@@ -1016,16 +1020,16 @@
             </div>
           {/if}
 
-          {#if getEffectiveProvider() === 'openai'}
+          {#if supportsApiMode()}
             <div class="field-group">
-              <label class="field-label" for="llm-openai-api-mode">OpenAI API Mode</label>
+              <label class="field-label" for="llm-openai-api-mode">API Mode</label>
               <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>
                 <option value="default">Default (inherit global)</option>
                 <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
                 <option value="responses">Responses API</option>
               </select>
               <span class="field-hint">
-                Use Responses API for GPT-5.5 via the CLIProxy Codex sidecar when you want native Responses reasoning blocks replayed from the checkpoint.
+                Responses API is the default for OpenAI-compatible reasoning models and OpenRouter beta. Chat Completions remains available as a compatibility override.
               </span>
             </div>
           {/if}

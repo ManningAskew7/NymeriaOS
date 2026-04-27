@@ -31,11 +31,11 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
 | `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for `openrouter`, `openai`, or `anthropic` providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for `openai`/Codex CLIProxy, use the OpenAI-compatible `/v1` URL. Leave unset to use the provider's standard URL. |
-| `OPENAI_API_MODE` | `responses` | responses/chat_completions | OpenAI provider API mode. `responses` is the default and recommended path for thinking/reasoning models; `chat_completions` is a compatibility override and is not recommended if thinking is enabled. |
+| `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers (`openai` and `openrouter`). `responses` is the default and recommended path for thinking/reasoning models; `chat_completions` is an explicit compatibility override and is not recommended if thinking is enabled. |
 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
-**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately.
+**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. Nymeria does not automatically fall back from Responses API to Chat Completions if a provider rejects the request; switch `OPENAI_API_MODE=chat_completions` explicitly when you need the older endpoint.
 
 ### API Keys
 
@@ -252,7 +252,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Advanced LLM Settings (all optional)
 # LLM_BASE_URL=                       # Override API endpoint (e.g., local proxy)
-# OPENAI_API_MODE=responses           # OpenAI provider mode: responses or chat_completions
+# OPENAI_API_MODE=responses           # OpenAI-compatible mode: responses or chat_completions
 # LLM_MAX_TOKENS=4096
 # LLM_TOP_P=0.95
 # LLM_TOP_K=40
@@ -344,6 +344,8 @@ OPENROUTER_API_KEY=sk-or-...
 ```
 
 OpenRouter provides access to many models from different providers through a unified API.
+
+Nymeria defaults OpenRouter to OpenRouter's beta Responses API (`/api/v1/responses`) with `store=false`. OpenRouter's Responses API is stateless, so Nymeria sends the full checkpointed conversation history on each request instead of using `previous_response_id`. To use the older `/chat/completions` endpoint, set `OPENAI_API_MODE=chat_completions` globally or choose **Chat Completions** in the global/per-thread API Mode selector. Errors from the beta Responses endpoint are surfaced directly so the mode choice stays explicit.
 
 **Tested Compatible Models:**
 - `anthropic/claude-sonnet-4.5` - Recommended

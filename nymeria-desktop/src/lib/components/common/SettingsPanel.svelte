@@ -908,14 +908,14 @@
           <p class="hint">Enable/disable thinking tokens for compatible models</p>
         </div>
 
-        {#if llmProvider === 'openai'}
+        {#if llmProvider === 'openai' || llmProvider === 'openrouter'}
           <div class="field">
-            <label for="openai-api-mode">OpenAI API Mode</label>
+            <label for="openai-api-mode">API Mode</label>
             <select id="openai-api-mode" bind:value={openaiApiMode}>
               <option value="responses">Responses API</option>
               <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
             </select>
-            <p class="hint">Responses API is the default path for OpenAI reasoning models and CLIProxy Codex OAuth.</p>
+            <p class="hint">Responses API is the default path for OpenAI reasoning models, CLIProxy Codex OAuth, and OpenRouter beta.</p>
           </div>
         {/if}
 

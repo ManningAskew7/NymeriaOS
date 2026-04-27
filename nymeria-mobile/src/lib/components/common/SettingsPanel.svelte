@@ -7,7 +7,7 @@
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
-  import type { ServerSettings, LLMProvider, LogLevel } from '$lib/types';
+  import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel } from '$lib/types';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
   import { ToolManagementPanel } from '../tools';
@@ -56,6 +56,7 @@
   let llmExtendedThinking = $state(false);
   let llmUseModelDefaults = $state(false);
   let llmBaseUrl = $state('');
+  let openaiApiMode = $state<OpenAIApiMode>('responses');
   let showAdvancedLlm = $state(false);
 
   // Agent settings
@@ -107,6 +108,7 @@
       llmExtendedThinking = serverSettings.llm_extended_thinking;
       llmUseModelDefaults = serverSettings.llm_use_model_defaults;
       llmBaseUrl = serverSettings.llm_base_url || '';
+      openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
       contextManagement = serverSettings.context_management;
       slidingWindowCycles = serverSettings.sliding_window_cycles;
       maxSelfInvokesPerHour = serverSettings.max_self_invokes_per_hour;
@@ -209,6 +211,7 @@
         llm_extended_thinking: llmExtendedThinking,
         llm_use_model_defaults: llmUseModelDefaults,
         llm_base_url: llmBaseUrl || null,
+        openai_api_mode: openaiApiMode,
         context_management: contextManagement,
         sliding_window_cycles: slidingWindowCycles,
         max_self_invokes_per_hour: maxSelfInvokesPerHour,
@@ -423,6 +426,17 @@
             </label>
             <p class="hint">Enable thinking tokens for compatible models</p>
           </div>
+
+          {#if llmProvider === 'openai' || llmProvider === 'openrouter'}
+            <div class="setting-group">
+              <label class="setting-label" for="openai-api-mode">API Mode</label>
+              <select id="openai-api-mode" class="setting-input" bind:value={openaiApiMode}>
+                <option value="responses">Responses API</option>
+                <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
+              </select>
+              <p class="hint">Responses API is the default path for OpenAI reasoning models, CLIProxy Codex OAuth, and OpenRouter beta.</p>
+            </div>
+          {/if}
 
           <!-- Advanced Settings -->
           <div class="advanced-section">

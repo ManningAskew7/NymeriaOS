@@ -78,6 +78,10 @@
     return llmProvider || serverSettingsStore.provider || '';
   }
 
+  function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
+    return provider === 'openai' || provider === 'openrouter';
+  }
+
   // Effective tool count
   const effectiveToolCount = $derived.by(() => {
     const coreNames = defaultToolsStore.defaultToolNames;
@@ -386,7 +390,7 @@
         } else {
           llm.use_model_defaults = null;
         }
-        llm.openai_api_mode = getEffectiveProvider() === 'openai' && llmOpenAiApiMode !== 'default'
+        llm.openai_api_mode = supportsApiMode() && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
         updates.llm_config = llm;
@@ -627,17 +631,19 @@
           </select>
         </div>
 
-        {#if getEffectiveProvider() === 'openai'}
+        {#if supportsApiMode()}
           <div class="setting-group">
-            <label class="setting-label" for="llm-openai-api-mode">OpenAI API Mode</label>
+            <label class="setting-label" for="llm-openai-api-mode">API Mode</label>
             <select id="llm-openai-api-mode" class="setting-input" bind:value={llmOpenAiApiMode}>
-              <option value="default">Default (chat completions)</option>
-              <option value="chat_completions">Chat Completions</option>
+              <option value="default">Default (inherit global)</option>
+              <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
               <option value="responses">Responses API</option>
             </select>
-            <p class="hint">Use Responses API for GPT-5.5 sidecar reasoning blocks replayed from the checkpoint.</p>
+            <p class="hint">Responses API is the default for OpenAI-compatible reasoning models and OpenRouter beta. Chat Completions remains available as a compatibility override.</p>
           </div>
+        {/if}
 
+        {#if getEffectiveProvider() === 'openai'}
           <div class="setting-group">
             <label class="setting-label" for="llm-base-url">API Base URL</label>
             <input
