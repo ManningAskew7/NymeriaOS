@@ -6,7 +6,7 @@ Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 """
 
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -18,6 +18,89 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_LLM_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 _CLIPROXY_STREAMING_PORTS = {8317, 8318}
+
+
+def _looks_like_openrouter_base_url(base_url: Any) -> bool:
+    """Return True for OpenRouter-compatible base URLs."""
+    return "openrouter.ai" in str(base_url or "").lower()
+
+
+def _extract_reasoning_text_from_reasoning_details(details: Any) -> str:
+    """Extract displayable plaintext from OpenRouter reasoning_details blocks."""
+    parts: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            parts.append(value)
+        elif isinstance(value, dict):
+            if value.get("type") == "reasoning.encrypted":
+                return
+            add(
+                value.get("text")
+                or value.get("content")
+                or value.get("reasoning")
+                or value.get("summary")
+            )
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+
+    add(details)
+    return "".join(parts)
+
+
+def _reasoning_details_for_storage(details: Any) -> Any:
+    """Return reasoning_details shaped so LangChain chunk merging keeps order.
+
+    langchain-core merges lists of dicts by matching `index`, which is correct
+    for tool-call deltas but corrupts streamed OpenRouter reasoning details by
+    concatenating repeated metadata fields such as `format`. The OpenRouter
+    `index` field is optional, so dropping it before checkpoint storage keeps
+    each streamed detail as a distinct ordered entry.
+    """
+    if not isinstance(details, list):
+        return details
+
+    sanitized: list[Any] = []
+    for item in details:
+        if isinstance(item, dict):
+            clean = dict(item)
+            clean.pop("index", None)
+            sanitized.append(clean)
+        else:
+            sanitized.append(item)
+    return sanitized
+
+
+def _reasoning_details_for_payload(details: Any) -> Any:
+    """Remove Nymeria/LangChain merge artifacts before replaying details."""
+    if not isinstance(details, list):
+        return details
+
+    cleaned: list[Any] = []
+    known_formats = (
+        "unknown",
+        "openai-responses-v1",
+        "azure-openai-responses-v1",
+        "xai-responses-v1",
+        "anthropic-claude-v1",
+        "google-gemini-v1",
+    )
+    for item in details:
+        if not isinstance(item, dict):
+            cleaned.append(item)
+            continue
+        clean = dict(item)
+        fmt = clean.get("format")
+        if isinstance(fmt, str):
+            for known in known_formats:
+                if fmt != known and len(fmt) % len(known) == 0:
+                    repeats = len(fmt) // len(known)
+                    if repeats > 1 and fmt == known * repeats:
+                        clean["format"] = known
+                        break
+        cleaned.append(clean)
+    return cleaned
 
 
 def _looks_like_cliproxy_base_url(base_url: str) -> bool:
@@ -104,8 +187,53 @@ def _get_chat_openai_with_reasoning():
     SSE events with a single code path.
     """
     from langchain_openai import ChatOpenAI
+    from langchain_core.messages import AIMessage
 
     class ChatOpenAIWithReasoning(ChatOpenAI):
+        def _get_request_payload(
+            self,
+            input_,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> dict:
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+            # OpenRouter documents assistant-message reasoning replay via
+            # `message.reasoning` or `message.reasoning_details`. LangChain
+            # stores provider-specific data in `additional_kwargs`, but its
+            # OpenAI-compatible serializer drops those fields by default.
+            # Keep this scoped to OpenRouter chat-completions payloads so
+            # direct OpenAI/local providers don't receive unknown message keys.
+            if "messages" not in payload or not _looks_like_openrouter_base_url(
+                getattr(self, "openai_api_base", None)
+            ):
+                return payload
+
+            source_messages = self._convert_input(input_).to_messages()
+            for source, wire_message in zip(source_messages, payload["messages"]):
+                if (
+                    not isinstance(source, AIMessage)
+                    or wire_message.get("role") != "assistant"
+                ):
+                    continue
+
+                extras = source.additional_kwargs or {}
+                reasoning_details = extras.get("reasoning_details")
+                if reasoning_details:
+                    wire_message["reasoning_details"] = (
+                        _reasoning_details_for_payload(reasoning_details)
+                    )
+                    continue
+
+                reasoning = extras.get("reasoning") or extras.get(
+                    "reasoning_content"
+                )
+                if reasoning:
+                    wire_message["reasoning"] = reasoning
+
+            return payload
+
         def _convert_chunk_to_generation_chunk(
             self, chunk, default_chunk_class, base_generation_info
         ):
@@ -122,13 +250,22 @@ def _get_chat_openai_with_reasoning():
                 )
                 if choices:
                     delta = choices[0].get("delta") or {}
-                    reasoning = delta.get("reasoning_content") or delta.get(
-                        "reasoning"
+                    reasoning_details = delta.get("reasoning_details")
+                    reasoning = (
+                        delta.get("reasoning_content")
+                        or delta.get("reasoning")
+                        or _extract_reasoning_text_from_reasoning_details(
+                            reasoning_details
+                        )
                     )
                     if reasoning:
                         generation_chunk.message.additional_kwargs[
                             "reasoning_content"
                         ] = reasoning
+                    if reasoning_details:
+                        generation_chunk.message.additional_kwargs[
+                            "reasoning_details"
+                        ] = _reasoning_details_for_storage(reasoning_details)
             except (AttributeError, KeyError, IndexError, TypeError):
                 pass
             return generation_chunk

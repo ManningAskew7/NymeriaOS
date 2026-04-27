@@ -618,6 +618,10 @@ function createChatStore() {
     addResponseStep(content: string) {
       if (messages.length === 0) return;
 
+      if (_thinkingBuffer) {
+        this._forceFlush();
+      }
+
       _responseBuffer += content;
 
       const now = performance.now();

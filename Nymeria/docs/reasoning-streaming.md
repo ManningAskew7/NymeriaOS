@@ -8,8 +8,8 @@ How live-streaming reasoning tokens flow from the LLM provider to the frontend t
 
 - The **frontend** has one code path for the thinking dropdown: it listens for SSE events of `type: "thinking"` and streams the bytes into a live-collapsing block.
 - The **backend agent** (`core/agent.py`) emits that event from three sources — Anthropic's typed `{"type": "thinking"}` content blocks, OpenAI-compatible `additional_kwargs["reasoning_content"]`, and Responses API `{"type": "reasoning"}` summary blocks.
-- The **ChatOpenAI subclass** (`vendor/react_agent/providers.py`) intercepts the raw streaming chunk and rescues OpenAI-compatible reasoning fields that langchain-openai deliberately drops (`delta.reasoning_content` and `delta.reasoning`).
-- The **history endpoint** rehydrates all supported storage shapes into the same frontend `steps` format: Anthropic thinking from `AIMessage.content` typed blocks, OpenAI-compatible reasoning from `AIMessage.additional_kwargs["reasoning_content"]`, and Responses reasoning summaries from `AIMessage.content` blocks.
+- The **ChatOpenAI subclass** (`vendor/react_agent/providers.py`) intercepts the raw streaming chunk and rescues OpenAI-compatible reasoning fields that langchain-openai deliberately drops (`delta.reasoning_content`, `delta.reasoning`, and `delta.reasoning_details`).
+- The **history endpoint** rehydrates all supported storage shapes into the same frontend `steps` format: Anthropic thinking from `AIMessage.content` typed blocks, OpenAI-compatible reasoning from `AIMessage.additional_kwargs["reasoning_content"]` / `["reasoning_details"]`, and Responses reasoning summaries from `AIMessage.content` blocks.
 - The **agent node** strips malformed Anthropic replay blocks shaped like `{"type": "thinking", "signature": "..."}` before the next provider call. Anthropic requires either a `thinking` or `redacted_thinking` field on replay, and summarized thinking can leave a signature-only block in checkpoint history.
 - For **CLIProxy's GPT-5.5 sidecar**, the proxy itself already does the hard translation: it turns upstream Codex Responses-API `response.reasoning_summary_text.delta` events into `choices[0].delta.reasoning_content` strings on the chat-completions wire. We just have to not drop them client-side.
 - For **native OpenAI Responses mode**, Nymeria replays the checkpointed Responses content blocks on each request instead of using `previous_response_id`. That keeps LangGraph's checkpoint authoritative for compaction, system prompt changes, injected context, and per-thread tool changes while still preserving prior reasoning/tool blocks in provider-native shape.
@@ -41,6 +41,7 @@ This is what CLIProxy's GPT-5.5 sidecar, OpenRouter, DeepSeek, and Qwen-via-Open
 | --- | --- | --- |
 | `delta.reasoning_content` | CLIProxy Codex sidecar, DeepSeek, Qwen | plaintext string deltas, one per token |
 | `delta.reasoning` | OpenRouter's unified wrapper | plaintext string deltas, one per token |
+| `delta.reasoning_details` | OpenRouter's structured reasoning wrapper | typed reasoning detail objects such as `reasoning.text`, `reasoning.summary`, or encrypted blocks |
 
 `langchain-openai` documents that it **intentionally does not** extract these provider-specific fields (see the docstring at `langchain_openai/chat_models/base.py:8` and the explicit comment at `:576`). It tells you to subclass for provider-specific behaviour — which we do.
 
@@ -88,9 +89,10 @@ Reasoning arrives as typed blocks with `type: "reasoning"`. Nymeria streams and 
 ┌───────────────────────────────────────┐
 │ ChatOpenAIWithReasoning (our subclass) │  Override point. Reads the raw
 │ vendor/react_agent/providers.py        │  chunk BEFORE returning it and
-│                                        │  stashes the reasoning string into
-│                                        │  message.additional_kwargs
-│                                        │  ["reasoning_content"]
+│                                        │  stashes plaintext reasoning into
+│                                        │  ["reasoning_content"] and structured
+│                                        │  OpenRouter details into
+│                                        │  ["reasoning_details"]
 └──────────┬─────────────────────────────┘
            │
            ▼
@@ -131,12 +133,12 @@ All under `/opt/NymeriaOS/Nymeria/`:
 
 | Where | What |
 | --- | --- |
-| `nymeria/vendor/react_agent/providers.py`, `_get_chat_openai_with_reasoning()` | Factory that builds `ChatOpenAIWithReasoning`, a `ChatOpenAI` subclass overriding `_convert_chunk_to_generation_chunk`. Normalises both `delta.reasoning_content` (CLIProxy / DeepSeek / Qwen) and `delta.reasoning` (OpenRouter) into `message.additional_kwargs["reasoning_content"]`. |
+| `nymeria/vendor/react_agent/providers.py`, `_get_chat_openai_with_reasoning()` | Factory that builds `ChatOpenAIWithReasoning`, a `ChatOpenAI` subclass overriding `_convert_chunk_to_generation_chunk`. Normalises `delta.reasoning_content` (CLIProxy / DeepSeek / Qwen), `delta.reasoning` (OpenRouter), and displayable `delta.reasoning_details` text into `message.additional_kwargs["reasoning_content"]`. It also preserves raw OpenRouter `reasoning_details` in `message.additional_kwargs["reasoning_details"]` and replays them on later OpenRouter chat-completions requests as assistant-message `reasoning_details`. |
 | `nymeria/vendor/react_agent/providers.py`, `_create_openai_llm` | Uses `ChatOpenAIWithReasoning` instead of vanilla `ChatOpenAI`. Covers direct OpenAI, the CLIProxy GPT-5.5 sidecar, and any OpenAI-compatible endpoint that sets `provider=openai`. CLIProxy-looking OpenAI base URLs are normalized to include `/v1` before `ChatOpenAI` is constructed; without that, Responses mode hits `POST /responses` and returns `404 page not found`. When `llm_config.openai_api_mode="responses"`, it sets `use_responses_api=True`, `output_version="responses/v1"`, and `store=False`; it intentionally does not set `use_previous_response_id`, so the next request replays checkpointed Responses items without relying on provider-side response retention. |
 | `nymeria/vendor/react_agent/providers.py`, `_create_openrouter_llm` | Same subclass, used for all OpenRouter traffic. Picks up reasoning when the model supports it and `extended_thinking=True` is set on the thread. |
 | `nymeria/vendor/react_agent/nodes.py`, `_sanitize_messages_for_anthropic()` | Replay-time guard for Anthropic history. Drops malformed signature-only `thinking` blocks before calling the provider while leaving stored checkpoints unchanged. |
 | `nymeria/core/agent.py`, `on_chat_model_stream` branch | First checks `chunk.additional_kwargs.get("reasoning_content")` and yields a `thinking` SSE event. Then handles typed `thinking` and `reasoning` content blocks with a per-LLM-call dedupe guard. Plain answer blocks of type `text` or `output_text`, plus provider-emitted bare string blocks, stream as `response` so pre-tool commentary stays visible. |
-| `nymeria/core/agent.py`, `get_conversation_history()` | Rehydrates saved reasoning into history `steps`. Anthropic thinking is read from typed content blocks; OpenAI-compatible reasoning is read from `AIMessage.additional_kwargs["reasoning_content"]` or legacy `"reasoning"`; Responses summaries are read from `AIMessage.content` reasoning blocks. |
+| `nymeria/core/agent.py`, `get_conversation_history()` | Rehydrates saved reasoning into history `steps`. Anthropic thinking is read from typed content blocks; OpenAI-compatible reasoning is read from `AIMessage.additional_kwargs["reasoning_content"]`, `["reasoning_details"]`, or legacy `"reasoning"`; Responses summaries are read from `AIMessage.content` reasoning blocks. |
 | `nymeria/triggers/api.py`, `/chat` SSE handler | Serialises `{"type": "thinking", "content": ...}` into the on-the-wire SSE line the frontend consumes. No special-casing per provider. |
 | `/opt/NymeriaOS/nymeria-desktop/src/lib/services/api.svelte.ts` | Parses SSE, dispatches `thinking` events to the chat store. |
 | `/opt/NymeriaOS/nymeria-desktop/src/lib/components/chat/ThinkingBlock.svelte` (or equivalent) | Renders the live-collapsing dropdown. Provider-agnostic. |
@@ -150,7 +152,7 @@ All under `/opt/NymeriaOS/Nymeria/`:
 | Anthropic via pinned CLIProxy | `/v1/messages` | typed blocks in `content` | ✅ yes |
 | CLIProxy GPT-5.5 sidecar with `openai_api_mode="chat_completions"` | `/v1/chat/completions` | `delta.reasoning_content` (plaintext summary, translated from upstream) | ✅ yes, via subclass; not recommended if thinking is enabled |
 | CLIProxy GPT-5.5 sidecar with default `openai_api_mode="responses"` | `/v1/responses` | typed `reasoning` summary blocks + `resp_*` id | ✅ yes, with checkpoint replay |
-| OpenRouter DeepSeek-R1 / Qwen thinking / Claude-via-OR with `reasoning.enabled=true` | `/chat/completions` | `delta.reasoning` (plaintext) | ✅ yes, via subclass |
+| OpenRouter DeepSeek-R1 / Qwen thinking / Claude-via-OR with `reasoning.enabled=true` | `/chat/completions` | `delta.reasoning` and/or `delta.reasoning_details` | ✅ yes, via subclass; prior OpenRouter assistant reasoning is replayed with `message.reasoning_details` when available |
 | Pure OpenAI reasoning models via `openai.com` with default `openai_api_mode="responses"` | `/v1/responses` | Typed reasoning blocks; summary optional and often empty | ✅ surfaces plaintext summaries when present |
 | gpt-5-pro family, gpt-5.2-pro, gpt-5.4-pro, any `*codex*` name — direct (not via CLIProxy) | `/v1/responses` (auto-switched by langchain-openai `_model_prefers_responses_api`) | Typed reasoning blocks; summary optional and often empty; raw reasoning is encrypted | ✅ surfaces plaintext summaries when present |
 
@@ -233,7 +235,7 @@ Expected for a GPT-5.5 sidecar turn: a `steps` array with a `thinking` entry bef
 ## Known limitations
 
 - **Responses summary availability.** The raw reasoning body is encrypted for privacy. Nymeria only displays plaintext summary text, and some Codex OAuth responses may return empty summaries even though checkpoint replay can still preserve provider-native reasoning/tool blocks.
-- **Provider-specific reasoning continuation outside OpenAI Responses.** OpenRouter/DeepSeek-style chat-completions `reasoning_details` replay is not implemented. Those providers still stream and rehydrate UI thinking, but they do not get native multi-turn reasoning continuation unless they expose a Responses-compatible state mechanism.
+- **Provider-specific reasoning continuation outside OpenAI Responses.** OpenRouter chat-completions reasoning replay is implemented for `message.reasoning_details` / `message.reasoning`. Other OpenAI-compatible servers may stream/display reasoning through `reasoning_content`, but Nymeria does not add those nonstandard fields back into later requests unless the base URL is OpenRouter.
 
 ## Related docs
 

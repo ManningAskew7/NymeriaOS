@@ -61,6 +61,61 @@ def test_history_rehydrates_legacy_reasoning_metadata_key():
     }
 
 
+def test_history_rehydrates_openrouter_reasoning_details_metadata():
+    history = _history_for([
+        HumanMessage(content="Hello"),
+        AIMessage(
+            content="Final answer",
+            additional_kwargs={
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "text": "Saved ",
+                        "format": "unknown",
+                        "index": 0,
+                    },
+                    {
+                        "type": "reasoning.text",
+                        "text": "details",
+                        "format": "unknown",
+                        "index": 0,
+                    },
+                ],
+            },
+        ),
+    ])
+
+    assert history[1]["steps"] == [
+        {"type": "thinking", "content": "Saved details"},
+        {"type": "response", "content": "Final answer"},
+    ]
+
+
+def test_history_deduplicates_openrouter_reasoning_details_and_string():
+    history = _history_for([
+        HumanMessage(content="Hello"),
+        AIMessage(
+            content="Final answer",
+            additional_kwargs={
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "text": "Same thought",
+                        "format": "unknown",
+                        "index": 0,
+                    },
+                ],
+                "reasoning_content": "Same thought",
+            },
+        ),
+    ])
+
+    thinking_steps = [
+        step for step in history[1]["steps"] if step["type"] == "thinking"
+    ]
+    assert thinking_steps == [{"type": "thinking", "content": "Same thought"}]
+
+
 def test_history_keeps_anthropic_typed_thinking_without_duplication():
     history = _history_for([
         HumanMessage(content="Hello"),
