@@ -108,11 +108,16 @@ AccountBadge renders the resolved identity reactively
 
 ### AccountSwitcher (desktop)
 
-Each saved entry (`SavedConnection` in `types/index.ts`) has a cached `identity?` field plus `identityCheckedAt` and `identityError`. On boot the active entry is auto-verified (`connectionsStore.verifyEntry(id)` runs in a 500ms-deferred `setTimeout` at the bottom of `connections.svelte.ts`). Each row in the switcher shows the cached identity; the per-row "⋯ → Re-verify" menu re-hits `/me` against that entry's URL+token.
+Each saved entry (`SavedConnection` in `types/index.ts`) is a saved login credential: backend URL + raw account token + cached `identity?`, `identityCheckedAt`, and `identityError`. This is intentionally not the same thing as a backend user row — raw tokens are only returned once by the API, so the frontend can only switch to accounts whose token it has saved locally.
+
+On setup completion and on app boot after a successful `/me`, the desktop app upserts the current credential into `connectionsStore` and marks it active. The upsert key is normalized backend URL + resolved `identity.id` when identity is known, with URL + token as the fallback. This keeps the original setup account switchable after adding another account, and avoids duplicate rows when the same user is saved again with a fresh token.
+
+On boot the active entry is auto-verified (`connectionsStore.verifyEntry(id)` runs in a 500ms-deferred `setTimeout` at the bottom of `connections.svelte.ts`). Each row in the switcher shows the cached identity; the per-row "⋯ → Re-verify" menu re-hits `/me` against that entry's URL+token.
 
 When the user clicks a different account:
-1. `connectionsStore.switchTo(id)` — disconnects SSE/polling, clears chat, sets new apiUrl/apiKey, **awaits `configStore.refreshIdentity()`** so `currentIdentityId` updates to the new user before any scoped-localStorage I/O, then reloads threads. The identity refresh is awaited specifically because `threadsStore.reset()` and `syncFromBackend()` write through `scopedKey()` (`config.svelte.ts`); without the await the stale `currentIdentityId` would route reads/writes to the previous user's `nymeria-*-<old-id>` namespace. The await is wrapped in `.catch(() => {})` so a network/401 failure mid-switch doesn't strand the user.
-2. `connectionsStore.verifyEntry(id)` — refreshes the cached identity for the just-activated entry
+1. `connectionsStore.switchTo(id)` first upserts the currently configured credential if it is not already the target. This prevents the common "add another account, then lose the path back to the setup account" failure.
+2. It disconnects SSE/polling, clears chat, sets new apiUrl/apiKey, **awaits `configStore.refreshIdentity()`** so `currentIdentityId` updates to the new user before any scoped-localStorage I/O, then reloads threads. The identity refresh is awaited specifically because `threadsStore.reset()` and `syncFromBackend()` write through `scopedKey()` (`config.svelte.ts`); without the await the stale `currentIdentityId` would route reads/writes to the previous user's `nymeria-*-<old-id>` namespace. The await is wrapped in `.catch(() => {})` so a network/401 failure mid-switch doesn't strand the user.
+3. `connectionsStore.verifyEntry(id)` — refreshes the cached identity for the just-activated entry
 
 ### Token issuance flow
 
@@ -135,7 +140,14 @@ User clicks "I've saved it" → dialog closes, raw_token state cleared
 load() re-fetches the list to show the new entry
 ```
 
-The raw token only ever lives in the issuing component's local state. It is not persisted anywhere — closing the dialog drops it forever. This matches the backend contract (`accounts.md::Tokens` — only sha256 is stored).
+The raw token only ever lives in the issuing component's local state. It is not persisted anywhere unless the user explicitly saves it to the desktop account switcher while the copy-once dialog is open. Closing the dialog drops it forever. This matches the backend contract (`accounts.md::Tokens` — only sha256 is stored).
+
+Desktop admin-mode token issuance and user creation add two extra actions to the copy-once dialog while `raw_token` is still available:
+
+- **Save account** — upserts `configStore.apiUrl + raw_token + target identity` into `connectionsStore`, making that user available in the bottom-bar switcher.
+- **Save and switch** — performs the same upsert, then calls `connectionsStore.switchTo(entry.id)`.
+
+If the dialog is closed without saving, the user can still use **Add account** later, but they must paste a valid token again because the raw token cannot be recovered from the backend.
 
 ### Error toast wiring
 
@@ -192,7 +204,7 @@ Reads `connectionsStore.connections` reactively. Per-row state (which row's `⋯
 
 ### `AddAccountSheet.svelte` (desktop only)
 
-Wraps `Modal`. Local state: URL + token + optional label. `Test connection` runs `/health` then `/me` (raw `fetch`, not `api.svelte` — needs to use the form's URL/token, not the global config). On success, shows a preview card with the resolved identity. `Save` calls `connectionsStore.add()` then `connectionsStore.verifyEntry()` then `connectionsStore.switchTo()` (when `switchAfterSave` is true).
+Wraps `Modal`. Local state: URL + token + optional label. `Test connection` calls `probeConnection(url, key)` from `services/api.svelte.ts` — a standalone exported function (not a method on the `api` singleton) that runs `/health` then `/me` against arbitrary credentials without touching `configStore`. On success, shows a preview card with the resolved identity. `Save` calls `connectionsStore.upsertAccountCredential()` with the resolved identity, so existing rows for the same backend URL + user are updated instead of duplicated. The `switchAfterSave` prop defaults to `true`; when set the component calls `connectionsStore.switchTo()` after upsert (which also saves the previous current credential before activating the new one). Pass `switchAfterSave={false}` from the copy-once dialog's "Save account" path so admins issuing a token for *another* user don't accidentally jump into that user's session.
 
 ### `AccountTab.svelte`
 
@@ -238,7 +250,7 @@ The store + endpoints are intentionally provider-agnostic (`provider: 'telegram'
 
 ### `ConnectMyTelegramBotWizard.svelte` (BYO bot, sibling of the shared-bot wizard)
 
-Lives at `components/threads/ConnectMyTelegramBotWizard.svelte`. Opens from the same Chat App tab via the **"Use my own bot"** button. Three-step flow:
+Lives at `components/threads/ConnectMyTelegramBotWizard.svelte`. Opens from the same Chat App tab via the **"Use my own bot"** button. Four-step flow:
 
 1. **token** — Paste a `@BotFather` token. Calls `api.registerMyTelegramBot(token)` which validates via Telegram's `getMe`, encrypts with `NYMERIA_SECRETS_KEY`, persists to `user_telegram_bots`. Auto-skipped if the user already has a registered bot (the wizard reuses it).
 2. **starting** — Polls `api.getMyTelegramBot(id)` every 2s waiting for `last_seen_at` to become non-null (proof the supervisor inside `nymeria-telegram-bot` started the polling loop, ~15s typical). Shows "Starting your bot…" spinner.

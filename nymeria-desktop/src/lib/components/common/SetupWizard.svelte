@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
+  import { connectionsStore } from '$lib/stores/connections.svelte';
   import { probeConnection } from '$lib/services/api.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
@@ -68,7 +69,15 @@
     // before the rest of the app starts reading threads/folders. Without
     // the await, scoped store reads can fire against the legacy unscoped
     // keys and momentarily render the previous user's data.
-    await configStore.refreshIdentity();
+    const identity = await configStore.refreshIdentity();
+    if (identity) {
+      connectionsStore.upsertAccountCredential({
+        apiUrl,
+        apiKey,
+        identity,
+        makeActive: true,
+      });
+    }
   }
 
   function canProceed(): boolean {

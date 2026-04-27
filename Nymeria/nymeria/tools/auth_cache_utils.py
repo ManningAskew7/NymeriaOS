@@ -268,6 +268,20 @@ def save_token_cache(user_id: str, cache_filename: str, cache: dict) -> None:
     path.write_text(json.dumps(cache, indent=2))
 
 
+def delete_token_cache(user_id: str, cache_filename: str) -> bool:
+    """Delete a user's token cache file if it exists.
+
+    Returns ``True`` when a file was removed, otherwise ``False``. The parent
+    directory is still created by ``cache_path``; leaving an empty per-user auth
+    directory is harmless and keeps this helper simple.
+    """
+    path = cache_path(user_id, cache_filename)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Google-specific helpers (userinfo, token exchange, account save)
 # ---------------------------------------------------------------------------
@@ -296,6 +310,61 @@ def fetch_google_user_info(access_token: str) -> Tuple[str, str]:
     except Exception:
         pass
     return "unknown", "Unknown User"
+
+
+def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
+    """Refresh a stored Google OAuth account.
+
+    Returns ``("refreshed", "")`` on success, ``("invalid", reason)`` when
+    Google rejects the refresh token, or ``("unavailable", reason)`` when the
+    local environment cannot validate it safely.
+    """
+    try:
+        from google.auth.exceptions import RefreshError
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2.credentials import Credentials
+    except ImportError as e:
+        return "unavailable", f"google-auth packages are not installed: {e}"
+
+    refresh_token = account.get("refresh_token")
+    if not refresh_token:
+        return "invalid", "no refresh token stored"
+
+    creds = Credentials(
+        token=account.get("access_token"),
+        refresh_token=refresh_token,
+        token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=account.get("client_id"),
+        client_secret=account.get("client_secret"),
+        scopes=account.get("scopes", list(scopes)),
+    )
+
+    try:
+        creds.refresh(GoogleAuthRequest())
+    except RefreshError as e:
+        reason = str(e)
+        lowered = reason.lower()
+        invalid_markers = (
+            "invalid_grant",
+            "invalid_client",
+            "unauthorized_client",
+            "expired or revoked",
+            "revoked",
+            "deleted",
+        )
+        if any(marker in lowered for marker in invalid_markers):
+            return "invalid", reason
+        return "unavailable", reason
+    except Exception as e:
+        return "unavailable", str(e)
+
+    account["access_token"] = creds.token
+    account["expires_at"] = (
+        creds.expiry.timestamp() if creds.expiry else time.time() + 3600
+    )
+    if creds.refresh_token:
+        account["refresh_token"] = creds.refresh_token
+    return "refreshed", ""
 
 
 def exchange_code_for_tokens(

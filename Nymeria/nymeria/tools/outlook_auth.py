@@ -81,6 +81,22 @@ def save_token_cache(user_id: str, cache: dict) -> None:
     path.write_text(json.dumps(cache, indent=2))
 
 
+def delete_token_cache(user_id: str) -> bool:
+    """Delete a user's Microsoft token cache file if present."""
+    path = _cache_path(user_id)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def _persist_or_delete_cache(user_id: str, cache: dict) -> None:
+    if cache:
+        save_token_cache(user_id, cache)
+    else:
+        delete_token_cache(user_id)
+
+
 @tool
 def outlook_auth_start(
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
@@ -118,7 +134,7 @@ If not, please complete sign-in first, then call `outlook_auth_complete`.
 
 The current authentication will expire in about {remaining} minutes.
 
-**To start fresh with a new code**, first wait for this one to expire or delete the pending auth."""
+**To start fresh with a new code**, call `outlook_auth_clear` first."""
 
     client_id = get_client_id()
 
@@ -166,6 +182,66 @@ The code expires in {expires_in // 60} minutes."""
     except Exception as e:
         logger.error(f"Auth start failed: {e}", exc_info=True)
         return f"[Error]: Failed to start authentication: {str(e)}"
+
+
+@tool
+def outlook_auth_clear(
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Clear saved Microsoft Outlook/Graph authentication for the current user.
+
+    Args:
+        account_id: Optional account ID to remove. When omitted, all saved
+            Microsoft accounts and any pending device-code flow are cleared
+            for the current user.
+    """
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
+    accounts = cache.get("accounts", {})
+    had_pending = "pending_auth" in cache
+
+    if account_id:
+        account = accounts.pop(account_id, None)
+        if account is None:
+            return (
+                f"[Info]: No Microsoft account found with ID `{account_id}`. "
+                "Use outlook_list_authenticated_accounts to see saved accounts."
+            )
+
+        email = account.get("email", "unknown")
+        name = account.get("name", "Unknown")
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        if had_pending:
+            cache.pop("pending_auth", None)
+        _persist_or_delete_cache(user_id, cache)
+        pending_note = " Pending Microsoft device-code auth was also cleared." if had_pending else ""
+        return (
+            f"[Success]: Cleared Microsoft authentication for **{name}** ({email})."
+            f"{pending_note} Run `outlook_auth_start` to authenticate again."
+        )
+
+    removed_count = len(accounts)
+    cache.pop("accounts", None)
+    cache.pop("pending_auth", None)
+    _persist_or_delete_cache(user_id, cache)
+
+    if removed_count or had_pending:
+        pieces = []
+        if removed_count:
+            pieces.append(f"{removed_count} saved Microsoft account(s)")
+        if had_pending:
+            pieces.append("the pending Microsoft device-code flow")
+        return (
+            f"[Success]: Cleared {' and '.join(pieces)}. "
+            "Run `outlook_auth_start` to authenticate again."
+        )
+
+    return "[Info]: No saved Microsoft authentication or pending device-code flow was present."
 
 
 def _try_complete_pending(user_id: str) -> Optional[str]:
@@ -403,5 +479,6 @@ def outlook_list_authenticated_accounts(
 AUTH_TOOLS = [
     outlook_auth_start,
     outlook_auth_complete,
+    outlook_auth_clear,
     outlook_list_authenticated_accounts,
 ]

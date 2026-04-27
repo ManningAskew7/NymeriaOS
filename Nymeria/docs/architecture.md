@@ -97,6 +97,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
+| `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
 | `thread_agent_executor.py` | Delegates tasks to callable threads via `NymeriaAgent.stream()`. Publishes live SSE events. |
 | `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
 | `activity_log.py` | Per-thread activity feed with time-based retention |

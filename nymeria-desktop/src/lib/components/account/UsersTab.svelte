@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { AdminUser, UserRole } from '$lib/types';
+  import type { AccountIdentity, AdminUser, UserRole } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { connectionsStore } from '$lib/stores/connections.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
@@ -53,6 +54,10 @@
   let issuedRawToken = $state<string | null>(null);
   let issuedFor = $state<string | null>(null);
   let issuedLabel = $state<string | null>(null);
+  let issuedIdentity = $state<AccountIdentity | null>(null);
+  let savingIssuedAccount = $state(false);
+  let issuedAccountMessage = $state<string | null>(null);
+  let issuedAccountError = $state<string | null>(null);
 
   // Detail-pane edit state
   let editName = $state('');
@@ -115,7 +120,9 @@
 
   async function handleCreate() {
     if (creating) return;
-    if (!createEmail.trim()) {
+    const requestedEmail = createEmail.trim().toLowerCase();
+    const requestedId = createId.trim();
+    if (!requestedEmail) {
       createError = 'Email is required';
       return;
     }
@@ -123,19 +130,35 @@
     createError = null;
     try {
       const body: Parameters<typeof api.createAdminUser>[0] = {
-        email: createEmail.trim(),
+        email: requestedEmail,
         role: createRole,
       };
       if (createDisplayName.trim()) body.display_name = createDisplayName.trim();
-      if (createId.trim()) body.id = createId.trim();
+      if (requestedId) body.id = requestedId;
       if (createTokenLabel.trim()) body.token_label = createTokenLabel.trim();
       const res = await api.createAdminUser(body);
+      await load();
+      const created =
+        users.find(
+          (u) =>
+            (requestedId && u.id === requestedId) ||
+            u.email.toLowerCase() === requestedEmail
+        ) ?? null;
       issuedRawToken = res.raw_token;
-      issuedFor = createDisplayName.trim() || createEmail.trim();
+      issuedFor = createDisplayName.trim() || requestedEmail;
       issuedLabel = res.metadata.label;
+      issuedIdentity = created
+        ? {
+            id: created.id,
+            email: created.email,
+            display_name: created.display_name,
+            role: created.role,
+          }
+        : null;
+      issuedAccountMessage = null;
+      issuedAccountError = null;
       showCreate = false;
       showCopyDialog = true;
-      await load();
     } catch (e) {
       createError = e instanceof Error ? e.message : 'Failed to create user';
     } finally {
@@ -148,6 +171,38 @@
     issuedRawToken = null;
     issuedFor = null;
     issuedLabel = null;
+    issuedIdentity = null;
+    issuedAccountMessage = null;
+    issuedAccountError = null;
+  }
+
+  async function saveIssuedCreatedAccount(switchAfterSave = false) {
+    if (!issuedRawToken || savingIssuedAccount) return;
+    if (!issuedIdentity) {
+      issuedAccountError = 'Cannot save this token because the new account identity is not loaded.';
+      return;
+    }
+    savingIssuedAccount = true;
+    issuedAccountMessage = null;
+    issuedAccountError = null;
+    try {
+      const entry = connectionsStore.upsertAccountCredential({
+        apiUrl: configStore.apiUrl,
+        apiKey: issuedRawToken,
+        identity: issuedIdentity,
+        name: identityDisplayName(issuedIdentity),
+      });
+      if (switchAfterSave) {
+        await connectionsStore.switchTo(entry.id);
+        closeCopyDialog();
+      } else {
+        issuedAccountMessage = 'Saved to the account switcher.';
+      }
+    } catch (e) {
+      issuedAccountError = e instanceof Error ? e.message : 'Failed to save account';
+    } finally {
+      savingIssuedAccount = false;
+    }
   }
 
   function handleSelect(id: string) {
@@ -404,6 +459,7 @@
         mode="admin"
         userId={selectedUser.id}
         userLabel={identityDisplayName(selectedUser)}
+        targetIdentity={selectedUser}
       />
     </section>
 
@@ -545,6 +601,11 @@
   rawToken={issuedRawToken}
   label={issuedLabel}
   forUser={issuedFor}
+  onSaveAccount={() => saveIssuedCreatedAccount(false)}
+  onSaveAndSwitch={() => saveIssuedCreatedAccount(true)}
+  savingAccount={savingIssuedAccount}
+  accountActionMessage={issuedAccountMessage}
+  accountActionError={issuedAccountError}
 />
 
 <style>

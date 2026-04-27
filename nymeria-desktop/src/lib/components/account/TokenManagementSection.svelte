@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { TokenInfo } from '$lib/types';
+  import type { AccountIdentity, TokenInfo } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { connectionsStore } from '$lib/stores/connections.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
@@ -23,9 +24,11 @@
     userId?: string;
     /** Optional human label shown in the rotate-all confirmation. */
     userLabel?: string;
+    /** Full target identity when an admin is issuing tokens for another user. */
+    targetIdentity?: AccountIdentity | null;
   }
 
-  let { mode = 'self', userId, userLabel }: Props = $props();
+  let { mode = 'self', userId, userLabel, targetIdentity = null }: Props = $props();
 
   let tokens = $state<TokenInfo[]>([]);
   let loading = $state(false);
@@ -39,6 +42,9 @@
   let showCopyDialog = $state(false);
   let issuedRawToken = $state<string | null>(null);
   let issuedLabel = $state<string | null>(null);
+  let savingAccount = $state(false);
+  let accountActionMessage = $state<string | null>(null);
+  let accountActionError = $state<string | null>(null);
 
   let revokingPrefix = $state<string | null>(null);
   let rotating = $state(false);
@@ -95,6 +101,8 @@
           : await api.issueMyToken(labelArg);
       issuedRawToken = res.raw_token;
       issuedLabel = res.metadata.label;
+      accountActionMessage = null;
+      accountActionError = null;
       showIssueDialog = false;
       showCopyDialog = true;
       await load();
@@ -118,6 +126,8 @@
       const res = await api.rotateUserTokens(userId);
       issuedRawToken = res.raw_token;
       issuedLabel = res.metadata.label;
+      accountActionMessage = null;
+      accountActionError = null;
       showCopyDialog = true;
       await load();
     } catch (e) {
@@ -131,6 +141,45 @@
     showCopyDialog = false;
     issuedRawToken = null;
     issuedLabel = null;
+    accountActionMessage = null;
+    accountActionError = null;
+  }
+
+  function issuedIdentity(): AccountIdentity | null {
+    if (mode === 'admin' && userId) {
+      return targetIdentity;
+    }
+    return configStore.identity;
+  }
+
+  async function saveIssuedAccount(switchAfterSave = false) {
+    if (!issuedRawToken || savingAccount) return;
+    const identity = issuedIdentity();
+    if (!identity) {
+      accountActionError = 'Cannot save this token because the account identity is not loaded.';
+      return;
+    }
+    savingAccount = true;
+    accountActionMessage = null;
+    accountActionError = null;
+    try {
+      const entry = connectionsStore.upsertAccountCredential({
+        apiUrl: configStore.apiUrl,
+        apiKey: issuedRawToken,
+        identity,
+        name: userLabel || identity.display_name || identity.email,
+      });
+      if (switchAfterSave) {
+        await connectionsStore.switchTo(entry.id);
+        closeCopyDialog();
+      } else {
+        accountActionMessage = 'Saved to the account switcher.';
+      }
+    } catch (e) {
+      accountActionError = e instanceof Error ? e.message : 'Failed to save account';
+    } finally {
+      savingAccount = false;
+    }
   }
 
   async function handleRevoke(token: TokenInfo) {
@@ -313,6 +362,11 @@
   onClose={closeCopyDialog}
   rawToken={issuedRawToken}
   label={issuedLabel}
+  onSaveAccount={mode === 'admin' ? () => saveIssuedAccount(false) : null}
+  onSaveAndSwitch={mode === 'admin' ? () => saveIssuedAccount(true) : null}
+  {savingAccount}
+  {accountActionMessage}
+  {accountActionError}
 />
 
 <style>

@@ -132,9 +132,9 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Streaming (SSE)
 - **Real-time SSE** for chat, autonomous tasks, and trigger executions
-- **Chat events**: `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `context_attached`, `compacted`, `command_result`, `tool_reload`, `error`, `done`
+- **Chat events**: `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `context_attached`, `compacted`, `tool_reload`, `queued`, `iteration_limit`, `error`, `done`
 - **Ordered assistant steps**: visible pre-tool commentary streams and rehydrates as `response` steps before the matching `tool_call`, separate from hidden/expanded thinking blocks
-- **Autonomous events**: `task_started`, `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `task_completed`
+- **Autonomous events**: `task_started`, `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `task_completed`, `webhook_message`
 
 ### Context Management
 - **Auto-compaction** (default) — Automatic summarization at configurable threshold (default 80% of model limit)
@@ -171,8 +171,8 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Browser** | 9 | Playwright with BeautifulSoup fallback; navigate, click, type, screenshot, scroll |
-| **Outlook Email** | 16 | OAuth, search (KQL), send, reply, forward, drafts, categories, attachments (PDF/DOCX/Excel) |
-| **Google Calendar** | 14 | OAuth, events CRUD, RSVP, free/busy, colors |
+| **Outlook Email** | 18 | OAuth, auth reset, search (KQL), send, reply, forward, drafts, categories, attachments (PDF/DOCX/Excel) |
+| **Google Calendar** | 15 | OAuth, auth reset, events CRUD, RSVP, free/busy, colors |
 | **Twitch** | 23 | Chat, moderation, stream info, polls, predictions, clips, channel management |
 | **Triggers** | 6 | Create, list, update, delete, inspect, source catalog |
 | **_PRV_A/Sheets** | 9 | Google Sheets CRUD, supplier lookup, product search, lifecycle status, pricing |

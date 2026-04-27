@@ -65,6 +65,75 @@ def save_token_cache(user_id: str, cache: dict) -> None:
     auth_utils.save_token_cache(user_id, _CACHE_FILENAME, cache)
 
 
+def _persist_or_delete_cache(user_id: str, cache: dict) -> None:
+    if cache:
+        save_token_cache(user_id, cache)
+    else:
+        auth_utils.delete_token_cache(user_id, _CACHE_FILENAME)
+
+
+def _existing_auth_message(user_id: str) -> Optional[str]:
+    """Return an already-authenticated message, pruning dead tokens first."""
+    cache = load_token_cache(user_id)
+    accounts = cache.get("accounts", {})
+    if not accounts:
+        return None
+
+    changed = False
+    for account_id, account in list(accounts.items()):
+        email = account.get("email", "unknown")
+        has_refresh = bool(account.get("refresh_token"))
+
+        if not has_refresh:
+            continue
+
+        expires_at = account.get("expires_at", 0)
+        if time.time() >= expires_at - 60:
+            status, reason = auth_utils.refresh_google_account(account, GOOGLE_SCOPES)
+            if status == "refreshed":
+                accounts[account_id] = account
+                changed = True
+            elif status == "invalid":
+                logger.info(
+                    "Clearing invalid Google Calendar token for %s: %s",
+                    email,
+                    reason,
+                )
+                del accounts[account_id]
+                changed = True
+                continue
+            else:
+                if changed:
+                    cache["accounts"] = accounts
+                    _persist_or_delete_cache(user_id, cache)
+                return (
+                    f"[Warning]: Found expired Google Calendar credentials for "
+                    f"**{account.get('name', 'Unknown')}** ({email}), but could not "
+                    f"verify the refresh token: {reason}\n\n"
+                    "Use `calendar_auth_clear` to remove the saved token, then run "
+                    "`calendar_auth_start` again."
+                )
+
+        if changed:
+            cache["accounts"] = accounts
+            _persist_or_delete_cache(user_id, cache)
+
+        return (
+            f"[Info]: Already authenticated as **{account.get('name', 'Unknown')}** ({email}). "
+            "Tokens will auto-refresh. To add another account or re-authenticate, "
+            "call `calendar_auth_clear` first."
+        )
+
+    if changed:
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        _persist_or_delete_cache(user_id, cache)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -89,17 +158,9 @@ def calendar_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = Non
     """
     user_id = get_user_id(config)
 
-    cache = load_token_cache(user_id)
-    accounts = cache.get("accounts", {})
-    if accounts:
-        first = next(iter(accounts.values()))
-        email = first.get("email", "unknown")
-        if first.get("refresh_token"):
-            return (
-                f"[Info]: Already authenticated as **{first.get('name', 'Unknown')}** ({email}). "
-                "Tokens will auto-refresh. To add another account or re-authenticate, "
-                "delete the token cache file first."
-            )
+    existing_message = _existing_auth_message(user_id)
+    if existing_message:
+        return existing_message
 
     existing = get_flow(user_id, PROVIDER)
     if existing and existing.server_thread and existing.server_thread.is_alive() and not existing.completed:
@@ -183,6 +244,61 @@ def calendar_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = Non
     except Exception as e:
         logger.error(f"calendar_auth_start failed: {e}", exc_info=True)
         return f"[Error]: Failed to start authentication: {str(e)}"
+
+
+@tool
+def calendar_auth_clear(
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Clear saved Google Calendar authentication for the current Nymeria user.
+
+    Args:
+        account_id: Optional account ID to remove. When omitted, all saved
+            Google Calendar accounts and any pending Calendar OAuth flow are
+            cleared for the current user.
+    """
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
+    accounts = cache.get("accounts", {})
+
+    clear_flow(user_id, PROVIDER)
+
+    if account_id:
+        account = accounts.pop(account_id, None)
+        if account is None:
+            return (
+                f"[Info]: No Google Calendar account found with ID `{account_id}`. "
+                "Use calendar_list_authenticated_accounts to see saved accounts."
+            )
+
+        email = account.get("email", "unknown")
+        name = account.get("name", "Unknown")
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        _persist_or_delete_cache(user_id, cache)
+        return (
+            f"[Success]: Cleared Google Calendar authentication for "
+            f"**{name}** ({email}). Run `calendar_auth_start` to authenticate again."
+        )
+
+    removed_count = len(accounts)
+    cache.pop("accounts", None)
+    _persist_or_delete_cache(user_id, cache)
+
+    if removed_count:
+        return (
+            f"[Success]: Cleared {removed_count} saved Google Calendar account(s) "
+            "and any pending Calendar OAuth flow. Run `calendar_auth_start` to authenticate again."
+        )
+
+    return (
+        "[Info]: No saved Google Calendar authentication was present. "
+        "Any pending Calendar OAuth flow was cleared."
+    )
 
 
 @tool
@@ -320,5 +436,6 @@ def calendar_list_authenticated_accounts(config: Annotated[RunnableConfig, Injec
 CALENDAR_AUTH_TOOLS = [
     calendar_auth_start,
     calendar_auth_complete,
+    calendar_auth_clear,
     calendar_list_authenticated_accounts,
 ]
