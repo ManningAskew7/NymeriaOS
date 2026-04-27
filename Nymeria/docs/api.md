@@ -471,7 +471,7 @@ Manage the default tool set applied to newly created threads.
 | `context_attached` | Previous context summary attached to this message | `summary` |
 | `compacted` | Auto-compact triggered, agent resuming | `messages_removed`, `auto_resumed` |
 | `queued` | Thread is busy with another turn; client should wait | `content` |
-| `iteration_limit` | Agent hit the max-iteration safety cap | `content` |
+| `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection | `content`, `reason`, `max_iterations`, `tool_call_count`, optional `repeated_tool_name`, `repeated_count` |
 | `error` | Error message | `content` |
 | `done` | Stream complete | `context_stats`, `model` (when available) |
 

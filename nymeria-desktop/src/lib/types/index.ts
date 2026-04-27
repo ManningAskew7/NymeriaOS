@@ -135,6 +135,7 @@ export interface ThreadConfig {
   callable: boolean;
   callableName?: string | null;
   callableDescription?: string | null;
+  callableMaxIterations?: number | null;
   enabledSkills: string[];
   disabledSkills: string[];
   injectTodosInPrompt: boolean;
@@ -158,6 +159,7 @@ export interface ThreadConfigUpdateRequest {
   callable?: boolean;
   callable_name?: string | null;
   callable_description?: string | null;
+  callable_max_iterations?: number | null;
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;

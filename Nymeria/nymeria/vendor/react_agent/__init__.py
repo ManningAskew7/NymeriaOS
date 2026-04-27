@@ -65,6 +65,8 @@ from .nodes import (
     create_agent_node,
     create_tools_node,
     create_should_continue,
+    analyze_turn_safety,
+    TurnSafetyResult,
     simple_should_continue,
     # Legacy exports
     agent_node,
@@ -114,6 +116,8 @@ __all__ = [
     "create_agent_node",
     "create_tools_node",
     "create_should_continue",
+    "analyze_turn_safety",
+    "TurnSafetyResult",
     "simple_should_continue",
     "agent_node",
     "tools_node",

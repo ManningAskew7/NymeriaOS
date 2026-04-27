@@ -6,7 +6,10 @@ Modular node creation that accepts configuration for easy framework integration.
 
 import asyncio
 import concurrent.futures
+import hashlib
+import json
 import logging
+from dataclasses import dataclass
 from typing import Any, List, Callable, Optional
 from urllib.parse import urlparse
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, HumanMessage, ToolMessage
@@ -20,11 +23,180 @@ from .providers import create_llm_with_tools
 
 logger = logging.getLogger(__name__)
 
+TURN_SAFETY_REASON_MAX_ITERATIONS = "max_iterations"
+TURN_SAFETY_REASON_REPEATED_TOOL_RESULT = "repeated_tool_result"
+
 _CLIPROXY_PORTS = {8317, 8318}
 _CLIPROXY_BILLING_SYSTEM_BLOCK = {
     "type": "text",
     "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
 }
+
+
+@dataclass(frozen=True)
+class TurnSafetyResult:
+    """Result of evaluating whether the current ReAct turn should stop."""
+
+    should_stop: bool = False
+    reason: Optional[str] = None
+    tool_call_count: int = 0
+    max_iterations: int = 0
+    repeated_tool_name: Optional[str] = None
+    repeated_count: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class _CompletedToolExchange:
+    signature: str
+    tool_name: str
+    result_hash: str
+
+
+def _json_default(value: Any) -> str:
+    return repr(value)
+
+
+def _canonical_json(value: Any) -> str:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=_json_default,
+        )
+    except Exception:
+        return repr(value)
+
+
+def _tool_call_signature(tool_call: dict) -> tuple[str, str]:
+    tool_name = str(tool_call.get("name") or "")
+    args_json = _canonical_json(tool_call.get("args", {}))
+    return tool_name, f"{tool_name}:{args_json}"
+
+
+def _tool_result_hash(content: Any) -> str:
+    if isinstance(content, str):
+        normalized = content.strip()
+    else:
+        normalized = _canonical_json(content)
+    return hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
+
+
+def _current_turn_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
+    current_turn: List[BaseMessage] = []
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            break
+        current_turn.append(msg)
+    current_turn.reverse()
+    return current_turn
+
+
+def _count_current_turn_tool_calls(messages: List[BaseMessage]) -> int:
+    return sum(
+        len(msg.tool_calls)
+        for msg in _current_turn_messages(messages)
+        if isinstance(msg, AIMessage) and msg.tool_calls
+    )
+
+
+def _completed_tool_exchanges(
+    current_turn_messages: List[BaseMessage],
+) -> List[_CompletedToolExchange]:
+    pending: dict[str, tuple[str, str]] = {}
+    exchanges: List[_CompletedToolExchange] = []
+
+    for msg in current_turn_messages:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                tool_call_id = tool_call.get("id")
+                if not tool_call_id:
+                    continue
+                tool_name, signature = _tool_call_signature(tool_call)
+                pending[str(tool_call_id)] = (signature, tool_name)
+        elif isinstance(msg, ToolMessage):
+            tool_call_id = getattr(msg, "tool_call_id", None)
+            if not tool_call_id or tool_call_id not in pending:
+                continue
+            signature, tool_name = pending.pop(tool_call_id)
+            exchanges.append(
+                _CompletedToolExchange(
+                    signature=signature,
+                    tool_name=tool_name,
+                    result_hash=_tool_result_hash(msg.content),
+                )
+            )
+
+    return exchanges
+
+
+def analyze_turn_safety(
+    messages: List[BaseMessage],
+    max_iterations: int,
+    repeated_tool_result_limit: int = 5,
+) -> TurnSafetyResult:
+    """Detect hard iteration caps and exact repeated tool/result loops.
+
+    The repeated-result guard stops before executing another tool call when the
+    last N completed tool exchanges used the same tool args and returned the
+    same exact normalized result, and the model asks for that same call again.
+    """
+    tool_call_count = _count_current_turn_tool_calls(messages)
+    result = TurnSafetyResult(
+        should_stop=False,
+        tool_call_count=tool_call_count,
+        max_iterations=max_iterations,
+    )
+
+    if not messages:
+        return result
+
+    last_message = messages[-1]
+    if not (isinstance(last_message, AIMessage) and last_message.tool_calls):
+        return result
+
+    if max_iterations > 0 and tool_call_count > max_iterations:
+        return TurnSafetyResult(
+            should_stop=True,
+            reason=TURN_SAFETY_REASON_MAX_ITERATIONS,
+            tool_call_count=tool_call_count,
+            max_iterations=max_iterations,
+        )
+
+    if repeated_tool_result_limit <= 0:
+        return result
+
+    current_turn = _current_turn_messages(messages)
+    prior_messages = current_turn[:-1] if current_turn and current_turn[-1] is last_message else current_turn
+    completed_exchanges = _completed_tool_exchanges(prior_messages)
+    if not completed_exchanges:
+        return result
+
+    for tool_call in last_message.tool_calls:
+        tool_name, signature = _tool_call_signature(tool_call)
+        repeat_count = 0
+        repeated_result_hash: Optional[str] = None
+
+        for exchange in reversed(completed_exchanges):
+            if exchange.signature != signature:
+                break
+            if repeated_result_hash is None:
+                repeated_result_hash = exchange.result_hash
+            elif exchange.result_hash != repeated_result_hash:
+                break
+            repeat_count += 1
+            if repeat_count >= repeated_tool_result_limit:
+                return TurnSafetyResult(
+                    should_stop=True,
+                    reason=TURN_SAFETY_REASON_REPEATED_TOOL_RESULT,
+                    tool_call_count=tool_call_count,
+                    max_iterations=max_iterations,
+                    repeated_tool_name=tool_name,
+                    repeated_count=repeat_count,
+                )
+
+    return result
 
 
 def _uses_cliproxy_anthropic(llm_config: Optional[LLMConfig]) -> bool:
@@ -328,7 +500,10 @@ class SafeToolNode(ToolNode):
         return {"messages": error_messages}
 
 
-def create_should_continue(max_iterations: int = 10) -> Callable[[AgentState], str]:
+def create_should_continue(
+    max_iterations: int = 10,
+    repeated_tool_result_limit: int = 5,
+) -> Callable[[AgentState], str]:
     """
     Factory for the routing function with iteration limit.
 
@@ -356,25 +531,26 @@ def create_should_continue(max_iterations: int = 10) -> Callable[[AgentState], s
 
         # Check if LLM wants to call tools
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            # Count tool calls only in the CURRENT TURN (since the last HumanMessage).
-            # This prevents previous turns' tool calls from blocking future turns.
-            current_turn_messages = []
-            for msg in reversed(messages):
-                if isinstance(msg, HumanMessage):
-                    break
-                current_turn_messages.append(msg)
-
-            tool_call_count = sum(
-                1 for msg in current_turn_messages
-                if isinstance(msg, AIMessage) and msg.tool_calls
+            safety = analyze_turn_safety(
+                messages,
+                max_iterations=max_iterations,
+                repeated_tool_result_limit=repeated_tool_result_limit,
             )
 
-            if tool_call_count > max_iterations:
-                # Force stop to prevent infinite loops
-                logger.warning(
-                    f"Iteration limit reached ({tool_call_count}/{max_iterations}). "
-                    f"Forcing agent to stop. The agent wanted to call more tools but was cut off."
-                )
+            if safety.should_stop:
+                # Force stop to prevent runaway loops.
+                if safety.reason == TURN_SAFETY_REASON_REPEATED_TOOL_RESULT:
+                    logger.warning(
+                        "Repeated tool/result loop detected: tool=%s repeat_count=%s. "
+                        "Forcing agent to stop before another identical tool call.",
+                        safety.repeated_tool_name,
+                        safety.repeated_count,
+                    )
+                else:
+                    logger.warning(
+                        f"Iteration limit reached ({safety.tool_call_count}/{max_iterations}). "
+                        f"Forcing agent to stop. The agent wanted to call more tools but was cut off."
+                    )
                 return "end"
 
             return "tools"
@@ -382,6 +558,13 @@ def create_should_continue(max_iterations: int = 10) -> Callable[[AgentState], s
         return "end"
 
     return should_continue
+
+
+def create_should_continue_old(max_iterations: int = 10) -> Callable[[AgentState], str]:
+    """
+    Deprecated compatibility shim for old imports.
+    """
+    return create_should_continue(max_iterations=max_iterations)
 
 
 def simple_should_continue(state: AgentState) -> str:
@@ -448,7 +631,10 @@ class NodeFactory:
 
     def create_router(self) -> Callable[[AgentState], str]:
         """Create the routing function."""
-        return create_should_continue(self.config.max_iterations)
+        return create_should_continue(
+            self.config.max_iterations,
+            self.config.repeated_tool_result_limit,
+        )
 
 
 # === BACKWARD COMPATIBILITY ===

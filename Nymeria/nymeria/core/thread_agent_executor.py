@@ -93,6 +93,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
         chunk_count = 0
         tool_call_count = 0
         iteration_limit_hit = False
+        iteration_limit_event = None
 
         for chunk in agent.stream(
             message=task,
@@ -166,9 +167,11 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
 
             elif chunk_type == "iteration_limit":
                 iteration_limit_hit = True
+                iteration_limit_event = dict(chunk)
                 logger.warning(
                     f"[CALLABLE] {callable_name}: hit iteration limit "
                     f"(scope={chunk.get('scope')}, "
+                    f"reason={chunk.get('reason')}, "
                     f"max_iterations={chunk.get('max_iterations')})"
                 )
 
@@ -180,19 +183,74 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
             response_text = "".join(thinking_parts)
         else:
             response_text = ""
+        return_response_text = response_text
 
         # Annotate response if iteration limit was hit so the parent LLM
         # knows the callable's work may be incomplete
         if iteration_limit_hit and response_text:
+            limit_message = (
+                iteration_limit_event.get("content")
+                if isinstance(iteration_limit_event, dict)
+                else None
+            )
             response_text += (
                 f"\n\n[Note: This response may be incomplete — "
-                f"{callable_name} was stopped after reaching its iteration limit.]"
+                f"{limit_message or f'{callable_name} was stopped by a turn safety limit.'}]"
             )
+            return_response_text = response_text
         elif iteration_limit_hit and not response_text:
-            response_text = (
-                f"[{callable_name} hit its iteration limit without producing "
-                f"a response. The task may require manual follow-up.]"
+            limit_message = (
+                iteration_limit_event.get("content")
+                if isinstance(iteration_limit_event, dict)
+                else None
             )
+            response_text = (
+                f"[{limit_message or f'{callable_name} hit a turn safety limit without producing a response.'} "
+                "The task may require manual follow-up.]"
+            )
+            return_response_text = response_text
+
+        if iteration_limit_hit:
+            metadata = {
+                "agent_name": callable_name,
+                "max_iterations": (
+                    iteration_limit_event.get("max_iterations")
+                    if isinstance(iteration_limit_event, dict)
+                    else None
+                ),
+                "tool_call_count": (
+                    iteration_limit_event.get("tool_call_count")
+                    if isinstance(iteration_limit_event, dict)
+                    else tool_call_count
+                ),
+                "reason": (
+                    iteration_limit_event.get("reason")
+                    if isinstance(iteration_limit_event, dict)
+                    else "max_iterations"
+                ),
+                "repeated_tool_name": (
+                    iteration_limit_event.get("repeated_tool_name")
+                    if isinstance(iteration_limit_event, dict)
+                    else None
+                ),
+                "repeated_count": (
+                    iteration_limit_event.get("repeated_count")
+                    if isinstance(iteration_limit_event, dict)
+                    else None
+                ),
+            }
+            message = (
+                iteration_limit_event.get("content")
+                if isinstance(iteration_limit_event, dict)
+                else f"{callable_name} was stopped by a turn safety limit."
+            )
+            payload = {
+                "code": "subagent_iteration_limit",
+                "message": message,
+                "metadata": metadata,
+            }
+            marker = f"{ERROR_MARKER_PREFIX}{json.dumps(payload, ensure_ascii=True, default=str)}"
+            return_response_text = f"{marker}\n{return_response_text}"
 
         _elapsed = _time.monotonic() - _start
         logger.info(
@@ -218,7 +276,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
             data=completed_data,
         )
 
-        return response_text
+        return return_response_text
 
     except Exception as e:
         _elapsed = _time.monotonic() - _start

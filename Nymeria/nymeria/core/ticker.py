@@ -564,16 +564,20 @@ class Ticker:
 
                 elif chunk_type == "iteration_limit":
                     scope = chunk.get("scope", "unknown")
+                    reason = chunk.get("reason", "max_iterations")
                     logger.warning(
                         f"[TICKER] Iteration limit for TODO {todo.id}: "
                         f"scope={scope}, "
+                        f"reason={reason}, "
                         f"max_iterations={chunk.get('max_iterations')}, "
                         f"tool_call_count={chunk.get('tool_call_count')}"
                     )
                     # Only trigger continuation for main_agent limits.
                     # Sub-agent limits are informational — the main agent
                     # can still continue working.
-                    if scope == "main_agent":
+                    # Repeated tool/result loops are likely runaways, not
+                    # useful continuation checkpoints.
+                    if scope == "main_agent" and reason != "repeated_tool_result":
                         iteration_limit_hit = True
 
             # --- Continuation on iteration_limit (one attempt max) ---

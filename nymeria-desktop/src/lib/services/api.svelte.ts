@@ -1079,10 +1079,13 @@ export class NymeriaAPI {
             type: 'iteration_limit',
             data: {
               message: (data.content as string) || 'Agent reached the maximum number of steps.',
-              maxIterations: (data.max_iterations as number) || 70,
+              maxIterations: (data.max_iterations as number) || 500,
+              reason: data.reason as 'max_iterations' | 'repeated_tool_result' | undefined,
               scope: (data.scope as 'main_agent' | 'sub_agent' | undefined),
               agentName: data.agent_name as string | undefined,
               toolCallCount: data.tool_call_count as number | undefined,
+              repeatedToolName: data.repeated_tool_name as string | undefined,
+              repeatedCount: data.repeated_count as number | undefined,
             },
             timestamp: new Date(),
             threadId
@@ -2519,6 +2522,7 @@ export class NymeriaAPI {
       callable: data.callable ?? false,
       callableName: data.callable_name ?? null,
       callableDescription: data.callable_description ?? null,
+      callableMaxIterations: data.callable_max_iterations ?? null,
       enabledSkills: data.enabled_skills ?? [],
       disabledSkills: data.disabled_skills ?? [],
       injectTodosInPrompt: data.inject_todos_in_prompt ?? false,
