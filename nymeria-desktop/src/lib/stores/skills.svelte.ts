@@ -6,13 +6,12 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import type {
   SkillMetadata,
   SkillMarketplaceSource,
   MarketplaceSkillEntry,
 } from '$lib/types';
-
-const DEFAULT_USER = 'default';
 
 // Installed skills (all scopes)
 let installed = $state<SkillMetadata[]>([]);
@@ -35,17 +34,36 @@ let marketplaceQuery = $state('');
 // Install/uninstall progress (skill name -> 'installing' | 'uninstalling')
 let pending = $state<Record<string, 'installing' | 'uninstalling'>>({});
 
+// Reset on account switch / sign-out — installed skills + global skills are
+// per-user, so the next consumer must re-fetch under the new identity.
+registerIdentityReloadHook(() => {
+  installed = [];
+  installedLoaded = false;
+  installedLoading = false;
+  installedError = null;
+  enabledGlobal = [];
+  enabledGlobalLoaded = false;
+  enabledGlobalLoading = false;
+  marketplaceResults = [];
+  marketplaceSearching = false;
+  marketplaceError = null;
+  marketplaceQuery = '';
+  pending = {};
+});
+
 async function loadInstalled(force = false): Promise<void> {
   if (installedLoading) return;
   if (installedLoaded && !force) return;
   installedLoading = true;
   installedError = null;
   try {
-    installed = await api.listSkills(DEFAULT_USER);
+    installed = await api.listSkills();
     installedLoaded = true;
   } catch (e) {
     installedError = e instanceof Error ? e.message : 'Failed to load skills';
     console.error('skills: loadInstalled failed', e);
+    // Mark loaded so callers don't re-fire indefinitely on a 404/auth error.
+    installedLoaded = true;
   } finally {
     installedLoading = false;
   }
@@ -56,10 +74,12 @@ async function loadGlobal(force = false): Promise<void> {
   if (enabledGlobalLoaded && !force) return;
   enabledGlobalLoading = true;
   try {
-    enabledGlobal = await api.getGlobalSkills(DEFAULT_USER);
+    enabledGlobal = await api.getGlobalSkills();
     enabledGlobalLoaded = true;
   } catch (e) {
     console.error('skills: loadGlobal failed', e);
+    // Mark loaded so callers don't re-fire indefinitely on a 404/auth error.
+    enabledGlobalLoaded = true;
   } finally {
     enabledGlobalLoading = false;
   }
@@ -67,7 +87,7 @@ async function loadGlobal(force = false): Promise<void> {
 
 async function setGlobalEnabled(names: string[]): Promise<void> {
   try {
-    enabledGlobal = await api.setGlobalSkills(names, DEFAULT_USER);
+    enabledGlobal = await api.setGlobalSkills(names);
   } catch (e) {
     console.error('skills: setGlobalEnabled failed', e);
     throw e;
@@ -107,7 +127,7 @@ async function install(
 ): Promise<SkillMetadata | null> {
   pending = { ...pending, [name]: 'installing' };
   try {
-    const installedSkill = await api.installSkill({ name, source, scope }, DEFAULT_USER);
+    const installedSkill = await api.installSkill({ name, source, scope });
     await loadInstalled(true);
     return installedSkill;
   } catch (e) {
@@ -122,7 +142,7 @@ async function install(
 async function uninstall(name: string, scope: 'user' | 'global'): Promise<void> {
   pending = { ...pending, [name]: 'uninstalling' };
   try {
-    await api.uninstallSkill(name, scope, DEFAULT_USER);
+    await api.uninstallSkill(name, scope);
     await loadInstalled(true);
     // If the uninstalled skill was in enabled_global, reload that list so the
     // UI reflects the server-side cleanup.

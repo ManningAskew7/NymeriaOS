@@ -58,7 +58,11 @@ function createAutonomousStore() {
 
   function getStreamUrl(): string {
     const baseUrl = configStore.apiUrl.replace(/\/$/, '');
-    return `${baseUrl}/autonomous/stream?user_id=default&client_id=${clientId}`;
+    const userId = configStore.identity?.id;
+    if (!userId) {
+      throw new Error('Cannot build stream URL: no identity resolved yet');
+    }
+    return `${baseUrl}/autonomous/stream?user_id=${encodeURIComponent(userId)}&client_id=${clientId}`;
   }
 
   function connect() {
@@ -74,7 +78,14 @@ function createAutonomousStore() {
       return;
     }
 
-    const url = getStreamUrl();
+    let url: string;
+    try {
+      url = getStreamUrl();
+    } catch (e) {
+      console.log('[Autonomous] Not connecting - identity not resolved yet');
+      scheduleReconnect();
+      return;
+    }
     console.log('[Autonomous] Connecting to SSE endpoint:', url);
 
     // Note: EventSource doesn't support custom headers, so we can't send the API key

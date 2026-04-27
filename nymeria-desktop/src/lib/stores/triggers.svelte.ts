@@ -5,6 +5,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import type {
   Trigger,
   TriggerCreateRequest,
@@ -23,6 +24,16 @@ let error = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;
 
+// Reset on account switch / sign-out — triggers are per-user.
+// `sources` is a global resource so it's left in place; only the
+// per-user trigger list and load gate are wiped.
+registerIdentityReloadHook(() => {
+  triggers = [];
+  loading = false;
+  loaded = false;
+  error = null;
+});
+
 function isHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
@@ -38,6 +49,8 @@ async function loadTriggers(): Promise<void> {
   } catch (e) {
     error = e instanceof Error ? e.message : 'Failed to load triggers';
     console.error('Failed to load triggers:', e);
+    // Mark loaded so consumer `$effect` blocks don't loop on a 404/auth error.
+    loaded = true;
   } finally {
     loading = false;
   }
