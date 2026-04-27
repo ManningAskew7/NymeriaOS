@@ -37,7 +37,7 @@ from ..core.accounts import (
 from ..core import secrets as nymeria_secrets
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
 from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
-from ..core.notifications import NotificationStore, Notification, get_notification_store
+from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
@@ -2574,6 +2574,30 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 fields["trigger_name"] = request.trigger_name
             return fields
 
+        def _in_app_notification_level() -> str:
+            try:
+                tc = agent.thread_config_manager.get_config(thread_id)
+                if tc is None:
+                    return "notify_only"
+                return getattr(tc, "in_app_notification_level", "notify_only") or "notify_only"
+            except Exception as e:
+                logger.debug("Failed to read notification level for %s: %s", thread_id, e)
+                return "notify_only"
+
+        def _maybe_create_autonomous_notification(content: str, task_id: str) -> None:
+            if not request.is_self_invoke or _in_app_notification_level() != "all_autonomous":
+                return
+            summary = (content or "Autonomous task completed")[:200]
+            try:
+                create_notification(
+                    user_id=user_id,
+                    summary=summary,
+                    thread_id=thread_id,
+                    task_id=task_id or None,
+                )
+            except Exception as e:
+                logger.warning("Failed to create autonomous notification for %s: %s", thread_id, e)
+
         async def event_generator():
             """Generate SSE events from agent stream."""
             autonomous_final_content_parts: List[str] = []
@@ -2701,6 +2725,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 })
                 yield f"data: {error_data}\n\n"
                 if autonomous_task_id and not autonomous_completed:
+                    error_text = str(e)
+                    _maybe_create_autonomous_notification(error_text, autonomous_task_id)
                     publish_autonomous_event(
                         event_type="task_completed",
                         thread_id=thread_id,
@@ -2708,7 +2734,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         task_id=autonomous_task_id,
                         data={
                             "error": True,
-                            "content": str(e),
+                            "content": error_text,
+                            "notify": _in_app_notification_level() == "all_autonomous",
                             "source": request.trigger_override or "autonomous",
                             **_trigger_fields(),
                         },
@@ -2716,13 +2743,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     autonomous_completed = True
             finally:
                 if autonomous_task_id and not autonomous_completed:
+                    final_content = "".join(autonomous_final_content_parts)
+                    _maybe_create_autonomous_notification(final_content, autonomous_task_id)
                     publish_autonomous_event(
                         event_type="task_completed",
                         thread_id=thread_id,
                         user_id=user_id,
                         task_id=autonomous_task_id,
                         data={
-                            "content": "".join(autonomous_final_content_parts),
+                            "content": final_content,
+                            "notify": _in_app_notification_level() == "all_autonomous",
                             "source": request.trigger_override or "autonomous",
                             **_trigger_fields(),
                         },
@@ -3408,6 +3438,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         inject_todos_in_prompt: Optional[bool] = None
         show_autonomous_prompts: Optional[bool] = None
         show_prompt_metadata: Optional[bool] = None
+        telegram_autonomous_delivery: Optional[Literal["full", "notify_only", "off"]] = None
+        in_app_notification_level: Optional[Literal["notify_only", "all_autonomous", "off"]] = None
         clear_instructions: bool = False
         clear_disabled_tools: bool = False
         clear_enabled_tools: bool = False
@@ -3443,6 +3475,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "inject_todos_in_prompt": False,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
+            "telegram_autonomous_delivery": "full",
+            "in_app_notification_level": "notify_only",
             "created_at": None,
             "updated_at": None,
             "has_customizations": False,
@@ -3553,6 +3587,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.show_autonomous_prompts = request.show_autonomous_prompts
         if request.show_prompt_metadata is not None:
             tc.show_prompt_metadata = request.show_prompt_metadata
+        if request.telegram_autonomous_delivery is not None:
+            tc.telegram_autonomous_delivery = request.telegram_autonomous_delivery
+        if request.in_app_notification_level is not None:
+            tc.in_app_notification_level = request.in_app_notification_level
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")

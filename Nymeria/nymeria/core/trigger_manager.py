@@ -563,7 +563,7 @@ class TriggerManager:
             if action.type == "agent_prompt":
                 self._fire_agent_prompt(action.config, template_vars, agent, user_id, trigger)
             elif action.type == "notify":
-                self._fire_notify(action.config, template_vars)
+                self._fire_notify(action.config, template_vars, user_id, trigger)
             elif action.type == "create_todo":
                 self._fire_create_todo(action.config, template_vars, user_id)
             else:
@@ -964,16 +964,26 @@ class TriggerManager:
             },
         )
 
-    def _fire_notify(self, config: dict, template_vars: dict) -> None:
+    def _fire_notify(
+        self,
+        config: dict,
+        template_vars: dict,
+        user_id: str,
+        trigger: TriggerDefinition,
+    ) -> None:
         """Send a notification (no LLM call)."""
         from ..tools.notify import notify
 
         template = config.get("message_template", "Trigger {trigger_name} fired.")
         message = _safe_format(template, template_vars)
-        platform = config.get("platform", "auto")
+        platform = config.get("platform") or "auto"
+        thread_id = trigger.thread_id or f"trigger-{trigger.id}"
 
         logger.info(f"[TRIGGER] Sending notification: {message[:100]}...")
-        result = notify.invoke({"message": message, "platform": platform})
+        result = notify.invoke(
+            {"message": message, "platform": platform},
+            config={"configurable": {"user_id": user_id, "thread_id": thread_id}},
+        )
         logger.info(f"[TRIGGER] Notify result: {result}")
 
     def _fire_create_todo(self, config: dict, template_vars: dict, user_id: str) -> None:

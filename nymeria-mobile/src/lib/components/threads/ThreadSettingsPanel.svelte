@@ -27,6 +27,8 @@
   let { threadId, open, onClose }: Props = $props();
 
   type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'triggers';
+  type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
+  type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
   let activeTab = $state<Tab>('instructions');
 
   // Config loaded from API
@@ -38,6 +40,8 @@
   let injectTodosInPrompt = $state(false);
   let showAutonomousPrompts = $state(false);
   let showPromptMetadata = $state(false);
+  let telegramAutonomousDelivery = $state<TelegramAutonomousDelivery>('full');
+  let inAppNotificationLevel = $state<InAppNotificationLevel>('notify_only');
 
   // Form state — System Prompt & Agent
   let systemPrompt = $state('');
@@ -222,6 +226,8 @@
     injectTodosInPrompt = cfg?.injectTodosInPrompt ?? false;
     showAutonomousPrompts = cfg?.showAutonomousPrompts ?? false;
     showPromptMetadata = cfg?.showPromptMetadata ?? false;
+    telegramAutonomousDelivery = cfg?.telegramAutonomousDelivery ?? 'full';
+    inAppNotificationLevel = cfg?.inAppNotificationLevel ?? 'notify_only';
     systemPrompt = cfg?.systemPrompt ?? '';
     isCallable = cfg?.callable ?? false;
     callableName = cfg?.callableName ?? '';
@@ -287,11 +293,15 @@
     const origInjectTodos = orig?.injectTodosInPrompt ?? false;
     const origShowAuto = orig?.showAutonomousPrompts ?? false;
     const origShowMeta = orig?.showPromptMetadata ?? false;
+    const origTelegramDelivery = orig?.telegramAutonomousDelivery ?? 'full';
+    const origNotificationLevel = orig?.inAppNotificationLevel ?? 'notify_only';
 
     if (instructions !== origInstructions) return true;
     if (injectTodosInPrompt !== origInjectTodos) return true;
     if (showAutonomousPrompts !== origShowAuto) return true;
     if (showPromptMetadata !== origShowMeta) return true;
+    if (telegramAutonomousDelivery !== origTelegramDelivery) return true;
+    if (inAppNotificationLevel !== origNotificationLevel) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
@@ -402,6 +412,8 @@
       updates.inject_todos_in_prompt = injectTodosInPrompt;
       updates.show_autonomous_prompts = showAutonomousPrompts;
       updates.show_prompt_metadata = showPromptMetadata;
+      updates.telegram_autonomous_delivery = telegramAutonomousDelivery;
+      updates.in_app_notification_level = inAppNotificationLevel;
 
       await threadConfigStore.updateConfig(threadId, updates);
 
@@ -524,6 +536,34 @@
             <span>Show prompt metadata</span>
           </label>
           <p class="hint">Show time context and trigger type prepended to each message.</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label" for="telegram-autonomous-delivery">
+            Telegram autonomous output
+          </label>
+          <select
+            id="telegram-autonomous-delivery"
+            class="setting-input"
+            bind:value={telegramAutonomousDelivery}
+          >
+            <option value="full">Full output</option>
+            <option value="notify_only">Notify only</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label" for="in-app-notification-level">
+            Notification center
+          </label>
+          <select
+            id="in-app-notification-level"
+            class="setting-input"
+            bind:value={inAppNotificationLevel}
+          >
+            <option value="notify_only">Notify only</option>
+            <option value="all_autonomous">All autonomous completions</option>
+            <option value="off">Off</option>
+          </select>
         </div>
 
       {:else if activeTab === 'system'}

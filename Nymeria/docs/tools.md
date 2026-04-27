@@ -25,7 +25,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 15 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
 | 16 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
 | 17 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
-| 18 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 18 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
 | 19 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
 | 20 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
 | 21 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
@@ -490,24 +490,27 @@ nym_todo_list(filter_status: Optional[str] = None)
 
 ### notify
 
-Send notifications to messaging platforms (Telegram, Discord, Slack).
+Send notifications to the in-app notification center and messaging platforms
+(Telegram, Discord, Slack, Teams).
 
 ```python
-notify(message: str, platform: Literal["auto", "telegram", "discord", "slack"] = "auto")
+notify(message: str, platform: Literal["auto", "desktop", "telegram", "discord", "slack", "teams"] = "auto")
 ```
 
 **Parameters:**
 - `message` (`str`): The message text to send
-- `platform` (`Literal["auto", "telegram", "discord", "slack"]`, default `"auto"`): Target platform. `"auto"` tries all configured platforms.
+- `platform` (`Literal["auto", "desktop", "telegram", "discord", "slack", "teams"]`, default `"auto"`): Target platform. `"auto"` creates an in-app notification and tries all configured platforms.
 
 **Returns:** Success/error message.
 
 **Requires:** Platform-specific credentials in `.env`:
-- Telegram: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_CHAT_ID`
+- Desktop/in-app: no external credentials
+- Telegram: bound Telegram chat for the current thread, or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_CHAT_ID` fallback
 - Discord: `DISCORD_WEBHOOK_URL`
 - Slack: `SLACK_WEBHOOK_URL`
+- Teams: `TEAMS_TEAM_ID` + `TEAMS_CHANNEL_ID` plus Microsoft auth
 
-**Behavior in auto mode:** Tries all configured platforms. If any succeed, returns the success messages (failures are not reported in mixed outcomes). If all fail, returns all errors. If none are configured, returns an error listing the required env vars.
+**Behavior in auto mode:** Creates a notification-center row unless the thread disables in-app notifications, then tries all configured external platforms. If the current thread is a Telegram thread or is bound to a Telegram chat, Telegram delivery is routed through that chat; otherwise Telegram falls back to the configured default chat. If any destination succeeds, returns the success messages (failures are not reported in mixed outcomes). If all fail, returns all errors.
 
 ### tool_search
 

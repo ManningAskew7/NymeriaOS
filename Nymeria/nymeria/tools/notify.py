@@ -6,12 +6,14 @@ reminders, and alerts.
 """
 
 import logging
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 import httpx
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
+from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,8 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT = 30.0
 
 
-def _send_telegram(message: str, settings) -> str:
-    """Send notification via Telegram."""
+def _send_telegram_default(message: str, settings) -> str:
+    """Send notification via the configured default Telegram chat."""
     bot_token = settings.telegram_bot_token
     if not bot_token:
         return None  # Not configured
@@ -47,6 +49,53 @@ def _send_telegram(message: str, settings) -> str:
     except Exception as e:
         logger.error(f"Telegram notification failed: {e}")
         return f"Telegram error: {str(e)}"
+
+
+def _thread_has_telegram_route(thread_id: str) -> bool:
+    """Return True if the current thread can be delivered through the Telegram bot."""
+    if not thread_id:
+        return False
+    if thread_id.startswith("telegram_"):
+        return True
+    try:
+        from ..core.agent import get_current_agent
+
+        agent = get_current_agent()
+        if agent is None:
+            return False
+        return agent.accounts_repo.lookup_thread_binding_by_thread("telegram", thread_id) is not None
+    except Exception as e:
+        logger.debug("Could not resolve Telegram route for %s: %s", thread_id, e)
+        return False
+
+
+def _publish_telegram_thread_notification(message: str, user_id: str, thread_id: str) -> Optional[str]:
+    """Queue a notification event for a Telegram-bound thread."""
+    if not _thread_has_telegram_route(thread_id):
+        return None
+    try:
+        from ..core.event_bus import publish_autonomous_event
+
+        publish_autonomous_event(
+            event_type="notification",
+            thread_id=thread_id,
+            user_id=user_id,
+            task_id="",
+            data={"message": message, "summary": message[:200]},
+        )
+        logger.info("Telegram thread notification queued for thread=%s", thread_id)
+        return "Queued to Telegram thread"
+    except Exception as e:
+        logger.error("Telegram thread notification failed: %s", e)
+        return f"Telegram thread error: {str(e)}"
+
+
+def _send_telegram(message: str, settings, user_id: str = "default", thread_id: str = "") -> str:
+    """Send notification via the current Telegram thread if possible, else default chat."""
+    routed = _publish_telegram_thread_notification(message, user_id, thread_id)
+    if routed is not None:
+        return routed
+    return _send_telegram_default(message, settings)
 
 
 def _send_discord(message: str, settings) -> str:
@@ -142,10 +191,62 @@ def _send_teams(message: str, settings) -> str:
         return f"Teams error: {str(e)}"
 
 
+def _thread_in_app_notification_level(thread_id: str) -> str:
+    """Return this thread's in-app notification mode."""
+    if not thread_id:
+        return "notify_only"
+    try:
+        from ..core.agent import get_current_agent
+
+        agent = get_current_agent()
+        if agent is None:
+            return "notify_only"
+        tc = agent.thread_config_manager.get_config(thread_id)
+        if tc is None:
+            return "notify_only"
+        return getattr(tc, "in_app_notification_level", "notify_only") or "notify_only"
+    except Exception as e:
+        logger.debug("Could not read in-app notification level for %s: %s", thread_id, e)
+        return "notify_only"
+
+
+def _create_in_app_notification(message: str, user_id: str, thread_id: str) -> str:
+    """Create an unread notification-center item for the caller."""
+    if _thread_in_app_notification_level(thread_id) == "off":
+        return "Skipped Desktop notification (disabled for thread)"
+    try:
+        from ..core.notifications import create_notification
+
+        notification = create_notification(
+            user_id=user_id,
+            summary=message[:200],
+            thread_id=thread_id if thread_id and thread_id != "default" else None,
+        )
+        try:
+            from ..core.event_bus import publish_autonomous_event
+
+            publish_autonomous_event(
+                event_type="notification",
+                thread_id=thread_id if thread_id else "default",
+                user_id=user_id,
+                task_id="",
+                data={"summary": message[:200], "in_app_only": True},
+            )
+        except Exception:
+            pass
+        logger.info("In-app notification created: id=%s user=%s", notification.id, user_id)
+        return f"Sent to Desktop (notification_id: {notification.id})"
+    except Exception as e:
+        logger.error("In-app notification failed: %s", e)
+        return f"Desktop error: {str(e)}"
+
+
 @tool
 def notify(
     message: str,
-    platform: Literal["auto", "telegram", "discord", "slack", "teams"] = "auto",
+    platform: Literal["auto", "desktop", "telegram", "discord", "slack", "teams"] = "auto",
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Send a notification to the user via messaging platform.
@@ -156,17 +257,20 @@ def notify(
     Args:
         message: The message text to send.
         platform: Target platform. "auto" tries all configured platforms.
-                  Options: "auto", "telegram", "discord", "slack", "teams"
+                  Options: "auto", "desktop", "telegram", "discord", "slack", "teams"
 
     Returns:
         Success message or error description.
     """
     logger.info(f"notify called: platform={platform}, message={message[:50]}...")
     settings = get_settings()
+    user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
 
     # Platform-specific handlers
     handlers = {
-        "telegram": _send_telegram,
+        "desktop": lambda msg, st: _create_in_app_notification(msg, user_id, thread_id),
+        "telegram": lambda msg, st: _send_telegram(msg, st, user_id, thread_id),
         "discord": _send_discord,
         "slack": _send_slack,
         "teams": _send_teams,
@@ -176,17 +280,19 @@ def notify(
         # Specific platform requested
         handler = handlers.get(platform)
         if not handler:
-            return f"[Error]: Unknown platform '{platform}'. Use: telegram, discord, slack, or auto."
+            return f"[Error]: Unknown platform '{platform}'. Use: desktop, telegram, discord, slack, teams, or auto."
 
         result = handler(message, settings)
         if result is None:
             return f"[Error]: {platform.title()} not configured. Set credentials in .env file."
-        if result.startswith("Sent"):
+        if result.startswith("Sent") or result.startswith("Queued") or result.startswith("Skipped"):
             try:
                 from ..core.activity_log import ActivityType, log_activity
                 log_activity(
                     ActivityType.NOTIFICATION_SENT,
                     f"Notification sent: {result}",
+                    user_id=user_id,
+                    thread_id=thread_id if thread_id != "default" else None,
                     metadata={"platforms": [platform]},
                 )
             except Exception:
@@ -202,7 +308,9 @@ def notify(
         result = handler(message, settings)
         if result is None:
             continue  # Not configured, skip
-        if result.startswith("Sent"):
+        if result.startswith("Skipped"):
+            continue
+        if result.startswith("Sent") or result.startswith("Queued"):
             results.append(result)
         else:
             errors.append(f"{name}: {result}")
@@ -213,6 +321,8 @@ def notify(
             log_activity(
                 ActivityType.NOTIFICATION_SENT,
                 f"Notification sent: {'; '.join(results)}",
+                user_id=user_id,
+                thread_id=thread_id if thread_id != "default" else None,
                 metadata={"platforms": [r.split("to ")[-1] for r in results]},
             )
         except Exception:
@@ -223,8 +333,8 @@ def notify(
     else:
         return (
             "[Error]: No notification platforms configured. "
-            "Set TELEGRAM_BOT_TOKEN, DISCORD_WEBHOOK_URL, SLACK_WEBHOOK_URL, or "
-            "TEAMS_TEAM_ID + TEAMS_CHANNEL_ID in .env"
+            "Use platform='desktop' for in-app notifications or set TELEGRAM_BOT_TOKEN, "
+            "DISCORD_WEBHOOK_URL, SLACK_WEBHOOK_URL, or TEAMS_TEAM_ID + TEAMS_CHANNEL_ID in .env"
         )
 
 

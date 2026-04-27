@@ -2524,6 +2524,8 @@ export class NymeriaAPI {
       injectTodosInPrompt: data.inject_todos_in_prompt ?? false,
       showAutonomousPrompts: data.show_autonomous_prompts ?? false,
       showPromptMetadata: data.show_prompt_metadata ?? false,
+      telegramAutonomousDelivery: data.telegram_autonomous_delivery ?? 'full',
+      inAppNotificationLevel: data.in_app_notification_level ?? 'notify_only',
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
       hasCustomizations: data.has_customizations ?? false,
