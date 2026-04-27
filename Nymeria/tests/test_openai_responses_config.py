@@ -322,6 +322,35 @@ def test_openrouter_responses_payload_normalization_adds_required_ids():
     assert [item["id"] for item in normalized_again["input"]] == first_ids
 
 
+def test_openrouter_responses_payload_strips_inline_thinking_from_replay():
+    payload = {
+        "input": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "private chain</think>\n\nVisible answer",
+                    },
+                    {
+                        "type": "output_text",
+                        "text": "Keep <think>hidden</think> visible",
+                    },
+                ],
+            },
+        ],
+    }
+
+    normalized = _normalize_openrouter_responses_payload(payload)
+
+    content = normalized["input"][0]["content"]
+    assert content == [
+        {"type": "output_text", "text": "Visible answer"},
+        {"type": "output_text", "text": "Keep visible"},
+    ]
+
+
 def test_openrouter_responses_reasoning_delta_becomes_content_block():
     _, _, _, generation_chunk = (
         _convert_openrouter_responses_chunk_to_generation_chunk(
@@ -342,6 +371,33 @@ def test_openrouter_responses_reasoning_delta_becomes_content_block():
             "type": "reasoning",
             "summary": [
                 {"index": 0, "type": "summary_text", "text": "Need context"}
+            ],
+            "index": 0,
+        }
+    ]
+
+
+def test_openrouter_responses_reasoning_text_delta_becomes_content_block():
+    _, _, _, generation_chunk = (
+        _convert_openrouter_responses_chunk_to_generation_chunk(
+            {
+                "type": "response.reasoning_text.delta",
+                "delta": "Claude thought",
+                "output_index": 0,
+                "content_index": 0,
+            },
+            -1,
+            -1,
+            -1,
+        )
+    )
+
+    assert generation_chunk is not None
+    assert generation_chunk.message.content == [
+        {
+            "type": "reasoning",
+            "summary": [
+                {"index": 0, "type": "summary_text", "text": "Claude thought"}
             ],
             "index": 0,
         }

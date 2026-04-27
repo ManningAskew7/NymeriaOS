@@ -35,7 +35,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
-**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. Nymeria does not automatically fall back from Responses API to Chat Completions if a provider rejects the request; switch `OPENAI_API_MODE=chat_completions` explicitly when you need the older endpoint.
+**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. Nymeria does not automatically fall back from Responses API to Chat Completions if a provider rejects the request; switch `OPENAI_API_MODE=chat_completions` explicitly when you need the older endpoint. OpenRouter Responses reasoning is displayed only when the provider emits plaintext reasoning fields; malformed inline `<think>` text that arrives as normal answer text is stripped from display and replay.
 
 ### API Keys
 

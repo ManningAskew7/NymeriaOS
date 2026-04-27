@@ -158,6 +158,52 @@ def test_history_rehydrates_responses_reasoning_summary_block():
     ]
 
 
+def test_history_rehydrates_responses_reasoning_content_block():
+    history = _history_for([
+        HumanMessage(content="Hello"),
+        AIMessage(content=[
+            {
+                "type": "reasoning",
+                "content": [
+                    {
+                        "type": "reasoning_text",
+                        "text": "Claude Responses thought",
+                    },
+                ],
+                "summary": [],
+            },
+            {"type": "text", "text": "Responses answer"},
+        ]),
+    ])
+
+    assistant = history[1]
+    assert assistant["steps"] == [
+        {"type": "thinking", "content": "Claude Responses thought"},
+        {"type": "response", "content": "Responses answer"},
+    ]
+
+
+def test_history_strips_inline_thinking_leaked_as_text():
+    history = _history_for([
+        HumanMessage(content="Hello"),
+        AIMessage(content=[
+            {
+                "type": "reasoning",
+                "summary": [],
+            },
+            {
+                "type": "text",
+                "text": "private chain</think>\n\nVisible answer",
+            },
+        ]),
+    ])
+
+    assistant = history[1]
+    assert assistant["content"] == "Visible answer"
+    assert "private chain" not in assistant["content"]
+    assert "steps" not in assistant
+
+
 def test_history_without_reasoning_metadata_stays_legacy_shaped():
     history = _history_for([
         HumanMessage(content="Hello"),
