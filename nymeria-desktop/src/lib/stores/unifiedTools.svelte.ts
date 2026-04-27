@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import { defaultToolsStore } from './defaultTools.svelte';
 import type { UnifiedTool, ToolCategory, ToolType } from '$lib/types';
 
@@ -16,6 +17,18 @@ let loaded = $state(false);
 let error = $state<string | null>(null);
 let builtinCount = $state(0);
 let customCount = $state(0);
+
+// Reset everything when the connected user changes — the previous account's
+// tools no longer apply, and consuming panels gate on `loaded` so flipping it
+// back to false makes their `$effect` blocks re-fetch under the new identity.
+registerIdentityReloadHook(() => {
+  tools = [];
+  builtinCount = 0;
+  customCount = 0;
+  loaded = false;
+  loading = false;
+  error = null;
+});
 
 // Category display names and icons
 const CATEGORY_INFO: Record<string, { name: string; icon: string; description: string }> = {
@@ -146,7 +159,7 @@ function getToolById(id: string): UnifiedTool | undefined {
 }
 
 // Actions
-async function loadTools(userId: string = 'default'): Promise<void> {
+async function loadTools(userId?: string): Promise<void> {
   if (loading) return;
 
   loading = true;
@@ -161,6 +174,10 @@ async function loadTools(userId: string = 'default'): Promise<void> {
   } catch (e) {
     error = e instanceof Error ? e.message : 'Failed to load tools';
     console.error('Failed to load unified tools:', e);
+    // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
+    // resetLoaded() (called on tool changes) or the identity-reload hook
+    // will reset this, allowing a fresh attempt.
+    loaded = true;
   } finally {
     loading = false;
   }
@@ -173,13 +190,13 @@ function resetLoaded(): void {
 async function setToolEnabled(
   toolId: string,
   enabled: boolean,
-  userId: string = 'default'
+  userId?: string
 ): Promise<boolean> {
   loading = true;
   error = null;
 
   try {
-    await api.setUnifiedToolEnabled(userId, toolId, enabled);
+    await api.setUnifiedToolEnabled(toolId, enabled, userId);
     // Reload to get updated state
     await loadTools(userId);
     // Sync defaultToolsStore so both stores reflect the change
@@ -204,7 +221,7 @@ async function createCustomTool(
     mcp?: Record<string, unknown>;
     tags?: string[];
   },
-  userId: string = 'default'
+  userId?: string
 ): Promise<UnifiedTool | null> {
   loading = true;
   error = null;
@@ -232,7 +249,7 @@ async function updateCustomTool(
     mcp?: Record<string, unknown>;
     tags?: string[];
   },
-  userId: string = 'default'
+  userId?: string
 ): Promise<UnifiedTool | null> {
   loading = true;
   error = null;
@@ -252,7 +269,7 @@ async function updateCustomTool(
 
 async function deleteCustomTool(
   toolId: string,
-  userId: string = 'default'
+  userId?: string
 ): Promise<boolean> {
   loading = true;
   error = null;
@@ -273,13 +290,13 @@ async function deleteCustomTool(
 async function setToolDescription(
   toolId: string,
   description: string | null,
-  userId: string = 'default'
+  userId?: string
 ): Promise<boolean> {
   loading = true;
   error = null;
 
   try {
-    await api.setUnifiedToolDescription(userId, toolId, description);
+    await api.setUnifiedToolDescription(toolId, description, userId);
     // Reload to get updated state
     await loadTools(userId);
     return true;
@@ -295,13 +312,13 @@ async function setToolDescription(
 async function setToolConfig(
   toolId: string,
   config: Record<string, unknown>,
-  userId: string = 'default'
+  userId?: string
 ): Promise<boolean> {
   loading = true;
   error = null;
 
   try {
-    await api.setUnifiedToolConfig(userId, toolId, config);
+    await api.setUnifiedToolConfig(toolId, config, userId);
     // Reload to get updated state
     await loadTools(userId);
     return true;
