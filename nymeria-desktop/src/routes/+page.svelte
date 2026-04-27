@@ -11,6 +11,7 @@
   import { autonomousStore } from '$lib/stores/autonomous.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { connectionsStore } from '$lib/stores/connections.svelte';
   import { startSyncPoll, stopSyncPoll } from '$lib/stores/syncPoll.svelte';
   import { api } from '$lib/services/api.svelte';
 
@@ -174,6 +175,14 @@
           console.warn('[Page] /me returned unauthorized; clearing apiKey to route to SetupWizard');
           configStore.apiKey = '';
           return;
+        }
+        if (id) {
+          connectionsStore.upsertAccountCredential({
+            apiUrl: configStore.apiUrl,
+            apiKey: configStore.apiKey,
+            identity: id,
+            makeActive: true,
+          });
         }
       } catch (e) {
         // Network failure — fall through; stores stay in legacy/unscoped

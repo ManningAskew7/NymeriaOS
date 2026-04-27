@@ -68,6 +68,87 @@ def save_token_cache(user_id: str, cache: dict) -> None:
     auth_utils.save_token_cache(user_id, _CACHE_FILENAME, cache)
 
 
+def _persist_or_delete_cache(user_id: str, cache: dict) -> None:
+    if cache:
+        save_token_cache(user_id, cache)
+    else:
+        auth_utils.delete_token_cache(user_id, _CACHE_FILENAME)
+
+
+def _existing_auth_message(user_id: str) -> Optional[str]:
+    """Return an already-authenticated message, pruning dead tokens first."""
+    cache = load_token_cache(user_id)
+    accounts = cache.get("accounts", {})
+    if not accounts:
+        return None
+
+    required_scopes = set(GOOGLE_SCOPES)
+    changed = False
+    for account_id, account in list(accounts.items()):
+        email = account.get("email", "unknown")
+        has_refresh = bool(account.get("refresh_token"))
+        saved_scopes = set(account.get("scopes", []))
+        scopes_match = saved_scopes >= required_scopes
+
+        if not has_refresh:
+            continue
+        if not scopes_match:
+            missing = required_scopes - saved_scopes
+            logger.info(
+                "Google Docs scope change detected for %s. Missing scopes: %s. "
+                "Proceeding with re-auth.",
+                email,
+                missing,
+            )
+            continue
+
+        expires_at = account.get("expires_at", 0)
+        if time.time() >= expires_at - 60:
+            status, reason = auth_utils.refresh_google_account(account, GOOGLE_SCOPES)
+            if status == "refreshed":
+                accounts[account_id] = account
+                changed = True
+            elif status == "invalid":
+                logger.info(
+                    "Clearing invalid Google Docs token for %s: %s",
+                    email,
+                    reason,
+                )
+                del accounts[account_id]
+                changed = True
+                continue
+            else:
+                if changed:
+                    cache["accounts"] = accounts
+                    _persist_or_delete_cache(user_id, cache)
+                return (
+                    f"[Warning]: Found expired Google Docs credentials for "
+                    f"**{account.get('name', 'Unknown')}** ({email}), but could not "
+                    f"verify the refresh token: {reason}\n\n"
+                    "Use `google_docs_auth_clear` to remove the saved token, then run "
+                    "`google_docs_auth_start` again."
+                )
+
+        if changed:
+            cache["accounts"] = accounts
+            _persist_or_delete_cache(user_id, cache)
+
+        return (
+            f"[Info]: Already authenticated as **{account.get('name', 'Unknown')}** ({email}). "
+            "Tokens will auto-refresh. To add another account or re-authenticate, "
+            "call `google_docs_auth_clear` first."
+        )
+
+    if changed:
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        _persist_or_delete_cache(user_id, cache)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -88,24 +169,9 @@ def google_docs_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = 
     """
     user_id = get_user_id(config)
 
-    cache = load_token_cache(user_id)
-    accounts = cache.get("accounts", {})
-    if accounts:
-        first = next(iter(accounts.values()))
-        email = first.get("email", "unknown")
-        has_refresh = bool(first.get("refresh_token"))
-        saved_scopes = set(first.get("scopes", []))
-        required_scopes = set(GOOGLE_SCOPES)
-        scopes_match = saved_scopes >= required_scopes
-        if has_refresh and scopes_match:
-            return (
-                f"[Info]: Already authenticated as **{first.get('name', 'Unknown')}** ({email}). "
-                "Tokens will auto-refresh. To add another account or re-authenticate, "
-                "delete the token cache file first."
-            )
-        if has_refresh and not scopes_match:
-            missing = required_scopes - saved_scopes
-            logger.info(f"Scope change detected. Missing scopes: {missing}. Proceeding with re-auth.")
+    existing_message = _existing_auth_message(user_id)
+    if existing_message:
+        return existing_message
 
     existing = get_flow(user_id, PROVIDER)
     if existing and existing.server_thread and existing.server_thread.is_alive() and not existing.completed:
@@ -189,6 +255,61 @@ def google_docs_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = 
     except Exception as e:
         logger.error(f"google_docs_auth_start failed: {e}", exc_info=True)
         return f"[Error]: Failed to start authentication: {str(e)}"
+
+
+@tool
+def google_docs_auth_clear(
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Clear saved Google Docs/Drive/Sheets authentication for the current user.
+
+    Args:
+        account_id: Optional account ID to remove. When omitted, all saved
+            Google Docs/Drive/Sheets accounts and any pending OAuth flow are
+            cleared for the current user.
+    """
+    user_id = get_user_id(config)
+    cache = load_token_cache(user_id)
+    accounts = cache.get("accounts", {})
+
+    clear_flow(user_id, PROVIDER)
+
+    if account_id:
+        account = accounts.pop(account_id, None)
+        if account is None:
+            return (
+                f"[Info]: No Google Docs account found with ID `{account_id}`. "
+                "Use google_docs_list_accounts to see saved accounts."
+            )
+
+        email = account.get("email", "unknown")
+        name = account.get("name", "Unknown")
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        _persist_or_delete_cache(user_id, cache)
+        return (
+            f"[Success]: Cleared Google Docs/Drive/Sheets authentication for "
+            f"**{name}** ({email}). Run `google_docs_auth_start` to authenticate again."
+        )
+
+    removed_count = len(accounts)
+    cache.pop("accounts", None)
+    _persist_or_delete_cache(user_id, cache)
+
+    if removed_count:
+        return (
+            f"[Success]: Cleared {removed_count} saved Google Docs/Drive/Sheets account(s) "
+            "and any pending Google Docs OAuth flow. Run `google_docs_auth_start` to authenticate again."
+        )
+
+    return (
+        "[Info]: No saved Google Docs/Drive/Sheets authentication was present. "
+        "Any pending Google Docs OAuth flow was cleared."
+    )
 
 
 @tool
@@ -321,5 +442,6 @@ def google_docs_list_accounts(config: Annotated[RunnableConfig, InjectedToolArg]
 GOOGLE_DOCS_AUTH_TOOLS = [
     google_docs_auth_start,
     google_docs_auth_complete,
+    google_docs_auth_clear,
     google_docs_list_accounts,
 ]

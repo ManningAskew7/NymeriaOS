@@ -9,6 +9,26 @@ import { stopSyncPoll } from '$lib/stores/syncPoll.svelte';
 const CONNECTIONS_KEY = 'nymeria-saved-connections';
 const ACTIVE_ID_KEY = 'nymeria-active-connection-id';
 
+function normalizeApiUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '');
+}
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+function identityLabel(identity: AccountIdentity | null | undefined): string | null {
+  if (!identity) return null;
+  const displayName = identity.display_name?.trim();
+  if (displayName) return displayName;
+  const email = identity.email?.trim();
+  return email || null;
+}
+
 function loadConnections(): SavedConnection[] {
   if (typeof localStorage === 'undefined') return [];
   try {
@@ -60,6 +80,87 @@ function createConnectionsStore() {
     saveConnections(connections);
   }
 
+  function findCredentialIndex(
+    apiUrl: string,
+    apiKey: string,
+    identity?: AccountIdentity | null
+  ): number {
+    const normalizedUrl = normalizeApiUrl(apiUrl);
+    const trimmedKey = apiKey.trim();
+
+    if (identity) {
+      const byIdentity = connections.findIndex(
+        (c) => normalizeApiUrl(c.apiUrl) === normalizedUrl && c.identity?.id === identity.id
+      );
+      if (byIdentity >= 0) return byIdentity;
+    }
+
+    return connections.findIndex(
+      (c) => normalizeApiUrl(c.apiUrl) === normalizedUrl && c.apiKey === trimmedKey
+    );
+  }
+
+  function upsertAccountCredential(args: {
+    apiUrl: string;
+    apiKey: string;
+    name?: string;
+    identity?: AccountIdentity | null;
+    makeActive?: boolean;
+  }): SavedConnection {
+    const apiUrl = normalizeApiUrl(args.apiUrl);
+    const apiKey = args.apiKey.trim();
+    const explicitName = args.name?.trim();
+    const fallbackName = identityLabel(args.identity) ?? safeHostname(apiUrl) ?? 'Nymeria account';
+    const name = explicitName || fallbackName;
+    const checkedAt = args.identity !== undefined ? new Date().toISOString() : undefined;
+    const existingIndex = findCredentialIndex(apiUrl, apiKey, args.identity);
+
+    if (existingIndex >= 0) {
+      const existing = connections[existingIndex];
+      const updated: SavedConnection = {
+        ...existing,
+        name: explicitName || existing.name || name,
+        apiUrl,
+        apiKey,
+        ...(args.identity !== undefined
+          ? {
+              identity: args.identity,
+              identityCheckedAt: checkedAt,
+              identityError: args.identity ? null : existing.identityError ?? null,
+            }
+          : {}),
+      };
+      connections = connections.map((c, i) => (i === existingIndex ? updated : c));
+      if (args.makeActive) {
+        activeConnectionId = updated.id;
+        saveActiveId(updated.id);
+      }
+      persist();
+      return updated;
+    }
+
+    const conn: SavedConnection = {
+      id: crypto.randomUUID(),
+      name,
+      apiUrl,
+      apiKey,
+      ...(args.identity !== undefined
+        ? {
+            identity: args.identity,
+            identityCheckedAt: checkedAt,
+            identityError: args.identity ? null : null,
+          }
+        : {}),
+    };
+    connections = [...connections, conn];
+    if (args.makeActive) {
+      activeConnectionId = conn.id;
+      saveActiveId(conn.id);
+    }
+    persist();
+    return conn;
+  }
+
   return {
     get connections() {
       return connections;
@@ -79,16 +180,27 @@ function createConnectionsStore() {
       const conn: SavedConnection = {
         id: crypto.randomUUID(),
         name,
-        apiUrl,
-        apiKey,
+        apiUrl: normalizeApiUrl(apiUrl),
+        apiKey: apiKey.trim(),
       };
       connections = [...connections, conn];
       persist();
       return conn;
     },
 
+    upsertAccountCredential,
+
     update(id: string, updates: Partial<Pick<SavedConnection, 'name' | 'apiUrl' | 'apiKey'>>) {
-      connections = connections.map((c) => (c.id === id ? { ...c, ...updates } : c));
+      connections = connections.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              ...updates,
+              apiUrl: updates.apiUrl !== undefined ? normalizeApiUrl(updates.apiUrl) : c.apiUrl,
+              apiKey: updates.apiKey !== undefined ? updates.apiKey.trim() : c.apiKey,
+            }
+          : c
+      );
       persist();
     },
 
@@ -102,10 +214,28 @@ function createConnectionsStore() {
     },
 
     saveCurrentAs(name: string): SavedConnection {
-      const conn = this.add(name, configStore.apiUrl, configStore.apiKey);
-      activeConnectionId = conn.id;
-      saveActiveId(conn.id);
-      return conn;
+      return upsertAccountCredential({
+        name,
+        apiUrl: configStore.apiUrl,
+        apiKey: configStore.apiKey,
+        identity: configStore.identity,
+        makeActive: true,
+      });
+    },
+
+    async ensureCurrentSaved(name?: string): Promise<SavedConnection | null> {
+      if (!configStore.apiUrl || !configStore.apiKey) return null;
+      let identity = configStore.identity;
+      if (!identity) {
+        identity = await configStore.refreshIdentity().catch(() => null);
+      }
+      return upsertAccountCredential({
+        name,
+        apiUrl: configStore.apiUrl,
+        apiKey: configStore.apiKey,
+        identity,
+        makeActive: true,
+      });
     },
 
     async switchTo(id: string) {
@@ -114,6 +244,20 @@ function createConnectionsStore() {
 
       switching = true;
       try {
+        const sameBackend = normalizeApiUrl(configStore.apiUrl) === normalizeApiUrl(conn.apiUrl);
+        const currentIsTarget =
+          sameBackend &&
+          (configStore.apiKey === conn.apiKey ||
+            (!!configStore.identity && configStore.identity.id === conn.identity?.id));
+        if (configStore.apiUrl && configStore.apiKey && !currentIsTarget) {
+          upsertAccountCredential({
+            apiUrl: configStore.apiUrl,
+            apiKey: configStore.apiKey,
+            identity: configStore.identity,
+            makeActive: false,
+          });
+        }
+
         // 1. Disconnect SSE and polling
         autonomousStore.disconnect();
         stopSyncPoll();

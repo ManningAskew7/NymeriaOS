@@ -12,9 +12,27 @@
     label?: string | null;
     /** Optional context line, e.g. "for alice@example.com" when an admin issues for someone else. */
     forUser?: string | null;
+    /** Optional action shown while the raw token is still available. */
+    onSaveAccount?: (() => void | Promise<void>) | null;
+    /** Optional action to save the token as a switchable account and activate it. */
+    onSaveAndSwitch?: (() => void | Promise<void>) | null;
+    savingAccount?: boolean;
+    accountActionMessage?: string | null;
+    accountActionError?: string | null;
   }
 
-  let { isOpen, onClose, rawToken, label, forUser }: Props = $props();
+  let {
+    isOpen,
+    onClose,
+    rawToken,
+    label,
+    forUser,
+    onSaveAccount = null,
+    onSaveAndSwitch = null,
+    savingAccount = false,
+    accountActionMessage = null,
+    accountActionError = null,
+  }: Props = $props();
 
   let copied = $state(false);
   let copyError = $state<string | null>(null);
@@ -65,8 +83,35 @@
         <Icon name={copied ? 'check' : 'copy'} size={14} />
         {copied ? 'Copied!' : 'Copy token'}
       </Button>
+      {#if onSaveAccount}
+        <Button
+          variant="secondary"
+          onclick={() => void onSaveAccount?.()}
+          disabled={!rawToken || savingAccount}
+        >
+          <Icon name={savingAccount ? 'loading' : 'server'} size={14} />
+          {savingAccount ? 'Saving…' : 'Save account'}
+        </Button>
+      {/if}
+      {#if onSaveAndSwitch}
+        <Button
+          variant="secondary"
+          onclick={() => void onSaveAndSwitch?.()}
+          disabled={!rawToken || savingAccount}
+        >
+          <Icon name={savingAccount ? 'loading' : 'check'} size={14} />
+          {savingAccount ? 'Switching…' : 'Save and switch'}
+        </Button>
+      {/if}
       <Button variant="ghost" onclick={onClose}>I've saved it</Button>
     </div>
+
+    {#if accountActionMessage}
+      <p class="account-action-message">{accountActionMessage}</p>
+    {/if}
+    {#if accountActionError}
+      <p class="account-action-error">{accountActionError}</p>
+    {/if}
 
     {#if copyError}
       <p class="copy-error">
@@ -127,13 +172,24 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--spacing-sm);
     align-items: center;
   }
 
+  .account-action-message,
+  .account-action-error,
   .copy-error {
     margin: 0;
     font-size: 12px;
+  }
+
+  .account-action-message {
+    color: var(--success, #22c55e);
+  }
+
+  .account-action-error,
+  .copy-error {
     color: var(--error);
   }
 </style>

@@ -312,6 +312,13 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Complete Microsoft authentication after user has signed in",
         default_enabled=False,
     ),
+    "outlook_auth_clear": ToolMetadata(
+        name="outlook_auth_clear",
+        category=ToolCategory.EMAIL,
+        security_level=SecurityLevel.MODERATE,
+        description="Clear saved Microsoft authentication or pending device-code flow",
+        default_enabled=False,
+    ),
     "outlook_list_authenticated_accounts": ToolMetadata(
         name="outlook_list_authenticated_accounts",
         category=ToolCategory.EMAIL,
@@ -472,6 +479,13 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Complete Google Calendar authentication",
         default_enabled=False,
     ),
+    "calendar_auth_clear": ToolMetadata(
+        name="calendar_auth_clear",
+        category=ToolCategory.CALENDAR,
+        security_level=SecurityLevel.MODERATE,
+        description="Clear saved Google Calendar authentication",
+        default_enabled=False,
+    ),
     "calendar_list_authenticated_accounts": ToolMetadata(
         name="calendar_list_authenticated_accounts",
         category=ToolCategory.CALENDAR,
@@ -572,6 +586,13 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.GOOGLE_DOCS,
         security_level=SecurityLevel.MODERATE,
         description="Complete Google Docs authentication",
+        default_enabled=False,
+    ),
+    "google_docs_auth_clear": ToolMetadata(
+        name="google_docs_auth_clear",
+        category=ToolCategory.GOOGLE_DOCS,
+        security_level=SecurityLevel.MODERATE,
+        description="Clear saved Google Docs/Drive/Sheets authentication",
         default_enabled=False,
     ),
     "google_docs_list_accounts": ToolMetadata(

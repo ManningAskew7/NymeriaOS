@@ -148,7 +148,7 @@ Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for m
 
 #### `components/threads/ThreadSettingsPanel.svelte`
 
-Both exist and provide per-thread LLM config UI. The mobile version has larger touch targets and full-screen modal presentation.
+Both exist and provide per-thread LLM config UI. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
 
 #### `routes/+page.svelte` — Main Entry Point
 
@@ -249,7 +249,7 @@ All account/identity surfaces live under `components/account/` in both apps. Mos
 | `UsersTab.svelte` | ✓ (admin only tab) | ✓ (admin only tab) | Same master/detail; mobile detail view stacks form fields vertically. |
 | `TokenManagementSection.svelte` | ✓ | ✓ | `mode: 'self' \| 'admin'` prop; admin mode adds Rotate-all. |
 | `PlatformLinkingSection.svelte` | ✓ | ✓ | Always uses admin endpoints — only rendered for admins. |
-| `CopyOnceTokenDialog.svelte` | ✓ | ✓ | Modal-wrapped; identical content. |
+| `CopyOnceTokenDialog.svelte` | ✓ | ✓ | Shared copy-once token modal; desktop adds optional account-switcher save actions for admin-issued tokens. |
 
 **Supporting files (also mirror in both apps):**
 - `services/api.svelte.ts` — 16 new account/admin methods + `_toastAndExtractError` helper.

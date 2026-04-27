@@ -86,12 +86,12 @@
     saving = true;
     try {
       const finalName = nameOverride.trim() || defaultName();
-      const entry = connectionsStore.add(finalName, trimmedUrl(), apiKey.trim());
-      // Cache the identity on the freshly-added entry so the switcher shows it
-      // immediately without waiting for a re-verify roundtrip.
-      if (resolvedIdentity) {
-        await connectionsStore.verifyEntry(entry.id);
-      }
+      const entry = connectionsStore.upsertAccountCredential({
+        name: finalName,
+        apiUrl: trimmedUrl(),
+        apiKey: apiKey.trim(),
+        identity: resolvedIdentity,
+      });
       if (switchAfterSave) {
         await connectionsStore.switchTo(entry.id);
       }

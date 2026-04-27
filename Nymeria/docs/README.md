@@ -60,6 +60,7 @@ C:\Nymeria\
 │   │   ├── response_handler.py  # Autonomous response data model
 │   │   ├── activity_log.py # Activity feed logging
 │   │   ├── notifications.py # Push notification storage
+│   │   ├── thread_deletion.py # Thread cascade deletion (TODOs, triggers, callable bindings)
 │   │   ├── backup.py       # File backup system
 │   │   ├── validator.py    # Python code validation
 │   │   ├── prompts.py      # System prompt templates (extracted)
@@ -84,8 +85,8 @@ C:\Nymeria\
 │   │   ├── notify.py       # Unified Telegram/Discord/Slack notifications
 │   │   ├── triggers.py     # Event-driven trigger CRUD
 │   │   ├── browser.py      # Native Playwright browser automation (9 tools)
-│   │   ├── outlook_auth.py # Microsoft OAuth authentication (3 tools)
-│   │   └── outlook_email.py # Outlook email via Graph API (10 tools)
+│   │   ├── outlook_auth.py # Microsoft OAuth authentication (4 tools)
+│   │   └── outlook_email.py # Outlook email via Graph API (13 tools)
 │   ├── agents/             # Callable-thread tool helpers and built-in agent presets
 │   │   ├── __init__.py
 │   │   ├── tool_factory.py # Generates direct tool bindings for callable threads
@@ -94,15 +95,22 @@ C:\Nymeria\
 │   │   ├── calendar_agent.py
 │   │   └── self_modify_agent.py
 │   ├── triggers/           # CLI, API, and event-driven interfaces
-│   │   ├── cli.py          # Interactive terminal
+│   │   ├── cli/            # Interactive terminal (app.py, input.py, state.py, commands/, rendering/)
 │   │   ├── api.py          # FastAPI REST server + /autonomous/stream SSE
+│   │   ├── trigger_api.py  # Trigger CRUD endpoints (mounted on the FastAPI app)
 │   │   ├── webhook.py      # Incoming webhook handlers (Telegram/Discord/Slack)
 │   │   ├── discord_bot.py  # Discord gateway bot
+│   │   ├── telegram_bot.py # Telegram polling bot (shared + per-user BYO)
 │   │   ├── twitch_bot.py   # TwitchIO bot with pulse/moderation support
+│   │   ├── watchdog_worker.py # Thin-client watchdog worker
 │   │   └── sources/        # Event-driven trigger source plugins
 │   │       ├── base.py     # Abstract TriggerSource
 │   │       ├── webhook_source.py
-│   │       └── outlook_email_source.py
+│   │       ├── outlook_email_source.py
+│   │       ├── rss_source.py
+│   │       ├── http_poll_source.py
+│   │       ├── slack_source.py
+│   │       └── teams_source.py
 │   └── config/             # Settings and prompts
 │       ├── settings.py     # Pydantic settings
 │       ├── soul.md         # System prompt

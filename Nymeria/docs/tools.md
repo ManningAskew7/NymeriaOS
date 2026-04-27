@@ -13,32 +13,31 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 3 | `file_write` | Core | MODERATE | On | Write content to files |
 | 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
-| 6 | `claude_code` | Core | MODERATE | On | Invoke Claude Code CLI for coding tasks |
-| 7 | `profile_save` | Profile | SAFE | On | Save a user memory |
-| 8 | `profile_forget` | Profile | SAFE | On | Remove a memory by key |
-| 9 | `profile_list` | Profile | SAFE | On | List all saved memories and preferences |
-| 10 | `personality_set` | Profile | SAFE | On | Set communication preferences |
-| 11 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
-| 12 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
-| 13 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
-| 14 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
-| 15 | `notepad_write` | Notepad | SAFE | On | Write to thread's persistent notepad |
-| 16 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
-| 17 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
-| 18 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
-| 19 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
-| 20 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
-| 21 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
-| 22 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
-| 23 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
-| 24 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
-| 25 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude Desktop JSON, stdio command, HTTP URL, or registry id) |
+| 6 | `profile_save` | Profile | SAFE | On | Save a user memory |
+| 7 | `profile_forget` | Profile | SAFE | On | Remove a memory by key |
+| 8 | `profile_list` | Profile | SAFE | On | List all saved memories and preferences |
+| 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
+| 10 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
+| 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
+| 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
+| 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
+| 14 | `notepad_write` | Notepad | SAFE | On | Write to thread's persistent notepad |
+| 15 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
+| 16 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
+| 17 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
+| 18 | `notify` | Core | MODERATE | On | Send notifications (Telegram/Discord/Slack) |
+| 19 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
+| 20 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
+| 21 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
+| 22 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
+| 23 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
+| 24 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude Desktop JSON, stdio command, HTTP URL, or registry id) |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. See `docs/skills.md`.
 
-> **Note:** `reload_all` and `self_modify_rollback` are in `ALL_TOOLS` (imported from `subagent.py`). They are also in `SUBAGENT_TOOLS` / optional tooling for backward compatibility. The "optional" classification refers to per-thread enabling — they can be disabled per-thread via thread config even though they're always available globally.
+> **Note:** `claude_code`, `reload_all`, and `self_modify_rollback` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `SUBAGENT_TOOLS`, `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them per-thread, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
 
-### Optional: Trigger Tools (4)
+### Optional: Trigger Tools (6)
 
 Not loaded by default. Enable per-thread via thread config, or use through SelfModifyAgent.
 
@@ -48,7 +47,8 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 2 | `trigger_list` | Trigger | SAFE | List triggers |
 | 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
 | 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
-| 5 | `trigger_sources_info` | Trigger | SAFE | List available trigger sources with config schemas and template variables |
+| 5 | `trigger_inspect` | Trigger | SAFE | Inspect a trigger — view detail, dry-run test, or execution history |
+| 6 | `trigger_sources_info` | Trigger | SAFE | List available trigger sources with config schemas and template variables |
 
 ### Optional: Slash Command Tool (1)
 
@@ -228,9 +228,9 @@ consult(question: str, context: Optional[str] = None, model: Optional[str] = Non
 
 ---
 
-### claude_code
+### claude_code (Optional, admin-only)
 
-Invoke Claude Code in headless mode to create, modify, or analyze code.
+Invoke Claude Code in headless mode to create, modify, or analyze code. **Not loaded by default** — lives in `OPTIONAL_TOOLS` and is gated by `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` (only admins may enable it).
 
 ```python
 claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet",
@@ -355,7 +355,7 @@ rag_search(query: str, max_results: int = 5)
 1. **Per turn** — `_index_conversation_turn` runs after every chat turn (`core/agent.py`).
 2. **Pre-compact** — manual `/compact`, async auto-compact, and sync auto-compact all flush via `_pre_trim_memory_flush` before clearing messages.
 3. **Pre-clear** — `POST /threads/{id}/clear` flushes before deleting checkpoints.
-4. **Delete cleanup** — `DELETE /threads/{id}` calls `MemoryIndex.delete_by_thread` so `rag_search` doesn't surface chunks from deleted threads.
+4. **Delete cleanup** — `DELETE /threads/{id}` runs the full thread cascade, including `MemoryIndex.delete_by_thread`, so `rag_search` doesn't surface chunks from deleted threads and thread-bound TODOs/triggers cannot wake the deleted thread again.
 
 To opt out, call `rag_settings(enabled=False)`. The migration watermark prevents re-flipping on subsequent loads.
 
@@ -701,6 +701,33 @@ trigger_delete(trigger_id: str)
 
 ---
 
+### trigger_inspect
+
+Inspect a trigger in one of three modes: view full configuration, dry-run with sample data, or fetch execution history.
+
+```python
+trigger_inspect(trigger_id: str, action: str = "detail", limit: int = 10)
+```
+
+**Parameters:**
+- `trigger_id` (`str`): The 8-char trigger ID to inspect
+- `action` (`str`, default `"detail"`): One of:
+  - `"detail"` — Full trigger configuration, health status, conditions, pending events, thread binding
+  - `"test"` — Dry-run with sample event data; renders the action template and reports whether conditions would pass. Does **not** fire the trigger.
+  - `"history"` — Recent execution history (status, duration, error messages)
+- `limit` (`int`, default `10`, max `50`): Number of executions to return for `action="history"`
+
+**Returns:** Formatted trigger details, test results, or execution history.
+
+**Examples:**
+```python
+trigger_inspect("a1b2c3d4")                          # detail
+trigger_inspect("a1b2c3d4", action="test")           # dry-run
+trigger_inspect("a1b2c3d4", action="history", limit=5)
+```
+
+---
+
 ### trigger_sources_info
 
 Get a formatted catalog of all available trigger sources with their config fields, template variables, and example configs. Useful for LLM-assisted trigger creation.
@@ -936,9 +963,9 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 ---
 
-### Outlook Tools (13)
+### Outlook Tools (18)
 
-Used internally by OutlookAgent. Also available as **optional tools** for per-thread enabling. Defined in `tools/outlook_auth.py` (3 auth) and `tools/outlook_email.py` (10 email).
+Used internally by OutlookAgent. Also available as **optional tools** for per-thread enabling. Defined in `tools/outlook_auth.py` (4 auth), `tools/outlook_email.py` (13 email), and `tools/outlook_attachments.py` (1 attachment).
 
 **Authentication tools:**
 
@@ -946,6 +973,7 @@ Used internally by OutlookAgent. Also available as **optional tools** for per-th
 |------|-----------|-------------|
 | `outlook_auth_start` | `()` | Start Microsoft OAuth device code flow. Returns URL and code. |
 | `outlook_auth_complete` | `()` | Complete auth after user signs in. Polls Microsoft (up to 5 min). |
+| `outlook_auth_clear` | `(account_id?)` | Clear one saved Microsoft account by ID, or all Microsoft accounts plus any pending device-code flow when omitted. |
 | `outlook_list_authenticated_accounts` | `()` | List all authenticated Microsoft accounts with IDs. |
 
 **Email tools:**
@@ -974,9 +1002,9 @@ Used internally by OutlookAgent. Also available as **optional tools** for per-th
 
 ---
 
-### Calendar Tools (14)
+### Calendar Tools (15)
 
-Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (3 auth) and `tools/calendar.py` (11 event). Uses `google-api-python-client` for direct API calls with agent-guided OAuth flow.
+Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (4 auth) and `tools/calendar.py` (11 event). Uses `google-api-python-client` for direct API calls with agent-guided OAuth flow.
 
 **Authentication tools:**
 
@@ -984,6 +1012,7 @@ Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (3
 |------|-----------|-------------|
 | `calendar_auth_start` | `()` | Start Google OAuth flow. Returns authorization URL for the user. |
 | `calendar_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
+| `calendar_auth_clear` | `(account_id?)` | Clear one saved Google Calendar account by ID, or all Calendar accounts plus any pending Calendar OAuth flow when omitted. |
 | `calendar_list_authenticated_accounts` | `()` | List authenticated Google accounts with token status. |
 
 **Event tools:**
@@ -1002,7 +1031,20 @@ Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (3
 | `calendar_get_current_time` | `()` | Get current time in ISO 8601 (no API call — local system time). |
 | `calendar_list_colors` | `(account_id?)` | List available event colors. |
 
-**Requires:** `GOOGLE_OAUTH_CREDENTIALS` env var pointing to the OAuth Desktop App credentials JSON from Google Cloud Console. Tokens stored at `~/.google_calendar_token_cache.json` with auto-refresh. Node.js/npx are **not** required.
+**Requires:** `GOOGLE_OAUTH_CREDENTIALS` env var pointing to the OAuth Desktop App credentials JSON from Google Cloud Console. Tokens are stored per Nymeria user at `data/auth_tokens/<user_id>/google_calendar.json` with auto-refresh. Node.js/npx are **not** required.
+
+---
+
+### Google Docs/Drive/Sheets Auth Tools (4)
+
+The Google Docs, Drive, and Sheets tools share one OAuth cache at `data/auth_tokens/<user_id>/google_docs.json`.
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `google_docs_auth_start` | `()` | Start Google Docs/Drive/Sheets OAuth flow. Returns authorization URL for the user. |
+| `google_docs_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
+| `google_docs_auth_clear` | `(account_id?)` | Clear one saved Google Docs account by ID, or all Docs/Drive/Sheets accounts plus any pending OAuth flow when omitted. |
+| `google_docs_list_accounts` | `()` | List authenticated Google accounts for Docs/Drive/Sheets with token status. |
 
 ---
 
@@ -1030,13 +1072,13 @@ Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** an
 Optional tools are NOT loaded by default. They're available for per-thread enabling via the thread config UI.
 
 **Currently available (representative categories):**
-- Outlook tools: 3 auth + 13 email + 1 attachment = 17 total
+- Outlook tools: 4 auth + 13 email + 1 attachment = 18 total
 - Trigger tools: 4
 - Browser tools: 9
-- Calendar tools: 3 auth + 11 event = 14 total
+- Calendar tools: 4 auth + 11 event = 15 total
 - Self-modify tools: 8
 - Subagent tools (reload/rollback): 2
-- Google Docs tools: 3 auth + 16 document = 19 total
+- Google Docs tools: 4 auth + 17 document = 21 total
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4

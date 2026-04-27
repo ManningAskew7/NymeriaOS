@@ -1470,6 +1470,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: var(--spacing-xl);
+    box-sizing: border-box;
     z-index: 1000;
   }
 
@@ -1477,11 +1479,14 @@
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
-    width: min(560px, 90vw);
+    width: fit-content;
+    min-width: min(560px, 100%);
+    max-width: min(920px, 100%);
     max-height: 80vh;
     display: flex;
     flex-direction: column;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    box-sizing: border-box;
   }
 
   .modal-header {
@@ -1527,19 +1532,26 @@
 
   .tabs {
     display: flex;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
     border-bottom: 1px solid var(--border-default);
     padding: 0 var(--spacing-lg);
+    scrollbar-width: thin;
   }
 
   .tab {
     display: flex;
     align-items: center;
+    flex: 0 0 auto;
     gap: 4px;
     padding: var(--spacing-sm) var(--spacing-md);
     font-size: var(--font-size-sm);
     color: var(--text-muted);
     border-bottom: 2px solid transparent;
     transition: all var(--transition-fast);
+    white-space: nowrap;
   }
 
   .tab:hover {
