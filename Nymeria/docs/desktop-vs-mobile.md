@@ -137,18 +137,18 @@ Desktop: 725 lines. Mobile: 145 lines. **Most divergent file.**
 | **Badges** | Callable, custom-config indicators | Not implemented |
 | **Task counts** | Shows active task count | Not implemented |
 | **Search** | Not present | Text search filter at top |
-| **Thread config** | Configure button → ThreadSettingsPanel modal | Not present (uses separate route) |
+| **Thread config** | Configure button/right-click → ThreadSettingsPanel modal; row Agent shortcut opens the Agent tab directly | Not present in list (settings open from chat header) |
 | **Lines** | ~766 | ~145 |
 
 **When changing**: Adding new thread list features requires independent implementation on each platform. The underlying `threadsStore` is shared, so data-layer changes sync automatically.
 
 #### `components/threads/ThreadItem.svelte`
 
-Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for multi-select), callable/config badges. Mobile version is simplified with just select + delete callbacks.
+Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for multi-select), callable/config badges, and a hover/focus Agent settings shortcut. Mobile version is simplified with just select + delete callbacks.
 
 #### `components/threads/ThreadSettingsPanel.svelte`
 
-Both exist and provide per-thread LLM config UI. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
+Both exist and provide per-thread LLM config UI plus a dedicated Agent tab for callable-thread settings. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
 
 #### `routes/+page.svelte` — Main Entry Point
 

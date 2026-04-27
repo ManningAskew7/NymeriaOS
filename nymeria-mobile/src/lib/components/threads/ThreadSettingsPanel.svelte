@@ -26,7 +26,7 @@
 
   let { threadId, open, onClose }: Props = $props();
 
-  type Tab = 'instructions' | 'system' | 'model' | 'tools' | 'triggers';
+  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'triggers';
   let activeTab = $state<Tab>('instructions');
 
   // Config loaded from API
@@ -466,6 +466,10 @@
         System
         {#if systemPrompt.trim()}<span class="tab-badge">1</span>{/if}
       </button>
+      <button class="tab-btn" class:active={activeTab === 'agent'} onclick={() => (activeTab = 'agent')}>
+        Agent
+        {#if isCallable}<span class="tab-badge">1</span>{/if}
+      </button>
       <button class="tab-btn" class:active={activeTab === 'model'} onclick={() => (activeTab = 'model')}>
         Model
       </button>
@@ -536,6 +540,7 @@
           <span class="char-count">{systemPrompt.length} / 50,000</span>
         </div>
 
+      {:else if activeTab === 'agent'}
         <div class="section-divider">
           <span class="section-title">Agent Configuration</span>
         </div>

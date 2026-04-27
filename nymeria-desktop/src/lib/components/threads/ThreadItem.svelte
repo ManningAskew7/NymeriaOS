@@ -15,10 +15,11 @@
     onDelete: () => void;
     onRename: (newTitle: string) => void;
     onConfigure?: () => void;
+    onOpenAgentConfig?: () => void;
     onTogglePin?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onTogglePin }: Props = $props();
+  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -34,8 +35,16 @@
   function handleClick(e: MouseEvent) {
     // Don't select if clicking action buttons or editing
     const target = e.target as HTMLElement;
-    if (target.closest('.delete-btn') || target.closest('.edit-btn') || isEditing) return;
+    if (target.closest('.delete-btn') || target.closest('.edit-btn') || target.closest('.agent-btn') || isEditing) return;
     onSelect(e);
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest('.action-buttons')) return;
+    if (e.key === 'Enter' && !isEditing) {
+      onSelect(e as unknown as MouseEvent);
+    }
   }
 
   function startEditing(e: MouseEvent) {
@@ -97,6 +106,12 @@
     onConfigure?.();
   }
 
+  function handleOpenAgentConfig(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    onOpenAgentConfig?.();
+  }
+
   function handleCopyId() {
     contextMenu = null;
     navigator.clipboard.writeText(thread.id);
@@ -112,6 +127,13 @@
     contextMenu = null;
     onDelete();
   }
+
+  function handleFocusOut(e: FocusEvent) {
+    const nextTarget = e.relatedTarget;
+    if (!(nextTarget instanceof Node) || !(e.currentTarget as HTMLElement).contains(nextTarget)) {
+      showActions = false;
+    }
+  }
 </script>
 
 <div
@@ -121,9 +143,11 @@
   class:editing={isEditing}
   onclick={handleClick}
   oncontextmenu={handleContextMenu}
-  onkeydown={(e) => e.key === 'Enter' && !isEditing && onSelect(e as unknown as MouseEvent)}
+  onkeydown={handleKeydown}
   onmouseenter={() => (showActions = true)}
   onmouseleave={() => (showActions = false)}
+  onfocusin={() => (showActions = true)}
+  onfocusout={handleFocusOut}
   role="button"
   tabindex="0"
 >
@@ -209,6 +233,17 @@
 
   {#if showActions && !isEditing}
     <div class="action-buttons">
+      {#if onOpenAgentConfig}
+        <button
+          class="agent-btn"
+          onclick={handleOpenAgentConfig}
+          type="button"
+          title="Agent settings"
+          aria-label="Agent settings"
+        >
+          <Icon name="tool" size={14} />
+        </button>
+      {/if}
       <button class="edit-btn" onclick={startEditing} type="button" title="Rename thread">
         <Icon name="edit" size={14} />
       </button>
@@ -376,6 +411,7 @@
     gap: 2px;
   }
 
+  .agent-btn,
   .edit-btn,
   .delete-btn {
     padding: var(--spacing-xs);
@@ -383,6 +419,12 @@
     border-radius: var(--radius-sm);
     transition: all var(--transition-fast);
     opacity: 0.7;
+  }
+
+  .agent-btn:hover {
+    color: var(--accent-primary);
+    background: var(--bg-elevated-2);
+    opacity: 1;
   }
 
   .edit-btn:hover {

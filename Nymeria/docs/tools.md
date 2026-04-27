@@ -104,7 +104,7 @@ Any thread with `callable=True` in its thread config becomes a tool that other t
 - **System prompt**: Custom `system_prompt` or `instructions` per-thread
 - **Name**: The tool name equals the thread's sidebar title (synced via `callable_name` in thread config)
 
-Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The thread becomes available as a tool to **the creator's own threads** after `sync_agent_tools()` runs — callables are scoped to their owner (the user who created them) and the `_thread_owners` table determines visibility. Two users can independently create callables with the same `callable_name`; each user's graph binds their own version, and the runtime ownership gate in `agents/tool_factory.py` blocks cross-user invocation.
+Create a callable thread: open thread settings → Agent → check "Make Callable" → set a name and description. On desktop, the thread row's Agent shortcut opens this tab directly. The thread becomes available as a tool to **the creator's own threads** after `sync_agent_tools()` runs — callables are scoped to their owner (the user who created them) and the `_thread_owners` table determines visibility. Two users can independently create callables with the same `callable_name`; each user's graph binds their own version, and the runtime ownership gate in `agents/tool_factory.py` blocks cross-user invocation.
 
 ---
 
@@ -931,7 +931,7 @@ Any thread with `callable=True` in its thread config becomes a callable tool —
 - **Tools**: Enable/disable any optional tools per-thread
 - **System prompt**: Custom `system_prompt` or `instructions` per-thread
 
-Create a callable thread: open thread settings → check "Make Callable" → set a name and description. The callable becomes available as a tool to **threads owned by the same user** after `sync_agent_tools()` runs. Other users do not see the callable in their tool list, and the runtime ownership gate rejects any invocation attempt by a non-owner. Admins can act-as the owning user via `X-Nymeria-Act-As` to test or trigger another user's callable.
+Create a callable thread: open thread settings → Agent → check "Make Callable" → set a name and description. On desktop, the thread row's Agent shortcut opens this tab directly. The callable becomes available as a tool to **threads owned by the same user** after `sync_agent_tools()` runs. Other users do not see the callable in their tool list, and the runtime ownership gate rejects any invocation attempt by a non-owner. Admins can act-as the owning user via `X-Nymeria-Act-As` to test or trigger another user's callable.
 
 The tool signature for any callable thread is:
 
