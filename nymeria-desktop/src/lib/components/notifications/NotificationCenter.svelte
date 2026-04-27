@@ -29,28 +29,15 @@
     notificationStore.markAllRead();
   }
 
-  function handleClickOutside(e: MouseEvent) {
-    const target = e.target as HTMLElement;
-    if (!target.closest('.notification-center')) {
-      onClose();
-    }
-  }
-
   $effect(() => {
     if (isOpen) {
-      // Add click outside listener when open
-      document.addEventListener('click', handleClickOutside, true);
-      // Refresh notifications when opened
       notificationStore.fetch();
-      return () => {
-        document.removeEventListener('click', handleClickOutside, true);
-      };
     }
   });
 </script>
 
 {#if isOpen}
-  <div class="notification-center">
+  <div class="notification-center" role="dialog" aria-label="Notifications">
     <div class="notification-header">
       <h3 class="notification-title">Notifications</h3>
       {#if notificationStore.unreadCount > 0}
@@ -91,19 +78,19 @@
 <style>
   .notification-center {
     position: absolute;
-    top: 100%;
+    bottom: 100%;
     left: 0;
-    right: 0;
-    margin-top: var(--spacing-sm);
+    margin-bottom: var(--spacing-sm);
+    width: max(100%, 280px);
+    max-width: calc(100vw - 24px);
     background: var(--bg-primary);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
-    max-height: 400px;
+    max-height: min(400px, calc(100vh - 96px));
     display: flex;
     flex-direction: column;
-    z-index: 100;
-    min-width: 280px;
+    z-index: 999;
   }
 
   .notification-header {

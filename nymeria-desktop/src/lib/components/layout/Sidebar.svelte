@@ -12,6 +12,7 @@
   let showSettings = $state(false);
   let settingsInitialTab = $state<string | undefined>(undefined);
   let showNotifications = $state(false);
+  let notificationWrapper: HTMLDivElement | undefined;
 
   let isCollapsed = $derived(uiStore.sidebarCollapsed);
 
@@ -38,6 +39,30 @@
   function closeNotifications() {
     showNotifications = false;
   }
+
+  function handleNotificationDocumentClick(e: MouseEvent) {
+    const target = e.target;
+    if (!(target instanceof Node) || !notificationWrapper?.contains(target)) {
+      closeNotifications();
+    }
+  }
+
+  function handleNotificationDocumentKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      closeNotifications();
+    }
+  }
+
+  $effect(() => {
+    if (showNotifications) {
+      document.addEventListener('click', handleNotificationDocumentClick, true);
+      document.addEventListener('keydown', handleNotificationDocumentKeydown, true);
+      return () => {
+        document.removeEventListener('click', handleNotificationDocumentClick, true);
+        document.removeEventListener('keydown', handleNotificationDocumentKeydown, true);
+      };
+    }
+  });
 
   // Start notification polling on mount
   onMount(() => {
@@ -76,13 +101,15 @@
   {/if}
 
   <div class="sidebar-footer" class:collapsed={isCollapsed}>
-    <div class="notification-wrapper">
+    <div class="notification-wrapper" bind:this={notificationWrapper}>
       {#if !isCollapsed}
         <button
           class="footer-btn"
           class:has-unread={notificationStore.unreadCount > 0}
           type="button"
           onclick={toggleNotifications}
+          aria-haspopup="dialog"
+          aria-expanded={showNotifications}
         >
           <Icon name="bell" size={18} />
           Notifications
@@ -98,6 +125,8 @@
           onclick={toggleNotifications}
           title="Notifications"
           aria-label="Notifications"
+          aria-haspopup="dialog"
+          aria-expanded={showNotifications}
         >
           <Icon name="bell" size={20} />
           {#if notificationStore.unreadCount > 0}
