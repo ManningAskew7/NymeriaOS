@@ -310,6 +310,27 @@ class NotificationStore:
                     return False
         return True
 
+    def delete_for_thread(self, user_id: str, thread_id: str) -> int:
+        """Delete notifications that point at a thread for one user."""
+        lock = self._get_lock(user_id)
+        with lock:
+            notifications = self._load_notifications(user_id)
+            kept = [n for n in notifications if n.thread_id != thread_id]
+            deleted = len(notifications) - len(kept)
+            if deleted:
+                self._save_notifications(user_id, kept)
+            return deleted
+
+    def delete_thread_globally(self, thread_id: str) -> int:
+        """Delete notifications that point at a thread from all user stores."""
+        deleted = 0
+        if not self.notifications_dir.exists():
+            return deleted
+        for path in self.notifications_dir.iterdir():
+            if path.is_file() and path.suffix == ".json":
+                deleted += self.delete_for_thread(path.stem, thread_id)
+        return deleted
+
 
 # Global notification store instance (initialized lazily)
 _notification_store: Optional[NotificationStore] = None

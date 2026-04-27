@@ -570,13 +570,20 @@ Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defau
 | Per turn | After every chat turn | `Agent._index_conversation_turn` |
 | Pre-compact | Before manual `/compact`, async + sync auto-compact | `Agent._pre_trim_memory_flush` |
 | Pre-clear | Before `POST /threads/{id}/clear` deletes checkpoints | `Agent._pre_trim_memory_flush` |
-| Delete cleanup | After `DELETE /threads/{id}` removes the thread | `MemoryIndex.delete_by_thread` |
+| Delete cleanup | During the full `DELETE /threads/{id}` cascade | `MemoryIndex.delete_by_thread` plus thread-bound resource cleanup |
 
 Agents query the index via the `rag_search` tool. Users can opt out at any time via `rag_settings(enabled=False)`; the migration watermark prevents re-flipping.
 
 ---
 
 ## Persistence
+
+Thread deletion is a hard cascade. `DELETE /threads/{id}` removes conversation
+checkpoints, metadata, config, notepad content, RAG chunks, TODOs and schedule
+rows, triggers and execution logs, chat-app bindings, bind codes, owner rows,
+activity entries, notifications, and FCM thread filters. User/account-level
+resources such as platform identities, registered Telegram bots, profile
+memories, skills, and custom tools are preserved.
 
 ### Conversation Storage
 

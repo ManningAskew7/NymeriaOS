@@ -225,6 +225,27 @@ class ActivityLog:
                     return False
         return True
 
+    def delete_for_thread(self, user_id: str, thread_id: str) -> int:
+        """Delete activity entries for one thread from one user's log."""
+        lock = self._get_lock(user_id)
+        with lock:
+            entries = self._load_entries(user_id)
+            kept = [entry for entry in entries if entry.thread_id != thread_id]
+            deleted = len(entries) - len(kept)
+            if deleted:
+                self._save_entries(user_id, kept)
+            return deleted
+
+    def delete_thread_globally(self, thread_id: str) -> int:
+        """Delete activity entries for one thread from all user logs."""
+        deleted = 0
+        if not self.activity_dir.exists():
+            return deleted
+        for path in self.activity_dir.iterdir():
+            if path.is_file() and path.suffix == ".json":
+                deleted += self.delete_for_thread(path.stem, thread_id)
+        return deleted
+
 
 # Global activity log instance (initialized lazily)
 _activity_log: Optional[ActivityLog] = None

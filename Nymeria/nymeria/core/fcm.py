@@ -162,6 +162,29 @@ def unregister_token(data_dir: str, token: str) -> bool:
     return False
 
 
+def remove_thread_from_tokens(data_dir: str, thread_id: str) -> int:
+    """
+    Remove a deleted thread from device subscription filters.
+
+    Device tokens themselves are account-level registrations and are not
+    deleted here; only the thread-specific filter list is pruned.
+
+    Returns:
+        Number of token entries updated.
+    """
+    tokens = load_tokens(data_dir)
+    updated = 0
+    for entry in tokens:
+        subscribed = entry.get("thread_ids")
+        if isinstance(subscribed, list) and thread_id in subscribed:
+            entry["thread_ids"] = [tid for tid in subscribed if tid != thread_id]
+            updated += 1
+    if updated:
+        save_tokens(data_dir, tokens)
+        logger.info("[FCM] Removed thread %s from %s device filter(s)", thread_id, updated)
+    return updated
+
+
 # ─── Broadcast ────────────────────────────────────────────────────────────────
 
 def send_to_all_devices(

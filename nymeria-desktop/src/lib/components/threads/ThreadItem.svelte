@@ -193,6 +193,11 @@
       {#if hasCustomConfig}
         <span class="config-dot" title="Custom config"></span>
       {/if}
+      {#if thread.recovered}
+        <span class="recovered-indicator" title="Recovered backend thread">
+          <Icon name="warning" size={12} />
+        </span>
+      {/if}
       {#if hasActiveTask}
         <span class="active-indicator"><span class="badge-spinner"></span></span>
       {/if}
@@ -470,6 +475,14 @@
     align-items: center;
     color: var(--text-muted);
     opacity: 0.6;
+  }
+
+  .recovered-indicator {
+    display: inline-flex;
+    align-items: center;
+    color: var(--warning);
+    opacity: 0.9;
+    flex-shrink: 0;
   }
 
   .config-dot {

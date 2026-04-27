@@ -272,6 +272,25 @@ class TriggerManager:
             store.triggers = [t for t in store.triggers if t.id != trigger_id]
             return len(store.triggers) < before
 
+    def delete_triggers_for_thread(self, user_id: str, thread_id: str) -> List[str]:
+        """
+        Remove all triggers owned by ``user_id`` that target ``thread_id``.
+
+        Returns:
+            Deleted trigger IDs.
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            store = self._load(user_id)
+            deleted_ids = [t.id for t in store.triggers if t.thread_id == thread_id]
+            if deleted_ids:
+                store.triggers = [t for t in store.triggers if t.thread_id != thread_id]
+                if not self._save(store):
+                    raise RuntimeError(
+                        f"Failed to save trigger cleanup for user {user_id}"
+                    )
+            return deleted_ids
+
     def get_triggers(self, user_id: str) -> List[TriggerDefinition]:
         """Get all triggers for a user (read-only snapshot)."""
         store = self._load(user_id)
@@ -371,6 +390,34 @@ class TriggerManager:
         except Exception as e:
             logger.warning(f"Failed to read trigger executions: {e}")
             return []
+
+    def delete_executions_for_triggers(self, user_id: str, trigger_ids: List[str]) -> int:
+        """Remove execution-log entries for deleted triggers."""
+        if not trigger_ids:
+            return 0
+
+        path = self._executions_path(user_id)
+        if not path.exists():
+            return 0
+
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, list):
+                return 0
+            trigger_set = set(trigger_ids)
+            kept = [
+                e for e in loaded
+                if not (isinstance(e, dict) and e.get("trigger_id") in trigger_set)
+            ]
+            deleted = len(loaded) - len(kept)
+            if deleted:
+                temp = path.with_suffix(".tmp")
+                temp.write_text(json.dumps(kept, default=str), encoding="utf-8")
+                temp.replace(path)
+            return deleted
+        except Exception as e:
+            logger.warning(f"Failed to delete trigger executions for {user_id}: {e}")
+            return 0
 
     # -- polling (for poll-based sources) ---------------------------------
 

@@ -242,6 +242,19 @@ class TodoList(BaseModel):
                 return deleted
         return None
 
+    def delete_items_for_thread(self, thread_id: str) -> List[TodoItem]:
+        """
+        Delete all TODO items scoped to a thread.
+
+        Returns:
+            Deleted TodoItem objects.
+        """
+        deleted = [item for item in self.items if item.thread_id == thread_id]
+        if deleted:
+            self.items = [item for item in self.items if item.thread_id != thread_id]
+            self.updated_at = datetime.utcnow()
+        return deleted
+
     def get_active_todos(self) -> List[TodoItem]:
         """Get all active (non-done) TODO items."""
         return [item for item in self.items if item.is_active()]
@@ -427,6 +440,24 @@ class TodoManager:
                 logger.error(f"Failed to delete TODOs for {user_id}: {e}")
                 return False
         return False
+
+    def delete_todos_for_thread(self, user_id: str, thread_id: str) -> List[TodoItem]:
+        """
+        Delete every TODO for ``user_id`` that belongs to ``thread_id``.
+
+        Returns:
+            Deleted TODO items.
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            todo_list = self.get_todos(user_id)
+            deleted = todo_list.delete_items_for_thread(thread_id)
+            if deleted:
+                if not self.save_todos(todo_list):
+                    raise RuntimeError(
+                        f"Failed to save TODO cleanup for user {user_id}"
+                    )
+            return deleted
 
     # =========================================================================
     # Schedule synchronization methods

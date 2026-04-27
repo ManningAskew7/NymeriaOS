@@ -209,6 +209,46 @@ class TodoScheduleDB:
             finally:
                 conn.close()
 
+    def remove_for_thread(self, thread_id: str, todo_ids: Optional[List[str]] = None) -> int:
+        """
+        Remove scheduled entries tied to a thread.
+
+        ``todo_ids`` are included as a defensive fallback for old or corrupt
+        schedule rows whose ``thread_id`` was missing but whose TODO item was
+        still thread-scoped.
+
+        Returns:
+            Number of schedule rows removed.
+        """
+        todo_ids = list(dict.fromkeys(todo_ids or []))
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                params: List[str] = [thread_id]
+                where = "thread_id = ?"
+                if todo_ids:
+                    placeholders = ", ".join("?" for _ in todo_ids)
+                    where = f"({where} OR todo_id IN ({placeholders}))"
+                    params.extend(todo_ids)
+                cursor = conn.execute(
+                    f"DELETE FROM scheduled_todos WHERE {where}",
+                    params,
+                )
+                conn.commit()
+                count = cursor.rowcount or 0
+                logger.info(
+                    "Removed %s scheduled TODO row(s) for thread %s",
+                    count,
+                    thread_id,
+                )
+                return count
+            except Exception as e:
+                logger.error(f"Failed to remove scheduled TODOs for thread {thread_id}: {e}")
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     def get_due(self, before: Optional[float] = None) -> List[ScheduledTodoEntry]:
         """
         Get all scheduled TODOs that are due for execution.
