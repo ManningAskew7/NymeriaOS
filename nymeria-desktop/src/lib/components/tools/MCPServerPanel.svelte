@@ -236,7 +236,7 @@
   </div>
 
   <p class="panel-hint">
-    Paste a server config, command, URL, or registry ID — Nymeria auto-detects the format, starts the server, and wires its tools into the agent.
+    Paste a server config, command, URL, or registry ID. Nymeria auto-detects the format, starts the server, and wires its tools into the agent.
   </p>
 
   <MCPInstallModal
@@ -261,7 +261,7 @@
     <div class="empty-state">
       <Icon name="terminal" size={24} />
       <p>No MCP servers yet</p>
-      <span>Click <strong>Install Server</strong> above to add one — pasting a command or JSON takes 30 seconds.</span>
+      <span>Click <strong>Install Server</strong> above to add one. Pasting a command or JSON takes 30 seconds.</span>
     </div>
   {:else}
     <div class="servers-list">
@@ -329,7 +329,7 @@
                   <div class="test-banner" class:test-ok={result.status === 'ok'} class:test-fail={result.status === 'error'}>
                     {#if result.status === 'ok'}
                       <Icon name="success" size={14} />
-                      Connected — {result.toolsCount} tools found
+                      Connected. {result.toolsCount} tools found
                     {:else}
                       <Icon name="error" size={14} />
                       {result.error}
@@ -348,7 +348,7 @@
                           class="tool-row"
                           class:tool-enabled={isEnabled}
                           class:tool-row-dormant={!server.enabled}
-                          title={!server.enabled ? 'MCP server is not running — enable the server to make this tool available' : ''}
+                          title={!server.enabled ? 'MCP server is not running. Enable the server to make this tool available' : ''}
                         >
                           <div class="tool-info">
                             <code class="tool-name-code">{tool.name}</code>

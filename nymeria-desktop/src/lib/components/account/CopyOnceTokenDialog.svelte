@@ -67,7 +67,7 @@
     <p class="intro">
       {#if forUser}
         Issued for <strong>{forUser}</strong>{label ? ` (${label})` : ''}. Hand it
-        off securely — anyone with this string can act as that account.
+        off securely; anyone with this string can act as that account.
       {:else}
         Use this token in another browser, the mobile app, or any tool calling
         the API. It carries the same access as your current session.
@@ -115,7 +115,7 @@
 
     {#if copyError}
       <p class="copy-error">
-        Copy failed — {copyError}. You can still select and copy the token manually.
+        Copy failed: {copyError}. You can still select and copy the token manually.
       </p>
     {/if}
   </div>

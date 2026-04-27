@@ -378,7 +378,7 @@
           <p class="step-desc">Only fire when ALL conditions match</p>
 
           {#if conditions.length === 0}
-            <p class="no-conditions">No conditions — trigger fires on every event</p>
+            <p class="no-conditions">No conditions set; trigger fires on every event</p>
           {/if}
 
           {#each conditions as condition, i}

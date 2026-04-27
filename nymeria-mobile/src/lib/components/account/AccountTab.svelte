@@ -125,8 +125,8 @@
         <h3>API tokens</h3>
       </div>
       <p class="section-hint">
-        Each token is a separate sign-in. Issue one for every device — you
-        can revoke them individually.
+        Each token is a separate sign-in. Issue one for every device, then
+        revoke them individually if needed.
       </p>
       <TokenManagementSection mode="self" />
     </section>

@@ -566,7 +566,9 @@ class NymeriaAgent:
             skill_index_db = self.settings.skills_dir / "index.db"
             skill_index = SkillEmbeddingIndex(
                 db_path=skill_index_db,
-                openai_api_key=self.settings.openai_api_key,
+                openai_api_key=self.settings.embedding_api_key,
+                openai_base_url=self.settings.embedding_base_url,
+                embedding_model=self.settings.embedding_model,
             )
             self.skill_manager = SkillManager(
                 bundled_dir=self.settings.bundled_skills_dir,
@@ -989,8 +991,8 @@ class NymeriaAgent:
             "## Active TODOs",
             "",
             "The following tasks are pending. Work on them proactively when appropriate.",
-            "Use todo(todo_id=..., status='done') to mark complete, or todo_delete if no longer needed.",
-            "**Recurring TODOs** auto-reschedule when marked done — they act as heartbeats. Only todo_delete stops them permanently.",
+            "Use nym_todo(todo_id=..., status='done') to mark complete, or nym_todo_delete if no longer needed.",
+            "**Recurring TODOs** auto-reschedule when marked done — they act as heartbeats. Only nym_todo_delete stops them permanently.",
             "",
         ]
 
@@ -1094,7 +1096,10 @@ class NymeriaAgent:
         # Callable threads with system_prompt: focused context (no memories/TODOs/instructions)
         if tc and tc.callable and tc.system_prompt:
             time_context = self._get_time_context(is_autonomous=is_autonomous)
-            return f"{tc.system_prompt}\n\n{time_context}"
+            return self._append_mode_rules(
+                f"{tc.system_prompt}\n\n{time_context}",
+                is_autonomous,
+            )
 
         # Determine base prompt: custom system_prompt or default soul.md
         base = tc.system_prompt if (tc and tc.system_prompt) else self._base_system_prompt
@@ -1112,12 +1117,13 @@ class NymeriaAgent:
             prompt += f"\n\n---\n\n## Thread-Specific Instructions\n\n{tc.instructions}\n"
 
         # Add mode-specific behavioral rules
-        if is_autonomous:
-            prompt += AUTONOMOUS_MODE_RULES
-        else:
-            prompt += INTERACTIVE_MODE_RULES
+        return self._append_mode_rules(prompt, is_autonomous)
 
-        return prompt
+    def _append_mode_rules(self, prompt: str, is_autonomous: bool) -> str:
+        """Append mode-specific prompt rules."""
+        if is_autonomous:
+            return prompt + AUTONOMOUS_MODE_RULES
+        return prompt + INTERACTIVE_MODE_RULES
 
     def _get_time_context(self, is_autonomous: bool = False, trigger_override: str = None) -> str:
         """Get current time context. Delegates to prompts.get_time_context()."""

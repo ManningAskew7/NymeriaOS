@@ -1,4 +1,4 @@
-"""Sticky note checklist tool — read and manage the desktop sticky note widget.
+"""Sticky note checklist tool. Reads and manages the desktop sticky note widget.
 
 The sticky note widget watches ~/.nymeria/sticky_note/checklist.txt for changes.
 This tool lets Nymeria read, add, remove, check, uncheck, and replace items
@@ -60,7 +60,7 @@ def _write_items(items: list[tuple[bool, str]]) -> None:
 def _format_list(items: list[tuple[bool, str]]) -> str:
     """Format items for display."""
     if not items:
-        return "(empty — no items)"
+        return "(empty, no items)"
     lines = []
     for i, (checked, text) in enumerate(items, 1):
         mark = "x" if checked else " "
@@ -95,13 +95,13 @@ def sticky_note(
     Manage the desktop sticky note checklist. The widget auto-refreshes.
 
     Actions:
-      list    — Show all items (no other args needed)
-      add     — Add a new unchecked item (text = item text)
-      remove  — Remove an item (target = item # or substring)
-      check   — Mark item as done (target = item # or substring)
-      uncheck — Mark item as not done (target = item # or substring)
-      replace — Replace entire list (text = newline-separated items, all unchecked)
-      clear   — Remove all items
+      list:    Show all items (no other args needed)
+      add:     Add a new unchecked item (text = item text)
+      remove:  Remove an item (target = item # or substring)
+      check:   Mark item as done (target = item # or substring)
+      uncheck: Mark item as not done (target = item # or substring)
+      replace: Replace entire list (text = newline-separated items, all unchecked)
+      clear:   Remove all items
 
     Args:
         action: One of: list, add, remove, check, uncheck, replace, clear

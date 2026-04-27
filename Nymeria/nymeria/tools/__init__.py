@@ -1,7 +1,7 @@
 """Nymeria tools module.
 
 Consolidated tool set for maximum autonomy with minimal complexity.
-Callable threads replace the old sub-agent system — any thread can become
+Callable threads replace the old sub-agent system. Any thread can become
 a callable tool with its own system prompt, LLM config, and tool set.
 
 Use get_all_tools_with_agents() for backward compatibility (returns ALL_TOOLS).
@@ -140,7 +140,7 @@ def filter_admin_only_tools(
 ) -> tuple[set, set]:
     """Filter admin-only tool names out for non-admin users.
 
-    Returns ``(allowed, blocked)`` — the input names split into a set the
+    Returns ``(allowed, blocked)``: the input names split into a set the
     caller may have, and a set the caller is not allowed to enable.
     Admins see everything allowed; for any other role, names in
     ``ADMIN_ONLY_OPTIONAL_TOOL_NAMES`` are stripped into ``blocked``.

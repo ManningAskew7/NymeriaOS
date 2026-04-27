@@ -65,7 +65,7 @@ def trigger_create(
 
     Triggers fire when an external event occurs (webhook POST, etc.) and
     execute an action automatically.  The trigger is automatically bound to
-    the current thread — when it fires, the prompt/notification arrives here.
+    the current thread; when it fires, the prompt/notification arrives here.
 
     Args:
         name: Human-friendly trigger name (e.g. "Wake-up morning briefing").

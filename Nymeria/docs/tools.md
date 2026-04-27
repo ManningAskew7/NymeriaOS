@@ -58,9 +58,9 @@ Not loaded by default. Enable per-thread to let the agent invoke the same user-f
 |---|------|----------|----------|-------------|
 | 1 | `slash_command` | Self | MODERATE | Run a Nymeria slash command on the current thread (config, env, tools, memory, TODOs, notepad, status). Destructive commands blocked. |
 
-### Optional: _PRV_A Tools (8 _PRV_A-specific + 1)
+### Optional: _PRV_A and Sheets Tools (8 + 1 attachment)
 
-Google Sheets-based tools for Acme Hardware RFQ processing. All backed by `google_sheets.py` with 5-minute in-memory caching (auto-invalidated after writes). The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module — it's placed here as a general-purpose extraction utility.
+Google Sheets-based tools for Acme Hardware RFQ processing. Generic `google_sheets_*` tools use the current user's Google OAuth. The dedicated `_prv_a_*` reference tools use the app-level `_PRV_A_SERVICE_ACCOUNT_FILE` service account with 5-minute in-memory caching, so _PRV_A lookups do not depend on whichever user is authenticated for Google Docs. The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module; it's placed here as a general-purpose extraction utility.
 
 | # | Tool | Security | Description |
 |---|------|----------|-------------|
@@ -996,7 +996,7 @@ Used internally by OutlookAgent. Also available as **optional tools** for per-th
 | `outlook_move_email` | `(email_id, folder, account_id?)` | Move email to a folder. |
 | `outlook_forward_email` | `(email_id, to, comment?, account_id?)` | Forward an email. |
 | `outlook_set_category` | `(email_id, category, action="add", account_id?)` | Add or remove a category tag on an email. Use to tag emails for processing ("Nymeria") and clear after done. |
-| `outlook_get_attachments` | `(email_id, skip?)` | Download and extract text from all email attachments. CSV/TXT decoded directly, Excel via openpyxl, PDF/DOCX/images via Gemini AI. Optional `skip` to ignore irrelevant attachments by name. |
+| `outlook_get_attachments` | `(email_id, skip?, account_id?)` | Download and extract text from all email attachments. CSV/TXT decoded directly, Excel via openpyxl, PDF/DOCX/images via Gemini AI. Optional `skip` to ignore irrelevant attachments by name. |
 
 **Folder names** (case-insensitive):
 - `outlook_list_emails` accepts: `inbox`, `sent`/`sentitems`, `drafts`, `deleted`/`deleteditems`, `junk`/`junkemail`, `archive`
@@ -1016,16 +1016,16 @@ Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (4
 | `calendar_auth_start` | `()` | Start Google OAuth flow. Returns authorization URL for the user. |
 | `calendar_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
 | `calendar_auth_clear` | `(account_id?)` | Clear one saved Google Calendar account by ID, or all Calendar accounts plus any pending Calendar OAuth flow when omitted. |
-| `calendar_list_authenticated_accounts` | `()` | List authenticated Google accounts with token status. |
+| `calendar_list_authenticated_accounts` | `()` | List authenticated Google accounts with verified token/scopes status. Invalid refresh tokens are pruned. |
 
 **Event tools:**
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
 | `calendar_list_calendars` | `(account_id?)` | List all available Google calendars. |
-| `calendar_list_events` | `(calendar_id="primary", max_results=10, time_min?, time_max?, account_id?)` | List events from a calendar. |
+| `calendar_list_events` | `(calendar_id="primary", max_results=10, time_min?, time_max?, account_id?)` | List events from a calendar. Output includes full event IDs for chaining into `calendar_get_event`. |
 | `calendar_get_event` | `(event_id, calendar_id="primary", account_id?)` | Get full event details. |
-| `calendar_search_events` | `(query, calendar_id="primary", max_results=10, account_id?)` | Search events by text. |
+| `calendar_search_events` | `(query, calendar_id="primary", max_results=10, account_id?)` | Search events by text. Output includes full event IDs for chaining into `calendar_get_event`. |
 | `calendar_create_event` | `(summary, start_time, end_time, calendar_id="primary", description?, location?, attendees?, timezone?, account_id?)` | Create a new event. Supports all-day (date-only) and timed events. |
 | `calendar_update_event` | `(event_id, calendar_id="primary", summary?, start_time?, end_time?, description?, location?, account_id?)` | Update an existing event (patch — only sends changed fields). |
 | `calendar_delete_event` | `(event_id, calendar_id="primary", account_id?)` | Delete a calendar event. |
@@ -1040,14 +1040,14 @@ Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (4
 
 ### Google Docs/Drive/Sheets Auth Tools (4)
 
-The Google Docs, Drive, and Sheets tools share one OAuth cache at `data/auth_tokens/<user_id>/google_docs.json`.
+The Google Docs, Drive, and Sheets tools share one OAuth cache at `data/auth_tokens/<user_id>/google_docs.json`. Account-list output verifies scopes and refreshability before presenting an account as usable.
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
 | `google_docs_auth_start` | `()` | Start Google Docs/Drive/Sheets OAuth flow. Returns authorization URL for the user. |
 | `google_docs_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
 | `google_docs_auth_clear` | `(account_id?)` | Clear one saved Google Docs account by ID, or all Docs/Drive/Sheets accounts plus any pending OAuth flow when omitted. |
-| `google_docs_list_accounts` | `()` | List authenticated Google accounts for Docs/Drive/Sheets with token status. |
+| `google_docs_list_accounts` | `()` | List authenticated Google accounts for Docs/Drive/Sheets with verified token/scopes status. Invalid refresh tokens are pruned. |
 
 ---
 

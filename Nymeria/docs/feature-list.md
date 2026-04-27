@@ -68,7 +68,7 @@ Nymeria threads don't just respond — they learn. Three interconnected systems 
 - **Pre-compaction flush** — Before context is trimmed, all messages are defensively written to RAG
 - **Hybrid search** — sqlite-vec vector similarity (70%) + FTS5 BM25 (30%)
 - **Three chunk types**: `conversation`, `memory`, `todo` — each toggleable
-- **Embedding**: OpenAI text-embedding-3-small (1536 dims), BM25-only fallback if unavailable
+- **Embedding**: OpenAI-compatible `EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536 dims), BM25-only fallback if unavailable
 - **Sentence-aware chunking**: 400-token chunks with 80-token overlap
 - **Per-user isolation**: Separate vector stores per user
 - **Search tool**: `rag_search` lets the agent query past context on demand
@@ -248,8 +248,11 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Nymeria as MCP Server
 - **Dual transport**: STDIO and HTTP (port 8001)
-- **Exposed tools**: `nymeria_chat`, `nymeria_profile_save/list/forget`, `nymeria_todo_add/list/complete/update/delete/status`, `nymeria_rag_search`, `nymeria_thread_history`
-- **Per-user isolation** on all operations
+- **Thin-client architecture** — MCP calls the Nymeria REST/SSE API with `NYMERIA_SERVICE_TOKEN`; it does not create a second in-process agent
+- **Full-fidelity chat** — `nymeria_chat` returns thinking, preamble text, raw SSE events, persisted tool calls/args/results, workspace artifacts, final response, context stats, and copy-ready markdown
+- **Core management tools** — threads, per-thread config, global settings, TODOs, triggers, memories, RAG search, and history
+- **MCP-friendly collection responses** — trigger lists and execution histories are wrapped as JSON objects with `total` counts so empty collections stay valid tool results
+- **Per-user isolation** via `X-Nymeria-Act-As`
 
 ### Nymeria as MCP Client
 - **4 install formats**: Claude Desktop JSON, bare stdio command, HTTP/SSE URL, registry ID
@@ -387,7 +390,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **TODOs** | CRUD, complete, list by user |
 | **Activity & Notifications** | Feed, mark read |
 | **Callable Threads** | List, create |
-| **RAG** | Settings, stats, reindex, delete index |
+| **RAG** | Settings, stats, search, reindex, delete index |
 | **MCP Servers** | CRUD, discover tools, test |
 | **Skills** | List, install, uninstall, marketplace search, global defaults |
 | **Triggers** | CRUD, test, execution history, fire webhook, source list, source reload |

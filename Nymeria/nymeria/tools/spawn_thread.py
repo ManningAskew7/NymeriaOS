@@ -84,7 +84,7 @@ def _get_parent_spawn_depth(
 
     Reads under the caller's ``user_id`` partition because spawn_thread saves
     metadata under the actual user_id (not always "default") since the
-    multi-user refactor — a hardcoded "default" lookup here weakened the
+    multi-user refactor. A hardcoded "default" lookup here weakened the
     max-depth guard for non-default users.
     """
     if not parent_thread_id or not agent:
@@ -265,7 +265,7 @@ def spawn_thread(
 
       action="create" (default): Create a new thread. It appears in the
           desktop sidebar inside a "Spawned by Nymeria" folder. By default
-          the thread is CALLABLE — it's registered as a global tool so any
+          the thread is CALLABLE; it's registered as a global tool so any
           thread (including its parent) can invoke it by calling the
           auto-generated tool name. Set make_callable=False to opt out.
 
@@ -283,7 +283,7 @@ def spawn_thread(
             description if provided.
         optional_tools: List of OPTIONAL tool names to enable on the new
             thread (e.g. ["sticky_note", "browser_navigate"]). Core tools
-            are inherited automatically — only list EXTRAS. Use
+            are inherited automatically; only list EXTRAS. Use
             tool_search(action="search", query="...") to discover names.
         tool_categories: List of category names (e.g. ["email", "browser"])
             to bulk-enable every optional tool in that category. Merged
@@ -309,7 +309,7 @@ def spawn_thread(
 
     Returns (create):
         Preamble with the new thread_id, the callable tool name (if
-        make_callable=True), and — if initial_message was provided —
+        make_callable=True), and, if initial_message was provided,
         the child thread's response text.
 
     Returns (delete):
@@ -545,7 +545,7 @@ def spawn_thread(
     preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
     if make_callable and callable_name:
         preamble_lines.append(
-            f'Callable as: {callable_name}(task="...") — any thread can invoke this.'
+            f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
         )
     if tc.enabled_tools:
         preamble_lines.append(
@@ -700,7 +700,7 @@ def _invoke_spawned(
 
         if iteration_limit_hit and response_text:
             response_text += (
-                "\n\n[Note: Spawned thread was stopped at iteration limit — "
+                "\n\n[Note: Spawned thread was stopped at iteration limit; "
                 "result may be incomplete.]"
             )
         elif iteration_limit_hit and not response_text:

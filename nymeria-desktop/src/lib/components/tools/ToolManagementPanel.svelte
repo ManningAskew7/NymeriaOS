@@ -330,7 +330,7 @@
 
     {#if totalWithCallable > 25}
       <div class="inline-warning">
-        {totalWithCallable} tools total (including callable threads) — high tool counts can degrade model performance
+        {totalWithCallable} tools total (including callable threads). High tool counts can degrade model performance
       </div>
     {/if}
 
@@ -381,7 +381,7 @@
                         <span class="tool-name">
                           {tool.name}
                           {#if isAdminOnlyTool(tool.name)}
-                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}>admin only</span>
+                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
                           {/if}
                         </span>
                         <span class="tool-desc">{tool.description}</span>
@@ -430,7 +430,7 @@
                         <span class="tool-name">
                           {tool.name}
                           {#if isAdminOnlyTool(tool.name)}
-                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}>admin only</span>
+                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
                           {/if}
                         </span>
                         <span class="tool-desc">{tool.description}</span>
@@ -506,7 +506,7 @@
                             <span class="optional-badge">optional</span>
                           {/if}
                           {#if isAdminOnlyTool(tool.name)}
-                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}>admin only</span>
+                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
                           {/if}
                         </span>
                         <span class="tool-desc">{tool.description}</span>

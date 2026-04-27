@@ -112,8 +112,8 @@ def _resolve_tool_object(name: str, agent) -> Optional[Any]:
     Mirrors the resolution logic in agent._build_graph_with_prompt so that
     enable-time validation matches what the rebuild actually does. Returns
     None if the name is in the searchable catalog (metadata only) but has
-    no live tool object — typically MCP server tools whose backing server
-    is installed but disabled.
+    no live tool object (typically MCP server tools whose backing server
+    is installed but disabled).
     """
     from . import ALL_TOOLS, OPTIONAL_TOOLS
 
@@ -140,7 +140,7 @@ def _format_unloadable_error(unloadable: List[str]) -> str:
         else:
             other.append(name)
     lines = [
-        f"[Error]: Cannot enable {len(unloadable)} tool(s) — "
+        f"[Error]: Cannot enable {len(unloadable)} tool(s); "
         "they appear in search results but their backing source is not active:"
     ]
     if mcp_servers:
@@ -488,7 +488,7 @@ def _enable(
     change_count = len(newly_added) + len(refreshed) + len(promoted) + len(un_disabled)
     noop_count = max(0, total_requested - change_count)
     header = (
-        f"[Success]: {total_requested} requested — "
+        f"[Success]: {total_requested} requested. "
         f"{len(newly_added)} newly loaded, "
         f"{len(refreshed)} TTL refreshed, "
         f"{len(promoted)} promoted, "
@@ -519,7 +519,7 @@ def _enable(
     if reload_tools and not cap_hit:
         lines.append(
             "Newly-loaded tools are NOT yet bound to the model in this "
-            "iteration — your current turn will end after this tool result "
+            "iteration. Your current turn will end after this tool result "
             "and the system will rebuild the tool list, then resume you with "
             "the new tools available. Do not attempt to call them here."
         )
@@ -532,7 +532,7 @@ def _enable(
             "to call the newly-enabled tool(s) in this turn."
         )
     else:
-        lines.append("No binding changes — nothing to reload.")
+        lines.append("No binding changes; nothing to reload.")
     result_text = "\n".join(lines)
 
     # When a reload is queued AND we're under the cap, force the graph to
@@ -686,7 +686,7 @@ def _status(thread_id: str) -> str:
             c = catalog.get(name, {})
             desc = _short_desc(c.get("description", ""))
             cat = c.get("category", "unknown")
-            lines.append(f"  {name} ({cat}) — {desc}")
+            lines.append(f"  {name} ({cat}): {desc}")
 
     if visible_temp_map:
         lines.append(f"\nEnabled (TTL) ({len(visible_temp_map)}):")
@@ -696,7 +696,7 @@ def _status(thread_id: str) -> str:
             desc = _short_desc(c.get("description", ""))
             cat = c.get("category", "unknown")
             remaining = _format_remaining(entry.expires_at)
-            lines.append(f"  {name} ({cat}, {remaining}) — {desc}")
+            lines.append(f"  {name} ({cat}, {remaining}): {desc}")
 
     if not visible_enabled_perm and not visible_temp_map:
         lines.append("\nNo optional tools enabled for this thread.")
@@ -736,7 +736,7 @@ def tool_search(
     google_docs, twitch, _prv_a, trigger, self_modify, etc.). Use this tool
     to discover and activate them for the current thread.
 
-    HOW ENABLE WORKS (important — read carefully):
+    HOW ENABLE WORKS (important, read carefully):
 
     When you call action="enable" and at least one tool is genuinely new,
     your CURRENT turn ends immediately after the tool result. The harness
@@ -744,7 +744,7 @@ def tool_search(
     resumes you in a fresh agent step where the new tools ARE callable.
 
     Concretely: you do NOT call the new tool in the same iteration as the
-    enable — that fails because the model is bound to the old tool list
+    enable. That fails because the model is bound to the old tool list
     for the rest of the iteration. After your enable returns, the system
     will resume you automatically (no user reply needed) and THAT is where
     you invoke the newly-enabled tool. Treat the enable + use as two
@@ -756,12 +756,12 @@ def tool_search(
 
     TTL: each tool enablement expires unless marked permanent. Pick the
     shortest TTL that covers your task to keep the tool list lean:
-      "30m"       — one-shot operation
-      "2h"        — default, typical multi-step task
-      "6h"        — sustained workflow in a single session
-      "24h"       — multi-session workflow, e.g. across a workday
-      "permanent" — only if you're confident the user wants this as a
-                    standing capability on this thread
+      "30m":       one-shot operation
+      "2h":        default, typical multi-step task
+      "6h":        sustained workflow in a single session
+      "24h":       multi-session workflow, e.g. across a workday
+      "permanent": only if you're confident the user wants this as a
+                   standing capability on this thread
     Calling enable again on a TTL'd tool resets its expiry. Calling it
     with ttl="permanent" promotes it out of the TTL bucket. Expired
     entries are evicted at the start of the next turn (lazy, no surprise
@@ -773,10 +773,10 @@ def tool_search(
     Settings → MCP first, then retry.
 
     Disabling core tools (bash_execute, file_read, tool_search itself, etc.)
-    can cripple the thread, so disable refuses core names by default — set
+    can cripple the thread, so disable refuses core names by default. Set
     force=True to override. "Core" here means a tool that's in the codebase's
     hardcoded ALL_TOOLS list (the superset of essential tools), which is
-    broader than the "default-bound" set the classifier uses — a user's
+    broader than the "default-bound" set the classifier uses. A user's
     default_thread_tools preference curates a subset of ALL_TOOLS, so a
     tool can be default-bound for your thread but still protected by this
     guard. Mixed batches (core + non-core) succeed for the non-core portion
@@ -788,51 +788,51 @@ def tool_search(
     Disable now preserves the tool's prior permanent/TTL state. If you had
     a tool as permanent and force-disable it, the entry stays in
     enabled_tools but is suppressed from the bound set via disabled_tools.
-    Un-disabling via enable restores the original state — the permanent
+    Un-disabling via enable restores the original state, so the permanent
     badge survives the round-trip.
 
     Actions:
-      search          — Search tools by keyword and/or category
-      enable          — Enable tools (ends the turn if new tools were added)
-      disable         — Disable tools for this thread (next-message effect)
-      list_categories — List all tool categories with counts
-      status          — Show enabled/disabled tools (with TTL remaining)
+      search:          Search tools by keyword and/or category
+      enable:          Enable tools (ends the turn if new tools were added)
+      disable:         Disable tools for this thread (next-message effect)
+      list_categories: List all tool categories with counts
+      status:          Show enabled/disabled tools (with TTL remaining)
 
-    Enable response breakdown — every input tool is classified in exactly
+    Enable response breakdown. Every input tool is classified in exactly
     one of these buckets, checked in this priority order:
-      Un-disabled             — the name was in tc.disabled_tools and got
-                                removed. Any preserved permanent or TTL
-                                entry is restored AS-IS — the requested
-                                `ttl` does NOT apply (preventing a batch-
-                                level TTL from silently promoting an
-                                unrelated tool). Only when there's no
-                                preserved state and no default binding does
-                                a fresh entry get written using `ttl`.
-      Already permanent       — already in tc.enabled_tools (persisted,
-                                no expiry). TTL requests are rejected — no
-                                demotion from permanent to TTL.
-      Already bound (default) — part of the thread's default-bound tool set
-                                (ALL_TOOLS or the user's default_thread_tools
-                                override). Already callable, nothing written.
-                                NOTE: "default-bound" is NOT the same as the
-                                "core" protection used by disable — disable
-                                protects ALL_TOOLS essentials (broader).
-      TTL refreshed           — existed in tc.temporary_tools; expires_at
-                                pushed out by ttl.
-      Promoted to permanent   — existed in tc.temporary_tools; moved to
-                                tc.enabled_tools (loses TTL, gains persistence).
-      Newly loaded            — none of the above; written fresh to
-                                enabled_tools (ttl=permanent) or
-                                temporary_tools (ttl=30m/2h/6h/24h).
+      Un-disabled:             the name was in tc.disabled_tools and got
+                               removed. Any preserved permanent or TTL
+                               entry is restored AS-IS, so the requested
+                               `ttl` does NOT apply (preventing a batch-
+                               level TTL from silently promoting an
+                               unrelated tool). Only when there's no
+                               preserved state and no default binding does
+                               a fresh entry get written using `ttl`.
+      Already permanent:       already in tc.enabled_tools (persisted,
+                               no expiry). TTL requests are rejected, so no
+                               demotion from permanent to TTL.
+      Already bound (default): part of the thread's default-bound tool set
+                               (ALL_TOOLS or the user's default_thread_tools
+                               override). Already callable, nothing written.
+                               NOTE: "default-bound" is NOT the same as the
+                               "core" protection used by disable; disable
+                               protects ALL_TOOLS essentials (broader).
+      TTL refreshed:           existed in tc.temporary_tools; expires_at
+                               pushed out by ttl.
+      Promoted to permanent:   existed in tc.temporary_tools; moved to
+                               tc.enabled_tools (loses TTL, gains persistence).
+      Newly loaded:            none of the above; written fresh to
+                               enabled_tools (ttl=permanent) or
+                               temporary_tools (ttl=30m/2h/6h/24h).
 
     Args:
         action: One of: search, enable, disable, list_categories, status
         query: Search keyword (for 'search' action)
         category: Category name to filter or enable (e.g. "email", "twitch")
         tools: List of tool names to enable or disable
-        ttl: TTL preset for 'enable' — "30m", "2h" (default), "6h", "24h",
-             or "permanent". Ignored for other actions.
-        force: For 'disable' only — set True to allow disabling core tools.
+        ttl: TTL preset for 'enable'. One of "30m", "2h" (default), "6h",
+             "24h", or "permanent". Ignored for other actions.
+        force: For 'disable' only. Set True to allow disabling core tools.
     """
     action = action.strip().lower()
     thread_id = get_thread_id(config)

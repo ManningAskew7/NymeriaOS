@@ -183,7 +183,7 @@ def _slash_command_sync(
         /notepad write replace:new notepad contents
 
     Destructive commands (/ask, /stop, /clear, /compact, /restart) are
-    blocked — they would interrupt or destroy the current conversation.
+    blocked because they would interrupt or destroy the current conversation.
 
     Args:
         command: The slash command string.

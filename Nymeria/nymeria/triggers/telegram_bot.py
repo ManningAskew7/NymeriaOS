@@ -1877,51 +1877,51 @@ class NymeriaTelegramBot:
         text = (
             "<b>Nymeria Bot Commands</b>\n\n"
             "<b>Chat</b>\n"
-            "/ask &lt;message&gt; — Send a message\n"
-            "/stop — Abort current operation\n"
-            "/clear — Clear conversation history\n"
-            "/compact — Compress context\n"
-            "/export [format] — Export history (markdown/json/txt)\n"
-            "/restart [bot|api] — Restart a service\n"
-            "/showtools — Toggle tool call display\n"
-            "/help — This message\n\n"
+            "/ask &lt;message&gt;: Send a message\n"
+            "/stop: Abort current operation\n"
+            "/clear: Clear conversation history\n"
+            "/compact: Compress context\n"
+            "/export [format]: Export history (markdown/json/txt)\n"
+            "/restart [bot|api]: Restart a service\n"
+            "/showtools: Toggle tool call display\n"
+            "/help: This message\n\n"
             "<b>Model &amp; Info</b>\n"
-            "/model [name] [scope] — Show/change model\n"
-            "/models — List available models\n"
-            "/think [off|on|low|medium|high] — Thinking mode\n"
-            "/status — System dashboard\n"
-            "/thread — Thread info\n"
-            "/context — Context breakdown\n"
-            "/tasks [status] — Scheduled tasks\n\n"
+            "/model [name] [scope]: Show/change model\n"
+            "/models: List available models\n"
+            "/think [off|on|low|medium|high]: Thinking mode\n"
+            "/status: System dashboard\n"
+            "/thread: Thread info\n"
+            "/context: Context breakdown\n"
+            "/tasks [status]: Scheduled tasks\n\n"
             "<b>TODOs</b>\n"
             "/todo_add &lt;task&gt; | &lt;schedule&gt; | &lt;repeat&gt;\n"
-            "/todo_list [status] — List TODOs\n"
-            "/todo_complete &lt;id&gt; — Mark done\n"
-            "/todo_delete &lt;id&gt; — Delete\n\n"
+            "/todo_list [status]: List TODOs\n"
+            "/todo_complete &lt;id&gt;: Mark done\n"
+            "/todo_delete &lt;id&gt;: Delete\n\n"
             "<b>Config</b>\n"
-            "/config_show — Show all settings\n"
-            "/config_get &lt;key&gt; — Get a setting\n"
-            "/config_set &lt;key&gt; &lt;value&gt; — Update setting\n\n"
+            "/config_show: Show all settings\n"
+            "/config_get &lt;key&gt;: Get a setting\n"
+            "/config_set &lt;key&gt; &lt;value&gt;: Update setting\n\n"
             "<b>Environment</b>\n"
-            "/env_show — All env vars (secrets masked)\n"
-            "/env_get &lt;key&gt; — Get unmasked value\n"
-            "/env_set &lt;key&gt; &lt;value&gt; — Set env variable\n\n"
+            "/env_show: All env vars (secrets masked)\n"
+            "/env_get &lt;key&gt;: Get unmasked value\n"
+            "/env_set &lt;key&gt; &lt;value&gt;: Set env variable\n\n"
             "<b>Tools</b>\n"
-            "/tools_core — Core tools\n"
-            "/tools_optional — Optional categories\n"
-            "/tools_enabled — Active tools\n"
-            "/tools_category &lt;name&gt; — Category tools\n"
-            "/tools_enable &lt;name&gt; — Enable tool/category\n"
-            "/tools_disable &lt;name&gt; — Disable tool/category\n\n"
+            "/tools_core: Core tools\n"
+            "/tools_optional: Optional categories\n"
+            "/tools_enabled: Active tools\n"
+            "/tools_category &lt;name&gt;: Category tools\n"
+            "/tools_enable &lt;name&gt;: Enable tool/category\n"
+            "/tools_disable &lt;name&gt;: Disable tool/category\n\n"
             "<b>Memory</b>\n"
-            "/memory_list — List memories\n"
+            "/memory_list: List memories\n"
             "/memory_save &lt;key&gt; &lt;value&gt;\n"
             "/memory_forget &lt;key&gt;\n"
             "/memory_search &lt;query&gt;\n\n"
             "<b>Notepad</b>\n"
-            "/notepad_read — Read notepad\n"
-            "/notepad_write &lt;content&gt; — Append to notepad\n"
-            "/notepad_clear — Clear notepad\n\n"
+            "/notepad_read: Read notepad\n"
+            "/notepad_write &lt;content&gt;: Append to notepad\n"
+            "/notepad_clear: Clear notepad\n\n"
             "<i>You can also send plain text in DMs or reply to me in groups.</i>"
         )
         await self._send_html(chat_id, text, context)
@@ -1989,7 +1989,7 @@ class NymeriaTelegramBot:
                 return
 
             status_icons = {"pending": "\u23f3", "in_progress": "\u25b6", "done": "\u2705"}
-            lines = [f"<b>TODOs ({filter_val})</b> — {len(items)} items\n"]
+            lines = [f"<b>TODOs ({filter_val})</b>: {len(items)} items\n"]
             for item in items[:25]:
                 st = item.get("status", "pending")
                 icon = status_icons.get(st, "?")
@@ -2840,7 +2840,7 @@ class NymeriaTelegramBot:
                         errors.append(err)
                 except Exception as e:
                     logger.warning(f"Failed to download Telegram photo: {e}")
-                    errors.append("Couldn't download that photo — try resending.")
+                    errors.append("Couldn't download that photo. Try resending.")
 
         # ---- Document (image-as-file, PDF, txt, md, csv) -------------------
         if msg.document:
@@ -2863,13 +2863,13 @@ class NymeriaTelegramBot:
                         errors.append(err)
                 except Exception as e:
                     logger.warning(f"Failed to download Telegram document: {e}")
-                    errors.append("Couldn't download that file — try resending.")
+                    errors.append("Couldn't download that file. Try resending.")
 
         if len(attachments) > attachment_helpers.MAX_FILES_PER_MESSAGE:
             extra = len(attachments) - attachment_helpers.MAX_FILES_PER_MESSAGE
             attachments = attachments[: attachment_helpers.MAX_FILES_PER_MESSAGE]
             errors.append(
-                f"Skipped {extra} extra file(s) — max "
+                f"Skipped {extra} extra file(s). Max is "
                 f"{attachment_helpers.MAX_FILES_PER_MESSAGE} per message."
             )
 

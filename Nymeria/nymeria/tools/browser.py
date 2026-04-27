@@ -503,7 +503,7 @@ def browser_navigate(url: str) -> str:
     logger.info(f"browser_navigate: {url}")
 
     if _use_fallback_mode():
-        logger.info("BROWSER_FORCE_FALLBACK=true — skipping Playwright, using requests fallback")
+        logger.info("BROWSER_FORCE_FALLBACK=true; skipping Playwright, using requests fallback")
         return _fallback_navigate(url)
 
     browser = _get_browser()

@@ -106,9 +106,9 @@ active skill.
 queries find the right skill even when the query and the skill name share no
 keywords:
 
-1. **Semantic** — `openai/text-embedding-3-small` embeddings indexed in
-   `sqlite-vec`, the same stack Nymeria's RAG already uses. Requires
-   `OPENAI_API_KEY`. Returns top-k by cosine similarity on
+1. **Semantic** — OpenAI-compatible embeddings indexed in `sqlite-vec`,
+   using `EMBEDDING_MODEL` (default `text-embedding-3-small`) and
+   `EMBEDDING_API_KEY`. Returns top-k by cosine similarity on
    `name + description + allowed-tools`.
 2. **BM25 / FTS5** — sqlite `FTS5` full-text search with Porter stemming,
    ranked by `bm25()`. No model, no network. Kicks in when semantic is
@@ -123,7 +123,7 @@ The tool's JSON response always includes a ``mode`` field (`"semantic"`,
 {
   "count": 3,
   "mode": "bm25",
-  "warning": "semantic search unavailable (OPENAI_API_KEY not set; semantic search disabled); falling back to keyword search. Set OPENAI_API_KEY on the server for better skill discovery.",
+  "warning": "semantic search unavailable (EMBEDDING_API_KEY not set; semantic search disabled); falling back to keyword search. Set EMBEDDING_API_KEY on the server for better skill discovery.",
   "results": [{"name": "pdf", "description": "…", "score": 0.71, "scope": "user"}]
 }
 ```
@@ -209,14 +209,10 @@ correctness/ergonomics upgrade (Pydantic-validated frontmatter, atomic
 
 ## Future improvements
 
-- **Local-server embeddings as a fallback step.** Ollama / llama.cpp-server /
-  LM Studio expose an OpenAI-compatible `/v1/embeddings` endpoint when
-  serving an embedding model (e.g. `nomic-embed-text`, `all-MiniLM`). A
-  `SKILLS_LOCAL_EMBED_URL` env var could slot in between the OpenAI path
-  and the BM25 fallback, letting users who run a local inference stack get
-  semantic search without an OpenAI key. The current fallback chain is
-  `OpenAI → BM25 → substring`; adding this would make it
-  `OpenAI → local /v1/embeddings → BM25 → substring`.
+- **Local-server embeddings.** OpenAI-compatible `/v1/embeddings` endpoints
+  can be used by pointing `EMBEDDING_BASE_URL` at the server and setting
+  `EMBEDDING_API_KEY` to that server's accepted token. The current sqlite-vec
+  schema expects 1536-dimensional vectors, so use a compatible model.
 - **Agent-authored skills tools** (`create_skill`, `edit_skill`,
   `delete_skill`) — see the Phase 1.5 section above.
 - **ClawHub + arbitrary git URL marketplaces** — the `marketplace.py`

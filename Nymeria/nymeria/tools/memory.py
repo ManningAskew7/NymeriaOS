@@ -85,6 +85,7 @@ def profile_save(
             memory_index = _get_memory_index(user_id)
             if memory_index:
                 try:
+                    memory_index.delete_memory_key(user_id, key)
                     memory_index.add_chunk(
                         content=f"{key}: {value}",
                         metadata={"key": key},
@@ -121,6 +122,12 @@ def profile_forget(
         # Try memories first, then personality preferences
         if profile.remove_memory(key):
             logger.info(f"Memory deleted for user {user_id}: {key}")
+            memory_index = _get_memory_index(user_id)
+            if memory_index:
+                try:
+                    memory_index.delete_memory_key(user_id, key)
+                except Exception as e:
+                    logger.warning(f"Failed to remove memory from RAG index: {e}")
             return f"[Deleted]: Forgot '{key}'. This will no longer appear in future conversations."
         if profile.clear_personality(key):
             logger.info(f"Personality preference deleted for user {user_id}: {key}")
@@ -196,6 +203,13 @@ def memory_clear_all(
         profile.memories = []
         profile.personality_overrides = {}
         profile.name = None
+
+        memory_index = _get_memory_index(user_id)
+        if memory_index:
+            try:
+                memory_index.delete_by_type(user_id, "memory")
+            except Exception as e:
+                logger.warning(f"Failed to clear memories from RAG index: {e}")
 
         logger.info(f"All memories cleared for user {user_id}")
         return f"[Cleared]: Deleted {count} memories and {personality_count} personality preferences. Starting fresh."

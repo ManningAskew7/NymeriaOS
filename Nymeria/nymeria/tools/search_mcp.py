@@ -151,7 +151,7 @@ def mcp_install(
         registry.delete_server(defn.id)
         logger.warning("mcp_install discovery failed for %s: %s", defn.id, e)
         return (
-            f"[error] installed but could not reach server — rolled back.\n"
+            f"[error] installed but could not reach server; rolled back.\n"
             f"Parsed as: {describe_definition(defn)}\n"
             f"Cause: {e}"
         )

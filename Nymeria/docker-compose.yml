@@ -85,6 +85,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-}
       # LLM Configuration
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
@@ -140,6 +143,7 @@ services:
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
       # Google OAuth
       GOOGLE_OAUTH_CREDENTIALS: ${GOOGLE_OAUTH_CREDENTIALS:-}
+      _PRV_A_SERVICE_ACCOUNT_FILE: ${_PRV_A_SERVICE_ACCOUNT_FILE:-}
       # Microsoft Teams notifications
       TEAMS_TEAM_ID: ${TEAMS_TEAM_ID:-}
       TEAMS_CHANNEL_ID: ${TEAMS_CHANNEL_ID:-}
@@ -386,7 +390,7 @@ services:
       - 1.1.1.1
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: ["python", "run.py", "mcp", "--http", "--host", "0.0.0.0", "--port", "8001"]
+    command: ["python", "run.py", "mcp", "--http", "--host", "0.0.0.0", "--port", "8001", "--api-url", "http://nymeria-api:8000"]
     ports:
       - "${MCP_PORT:-8001}:8001"
     environment:
@@ -398,6 +402,8 @@ services:
       - ./run.py:/app/run.py          # Bind mount: live entry point
       - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
     depends_on:
+      api:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:

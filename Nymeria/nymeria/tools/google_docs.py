@@ -1,10 +1,10 @@
-"""Google Docs tools — native Python implementation.
+"""Google Docs tools (native Python implementation).
 
 Uses google-api-python-client for direct Google Docs API calls.
 Authentication is handled by google_docs_auth.py (OAuth 2.0 authorization
 code flow with localhost redirect + manual fallback).
 
-Optional tools — enable per-thread via thread config.
+Optional tools, enable per-thread via thread config.
 """
 
 import json
@@ -1012,7 +1012,7 @@ def google_docs_read(
 
     Args:
         document_id: The Google Docs document ID or full URL
-        format: Output format — "text" for plain text (default), "markdown" for
+        format: Output format. "text" for plain text (default), "markdown" for
                 reconstructed markdown with headings/bold/lists/tables, "json" for
                 raw API structure with indices
         max_chars: Maximum characters to return (default: 50000)
@@ -1232,7 +1232,7 @@ def google_docs_write(
         document_id: The Google Docs document ID or full URL
         content: Markdown-formatted content to write
         mode: "append" to add after existing content (default), "overwrite" to replace all content
-        insert_index: Optional — insert content at this specific 1-based index instead of
+        insert_index: Optional. Insert content at this specific 1-based index instead of
                       appending. Use google_docs_read with format="json" or include_metadata=True
                       to find indices. Cannot be combined with mode="overwrite".
         account_id: Google account ID (optional, uses first account if not specified)
@@ -1260,7 +1260,7 @@ def google_docs_write(
     # Parse markdown into blocks
     blocks = _parse_markdown(content)
     if not blocks:
-        return "[Error]: No content to write — the markdown produced no blocks."
+        return "[Error]: No content to write. The markdown produced no blocks."
 
     # Count elements for summary
     element_counts: dict[str, int] = {}
@@ -1583,7 +1583,7 @@ def google_docs_update_paragraph_style(
     """
     Update paragraph styling for a range of text in a Google Docs document.
 
-    Use this for post-hoc styling of existing content — setting headings or
+    Use this for post-hoc styling of existing content, setting headings or
     alignment on paragraphs that are already in the document.
 
     Accepts either a document ID or a full Google Docs URL.
@@ -1593,7 +1593,7 @@ def google_docs_update_paragraph_style(
         start_index: Start of the paragraph range (inclusive)
         end_index: End of the paragraph range (exclusive)
         heading_level: Heading level 0-6 (0 = normal text, 1 = HEADING_1, etc.)
-        alignment: Text alignment — "START", "CENTER", "END", or "JUSTIFIED"
+        alignment: Text alignment. One of "START", "CENTER", "END", or "JUSTIFIED"
         account_id: Google account ID (optional, uses first account if not specified)
 
     Returns:
@@ -1932,8 +1932,8 @@ def google_docs_replace_text(
         find_text: The text to search for
         replace_text: The text to replace it with
         match_case: Whether the search is case-sensitive (default: True)
-        clear_formatting: If True, reset the replaced text to default style —
-                          removes bold, italic, underline, color, font size, links
+        clear_formatting: If True, reset the replaced text to default style.
+                          Removes bold, italic, underline, color, font size, links
                           (default: False)
         account_id: Google account ID (optional, uses first account if not specified)
 

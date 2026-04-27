@@ -28,6 +28,7 @@ CHARS_PER_TOKEN = 4  # Approximate
 
 # OpenAI embedding dimensions
 EMBEDDING_DIMENSIONS = 1536  # text-embedding-3-small
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 @dataclass
@@ -49,6 +50,9 @@ class MemoryIndex:
         self,
         db_path: Path,
         embedding_provider: str = "openai",
+        embedding_api_key: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
+        embedding_model: Optional[str] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     ):
@@ -58,11 +62,29 @@ class MemoryIndex:
         Args:
             db_path: Path to SQLite database (e.g., data/users/{user_id}/memory.db)
             embedding_provider: Embedding provider ('openai' for now)
+            embedding_api_key: Dedicated API key for embeddings
+            embedding_base_url: Optional OpenAI-compatible embeddings base URL
+            embedding_model: Embedding model name
             chunk_size: Maximum tokens per chunk
             chunk_overlap: Token overlap between chunks
         """
         self.db_path = Path(db_path)
         self.embedding_provider = embedding_provider
+        if embedding_api_key is None or embedding_base_url is None or embedding_model is None:
+            try:
+                from ..config import get_settings
+                settings = get_settings()
+                if embedding_api_key is None:
+                    embedding_api_key = settings.embedding_api_key
+                if embedding_base_url is None:
+                    embedding_base_url = settings.embedding_base_url
+                if embedding_model is None:
+                    embedding_model = settings.embedding_model
+            except Exception:
+                pass
+        self.embedding_api_key = embedding_api_key
+        self.embedding_base_url = embedding_base_url
+        self.embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._lock = threading.RLock()
@@ -181,9 +203,16 @@ class MemoryIndex:
     def _get_openai_client(self):
         """Lazily initialize OpenAI client."""
         if self._openai_client is None:
+            if not self.embedding_api_key:
+                raise RuntimeError("EMBEDDING_API_KEY not configured")
+            if self.embedding_api_key.startswith("cpx-"):
+                raise RuntimeError("EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key")
             try:
                 from openai import OpenAI
-                self._openai_client = OpenAI()
+                kwargs = {"api_key": self.embedding_api_key}
+                if self.embedding_base_url:
+                    kwargs["base_url"] = self.embedding_base_url
+                self._openai_client = OpenAI(**kwargs)
             except ImportError:
                 raise ImportError("openai package required for embeddings. Install with: pip install openai")
         return self._openai_client
@@ -205,10 +234,18 @@ class MemoryIndex:
             try:
                 client = self._get_openai_client()
                 response = client.embeddings.create(
-                    model="text-embedding-3-small",
+                    model=self.embedding_model,
                     input=text[:8000],  # Truncate to model's limit
                 )
-                return response.data[0].embedding
+                embedding = response.data[0].embedding
+                if len(embedding) != EMBEDDING_DIMENSIONS:
+                    logger.error(
+                        "Embedding dimension mismatch: expected %s, got %s",
+                        EMBEDDING_DIMENSIONS,
+                        len(embedding),
+                    )
+                    return None
+                return embedding
             except Exception as e:
                 logger.error(f"Failed to get OpenAI embedding: {e}")
                 return None
@@ -602,6 +639,64 @@ class MemoryIndex:
 
                 chunk_ids = [row['id'] for row in cursor.fetchall()]
 
+            finally:
+                conn.close()
+
+        return self.delete_chunks(chunk_ids)
+
+    def delete_by_type(self, user_id: str, chunk_type: str) -> int:
+        """
+        Delete all chunks of a specific type for a user.
+
+        Args:
+            user_id: User ID
+            chunk_type: Chunk type to remove ('conversation', 'memory', 'todo')
+
+        Returns:
+            Number of chunks deleted
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id FROM chunks
+                    WHERE user_id = ? AND chunk_type = ?
+                """, (user_id, chunk_type))
+                chunk_ids = [row['id'] for row in cursor.fetchall()]
+            finally:
+                conn.close()
+
+        return self.delete_chunks(chunk_ids)
+
+    def delete_memory_key(self, user_id: str, key: str) -> int:
+        """
+        Delete memory chunks for a specific profile memory key.
+
+        Args:
+            user_id: User ID
+            key: Profile memory key
+
+        Returns:
+            Number of chunks deleted
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, metadata FROM chunks
+                    WHERE user_id = ? AND chunk_type = 'memory'
+                """, (user_id,))
+
+                chunk_ids = []
+                for row in cursor.fetchall():
+                    try:
+                        metadata = json.loads(row['metadata'] or "{}")
+                    except json.JSONDecodeError:
+                        metadata = {}
+                    if metadata.get("key") == key:
+                        chunk_ids.append(row['id'])
             finally:
                 conn.close()
 

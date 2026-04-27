@@ -34,7 +34,7 @@ def consult(
     an outside perspective, need help with a hard problem, or want to
     cross-check your own reasoning.
 
-    Gemini has no memory of previous calls — include all relevant context
+    Gemini has no memory of previous calls, so include all relevant context
     with every request.
 
     Args:

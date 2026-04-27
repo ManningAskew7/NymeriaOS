@@ -11,9 +11,12 @@ text content using the appropriate method:
 import base64
 import io
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +53,14 @@ Pay special attention to:
 - Email addresses and contact details
 
 Return the extracted content as plain text. For tables, use markdown table format.
-Do not summarize or interpret — extract verbatim."""
+Do not summarize or interpret. Extract verbatim."""
 
 
-def _download_attachments(email_id: str, account_id: Optional[str] = None) -> tuple[list[dict], int]:
+def _download_attachments(
+    user_id: str,
+    email_id: str,
+    account_id: Optional[str] = None,
+) -> tuple[list[dict], int]:
     """Download attachments from an email via Graph API.
 
     Returns (list of {name, mime_type, data_b64, size}, skipped_inline_count).
@@ -61,6 +68,7 @@ def _download_attachments(email_id: str, account_id: Optional[str] = None) -> tu
     from .outlook_email import graph_request
 
     success, result = graph_request(
+        user_id,
         "GET",
         f"/me/messages/{email_id}/attachments",
         account_id=account_id,
@@ -91,7 +99,7 @@ def _download_attachments(email_id: str, account_id: Optional[str] = None) -> tu
             continue
 
         if size > _MAX_ATTACHMENT_SIZE:
-            logger.warning(f"Skipping attachment '{name}' ({size} bytes) — exceeds size limit")
+            logger.warning(f"Skipping attachment '{name}' ({size} bytes); exceeds size limit")
             attachments.append({
                 "name": name,
                 "mime_type": mime_type,
@@ -130,7 +138,7 @@ def _extract_xlsx(data_b64: str, filename: str) -> str:
     try:
         import openpyxl
     except ImportError:
-        return "[Error]: openpyxl not installed — cannot extract Excel files."
+        return "[Error]: openpyxl not installed; cannot extract Excel files."
 
     try:
         raw = base64.b64decode(data_b64)
@@ -271,6 +279,8 @@ def _extract_attachment(att: dict) -> str:
 def outlook_get_attachments(
     email_id: str,
     skip: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Download and extract text content from all attachments on an email.
@@ -289,15 +299,18 @@ def outlook_get_attachments(
               Use this to avoid extracting irrelevant attachments you already
               know about (e.g. "logo.png, terms.pdf, disclaimer.html").
               Matching is case-insensitive and supports partial names.
+        account_id: Microsoft account ID (optional, uses first account if not specified)
 
     Returns:
         Extracted text content from all attachments, grouped by filename.
     """
+    user_id = get_user_id(config)
+
     # Parse skip list
     skip_names = [s.strip().lower() for s in skip.split(",") if s.strip()] if skip.strip() else []
 
     try:
-        attachments, skipped = _download_attachments(email_id)
+        attachments, skipped = _download_attachments(user_id, email_id, account_id=account_id)
     except RuntimeError as e:
         return f"[Error]: {e}"
 

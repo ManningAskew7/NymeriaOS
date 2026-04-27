@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+from html import unescape
 from pathlib import Path
 from typing import Annotated, Optional, List
 
@@ -23,28 +24,47 @@ logger = logging.getLogger(__name__)
 # Graph API base URL
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
+FOLDER_ALIASES = {
+    "inbox": "inbox",
+    "sent": "sentitems",
+    "sentitems": "sentitems",
+    "drafts": "drafts",
+    "deleted": "deleteditems",
+    "deleteditems": "deleteditems",
+    "junk": "junkemail",
+    "junkemail": "junkemail",
+    "archive": "archive",
+}
 
-def _html_to_text(html: str) -> str:
+
+def _resolve_folder_alias(folder: str) -> tuple[bool, str]:
+    """Resolve a supported folder alias to a Microsoft Graph folder ID."""
+    key = folder.lower().strip()
+    if key in FOLDER_ALIASES:
+        return True, FOLDER_ALIASES[key]
+    options = ", ".join(sorted(FOLDER_ALIASES))
+    return False, f"Invalid folder. Expected one of: {options}."
+
+
+def _html_to_text(content: str) -> str:
     """Convert HTML email body to readable plain text.
 
     Preserves line breaks from block elements so part lists
     and tables don't get concatenated into a single line.
     """
-    text = html
+    text = content
+    # Remove non-content blocks before stripping tags. Outlook/marketing HTML
+    # often includes large CSS chunks that otherwise dominate the readable body.
+    text = re.sub(r"(?is)<(script|style|head|noscript)[^>]*>.*?</\1>", "", text)
+    text = re.sub(r"(?is)<!--.*?-->", "", text)
     # Convert block-level closing tags to newlines
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</(?:p|div|tr|li|h[1-6]|blockquote)>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<hr\s*/?>', '\n---\n', text, flags=re.IGNORECASE)
     # Table cell separators
     text = re.sub(r'</t[dh]>', ' | ', text, flags=re.IGNORECASE)
-    # Decode common HTML entities
-    text = text.replace('&nbsp;', ' ')
-    text = text.replace('&amp;', '&')
-    text = text.replace('&lt;', '<')
-    text = text.replace('&gt;', '>')
-    text = text.replace('&quot;', '"')
-    text = text.replace('&#39;', "'")
-    text = text.replace('&apos;', "'")
+    # Decode HTML entities
+    text = unescape(text).replace("\xa0", " ")
     # Strip remaining tags
     text = re.sub(r'<[^>]+>', '', text)
     # Collapse excessive newlines (3+ → 2)
@@ -59,7 +79,7 @@ def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict
     """Get account info from cache.
 
     Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first account.
-    All reads are scoped to the Nymeria ``user_id`` — another user's Microsoft
+    All reads are scoped to the Nymeria ``user_id``; another user's Microsoft
     accounts are invisible.
     """
     cache = load_token_cache(user_id)
@@ -305,8 +325,8 @@ def format_email_summary(msg: dict) -> str:
     sender = msg.get("from", {}).get("emailAddress", {})
     sender_str = _clean_sender(sender)
     date = msg.get("receivedDateTime", "")[:16].replace("T", " ")
-    is_read = "✓" if msg.get("isRead") else "•"
-    has_attach = "📎" if msg.get("hasAttachments") else ""
+    read_state = "read" if msg.get("isRead") else "unread"
+    has_attach = " [attachment]" if msg.get("hasAttachments") else ""
     msg_id = msg.get("id", "")
     conv_id = msg.get("conversationId", "")
 
@@ -317,7 +337,7 @@ def format_email_summary(msg: dict) -> str:
         if len(preview) > 120:
             preview = preview[:117] + "..."
 
-    lines = [f"{is_read} [{date}] {sender_str}", f"   {subject} {has_attach}"]
+    lines = [f"[{read_state}] [{date}] {sender_str}", f"   {subject}{has_attach}"]
     if preview:
         lines.append(f"   Preview: {preview}")
     lines.append(f"   ID: {msg_id}")
@@ -362,18 +382,9 @@ def outlook_list_emails(
     if filters:
         params["$filter"] = " and ".join(filters)
 
-    # Map folder names
-    folder_map = {
-        "inbox": "inbox",
-        "sent": "sentitems",
-        "sentitems": "sentitems",
-        "drafts": "drafts",
-        "deleted": "deleteditems",
-        "deleteditems": "deleteditems",
-        "junk": "junkemail",
-        "archive": "archive",
-    }
-    folder_name = folder_map.get(folder.lower(), folder)
+    valid_folder, folder_name = _resolve_folder_alias(folder)
+    if not valid_folder:
+        return f"[Error]: {folder_name}"
 
     success, result = graph_request(user_id, "GET",
         f"/me/mailFolders/{folder_name}/messages",
@@ -454,11 +465,11 @@ def _format_single_email(result: dict) -> str:
                     lines.append(f"  ({inline_count} inline signature image(s) hidden)")
                 lines.append(f'Use outlook_get_attachments(email_id="{email_id_val}") to extract text content')
             elif inline_count:
-                lines.append(f"\n**Attachments:** {inline_count} inline signature image(s) only — no documents to extract")
+                lines.append(f"\n**Attachments:** {inline_count} inline signature image(s) only, no documents to extract")
             else:
-                lines.append(f'\n**Attachments:** Yes — use outlook_get_attachments(email_id="{email_id_val}") to read contents')
+                lines.append(f'\n**Attachments:** Yes. Use outlook_get_attachments(email_id="{email_id_val}") to read contents')
         else:
-            lines.append(f'\n**Attachments:** Yes — use outlook_get_attachments(email_id="{email_id_val}") to read contents')
+            lines.append(f'\n**Attachments:** Yes. Use outlook_get_attachments(email_id="{email_id_val}") to read contents')
 
     return "\n".join(lines)
 
@@ -550,6 +561,7 @@ def _build_search_kql(
 
 
 def _search_single_query(
+    user_id: str,
     query: str,
     account_id: Optional[str],
     limit: int,
@@ -563,19 +575,10 @@ def _search_single_query(
         "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
     }
 
-    # Build endpoint — folder-scoped or global
-    folder_map = {
-        "inbox": "inbox",
-        "sent": "sentitems",
-        "sentitems": "sentitems",
-        "drafts": "drafts",
-        "deleted": "deleteditems",
-        "deleteditems": "deleteditems",
-        "junk": "junkemail",
-        "archive": "archive",
-    }
     if folder.strip():
-        folder_name = folder_map.get(folder.lower().strip(), folder.strip())
+        valid_folder, folder_name = _resolve_folder_alias(folder)
+        if not valid_folder:
+            return f"[Error]: {folder_name}"
         endpoint = f"/me/mailFolders/{folder_name}/messages"
     else:
         endpoint = "/me/messages"
@@ -740,7 +743,7 @@ def outlook_search_emails(
 
     # Raw KQL mode — bypass structured filters
     if kql.strip():
-        return _search_single_query(kql.strip(), account_id, limit, folder=folder, days_back=days_back, category=category)
+        return _search_single_query(user_id, kql.strip(), account_id, limit, folder=folder, days_back=days_back, category=category)
 
     # Build KQL from structured filters
     kql_suffix = _build_search_kql("", sender=sender, recipient=to, subject=subject, has_attachments=has_attachments)
@@ -755,7 +758,7 @@ def outlook_search_emails(
         # No keyword query but have filters — search with filters only
         # Use kql_suffix as the query itself (don't append it again later)
         return _search_single_query(
-            kql_suffix, account_id, limit, folder=folder, days_back=days_back, category=category,
+            user_id, kql_suffix, account_id, limit, folder=folder, days_back=days_back, category=category,
         )
     else:
         return "[Error]: Provide a query, filters, or both."
@@ -768,14 +771,14 @@ def outlook_search_emails(
 
     # Single query — return directly
     if len(final_queries) == 1:
-        return _search_single_query(final_queries[0], account_id, limit, folder=folder, days_back=days_back, category=category)
+        return _search_single_query(user_id, final_queries[0], account_id, limit, folder=folder, days_back=days_back, category=category)
 
     # Batch mode
     total = len(final_queries)
     sections = []
     for i, (orig_q, full_q) in enumerate(zip(query_list, final_queries), 1):
         header = f"=== Search {i}/{total}: {orig_q} ==="
-        result = _search_single_query(full_q, account_id, limit, folder=folder, days_back=days_back, category=category)
+        result = _search_single_query(user_id, full_q, account_id, limit, folder=folder, days_back=days_back, category=category)
         sections.append(f"{header}\n{result}")
 
     return "\n\n".join(sections)
@@ -971,7 +974,7 @@ def outlook_create_draft(
         account_id: Microsoft account ID (optional)
         cc: CC recipients, comma-separated (optional)
         bcc: BCC recipients, comma-separated (optional). Recipients in BCC
-             cannot see each other — use this for supplier RFQs where suppliers
+             cannot see each other. Use this for supplier RFQs where suppliers
              should not see who else was contacted.
         is_html: Set to True if body contains HTML content (default False)
 
@@ -1030,7 +1033,7 @@ def outlook_edit_draft(
     """
     Edit an existing email draft. Only provided fields are updated.
 
-    Use this to revise a draft after feedback — e.g. the user says
+    Use this to revise a draft after feedback, e.g. the user says
     "change the greeting" or "add these parts to the quote".
     Works on drafts created by outlook_create_draft or outlook_draft_reply.
 
@@ -1254,7 +1257,7 @@ def outlook_set_category(
 
     Use this to tag emails for processing (e.g. category="Nymeria") or to
     clear the tag after you've finished processing them. Categories are
-    visible in Outlook as colored labels — staff can also add them manually.
+    visible in Outlook as colored labels; staff can also add them manually.
 
     Args:
         email_id: The email ID to modify

@@ -222,13 +222,21 @@ TodoManager:
 Ticker finds due scheduled TODO:
     1. Marks TODO as IN_PROGRESS (prevents duplicates)
     2. Publishes "task_started" event to EventBus
-    3. Calls agent.stream(todo.task, _is_self_invoke=True)
+    3. Calls agent.stream("Work on TODO {id}: {task}", _is_self_invoke=True)
     4. Streams tool_call, tool_result, thinking, response events to frontend
     5. Publishes "task_completed" event
     7. If recurring: calculates next execution, reschedules
     8. If not recurring: clears schedule, marks done
     9. Auto-compacts context if needed (or trims if using legacy sliding window)
 ```
+
+Autonomous executions append `AUTONOMOUS_MODE_RULES` from `core/prompts.py`.
+Those rules make scheduled TODOs, watchdog nudges, triggers, and autonomous
+callable-thread wake-ups user-visible work: the agent must complete/update/delete
+the TODO when appropriate, or briefly explain what it checked and why no action
+was taken. Callable threads with a custom system prompt still keep their focused
+context (no profile/TODO injection), but autonomous wake-ups receive the same
+autonomous rules.
 
 **Recovery on Restart:**
 When Nymeria starts, the Ticker:
@@ -562,7 +570,7 @@ The LLM naturally uses these memories without explicit retrieval.
 
 ### RAG (Semantic Conversation Recall)
 
-`MemoryIndex` (`core/memory_index.py`) provides per-user semantic search over indexed conversation turns, profile memories, and completed TODO outcomes. Storage is per-user SQLite at `data/users/{user_id}/memory.db` using sqlite-vec (1536-dim vectors via OpenAI `text-embedding-3-small`) plus FTS5 for hybrid BM25 + vector retrieval.
+`MemoryIndex` (`core/memory_index.py`) provides per-user semantic search over indexed conversation turns, profile memories, and completed TODO outcomes. Storage is per-user SQLite at `data/users/{user_id}/memory.db` using sqlite-vec (1536-dim vectors via the OpenAI-compatible `EMBEDDING_MODEL`, default `text-embedding-3-small`) plus FTS5 for hybrid BM25 + vector retrieval.
 
 Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defaults to `True`; existing profiles are migrated once via the `opt_in.rag_migrated` watermark). Four hook points keep the index in sync with thread state:
 

@@ -7,7 +7,8 @@ helper used by the dedicated _PRV_A wrapper tools.
 
 import logging
 import time
-from typing import Annotated, Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Annotated, Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -17,14 +18,12 @@ from .utils import get_user_id
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Sheet cache (per user_id+spreadsheet_id+sheet_name, 5-minute TTL)
+# Sheet cache (per auth-scope+spreadsheet_id+sheet_name, 5-minute TTL)
 # ---------------------------------------------------------------------------
 #
-# Key format: ``f"{user_id}::{spreadsheet_id}::{sheet_name}::{gid}"``. Without
-# the user_id prefix two users querying the same sheet would share the same
-# cache slot — a stale read by user A could be served to user B even though
-# they may have authenticated with different Google accounts and have
-# different row-level permissions on the sheet.
+# Key format: ``f"{scope}::{spreadsheet_id}::{sheet_name}::{gid}"``. For
+# user-OAuth reads, scope is the Nymeria user_id. For _PRV_A reference-data
+# reads, scope is an app-level service-account namespace.
 
 _sheet_cache: Dict[str, Tuple[float, List[str], List[List[str]]]] = {}
 _CACHE_TTL = 300  # seconds
@@ -58,11 +57,45 @@ def _get_sheets_service(user_id: str):
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
-def _fetch_sheet(
-    user_id: str,
+def _get__prv_a_sheets_service():
+    """Build a read-only Sheets service for _PRV_A reference spreadsheets."""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+    except ImportError:
+        logger.error(
+            "google-api-python-client/google-auth not installed. "
+            "Run: pip install google-api-python-client google-auth-oauthlib"
+        )
+        return None
+
+    from ..config import get_settings
+
+    settings = get_settings()
+    service_account_file = settings._prv_a_service_account_file
+    if not service_account_file:
+        return None
+
+    path = Path(service_account_file).expanduser()
+    if not path.exists():
+        logger.error("_PRV_A Google service account file not found: %s", path)
+        return None
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = service_account.Credentials.from_service_account_file(
+        str(path),
+        scopes=scopes,
+    )
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+def _fetch_sheet_with_service(
+    cache_scope: str,
     spreadsheet_id: str,
     sheet_name: str = "",
     gid: Optional[int] = None,
+    service_factory: Optional[Callable[[], Any]] = None,
+    unavailable_message: str = "[Error]: Google Sheets API not available.",
 ) -> Tuple[List[str], List[List[str]]]:
     """
     Fetch sheet data with caching.
@@ -70,7 +103,7 @@ def _fetch_sheet(
     Returns (headers, rows) where headers is row 1 (or row 2 if row 1 looks
     like a category grouping row) and rows is everything after headers.
     """
-    cache_key = f"{user_id}::{spreadsheet_id}::{sheet_name}::{gid}"
+    cache_key = f"{cache_scope}::{spreadsheet_id}::{sheet_name}::{gid}"
     now = time.time()
 
     if cache_key in _sheet_cache:
@@ -78,12 +111,9 @@ def _fetch_sheet(
         if now - ts < _CACHE_TTL:
             return headers, rows
 
-    service = _get_sheets_service(user_id)
+    service = service_factory() if service_factory else None
     if not service:
-        raise RuntimeError(
-            "[Error]: Google Sheets API not available. "
-            "Run the google_docs_auth_start tool to authenticate."
-        )
+        raise RuntimeError(unavailable_message)
 
     # If we have a gid but no sheet_name, resolve it
     if gid is not None and not sheet_name:
@@ -148,8 +178,48 @@ def _fetch_sheet(
     return headers, normalized
 
 
-def search_sheet_data(
+def _fetch_sheet(
     user_id: str,
+    spreadsheet_id: str,
+    sheet_name: str = "",
+    gid: Optional[int] = None,
+) -> Tuple[List[str], List[List[str]]]:
+    """Fetch sheet data using the current user's Google Docs/Sheets OAuth."""
+    return _fetch_sheet_with_service(
+        user_id,
+        spreadsheet_id,
+        sheet_name,
+        gid,
+        service_factory=lambda: _get_sheets_service(user_id),
+        unavailable_message=(
+            "[Error]: Google Sheets API not available. "
+            "Run the google_docs_auth_start tool to authenticate."
+        ),
+    )
+
+
+def fetch__prv_a_reference_sheet(
+    spreadsheet_id: str,
+    sheet_name: str = "",
+    gid: Optional[int] = None,
+) -> Tuple[List[str], List[List[str]]]:
+    """Fetch _PRV_A reference data through the app-level service account."""
+    return _fetch_sheet_with_service(
+        "___prv_a_service_account__",
+        spreadsheet_id,
+        sheet_name,
+        gid,
+        service_factory=_get__prv_a_sheets_service,
+        unavailable_message=(
+            "[Error]: _PRV_A Google Sheets service account not configured. "
+            "Set _PRV_A_SERVICE_ACCOUNT_FILE and share the reference "
+            "spreadsheets with that service account."
+        ),
+    )
+
+
+def search_sheet_data(
+    user_id: Optional[str],
     spreadsheet_id: str,
     query: str,
     sheet_name: str = "",
@@ -157,15 +227,22 @@ def search_sheet_data(
     column: str = "",
     max_results: int = 20,
     strip_hyphens: bool = False,
+    use__prv_a_service_account: bool = False,
 ) -> str:
     """
     Internal search function used by both the generic tool and dedicated wrappers.
 
-    Scoped to a Nymeria user_id so each user's Google auth is used.
+    Scoped to a Nymeria user_id so each user's Google auth is used, unless
+    ``use__prv_a_service_account`` is true for _PRV_A app-level reference data.
     Returns a formatted string with matching rows.
     """
     try:
-        headers, rows = _fetch_sheet(user_id, spreadsheet_id, sheet_name, gid)
+        if use__prv_a_service_account:
+            headers, rows = fetch__prv_a_reference_sheet(spreadsheet_id, sheet_name, gid)
+        else:
+            if not user_id:
+                return "[Error]: user_id is required for user-authenticated Google Sheets access."
+            headers, rows = _fetch_sheet(user_id, spreadsheet_id, sheet_name, gid)
     except RuntimeError as e:
         return str(e)
 
@@ -290,7 +367,7 @@ def google_sheets_search(
 
     Args:
         spreadsheet_id: The Google Sheets ID (from the URL between /d/ and /edit)
-        query: Search term — part number, name, keyword, etc.
+        query: Search term, e.g. part number, name, or keyword.
         sheet_name: Tab/sheet name to search (empty = first sheet)
         column: Only search this column (empty = search all columns)
         max_results: Maximum rows to return (default 20)
@@ -379,7 +456,7 @@ def google_sheets_append(
         error_msg = str(e)
         if "PERMISSION_DENIED" in error_msg or "403" in error_msg:
             return (
-                "[Error]: Permission denied — the Google account may only have "
+                "[Error]: Permission denied. The Google account may only have "
                 "read-only access. Run google_docs_auth_start to re-authenticate "
                 "with write permissions."
             )
@@ -530,7 +607,7 @@ def google_sheets_update(
         error_msg = str(e)
         if "PERMISSION_DENIED" in error_msg or "403" in error_msg:
             return (
-                "[Error]: Permission denied — run google_docs_auth_start to "
+                "[Error]: Permission denied. Run google_docs_auth_start to "
                 "re-authenticate with write permissions."
             )
         return f"[Error]: Failed to update sheet: {e}"

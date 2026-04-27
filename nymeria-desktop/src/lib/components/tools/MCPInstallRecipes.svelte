@@ -17,7 +17,7 @@
     {
       name: 'Filesystem',
       source: 'npx -y @modelcontextprotocol/server-filesystem /workspace',
-      description: 'Read/write files in /workspace. Paths must exist on the machine Nymeria runs on — edit the path before installing if you want a different folder.',
+      description: 'Read/write files in /workspace. Paths must exist on the machine Nymeria runs on; edit the path before installing if you want a different folder.',
       kind: 'stdio',
     },
     {
@@ -35,7 +35,7 @@
     {
       name: 'Memory (via registry)',
       source: 'io.github.modelcontextprotocol/server-memory',
-      description: 'Persistent memory — installs from the official registry by ID',
+      description: 'Persistent memory; installs from the official registry by ID',
       kind: 'registry',
     },
   ];

@@ -956,12 +956,12 @@
 
               <div class="field-group">
                 <label class="field-label" for="callable-desc-input">Callable Description</label>
-                <p class="field-hint">What the LLM sees as the tool description — describe when to use this thread.</p>
+                <p class="field-hint">What the LLM sees as the tool description. Describe when to use this thread.</p>
                 <textarea
                   id="callable-desc-input"
                   class="instructions-input"
                   bind:value={callableDescription}
-                  placeholder="e.g. Autonomous web research — finds information, summarizes articles, and compiles reports"
+                  placeholder="e.g. Autonomous web research that finds information, summarizes articles, and compiles reports"
                   maxlength={500}
                   rows={3}
                 ></textarea>
@@ -996,7 +996,7 @@
                 placeholder="http://cli-proxy-api-latest:8317/v1"
               />
               <span class="field-hint">
-                Any OpenAI-compatible endpoint reachable from inside the Nymeria api container — a CLIProxy sidecar (e.g. <code>cli-proxy-api-latest:8317/v1</code>) or a local inference server (<code>host.docker.internal:8080/v1</code>).
+                Any OpenAI-compatible endpoint reachable from inside the Nymeria api container, such as a CLIProxy sidecar (e.g. <code>cli-proxy-api-latest:8317/v1</code>) or a local inference server (<code>host.docker.internal:8080/v1</code>).
               </span>
             </div>
 
@@ -1262,7 +1262,7 @@
                           class:mcp-status-running={server.enabled && server.discoveredCount > 0}
                           class:mcp-status-warning={server.enabled && server.discoveredCount === 0}
                           class:mcp-status-stopped={!server.enabled}
-                          title={server.enabled ? (server.discoveredCount > 0 ? 'Running' : 'Running, no tools discovered') : 'Stopped — enable the server in Settings → Tools to make this tool available'}
+                          title={server.enabled ? (server.discoveredCount > 0 ? 'Running' : 'Running, no tools discovered') : 'Stopped. Enable the server in Settings → Tools to make this tool available'}
                         ></span>
                         <span class="mcp-server-name">{server.name}</span>
                         <span class="mcp-tool-count">
@@ -1287,7 +1287,7 @@
                               class="tool-row"
                               class:optional-enabled={enabledTools.has(tool.mcpName)}
                               class:tool-row-dormant={!server.enabled}
-                              title={!server.enabled ? 'MCP server is not running — enable it in Settings → Tools to make this tool available' : ''}
+                              title={!server.enabled ? 'MCP server is not running. Enable it in Settings → Tools to make this tool available' : ''}
                             >
                               <div class="tool-info">
                                 <span class="tool-name">{tool.shortName}</span>
@@ -1439,8 +1439,8 @@
                 >Use my own bot</button>
               </div>
               <p class="field-hint" style="margin: 0.25rem 0 0;">
-                <strong>Shared:</strong> use the existing Nymeria bot — fastest
-                setup, no BotFather required.
+                <strong>Shared:</strong> use the existing Nymeria bot for the
+                fastest setup, with no BotFather required.
                 <br />
                 <strong>My own bot:</strong> paste a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> for a branded bot you control. Requires <code>NYMERIA_SECRETS_KEY</code> on the server.
               </p>

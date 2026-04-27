@@ -1,7 +1,7 @@
 """Skill embedding index — semantic search over installed + marketplace skills.
 
 Fallback chain (highest quality first):
-    1. OpenAI text-embedding-3-small via sqlite-vec cosine similarity
+    1. Configured OpenAI-compatible embeddings via sqlite-vec cosine similarity
     2. SQLite FTS5 / BM25 over name+description (keyword, no model)
     3. Substring match (final safety net)
 
@@ -10,8 +10,8 @@ namespace per marketplace source (e.g. `marketplace:anthropic`). The tool
 layer is responsible for triggering rebuilds when the underlying data
 changes — this class is a passive store.
 
-Reuses the existing OpenAI embedding path (text-embedding-3-small, 1536-dim)
-that Nymeria's RAG already uses, so no new model weight is shipped.
+Uses the same embedding configuration as Nymeria's memory index, so no new
+model weight is shipped.
 """
 
 from __future__ import annotations
@@ -70,11 +70,19 @@ class SearchResponse:
 class SkillEmbeddingIndex:
     """sqlite-vec backed, namespaced, with FTS5 + substring fallbacks."""
 
-    def __init__(self, db_path: Path, openai_api_key: Optional[str] = None):
+    def __init__(
+        self,
+        db_path: Path,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+        embedding_model: str = EMBEDDING_MODEL,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._openai_key = openai_api_key
+        self._openai_base_url = openai_base_url
+        self._embedding_model = embedding_model
         self._openai_client = None
         self._semantic_available: Optional[bool] = None  # lazy-probed
         self._last_error: Optional[str] = None
@@ -154,9 +162,12 @@ class SkillEmbeddingIndex:
     def _get_openai(self):
         if self._openai_client is None:
             if not self._openai_key:
-                raise RuntimeError("OPENAI_API_KEY not configured")
+                raise RuntimeError("EMBEDDING_API_KEY not configured")
             from openai import OpenAI
-            self._openai_client = OpenAI(api_key=self._openai_key)
+            kwargs = {"api_key": self._openai_key}
+            if self._openai_base_url:
+                kwargs["base_url"] = self._openai_base_url
+            self._openai_client = OpenAI(**kwargs)
         return self._openai_client
 
     def is_semantic_available(self) -> bool:
@@ -169,7 +180,14 @@ class SkillEmbeddingIndex:
             return False
         if not self._openai_key:
             self._semantic_available = False
-            self._last_error = "OPENAI_API_KEY not set; semantic search disabled"
+            self._last_error = "EMBEDDING_API_KEY not set; semantic search disabled"
+            return False
+        if self._openai_key.startswith("cpx-"):
+            self._semantic_available = False
+            self._last_error = (
+                "EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key; "
+                "set a real embeddings key or base URL"
+            )
             return False
         # Lazy-probe on first real use via embed_text() instead of upfront.
         self._semantic_available = True
@@ -186,9 +204,14 @@ class SkillEmbeddingIndex:
             return None
         try:
             resp = self._get_openai().embeddings.create(
-                model=EMBEDDING_MODEL, input=text[:8000],
+                model=self._embedding_model, input=text[:8000],
             )
-            return resp.data[0].embedding
+            embedding = resp.data[0].embedding
+            if len(embedding) != EMBEDDING_DIMENSIONS:
+                raise ValueError(
+                    f"embedding dimension mismatch: expected {EMBEDDING_DIMENSIONS}, got {len(embedding)}"
+                )
+            return embedding
         except Exception as e:
             # Permanently degrade for this process so we don't retry on every search.
             self._semantic_available = False
@@ -417,7 +440,7 @@ class SkillEmbeddingIndex:
                     warning = (
                         f"semantic search unavailable ({self._last_error}); "
                         "falling back to keyword search. "
-                        "Set OPENAI_API_KEY on the server for better skill discovery."
+                        "Set EMBEDDING_API_KEY on the server for better skill discovery."
                     )
 
                 # Attempt BM25 / FTS5.

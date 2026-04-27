@@ -160,7 +160,7 @@ export async function probeConnection(
       ok: false,
       reason: 'unauthorized',
       status: me.status,
-      message: 'Token rejected — check it matches one issued by this backend.',
+      message: 'Token rejected. Check it matches one issued by this backend.',
     };
   }
   if (!me.ok) {

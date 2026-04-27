@@ -47,6 +47,9 @@ Set the API key for your chosen provider:
 | `ANTHROPIC_DIRECT_API_KEY` | Anthropic | Optional direct Anthropic `sk-ant-*` key. Used only when the effective Anthropic base URL is empty/direct; CLIProxy Anthropic calls continue using `ANTHROPIC_API_KEY` (`cpx-*`). |
 | `OPENAI_API_KEY` | OpenAI | If using `openai` provider |
 | `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
+| `EMBEDDING_API_KEY` | OpenAI-compatible embeddings | Optional; enables semantic memory/skill search. Keep separate from CLIProxy `OPENAI_API_KEY` values. |
+| `EMBEDDING_BASE_URL` | OpenAI-compatible embeddings | Optional custom `/v1` base URL for embeddings |
+| `EMBEDDING_MODEL` | OpenAI-compatible embeddings | Optional; defaults to `text-embedding-3-small`; must return 1536-dimensional vectors |
 | `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
 
 ### Database
@@ -63,8 +66,8 @@ Set the API key for your chosen provider:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
-| `NYMERIA_SERVICE_TOKEN` | (required) | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, and slash commands for X-Nymeria-Act-As calls. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
-| `NYMERIA_API_URL` | auto | Local API URL for in-process tools (e.g. `slash_command`). Defaults to `http://api:8000` in Docker, `http://localhost:8000` otherwise |
+| `NYMERIA_SERVICE_TOKEN` | (required) | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
+| `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins, or `*` for all |
@@ -96,6 +99,7 @@ Set the API key for your chosen provider:
 | `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
 | `MICROSOFT_MCP_CLIENT_ID` | `8ad36cab...` | Azure AD app client ID for Outlook/Teams OAuth |
 | `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth credentials JSON file |
+| `_PRV_A_SERVICE_ACCOUNT_FILE` | - | Path to a Google service account JSON file for _PRV_A reference Sheets |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
@@ -328,6 +332,7 @@ Available models:
 LLM_PROVIDER=openai
 LLM_MODEL=gpt-4o
 OPENAI_API_KEY=sk-...
+EMBEDDING_API_KEY=sk-...   # Optional; used by memory/skill semantic search
 ```
 
 ### OpenRouter
@@ -378,6 +383,7 @@ LLM_MODEL=gpt-5.5                      # Model name from the proxy's /v1/models
 OPENAI_API_MODE=responses
 OPENAI_API_KEY=cpx-latest-local-test   # Proxy gatekeeper key, not a hosted OpenAI key
 LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint (with /v1 suffix)
+EMBEDDING_API_KEY=sk-...               # Optional hosted/local embeddings key; do not use cpx-* here
 ```
 
 For GPT-5.5 through Codex OAuth, run the sidecar documented in `docs/cliproxy.md`. To route individual threads, use **Thread Settings → Model → OpenAI (Custom base URL)** and set the thread-level Base URL/API Key fields; the default OpenAI API mode is `Responses API`, with `Chat Completions` available only as a compatibility override and not recommended if thinking is enabled. To route the whole deployment, use **Settings → LLM → OpenAI (Custom base URL)** and keep `OPENAI_API_MODE=responses` in `.env.docker`. Per-thread overrides honor `provider`, `base_url`, `api_key`, and `openai_api_mode` — the API key is the CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI key.
