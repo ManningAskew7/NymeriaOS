@@ -305,8 +305,17 @@ The bot maintains a background SSE connection to `GET /autonomous/stream`. When 
 - A small `Tool calls: N` italic footer is appended to the final bubble when tools were used.
 - No wrapper header — bubbles look identical to a regular reply, with the chat itself providing the autonomous-vs-user provenance.
 - On `task_completed` with `error: true`, a single short `Autonomous task error: ...` line is posted instead.
+- Explicit `notify` tool calls arrive as `notification` SSE events and are posted to the bound Telegram chat unless Telegram autonomous delivery is `off`.
 
 TODOs created via `/todo_add` in a Telegram chat have their results delivered back to that chat automatically.
+
+Per-thread delivery is controlled from Thread Settings:
+
+| Mode | Behavior |
+|------|----------|
+| `full` | Stream autonomous output into Telegram. Default. |
+| `notify_only` | Suppress normal autonomous output; send only explicit `notify` events and task errors. |
+| `off` | Suppress autonomous Telegram delivery for the thread. |
 
 ## Key Files
 

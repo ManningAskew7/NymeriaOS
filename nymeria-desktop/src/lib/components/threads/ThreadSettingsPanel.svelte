@@ -20,6 +20,8 @@
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
 
   type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'model' | 'tools' | 'skills' | 'triggers' | 'chatapp';
+  type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
+  type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
   interface Props {
     thread: Thread;
@@ -329,9 +331,19 @@
     return threadConfig?.showPromptMetadata ?? false;
   }
 
+  function getInitialTelegramAutonomousDelivery(): TelegramAutonomousDelivery {
+    return threadConfig?.telegramAutonomousDelivery ?? 'full';
+  }
+
+  function getInitialInAppNotificationLevel(): InAppNotificationLevel {
+    return threadConfig?.inAppNotificationLevel ?? 'notify_only';
+  }
+
   let injectTodosInPrompt = $state(getInitialInjectTodosInPrompt());
   let showAutonomousPrompts = $state(getInitialShowAutonomousPrompts());
   let showPromptMetadata = $state(getInitialShowPromptMetadata());
+  let telegramAutonomousDelivery = $state<TelegramAutonomousDelivery>(getInitialTelegramAutonomousDelivery());
+  let inAppNotificationLevel = $state<InAppNotificationLevel>(getInitialInAppNotificationLevel());
 
   // Search
   let toolSearch = $state('');
@@ -524,6 +536,12 @@
     const origShowPromptMeta = threadConfig?.showPromptMetadata ?? false;
     if (showPromptMetadata !== origShowPromptMeta) return true;
 
+    const origTelegramDelivery = threadConfig?.telegramAutonomousDelivery ?? 'full';
+    if (telegramAutonomousDelivery !== origTelegramDelivery) return true;
+
+    const origNotificationLevel = threadConfig?.inAppNotificationLevel ?? 'notify_only';
+    if (inAppNotificationLevel !== origNotificationLevel) return true;
+
     return false;
   }
 
@@ -636,6 +654,8 @@
       updates.inject_todos_in_prompt = injectTodosInPrompt;
       updates.show_autonomous_prompts = showAutonomousPrompts;
       updates.show_prompt_metadata = showPromptMetadata;
+      updates.telegram_autonomous_delivery = telegramAutonomousDelivery;
+      updates.in_app_notification_level = inAppNotificationLevel;
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
@@ -687,6 +707,8 @@
       callableDescription = '';
       showAutonomousPrompts = false;
       showPromptMetadata = false;
+      telegramAutonomousDelivery = 'full';
+      inAppNotificationLevel = 'notify_only';
       onSaved({
         threadId: thread.id,
         instructions: null,
@@ -702,6 +724,8 @@
         injectTodosInPrompt: false,
         showAutonomousPrompts: false,
         showPromptMetadata: false,
+        telegramAutonomousDelivery: 'full',
+        inAppNotificationLevel: 'notify_only',
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -1364,6 +1388,36 @@
             You can keep using the desktop app for the same thread; nothing changes
             here when you chat from the bound chat instead.
           </p>
+
+          <div class="visibility-section">
+            <h3 class="section-title">Attention & Delivery</h3>
+
+            <label class="field-label" for="telegram-autonomous-delivery">
+              Telegram autonomous output
+            </label>
+            <select
+              id="telegram-autonomous-delivery"
+              class="field-input"
+              bind:value={telegramAutonomousDelivery}
+            >
+              <option value="full">Full output</option>
+              <option value="notify_only">Notify only</option>
+              <option value="off">Off</option>
+            </select>
+
+            <label class="field-label" for="in-app-notification-level">
+              Notification center
+            </label>
+            <select
+              id="in-app-notification-level"
+              class="field-input"
+              bind:value={inAppNotificationLevel}
+            >
+              <option value="notify_only">Notify only</option>
+              <option value="all_autonomous">All autonomous completions</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
 
           {#if chatAppLoadError}
             <div class="error-bar">{chatAppLoadError}</div>

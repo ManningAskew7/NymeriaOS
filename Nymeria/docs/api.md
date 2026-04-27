@@ -529,6 +529,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 | `tool_result` | Tool execution result | `id`, `name`, `result` |
 | `workspace_artifact` | Downloadable workspace file generated during the task | `tool_call_id`, `tool_name`, `path`, `name`, `mime_type`, `size_bytes` |
 | `response` | Response text chunks | `content` |
+| `notification` | Explicit `notify` tool event or new in-app notification | `message`, `summary`, `in_app_only` |
 | `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id` |
 
 **Example Stream:**
@@ -1373,6 +1374,8 @@ Updates thread config. Key fields for callable threads:
 | `llm_model` | string | Override model |
 | `llm_config.base_url` | string | Per-thread provider base URL. For CLIProxy sidecars, this is the URL reachable from the Nymeria backend container, e.g. `http://cli-proxy-api-latest:8317/v1`. |
 | `llm_config.api_key` | string | Per-thread provider API key. For CLIProxy sidecars, this is the local sidecar gatekeeper key, not an upstream OpenAI key. |
+| `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
+| `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
 | `llm_temperature` | float | Override temperature |
 | `llm_config.openai_api_mode` | string | OpenAI-only API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
 

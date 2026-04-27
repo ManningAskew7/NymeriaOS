@@ -123,13 +123,16 @@ Multiple events in one poll cycle are batched into a single LLM call to avoid fl
 
 ### notify
 
-Publishes a notification via SSE to connected clients.
+Calls the `notify` tool without an LLM turn. By default this creates an
+in-app notification and sends to any configured external notification
+destinations.
 
 ```json
 {
   "type": "notify",
   "config": {
-    "message_template": "RSS update: {title} — {link}"
+    "message_template": "RSS update: {title} — {link}",
+    "platform": "auto"
   }
 }
 ```

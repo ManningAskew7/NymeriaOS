@@ -11,6 +11,7 @@ import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
 import { threadConfigStore } from './threadConfig.svelte';
+import { notificationStore } from './notifications.svelte';
 import { api } from '$lib/services/api.svelte';
 
 interface AutonomousEvent {
@@ -274,6 +275,9 @@ function createAutonomousStore() {
       case 'task_completed':
         todosStore.fetch();
         activityStore.fetch();
+        if (event.notify) {
+          notificationStore.fetch();
+        }
         refreshThreadTaskCounts();
 
         {
@@ -334,6 +338,10 @@ function createAutonomousStore() {
             threadsStore.setThreadActive(event.thread_id, false);
           }, 3000);
         }
+        break;
+
+      case 'notification':
+        notificationStore.fetch();
         break;
     }
   }

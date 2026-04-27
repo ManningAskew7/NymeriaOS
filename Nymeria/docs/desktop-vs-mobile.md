@@ -152,6 +152,14 @@ Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for m
 
 Both exist and provide per-thread LLM config UI plus a dedicated Agent tab for callable-thread settings. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
 
+Per-thread attention settings are shared conceptually across both apps:
+`telegram_autonomous_delivery` controls whether Telegram gets full autonomous
+output, explicit notifications only, or no autonomous delivery; and
+`in_app_notification_level` controls whether the notification center shows only
+explicit `notify` calls, all autonomous completions, or nothing for that thread.
+Desktop places these controls in the Chat App tab. Mobile places them in the
+Advanced section of Thread Settings.
+
 #### `routes/+page.svelte` — Main Entry Point
 
 **Same core**: Setup wizard check, thread sync from backend, chat history loading, autonomous stream connection.

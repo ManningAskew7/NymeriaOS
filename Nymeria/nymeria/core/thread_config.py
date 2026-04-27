@@ -103,6 +103,12 @@ class ThreadConfig(BaseModel):
     show_autonomous_prompts: bool = False
     # Debug: show the [Time: ...] [Trigger: ...] metadata prepended to each message
     show_prompt_metadata: bool = False
+    # Chat-app autonomous delivery. "full" preserves current Telegram behavior;
+    # "notify_only" suppresses normal autonomous output but allows explicit
+    # notification events; "off" suppresses autonomous Telegram delivery.
+    telegram_autonomous_delivery: Literal["full", "notify_only", "off"] = "full"
+    # In-app notification center behavior for this thread.
+    in_app_notification_level: Literal["notify_only", "all_autonomous", "off"] = "notify_only"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -153,6 +159,10 @@ class ThreadConfig(BaseModel):
         if self.show_autonomous_prompts:
             return True
         if self.show_prompt_metadata:
+            return True
+        if self.telegram_autonomous_delivery != "full":
+            return True
+        if self.in_app_notification_level != "notify_only":
             return True
         return False
 

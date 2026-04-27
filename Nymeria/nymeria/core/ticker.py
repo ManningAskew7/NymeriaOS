@@ -376,6 +376,20 @@ class Ticker:
             return from_time + delta
         return None
 
+    def _in_app_notification_level(self, thread_id: str) -> str:
+        """Return per-thread notification-center behavior."""
+        try:
+            tc = self.agent.thread_config_manager.get_config(thread_id)
+            if tc is None:
+                return "notify_only"
+            return getattr(tc, "in_app_notification_level", "notify_only") or "notify_only"
+        except Exception as e:
+            logger.debug("Failed to read notification level for %s: %s", thread_id, e)
+            return "notify_only"
+
+    def _should_create_autonomous_notification(self, thread_id: str) -> bool:
+        return self._in_app_notification_level(thread_id) == "all_autonomous"
+
     def _execute_scheduled_todo(self, entry: ScheduledTodoEntry) -> None:
         """
         Execute a scheduled TODO.
@@ -764,6 +778,12 @@ class Ticker:
             if todo.id in self._retry_counts:
                 del self._retry_counts[todo.id]
 
+            should_notify = response.notify or self._should_create_autonomous_notification(thread_id)
+            notification_summary = (
+                response.summary
+                or (response.content[:200] if response.content else "Scheduled TODO executed")
+            )
+
             # Publish task completed event
             publish_autonomous_event(
                 event_type="task_completed",
@@ -771,7 +791,7 @@ class Ticker:
                 user_id=entry.user_id,
                 task_id=todo.id,
                 data={
-                    "notify": response.notify,
+                    "notify": should_notify,
                     "content": response.content,
                     "summary": response.summary,
                     "todo_id": todo.id,
@@ -809,7 +829,7 @@ class Ticker:
                 response.summary or response.content[:200] if response.content else "Scheduled TODO executed",
                 user_id=entry.user_id,
                 thread_id=thread_id,
-                metadata={"todo_id": todo.id, "notify": response.notify},
+                metadata={"todo_id": todo.id, "notify": should_notify},
             )
 
             # Show remaining response in console (non-fatal — task already succeeded)
@@ -825,16 +845,16 @@ class Ticker:
             except Exception as console_err:
                 logger.warning(f"Console print failed (non-fatal): {console_err}")
 
-            # Create notification if requested
-            if response.notify and response.summary:
+            # Create notification if requested or the thread wants all autonomous completions.
+            if should_notify and notification_summary:
                 try:
                     create_notification(
                         user_id=entry.user_id,
-                        summary=response.summary,
+                        summary=notification_summary,
                         thread_id=thread_id,
                         task_id=todo.id,
                     )
-                    _console.print(f"[yellow]Notification sent: {response.summary}[/yellow]")
+                    _console.print(f"[yellow]Notification sent: {notification_summary}[/yellow]")
                 except Exception as notify_err:
                     logger.error(f"Failed to create notification for TODO {todo.id}: {notify_err}")
 
@@ -842,7 +862,7 @@ class Ticker:
                 _console.print()
             except Exception:
                 pass
-            logger.info(f"TODO {todo.id} scheduled execution completed, notify={response.notify}")
+            logger.info(f"TODO {todo.id} scheduled execution completed, notify={should_notify}")
 
             # Trim context window if needed (only in sliding_window mode)
             if self.agent.settings.context_management == "sliding_window":
@@ -885,6 +905,17 @@ class Ticker:
                     "todo_id": todo.id,
                 },
             )
+
+            if self._should_create_autonomous_notification(thread_id):
+                try:
+                    create_notification(
+                        user_id=entry.user_id,
+                        summary=f"Task failed: {str(e)[:180]}",
+                        thread_id=thread_id,
+                        task_id=todo.id,
+                    )
+                except Exception as notify_err:
+                    logger.error(f"Failed to create failure notification for TODO {todo.id}: {notify_err}")
 
             # Check retry count
             retry_count = self._retry_counts.get(todo.id, 0) + 1

@@ -277,6 +277,7 @@ _USER_CACHE_TTL_SECONDS = 30 * 60
 # the API. Direct cache mutation on /bind and /unbind makes those changes
 # feel instant; this loop catches bindings created from the desktop wizard.
 _BINDING_REFRESH_INTERVAL_SECONDS = 60
+_THREAD_CONFIG_CACHE_TTL_SECONDS = 60
 
 # How often the shared bot reconciles its set of running user-owned bots
 # against the API. Determines how long a freshly-registered BYO bot takes
@@ -323,6 +324,8 @@ class NymeriaTelegramBot:
         # cache. None (still under TTL) means "checked and confirmed
         # unlinked"; after TTL expiry the entry is re-fetched.
         self._user_cache: Dict[int, tuple[Optional[str], float]] = {}
+        # thread_id -> (telegram_autonomous_delivery, expires_at)
+        self._thread_delivery_cache: Dict[str, tuple[str, float]] = {}
         # Per-thread chat-app bindings — populated by _refresh_bindings on
         # startup and refreshed every _BINDING_REFRESH_INTERVAL_SECONDS to
         # absorb bindings created from the desktop wizard. Direct mutation
@@ -333,6 +336,26 @@ class NymeriaTelegramBot:
         # Shared-bot only: subordinate user-owned bots, keyed by row id.
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
+
+    async def _get_telegram_autonomous_delivery(self, thread_id: str) -> str:
+        """Read and cache this thread's Telegram autonomous delivery mode."""
+        now = time.time()
+        cached = self._thread_delivery_cache.get(thread_id)
+        if cached and cached[1] > now:
+            return cached[0]
+        mode = "full"
+        try:
+            cfg = await self.api.get_thread_config(thread_id)
+            candidate = (cfg or {}).get("telegram_autonomous_delivery")
+            if candidate in ("full", "notify_only", "off"):
+                mode = candidate
+        except Exception as e:
+            logger.debug("Failed to load Telegram delivery mode for %s: %s", thread_id, e)
+        self._thread_delivery_cache[thread_id] = (
+            mode,
+            now + _THREAD_CONFIG_CACHE_TTL_SECONDS,
+        )
+        return mode
 
     @property
     def is_shared_bot(self) -> bool:
@@ -2975,6 +2998,46 @@ class NymeriaTelegramBot:
             chat_id = self.resolve_chat_id_for_thread(thread_id)
             if chat_id is None:
                 return
+
+        delivery_mode = await self._get_telegram_autonomous_delivery(thread_id)
+
+        if event_type == "notification":
+            if event.get("in_app_only"):
+                return
+            if delivery_mode == "off":
+                return
+            message = (
+                event.get("message")
+                or event.get("summary")
+                or event.get("content")
+                or ""
+            )
+            if not str(message).strip():
+                return
+            for chunk in split_message(markdown_to_html(str(message)), 4000):
+                try:
+                    await self._send_html(chat_id, chunk)
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram notification event: {e}")
+            return
+
+        if delivery_mode == "off":
+            self._autonomous_state.pop(thread_id, None)
+            return
+
+        if delivery_mode == "notify_only":
+            if event_type == "task_completed":
+                self._autonomous_state.pop(thread_id, None)
+                if event.get("error"):
+                    err = event.get("content") or "Unknown error"
+                    try:
+                        await self._send_html(
+                            chat_id,
+                            f"<i>Autonomous task error:</i> {escape_html(str(err))}",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send autonomous error: {e}")
+            return
 
         state = self._autonomous_state.get(thread_id)
 

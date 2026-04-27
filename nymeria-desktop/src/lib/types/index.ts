@@ -140,6 +140,8 @@ export interface ThreadConfig {
   injectTodosInPrompt: boolean;
   showAutonomousPrompts: boolean;
   showPromptMetadata?: boolean;
+  telegramAutonomousDelivery: 'full' | 'notify_only' | 'off';
+  inAppNotificationLevel: 'notify_only' | 'all_autonomous' | 'off';
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
@@ -159,6 +161,8 @@ export interface ThreadConfigUpdateRequest {
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;
+  telegram_autonomous_delivery?: 'full' | 'notify_only' | 'off';
+  in_app_notification_level?: 'notify_only' | 'all_autonomous' | 'off';
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
