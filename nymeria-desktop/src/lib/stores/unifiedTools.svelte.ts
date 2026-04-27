@@ -17,11 +17,13 @@ let loaded = $state(false);
 let error = $state<string | null>(null);
 let builtinCount = $state(0);
 let customCount = $state(0);
+let identityGeneration = 0;
 
 // Reset everything when the connected user changes — the previous account's
 // tools no longer apply, and consuming panels gate on `loaded` so flipping it
 // back to false makes their `$effect` blocks re-fetch under the new identity.
 registerIdentityReloadHook(() => {
+  identityGeneration += 1;
   tools = [];
   builtinCount = 0;
   customCount = 0;
@@ -162,16 +164,19 @@ function getToolById(id: string): UnifiedTool | undefined {
 async function loadTools(userId?: string): Promise<void> {
   if (loading) return;
 
+  const requestGeneration = identityGeneration;
   loading = true;
   error = null;
 
   try {
     const response = await api.getUnifiedTools(userId);
+    if (requestGeneration !== identityGeneration) return;
     tools = response.tools;
     builtinCount = response.builtinCount;
     customCount = response.customCount;
     loaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     error = e instanceof Error ? e.message : 'Failed to load tools';
     console.error('Failed to load unified tools:', e);
     // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
@@ -179,7 +184,9 @@ async function loadTools(userId?: string): Promise<void> {
     // will reset this, allowing a fresh attempt.
     loaded = true;
   } finally {
-    loading = false;
+    if (requestGeneration === identityGeneration) {
+      loading = false;
+    }
   }
 }
 

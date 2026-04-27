@@ -10,10 +10,12 @@ function createDefaultToolsStore() {
   let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let identityGeneration = 0;
 
   // Reset on account switch / sign-out so the next consumer re-fetches
   // under the new identity instead of showing stale data.
   registerIdentityReloadHook(() => {
+    identityGeneration += 1;
     tools = [];
     defaultToolNames = [];
     callableThreadCount = 0;
@@ -49,20 +51,25 @@ function createDefaultToolsStore() {
 
     async load(userId?: string): Promise<void> {
       if (loading) return;
+      const requestGeneration = identityGeneration;
       loading = true;
       error = null;
       try {
         const response = await api.getDefaultTools(userId);
+        if (requestGeneration !== identityGeneration) return;
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
         loaded = true;
       } catch (e) {
+        if (requestGeneration !== identityGeneration) return;
         error = e instanceof Error ? e.message : 'Failed to load default tools';
         // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
         loaded = true;
       } finally {
-        loading = false;
+        if (requestGeneration === identityGeneration) {
+          loading = false;
+        }
       }
     },
 

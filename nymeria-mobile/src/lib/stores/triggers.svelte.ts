@@ -5,6 +5,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import type {
   Trigger,
   TriggerCreateRequest,
@@ -22,6 +23,15 @@ let loaded = $state(false);
 let error = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;
+let identityGeneration = 0;
+
+registerIdentityReloadHook(() => {
+  identityGeneration += 1;
+  triggers = [];
+  loading = false;
+  loaded = false;
+  error = null;
+});
 
 function isHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
@@ -30,16 +40,23 @@ function isHidden(): boolean {
 // Actions
 async function loadTriggers(): Promise<void> {
   if (loading) return;
+  const requestGeneration = identityGeneration;
   loading = true;
   error = null;
   try {
-    triggers = await api.getTriggers();
+    const nextTriggers = await api.getTriggers();
+    if (requestGeneration !== identityGeneration) return;
+    triggers = nextTriggers;
     loaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     error = e instanceof Error ? e.message : 'Failed to load triggers';
     console.error('Failed to load triggers:', e);
+    loaded = true;
   } finally {
-    loading = false;
+    if (requestGeneration === identityGeneration) {
+      loading = false;
+    }
   }
 }
 

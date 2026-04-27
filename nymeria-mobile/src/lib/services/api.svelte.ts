@@ -205,6 +205,12 @@ export class NymeriaAPI {
     return configStore.apiUrl.replace(/\/$/, '');
   }
 
+  private resolveUserId(userId?: string): string {
+    const id = userId ?? configStore.identity?.id ?? null;
+    if (!id) throw new Error('Not signed in');
+    return id;
+  }
+
   /**
    * Surface a structured toast for known account/admin failure modes and then
    * extract a human-readable error message to throw. See desktop counterpart.
@@ -1837,8 +1843,9 @@ export class NymeriaAPI {
     };
   }
 
-  async getBuiltInTools(userId: string = 'default'): Promise<BuiltInToolsResponse> {
-    const response = await fetch(`${this.getBaseUrl()}/users/${userId}/tools`, {
+  async getBuiltInTools(userId?: string): Promise<BuiltInToolsResponse> {
+    const id = this.resolveUserId(userId);
+    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools`, {
       headers: this.getHeaders()
     });
 
@@ -1871,8 +1878,9 @@ export class NymeriaAPI {
     };
   }
 
-  async getToolPreferences(userId: string = 'default'): Promise<ToolPreferences> {
-    const response = await fetch(`${this.getBaseUrl()}/users/${userId}/tools/preferences`, {
+  async getToolPreferences(userId?: string): Promise<ToolPreferences> {
+    const id = this.resolveUserId(userId);
+    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools/preferences`, {
       headers: this.getHeaders()
     });
 
@@ -1889,12 +1897,13 @@ export class NymeriaAPI {
   }
 
   async setToolEnabled(
-    userId: string,
+    userId: string | undefined,
     toolName: string,
     enabled: boolean
   ): Promise<{ status: string; toolName: string; enabled: boolean }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/${toolName}/enable`,
+      `${this.getBaseUrl()}/users/${id}/tools/${toolName}/enable`,
       {
         method: 'PUT',
         headers: this.getHeaders(),
@@ -1916,11 +1925,12 @@ export class NymeriaAPI {
   }
 
   async clearToolOverride(
-    userId: string,
+    userId: string | undefined,
     toolName: string
   ): Promise<{ status: string; toolName: string; cleared: boolean }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/${toolName}/enable`,
+      `${this.getBaseUrl()}/users/${id}/tools/${toolName}/enable`,
       {
         method: 'DELETE',
         headers: this.getHeaders()
@@ -1940,12 +1950,13 @@ export class NymeriaAPI {
   }
 
   async setCategoryEnabled(
-    userId: string,
+    userId: string | undefined,
     category: string,
     enabled: boolean
   ): Promise<{ status: string; category: string; enabled: boolean }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/categories/${category}/enable`,
+      `${this.getBaseUrl()}/users/${id}/tools/categories/${category}/enable`,
       {
         method: 'PUT',
         headers: this.getHeaders(),
@@ -1967,12 +1978,13 @@ export class NymeriaAPI {
   }
 
   async setToolConfig(
-    userId: string,
+    userId: string | undefined,
     toolName: string,
     config: Record<string, unknown>
   ): Promise<{ status: string; toolName: string; config: Record<string, unknown> }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/${toolName}/config`,
+      `${this.getBaseUrl()}/users/${id}/tools/${toolName}/config`,
       {
         method: 'PUT',
         headers: this.getHeaders(),
@@ -1993,8 +2005,9 @@ export class NymeriaAPI {
     };
   }
 
-  async resetToolPreferences(userId: string): Promise<{ status: string; message: string }> {
-    const response = await fetch(`${this.getBaseUrl()}/users/${userId}/tools/reset`, {
+  async resetToolPreferences(userId?: string): Promise<{ status: string; message: string }> {
+    const id = this.resolveUserId(userId);
+    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools/reset`, {
       method: 'POST',
       headers: this.getHeaders()
     });
@@ -2051,8 +2064,9 @@ export class NymeriaAPI {
     };
   }
 
-  async getUnifiedTools(userId: string = 'default'): Promise<UnifiedToolListResponse> {
-    const response = await fetch(`${this.getBaseUrl()}/users/${userId}/tools/unified`, {
+  async getUnifiedTools(userId?: string): Promise<UnifiedToolListResponse> {
+    const id = this.resolveUserId(userId);
+    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools/unified`, {
       headers: this.getHeaders()
     });
 
@@ -2072,12 +2086,13 @@ export class NymeriaAPI {
   }
 
   async setUnifiedToolEnabled(
-    userId: string,
     toolId: string,
-    enabled: boolean
+    enabled: boolean,
+    userId?: string
   ): Promise<{ status: string; toolId: string; enabled: boolean; toolType: string }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/unified/${toolId}/enable`,
+      `${this.getBaseUrl()}/users/${id}/tools/unified/${toolId}/enable`,
       {
         method: 'PUT',
         headers: this.getHeaders(),
@@ -2100,12 +2115,13 @@ export class NymeriaAPI {
   }
 
   async setUnifiedToolDescription(
-    userId: string,
     toolId: string,
-    description: string | null
+    description: string | null,
+    userId?: string
   ): Promise<{ status: string; toolId: string; action: string; description: string | null }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/unified/${toolId}/description`,
+      `${this.getBaseUrl()}/users/${id}/tools/unified/${toolId}/description`,
       {
         method: 'PUT',
         headers: this.getHeaders(),
@@ -2128,12 +2144,13 @@ export class NymeriaAPI {
   }
 
   async setUnifiedToolConfig(
-    userId: string,
     toolId: string,
-    config: Record<string, unknown>
+    config: Record<string, unknown>,
+    userId?: string
   ): Promise<{ status: string; toolId: string; action: string; config: Record<string, unknown> }> {
+    const id = this.resolveUserId(userId);
     const response = await fetch(
-      `${this.getBaseUrl()}/users/${userId}/tools/unified/${toolId}/config`,
+      `${this.getBaseUrl()}/users/${id}/tools/unified/${toolId}/config`,
       {
         method: 'PUT',
         headers: this.getHeaders(),
@@ -2329,8 +2346,8 @@ export class NymeriaAPI {
     return data.tools ?? [];
   }
 
-  async getDefaultTools(userId: string = 'default'): Promise<import('$lib/types').DefaultToolsResponse> {
-    const params = new URLSearchParams({ user_id: userId });
+  async getDefaultTools(userId?: string): Promise<import('$lib/types').DefaultToolsResponse> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
       headers: this.getHeaders()
     });
@@ -2338,8 +2355,8 @@ export class NymeriaAPI {
     return response.json();
   }
 
-  async setDefaultTools(toolNames: string[], userId: string = 'default'): Promise<void> {
-    const params = new URLSearchParams({ user_id: userId });
+  async setDefaultTools(toolNames: string[], userId?: string): Promise<void> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
       method: 'PUT',
       headers: this.getHeaders(),
@@ -2351,8 +2368,8 @@ export class NymeriaAPI {
     }
   }
 
-  async resetDefaultTools(userId: string = 'default'): Promise<void> {
-    const params = new URLSearchParams({ user_id: userId });
+  async resetDefaultTools(userId?: string): Promise<void> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
       method: 'DELETE',
       headers: this.getHeaders()
@@ -2396,8 +2413,8 @@ export class NymeriaAPI {
     };
   }
 
-  async getTriggers(userId: string = 'default'): Promise<Trigger[]> {
-    const params = new URLSearchParams({ user_id: userId });
+  async getTriggers(userId?: string): Promise<Trigger[]> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/triggers?${params}`, {
       headers: this.getHeaders()
     });
@@ -2410,8 +2427,8 @@ export class NymeriaAPI {
     return (data || []).map((item: Record<string, unknown>) => this.triggerFromResponse(item));
   }
 
-  async createTrigger(request: TriggerCreateRequest, userId: string = 'default'): Promise<Trigger> {
-    const params = new URLSearchParams({ user_id: userId });
+  async createTrigger(request: TriggerCreateRequest, userId?: string): Promise<Trigger> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/triggers?${params}`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -2430,9 +2447,9 @@ export class NymeriaAPI {
   async updateTrigger(
     triggerId: string,
     request: TriggerUpdateRequest,
-    userId: string = 'default'
+    userId?: string
   ): Promise<Trigger> {
-    const params = new URLSearchParams({ user_id: userId });
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}?${params}`, {
       method: 'PATCH',
       headers: this.getHeaders(),
@@ -2448,8 +2465,8 @@ export class NymeriaAPI {
     return this.triggerFromResponse(data);
   }
 
-  async deleteTrigger(triggerId: string, userId: string = 'default'): Promise<void> {
-    const params = new URLSearchParams({ user_id: userId });
+  async deleteTrigger(triggerId: string, userId?: string): Promise<void> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}?${params}`, {
       method: 'DELETE',
       headers: this.getHeaders()
@@ -2473,8 +2490,8 @@ export class NymeriaAPI {
     return data.sources || {};
   }
 
-  async testTrigger(triggerId: string, userId: string = 'default'): Promise<TriggerTestResult> {
-    const params = new URLSearchParams({ user_id: userId });
+  async testTrigger(triggerId: string, userId?: string): Promise<TriggerTestResult> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}/test?${params}`, {
       method: 'POST',
       headers: this.getHeaders()
@@ -2490,10 +2507,10 @@ export class NymeriaAPI {
 
   async getTriggerExecutions(
     triggerId: string,
-    userId: string = 'default',
+    userId?: string,
     limit: number = 50
   ): Promise<TriggerExecution[]> {
-    const params = new URLSearchParams({ user_id: userId, limit: limit.toString() });
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId), limit: limit.toString() });
     const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}/executions?${params}`, {
       headers: this.getHeaders()
     });
@@ -2506,10 +2523,10 @@ export class NymeriaAPI {
   }
 
   async getRecentTriggerExecutions(
-    userId: string = 'default',
+    userId?: string,
     limit: number = 50
   ): Promise<TriggerExecution[]> {
-    const params = new URLSearchParams({ user_id: userId, limit: limit.toString() });
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId), limit: limit.toString() });
     const response = await fetch(`${this.getBaseUrl()}/triggers/executions/recent?${params}`, {
       headers: this.getHeaders()
     });

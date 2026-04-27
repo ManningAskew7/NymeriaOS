@@ -5,6 +5,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 import { defaultToolsStore } from './defaultTools.svelte';
 import type { UnifiedTool, ToolCategory } from '$lib/types';
 
@@ -15,6 +16,17 @@ let loaded = $state(false);
 let error = $state<string | null>(null);
 let builtinCount = $state(0);
 let customCount = $state(0);
+let identityGeneration = 0;
+
+registerIdentityReloadHook(() => {
+  identityGeneration += 1;
+  tools = [];
+  builtinCount = 0;
+  customCount = 0;
+  loading = false;
+  loaded = false;
+  error = null;
+});
 
 const CATEGORY_INFO: Record<string, { name: string; icon: string; description: string }> = {
   core: { name: 'Core', icon: 'terminal', description: 'Essential system tools' },
@@ -68,21 +80,27 @@ function getToolById(id: string): UnifiedTool | undefined {
   return tools.find((t) => t.id === id);
 }
 
-async function loadTools(userId: string = 'default'): Promise<void> {
+async function loadTools(userId?: string): Promise<void> {
   if (loading) return;
+  const requestGeneration = identityGeneration;
   loading = true;
   error = null;
   try {
     const response = await api.getUnifiedTools(userId);
+    if (requestGeneration !== identityGeneration) return;
     tools = response.tools;
     builtinCount = response.builtinCount;
     customCount = response.customCount;
     loaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     error = e instanceof Error ? e.message : 'Failed to load tools';
     console.error('Failed to load unified tools:', e);
+    loaded = true;
   } finally {
-    loading = false;
+    if (requestGeneration === identityGeneration) {
+      loading = false;
+    }
   }
 }
 
@@ -90,11 +108,11 @@ function resetLoaded(): void {
   loaded = false;
 }
 
-async function setToolEnabled(toolId: string, enabled: boolean, userId: string = 'default'): Promise<boolean> {
+async function setToolEnabled(toolId: string, enabled: boolean, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
-    await api.setUnifiedToolEnabled(userId, toolId, enabled);
+    await api.setUnifiedToolEnabled(toolId, enabled, userId);
     await loadTools(userId);
     // Sync defaultToolsStore so both stores reflect the change
     defaultToolsStore.resetLoaded();
@@ -107,11 +125,11 @@ async function setToolEnabled(toolId: string, enabled: boolean, userId: string =
   }
 }
 
-async function setToolDescription(toolId: string, description: string | null, userId: string = 'default'): Promise<boolean> {
+async function setToolDescription(toolId: string, description: string | null, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
-    await api.setUnifiedToolDescription(userId, toolId, description);
+    await api.setUnifiedToolDescription(toolId, description, userId);
     await loadTools(userId);
     return true;
   } catch (e) {
@@ -122,11 +140,11 @@ async function setToolDescription(toolId: string, description: string | null, us
   }
 }
 
-async function setToolConfig(toolId: string, config: Record<string, unknown>, userId: string = 'default'): Promise<boolean> {
+async function setToolConfig(toolId: string, config: Record<string, unknown>, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {
-    await api.setUnifiedToolConfig(userId, toolId, config);
+    await api.setUnifiedToolConfig(toolId, config, userId);
     await loadTools(userId);
     return true;
   } catch (e) {
@@ -139,7 +157,7 @@ async function setToolConfig(toolId: string, config: Record<string, unknown>, us
 
 async function createCustomTool(
   request: { id: string; name: string; description: string; parameters?: Record<string, unknown>[]; http?: Record<string, unknown>; mcp?: Record<string, unknown>; tags?: string[] },
-  userId: string = 'default'
+  userId?: string
 ): Promise<UnifiedTool | null> {
   loading = true;
   error = null;
@@ -158,7 +176,7 @@ async function createCustomTool(
 async function updateCustomTool(
   toolId: string,
   request: { name?: string; description?: string; parameters?: Record<string, unknown>[]; http?: Record<string, unknown>; mcp?: Record<string, unknown>; tags?: string[] },
-  userId: string = 'default'
+  userId?: string
 ): Promise<UnifiedTool | null> {
   loading = true;
   error = null;
@@ -174,7 +192,7 @@ async function updateCustomTool(
   }
 }
 
-async function deleteCustomTool(toolId: string, userId: string = 'default'): Promise<boolean> {
+async function deleteCustomTool(toolId: string, userId?: string): Promise<boolean> {
   loading = true;
   error = null;
   try {

@@ -23,11 +23,13 @@ let loaded = $state(false);
 let error = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;
+let identityGeneration = 0;
 
 // Reset on account switch / sign-out — triggers are per-user.
 // `sources` is a global resource so it's left in place; only the
 // per-user trigger list and load gate are wiped.
 registerIdentityReloadHook(() => {
+  identityGeneration += 1;
   triggers = [];
   loading = false;
   loaded = false;
@@ -41,18 +43,24 @@ function isHidden(): boolean {
 // Actions
 async function loadTriggers(): Promise<void> {
   if (loading) return;
+  const requestGeneration = identityGeneration;
   loading = true;
   error = null;
   try {
-    triggers = await api.getTriggers();
+    const nextTriggers = await api.getTriggers();
+    if (requestGeneration !== identityGeneration) return;
+    triggers = nextTriggers;
     loaded = true;
   } catch (e) {
+    if (requestGeneration !== identityGeneration) return;
     error = e instanceof Error ? e.message : 'Failed to load triggers';
     console.error('Failed to load triggers:', e);
     // Mark loaded so consumer `$effect` blocks don't loop on a 404/auth error.
     loaded = true;
   } finally {
-    loading = false;
+    if (requestGeneration === identityGeneration) {
+      loading = false;
+    }
   }
 }
 
