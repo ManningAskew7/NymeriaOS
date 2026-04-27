@@ -536,6 +536,8 @@ function createThreadsStore() {
       created_at: string | null;
       updated_at: string | null;
       title_source: string;
+      recovered?: boolean;
+      recovery_sources?: string[];
     }>) {
       // Build a map of local threads for preserving UI-only state
       const localMap = new Map(threads.map((t) => [t.id, t]));
@@ -557,10 +559,16 @@ function createThreadsStore() {
           updatedAt: bt.updated_at ? new Date(bt.updated_at) : local?.updatedAt ?? new Date(),
           messageCount: local?.messageCount ?? 0,
           hasCustomConfig: local?.hasCustomConfig,
+          recovered: bt.recovered ?? local?.recovered ?? false,
+          recoverySources: bt.recovery_sources ?? local?.recoverySources ?? [],
         };
       });
 
       threads = merged;
+      if (currentThreadId && !threads.some((t) => t.id === currentThreadId)) {
+        currentThreadId = null;
+        saveCurrentThreadId(null);
+      }
       saveThreads(threads);
       console.log('[Threads] Synced from backend:', backendThreads.length, 'threads');
     },

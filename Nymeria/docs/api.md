@@ -765,7 +765,9 @@ The list also includes recoverable thread IDs referenced by thread-bound
 resources such as TODOs, scheduled TODO rows, triggers, chat bindings, bind
 codes, and safe orphan checkpoints. Those rows are marked with
 `recovered=true` so clients can surface partially-deleted threads for cleanup
-instead of hiding them.
+instead of hiding them. Recovered rows are filtered to thread IDs the effective
+caller can actually open through the detail routes; stale metadata for a thread
+owned by another user is not returned.
 
 **Response:**
 ```json
@@ -792,8 +794,8 @@ instead of hiding them.
 | `title_source` | `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name) |
 | `pinned` | Whether thread is pinned to top |
 | `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"webhook"` |
-| `recovered` | `true` when this row was included because a resource survived without the normal complete thread listing path |
-| `recovery_sources` | Storage surfaces that referenced the recovered thread, e.g. `"todo"`, `"scheduled_todo"`, `"trigger"`, `"chat_binding"`, `"bind_code"`, `"checkpoint"` |
+| `recovered` | `true` when this row was included because a resource survived without the normal complete thread listing path and the effective caller can open it |
+| `recovery_sources` | Storage surfaces that referenced the recovered thread, e.g. `"metadata"`, `"todo"`, `"scheduled_todo"`, `"trigger"`, `"chat_binding"`, `"bind_code"`, `"checkpoint"` |
 
 ---
 

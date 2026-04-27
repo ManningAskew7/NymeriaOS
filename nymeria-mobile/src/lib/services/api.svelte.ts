@@ -153,7 +153,7 @@ export async function probeConnection(
       ok: false,
       reason: 'unauthorized',
       status: me.status,
-      message: 'Token rejected — check it matches one issued by this backend.',
+      message: 'Token rejected. Check it matches one issued by this backend.',
     };
   }
   if (!me.ok) {
@@ -987,6 +987,8 @@ export class NymeriaAPI {
       created_at: string | null;
       updated_at: string | null;
       title_source: string;
+      recovered?: boolean;
+      recovery_sources?: string[];
     }>;
     total: number;
   }> {

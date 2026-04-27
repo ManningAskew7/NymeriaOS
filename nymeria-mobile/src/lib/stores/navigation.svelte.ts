@@ -7,6 +7,10 @@ export type SwitchResult =
   | { success: true }
   | { success: false; error: string };
 
+function isNotFoundError(error: unknown): boolean {
+  return error instanceof Error && /\b404\b/.test(error.message);
+}
+
 /**
  * Shared thread-switch pipeline for mobile.
  * Navigates to the chat panel after switching.
@@ -63,6 +67,10 @@ export async function switchToThread(
     if (threadsStore.currentThreadId !== threadId) return { success: true };
     chatStore.clearMessages();
     chatStore.setLoadingHistory(false);
+    if (isNotFoundError(error)) {
+      threadsStore.clearCurrent();
+      await threadsStore.syncFromBackend();
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };
   }

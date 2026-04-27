@@ -87,6 +87,8 @@ export interface Thread {
   };
   hasCustomConfig?: boolean;
   pinned?: boolean;
+  recovered?: boolean;
+  recoverySources?: string[];
 }
 
 // Thread organization types
