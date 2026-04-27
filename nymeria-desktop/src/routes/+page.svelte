@@ -79,8 +79,47 @@
       console.error('[Page] Failed to load thread history:', err);
       if (threadsStore.currentThreadId === threadId) {
         chatStore.setLoadingHistory(false);
+        if (isNotFoundError(err)) {
+          threadsStore.clearCurrent();
+          chatStore.clearMessages();
+          void threadsStore.syncFromBackend();
+        }
       }
     });
+  }
+
+  function isNotFoundError(error: unknown): boolean {
+    return error instanceof Error && /\b404\b/.test(error.message);
+  }
+
+  function fallbackRestorableThread(
+    backendThreads: { thread_id: string; platform: string }[],
+    excludeId?: string
+  ) {
+    const restorableIds = new Set(
+      backendThreads
+        .filter((t) => t.platform === 'desktop' || t.platform === 'callable')
+        .map((t) => t.thread_id)
+    );
+    return threadsStore.threads
+      .filter((t) => t.id !== excludeId && restorableIds.has(t.id))
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+  }
+
+  function selectFallbackOrClear(
+    backendThreads: { thread_id: string; platform: string }[],
+    excludeId?: string
+  ) {
+    const fallback = fallbackRestorableThread(backendThreads, excludeId);
+    if (fallback) {
+      threadsStore.selectThread(fallback.id);
+      console.log('[Page] Switched to fallback thread:', fallback.id);
+      loadThreadHistory(fallback.id);
+    } else {
+      threadsStore.clearCurrent();
+      chatStore.clearMessages();
+      console.log('[Page] No restorable threads available, cleared selection');
+    }
   }
 
   /**
@@ -94,29 +133,19 @@
       if (threadsStore.currentThreadId !== restoredId) return;
 
       const match = backendThreads.find((t) => t.thread_id === restoredId);
-      if (match && match.platform !== 'desktop') {
-        console.log(`[Page] Restored thread ${restoredId} is ${match.platform}, finding desktop thread`);
-        const desktopThreads = threadsStore.threads.filter(
-          (t) => !t.id.startsWith('trigger-') &&
-                 !t.id.startsWith('discord_') &&
-                 !t.id.startsWith('telegram_') &&
-                 !t.id.startsWith('slack_')
-        );
-        const fallback = desktopThreads.sort(
-          (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()
-        )[0];
-        if (fallback) {
-          threadsStore.selectThread(fallback.id);
-          console.log('[Page] Switched to desktop thread:', fallback.id);
-          loadThreadHistory(fallback.id);
-        } else {
-          threadsStore.clearCurrent();
-          console.log('[Page] No desktop threads available, cleared selection');
-        }
+      if (!match) {
+        console.log(`[Page] Restored thread ${restoredId} is no longer listed, clearing stale selection`);
+        selectFallbackOrClear(backendThreads, restoredId);
         return;
       }
 
-      // Thread is desktop (or unknown to backend) — load it
+      if (match.platform !== 'desktop' && match.platform !== 'callable') {
+        console.log(`[Page] Restored thread ${restoredId} is ${match.platform}, finding desktop thread`);
+        selectFallbackOrClear(backendThreads, restoredId);
+        return;
+      }
+
+      // Thread is restorable — load it
       loadThreadHistory(restoredId);
     }).catch((err) => {
       console.warn('[Page] Backend thread validation failed, loading directly:', err);
@@ -191,7 +220,7 @@
       }
 
       // Identity settled. Now safe to read scoped state and kick off backend sync.
-      threadsStore.syncFromBackend();
+      await threadsStore.syncFromBackend();
 
       // Restore last thread's chat history if one was saved
       const initialThreadId = threadsStore.currentThreadId;

@@ -2967,6 +2967,28 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             return get_agent().accounts_repo.resolve_platform("telegram", provider_user_id) == user_id
         return False
 
+    def _can_list_recovered_thread(
+        user: AuthenticatedUser,
+        user_id: str,
+        thread_id: str,
+    ) -> bool:
+        """Return True when a recovered /threads row can be opened by caller.
+
+        Recovery sources are advisory. Some old metadata rows can point at a
+        thread now owned by another user; listing those rows creates sidebar
+        zombies because detail routes correctly return 404. This mirrors
+        _require_thread_access without claiming ownerless personal threads from
+        a read-only list request.
+        """
+        owner = get_agent().accounts_repo.get_thread_owner(thread_id)
+        if owner == user_id:
+            return True
+        if owner is not None:
+            return user.role == "admin"
+        if _is_shared_channel_thread(thread_id):
+            return user.role == "admin" or user.via_act_as
+        return True
+
     def _collect_recoverable_thread_sources(
         *,
         user: AuthenticatedUser,
@@ -3108,6 +3130,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # metadata/owner/checkpoint path is incomplete.
         for tid in sorted(recovery_sources):
             if tid in seen:
+                continue
+            if not _can_list_recovered_thread(user, user_id, tid):
                 continue
             threads.append(
                 _thread_list_payload(

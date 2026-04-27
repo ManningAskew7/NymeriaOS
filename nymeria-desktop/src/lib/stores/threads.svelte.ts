@@ -631,6 +631,10 @@ function createThreadsStore() {
       });
 
       threads = merged;
+      if (currentThreadId && !threads.some((t) => t.id === currentThreadId)) {
+        currentThreadId = null;
+        saveCurrentThreadId(null);
+      }
       saveThreads(threads);
       autoFileSpawnedThreads();
       console.log('[Threads] Synced from backend:', backendThreads.length, 'threads');

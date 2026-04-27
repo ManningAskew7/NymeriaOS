@@ -38,8 +38,17 @@
         console.error('[Page] Failed to load thread history:', err);
         if (threadsStore.currentThreadId === threadId) {
           chatStore.setLoadingHistory(false);
+          if (isNotFoundError(err)) {
+            threadsStore.clearCurrent();
+            chatStore.clearMessages();
+            void threadsStore.syncFromBackend();
+          }
         }
       });
+  }
+
+  function isNotFoundError(error: unknown): boolean {
+    return error instanceof Error && /\b404\b/.test(error.message);
   }
 
   function handleBackButton() {
@@ -95,7 +104,7 @@
         } catch (e) {
           console.warn('[Page] refreshIdentity failed, continuing with cached scope:', e);
         }
-        threadsStore.syncFromBackend();
+        await threadsStore.syncFromBackend();
         const initialThreadId = threadsStore.currentThreadId;
         if (initialThreadId) {
           loadThreadHistory(initialThreadId);

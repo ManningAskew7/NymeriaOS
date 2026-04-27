@@ -31,8 +31,13 @@
   // Load thread config when thread changes
   $effect(() => {
     const tid = threadsStore.currentThreadId;
-    if (tid) {
-      untrack(() => threadConfigStore.loadConfig(tid));
+    const thread = threadsStore.currentThread;
+    if (tid && !thread?.recovered) {
+      untrack(() => {
+        threadConfigStore.loadConfig(tid).catch((err) => {
+          console.warn('[ChatPanel] Failed to load thread config:', err);
+        });
+      });
     }
   });
 
