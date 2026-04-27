@@ -206,9 +206,9 @@
         </div>
       {/if}
       <p class="form-hint">
-        Provider user IDs are the platform's own snowflake/numeric ID — Discord
-        right-click → Copy User ID, Telegram via <code>/start</code> with a bot,
-        Twitch via the Helix API.
+        Provider user IDs are the platform's own snowflake/numeric ID. Get them
+        via Discord right-click → Copy User ID, Telegram via <code>/start</code>
+        with a bot, or Twitch via the Helix API.
       </p>
     </div>
   {/if}

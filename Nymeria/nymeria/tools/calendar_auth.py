@@ -3,13 +3,13 @@
 Per-user OAuth flow: each ``(user_id, "google_calendar")`` pair gets its own
 in-memory flow state and ephemeral callback server, so concurrent users
 don't overwrite each other's pending auth. The heavy lifting lives in
-``auth_cache_utils`` — this file only wires the Google Calendar specifics
+``auth_cache_utils``; this file only wires the Google Calendar specifics
 (scopes, cache filename) and exposes the agent tools.
 
 Token cache is per-user at ``data/auth_tokens/<user_id>/google_calendar.json``
 and tokens are auto-refreshed on expiry (60-second buffer) by ``calendar.py``.
 
-Optional tools — enable per-thread via thread config.
+Optional tools, enable per-thread via thread config.
 """
 
 import json
@@ -234,7 +234,7 @@ def calendar_auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = Non
             f"and show a success message.\n\n"
             f"Then call `calendar_auth_complete` to finish.\n\n"
             f"**If the redirect page doesn't load** (e.g. Docker/remote), copy the full URL "
-            f"from your browser's address bar and give it to me — I'll extract the auth code from it."
+            f"from your browser's address bar and give it to me. I'll extract the auth code from it."
         )
 
     except KeyError as e:
@@ -332,7 +332,7 @@ def calendar_auth_complete(redirect_url: Optional[str] = None, config: Annotated
             return "[Error]: Could not parse the redirect URL. Please copy the complete URL."
 
         if returned_state != flow.state_param:
-            return "[Error]: State parameter mismatch — the URL may be from a different auth session. Please call calendar_auth_start to begin again."
+            return "[Error]: State parameter mismatch. The URL may be from a different auth session. Please call calendar_auth_start to begin again."
 
         success, token_data = exchange_code_for_tokens(
             auth_code, flow.client_id, flow.client_secret, flow.redirect_uri, flow.token_uri
@@ -412,23 +412,32 @@ def calendar_list_authenticated_accounts(config: Annotated[RunnableConfig, Injec
     if not accounts:
         return "[Info]: No Google accounts authenticated. Use calendar_auth_start to add an account."
 
+    rows, changed = auth_utils.validate_google_accounts_for_display(accounts, GOOGLE_SCOPES)
+    if changed:
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        _persist_or_delete_cache(user_id, cache)
+
+    if not rows:
+        return "[Info]: No usable Google Calendar accounts authenticated. Use calendar_auth_start to add an account."
+
     lines = ["[Success]: Authenticated Google accounts:\n"]
-    for account_id, info in accounts.items():
+    for row in rows:
+        account_id = row["account_id"]
+        info = row["account"]
         email = info.get("email", "unknown")
         name = info.get("name", "Unknown")
-        expires_at = info.get("expires_at", 0)
-        has_refresh = bool(info.get("refresh_token"))
-        expired = time.time() > expires_at
-
-        if expired and has_refresh:
-            status = "(token expired, will auto-refresh)"
-        elif expired:
-            status = "(expired — re-authentication required)"
-        else:
-            status = "(active)"
+        status = row["status"]
 
         lines.append(f"- **{name}** ({email})")
-        lines.append(f"  Account ID: `{account_id}` {status}")
+        lines.append(f"  Account ID: `{account_id}` ({status})")
+        if not row["usable"] and row.get("reason"):
+            lines.append(
+                f"  Action: run `calendar_auth_clear(account_id=\"{account_id}\")`, "
+                "then `calendar_auth_start`."
+            )
 
     return "\n".join(lines)
 

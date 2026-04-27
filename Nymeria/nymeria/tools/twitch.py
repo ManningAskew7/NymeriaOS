@@ -1,6 +1,6 @@
-"""Twitch tools for Nymeria — chat, moderation, stream info, and broadcaster actions.
+"""Twitch tools for Nymeria: chat, moderation, stream info, and broadcaster actions.
 
-These are OPTIONAL_TOOLS — enabled per-thread via thread config.
+These are OPTIONAL_TOOLS, enabled per-thread via thread config.
 They require a running Twitch bot instance with Helix API access.
 The bot sets the module-level _bot_ref on startup.
 """
@@ -107,7 +107,7 @@ def twitch_read_chat(count: int = 50) -> str:
     bot = _get_bot()
     messages = bot._buffer.get_recent(count)
     if not messages:
-        return "Chat buffer is empty — no messages received yet."
+        return "Chat buffer is empty. No messages received yet."
 
     from ..triggers.twitch_bot import format_chat_context
 
@@ -387,7 +387,7 @@ def twitch_shoutout(username: str) -> str:
 
 @tool
 def twitch_get_stream() -> str:
-    """Get the current live stream status — viewers, game, title, uptime. Returns 'offline' if not live."""
+    """Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live."""
 
     async def _get():
         bot = _get_bot()
@@ -410,7 +410,7 @@ def twitch_get_stream() -> str:
 
 @tool
 def twitch_get_channel() -> str:
-    """Get channel info — title, game, tags, language."""
+    """Get channel info: title, game, tags, language."""
 
     async def _get():
         bot = _get_bot()
@@ -573,7 +573,7 @@ def twitch_create_poll(title: str, choices: str, duration: int = 60) -> str:
         )
         if resp.status_code == 200:
             data = resp.json().get("data", [{}])[0]
-            return f"Poll created: '{data.get('title')}' (ID: {data.get('id')}) — {duration}s"
+            return f"Poll created: '{data.get('title')}' (ID: {data.get('id')}, {duration}s)"
         return f"Error creating poll: {resp.status_code} {resp.text}"
 
     return _run_async(_create())

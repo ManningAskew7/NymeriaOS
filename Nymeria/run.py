@@ -617,14 +617,16 @@ def run_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server."""
     from nymeria.mcp_server import run_stdio, run_http
 
+    api_url = getattr(args, "api_url", None)
     if args.http:
         host = args.host or "127.0.0.1"
         port = args.port or 8001
-        print(f"Starting Nymeria MCP server (HTTP mode) on {host}:{port}...")
-        run_http(host=host, port=port)
+        api_label = api_url or os.environ.get("NYMERIA_API_URL") or "auto"
+        print(f"Starting Nymeria MCP server (HTTP mode) on {host}:{port}; API={api_label}...")
+        run_http(host=host, port=port, api_url=api_url)
     else:
         # STDIO mode - minimal output to avoid corrupting JSON-RPC
-        run_stdio()
+        run_stdio(api_url=api_url)
 
 
 def run_gateway_foreground(args: argparse.Namespace) -> None:
@@ -792,6 +794,11 @@ Examples:
         type=int,
         default=None,
         help="Port for HTTP mode (default: 8001)",
+    )
+    mcp_parser.add_argument(
+        "--api-url",
+        default=None,
+        help="URL of the running Nymeria API (default: NYMERIA_API_URL, Docker nymeria-api, or localhost:8000)",
     )
 
     # Service subcommand

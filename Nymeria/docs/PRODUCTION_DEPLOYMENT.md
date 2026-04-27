@@ -134,20 +134,26 @@ Then configure your platform to send webhooks to:
 ## MCP Server (Agent-to-Agent Communication)
 
 Nymeria can expose an MCP server for other AI agents to use her capabilities.
+The MCP process is a thin client: it talks to the running REST/SSE API with
+`NYMERIA_SERVICE_TOKEN` and uses `X-Nymeria-Act-As` for user-scoped tools.
 
 ### Local MCP
 
 ```bash
 # STDIO mode (for Claude Code, etc.)
-python run.py mcp
+python run.py mcp --api-url http://localhost:8000
 
 # HTTP mode (for network access)
-python run.py mcp --http --port 8001
+python run.py mcp --http --port 8001 --api-url http://localhost:8000
 ```
 
 ### Docker MCP
 
-The `mcp` service starts by default in `docker compose --env-file .env.docker up -d` and runs `python run.py mcp --http --host 0.0.0.0 --port 8001`:
+The `mcp` service starts by default in `docker compose --env-file .env.docker up -d`, waits for the API health check, and runs:
+
+```bash
+python run.py mcp --http --host 0.0.0.0 --port 8001 --api-url http://nymeria-api:8000
+```
 
 ```yaml
 # In docker-compose.yml

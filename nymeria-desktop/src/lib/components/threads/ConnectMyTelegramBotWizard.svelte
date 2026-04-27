@@ -178,11 +178,11 @@
 
   let stepTitle = $derived(
     currentStep === 'token'
-      ? 'Step 1 of 3 — Paste your bot token'
+      ? 'Step 1 of 3: Paste your bot token'
       : currentStep === 'starting'
-      ? 'Step 2 of 3 — Starting your bot…'
+      ? 'Step 2 of 3: Starting your bot…'
       : currentStep === 'bind'
-      ? 'Step 3 of 3 — Bind a chat to this thread'
+      ? 'Step 3 of 3: Bind a chat to this thread'
       : 'Connected'
   );
 
@@ -213,7 +213,7 @@
       <p>
         Open <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
         in Telegram, send <code>/newbot</code>, follow the prompts, and copy the
-        token it gives you. Paste it below — the server validates it via Telegram
+        token it gives you. Paste it below; the server validates it via Telegram
         and stores it encrypted.
       </p>
 
@@ -233,7 +233,7 @@
       <p class="muted small">
         The token is encrypted with the server's <code>NYMERIA_SECRETS_KEY</code>
         before it touches the database. The plaintext is never returned in any
-        API response. To revoke, use BotFather's <code>/revoke</code> — that
+        API response. To revoke, use BotFather's <code>/revoke</code>. That
         rotates the token on Telegram's side; the stored ciphertext stops
         working immediately.
       </p>
@@ -250,7 +250,7 @@
       <p>
         Your bot is registered as
         <strong>@{registeredBot?.bot_username ?? '…'}</strong>. The supervisor
-        process is starting its polling loop now — this normally takes
+        process is starting its polling loop now. This normally takes
         15 seconds or less.
       </p>
       <div class="muted small">

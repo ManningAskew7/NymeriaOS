@@ -1,7 +1,7 @@
 """Shared OAuth scaffold for Google-based tools (calendar, docs, drive, sheets).
 
 Per-user OAuth flow state, callback server, token-cache I/O, userinfo and
-token-exchange helpers — previously duplicated in calendar_auth.py and
+token-exchange helpers, previously duplicated in calendar_auth.py and
 google_docs_auth.py. The duplication caused two real bugs:
 
 1. Module-global ``_auth_state`` dicts allowed concurrent users to overwrite
@@ -46,7 +46,7 @@ class OAuthFlow:
 
     Identified by ``(user_id, provider)``. ``state_param`` is unique per
     flow and is what the callback handler uses to route an inbound redirect
-    to the right flow — so concurrent flows from different users don't
+    to the right flow, so concurrent flows from different users don't
     collide.
     """
 
@@ -133,7 +133,7 @@ def clear_flow(user_id: str, provider: str) -> None:
 class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
     """Handles the OAuth redirect callback from the provider.
 
-    The same handler class serves all flows — request dispatch is by the
+    The same handler class serves all flows; request dispatch is by the
     ``state`` URL parameter, which uniquely identifies the flow.
     """
 
@@ -177,7 +177,7 @@ class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
             self._send_page(
                 400,
                 "Authentication Failed",
-                "Unexpected callback — no authorization code received.",
+                "Unexpected callback: no authorization code received.",
             )
 
         flow.completed = True
@@ -204,8 +204,8 @@ def start_callback_server(flow: OAuthFlow) -> int:
     """Open an ephemeral HTTP server for this flow's callback.
 
     Mutates the flow in place: sets ``port``, ``httpd``, and ``server_thread``.
-    Returns the port. The server handles exactly one request, then closes —
-    if no request arrives within ``OAUTH_TIMEOUT_SECONDS`` the flow is marked
+    Returns the port. The server handles exactly one request, then closes.
+    If no request arrives within ``OAUTH_TIMEOUT_SECONDS`` the flow is marked
     timed-out.
     """
     httpd = socketserver.TCPServer(("127.0.0.1", 0), _OAuthCallbackHandler)
@@ -365,6 +365,88 @@ def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
     if creds.refresh_token:
         account["refresh_token"] = creds.refresh_token
     return "refreshed", ""
+
+
+def validate_google_accounts_for_display(
+    accounts: dict,
+    scopes: list,
+) -> Tuple[list[dict], bool]:
+    """Validate cached Google accounts before presenting them as usable.
+
+    Mutates ``accounts`` in place when a token refresh succeeds or Google
+    confirms a refresh token is invalid. Returns ``(rows, changed)`` where
+    each row has account_id/account/status/usable/reason keys.
+    """
+    required_scopes = set(scopes)
+    rows: list[dict] = []
+    changed = False
+
+    for account_id, account in list(accounts.items()):
+        email = account.get("email", "unknown")
+        saved_scopes = set(account.get("scopes", []))
+        missing_scopes = required_scopes - saved_scopes
+        if missing_scopes:
+            rows.append({
+                "account_id": account_id,
+                "account": account,
+                "status": "missing required scopes - re-authentication required",
+                "usable": False,
+                "reason": f"missing scopes: {', '.join(sorted(missing_scopes))}",
+            })
+            continue
+
+        expires_at = account.get("expires_at", 0)
+        expired = time.time() > expires_at - 60
+        has_refresh = bool(account.get("refresh_token"))
+
+        if not expired:
+            rows.append({
+                "account_id": account_id,
+                "account": account,
+                "status": "active",
+                "usable": True,
+                "reason": "",
+            })
+            continue
+
+        if not has_refresh:
+            rows.append({
+                "account_id": account_id,
+                "account": account,
+                "status": "expired - re-authentication required",
+                "usable": False,
+                "reason": "no refresh token stored",
+            })
+            continue
+
+        refresh_status, reason = refresh_google_account(account, scopes)
+        if refresh_status == "refreshed":
+            accounts[account_id] = account
+            changed = True
+            rows.append({
+                "account_id": account_id,
+                "account": account,
+                "status": "active (refreshed)",
+                "usable": True,
+                "reason": "",
+            })
+            continue
+
+        if refresh_status == "invalid":
+            logger.info("Clearing invalid Google token for %s: %s", email, reason)
+            del accounts[account_id]
+            changed = True
+            continue
+
+        rows.append({
+            "account_id": account_id,
+            "account": account,
+            "status": f"expired - refresh could not be verified: {reason}",
+            "usable": False,
+            "reason": reason,
+        })
+
+    return rows, changed
 
 
 def exchange_code_for_tokens(

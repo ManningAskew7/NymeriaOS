@@ -397,7 +397,7 @@
               Let the provider apply model-specific optimal defaults
               {#if llmUseModelDefaults && currentModelMeta}
                 {#if currentModelMeta.default_temperature != null}
-                  — temp: {currentModelMeta.default_temperature}
+                  (temp: {currentModelMeta.default_temperature})
                 {/if}
               {/if}
             </p>
@@ -567,7 +567,7 @@
               {:else if contextManagement === 'sliding_window'}
                 Keeps only the N most recent conversation cycles
               {:else}
-                No context management — history grows unbounded
+                No context management. History grows unbounded
               {/if}
             </p>
           </div>
@@ -666,15 +666,15 @@
             </select>
             <p class="hint">
               {#if ttsProvider === 'cartesia'}
-                Cartesia Sonic-3 — ultra-low latency (~90ms), speed/emotion controls
+                Cartesia Sonic-3 with ultra-low latency (~90ms) and speed/emotion controls
               {:else if ttsProvider === 'gemini'}
-                Google Gemini 3.1 Flash TTS — 30 voices, 70+ languages, audio tags supported
+                Google Gemini 3.1 Flash TTS with 30 voices, 70+ languages, and audio tag support
               {:else if ttsProvider === 'openai'}
                 Uses OpenAI TTS API (tts-1, tts-1-hd)
               {:else if ttsProvider === 'qwen3'}
                 Local Qwen3-TTS via OpenAI-compatible server
               {:else}
-                TTS disabled — voice endpoints will not return audio
+                TTS disabled. Voice endpoints will not return audio
               {/if}
             </p>
           </div>
@@ -765,7 +765,7 @@
               {:else if sttProvider === 'faster-whisper'}
                 Local faster-whisper via OpenAI-compatible server
               {:else}
-                STT disabled — voice endpoints will not accept audio
+                STT disabled. Voice endpoints will not accept audio
               {/if}
             </p>
           </div>

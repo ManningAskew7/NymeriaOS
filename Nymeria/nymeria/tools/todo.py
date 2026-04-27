@@ -87,10 +87,10 @@ def nym_todo(
     """
     Create or update a TODO item. Omit todo_id to create, provide it to update.
 
-    These are YOUR tasks — scheduled TODOs auto-wake you to execute them.
+    These are YOUR tasks. Scheduled TODOs auto-wake you to execute them.
     Use scheduled_for to prompt yourself at a specific time.
 
-    Recurring TODOs auto-reschedule when marked done — use nym_todo_delete or
+    Recurring TODOs auto-reschedule when marked done; use nym_todo_delete or
     clear_recurrence to stop them permanently.
 
     Args:

@@ -266,7 +266,7 @@
     if (!selectedUser || deleting) return;
     const subject = selectedUser.display_name || selectedUser.email;
     const ok = window.confirm(
-      `Permanently delete ${subject}? Tokens and platform identities are cleaned up automatically. The backend refuses with 409 if this user still owns threads or todos — you'll need to re-assign or remove those first.`
+      `Permanently delete ${subject}? Tokens and platform identities are cleaned up automatically. The backend refuses with 409 if this user still owns threads or todos; you'll need to re-assign or remove those first.`
     );
     if (!ok) return;
     deleting = true;
@@ -334,7 +334,7 @@
       <div class="empty-state">
         <Icon name="users" size={24} />
         <p>You're the only account so far.</p>
-        <span>Add another user to delegate access — bots, family, collaborators…</span>
+        <span>Add another user to delegate access for bots, family, or collaborators…</span>
         <div class="empty-cta">
           <Button onclick={openCreate}>
             <Icon name="plus" size={14} />
@@ -475,7 +475,7 @@
       <div class="section-header"><h4>Delete user</h4></div>
       <p class="section-hint">
         Cleans up tokens and platform identities automatically. The backend
-        refuses with 409 if this user still owns threads or todos — re-assign
+        refuses with 409 if this user still owns threads or todos; re-assign
         or remove those first.
       </p>
       {#if (selectedUser.thread_count ?? 0) + (selectedUser.todo_count ?? 0) > 0}
@@ -492,7 +492,7 @@
             {#if (selectedUser.todo_count ?? 0) > 0}
               {selectedUser.todo_count} todo{selectedUser.todo_count === 1 ? '' : 's'}
             {/if}
-            — clean these up before deleting.
+            ; clean these up before deleting.
           </span>
         </div>
       {/if}

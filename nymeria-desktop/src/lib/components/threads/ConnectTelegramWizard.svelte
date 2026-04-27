@@ -155,9 +155,9 @@
   // Pretty title in the modal header that reflects the wizard's progress.
   let stepTitle = $derived(
     currentStep === 'link'
-      ? 'Step 1 of 2 — Link your Telegram account'
+      ? 'Step 1 of 2: Link your Telegram account'
       : currentStep === 'bind'
-      ? (linkCode ? 'Step 2 of 2 — Bind this thread to a chat' : 'Bind this thread to a chat')
+      ? (linkCode ? 'Step 2 of 2: Bind this thread to a chat' : 'Bind this thread to a chat')
       : 'Connected'
   );
 </script>
@@ -181,7 +181,7 @@
     {:else if currentStep === 'link'}
       <p>
         Your Telegram account isn't linked to Nymeria yet. Open your Telegram bot
-        and send the link command — we'll detect it and continue automatically.
+        and send the link command. We'll detect it and continue automatically.
       </p>
 
       {#if linkCode}
@@ -215,7 +215,7 @@
       {/if}
     {:else if currentStep === 'bind'}
       <p>
-        Got it — your account is linked. Now open the Telegram chat you want to use
+        Your account is linked. Now open the Telegram chat you want to use
         for this thread and tell the bot to bind it.
       </p>
 

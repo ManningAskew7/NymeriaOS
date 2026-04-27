@@ -4436,8 +4436,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "anthropic_direct_api_key": "ANTHROPIC_DIRECT_API_KEY",
             "openrouter_api_key": "OPENROUTER_API_KEY",
+            "embedding_api_key": "EMBEDDING_API_KEY",
+            "embedding_base_url": "EMBEDDING_BASE_URL",
+            "embedding_model": "EMBEDDING_MODEL",
             "gemini_api_key": "GEMINI_API_KEY",
             "gemini_extraction_model": "GEMINI_EXTRACTION_MODEL",
+            "_prv_a_service_account_file": "_PRV_A_SERVICE_ACCOUNT_FILE",
             # Runtime tuning
             "user_timezone": "USER_TIMEZONE",
             "ticker_poll_interval": "TICKER_POLL_INTERVAL",
@@ -6398,16 +6402,77 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             logger.error(f"Failed to get RAG stats for user {user_id}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.get("/users/{user_id}/rag/search", tags=["RAG"])
+    async def search_rag(
+        user_id: str,
+        q: str = Query(..., min_length=1, description="Search query"),
+        max_results: int = Query(default=5, ge=1, le=10),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Search a user's RAG index and return structured chunk results."""
+        _require_same_user_or_admin(user, user_id)
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+
+        if not profile.opt_in.rag_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"RAG is not enabled for user '{user_id}'.",
+            )
+
+        memory_index = agent._get_memory_index(user_id)
+        if not memory_index:
+            raise HTTPException(status_code=500, detail="Could not access memory index")
+
+        rag_prefs = profile.get_rag_preferences()
+        chunk_types: List[str] = []
+        if rag_prefs.get("include_conversations", True):
+            chunk_types.append("conversation")
+        if rag_prefs.get("include_memories", True):
+            chunk_types.append("memory")
+        if rag_prefs.get("include_todos", True):
+            chunk_types.append("todo")
+
+        if not chunk_types:
+            return {
+                "user_id": user_id,
+                "query": q,
+                "results": [],
+                "total": 0,
+                "message": "All RAG content types are disabled.",
+            }
+
+        results = memory_index.search(
+            query=q,
+            user_id=user_id,
+            limit=max_results,
+            chunk_types=chunk_types,
+        )
+
+        return {
+            "user_id": user_id,
+            "query": q,
+            "results": [
+                {
+                    "id": result.id,
+                    "content": result.content,
+                    "chunk_type": result.chunk_type,
+                    "thread_id": result.thread_id,
+                    "created_at": result.created_at.isoformat(),
+                    "metadata": result.metadata,
+                    "score": result.score,
+                }
+                for result in results
+            ],
+            "total": len(results),
+        }
+
     @app.post("/users/{user_id}/rag/reindex", tags=["RAG"])
     async def reindex_user(
         user_id: str,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """
-        Rebuild user's entire RAG index from conversation history.
-
-        This clears existing index and re-indexes all conversations.
-        """
+        """Rebuild saved-memory chunks in the user's RAG index."""
         _require_same_user_or_admin(user, user_id)
         from ..core.memory_index import MemoryIndex
 
@@ -6426,8 +6491,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
             memory_index = MemoryIndex(db_path)
 
-            # Clear existing index
-            cleared = memory_index.clear_index(user_id)
+            # Clear only saved-memory chunks. Conversation and TODO chunks are
+            # event-generated and should not be discarded by a memory reindex.
+            cleared = memory_index.delete_by_type(user_id, "memory")
 
             # Re-index memories
             indexed_memories = 0
@@ -6446,7 +6512,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
             return {
                 "status": "ok",
-                "cleared_chunks": cleared,
+                "cleared_memory_chunks": cleared,
                 "indexed_memories": indexed_memories,
                 "message": "Index rebuilt. New conversations will be indexed automatically.",
             }
@@ -6691,6 +6757,34 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         key: str = Field(..., description="Memory key identifier")
         value: str = Field(..., max_length=1000, description="Memory content")
 
+    def _upsert_memory_rag_chunk(user_id: str, key: str, value: str) -> None:
+        """Best-effort profile-memory sync into the user's RAG index."""
+        agent = get_agent()
+        memory_index = agent._get_memory_index(user_id)
+        if not memory_index:
+            return
+        try:
+            memory_index.delete_memory_key(user_id, key)
+            memory_index.add_chunk(
+                content=f"{key}: {value}",
+                metadata={"key": key},
+                chunk_type="memory",
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to sync memory '{key}' into RAG index: {e}")
+
+    def _delete_memory_rag_chunk(user_id: str, key: str) -> None:
+        """Best-effort removal of a profile memory from the user's RAG index."""
+        agent = get_agent()
+        memory_index = agent._get_memory_index(user_id)
+        if not memory_index:
+            return
+        try:
+            memory_index.delete_memory_key(user_id, key)
+        except Exception as e:
+            logger.warning(f"Failed to remove memory '{key}' from RAG index: {e}")
+
     @app.post("/users/{user_id}/memories", tags=["User Memories"])
     async def save_memory(
         user_id: str,
@@ -6707,6 +6801,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 status_code=400,
                 detail=f"Memory limit reached ({profile.MAX_MEMORIES})",
             )
+        _upsert_memory_rag_chunk(user_id, request.key, request.value)
         return {"status": "ok", "key": request.key}
 
     @app.delete("/users/{user_id}/memories/{key}", tags=["User Memories"])
@@ -6722,6 +6817,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             removed = profile.remove_memory(key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"No memory with key '{key}'")
+        _delete_memory_rag_chunk(user_id, key)
         return {"status": "ok", "key": key}
 
     @app.get("/users/{user_id}/memories/search", tags=["User Memories"])

@@ -10,9 +10,24 @@ from datetime import datetime
 # Kept minimal — soul.md carries all behavioral guidance
 INTERACTIVE_MODE_RULES = ''
 
-# Rules for autonomous mode (self_invoke scheduled tasks)
-# Kept minimal — soul.md carries all behavioral guidance
-AUTONOMOUS_MODE_RULES = ''
+# Rules for autonomous mode (scheduled TODOs, watchdog nudges, triggers)
+AUTONOMOUS_MODE_RULES = """
+
+---
+
+## Autonomous Run Rules
+
+This is autonomous user-visible work. Do not end by choosing silence, a no-op,
+or "nothing to do" as the final outcome.
+
+- For scheduled TODOs: work the TODO, then use `nym_todo(todo_id=..., status="done")`
+  when complete, update its notes/status when still in progress, or use
+  `nym_todo_delete` when it is truly obsolete.
+- For watchdog or trigger runs: perform the requested check/action and report the
+  outcome concisely.
+- If there is no useful action to take, still respond with a brief explanation of
+  what you checked and why no action was taken.
+"""
 
 
 def get_time_context(is_autonomous: bool = False, trigger_override: str = None) -> str:

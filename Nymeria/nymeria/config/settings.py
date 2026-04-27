@@ -134,6 +134,14 @@ class Settings(BaseSettings):
         description="Secret for validating incoming webhooks"
     )
 
+    # _PRV_A Google Sheets reference-data access. This is intentionally separate
+    # from GOOGLE_OAUTH_CREDENTIALS, which is a user OAuth client for the
+    # general Google Docs/Drive/Sheets tools.
+    _prv_a_service_account_file: Optional[str] = Field(
+        default=None,
+        description="Path to a Google service account JSON file for _PRV_A reference spreadsheets",
+    )
+
     # Messaging Platform Credentials - Telegram
     telegram_bot_token: Optional[str] = Field(
         default=None,
@@ -264,6 +272,18 @@ class Settings(BaseSettings):
     openrouter_api_key: Optional[str] = Field(default=None)
     perplexity_api_key: Optional[str] = Field(default=None)
     perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")
+    embedding_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
+    )
+    embedding_base_url: Optional[str] = Field(
+        default=None,
+        description="Optional OpenAI-compatible base URL for embeddings",
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="1536-dimensional embedding model name for memory and skill semantic search",
+    )
 
     # Gemini (document extraction for email attachments)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")

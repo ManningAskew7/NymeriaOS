@@ -98,7 +98,7 @@
                         class="admin-only-badge"
                         title={isAdmin
                           ? 'Requires admin role'
-                          : "You don't have the admin role — toggling this tool will work but the agent will hit 403 when invoking it"}
+                          : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}
                       >
                         admin only
                       </span>

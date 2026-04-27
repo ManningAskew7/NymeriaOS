@@ -1398,7 +1398,7 @@ Manage RAG (Retrieval Augmented Generation) settings and indexes per user.
 
 `rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the `rag_settings` tool — the watermark prevents re-flipping.
 
-Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
+Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. Saved profile memories are also synced into the memory chunk index when created or updated through the REST API or agent tools, and removed from the index when forgotten. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
 
 ### Get RAG Settings
 
@@ -1472,6 +1472,37 @@ Authorization: Bearer <token>
 
 ---
 
+### Search RAG Index
+
+```http
+GET /users/{user_id}/rag/search?q=<query>&max_results=5
+Authorization: Bearer <token>
+```
+
+Searches the user's enabled RAG content types and returns matching chunks.
+
+**Response:**
+```json
+{
+  "user_id": "default",
+  "query": "supplier pricing",
+  "results": [
+    {
+      "id": "chunk-id",
+      "content": "Relevant conversation or memory text",
+      "chunk_type": "conversation",
+      "thread_id": "thread-id",
+      "created_at": "2026-04-27T12:00:00",
+      "metadata": {},
+      "score": 0.87
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
 ### Trigger RAG Reindex
 
 ```http
@@ -1479,13 +1510,15 @@ POST /users/{user_id}/rag/reindex
 Authorization: Bearer <token>
 ```
 
-Rebuilds the RAG index from scratch.
+Rebuilds saved-memory chunks in the RAG index without deleting conversation or TODO chunks.
 
 **Response:**
 ```json
 {
-  "message": "Reindexing started",
-  "chunks_indexed": 156
+  "status": "ok",
+  "cleared_memory_chunks": 25,
+  "indexed_memories": 25,
+  "message": "Index rebuilt. New conversations will be indexed automatically."
 }
 ```
 

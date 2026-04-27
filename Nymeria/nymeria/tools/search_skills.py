@@ -5,7 +5,7 @@ These tools let Nymeria reason about skills as first-class resources:
 - search_skills: search installed skills OR pull a fresh index from a marketplace
 - install_skill: download a skill from a marketplace into user/global scope
 
-The `Skill` meta-tool itself is *not* defined here — it's built dynamically
+The `Skill` meta-tool itself is *not* defined here; it's built dynamically
 per-graph in skills.meta_tool.create_skill_meta_tool so its description can
 carry the (name, description) index for the current thread's active skills.
 """
@@ -145,8 +145,8 @@ def search_skills(
             - ``mode`` is "semantic" (best), "bm25" (keyword fallback), or
               "substring" (final safety net)
             - ``warning`` is only present when search is running in degraded
-              mode — surface its message to the user so they can set up a
-              better configuration (typically set OPENAI_API_KEY).
+              mode. Surface its message to the user so they can set up a
+              better configuration (typically set EMBEDDING_API_KEY).
             - each result is ``{name, description, score, ...}``
     """
     agent = _agent()
@@ -173,7 +173,7 @@ def search_skills(
             return json.dumps({
                 "count": len(matches),
                 "mode": "substring",
-                "warning": "embedding index unavailable — using substring match",
+                "warning": "embedding index unavailable; using substring match",
                 "results": matches[:top_k],
             }, indent=2)
 
@@ -202,7 +202,7 @@ def search_skills(
             return json.dumps({
                 "count": len(matches),
                 "mode": "substring",
-                "warning": "embedding index unavailable — using keyword match on marketplace list",
+                "warning": "embedding index unavailable; using keyword match on marketplace list",
                 "results": matches,
             }, indent=2)
 
@@ -229,7 +229,7 @@ def install_skill(
 ) -> str:
     """Install an Agent Skill from a marketplace onto disk.
 
-    Installed skills are not automatically enabled on any thread — use the
+    Installed skills are not automatically enabled on any thread. Use the
     desktop Settings → Skills tab, or the skill-creator skill's enable
     workflow, to turn them on.
 

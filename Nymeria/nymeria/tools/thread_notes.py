@@ -1,4 +1,4 @@
-"""Per-thread notepad tools — persistent notes that survive compaction.
+"""Per-thread notepad tools: persistent notes that survive compaction.
 
 Unlike memories (which are global, cross-thread facts injected into the system
 prompt), notepad content is thread-specific context: project state, file paths,
@@ -96,6 +96,11 @@ def notepad_write(
     else:
         new_content = content
 
+    if not new_content.strip():
+        deleted = delete_notepad(thread_id)
+        logger.info(f"Notepad cleared by empty write for thread {thread_id}")
+        return "[Saved]: Notepad is empty." if deleted else "[Info]: Notepad was already empty."
+
     if len(new_content.encode("utf-8")) > MAX_NOTEPAD_SIZE:
         return f"[Error]: Notepad would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit. Use mode='replace' to overwrite, or trim content."
 
@@ -147,7 +152,7 @@ def notepad_edit(
     path = _notepad_path(thread_id)
 
     if not path.exists():
-        return "[Error]: Notepad is empty — nothing to edit."
+        return "[Error]: Notepad is empty; nothing to edit."
 
     content = path.read_text(encoding="utf-8")
 
@@ -160,7 +165,14 @@ def notepad_edit(
     # Clean up double blank lines from deletions
     while "\n\n\n" in updated:
         updated = updated.replace("\n\n\n", "\n\n")
-    updated = updated.strip() + "\n"
+    updated = updated.strip()
+
+    if not updated:
+        delete_notepad(thread_id)
+        logger.info(f"Notepad edited for thread {thread_id}: removed all content")
+        return "[Saved]: Text removed. Notepad is now empty."
+
+    updated = updated + "\n"
 
     if len(updated.encode("utf-8")) > MAX_NOTEPAD_SIZE:
         return f"[Error]: Edit would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit."

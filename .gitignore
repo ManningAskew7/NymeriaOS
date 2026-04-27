@@ -7,7 +7,9 @@
 !.env.docker.example
 firebase-service-account.json
 google_credentials.json
+_prv_a-google-service-account.json
 **/google_credentials.json
+**/_prv_a-google-service-account.json
 # Per-instance CLIProxy state — keep tracked files (source, compose, docs)
 # but exclude per-machine secrets, configs, and runtime data:
 CLIProxyAPI-main/auths/

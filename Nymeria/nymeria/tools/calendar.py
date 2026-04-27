@@ -1,10 +1,10 @@
-"""Google Calendar tools — native Python implementation.
+"""Google Calendar tools (native Python implementation).
 
 Uses google-api-python-client for direct Google Calendar API calls.
 Authentication is handled by calendar_auth.py (OAuth 2.0 authorization
 code flow with localhost redirect + manual fallback).
 
-Optional tools — enable per-thread via thread config.
+Optional tools, enable per-thread via thread config.
 """
 
 import json
@@ -36,7 +36,7 @@ def get_credentials(user_id: str, account_id: Optional[str] = None):
     Get valid Google OAuth credentials for a Nymeria user, refreshing the
     access token if expired.
 
-    Mirrors get_access_token() in outlook_email.py — checks expiry with a
+    Mirrors get_access_token() in outlook_email.py: checks expiry with a
     60-second buffer and auto-refreshes via the stored refresh token.
 
     Returns:
@@ -128,7 +128,7 @@ def _calendar_request(
         account_id: Optional account ID to use.
 
     Returns:
-        ``(success, result)`` — on failure *result* is an error message string.
+        ``(success, result)``. On failure *result* is an error message string.
     """
     try:
         from googleapiclient.discovery import build
@@ -166,7 +166,7 @@ def _calendar_request(
 def _format_event_summary(evt: dict) -> str:
     """Format a calendar event as a short summary string."""
     summary = evt.get("summary", "(no title)")
-    evt_id = evt.get("id", "")[:12]
+    evt_id = evt.get("id", "")
     start = evt.get("start", {})
     start_str = start.get("dateTime") or start.get("date", "")
     if start_str and "T" in start_str:
@@ -175,7 +175,7 @@ def _format_event_summary(evt: dict) -> str:
     loc_str = f" @ {location}" if location else ""
     status = evt.get("status", "")
     status_str = f" ({status})" if status and status != "confirmed" else ""
-    return f"- [{start_str}] **{summary}**{loc_str}{status_str}\n  ID: `{evt_id}...`"
+    return f"- [{start_str}] **{summary}**{loc_str}{status_str}\n  Event ID: `{evt_id}`"
 
 
 def _format_event_detail(evt: dict) -> str:
@@ -311,7 +311,7 @@ def calendar_list_events(
             kwargs["timeMax"] = time_max
         return s.events().list(**kwargs).execute()
 
-    success, result = _calendar_request(_op, account_id=account_id)
+    success, result = _calendar_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -466,7 +466,7 @@ def calendar_create_event(
 
         return s.events().insert(calendarId=calendar_id, body=body).execute()
 
-    success, result = _calendar_request(_op, account_id=account_id)
+    success, result = _calendar_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -534,7 +534,7 @@ def calendar_update_event(
             body=body,
         ).execute()
 
-    success, result = _calendar_request(_op, account_id=account_id)
+    success, result = _calendar_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -633,7 +633,7 @@ def calendar_respond_to_event(
             body={"attendees": attendees},
         ).execute()
 
-    success, result = _calendar_request(_op, account_id=account_id)
+    success, result = _calendar_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -674,7 +674,7 @@ def calendar_get_freebusy(
         }
         return s.freebusy().query(body=body).execute()
 
-    success, result = _calendar_request(_op, account_id=account_id)
+    success, result = _calendar_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -706,7 +706,7 @@ def calendar_get_current_time(config: Annotated[RunnableConfig, InjectedToolArg]
     Get the current time in ISO 8601 format.
 
     Useful for calculating relative times for event scheduling.
-    No Google API call is made — returns the local system time.
+    No Google API call is made; returns the local system time.
 
     Returns:
         Current time as ISO 8601 string with timezone offset.

@@ -166,7 +166,7 @@ async def fetch_channel_context(
 
         context = "\n".join(lines)
         return (
-            f"[Discord Channel Context — last {len(lines)} messages]\n"
+            f"[Discord Channel Context: last {len(lines)} messages]\n"
             f"{context}\n"
             f"[End of channel context]\n\n"
         )
@@ -1628,7 +1628,7 @@ class NymeriaDiscordBot(discord.Client):
 
                 embed = discord.Embed(
                     title="Core Tools",
-                    description=f"{len(default_names)} tools — enabled by default for new threads",
+                    description=f"{len(default_names)} tools enabled by default for new threads",
                     color=discord.Color.blue(),
                 )
 
@@ -1671,8 +1671,8 @@ class NymeriaDiscordBot(discord.Client):
                 embed = discord.Embed(
                     title="Optional Tools",
                     description=(
-                        f"{total_optional} tools across {len(cats)} categories "
-                        f"— disabled by default for new threads.\n"
+                        f"{total_optional} tools across {len(cats)} categories, "
+                        f"disabled by default for new threads.\n"
                         f"Use `/tools category <name>` to see individual tools."
                     ),
                     color=discord.Color.orange(),
@@ -1874,7 +1874,7 @@ class NymeriaDiscordBot(discord.Client):
                 # Categories first (prefixed for clarity)
                 for cat_name, tools in sorted(categories.items()):
                     if current_lower in cat_name:
-                        label = f"{cat_name} (category — {len(tools)} tools)"
+                        label = f"{cat_name} (category: {len(tools)} tools)"
                         choices.append(app_commands.Choice(name=label[:100], value=cat_name))
 
                 # Then individual tools
@@ -1882,7 +1882,7 @@ class NymeriaDiscordBot(discord.Client):
                     tool_name = t["name"]
                     if current_lower in tool_name.lower():
                         desc = (t.get("description") or "").split("\n")[0][:60]
-                        label = f"{tool_name} — {desc}" if desc else tool_name
+                        label = f"{tool_name}: {desc}" if desc else tool_name
                         choices.append(app_commands.Choice(name=label[:100], value=tool_name))
 
                 return choices[:25]  # Discord max
@@ -2737,7 +2737,7 @@ class NymeriaDiscordBot(discord.Client):
                 raw = await att.read()
             except Exception as e:
                 logger.warning(f"Failed to download Discord attachment {att.filename}: {e}")
-                errors.append(f"Couldn't download {att.filename} — try resending.")
+                errors.append(f"Couldn't download {att.filename}. Try resending.")
                 continue
             built, err = attachment_helpers.build_attachment(
                 raw, att.content_type, att.filename
@@ -2751,7 +2751,7 @@ class NymeriaDiscordBot(discord.Client):
             extra = len(attachments) - attachment_helpers.MAX_FILES_PER_MESSAGE
             attachments = attachments[: attachment_helpers.MAX_FILES_PER_MESSAGE]
             errors.append(
-                f"Skipped {extra} extra file(s) — max "
+                f"Skipped {extra} extra file(s). Max is "
                 f"{attachment_helpers.MAX_FILES_PER_MESSAGE} per message."
             )
 

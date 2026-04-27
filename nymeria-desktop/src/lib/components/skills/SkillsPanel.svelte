@@ -54,8 +54,8 @@
       <p class="panel-hint">
         Skills are bundles of procedural knowledge (SKILL.md + optional scripts).
         When enabled on a thread, the agent sees their name + description and
-        loads the full body via a single <code>Skill(name)</code> tool call — no
-        context cost for skills the agent doesn't activate this turn.
+        loads the full body via a single <code>Skill(name)</code> tool call,
+        with no context cost for skills the agent doesn't activate this turn.
       </p>
     </div>
     <button class="btn btn-primary" onclick={() => (showMarketplace = true)} type="button">

@@ -139,7 +139,7 @@
       </div>
       <p class="section-hint">
         Each token is a separate sign-in. Issue one for every device or
-        script — you can revoke them individually if anything goes missing.
+        script, then revoke them individually if anything goes missing.
       </p>
       <TokenManagementSection mode="self" />
     </section>

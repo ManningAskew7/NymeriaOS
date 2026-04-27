@@ -761,7 +761,7 @@
             {#if displayProvider === 'anthropic_proxy'}
               Routes through CLIProxy using your Claude subscription
             {:else if displayProvider === 'anthropic_direct'}
-              Direct Anthropic API — pay-per-token (requires ANTHROPIC_API_KEY)
+              Direct Anthropic API. Pay-per-token (requires ANTHROPIC_API_KEY)
             {:else if displayProvider === 'local_openai'}
               Local OpenAI-compatible server (e.g. llama.cpp llama-server, LM Studio). Edit the API Base URL under Advanced Settings.
             {:else if displayProvider === 'openai_custom'}
@@ -1078,7 +1078,7 @@
             {:else if contextManagement === 'sliding_window'}
               Keeps only the N most recent conversation cycles
             {:else}
-              No context management — conversation history grows unbounded
+              No context management. Conversation history grows unbounded
             {/if}
           </p>
         </div>
@@ -1199,15 +1199,15 @@
           </select>
           <p class="hint">
             {#if ttsProvider === 'cartesia'}
-              Cartesia Sonic-3 — ultra-low latency (~90ms), speed/emotion controls
+              Cartesia Sonic-3 with ultra-low latency (~90ms) and speed/emotion controls
             {:else if ttsProvider === 'gemini'}
-              Google Gemini 3.1 Flash TTS — 30 voices, 70+ languages, audio tags supported
+              Google Gemini 3.1 Flash TTS with 30 voices, 70+ languages, and audio tag support
             {:else if ttsProvider === 'openai'}
               Uses OpenAI TTS API (tts-1, tts-1-hd)
             {:else if ttsProvider === 'qwen3'}
               Local Qwen3-TTS via OpenAI-compatible server
             {:else}
-              TTS disabled — voice endpoints will not return audio
+              TTS disabled. Voice endpoints will not return audio
             {/if}
           </p>
         </div>
@@ -1299,7 +1299,7 @@
             {:else if sttProvider === 'faster-whisper'}
               Local faster-whisper via OpenAI-compatible server
             {:else}
-              STT disabled — voice endpoints will not accept audio
+              STT disabled. Voice endpoints will not accept audio
             {/if}
           </p>
         </div>

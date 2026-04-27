@@ -237,7 +237,7 @@
                 {@const result = testResults[server.id]}
                 <div class="test-banner" class:test-ok={result.status === 'ok'} class:test-fail={result.status === 'error'}>
                   {#if result.status === 'ok'}
-                    Connected — {result.toolsCount} tools
+                    Connected. {result.toolsCount} tools
                   {:else}
                     {result.error}
                   {/if}

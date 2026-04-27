@@ -17,6 +17,7 @@ class ToolCategory(str, Enum):
     NOTEPAD = "notepad"     # notepad_write, notepad_read, notepad_clear
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # todo, todo_delete, todo_list
+    AUTONOMY = "autonomy"   # activity feed and watchdog dispatch helpers
     SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
     TRIGGER = "trigger"     # trigger_create, trigger_list, trigger_update, trigger_delete
     EMAIL = "email"         # Outlook auth + email tools (optional)
@@ -228,7 +229,7 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         name="nym_todo",
         category=ToolCategory.TODO,
         security_level=SecurityLevel.SAFE,
-        description="Create or update a TODO — scheduled TODOs auto-wake the agent",
+        description="Create or update a TODO. Scheduled TODOs auto-wake the agent",
     ),
     "nym_todo_delete": ToolMetadata(
         name="nym_todo_delete",
@@ -287,6 +288,18 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.TRIGGER,
         security_level=SecurityLevel.MODERATE,
         description="Delete a trigger",
+    ),
+    "trigger_inspect": ToolMetadata(
+        name="trigger_inspect",
+        category=ToolCategory.TRIGGER,
+        security_level=SecurityLevel.SAFE,
+        description="Inspect trigger configuration, health, history, or rendered test output",
+    ),
+    "trigger_sources_info": ToolMetadata(
+        name="trigger_sources_info",
+        category=ToolCategory.TRIGGER,
+        security_level=SecurityLevel.SAFE,
+        description="List trigger source types and their configuration schemas",
     ),
 
     # Test tool
@@ -926,7 +939,7 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         name="twitch_get_channel",
         category=ToolCategory.TWITCH,
         security_level=SecurityLevel.SAFE,
-        description="Get channel info — title, game, tags, language",
+        description="Get channel info: title, game, tags, language",
         default_enabled=False,
     ),
     "twitch_get_chatters": ToolMetadata(
@@ -1009,7 +1022,7 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
             "Search, enable, and disable optional tools for the current thread. "
             "Enabling auto-continues the turn with the new tools bound (no need "
             "to wait for the next user message). Enablements have a TTL "
-            "(default 2h) — pick shortest needed or use 'permanent'."
+            "(default 2h); pick shortest needed or use 'permanent'."
         ),
     ),
 
@@ -1043,6 +1056,34 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.MCP_SERVER,
         security_level=SecurityLevel.MODERATE,
         description="Install an MCP server from a paste (Claude Desktop JSON, stdio command, HTTP URL, or registry id)",
+    ),
+    "activity_feed": ToolMetadata(
+        name="activity_feed",
+        category=ToolCategory.AUTONOMY,
+        security_level=SecurityLevel.SAFE,
+        description="Read recent autonomous activity and event history",
+        default_enabled=False,
+    ),
+    "watchdog_dispatch": ToolMetadata(
+        name="watchdog_dispatch",
+        category=ToolCategory.AUTONOMY,
+        security_level=SecurityLevel.MODERATE,
+        description="Dispatch watchdog nudges for stale TODOs",
+        default_enabled=False,
+    ),
+    "watchdog_read_notepad": ToolMetadata(
+        name="watchdog_read_notepad",
+        category=ToolCategory.AUTONOMY,
+        security_level=SecurityLevel.SAFE,
+        description="Read watchdog-specific notepad context",
+        default_enabled=False,
+    ),
+    "watchdog_todo_overview": ToolMetadata(
+        name="watchdog_todo_overview",
+        category=ToolCategory.AUTONOMY,
+        security_level=SecurityLevel.SAFE,
+        description="Summarize TODO state for watchdog checks",
+        default_enabled=False,
     ),
 }
 

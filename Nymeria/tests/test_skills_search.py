@@ -20,7 +20,7 @@ from nymeria.skills.embedding_index import SkillEmbeddingIndex
 
 
 def _env_has_openai_key() -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY"))
+    return bool(os.environ.get("EMBEDDING_API_KEY"))
 
 
 @dataclass
@@ -36,7 +36,7 @@ class FakeSkill:
 
 
 def _fresh_index(tmp_path: Path) -> SkillEmbeddingIndex:
-    # No OPENAI_API_KEY => semantic path disabled, BM25/substring remain.
+    # No EMBEDDING_API_KEY => semantic path disabled, BM25/substring remain.
     return SkillEmbeddingIndex(db_path=tmp_path / "skills.db", openai_api_key=None)
 
 
@@ -55,7 +55,7 @@ def test_rebuild_counts(tmp_path):
     # Without a real API key the semantic path is skipped.
     assert summary["semantic_indexed"] == 0
     assert summary["semantic_available"] is False
-    assert "OPENAI_API_KEY" in (summary.get("warning") or "")
+    assert "EMBEDDING_API_KEY" in (summary.get("warning") or "")
 
 
 def test_bm25_fallback_returns_keyword_matches(tmp_path):
@@ -66,7 +66,15 @@ def test_bm25_fallback_returns_keyword_matches(tmp_path):
     assert r.results
     assert r.results[0].name == "pdf"
     assert r.warning is not None
-    assert "OPENAI_API_KEY" in r.warning
+    assert "EMBEDDING_API_KEY" in r.warning
+
+
+def test_cliproxy_gatekeeper_key_does_not_hit_embeddings(tmp_path):
+    idx = SkillEmbeddingIndex(db_path=tmp_path / "skills.db", openai_api_key="cpx-local-test")
+    summary = idx.rebuild("installed", SAMPLE_SKILLS)
+
+    assert summary["semantic_indexed"] == 0
+    assert "CLIProxy gatekeeper" in (summary.get("warning") or "")
 
 
 def test_substring_fallback_when_bm25_empty(tmp_path):
@@ -118,14 +126,16 @@ def test_to_json_shape(tmp_path):
 
 @pytest.mark.skipif(
     not _env_has_openai_key(),
-    reason="semantic path requires OPENAI_API_KEY",
+    reason="semantic path requires EMBEDDING_API_KEY",
 )
 def test_semantic_search_finds_intent_matches(tmp_path):
-    """Only runs when OPENAI_API_KEY is present. Proves semantic matching
+    """Only runs when EMBEDDING_API_KEY is present. Proves semantic matching
     can find skills whose names don't share keywords with the query."""
     idx = SkillEmbeddingIndex(
         db_path=tmp_path / "skills.db",
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
+        openai_api_key=os.environ.get("EMBEDDING_API_KEY"),
+        openai_base_url=os.environ.get("EMBEDDING_BASE_URL"),
+        embedding_model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
     )
     idx.rebuild("installed", SAMPLE_SKILLS)
     r = idx.search("read text in pictures", namespace="installed", top_k=3)

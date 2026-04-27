@@ -26,7 +26,7 @@
   let progressTimer: ReturnType<typeof setInterval> | null = null;
 
   const FORMAT_LABELS = {
-    json: { label: 'Claude Desktop JSON', hint: 'We detected a config block — we\'ll extract the server entry.' },
+    json: { label: 'Claude Desktop JSON', hint: 'We detected a config block and will extract the server entry.' },
     url: { label: 'HTTP URL', hint: 'We\'ll connect over HTTP/SSE transport.' },
     registry: { label: 'Registry ID', hint: 'We\'ll resolve this on the official MCP registry.' },
     stdio: { label: 'stdio command', hint: 'We\'ll run this as a local subprocess.' },
@@ -94,7 +94,7 @@
       // error body for a branded 5xx error page with missing CORS headers.
       // In all those cases the browser never sees the backend's detail.
       if (/failed to fetch|networkerror|load failed/i.test(raw)) {
-        error = "Couldn't reach the API — or the response was blocked by something between the app and the backend (proxy / tunnel / firewall). Check the backend logs for the real error and retry.";
+        error = "Couldn't reach the API, or the response was blocked by something between the app and the backend (proxy / tunnel / firewall). Check the backend logs for the real error and retry.";
       } else {
         error = raw;
       }
@@ -131,7 +131,7 @@
         <div class="install-left">
           <label class="paste-label" for="mcp-paste-box">
             <span class="paste-label-title">Paste your MCP configuration</span>
-            <span class="paste-label-sub">JSON, a command, a URL, or a registry ID — all four work.</span>
+            <span class="paste-label-sub">JSON, a command, a URL, or a registry ID. All four work.</span>
           </label>
 
           <div class="paste-box-wrap">

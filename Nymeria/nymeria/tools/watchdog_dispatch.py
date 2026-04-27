@@ -1,4 +1,4 @@
-"""Watchdog-specific tools — cross-thread dispatch, notepad reading, and TODO overview.
+"""Watchdog-specific tools: cross-thread dispatch, notepad reading, and TODO overview.
 
 These are optional tools designed exclusively for the Smart Watchdog thread.
 They provide cross-thread visibility that normal threads don't need or want.
@@ -134,7 +134,7 @@ def watchdog_read_notepad(
     content = read_notepad(target_thread_id)
     if content:
         return content
-    return f"[empty] — thread '{target_thread_id}' has no notepad content."
+    return f"[empty]: thread '{target_thread_id}' has no notepad content."
 
 
 @tool

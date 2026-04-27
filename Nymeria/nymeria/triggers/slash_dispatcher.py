@@ -378,7 +378,7 @@ class SlashCommandDispatcher:
             if extra_enabled:
                 override_lines.append(f"  enabled: {', '.join(sorted(extra_enabled))}")
         if not override_lines:
-            override_lines.append("  none — using global defaults")
+            override_lines.append("  none (using global defaults)")
         lines.extend(override_lines)
 
         lines.append("")
@@ -396,7 +396,7 @@ class SlashCommandDispatcher:
         if not items:
             return f"[Info]: No {filter_val} tasks."
 
-        lines = [f"Scheduled Tasks ({filter_val}) — {len(items)} items"]
+        lines = [f"Scheduled Tasks ({filter_val}): {len(items)} items"]
         for item in items[:25]:
             st = item.get("status", "pending")
             task = item.get("task", "")[:80]
@@ -453,7 +453,7 @@ class SlashCommandDispatcher:
         if not models:
             return "[Info]: No models returned from provider."
         lines = [
-            f"Available Models — {len(models)} from {settings.get('llm_provider', '?')}"
+            f"Available Models: {len(models)} from {settings.get('llm_provider', '?')}"
         ]
         for m in models[:25]:
             model_id = m.get("id") or m.get("name", "?")
@@ -563,7 +563,7 @@ class SlashCommandDispatcher:
         for e in entries:
             by_cat.setdefault(e["category"], []).append(e)
         total_set = sum(1 for e in entries if e["is_set"])
-        lines = [f"Environment Variables — {len(entries)} total ({total_set} set)"]
+        lines = [f"Environment Variables: {len(entries)} total ({total_set} set)"]
         for cat, items in by_cat.items():
             lines.append("")
             lines.append(f"{cat}")
@@ -627,12 +627,12 @@ class SlashCommandDispatcher:
         data = await self.api.get_default_tools(self.user_id)
         default_names = set(data.get("default_tools", []))
         available = data.get("available_tools", [])
-        lines = [f"Core Tools — {len(default_names)} tools"]
+        lines = [f"Core Tools: {len(default_names)} tools"]
         for t in available:
             if t.get("name") in default_names:
                 desc = (t.get("description") or "").split("\n")[0][:60]
                 if desc:
-                    lines.append(f"  {t['name']} — {desc}")
+                    lines.append(f"  {t['name']}: {desc}")
                 else:
                     lines.append(f"  {t['name']}")
         return "[Info]: " + "\n".join(lines)
@@ -651,7 +651,7 @@ class SlashCommandDispatcher:
                 cats.setdefault(cat, []).append(t)
 
         total = sum(len(v) for v in cats.values())
-        lines = [f"Optional Tools — {total} tools in {len(cats)} categories"]
+        lines = [f"Optional Tools: {total} tools in {len(cats)} categories"]
         for cat_name in sorted(cats):
             entries = cats[cat_name]
             active = sum(1 for t in entries if t["name"] in thread_extras)
@@ -671,7 +671,7 @@ class SlashCommandDispatcher:
         thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
         all_enabled = (default_names | thread_extras) - thread_disabled
 
-        lines = [f"Enabled Tools on this thread — {len(all_enabled)} active"]
+        lines = [f"Enabled Tools on this thread: {len(all_enabled)} active"]
         core_active = sorted(n for n in all_enabled if n in default_names)
         lines.append("")
         lines.append(f"Core ({len(core_active)}):")
@@ -692,7 +692,7 @@ class SlashCommandDispatcher:
                 t = avail_by_name.get(name, {})
                 desc = (t.get("description") or "").split("\n")[0][:60]
                 if desc:
-                    lines.append(f"  {name} — {desc}")
+                    lines.append(f"  {name}: {desc}")
                 else:
                     lines.append(f"  {name}")
         else:
@@ -721,7 +721,7 @@ class SlashCommandDispatcher:
             return f"[Error]: Unknown category '{cat_name}'. Available: {', '.join(sorted(cats))}"
 
         entries = cats[cat_key]
-        lines = [f"Tools in category '{cat_key}' — {len(entries)} tools"]
+        lines = [f"Tools in category '{cat_key}': {len(entries)} tools"]
         for t in entries:
             tool_name = t["name"]
             enabled = tool_name in all_enabled
@@ -730,7 +730,7 @@ class SlashCommandDispatcher:
             tag = " (core)" if is_default else ""
             desc = (t.get("description") or "").split("\n")[0][:60]
             if desc:
-                lines.append(f"  {mark} {tool_name}{tag} — {desc}")
+                lines.append(f"  {mark} {tool_name}{tag}: {desc}")
             else:
                 lines.append(f"  {mark} {tool_name}{tag}")
         return _truncate("[Info]: " + "\n".join(lines))
@@ -785,7 +785,7 @@ class SlashCommandDispatcher:
         memories = await self.api.list_memories(self.user_id)
         if not memories:
             return "[Info]: No memories saved yet."
-        lines = [f"Memories — {len(memories)} stored"]
+        lines = [f"Memories: {len(memories)} stored"]
         for mem in memories[:25]:
             value = mem.get("value", "")
             preview = (value[:200] + "...") if len(value) > 200 else value
@@ -821,7 +821,7 @@ class SlashCommandDispatcher:
         results = await self.api.search_memories(self.user_id, query)
         if not results:
             return f"[Info]: No memories matching '{query}'."
-        lines = [f"Memory search for '{query}' — {len(results)} results"]
+        lines = [f"Memory search for '{query}': {len(results)} results"]
         for mem in results[:25]:
             value = mem.get("value", "")
             preview = (value[:200] + "...") if len(value) > 200 else value
@@ -839,7 +839,7 @@ class SlashCommandDispatcher:
             items = [i for i in items if i.get("status") == filter_val]
         if not items:
             return f"[Info]: No {filter_val} TODOs."
-        lines = [f"TODOs ({filter_val}) — {len(items)} items"]
+        lines = [f"TODOs ({filter_val}): {len(items)} items"]
         for item in items[:25]:
             st = item.get("status", "pending")
             task = item.get("task", "")[:80]

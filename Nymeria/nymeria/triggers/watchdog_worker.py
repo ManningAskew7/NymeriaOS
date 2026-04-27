@@ -281,9 +281,9 @@ class WatchdogWorker:
         lines.append("")
         lines.append(
             "For each TODO above, please do one of the following:\n"
-            "- If complete: mark it done using the todo tool.\n"
+            "- If complete: mark it done using the nym_todo tool.\n"
             "- If still in progress: continue working on it, or update its notes/status.\n"
-            "- If no longer needed: delete it."
+            "- If no longer needed: delete it with nym_todo_delete."
         )
         return "\n".join(lines)
 
