@@ -253,7 +253,7 @@ class Settings(BaseSettings):
         description="Override base URL for LLM API (e.g., local proxy at http://localhost:8317/v1)"
     )
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = Field(
-        default=None,
+        default="responses",
         description="Default OpenAI API mode when no per-thread override is set: 'responses' or 'chat_completions'"
     )
 

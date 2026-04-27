@@ -205,6 +205,7 @@ class ServerSettingsResponse(BaseModel):
     llm_extended_thinking: bool = False
     llm_use_model_defaults: bool = False
     llm_base_url: Optional[str] = None
+    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = "responses"
     # Context management settings
     context_management: str
     compact_threshold: float
@@ -246,6 +247,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_extended_thinking: Optional[bool] = None
     llm_use_model_defaults: Optional[bool] = None
     llm_base_url: Optional[str] = None
+    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     # Context management settings
     context_management: Optional[str] = None
     compact_threshold: Optional[float] = None
@@ -4188,6 +4190,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             llm_extended_thinking=settings.llm_extended_thinking,
             llm_use_model_defaults=settings.llm_use_model_defaults,
             llm_base_url=settings.llm_base_url,
+            openai_api_mode=settings.openai_api_mode,
             context_management=settings.context_management,
             compact_threshold=settings.compact_threshold,
             compact_keep_messages=settings.compact_keep_messages,
@@ -4331,6 +4334,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "llm_extended_thinking": "LLM_EXTENDED_THINKING",
             "llm_use_model_defaults": "LLM_USE_MODEL_DEFAULTS",
             "llm_base_url": "LLM_BASE_URL",
+            "openai_api_mode": "OPENAI_API_MODE",
             "context_management": "CONTEXT_MANAGEMENT",
             "compact_threshold": "COMPACT_THRESHOLD",
             "compact_keep_messages": "COMPACT_KEEP_MESSAGES",
@@ -4454,7 +4458,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                        "llm_max_tokens", "llm_top_p", "llm_top_k",
                        "llm_frequency_penalty", "llm_presence_penalty",
                        "llm_reasoning_effort", "llm_extended_thinking",
-                       "llm_use_model_defaults", "llm_base_url"}
+                       "llm_use_model_defaults", "llm_base_url",
+                       "openai_api_mode"}
         if llm_fields & set(updates_dict.keys()):
             # Clear graph caches so they rebuild with new LLM config
             with agent._graph_cache_lock:
@@ -4513,6 +4518,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "llm_top_p", "llm_top_k", "llm_frequency_penalty",
                 "llm_presence_penalty", "llm_reasoning_effort",
                 "llm_extended_thinking", "llm_use_model_defaults", "llm_base_url",
+                "openai_api_mode",
             ],
             "API Keys": [
                 "nymeria_api_key", "openai_api_key", "anthropic_api_key",

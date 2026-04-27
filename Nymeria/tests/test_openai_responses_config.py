@@ -81,6 +81,19 @@ def test_openai_responses_mode_replays_checkpoint_items_payload():
     assert payload["store"] is False
 
 
+def test_openai_default_mode_uses_responses_payload():
+    llm = create_llm(_openai_config())
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "input" in payload
+    assert "messages" not in payload
+    assert payload["store"] is False
+
+
 def test_openai_chat_completions_mode_stays_on_messages_payload():
     with warnings.catch_warnings():
         warnings.filterwarnings(

@@ -975,8 +975,8 @@
             <div class="field-group">
               <label class="field-label" for="llm-openai-api-mode">OpenAI API Mode</label>
               <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>
-                <option value="default">Default (chat completions)</option>
-                <option value="chat_completions">Chat Completions</option>
+                <option value="default">Default (inherit global)</option>
+                <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
                 <option value="responses">Responses API</option>
               </select>
               <span class="field-hint">
