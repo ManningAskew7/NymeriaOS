@@ -76,7 +76,10 @@
 <div class="sidebar-content" class:collapsed={isCollapsed}>
   <div class="sidebar-header" class:collapsed={isCollapsed}>
     {#if !isCollapsed}
-      <h1 class="logo">Nymeria</h1>
+      <div class="brand">
+        <img src="/wolfhead-transparent.png" alt="" class="brand-mark" />
+        <h1 class="logo">Nymeria</h1>
+      </div>
       <Button variant="primary" size="sm" onclick={handleNewChat}>
         <Icon name="plus" size={16} />
         New Thread
@@ -183,6 +186,21 @@
   .sidebar-header.collapsed {
     justify-content: center;
     padding: var(--spacing-md) var(--spacing-sm);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    min-width: 0;
+  }
+
+  .brand-mark {
+    width: 1.75em;
+    height: 1.75em;
+    object-fit: contain;
+    flex-shrink: 0;
+    filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.25));
   }
 
   .logo {
