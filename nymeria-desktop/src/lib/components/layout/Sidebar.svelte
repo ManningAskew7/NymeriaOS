@@ -179,6 +179,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--spacing-md);
     padding: var(--spacing-md);
     border-bottom: 1px solid var(--glass-border);
   }
