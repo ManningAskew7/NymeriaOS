@@ -209,6 +209,7 @@ Advanced section of Thread Settings.
 | `components/layout/MainPanel.svelte` | Center panel container | Replaced by `ChatPanel.svelte` |
 | `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator | Integrated into `ChatPanel` header |
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
+| Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
 | `components/common/StartupOverlay.svelte` | Backend startup/readiness overlay | Desktop-only Tauri startup behavior |
 | `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |

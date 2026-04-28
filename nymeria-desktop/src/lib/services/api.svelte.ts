@@ -64,7 +64,9 @@ import type {
   MCPServerUpdateRequest,
   MCPInstallRequest,
   MCPInstallResponse,
-  MCPServerListResponse
+  MCPServerListResponse,
+  ThreadShareDocument,
+  ThreadShareImportResult
 } from '$lib/types';
 
 // Module-level abort controller for current stream
@@ -2662,6 +2664,42 @@ export class NymeriaAPI {
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
     }
+  }
+
+  async exportThread(threadId: string): Promise<ThreadShareDocument> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/export`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  async importThread(document: ThreadShareDocument | Record<string, unknown>): Promise<ThreadShareImportResult> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/import`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(document),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return {
+      status: data.status ?? 'ok',
+      threadId: data.thread_id,
+      title: data.title ?? 'Imported Thread',
+      config: this._normalizeThreadConfig(data.config ?? {}),
+      warnings: data.warnings ?? [],
+    };
   }
 
   // =========================================================================

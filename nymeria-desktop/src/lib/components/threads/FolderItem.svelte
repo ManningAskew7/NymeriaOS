@@ -18,6 +18,7 @@
     onRenameThread: (id: string, title: string) => void;
     onConfigureThread: (thread: Thread) => void;
     onOpenAgentConfigThread?: (thread: Thread) => void;
+    onExportThread?: (thread: Thread) => void;
     onToggleCollapse: () => void;
     onRenameFolder: (name: string) => void;
     onDeleteFolder: () => void;
@@ -40,6 +41,7 @@
     onRenameThread,
     onConfigureThread,
     onOpenAgentConfigThread,
+    onExportThread,
     onToggleCollapse,
     onRenameFolder,
     onDeleteFolder,
@@ -166,6 +168,7 @@
             onRename={(newTitle) => onRenameThread(thread.id, newTitle)}
             onConfigure={() => onConfigureThread(thread)}
             onOpenAgentConfig={onOpenAgentConfigThread ? () => onOpenAgentConfigThread(thread) : undefined}
+            onExport={onExportThread ? () => onExportThread(thread) : undefined}
             onTogglePin={onTogglePinThread ? () => onTogglePinThread(thread.id) : undefined}
           />
         {/each}

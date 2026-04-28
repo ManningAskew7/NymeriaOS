@@ -174,6 +174,27 @@ export interface ThreadConfigUpdateRequest {
   clear_system_prompt?: boolean;
 }
 
+export interface ThreadShareDocument {
+  kind: 'nymeria.thread.share';
+  version: number;
+  exported_at?: string;
+  source?: {
+    thread_id?: string;
+    title?: string;
+  };
+  title: string;
+  config: Record<string, unknown>;
+  omitted?: string[];
+}
+
+export interface ThreadShareImportResult {
+  status: string;
+  threadId: string;
+  title: string;
+  config: ThreadConfig;
+  warnings: string[];
+}
+
 // =========================================================================
 // Agent Skills (SKILL.md progressive-disclosure bundles)
 // =========================================================================
