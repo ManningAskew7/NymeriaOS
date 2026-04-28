@@ -17,9 +17,10 @@
     onConfigure?: () => void;
     onOpenAgentConfig?: () => void;
     onTogglePin?: () => void;
+    onExport?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin }: Props = $props();
+  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -115,6 +116,11 @@
   function handleCopyId() {
     contextMenu = null;
     navigator.clipboard.writeText(thread.id);
+  }
+
+  function handleContextExport() {
+    contextMenu = null;
+    onExport?.();
   }
 
   function handleContextRename() {
@@ -268,6 +274,12 @@
       <button class="context-item" onclick={handleContextConfigure} type="button">
         <Icon name="cog" size={14} />
         <span>Configure</span>
+      </button>
+    {/if}
+    {#if onExport}
+      <button class="context-item" onclick={handleContextExport} type="button">
+        <Icon name="download" size={14} />
+        <span>Export</span>
       </button>
     {/if}
     <button class="context-item" onclick={handleCopyId} type="button">

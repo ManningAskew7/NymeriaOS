@@ -1392,6 +1392,48 @@ Resets thread config to defaults.
 
 ---
 
+### Thread Config Sharing
+
+```http
+GET /threads/{thread_id}/export
+Authorization: Bearer <token>
+```
+
+Exports a portable thread-share JSON document (`kind: "nymeria.thread.share"`, `version: 1`) for sharing a thread's configuration. The export includes the thread title and portable config such as custom instructions, system prompt override, callable settings, tool/skill enablement, LLM overrides, and prompt/debug/delivery flags.
+
+The export intentionally omits conversation messages, notepad content, attachments, checkpoints, TODOs, triggers, chat-app bindings, temporary tool TTL state, and secrets such as `llm_config.api_key`.
+
+```http
+POST /threads/import
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Creates a new empty thread owned by the importing user from a `nymeria.thread.share` document. Imports do not overwrite an existing thread.
+
+Import sanitization:
+
+| Case | Behavior |
+|------|----------|
+| Missing tools, MCP tools, custom tools, or skills | Dropped from the imported config and returned in `warnings` |
+| Admin-only enabled tools for non-admin importers | Dropped and returned in `warnings` |
+| Callable name conflicts or invalid callable names | Replaced with a valid unique name and returned in `warnings` |
+| `llm_config.api_key` in the file | Ignored and returned in `warnings` |
+
+Response shape:
+
+```json
+{
+  "status": "ok",
+  "thread_id": "imported-abc123...",
+  "title": "Imported Thread",
+  "config": {},
+  "warnings": []
+}
+```
+
+---
+
 ## RAG Management API
 
 Manage RAG (Retrieval Augmented Generation) settings and indexes per user.

@@ -15,6 +15,10 @@
   let configureInitialTab = $state<'instructions' | 'agent'>('instructions');
   let deleteConfirmThreadId = $state<string | null>(null);
   let deleteConfirmTitle = $state('');
+  let importInput: HTMLInputElement | null = null;
+  let importing = $state(false);
+  let importReportTitle = $state('');
+  let importWarnings = $state<string[]>([]);
 
   // Multi-select state
   let selectedIds = $state<Set<string>>(new Set());
@@ -189,6 +193,68 @@
     // Config is already in the store
   }
 
+  function exportFilename(title: string): string {
+    const slug = title
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64);
+    return `${slug || 'thread'}.nymeria-thread.json`;
+  }
+
+  function downloadJson(filename: string, data: unknown) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleExportThread(thread: Thread) {
+    loadError = null;
+    try {
+      const document = await api.exportThread(thread.id);
+      downloadJson(exportFilename(thread.title), document);
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to export thread';
+    }
+  }
+
+  function handleImportClick() {
+    importInput?.click();
+  }
+
+  async function handleImportFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+
+    importing = true;
+    loadError = null;
+    importReportTitle = '';
+    importWarnings = [];
+    try {
+      const text = await file.text();
+      const document = JSON.parse(text) as Record<string, unknown>;
+      const result = await api.importThread(document);
+      await threadsStore.syncFromBackend();
+      await threadConfigStore.loadConfig(result.threadId).catch(() => {});
+      await switchToThread(result.threadId);
+      importReportTitle = result.title;
+      importWarnings = result.warnings;
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to import thread';
+    } finally {
+      importing = false;
+    }
+  }
+
   // Sort controls
   function handleSortChange(mode: SortMode) {
     threadsStore.setSortMode(mode);
@@ -280,6 +346,23 @@
       <span>{getCurrentSortLabel()}</span>
       <Icon name="chevronDown" size={12} />
     </button>
+    <button
+      class="import-trigger"
+      type="button"
+      onclick={handleImportClick}
+      disabled={importing}
+      title="Import thread"
+    >
+      <Icon name={importing ? 'loading' : 'upload'} size={14} />
+      <span>Import</span>
+    </button>
+    <input
+      bind:this={importInput}
+      class="share-file-input"
+      type="file"
+      accept=".nymeria-thread.json,.json,application/json"
+      onchange={handleImportFile}
+    />
   </div>
 
   {#if showSortDropdown}
@@ -333,6 +416,7 @@
         onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
         onTogglePin={() => threadsStore.togglePinFolder(folder.id)}
         onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
+        onExportThread={handleExportThread}
       />
     {/each}
 
@@ -362,6 +446,7 @@
                 onConfigure={() => handleConfigureThread(thread)}
                 onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
                 onTogglePin={() => threadsStore.togglePinThread(thread.id)}
+                onExport={() => handleExportThread(thread)}
               />
             {/each}
           </div>
@@ -385,6 +470,7 @@
             onConfigure={() => handleConfigureThread(thread)}
             onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
             onTogglePin={() => threadsStore.togglePinThread(thread.id)}
+            onExport={() => handleExportThread(thread)}
           />
         {/each}
       </div>
@@ -474,6 +560,22 @@
   </div>
 </Modal>
 
+<Modal
+  title="Thread Imported"
+  isOpen={importWarnings.length > 0}
+  onClose={() => (importWarnings = [])}
+>
+  <p class="import-report-text"><strong>{importReportTitle}</strong> was imported with configuration warnings.</p>
+  <ul class="import-warning-list">
+    {#each importWarnings as warning}
+      <li>{warning}</li>
+    {/each}
+  </ul>
+  <div class="delete-confirm-actions">
+    <Button variant="primary" onclick={() => (importWarnings = [])}>Done</Button>
+  </div>
+</Modal>
+
 <style>
   .delete-confirm-text {
     color: var(--text-secondary);
@@ -558,11 +660,13 @@
   .sort-bar {
     display: flex;
     align-items: center;
+    gap: var(--spacing-xs);
     padding: 0 var(--spacing-xs) var(--spacing-xs);
     position: relative;
   }
 
-  .sort-trigger {
+  .sort-trigger,
+  .import-trigger {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -576,10 +680,36 @@
     transition: all var(--transition-fast);
   }
 
-  .sort-trigger:hover {
+  .import-trigger {
+    margin-left: auto;
+  }
+
+  .share-file-input {
+    display: none;
+  }
+
+  .sort-trigger:hover,
+  .import-trigger:hover:not(:disabled) {
     color: var(--text-primary);
     background: var(--bg-hover);
     border-color: var(--border-default);
+  }
+
+  .import-trigger:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+
+  .import-report-text {
+    color: var(--text-secondary);
+    margin: 0 0 var(--spacing-md);
+  }
+
+  .import-warning-list {
+    margin: 0 0 var(--spacing-lg);
+    padding-left: var(--spacing-lg);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
   }
 
   .sort-backdrop {

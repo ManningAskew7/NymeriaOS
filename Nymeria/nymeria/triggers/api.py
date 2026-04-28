@@ -3668,6 +3668,147 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             agent.sync_agent_tools()
         return {"status": "ok", "thread_id": thread_id}
 
+    def _thread_share_available_tool_names(agent) -> tuple[set[str], set[str], set[str]]:
+        """Return (available tools, admin-only tools, callable tool names)."""
+        from ..tools import ADMIN_ONLY_OPTIONAL_TOOL_NAMES, ALL_TOOLS, OPTIONAL_TOOLS
+
+        names = {t.name for t in ALL_TOOLS}
+        names.update(OPTIONAL_TOOLS.keys())
+        try:
+            names.update(t.get("name") for t in agent.tool_registry.list_tools() if t.get("name"))
+        except Exception:
+            pass
+
+        callable_names = set(getattr(agent, "_callable_tool_thread_map", {}) or {})
+        try:
+            callable_names.update(
+                tc.callable_name
+                for tc in agent.thread_config_manager.list_callable_threads()
+                if tc.callable_name
+            )
+        except Exception:
+            pass
+
+        # Callable tools are resolved from ownership, not enabled_tools. Do
+        # not preserve guessed callable names as portable tool enablements.
+        return names - callable_names, set(ADMIN_ONLY_OPTIONAL_TOOL_NAMES), callable_names
+
+    def _thread_share_available_skill_names(agent, user_id: str) -> set[str]:
+        if getattr(agent, "skill_manager", None) is None:
+            return set()
+        try:
+            return {s.name for s in agent.skill_manager.list_installed(user_id=user_id)}
+        except Exception:
+            return set()
+
+    def _thread_share_title(document: dict[str, Any]) -> str:
+        raw = document.get("title")
+        if not isinstance(raw, str) or not raw.strip():
+            source = document.get("source")
+            if isinstance(source, dict):
+                raw = source.get("title")
+        if not isinstance(raw, str) or not raw.strip():
+            return "Imported Thread"
+        return raw.strip()[:200]
+
+    @app.get("/threads/{thread_id}/export", tags=["Threads"])
+    async def export_thread_share(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Export a portable, shareable thread configuration document."""
+        _require_thread_access(user, thread_id)
+        from ..core.thread_share import build_thread_share_document
+
+        agent = get_agent()
+        meta = agent.thread_metadata_manager.get_thread(user.id, thread_id)
+        title = meta.title if meta else "New Chat"
+        tc = agent.thread_config_manager.get_config(thread_id)
+        return build_thread_share_document(thread_id=thread_id, title=title, config=tc)
+
+    @app.post("/threads/import", tags=["Threads"])
+    async def import_thread_share(
+        http_request: Request,
+        document: Dict[str, Any],
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Create a new empty thread from a portable thread configuration."""
+        from ..core.thread_share import ThreadShareError, sanitize_import_config
+
+        agent = get_agent()
+        available_tools, admin_only_tools, _callable_tool_names = _thread_share_available_tool_names(agent)
+        available_skills = _thread_share_available_skill_names(agent, user_id)
+        owned = set(agent.accounts_repo.list_threads_for_user(user_id))
+        owned_callable_names: set[str] = set()
+        try:
+            owned_callables = agent.thread_config_manager.list_callable_threads(
+                owned_thread_ids=owned
+            )
+            owned_callable_names.update(
+                tc.callable_name for tc in owned_callables if tc.callable_name
+            )
+        except Exception:
+            pass
+
+        title = _thread_share_title(document)
+        thread_id = f"imported-{uuid.uuid4().hex[:12]}"
+        try:
+            tc, warnings = sanitize_import_config(
+                document=document,
+                new_thread_id=thread_id,
+                importer_role=user.role,
+                available_tool_names=available_tools,
+                unavailable_enabled_tool_names=admin_only_tools,
+                available_skill_names=available_skills,
+                unavailable_callable_names=available_tools | owned_callable_names,
+            )
+        except ThreadShareError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if not agent.thread_config_manager.save_config(tc):
+            raise HTTPException(status_code=500, detail="Failed to save imported thread config")
+
+        agent.accounts_repo.claim_thread(thread_id, user_id)
+
+        metadata_title = tc.callable_name if tc.callable and tc.callable_name else title
+        metadata_platform = "callable" if tc.callable else "desktop"
+        metadata_source = "callable" if tc.callable else "user"
+        agent.thread_metadata_manager.upsert_thread(
+            user_id,
+            thread_id,
+            title=metadata_title,
+            title_source=metadata_source,
+            platform=metadata_platform,
+        )
+
+        agent.invalidate_thread_config_cache(thread_id)
+        if tc.callable:
+            agent.sync_agent_tools()
+
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        publish_sync_event(
+            event_type="thread_created",
+            thread_id=thread_id,
+            user_id=user_id,
+            data={
+                "title": metadata_title,
+                "title_source": metadata_source,
+                "platform": metadata_platform,
+            },
+            origin_client_id=client_id,
+        )
+
+        result = tc.model_dump(mode="json")
+        result["has_customizations"] = tc.has_customizations()
+        return {
+            "status": "ok",
+            "thread_id": thread_id,
+            "title": metadata_title,
+            "config": result,
+            "warnings": warnings,
+        }
+
     @app.post(
         "/threads/{thread_id}/attachments/validate",
         response_model=AttachmentValidationResponse,
