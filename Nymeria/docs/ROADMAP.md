@@ -20,7 +20,7 @@ Storage: JSON files in `data/custom_tools/`
 
 ---
 
-### MCP Paste-Install + Discovery (Implemented, Phase 1)
+### MCP Paste-Install + Managed Runtime (Implemented)
 
 Rather than filling out the MCP tool form by hand, users (and the agent) can paste an install source and Nymeria takes care of hosting.
 
@@ -29,12 +29,16 @@ Rather than filling out the MCP tool form by hand, users (and the agent) can pas
 - Bare stdio command string (`npx -y @modelcontextprotocol/server-filesystem /tmp`)
 - HTTP/SSE URL (covers Docker MCP Gateway: `docker mcp gateway run --transport streaming`)
 - Official registry id (`io.github.modelcontextprotocol/server-filesystem`)
+- npm and PyPI package pages
+- Git repository URLs
+- `.mcpb`, `.dxt`, and `.zip` bundles by upload or URL
 
 **New components:**
 - `core/mcp_installer.py` — paste parser
+- `core/mcp_runtime.py` — preview, smart-confirm metadata, managed cache/source directories, Git/package/bundle preparation, encrypted config values, disabled failure drafts
 - `core/mcp_registry_client.py` — clients for registry.modelcontextprotocol.io + Smithery
 - `tools/search_mcp.py` — agent-facing `mcp_search` + `mcp_install`
-- `POST /mcp-servers/install` — REST endpoint for the desktop paste box
+- `POST /mcp-servers/install/preview`, `/preview-upload`, `/install`, and `/{server_id}/retry` — REST endpoints for the desktop paste box
 - HTTP transport in `core/mcp_manager.py` alongside the existing stdio path
 - Lifecycle fixes: process-group spawn + kill, stderr drain thread, per-phase timeouts (init 10s / list 30s / call 60s)
 
@@ -107,10 +111,9 @@ Central repository for community-created custom tools and callable-thread config
 ### MCP Paste-Install Phase 2
 Follow-up work on top of the Phase 1 paste-install feature:
 - **Docker MCP Gateway control**: programmatically enable/disable catalog entries, manage secrets via `docker mcp secret`, drive the OAuth flow for remote servers — so users do not have to run the gateway themselves.
-- **DXT/MCPB bundle install**: accept `.mcpb` one-click install bundles.
-- **OS keychain secrets**: replace plain `${env:VAR}` interpolation with `keyring`-backed storage.
+- **OS keychain secrets**: optionally replace Fernet-on-disk values with `keyring`-backed storage on desktop hosts.
 - **Stdio auto-reconnect**: exponential backoff + restart on unexpected server exit (today we only mark the connection dead).
-- **venv-per-server**: opt-in wrapping for Python MCP servers to isolate dependencies on bare-metal installs.
+- **Registry-driven config UX**: richer forms from registry metadata, OAuth handoff, and version update prompts.
 
 ---
 

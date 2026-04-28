@@ -33,6 +33,7 @@
   let testingServer = $state<string | null>(null);
   let testResults = $state<Record<string, { status: string; error?: string; toolsCount?: number }>>({});
   let discoveringServer = $state<string | null>(null);
+  let retryingServer = $state<string | null>(null);
   let addLoading = $state(false);
   let addError = $state<string | null>(null);
   let editLoading = $state(false);
@@ -69,9 +70,27 @@
   }
 
   function getStatusColor(server: MCPServer): string {
+    if (server.installStatus === 'failed') return '#f44336';
+    if (server.installStatus === 'draft') return '#f59e0b';
     if (!server.enabled) return 'var(--text-muted, #555)';
     if (server.discoveredTools.length === 0) return '#f59e0b';
     return '#22c55e';
+  }
+
+  function getStatusLabel(server: MCPServer): string {
+    if (server.installStatus === 'failed') return 'failed';
+    if (server.installStatus === 'draft') return 'draft';
+    if (!server.enabled) return 'disabled';
+    if (server.discoveredTools.length === 0) return 'no tools';
+    return 'ready';
+  }
+
+  function getStatusClass(server: MCPServer): string {
+    if (server.installStatus === 'failed') return 'status-failed';
+    if (server.installStatus === 'draft') return 'status-draft';
+    if (!server.enabled) return 'status-disabled';
+    if (server.discoveredTools.length === 0) return 'status-draft';
+    return 'status-ready';
   }
 
   function getMcpToolName(serverId: string, toolName: string): string {
@@ -188,6 +207,44 @@
     }
   }
 
+  async function handleRetry(server: MCPServer) {
+    retryingServer = server.id;
+    delete testResults[server.id];
+    try {
+      const result = await mcpServersStore.retry(server.id, { confirmed: true });
+      if (result.status === 'draft') {
+        testResults = {
+          ...testResults,
+          [server.id]: {
+            status: 'error',
+            error: result.discoveryError || result.server.lastError || 'Retry saved another draft',
+            toolsCount: result.discoveredTools,
+          },
+        };
+      } else {
+        testResults = {
+          ...testResults,
+          [server.id]: {
+            status: 'ok',
+            toolsCount: result.discoveredTools,
+          },
+        };
+      }
+      defaultToolsStore.resetLoaded();
+      await defaultToolsStore.load();
+    } catch (e) {
+      testResults = {
+        ...testResults,
+        [server.id]: {
+          status: 'error',
+          error: e instanceof Error ? e.message : 'Retry failed',
+        },
+      };
+    } finally {
+      retryingServer = null;
+    }
+  }
+
   async function handleDelete(serverId: string) {
     try {
       await mcpServersStore.remove(serverId);
@@ -279,6 +336,7 @@
                 <span class="server-id">{server.id}</span>
               </div>
               <span class="tool-badge">{server.discoveredTools.length} tools</span>
+              <span class="install-status {getStatusClass(server)}">{getStatusLabel(server)}</span>
               <span class="updated-at">{timeAgo(server.updatedAt)}</span>
               <Icon name={expandedServer === server.id ? 'chevronDown' : 'chevronRight'} size={16} />
             </button>
@@ -313,9 +371,23 @@
               {:else}
                 <div class="server-info-section">
                   <div class="info-row">
-                    <span class="info-label">Command</span>
-                    <code>{server.serverCommand} {server.serverArgs.join(' ')}</code>
+                    <span class="info-label">{server.transport === 'http' ? 'URL' : 'Command'}</span>
+                    <code>
+                      {#if server.transport === 'http'}
+                        {server.url}
+                      {:else if server.serverCommand}
+                        {server.serverCommand} {server.serverArgs.join(' ')}
+                      {:else}
+                        Prepared during install
+                      {/if}
+                    </code>
                   </div>
+                  {#if server.sourceType || server.runtimeType}
+                    <div class="info-row">
+                      <span class="info-label">Runtime</span>
+                      <span>{server.sourceType || 'manual'} / {server.runtimeType || server.transport}</span>
+                    </div>
+                  {/if}
                   {#if server.description}
                     <div class="info-row">
                       <span class="info-label">Description</span>
@@ -323,6 +395,20 @@
                     </div>
                   {/if}
                 </div>
+
+                {#if server.lastError}
+                  <div class="test-banner test-fail">
+                    <Icon name="error" size={14} />
+                    {server.lastError}
+                  </div>
+                {/if}
+
+                {#if server.missingConfig.length > 0}
+                  <div class="missing-config">
+                    <Icon name="warning" size={14} />
+                    <span>Missing {server.missingConfig.map(field => field.label || field.name).join(', ')}</span>
+                  </div>
+                {/if}
 
                 {#if testResults[server.id]}
                   {@const result = testResults[server.id]}
@@ -373,10 +459,15 @@
                 {/if}
 
                 <div class="server-actions">
-                  <Button size="sm" variant="ghost" onclick={() => handleTest(server.id)} disabled={testingServer === server.id} loading={testingServer === server.id}>
+                  {#if server.installStatus !== 'ready' || server.lastError}
+                    <Button size="sm" variant="secondary" onclick={() => handleRetry(server)} disabled={retryingServer === server.id} loading={retryingServer === server.id}>
+                      <Icon name="refresh" size={14} /> Retry
+                    </Button>
+                  {/if}
+                  <Button size="sm" variant="ghost" onclick={() => handleTest(server.id)} disabled={testingServer === server.id || server.installStatus !== 'ready'} loading={testingServer === server.id}>
                     Test
                   </Button>
-                  <Button size="sm" variant="ghost" onclick={() => handleDiscover(server.id)} disabled={discoveringServer === server.id} loading={discoveringServer === server.id}>
+                  <Button size="sm" variant="ghost" onclick={() => handleDiscover(server.id)} disabled={discoveringServer === server.id || server.installStatus !== 'ready'} loading={discoveringServer === server.id}>
                     Rediscover
                   </Button>
                   <Button size="sm" variant="ghost" onclick={() => { editingServerId = server.id; editError = null; }}>
@@ -572,6 +663,39 @@
     white-space: nowrap;
   }
 
+  .install-status {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.12rem 0.45rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle, #2a2a2a);
+    white-space: nowrap;
+  }
+
+  .status-ready {
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.25);
+  }
+
+  .status-draft {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.25);
+  }
+
+  .status-failed {
+    color: #f44336;
+    background: rgba(244, 67, 54, 0.12);
+    border-color: rgba(244, 67, 54, 0.25);
+  }
+
+  .status-disabled {
+    color: var(--text-muted, #777);
+    background: var(--bg-base, #1a1a1a);
+  }
+
   .updated-at {
     font-size: 0.7rem;
     color: var(--text-muted, #777);
@@ -706,6 +830,17 @@
   .test-fail {
     background: rgba(244, 67, 54, 0.12);
     color: #f44336;
+  }
+
+  .missing-config {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm, 4px);
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    font-size: 0.8rem;
   }
 
   @keyframes fadeIn {

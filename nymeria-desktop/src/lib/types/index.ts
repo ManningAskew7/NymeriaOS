@@ -946,14 +946,27 @@ export interface MCPServer {
   id: string;
   name: string;
   description: string;
+  transport: 'stdio' | 'http';
   serverCommand: string;
   serverArgs: string[];
+  url: string;
   envVars: Record<string, string>;
   workingDirectory?: string;
   idleTimeoutSeconds: number;
   startupTimeoutSeconds: number;
   enabled: boolean;
   discoveredTools: MCPDiscoveredTool[];
+  installStatus: 'ready' | 'draft' | 'failed';
+  sourceType: string;
+  runtimeType: string;
+  originalSource: string;
+  parsedSummary: string;
+  installPlan: Record<string, unknown>;
+  installLogs: string[];
+  lastError?: string;
+  missingConfig: MCPInstallConfigField[];
+  riskLevel: 'low' | 'medium' | 'high' | string;
+  confirmationRequired: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -988,19 +1001,68 @@ export interface MCPServerListResponse {
   total: number;
 }
 
-export interface MCPInstallRequest {
+export interface MCPInstallConfigField {
+  name: string;
+  env_name?: string;
+  label?: string;
+  description?: string;
+  required?: boolean;
+  sensitive?: boolean;
+  type?: string;
+  default?: unknown;
+  source?: string;
+  error?: string;
+}
+
+export interface MCPInstallPlan {
+  source_type: string;
+  runtime_type: string;
+  risk_level: 'low' | 'medium' | 'high' | string;
+  confirmation_required: boolean;
+  parsed_summary: string;
+  command_preview: string;
+  warnings: string[];
+  required_config: MCPInstallConfigField[];
+  missing_config: MCPInstallConfigField[];
+  setup_hint: string;
+  source_url: string;
+  bundle_path: string;
+  preview_token: string;
+  can_install: boolean;
+}
+
+export interface MCPInstallPreviewRequest {
   source: string;
   name?: string;
+}
+
+export interface MCPInstallPreviewResponse {
+  previewToken: string;
+  server: MCPServer;
+  plan: MCPInstallPlan;
+}
+
+export interface MCPInstallRequest {
+  source?: string;
+  name?: string;
+  preview_token?: string;
+  confirmed?: boolean;
+  config_values?: Record<string, string>;
   auto_enable?: boolean;
   thread_id?: string;
 }
 
 export interface MCPInstallResponse {
+  status: 'ok' | 'draft';
   server: MCPServer;
   parsedSummary: string;
   discoveredTools: number;
   toolNames: string[];
   threadId?: string;
+  discoveryError?: string;
+  installLogs: string[];
+  missingConfig: MCPInstallConfigField[];
+  requiresConfirmation: boolean;
 }
 
 // Trigger Types

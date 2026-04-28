@@ -1781,12 +1781,58 @@ POST /mcp-servers
 GET /mcp-servers/{server_id}
 PUT /mcp-servers/{server_id}
 DELETE /mcp-servers/{server_id}
+POST /mcp-servers/install/preview
+POST /mcp-servers/install/preview-upload
+POST /mcp-servers/install
+POST /mcp-servers/{server_id}/retry
 POST /mcp-servers/{server_id}/discover
 POST /mcp-servers/{server_id}/test
 Authorization: Bearer <token>
 ```
 
-Manage MCP server definitions, trigger tool discovery, and optionally auto-enable discovered MCP tools for a thread when creating a server.
+Manage MCP server definitions, install from pasted sources, trigger tool discovery, and optionally auto-enable discovered MCP tools for a thread when creating a server.
+
+Paste install is now a preview-first flow:
+
+- `POST /mcp-servers/install/preview` parses text without running anything. Accepted text includes Claude Desktop `mcpServers` JSON, bare stdio commands, HTTP/SSE URLs, npm package pages, PyPI package pages, GitHub/GitLab/Bitbucket repository URLs, bundle URLs, and registry ids.
+- `POST /mcp-servers/install/preview-upload` accepts a multipart `file` field for `.mcpb`, `.dxt`, or `.zip` bundles and returns the same preview shape.
+- `POST /mcp-servers/install` accepts either `source` or a `preview_token`. Safe package/HTTP installs can run after preview; Git/local-path/bundle installs require `confirmed: true`.
+- `POST /mcp-servers/{server_id}/retry` reruns setup/discovery for a disabled draft or failed server.
+
+Failed setup or discovery is not rolled back. Nymeria saves a disabled draft with `install_status`, `last_error`, `missing_config`, and `install_logs` so the frontend can show the failure and retry later. Sensitive install values are encrypted with `NYMERIA_SECRETS_KEY` before being written to disk.
+
+Stdio commands run inside the Nymeria backend process environment. In Docker deployments, file paths must exist inside the `nymeria-api` container and services running on the host should usually be addressed with `host.docker.internal` instead of `localhost`. If a stdio server exits during initialization, the error detail includes its recent stderr output to expose path, import, or dependency failures.
+
+Preview response:
+
+```json
+{
+  "preview_token": "4f9f...",
+  "server": {"id": "fetch-a1b2c3", "name": "fetch", "install_status": "ready"},
+  "plan": {
+    "source_type": "pypi",
+    "runtime_type": "uvx",
+    "risk_level": "low",
+    "confirmation_required": false,
+    "parsed_summary": "stdio MCP server 'fetch' running: uvx mcp-server-fetch",
+    "command_preview": "uvx mcp-server-fetch",
+    "warnings": [],
+    "required_config": []
+  }
+}
+```
+
+Install request:
+
+```json
+{
+  "preview_token": "4f9f...",
+  "confirmed": true,
+  "config_values": {"API_KEY": "..."},
+  "auto_enable": true,
+  "thread_id": "optional-thread-id"
+}
+```
 
 ### Device Registration
 

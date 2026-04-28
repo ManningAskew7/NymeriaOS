@@ -66,6 +66,9 @@ class MCPConnection:
     _io_lock: threading.Lock = field(default_factory=threading.Lock)
     _request_id: int = 0
     _stderr_thread: Optional[threading.Thread] = None
+    _stderr_tail: List[str] = field(default_factory=list)
+    _stderr_lock: threading.Lock = field(default_factory=threading.Lock)
+    _stderr_tail_limit: int = 20
 
     def next_request_id(self) -> int:
         with self._lock:
@@ -82,6 +85,16 @@ class MCPConnection:
 
     def is_idle(self, timeout_seconds: int) -> bool:
         return (time.time() - self.last_used) > timeout_seconds
+
+    def record_stderr(self, line: str) -> None:
+        with self._stderr_lock:
+            self._stderr_tail.append(line)
+            if len(self._stderr_tail) > self._stderr_tail_limit:
+                del self._stderr_tail[: len(self._stderr_tail) - self._stderr_tail_limit]
+
+    def stderr_tail(self) -> List[str]:
+        with self._stderr_lock:
+            return list(self._stderr_tail)
 
 
 class MCPServerManager:
@@ -177,6 +190,10 @@ class MCPServerManager:
                 env[key] = os.environ.get(var_name, "")
             else:
                 env[key] = value
+        if config.encrypted_env_vars:
+            from . import secrets as nymeria_secrets
+            for key, value in config.encrypted_env_vars.items():
+                env[key] = nymeria_secrets.decrypt(value)
 
         cmd = [config.server_command] + config.server_args
 
@@ -238,9 +255,28 @@ class MCPServerManager:
                     break
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 if decoded:
+                    conn.record_stderr(decoded)
                     logger.debug(f"[mcp:{conn.server_id}] {decoded}")
         except Exception as e:
             logger.debug(f"stderr drain ended for {conn.server_id}: {e}")
+
+    def _stdio_error_detail(self, conn: MCPConnection, message: str) -> str:
+        """Build an actionable stdio process error without dumping unbounded logs."""
+        if conn._stderr_thread and conn._stderr_thread.is_alive():
+            conn._stderr_thread.join(timeout=0.2)
+
+        exit_code = conn.process.poll() if conn.process else None
+        detail = message
+        if exit_code is not None:
+            detail = f"{detail} (exit code {exit_code})"
+
+        stderr_tail = conn.stderr_tail()
+        if stderr_tail:
+            stderr = "\n".join(stderr_tail[-8:])
+            if len(stderr) > 2000:
+                stderr = "..." + stderr[-2000:]
+            detail = f"{detail}; stderr:\n{stderr}"
+        return detail
 
     # ---- http transport ----
 
@@ -345,7 +381,9 @@ class MCPServerManager:
         self, conn: MCPConnection, request: Dict[str, Any], timeout: int
     ) -> Dict[str, Any]:
         if not conn.is_alive():
-            raise RuntimeError("MCP server process has died")
+            raise RuntimeError(
+                self._stdio_error_detail(conn, "MCP server process has died")
+            )
 
         request_bytes = (json.dumps(request) + "\n").encode("utf-8")
 
@@ -353,6 +391,10 @@ class MCPServerManager:
             conn.process.stdin.write(request_bytes)
             conn.process.stdin.flush()
         except (BrokenPipeError, OSError) as e:
+            if not conn.is_alive():
+                raise RuntimeError(
+                    self._stdio_error_detail(conn, f"Failed to send request: {e}")
+                )
             raise RuntimeError(f"Failed to send request: {e}")
 
         # Read JSON-RPC lines until we see a response whose id matches this
@@ -365,7 +407,9 @@ class MCPServerManager:
 
         while time.time() < deadline:
             if not conn.is_alive():
-                raise RuntimeError("MCP server process died during request")
+                raise RuntimeError(
+                    self._stdio_error_detail(conn, "MCP server process died during request")
+                )
             try:
                 if sys.platform == "win32":
                     conn.process.stdout.flush()
@@ -409,7 +453,14 @@ class MCPServerManager:
 
             return msg
 
-        raise RuntimeError(f"Timeout waiting for MCP response after {timeout}s")
+        detail = f"Timeout waiting for MCP response after {timeout}s"
+        stderr_tail = conn.stderr_tail()
+        if stderr_tail:
+            stderr = "\n".join(stderr_tail[-8:])
+            if len(stderr) > 2000:
+                stderr = "..." + stderr[-2000:]
+            detail = f"{detail}; recent stderr:\n{stderr}"
+        raise RuntimeError(detail)
 
     def _stdio_send_notification(
         self, conn: MCPConnection, notification: Dict[str, Any]

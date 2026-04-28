@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -6210,12 +6211,219 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     class MCPServerInstallRequest(BaseModel):
         source: str = Field(
-            ...,
+            default="",
             description="Install source: Claude Desktop JSON blob, bare stdio command, HTTP URL, or registry id",
         )
         name: Optional[str] = None
+        preview_token: Optional[str] = None
+        confirmed: bool = False
+        config_values: Dict[str, str] = Field(default_factory=dict)
         auto_enable: bool = True
         thread_id: Optional[str] = None
+
+    class MCPServerInstallPreviewRequest(BaseModel):
+        source: str = Field(..., description="Install source to inspect")
+        name: Optional[str] = None
+
+    class MCPServerInstallRetryRequest(BaseModel):
+        confirmed: bool = False
+        config_values: Dict[str, str] = Field(default_factory=dict)
+
+    def _mcp_install_response(
+        *,
+        registry,
+        defn,
+        parsed_summary: str,
+        discovered,
+        thread_id: Optional[str],
+        status: str = "ok",
+        discovery_error: Optional[str] = None,
+    ):
+        tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+        return {
+            "status": status,
+            "server": registry.get_server(defn.id).model_dump(),
+            "parsed_summary": parsed_summary,
+            "discovered_tools": len(discovered),
+            "tool_names": tool_names,
+            "thread_id": thread_id,
+            "discovery_error": discovery_error,
+            "install_logs": defn.install_logs,
+            "missing_config": defn.missing_config,
+            "requires_confirmation": bool(defn.confirmation_required and status != "ok"),
+        }
+
+    def _enable_mcp_tools_for_user_defaults(user_id: str, tool_names: List[str]) -> None:
+        if not tool_names:
+            return
+        from ..tools import ALL_TOOLS
+
+        agent = get_agent()
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            dtt = profile.tool_preferences.default_thread_tools
+            if dtt is None:
+                dtt = [t.name for t in ALL_TOOLS]
+            for name in tool_names:
+                if name not in dtt:
+                    dtt.append(name)
+            profile.tool_preferences.default_thread_tools = dtt
+        agent._rebuild_default_graphs()
+
+    def _attach_mcp_tools_to_thread(user: AuthenticatedUser, thread_id: str, tool_names: List[str]) -> None:
+        if not thread_id or not tool_names:
+            return
+        agent = get_agent()
+        _require_thread_access(user, thread_id)
+        tc = agent.thread_config_manager.get_config(thread_id)
+        enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
+        for tool_name in tool_names:
+            if tool_name not in enabled_tools:
+                enabled_tools.append(tool_name)
+        agent.thread_config_manager.update_config(thread_id, enabled_tools=enabled_tools)
+        agent.invalidate_thread_config_cache(thread_id)
+
+    async def _run_mcp_install(
+        *,
+        defn,
+        plan,
+        registry,
+        user: AuthenticatedUser,
+        auto_enable: bool,
+        thread_id: Optional[str],
+        confirmed: bool,
+        config_values: Dict[str, str],
+    ):
+        from ..core.mcp_runtime import make_failed_draft, prepare_runtime
+
+        if plan.confirmation_required and not confirmed:
+            defn.install_status = "draft"
+            defn.enabled = False
+            registry.save_server(defn)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "This MCP install needs admin confirmation before Nymeria runs it.",
+                    "preview": plan.to_dict(),
+                    "server": registry.get_server(defn.id).model_dump(),
+                },
+            )
+
+        logs: List[str] = []
+        try:
+            defn, logs = prepare_runtime(defn, plan, config_values=config_values, log_sink=logs)
+        except Exception as e:
+            failed = make_failed_draft(defn, plan, str(e), logs)
+            registry.save_server(failed)
+            return _mcp_install_response(
+                registry=registry,
+                defn=failed,
+                parsed_summary=plan.parsed_summary,
+                discovered=[],
+                thread_id=thread_id,
+                status="draft",
+                discovery_error=str(e),
+            )
+
+        defn.enabled = bool(auto_enable)
+        defn.install_status = "ready"
+        defn.last_error = None
+        defn.install_logs = logs
+        defn.install_plan = plan.to_dict()
+        defn.missing_config = []
+        registry.save_server(defn)
+
+        try:
+            discovered = registry.discover_tools(defn.id)
+        except Exception as e:
+            failed = make_failed_draft(defn, plan, str(e), logs)
+            registry.save_server(failed)
+            logger.warning("install_mcp_server discovery failed for %s: %s", defn.id, e)
+            return _mcp_install_response(
+                registry=registry,
+                defn=failed,
+                parsed_summary=plan.parsed_summary,
+                discovered=[],
+                thread_id=thread_id,
+                status="draft",
+                discovery_error=str(e),
+            )
+
+        agent = get_agent()
+        agent.reload_mcp_server_tools()
+        tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+        if thread_id:
+            _attach_mcp_tools_to_thread(user, thread_id, tool_names)
+        elif auto_enable:
+            _enable_mcp_tools_for_user_defaults(user.id, tool_names)
+
+        return _mcp_install_response(
+            registry=registry,
+            defn=registry.get_server(defn.id),
+            parsed_summary=plan.parsed_summary,
+            discovered=discovered,
+            thread_id=thread_id,
+            status="ok",
+        )
+
+    @app.post("/mcp-servers/install/preview", tags=["MCP Servers"])
+    async def preview_mcp_server_install(
+        request: MCPServerInstallPreviewRequest,
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Parse an MCP install source and return a non-executing install plan."""
+        from ..core.mcp_runtime import save_preview, plan_text_source
+        from ..core.mcp_installer import MCPInstallError
+
+        try:
+            defn, plan = plan_text_source(request.source, name=request.name)
+            token = save_preview(defn, plan, source=request.source)
+        except MCPInstallError as e:
+            raise HTTPException(400, detail=str(e))
+        except Exception as e:
+            logger.exception("preview_mcp_server_install failed")
+            raise HTTPException(400, detail=f"{type(e).__name__}: {e}")
+
+        return {
+            "preview_token": token,
+            "server": defn.model_dump(),
+            "plan": plan.to_dict(),
+        }
+
+    @app.post("/mcp-servers/install/preview-upload", tags=["MCP Servers"])
+    async def preview_mcp_server_bundle_upload(
+        file: UploadFile = File(...),
+        name: Optional[str] = Form(None),
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Preview an uploaded .mcpb/.dxt/.zip bundle without running it."""
+        from ..core.mcp_runtime import plan_bundle_file, save_preview
+        from ..core.mcp_installer import MCPInstallError
+
+        filename = file.filename or "bundle.mcpb"
+        if not filename.lower().endswith((".mcpb", ".dxt", ".zip")):
+            raise HTTPException(400, detail="upload must be a .mcpb, .dxt, or .zip file")
+
+        upload_dir = get_settings().data_dir / "mcp_install_previews" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        upload_path = upload_dir / f"{uuid.uuid4().hex}-{Path(filename).name}"
+        try:
+            content = await file.read()
+            upload_path.write_bytes(content)
+            defn, plan = plan_bundle_file(upload_path, original_name=filename, name=name)
+            token = save_preview(defn, plan, source=filename)
+        except MCPInstallError as e:
+            upload_path.unlink(missing_ok=True)
+            raise HTTPException(400, detail=str(e))
+        except Exception as e:
+            upload_path.unlink(missing_ok=True)
+            logger.exception("preview_mcp_server_bundle_upload failed")
+            raise HTTPException(400, detail=f"{type(e).__name__}: {e}")
+
+        return {
+            "preview_token": token,
+            "server": defn.model_dump(),
+            "plan": plan.to_dict(),
+        }
 
     @app.post("/mcp-servers/install", tags=["MCP Servers"])
     async def install_mcp_server(
@@ -6224,80 +6432,82 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     ):
         """Install an MCP server from a user-pasted source string. Admin-only.
 
-        Parses `source` into a server definition (JSON / stdio command / HTTP
-        URL / registry id), saves it, discovers tools, and wires them into
-        the agent. Rolls back on discovery failure so we don't leave dead
-        definitions on disk.
+        Parses `source` or a saved preview into a server definition, prepares
+        any managed runtime needed, discovers tools, and wires them into the
+        agent. Failed setup/discovery is saved as a disabled draft so admins
+        can inspect logs and retry.
 
         Admin-only because install can launch arbitrary stdio commands inside
         the agent process.
         """
+        from ..core.mcp_runtime import (
+            consume_preview,
+            load_preview,
+            plan_text_source,
+        )
         from ..core.mcp_installer import (
             MCPInstallError,
-            describe_definition,
-            parse_mcp_source,
         )
         from ..core.mcp_servers import get_mcp_server_registry
 
         try:
-            defn = parse_mcp_source(request.source, name=request.name)
+            if request.preview_token:
+                _, defn, plan = load_preview(request.preview_token)
+            else:
+                defn, plan = plan_text_source(request.source, name=request.name)
         except MCPInstallError as e:
             raise HTTPException(400, detail=str(e))
         except Exception as e:
             logger.exception("install_mcp_server parse failed")
             raise HTTPException(400, detail=f"{type(e).__name__}: {e}")
 
-        defn.enabled = bool(request.auto_enable)
-
         registry = get_mcp_server_registry()
         if registry.get_server(defn.id):
             # Very unlikely (ids include a random suffix) but handle it.
             raise HTTPException(409, detail=f"MCP server '{defn.id}' already exists")
-        registry.save_server(defn)
 
-        try:
-            discovered = registry.discover_tools(defn.id)
-        except Exception as e:
-            registry.delete_server(defn.id)
-            logger.warning("install_mcp_server discovery failed for %s: %s", defn.id, e)
-            # 400, not 502: this is a client-input problem (bad command, wrong
-            # path, missing runtime on the host) — we want the `detail` body to
-            # pass through reverse proxies like Cloudflare cleanly. 5xx responses
-            # can get substituted for the proxy's own branded error page, which
-            # strips our JSON detail and breaks CORS, surfacing as an opaque
-            # "Failed to fetch" on the client.
-            raise HTTPException(
-                400,
-                detail=f"parsed ok ({describe_definition(defn)}) but could not reach server: {e}",
-            )
+        result = await _run_mcp_install(
+            defn=defn,
+            plan=plan,
+            registry=registry,
+            user=user,
+            auto_enable=request.auto_enable,
+            thread_id=request.thread_id,
+            confirmed=request.confirmed,
+            config_values=request.config_values,
+        )
+        if request.preview_token:
+            consume_preview(request.preview_token)
+        return result
 
-        agent = get_agent()
-        agent.reload_mcp_server_tools()
+    @app.post("/mcp-servers/{server_id}/retry", tags=["MCP Servers"])
+    async def retry_mcp_server_install(
+        server_id: str,
+        request: MCPServerInstallRetryRequest,
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Retry setup/discovery for a disabled draft or failed MCP server."""
+        from ..core.mcp_runtime import MCPInstallPlan
+        from ..core.mcp_servers import get_mcp_server_registry
 
-        if request.thread_id and discovered:
-            # Same ownership check as create_mcp_server above — installing
-            # admin can't accidentally (or intentionally) attach the new tools
-            # to a thread they don't own.
-            _require_thread_access(user, request.thread_id)
-            tc = agent.thread_config_manager.get_config(request.thread_id)
-            enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
-            for dt in discovered:
-                tool_name = f"mcp__{defn.id}__{dt.name}"
-                if tool_name not in enabled_tools:
-                    enabled_tools.append(tool_name)
-            agent.thread_config_manager.update_config(
-                request.thread_id, enabled_tools=enabled_tools
-            )
-            agent.invalidate_thread_config_cache(request.thread_id)
+        registry = get_mcp_server_registry()
+        defn = registry.get_server(server_id)
+        if not defn:
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
+        if not defn.install_plan:
+            raise HTTPException(400, detail="MCP server has no install plan to retry")
 
-        return {
-            "status": "ok",
-            "server": registry.get_server(defn.id).model_dump(),
-            "parsed_summary": describe_definition(defn),
-            "discovered_tools": len(discovered),
-            "tool_names": [f"mcp__{defn.id}__{t.name}" for t in discovered],
-            "thread_id": request.thread_id,
-        }
+        plan = MCPInstallPlan.from_dict(defn.install_plan)
+        return await _run_mcp_install(
+            defn=defn,
+            plan=plan,
+            registry=registry,
+            user=user,
+            auto_enable=True,
+            thread_id=None,
+            confirmed=request.confirmed,
+            config_values=request.config_values,
+        )
 
     # ========================================================================
     # Agent Thread Endpoints
