@@ -6,6 +6,8 @@ import type {
   MCPDiscoveredTool,
   MCPInstallRequest,
   MCPInstallResponse,
+  MCPInstallPreviewRequest,
+  MCPInstallPreviewResponse,
 } from '$lib/types';
 
 function createMCPServersStore() {
@@ -55,6 +57,20 @@ function createMCPServersStore() {
       } else {
         servers = [...servers, result.server];
       }
+      return result;
+    },
+
+    async preview(request: MCPInstallPreviewRequest): Promise<MCPInstallPreviewResponse> {
+      return api.previewMCPServerInstall(request);
+    },
+
+    async previewUpload(file: File, name?: string): Promise<MCPInstallPreviewResponse> {
+      return api.previewMCPServerUpload(file, name);
+    },
+
+    async retry(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'config_values'> = {}): Promise<MCPInstallResponse> {
+      const result = await api.retryMCPServerInstall(serverId, request);
+      servers = servers.map(s => s.id === serverId ? result.server : s);
       return result;
     },
 

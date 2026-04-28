@@ -122,6 +122,7 @@ class MCPServerRegistry:
             headers=defn.headers,
             tool_name="__discovery__",  # placeholder
             env_vars=defn.env_vars,
+            encrypted_env_vars=defn.encrypted_env_vars,
             working_directory=defn.working_directory,
             idle_timeout_seconds=defn.idle_timeout_seconds,
             startup_timeout_seconds=defn.startup_timeout_seconds,
@@ -218,6 +219,7 @@ class MCPServerRegistry:
             headers=defn.headers,
             tool_name=discovered.name,
             env_vars=defn.env_vars,
+            encrypted_env_vars=defn.encrypted_env_vars,
             working_directory=defn.working_directory,
             idle_timeout_seconds=defn.idle_timeout_seconds,
             startup_timeout_seconds=defn.startup_timeout_seconds,

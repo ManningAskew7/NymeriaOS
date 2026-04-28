@@ -5,7 +5,11 @@
   import MCPInstallRecipes from './MCPInstallRecipes.svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
-  import type { MCPInstallResponse } from '$lib/types';
+  import type {
+    MCPInstallConfigField,
+    MCPInstallPreviewResponse,
+    MCPInstallResponse,
+  } from '$lib/types';
 
   interface Props {
     isOpen: boolean;
@@ -15,21 +19,30 @@
 
   let { isOpen, onClose, threadId }: Props = $props();
 
-  type Stage = 'input' | 'installing' | 'success';
+  type Stage = 'input' | 'previewing' | 'preview' | 'installing' | 'success';
 
   let stage = $state<Stage>('input');
   let source = $state('');
+  let bundleFile = $state<File | null>(null);
   let autoEnable = $state(true);
+  let confirmed = $state(false);
   let error = $state<string | null>(null);
+  let preview = $state<MCPInstallPreviewResponse | null>(null);
   let result = $state<MCPInstallResponse | null>(null);
+  let configValues = $state<Record<string, string>>({});
   let progressStep = $state(0);
   let progressTimer: ReturnType<typeof setInterval> | null = null;
+  let fileInput: HTMLInputElement | null = $state(null);
 
   const FORMAT_LABELS = {
-    json: { label: 'Claude Desktop JSON', hint: 'We detected a config block and will extract the server entry.' },
-    url: { label: 'HTTP URL', hint: 'We\'ll connect over HTTP/SSE transport.' },
-    registry: { label: 'Registry ID', hint: 'We\'ll resolve this on the official MCP registry.' },
-    stdio: { label: 'stdio command', hint: 'We\'ll run this as a local subprocess.' },
+    json: { label: 'Claude Desktop JSON', hint: 'Extracts the selected server entry.' },
+    http: { label: 'HTTP URL', hint: 'Uses remote HTTP transport.' },
+    npm: { label: 'npm package', hint: 'Runs through npx with an isolated cache.' },
+    pypi: { label: 'PyPI package', hint: 'Runs through uvx with an isolated cache.' },
+    git: { label: 'Git repository', hint: 'Clones source and needs confirmation.' },
+    bundle_url: { label: 'MCP bundle URL', hint: 'Downloads and unpacks a bundle after confirmation.' },
+    registry: { label: 'Registry ID', hint: 'Resolves through the MCP registry parser.' },
+    stdio: { label: 'stdio command', hint: 'Runs as a local subprocess.' },
     empty: { label: '', hint: '' },
   } as const;
 
@@ -38,22 +51,36 @@
   function detectFormat(src: string): keyof typeof FORMAT_LABELS {
     const s = src.trim();
     if (!s) return 'empty';
-    if (s.startsWith('{')) return 'json';
-    if (s.startsWith('http://') || s.startsWith('https://')) return 'url';
+    if (s.startsWith('{') || s.startsWith('```')) return 'json';
+    if (/^https?:\/\/www\.npmjs\.com\/package\//i.test(s)) return 'npm';
+    if (/^https?:\/\/pypi\.org\/project\//i.test(s)) return 'pypi';
+    if (/^https?:\/\/.*\.(mcpb|dxt|zip)(\?.*)?$/i.test(s)) return 'bundle_url';
+    if (/^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\//i.test(s) || /\.git$/i.test(s)) return 'git';
+    if (s.startsWith('http://') || s.startsWith('https://')) return 'http';
     if (REGISTRY_ID_RE.test(s)) return 'registry';
     return 'stdio';
   }
 
   let detectedFormat = $derived(detectFormat(source));
-  let canInstall = $derived(detectedFormat !== 'empty' && stage === 'input');
+  let canPreview = $derived(stage === 'input' && (source.trim().length > 0 || bundleFile !== null));
+  let canInstall = $derived(
+    stage === 'preview' &&
+    preview !== null &&
+    (!preview.plan.confirmation_required || confirmed)
+  );
 
   function resetState() {
     stage = 'input';
     source = '';
+    bundleFile = null;
     autoEnable = true;
+    confirmed = false;
     error = null;
+    preview = null;
     result = null;
+    configValues = {};
     progressStep = 0;
+    if (fileInput) fileInput.value = '';
     if (progressTimer) {
       clearInterval(progressTimer);
       progressTimer = null;
@@ -65,50 +92,110 @@
     onClose();
   }
 
+  function startProgress(maxStep: number, intervalMs = 1600) {
+    progressStep = 0;
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = setInterval(() => {
+      progressStep = Math.min(progressStep + 1, maxStep);
+    }, intervalMs);
+  }
+
+  function stopProgress() {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+  }
+
+  function seedConfigValues(nextPreview: MCPInstallPreviewResponse) {
+    const seeded: Record<string, string> = {};
+    for (const field of nextPreview.plan.required_config || []) {
+      if (field.default !== undefined && field.default !== null) {
+        seeded[field.name] = String(field.default);
+      }
+    }
+    configValues = seeded;
+  }
+
+  async function handlePreview() {
+    if (!canPreview) return;
+    error = null;
+    preview = null;
+    result = null;
+    confirmed = false;
+    stage = 'previewing';
+    startProgress(1, 1200);
+
+    try {
+      const nextPreview = bundleFile
+        ? await mcpServersStore.previewUpload(bundleFile)
+        : await mcpServersStore.preview({ source: source.trim() });
+      preview = nextPreview;
+      seedConfigValues(nextPreview);
+      stage = 'preview';
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Preview failed';
+      stage = 'input';
+    } finally {
+      stopProgress();
+    }
+  }
+
   async function handleInstall() {
-    if (!canInstall) return;
+    if (!preview || !canInstall) return;
     error = null;
     stage = 'installing';
-    progressStep = 0;
-
-    // Cosmetic staged progress — the POST is atomic but takes 5-15s.
-    progressTimer = setInterval(() => {
-      progressStep = Math.min(progressStep + 1, 2);
-    }, 1800);
+    startProgress(2, 1800);
 
     try {
       const res = await mcpServersStore.install({
-        source: source.trim(),
+        preview_token: preview.previewToken,
+        confirmed,
+        config_values: configValues,
         auto_enable: autoEnable,
         thread_id: threadId,
       });
       result = res;
       stage = 'success';
-      // Refresh the global default tools list so the Tools page picks up the new mcp__* names.
       defaultToolsStore.resetLoaded();
       await defaultToolsStore.load();
     } catch (e) {
       const raw = e instanceof Error ? e.message : 'Installation failed';
-      // fetch() throws TypeError on network-level failures: DNS, connection
-      // reset, CORS preflight abort, or a reverse proxy swapping our JSON
-      // error body for a branded 5xx error page with missing CORS headers.
-      // In all those cases the browser never sees the backend's detail.
       if (/failed to fetch|networkerror|load failed/i.test(raw)) {
-        error = "Couldn't reach the API, or the response was blocked by something between the app and the backend (proxy / tunnel / firewall). Check the backend logs for the real error and retry.";
+        error = "Couldn't reach the API, or the response was blocked before the app received backend details.";
       } else {
         error = raw;
       }
-      stage = 'input';
+      stage = 'preview';
     } finally {
-      if (progressTimer) {
-        clearInterval(progressTimer);
-        progressTimer = null;
-      }
+      stopProgress();
     }
   }
 
   function handlePrefill(value: string) {
     source = value;
+    bundleFile = null;
+    error = null;
+    if (fileInput) fileInput.value = '';
+  }
+
+  function handleBundleFile(event: Event) {
+    const target = event.currentTarget as HTMLInputElement;
+    bundleFile = target.files?.[0] ?? null;
+    if (bundleFile) source = '';
+    error = null;
+  }
+
+  function clearBundleFile() {
+    bundleFile = null;
+    if (fileInput) fileInput.value = '';
+  }
+
+  function handleBackToInput() {
+    stage = 'input';
+    preview = null;
+    result = null;
+    confirmed = false;
     error = null;
   }
 
@@ -116,22 +203,47 @@
     resetState();
   }
 
-  const PROGRESS_STEPS = [
-    'Parsing what you pasted…',
-    'Starting the MCP server…',
-    'Asking it what tools it offers…',
+  function setConfigValue(name: string, value: string) {
+    configValues = { ...configValues, [name]: value };
+  }
+
+  function fieldLabel(field: MCPInstallConfigField): string {
+    return field.label || field.name;
+  }
+
+  function fieldDescription(field: MCPInstallConfigField): string {
+    return field.description || field.env_name || '';
+  }
+
+  function fieldInputType(field: MCPInstallConfigField): string {
+    return field.sensitive ? 'password' : 'text';
+  }
+
+  function riskClass(level: string): string {
+    if (level === 'high') return 'risk-high';
+    if (level === 'medium') return 'risk-medium';
+    return 'risk-low';
+  }
+
+  const PREVIEW_STEPS = [
+    'Parsing source',
+    'Preparing install plan',
+  ];
+
+  const INSTALL_STEPS = [
+    'Preparing runtime',
+    'Starting MCP server',
+    'Discovering tools',
   ];
 </script>
 
 <Modal title="Install MCP Server" {isOpen} onClose={handleClose}>
   <div class="install-root">
     {#if stage === 'input'}
-      <div class="install-grid">
-        <!-- Left: paste box -->
-        <div class="install-left">
-          <label class="paste-label" for="mcp-paste-box">
-            <span class="paste-label-title">Paste your MCP configuration</span>
-            <span class="paste-label-sub">JSON, a command, a URL, or a registry ID. All four work.</span>
+      <div class="input-grid">
+        <div class="input-main">
+          <label class="field-label" for="mcp-paste-box">
+            <span>MCP source</span>
           </label>
 
           <div class="paste-box-wrap">
@@ -139,33 +251,49 @@
               id="mcp-paste-box"
               class="paste-box"
               bind:value={source}
-              placeholder={`Examples:
-
-npx -y @modelcontextprotocol/server-filesystem ~/Documents
+              placeholder={`npx -y @modelcontextprotocol/server-filesystem ~/Documents
 
 {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
 
-https://example.com/mcp
+https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem
 
-io.github.modelcontextprotocol/server-memory`}
+https://github.com/example/mcp-server`}
               rows={10}
               spellcheck="false"
               autocomplete="off"
               autocapitalize="off"
+              disabled={bundleFile !== null}
             ></textarea>
 
-            {#if detectedFormat !== 'empty'}
+            {#if detectedFormat !== 'empty' && !bundleFile}
               <div class="format-chip" role="status" aria-live="polite">
                 <span class="chip-dot"></span>
-                <span class="chip-label">Detected:</span>
-                <span class="chip-value">{FORMAT_LABELS[detectedFormat].label}</span>
+                <span>{FORMAT_LABELS[detectedFormat].label}</span>
               </div>
             {/if}
           </div>
 
-          {#if detectedFormat !== 'empty'}
+          {#if detectedFormat !== 'empty' && !bundleFile}
             <div class="format-hint">{FORMAT_LABELS[detectedFormat].hint}</div>
           {/if}
+
+          <div class="bundle-row">
+            <label class="bundle-upload">
+              <input
+                bind:this={fileInput}
+                type="file"
+                accept=".mcpb,.dxt,.zip,application/zip"
+                onchange={handleBundleFile}
+              />
+              <Icon name="upload" size={15} />
+              <span>{bundleFile ? bundleFile.name : 'Upload MCPB, DXT, or ZIP'}</span>
+            </label>
+            {#if bundleFile}
+              <button type="button" class="clear-file" onclick={clearBundleFile} title="Clear bundle">
+                <Icon name="x" size={14} />
+              </button>
+            {/if}
+          </div>
 
           {#if error}
             <div class="error-banner" role="alert">
@@ -180,78 +308,31 @@ io.github.modelcontextprotocol/server-memory`}
               <span class="check-track"><span class="check-thumb"></span></span>
               <span class="option-text">
                 Auto-enable discovered tools
-                {#if threadId}
-                  <span class="option-sub">for this thread</span>
-                {:else}
-                  <span class="option-sub">globally</span>
-                {/if}
+                <span class="option-sub">{threadId ? 'for this thread' : 'globally'}</span>
               </span>
             </label>
           </div>
 
           <div class="actions-row">
             <Button variant="ghost" onclick={handleClose}>Cancel</Button>
-            <Button variant="primary" disabled={!canInstall} onclick={handleInstall}>
+            <Button variant="primary" disabled={!canPreview} onclick={handlePreview}>
               <Icon name="bolt" size={14} />
-              Install
+              Preview
             </Button>
           </div>
         </div>
 
-        <!-- Right: help + recipes -->
-        <div class="install-right">
-          <div class="help-card">
-            <div class="help-title">
-              <Icon name="info" size={16} />
-              <span>How this works</span>
-            </div>
-            <ol class="help-steps">
-              <li>
-                <span class="step-num">1</span>
-                <div>
-                  <div class="step-head">Find an MCP server</div>
-                  <div class="step-body">
-                    Browse <a href="https://modelcontextprotocol.io/servers" target="_blank" rel="noopener noreferrer">modelcontextprotocol.io/servers</a>,
-                    a tutorial, or someone's blog. Copy <em>any one</em> of: their JSON config, a <code>npx</code>/<code>uvx</code>/<code>python</code> command, a server URL, or a registry name.
-                  </div>
-                </div>
-              </li>
-              <li>
-                <span class="step-num">2</span>
-                <div>
-                  <div class="step-head">Paste it on the left</div>
-                  <div class="step-body">The chip under the box tells you what format we detected.</div>
-                </div>
-              </li>
-              <li>
-                <span class="step-num">3</span>
-                <div>
-                  <div class="step-head">Click Install</div>
-                  <div class="step-body">Nymeria starts the server, asks it what tools it offers, and lists them.</div>
-                </div>
-              </li>
-              <li>
-                <span class="step-num">4</span>
-                <div>
-                  <div class="step-head">You're done</div>
-                  <div class="step-body">New tools show up in the next screen and stay available for the agent.</div>
-                </div>
-              </li>
-            </ol>
-          </div>
-
+        <div class="input-side">
           <MCPInstallRecipes onUse={handlePrefill} />
         </div>
       </div>
 
-    {:else if stage === 'installing'}
-      <div class="installing-panel">
-        <div class="installing-spinner">
-          <div class="spin-ring"></div>
-        </div>
-        <h3>Installing your MCP server</h3>
+    {:else if stage === 'previewing'}
+      <div class="progress-panel">
+        <div class="spin-ring"></div>
+        <h3>Reviewing MCP source</h3>
         <ol class="progress-list">
-          {#each PROGRESS_STEPS as step, i}
+          {#each PREVIEW_STEPS as step, i}
             <li class:done={i < progressStep} class:active={i === progressStep}>
               {#if i < progressStep}
                 <Icon name="check" size={14} />
@@ -260,22 +341,131 @@ io.github.modelcontextprotocol/server-memory`}
               {:else}
                 <span class="dot-idle"></span>
               {/if}
-              <span class="step-text">{step}</span>
+              <span>{step}</span>
             </li>
           {/each}
         </ol>
-        <p class="installing-note">First install of a server can take 10–15 seconds while <code>npx</code>/<code>uvx</code> downloads it.</p>
+      </div>
+
+    {:else if stage === 'preview' && preview}
+      <div class="preview-panel">
+        <div class="preview-header">
+          <div>
+            <h3>{preview.server.name}</h3>
+            <p>{preview.plan.parsed_summary}</p>
+          </div>
+          <span class="risk-pill {riskClass(preview.plan.risk_level)}">
+            {preview.plan.risk_level} risk
+          </span>
+        </div>
+
+        <div class="plan-grid">
+          <div class="plan-item">
+            <span>Source</span>
+            <code>{preview.plan.source_type}</code>
+          </div>
+          <div class="plan-item">
+            <span>Runtime</span>
+            <code>{preview.plan.runtime_type}</code>
+          </div>
+          <div class="plan-item wide">
+            <span>Command</span>
+            <code>{preview.plan.command_preview || preview.server.url || 'runtime prepares command during install'}</code>
+          </div>
+        </div>
+
+        {#if preview.plan.warnings.length > 0}
+          <div class="warning-banner">
+            <Icon name="warning" size={16} />
+            <div>
+              {#each preview.plan.warnings as warning}
+                <p>{warning}</p>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        {#if preview.plan.required_config.length > 0}
+          <div class="config-section">
+            <span class="section-title">Required configuration</span>
+            <div class="config-fields">
+              {#each preview.plan.required_config as field}
+                <label class="config-field">
+                  <span>
+                    {fieldLabel(field)}
+                    {#if field.required !== false}<strong>*</strong>{/if}
+                  </span>
+                  <input
+                    type={fieldInputType(field)}
+                    value={configValues[field.name] ?? ''}
+                    placeholder={fieldDescription(field)}
+                    oninput={(event) => setConfigValue(field.name, (event.currentTarget as HTMLInputElement).value)}
+                  />
+                  {#if field.error}
+                    <small class="field-error">{field.error}</small>
+                  {:else if fieldDescription(field)}
+                    <small>{fieldDescription(field)}</small>
+                  {/if}
+                </label>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        {#if preview.plan.confirmation_required}
+          <label class="confirm-box">
+            <input type="checkbox" bind:checked={confirmed} />
+            <span>
+              I approve running this managed MCP setup on the Nymeria host.
+            </span>
+          </label>
+        {/if}
+
+        {#if error}
+          <div class="error-banner" role="alert">
+            <Icon name="error" size={16} />
+            <span>{error}</span>
+          </div>
+        {/if}
+
+        <div class="actions-row">
+          <Button variant="ghost" onclick={handleBackToInput}>Back</Button>
+          <Button variant="primary" disabled={!canInstall} onclick={handleInstall}>
+            <Icon name="bolt" size={14} />
+            Install
+          </Button>
+        </div>
+      </div>
+
+    {:else if stage === 'installing'}
+      <div class="progress-panel">
+        <div class="spin-ring"></div>
+        <h3>Installing MCP server</h3>
+        <ol class="progress-list">
+          {#each INSTALL_STEPS as step, i}
+            <li class:done={i < progressStep} class:active={i === progressStep}>
+              {#if i < progressStep}
+                <Icon name="check" size={14} />
+              {:else if i === progressStep}
+                <span class="dot-pulse"></span>
+              {:else}
+                <span class="dot-idle"></span>
+              {/if}
+              <span>{step}</span>
+            </li>
+          {/each}
+        </ol>
       </div>
 
     {:else if stage === 'success' && result}
-      <div class="success-panel">
+      <div class="success-panel" class:draft-result={result.status === 'draft'}>
         <div class="success-header">
           <div class="success-icon">
-            <Icon name="success" size={28} />
+            <Icon name={result.status === 'ok' ? 'success' : 'warning'} size={28} />
           </div>
           <div class="success-heading">
-            <h3>{result.server.name} is installed</h3>
-            <p class="success-sub">{result.parsedSummary}</p>
+            <h3>{result.status === 'ok' ? `${result.server.name} is installed` : `${result.server.name} was saved as a draft`}</h3>
+            <p class="success-sub">{result.discoveryError || result.parsedSummary}</p>
           </div>
         </div>
 
@@ -285,27 +475,19 @@ io.github.modelcontextprotocol/server-memory`}
             <code>{result.server.id}</code>
           </div>
           <div class="stat">
-            <span class="stat-label">Tools discovered</span>
+            <span class="stat-label">Tools</span>
             <span class="stat-value">{result.discoveredTools}</span>
           </div>
           <div class="stat">
-            <span class="stat-label">Scope</span>
-            <span class="stat-value">
-              {#if result.threadId}
-                This thread
-              {:else if autoEnable}
-                Globally
-              {:else}
-                Disabled by default
-              {/if}
-            </span>
+            <span class="stat-label">Status</span>
+            <span class="stat-value">{result.server.installStatus}</span>
           </div>
         </div>
 
         {#if result.toolNames.length > 0}
           <div class="tools-section">
             <div class="tools-head">
-              <span class="tools-title">New tools available to the agent</span>
+              <span class="tools-title">Tools available to the agent</span>
               <span class="tools-count">{result.toolNames.length}</span>
             </div>
             <div class="tool-chips">
@@ -314,11 +496,13 @@ io.github.modelcontextprotocol/server-memory`}
               {/each}
             </div>
           </div>
-        {:else}
-          <div class="no-tools-note">
-            <Icon name="warning" size={16} />
-            <span>The server started but didn't report any tools. You can rediscover from the MCP Servers panel.</span>
-          </div>
+        {/if}
+
+        {#if result.installLogs.length > 0}
+          <details class="log-details">
+            <summary>Install log</summary>
+            <pre>{result.installLogs.join('\n')}</pre>
+          </details>
         {/if}
 
         <div class="success-actions">
@@ -341,42 +525,32 @@ io.github.modelcontextprotocol/server-memory`}
     overflow-y: auto;
   }
 
-  /* ---- Input stage ---- */
-
-  .install-grid {
+  .input-grid {
     display: grid;
-    grid-template-columns: 1.2fr 1fr;
+    grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
     gap: var(--spacing-lg);
   }
 
   @media (max-width: 820px) {
-    .install-grid {
+    .input-grid {
       grid-template-columns: 1fr;
     }
   }
 
-  .install-left {
+  .input-main,
+  .input-side,
+  .preview-panel,
+  .success-panel {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
     min-width: 0;
   }
 
-  .paste-label {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .paste-label-title {
+  .field-label {
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
-  }
-
-  .paste-label-sub {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
   }
 
   .paste-box-wrap {
@@ -385,7 +559,7 @@ io.github.modelcontextprotocol/server-memory`}
 
   .paste-box {
     width: 100%;
-    min-height: 220px;
+    min-height: 250px;
     padding: var(--spacing-md) var(--spacing-md) calc(var(--spacing-md) + 28px);
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
@@ -398,6 +572,11 @@ io.github.modelcontextprotocol/server-memory`}
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
 
+  .paste-box:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   .paste-box:focus {
     outline: none;
     border-color: var(--accent-primary);
@@ -406,7 +585,7 @@ io.github.modelcontextprotocol/server-memory`}
 
   .paste-box::placeholder {
     color: var(--text-muted);
-    opacity: 0.7;
+    opacity: 0.75;
   }
 
   .format-chip {
@@ -423,13 +602,7 @@ io.github.modelcontextprotocol/server-memory`}
     border-radius: var(--radius-full, 9999px);
     font-size: var(--font-size-xs);
     font-weight: 500;
-    animation: chipIn 150ms ease;
     pointer-events: none;
-  }
-
-  @keyframes chipIn {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   .chip-dot {
@@ -437,16 +610,6 @@ io.github.modelcontextprotocol/server-memory`}
     height: 6px;
     border-radius: 50%;
     background: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb, 108, 159, 255), 0.25);
-  }
-
-  .chip-label {
-    color: var(--text-secondary);
-    font-weight: 400;
-  }
-
-  .chip-value {
-    font-family: var(--font-mono);
   }
 
   .format-hint {
@@ -455,17 +618,85 @@ io.github.modelcontextprotocol/server-memory`}
     padding: 0 var(--spacing-xs);
   }
 
-  .error-banner {
+  .bundle-row {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
+  }
+
+  .bundle-upload {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    width: fit-content;
+    max-width: 100%;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+  }
+
+  .bundle-upload:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .bundle-upload input {
+    display: none;
+  }
+
+  .bundle-upload span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .clear-file {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .clear-file:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .error-banner,
+  .warning-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    line-height: 1.4;
+  }
+
+  .error-banner {
     background: rgba(244, 67, 54, 0.1);
     color: var(--error, #f44336);
     border: 1px solid rgba(244, 67, 54, 0.3);
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-sm);
-    animation: chipIn 150ms ease;
+  }
+
+  .warning-banner {
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  .warning-banner p {
+    margin: 0;
   }
 
   .options-row {
@@ -519,128 +750,35 @@ io.github.modelcontextprotocol/server-memory`}
   }
 
   .option-text {
-    font-size: var(--font-size-sm);
-    color: var(--text-primary);
     display: inline-flex;
     align-items: baseline;
     gap: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
   }
 
   .option-sub {
-    font-size: var(--font-size-xs);
     color: var(--text-muted);
+    font-size: var(--font-size-xs);
   }
 
-  .actions-row {
+  .actions-row,
+  .success-actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-sm);
-    padding-top: var(--spacing-xs);
+    padding-top: var(--spacing-sm);
     border-top: 1px solid var(--border-subtle);
-    margin-top: var(--spacing-xs);
   }
 
-  /* ---- Right panel ---- */
-
-  .install-right {
+  .progress-panel {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-md);
-    min-width: 0;
-  }
-
-  .help-card {
-    padding: var(--spacing-md);
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-  }
-
-  .help-title {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--accent-primary);
-    margin-bottom: var(--spacing-sm);
-  }
-
-  .help-steps {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .help-steps li {
-    display: grid;
-    grid-template-columns: 24px 1fr;
-    gap: var(--spacing-sm);
-    align-items: start;
-  }
-
-  .step-num {
-    display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.18);
-    color: var(--accent-primary);
-    font-size: 11px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-  }
-
-  .step-head {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--text-primary);
-    margin-bottom: 2px;
-  }
-
-  .step-body {
-    font-size: var(--font-size-xs);
-    color: var(--text-secondary);
-    line-height: 1.5;
-  }
-
-  .step-body a {
-    color: var(--accent-primary);
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-
-  .step-body code {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-primary);
-    background: var(--bg-elevated);
-    padding: 1px 4px;
-    border-radius: 3px;
-  }
-
-  /* ---- Installing stage ---- */
-
-  .installing-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
     gap: var(--spacing-md);
-    padding: var(--spacing-xl) var(--spacing-lg);
-    text-align: center;
     min-height: 320px;
-    justify-content: center;
-  }
-
-  .installing-spinner {
-    position: relative;
-    width: 48px;
-    height: 48px;
+    text-align: center;
   }
 
   .spin-ring {
@@ -656,7 +794,7 @@ io.github.modelcontextprotocol/server-memory`}
     to { transform: rotate(360deg); }
   }
 
-  .installing-panel h3 {
+  .progress-panel h3 {
     margin: 0;
     font-size: var(--font-size-lg);
     color: var(--text-primary);
@@ -681,7 +819,6 @@ io.github.modelcontextprotocol/server-memory`}
     padding: var(--spacing-xs) var(--spacing-sm);
     font-size: var(--font-size-sm);
     color: var(--text-muted);
-    transition: color var(--transition-fast);
   }
 
   .progress-list li.active {
@@ -692,57 +829,211 @@ io.github.modelcontextprotocol/server-memory`}
     color: var(--accent-primary);
   }
 
-  .dot-idle {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--border-default);
-    flex-shrink: 0;
-  }
-
+  .dot-idle,
   .dot-pulse {
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--accent-primary);
-    box-shadow: 0 0 0 0 var(--accent-primary);
-    animation: pulse 1.4s ease-out infinite;
     flex-shrink: 0;
   }
 
+  .dot-idle {
+    background: var(--border-default);
+  }
+
+  .dot-pulse {
+    background: var(--accent-primary);
+    animation: pulse 1.4s ease-out infinite;
+  }
+
   @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb, 108, 159, 255), 0.5); }
-    70%  { box-shadow: 0 0 0 8px rgba(var(--accent-primary-rgb, 108, 159, 255), 0); }
+    0% { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb, 108, 159, 255), 0.5); }
+    70% { box-shadow: 0 0 0 8px rgba(var(--accent-primary-rgb, 108, 159, 255), 0); }
     100% { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb, 108, 159, 255), 0); }
   }
 
-  .installing-note {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    margin: 0;
-    max-width: 360px;
-  }
-
-  .installing-note code {
-    font-family: var(--font-mono);
-    background: var(--bg-elevated);
-    padding: 1px 5px;
-    border-radius: 3px;
-  }
-
-  /* ---- Success stage ---- */
-
-  .success-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-    width: min(640px, 90vw);
-  }
-
+  .preview-header,
   .success-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    justify-content: space-between;
     gap: var(--spacing-md);
+  }
+
+  .preview-header h3,
+  .success-heading h3 {
+    margin: 0 0 4px 0;
+    font-size: var(--font-size-lg);
+    color: var(--text-primary);
+  }
+
+  .preview-header p,
+  .success-sub {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  .risk-pill {
+    flex-shrink: 0;
+    padding: 3px var(--spacing-sm);
+    border-radius: var(--radius-full, 9999px);
+    border: 1px solid var(--border-subtle);
+    font-size: var(--font-size-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .risk-low {
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.3);
+  }
+
+  .risk-medium {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+
+  .risk-high {
+    color: #f44336;
+    background: rgba(244, 67, 54, 0.12);
+    border-color: rgba(244, 67, 54, 0.3);
+  }
+
+  .plan-grid,
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--spacing-sm);
+  }
+
+  .plan-item,
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    min-width: 0;
+  }
+
+  .plan-item.wide {
+    grid-column: 1 / -1;
+  }
+
+  .plan-item span,
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+  }
+
+  .plan-item code,
+  .stat code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--accent-primary);
+    word-break: break-all;
+  }
+
+  @media (max-width: 640px) {
+    .plan-grid,
+    .stat-row {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .section-title,
+  .tools-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .config-section,
+  .tools-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .config-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--spacing-sm);
+  }
+
+  .config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .config-field span {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+  }
+
+  .config-field strong {
+    color: var(--error, #f44336);
+    margin-left: 2px;
+  }
+
+  .config-field input {
+    width: 100%;
+    min-height: 34px;
+    padding: 0 var(--spacing-sm);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  .config-field input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+  }
+
+  .config-field small {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .field-error {
+    color: var(--error, #f44336) !important;
+  }
+
+  .confirm-box {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .confirm-box input {
+    margin-top: 2px;
+  }
+
+  .success-panel {
+    width: min(680px, 90vw);
+  }
+
+  .draft-result .success-icon {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
   }
 
   .success-icon {
@@ -757,46 +1048,9 @@ io.github.modelcontextprotocol/server-memory`}
     flex-shrink: 0;
   }
 
-  .success-heading h3 {
-    margin: 0 0 4px 0;
-    font-size: var(--font-size-lg);
-    color: var(--text-primary);
-  }
-
-  .success-sub {
-    margin: 0;
-    font-size: var(--font-size-xs);
-    color: var(--text-secondary);
-    line-height: 1.4;
-  }
-
-  .stat-row {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: var(--spacing-sm);
-  }
-
-  @media (max-width: 560px) {
-    .stat-row {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-  }
-
-  .stat-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
+  .success-heading {
+    flex: 1;
+    min-width: 0;
   }
 
   .stat-value {
@@ -805,29 +1059,10 @@ io.github.modelcontextprotocol/server-memory`}
     color: var(--text-primary);
   }
 
-  .stat code {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    color: var(--accent-primary);
-    word-break: break-all;
-  }
-
-  .tools-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
   .tools-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-  }
-
-  .tools-title {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--text-primary);
   }
 
   .tools-count {
@@ -859,23 +1094,29 @@ io.github.modelcontextprotocol/server-memory`}
     word-break: break-all;
   }
 
-  .no-tools-note {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: rgba(245, 158, 11, 0.1);
-    color: #f59e0b;
-    border: 1px solid rgba(245, 158, 11, 0.3);
+  .log-details {
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    overflow: hidden;
+  }
+
+  .log-details summary {
+    cursor: pointer;
+    padding: var(--spacing-sm) var(--spacing-md);
+    color: var(--text-secondary);
     font-size: var(--font-size-sm);
   }
 
-  .success-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--spacing-sm);
-    padding-top: var(--spacing-sm);
+  .log-details pre {
+    margin: 0;
+    padding: var(--spacing-sm) var(--spacing-md);
+    max-height: 220px;
+    overflow: auto;
     border-top: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-wrap;
   }
 </style>

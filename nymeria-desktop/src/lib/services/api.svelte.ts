@@ -64,6 +64,8 @@ import type {
   MCPServerUpdateRequest,
   MCPInstallRequest,
   MCPInstallResponse,
+  MCPInstallPreviewRequest,
+  MCPInstallPreviewResponse,
   MCPServerListResponse,
   ThreadShareDocument,
   ThreadShareImportResult
@@ -1969,25 +1971,64 @@ export class NymeriaAPI {
   // MCP Servers API
   // =========================================================================
 
+  private async mcpErrorMessage(response: Response, fallback: string): Promise<string> {
+    const err = await response.json().catch(() => ({}));
+    const detail = (err as Record<string, unknown>).detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object') {
+      const message = (detail as Record<string, unknown>).message;
+      if (typeof message === 'string') return message;
+    }
+    return `${fallback} (${response.status})`;
+  }
+
   private mcpServerFromResponse(item: Record<string, unknown>): MCPServer {
     return {
       id: item.id as string,
       name: item.name as string,
       description: (item.description as string) || '',
+      transport: (item.transport as 'stdio' | 'http') || 'stdio',
       serverCommand: item.server_command as string,
       serverArgs: (item.server_args as string[]) || [],
+      url: (item.url as string) || '',
       envVars: (item.env_vars as Record<string, string>) || {},
       workingDirectory: item.working_directory as string | undefined,
       idleTimeoutSeconds: (item.idle_timeout_seconds as number) || 300,
       startupTimeoutSeconds: (item.startup_timeout_seconds as number) || 30,
-      enabled: item.enabled as boolean,
+      enabled: item.enabled !== false,
       discoveredTools: ((item.discovered_tools as Array<Record<string, unknown>>) || []).map(t => ({
         name: t.name as string,
         description: (t.description as string) || '',
         inputSchema: (t.input_schema as Record<string, unknown>) || {},
       })),
+      installStatus: (item.install_status as 'ready' | 'draft' | 'failed') || 'ready',
+      sourceType: (item.source_type as string) || '',
+      runtimeType: (item.runtime_type as string) || '',
+      originalSource: (item.original_source as string) || '',
+      parsedSummary: (item.parsed_summary as string) || '',
+      installPlan: (item.install_plan as Record<string, unknown>) || {},
+      installLogs: (item.install_logs as string[]) || [],
+      lastError: item.last_error as string | undefined,
+      missingConfig: (item.missing_config as MCPInstallResponse['missingConfig']) || [],
+      riskLevel: (item.risk_level as string) || 'low',
+      confirmationRequired: item.confirmation_required === true,
       createdAt: item.created_at as string,
       updatedAt: item.updated_at as string,
+    };
+  }
+
+  private mcpInstallResponseFromData(data: Record<string, unknown>): MCPInstallResponse {
+    return {
+      status: (data.status as 'ok' | 'draft') || 'ok',
+      server: this.mcpServerFromResponse(data.server as Record<string, unknown>),
+      parsedSummary: (data.parsed_summary as string) || '',
+      discoveredTools: (data.discovered_tools as number) ?? 0,
+      toolNames: (data.tool_names as string[]) || [],
+      threadId: (data.thread_id as string) ?? undefined,
+      discoveryError: (data.discovery_error as string) ?? undefined,
+      installLogs: (data.install_logs as string[]) || [],
+      missingConfig: (data.missing_config as MCPInstallResponse['missingConfig']) || [],
+      requiresConfirmation: data.requires_confirmation === true,
     };
   }
 
@@ -2024,6 +2065,45 @@ export class NymeriaAPI {
     };
   }
 
+  async previewMCPServerInstall(request: MCPInstallPreviewRequest): Promise<MCPInstallPreviewResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/mcp-servers/install/preview`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request)
+    });
+    if (!response.ok) {
+      throw new Error(await this.mcpErrorMessage(response, 'Preview failed'));
+    }
+    const data = await response.json() as Record<string, unknown>;
+    return {
+      previewToken: data.preview_token as string,
+      server: this.mcpServerFromResponse(data.server as Record<string, unknown>),
+      plan: data.plan as MCPInstallPreviewResponse['plan'],
+    };
+  }
+
+  async previewMCPServerUpload(file: File, name?: string): Promise<MCPInstallPreviewResponse> {
+    const form = new FormData();
+    form.append('file', file);
+    if (name) form.append('name', name);
+    const headers = { ...(this.getHeaders() as Record<string, string>) };
+    delete headers['Content-Type'];
+    const response = await fetch(`${this.getBaseUrl()}/mcp-servers/install/preview-upload`, {
+      method: 'POST',
+      headers,
+      body: form
+    });
+    if (!response.ok) {
+      throw new Error(await this.mcpErrorMessage(response, 'Bundle preview failed'));
+    }
+    const data = await response.json() as Record<string, unknown>;
+    return {
+      previewToken: data.preview_token as string,
+      server: this.mcpServerFromResponse(data.server as Record<string, unknown>),
+      plan: data.plan as MCPInstallPreviewResponse['plan'],
+    };
+  }
+
   async installMCPServer(request: MCPInstallRequest): Promise<MCPInstallResponse> {
     const response = await fetch(`${this.getBaseUrl()}/mcp-servers/install`, {
       method: 'POST',
@@ -2031,17 +2111,23 @@ export class NymeriaAPI {
       body: JSON.stringify(request)
     });
     if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || `API error: ${response.status}`);
+      throw new Error(await this.mcpErrorMessage(response, 'Installation failed'));
     }
-    const data = await response.json();
-    return {
-      server: this.mcpServerFromResponse(data.server),
-      parsedSummary: data.parsed_summary || '',
-      discoveredTools: data.discovered_tools ?? 0,
-      toolNames: data.tool_names || [],
-      threadId: data.thread_id ?? undefined,
-    };
+    const data = await response.json() as Record<string, unknown>;
+    return this.mcpInstallResponseFromData(data);
+  }
+
+  async retryMCPServerInstall(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'config_values'> = {}): Promise<MCPInstallResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/mcp-servers/${serverId}/retry`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request)
+    });
+    if (!response.ok) {
+      throw new Error(await this.mcpErrorMessage(response, 'Retry failed'));
+    }
+    const data = await response.json() as Record<string, unknown>;
+    return this.mcpInstallResponseFromData(data);
   }
 
   async updateMCPServer(serverId: string, request: MCPServerUpdateRequest): Promise<{ server: MCPServer; discoveredTools: number; discoveryError?: string }> {

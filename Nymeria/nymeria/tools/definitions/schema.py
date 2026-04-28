@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 MCPTransport = Literal["stdio", "http"]
+MCPInstallStatus = Literal["ready", "draft", "failed"]
 
 
 class MCPDiscoveredTool(BaseModel):
@@ -46,17 +47,29 @@ class MCPServerDefinition(BaseModel):
     headers: Dict[str, str] = {}
     # shared
     env_vars: Dict[str, str] = {}
+    encrypted_env_vars: Dict[str, str] = {}
     working_directory: Optional[str] = None
     idle_timeout_seconds: int = 300
     startup_timeout_seconds: int = 30
     enabled: bool = True
     discovered_tools: List[MCPDiscoveredTool] = []
+    install_status: MCPInstallStatus = "ready"
+    source_type: str = ""
+    runtime_type: str = ""
+    original_source: str = ""
+    parsed_summary: str = ""
+    install_plan: Dict[str, Any] = {}
+    install_logs: List[str] = []
+    last_error: Optional[str] = None
+    missing_config: List[Dict[str, Any]] = []
+    risk_level: str = "low"
+    confirmation_required: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     @model_validator(mode="after")
     def _validate_transport_fields(self) -> "MCPServerDefinition":
-        if self.transport == "stdio" and not self.server_command:
+        if self.transport == "stdio" and not self.server_command and self.install_status == "ready":
             raise ValueError("server_command is required when transport is 'stdio'")
         if self.transport == "http" and not self.url:
             raise ValueError("url is required when transport is 'http'")
@@ -194,6 +207,10 @@ class MCPToolConfig(BaseModel):
     env_vars: Dict[str, str] = Field(
         default_factory=dict,
         description="Environment variables for the server process (supports ${env:VAR})",
+    )
+    encrypted_env_vars: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Encrypted environment variable values for the server process",
     )
     working_directory: Optional[str] = Field(
         default=None,

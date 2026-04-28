@@ -31,7 +31,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 21 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
 | 22 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
 | 23 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
-| 24 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude Desktop JSON, stdio command, HTTP URL, or registry id) |
+| 24 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude JSON, command, URL, package page, registry id, or bundle) |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. See `docs/skills.md`.
 
@@ -1147,7 +1147,11 @@ HTTP tools make REST API calls with configurable:
 
 ### MCP Tools
 
-MCP tools connect to external MCP servers via JSON-RPC over stdio.
+MCP tools connect to external MCP servers via JSON-RPC over stdio or HTTP.
+
+The MCP paste installer accepts Claude Desktop JSON, bare stdio commands, HTTP/SSE URLs, npm package pages, PyPI package pages, Git repository URLs, registry ids, bundle URLs, and uploaded `.mcpb`/`.dxt`/`.zip` bundles. The desktop installer previews the plan before running anything, asks for confirmation before Git/local-path/bundle installs, and saves failed installs as disabled drafts with logs so they can be retried. Sensitive pasted config values are encrypted with `NYMERIA_SECRETS_KEY`.
+
+For stdio servers, Nymeria launches the command from the backend process. In Docker, that means paths and Python/Node dependencies must exist inside the `nymeria-api` container, and host services should normally be referenced as `host.docker.internal:<port>` rather than `localhost:<port>`. Startup and discovery failures include the server process's recent stderr when available.
 
 **Configuration:**
 - **Server Command**: Command to start the MCP server (e.g., `npx`, `python`)
