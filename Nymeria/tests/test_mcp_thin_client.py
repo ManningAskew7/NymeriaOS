@@ -9,6 +9,7 @@ from nymeria.mcp_backend_client import (
     NymeriaBackendClient,
     collect_chat_transcript,
     message_steps_to_response_text,
+    project_history_message_for_verbosity,
 )
 from nymeria.mcp_server import _collection_result
 
@@ -50,6 +51,69 @@ def test_chat_transcript_preserves_thinking_preamble_tool_result_and_final_respo
     assert "No active TODOs." in result["full_markdown"]
 
 
+def test_chat_transcript_concise_redacts_tool_payloads_but_keeps_flow():
+    transcript = ChatTranscript(thread_id="thread-1")
+    for event in [
+        {"type": "thinking", "content": "Need to inspect state.", "thread_id": "thread-1"},
+        {"type": "response", "content": "I will check the TODO list first.", "thread_id": "thread-1"},
+        {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "todo_list",
+            "args": {"filter_status": "all"},
+            "thread_id": "thread-1",
+        },
+        {
+            "type": "tool_result",
+            "id": "call-1",
+            "name": "todo_list",
+            "result": "No active TODOs.",
+            "thread_id": "thread-1",
+        },
+        {"type": "response", "content": "There are no active TODOs.", "thread_id": "thread-1"},
+        {"type": "done", "model": "claude-test", "context_stats": {"total_tokens": 42}, "thread_id": "thread-1"},
+    ]:
+        transcript.add_event(event, keep_raw=True)
+
+    result = transcript.as_dict(include_events=True, verbosity="concise")
+
+    assert result["verbosity"] == "concise"
+    assert result["model"] == "claude-test"
+    assert result["context_stats"] == {"total_tokens": 42}
+    assert result["final_response"] == "There are no active TODOs."
+    assert result["steps"] == [
+        {"type": "thinking", "content": "Need to inspect state."},
+        {"type": "response", "content": "I will check the TODO list first."},
+        {"type": "tool_call", "name": "todo_list", "status": "success"},
+        {"type": "response", "content": "There are no active TODOs."},
+    ]
+    assert "filter_status" not in result["full_markdown"]
+    assert "No active TODOs." not in result["full_markdown"]
+    assert "events" not in result
+
+
+def test_chat_transcript_chat_returns_only_final_conversation_text():
+    transcript = ChatTranscript(thread_id="thread-1")
+    for event in [
+        {"type": "response", "content": "Preamble before a tool.", "thread_id": "thread-1"},
+        {"type": "tool_call", "id": "call-1", "name": "search", "args": {"q": "secret"}},
+        {"type": "tool_result", "id": "call-1", "name": "search", "result": "secret result"},
+        {"type": "response", "content": "Final answer.", "thread_id": "thread-1"},
+        {"type": "done", "thread_id": "thread-1"},
+    ]:
+        transcript.add_event(event, keep_raw=True)
+
+    result = transcript.as_dict(include_events=True, verbosity="chat")
+
+    assert result == {
+        "thread_id": "thread-1",
+        "final_response": "Final answer.",
+        "errors": [],
+        "done": True,
+        "verbosity": "chat",
+    }
+
+
 def test_workspace_artifacts_attach_to_matching_tool_call():
     transcript = ChatTranscript()
     transcript.add_event({"type": "tool_call", "id": "call-1", "name": "write_file", "args": {"path": "x.txt"}})
@@ -77,6 +141,49 @@ def test_response_text_matches_desktop_trailing_response_rule():
     ]
 
     assert message_steps_to_response_text(steps) == "Final"
+
+
+def test_history_message_projection_redacts_concise_and_trims_chat():
+    message = {
+        "id": "assistant-1",
+        "role": "assistant",
+        "content": "Final",
+        "timestamp": "2026-04-28T00:00:00Z",
+        "steps": [
+            {"type": "thinking", "content": "Think"},
+            {"type": "response", "content": "Preamble"},
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "search",
+                "arguments": {"q": "secret"},
+                "result": "secret result",
+                "status": "success",
+                "artifacts": [{"path": "/tmp/secret"}],
+            },
+            {"type": "response", "content": "Final"},
+        ],
+        "tool_calls": [{"name": "search", "arguments": {"q": "secret"}, "result": "secret result"}],
+    }
+
+    concise = project_history_message_for_verbosity(message, "concise")
+    chat = project_history_message_for_verbosity(message, "chat")
+
+    assert concise["steps"] == [
+        {"type": "thinking", "content": "Think"},
+        {"type": "response", "content": "Preamble"},
+        {"type": "tool_call", "name": "search", "status": "success"},
+        {"type": "response", "content": "Final"},
+    ]
+    assert concise["tool_calls"] == [{"type": "tool_call", "name": "search", "status": "success"}]
+    assert "secret" not in concise["full_markdown"]
+    assert chat == {
+        "id": "assistant-1",
+        "role": "assistant",
+        "content": "Final",
+        "timestamp": "2026-04-28T00:00:00Z",
+        "final_response": "Final",
+    }
 
 
 class FakeChatClient:
@@ -109,7 +216,7 @@ class FakeChatClientWithHistory:
     async def stream_chat(self, **_kwargs):
         yield {"type": "tool_call", "id": "call-b", "name": "second_tool", "args": {}, "thread_id": "thread-3"}
         yield {"type": "tool_call", "id": "call-a", "name": "first_tool", "args": {}, "thread_id": "thread-3"}
-        yield {"type": "response", "content": "stream final", "thread_id": "thread-3"}
+        yield {"type": "response", "content": "persisted final", "thread_id": "thread-3"}
         yield {"type": "done", "thread_id": "thread-3"}
 
     async def get(self, *_args, **_kwargs):

@@ -249,7 +249,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ### Nymeria as MCP Server
 - **Dual transport**: STDIO and HTTP (port 8001)
 - **Thin-client architecture** — MCP calls the Nymeria REST/SSE API with `NYMERIA_SERVICE_TOKEN`; it does not create a second in-process agent
-- **Full-fidelity chat** — `nymeria_chat` returns thinking, preamble text, raw SSE events, persisted tool calls/args/results, workspace artifacts, final response, context stats, and copy-ready markdown
+- **Configurable transcript verbosity** — `nymeria_chat`, `nymeria_get_thread_history`, and `nymeria_thread_history` accept `verbosity`: `verbose` preserves full-fidelity thinking, preamble text, raw SSE events when requested, persisted tool calls/args/results, workspace artifacts, final response, context stats, model metadata, and copy-ready markdown; `concise` keeps thinking/response text plus tool names/status without tool payloads; `chat` returns the smallest conversational text shape
 - **Core management tools** — threads, per-thread config, global settings, TODOs, triggers, memories, RAG search, and history
 - **MCP-friendly collection responses** — trigger lists and execution histories are wrapped as JSON objects with `total` counts so empty collections stay valid tool results
 - **Per-user isolation** via `X-Nymeria-Act-As`

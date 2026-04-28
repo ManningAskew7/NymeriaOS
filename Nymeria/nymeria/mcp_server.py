@@ -21,8 +21,8 @@ from .mcp_backend_client import (
     NymeriaAPIError,
     NymeriaBackendClient,
     collect_chat_transcript,
-    message_steps_to_markdown,
-    message_steps_to_response_text,
+    normalize_transcript_verbosity,
+    project_history_message_for_verbosity,
 )
 
 # Configure logging to stderr to avoid corrupting JSON-RPC in STDIO mode.
@@ -162,15 +162,20 @@ async def nymeria_chat(
     user_id: str = "default",
     thread_id: Optional[str] = None,
     include_events: bool = False,
+    verbosity: str = "verbose",
     attachments: Optional[List[Dict[str, Any]]] = None,
     force_unsupported_attachments: bool = False,
 ) -> Dict[str, Any]:
     """
-    Send a message to Nymeria and return a full desktop-style transcript.
+    Send a message to Nymeria and return a transcript.
 
-    The response includes ordered thinking, preamble response chunks, tool call
-    arguments, tool results, final response text, markdown suitable for copying,
-    context stats, and model metadata.
+    verbosity:
+    - verbose: full desktop-style transcript with tool args/results/artifacts,
+      markdown, context stats, model metadata, and optional raw SSE events.
+    - concise: thinking, preamble/final response text, tool names/status, useful
+      metadata, and no tool arguments/results/artifacts.
+    - chat: smallest conversational result with thread_id, final_response,
+      errors, and done.
     """
     if not message or not message.strip():
         return {"error": "message is required"}
@@ -183,6 +188,7 @@ async def nymeria_chat(
             attachments=attachments,
             force_unsupported_attachments=force_unsupported_attachments,
             include_events=include_events,
+            verbosity=verbosity,
         )
     except Exception as exc:
         return _error_result(exc)
@@ -226,8 +232,22 @@ async def nymeria_get_thread_history(
     include_internal: bool = False,
     limit: Optional[int] = None,
     include_markdown: bool = True,
+    verbosity: str = "verbose",
 ) -> Dict[str, Any]:
-    """Get thread history, optionally adding assistant markdown/final text."""
+    """
+    Get thread history, optionally adding assistant markdown/final text.
+
+    verbosity:
+    - verbose: current full history with tool args/results/artifacts.
+    - concise: redacted assistant steps with thinking/response text and tool
+      names/status only.
+    - chat: smallest conversational history with message text only.
+    """
+    try:
+        mode = normalize_transcript_verbosity(verbosity)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
     result = await _json_call(
         "GET",
         f"/threads/{_enc(thread_id)}/history",
@@ -241,16 +261,18 @@ async def nymeria_get_thread_history(
     if limit is not None:
         limit = max(1, min(200, int(limit)))
         messages = messages[-limit:]
-        result["messages"] = messages
 
-    if include_markdown:
-        for msg in messages:
-            if msg.get("role") != "assistant":
-                continue
-            steps = msg.get("steps") or []
-            if isinstance(steps, list) and steps:
-                msg["full_markdown"] = message_steps_to_markdown(steps)
-                msg["final_response"] = message_steps_to_response_text(steps)
+    result["messages"] = [
+        project_history_message_for_verbosity(
+            msg,
+            mode,
+            include_markdown=include_markdown,
+        )
+        if isinstance(msg, dict)
+        else msg
+        for msg in messages
+    ]
+    result["verbosity"] = mode
     return result
 
 
@@ -260,6 +282,7 @@ async def nymeria_thread_history(
     user_id: str = "default",
     limit: int = 20,
     include_internal: bool = False,
+    verbosity: str = "verbose",
 ) -> Dict[str, Any]:
     """Backward-compatible alias for nymeria_get_thread_history."""
     return await nymeria_get_thread_history(
@@ -268,6 +291,7 @@ async def nymeria_thread_history(
         include_internal=include_internal,
         limit=limit,
         include_markdown=True,
+        verbosity=verbosity,
     )
 
 
