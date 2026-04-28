@@ -196,8 +196,8 @@
   }
 
   .brand-mark {
-    width: 1.75em;
-    height: 1.75em;
+    width: 2.5em;
+    height: 2.5em;
     object-fit: contain;
     flex-shrink: 0;
     filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.25));
