@@ -7,10 +7,11 @@ Nymeria API, plus transcript formatting that mirrors the desktop copy buttons.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 from urllib.parse import quote
 
 import httpx
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 _CHAT_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
+TranscriptVerbosity = Literal["verbose", "concise", "chat"]
+_VALID_TRANSCRIPT_VERBOSITIES = {"verbose", "concise", "chat"}
 
 
 class NymeriaAPIError(RuntimeError):
@@ -228,24 +231,82 @@ def _find_tool_step(steps: List[Dict[str, Any]], tool_call_id: Optional[str], na
     return None
 
 
-def message_steps_to_markdown(steps: List[Dict[str, Any]]) -> str:
+def normalize_transcript_verbosity(verbosity: str = "verbose") -> TranscriptVerbosity:
+    """Normalize public MCP transcript verbosity names."""
+    normalized = (verbosity or "verbose").strip().lower()
+    if normalized == "full":
+        normalized = "verbose"
+    if normalized not in _VALID_TRANSCRIPT_VERBOSITIES:
+        raise ValueError(
+            "verbosity must be one of: verbose, concise, chat"
+        )
+    return normalized  # type: ignore[return-value]
+
+
+def project_steps_for_verbosity(
+    steps: List[Dict[str, Any]],
+    verbosity: str = "verbose",
+) -> List[Dict[str, Any]]:
+    """Return assistant steps shaped for an MCP transcript verbosity."""
+    mode = normalize_transcript_verbosity(verbosity)
+    if mode == "verbose":
+        return copy.deepcopy(steps)
+    if mode == "chat":
+        return [
+            {"type": "response", "content": str(step.get("content") or "")}
+            for step in steps
+            if isinstance(step, dict)
+            and step.get("type") == "response"
+            and step.get("content")
+        ]
+
+    projected: List[Dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_type = step.get("type")
+        if step_type in {"thinking", "response"}:
+            content = step.get("content")
+            if content:
+                projected.append({"type": step_type, "content": str(content)})
+        elif step_type == "tool_call":
+            tool_step = {
+                "type": "tool_call",
+                "name": step.get("name") or "unknown",
+            }
+            if step.get("status"):
+                tool_step["status"] = step["status"]
+            projected.append(tool_step)
+    return projected
+
+
+def message_steps_to_markdown(
+    steps: List[Dict[str, Any]],
+    verbosity: str = "verbose",
+) -> str:
     """Mirror desktop ``messageToMarkdown`` for assistant message steps."""
+    mode = normalize_transcript_verbosity(verbosity)
     sections: List[str] = []
     for step in steps:
         step_type = step.get("type")
         if step_type == "thinking" and step.get("content"):
+            if mode == "chat":
+                continue
             quoted = "\n".join(f"> {line}" for line in str(step["content"]).split("\n"))
             sections.append(f"> *Thinking:*\n{quoted}")
         elif step_type == "tool_call":
             block = f"### Tool: {step.get('name') or 'unknown'}"
-            arguments = step.get("arguments")
-            if isinstance(arguments, dict) and arguments:
-                block += f"\n\n**Arguments:**\n```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
-            if step.get("result"):
-                block += f"\n\n**Result:**\n```\n{step['result']}\n```"
-            artifacts = step.get("artifacts")
-            if isinstance(artifacts, list) and artifacts:
-                block += f"\n\n**Artifacts:**\n```json\n{json.dumps(artifacts, indent=2, ensure_ascii=False)}\n```"
+            if mode == "chat":
+                continue
+            if mode == "verbose":
+                arguments = step.get("arguments")
+                if isinstance(arguments, dict) and arguments:
+                    block += f"\n\n**Arguments:**\n```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
+                if step.get("result"):
+                    block += f"\n\n**Result:**\n```\n{step['result']}\n```"
+                artifacts = step.get("artifacts")
+                if isinstance(artifacts, list) and artifacts:
+                    block += f"\n\n**Artifacts:**\n```json\n{json.dumps(artifacts, indent=2, ensure_ascii=False)}\n```"
             sections.append(block)
         elif step_type == "response" and step.get("content"):
             sections.append(str(step["content"]))
@@ -366,23 +427,31 @@ class ChatTranscript:
             self.title = event.get("title")
             self.title_source = event.get("title_source")
 
-    def as_dict(self, *, include_events: bool = False) -> Dict[str, Any]:
+    def as_dict(
+        self,
+        *,
+        include_events: bool = False,
+        verbosity: str = "verbose",
+    ) -> Dict[str, Any]:
+        mode = normalize_transcript_verbosity(verbosity)
+        full_steps = copy.deepcopy(self.steps)
         payload: Dict[str, Any] = {
             "thread_id": self.thread_id,
             "final_response": message_steps_to_response_text(self.steps),
-            "full_markdown": message_steps_to_markdown(self.steps),
-            "steps": self.steps,
+            "full_markdown": message_steps_to_markdown(full_steps, "verbose"),
+            "steps": full_steps,
             "errors": self.errors,
             "done": self.done,
             "context_stats": self.context_stats,
             "model": self.model,
+            "verbosity": mode,
         }
         if self.title:
             payload["title"] = self.title
             payload["title_source"] = self.title_source
-        if include_events:
+        if include_events and mode == "verbose":
             payload["events"] = self.raw_events
-        return payload
+        return project_chat_payload_for_verbosity(payload, mode)
 
 
 async def collect_chat_transcript(
@@ -396,7 +465,9 @@ async def collect_chat_transcript(
     include_events: bool = False,
     is_self_invoke: bool = False,
     trigger_override: Optional[str] = None,
+    verbosity: str = "verbose",
 ) -> Dict[str, Any]:
+    mode = normalize_transcript_verbosity(verbosity)
     transcript = ChatTranscript(thread_id=thread_id)
     async for event in client.stream_chat(
         message=message,
@@ -408,8 +479,112 @@ async def collect_chat_transcript(
         trigger_override=trigger_override,
     ):
         transcript.add_event(event, keep_raw=include_events)
-    payload = transcript.as_dict(include_events=include_events)
-    return await _apply_persisted_assistant_steps(client, payload, user_id=user_id, message=message)
+    payload = transcript.as_dict(include_events=include_events, verbosity="verbose")
+    payload = await _apply_persisted_assistant_steps(client, payload, user_id=user_id, message=message)
+    return project_chat_payload_for_verbosity(payload, mode)
+
+
+def project_chat_payload_for_verbosity(
+    payload: Dict[str, Any],
+    verbosity: str = "verbose",
+) -> Dict[str, Any]:
+    """Shape a single chat tool response for a caller's token budget."""
+    mode = normalize_transcript_verbosity(verbosity)
+    if mode == "verbose":
+        projected = copy.deepcopy(payload)
+        projected["verbosity"] = mode
+        return projected
+
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    final_response = message_steps_to_response_text(steps) if steps else str(payload.get("final_response") or "")
+
+    if mode == "chat":
+        result = {
+            "thread_id": payload.get("thread_id"),
+            "final_response": final_response,
+            "errors": copy.deepcopy(payload.get("errors") or []),
+            "done": payload.get("done"),
+            "verbosity": mode,
+        }
+        return {k: v for k, v in result.items() if v is not None}
+
+    projected_steps = project_steps_for_verbosity(steps, mode)
+    result = {
+        "thread_id": payload.get("thread_id"),
+        "final_response": final_response,
+        "full_markdown": message_steps_to_markdown(projected_steps, mode),
+        "steps": projected_steps,
+        "errors": copy.deepcopy(payload.get("errors") or []),
+        "done": payload.get("done"),
+        "context_stats": copy.deepcopy(payload.get("context_stats")),
+        "model": payload.get("model"),
+        "verbosity": mode,
+    }
+    for key in ("title", "title_source", "history_message_id"):
+        if payload.get(key) is not None:
+            result[key] = payload[key]
+    return {k: v for k, v in result.items() if v is not None}
+
+
+def project_history_message_for_verbosity(
+    message: Dict[str, Any],
+    verbosity: str = "verbose",
+    *,
+    include_markdown: bool = True,
+) -> Dict[str, Any]:
+    """Shape one persisted history message for an MCP transcript verbosity."""
+    mode = normalize_transcript_verbosity(verbosity)
+    projected = copy.deepcopy(message)
+
+    steps = projected.get("steps")
+    if mode == "verbose":
+        if projected.get("role") == "assistant" and isinstance(steps, list) and steps:
+            if include_markdown:
+                projected["full_markdown"] = message_steps_to_markdown(steps, mode)
+                projected["final_response"] = message_steps_to_response_text(steps)
+        return projected
+
+    compact: Dict[str, Any] = {}
+    for key in ("id", "role", "content", "timestamp", "autonomous_source"):
+        if projected.get(key) is not None:
+            compact[key] = projected[key]
+
+    if mode == "chat":
+        if projected.get("role") == "assistant" and isinstance(steps, list) and steps:
+            final_response = message_steps_to_response_text(steps)
+            compact["content"] = final_response
+            compact["final_response"] = final_response
+        return compact
+
+    attachments = projected.get("attachments")
+    if isinstance(attachments, list) and attachments:
+        compact["attachments"] = [
+            {
+                key: attachment[key]
+                for key in ("id", "type", "mimeType", "name", "size")
+                if isinstance(attachment, dict) and attachment.get(key) is not None
+            }
+            for attachment in attachments
+            if isinstance(attachment, dict)
+        ]
+
+    if projected.get("role") == "assistant" and isinstance(steps, list) and steps:
+        concise_steps = project_steps_for_verbosity(steps, mode)
+        compact["steps"] = concise_steps
+        compact["intermediate_content"] = "\n".join(
+            step["content"]
+            for step in concise_steps
+            if step.get("type") == "thinking" and step.get("content")
+        ) or None
+        compact["tool_calls"] = [
+            step
+            for step in concise_steps
+            if step.get("type") == "tool_call"
+        ]
+        if include_markdown:
+            compact["full_markdown"] = message_steps_to_markdown(concise_steps, mode)
+        compact["final_response"] = message_steps_to_response_text(steps)
+    return {k: v for k, v in compact.items() if v is not None}
 
 
 async def _apply_persisted_assistant_steps(
