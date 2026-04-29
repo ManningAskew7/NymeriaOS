@@ -151,13 +151,15 @@
 
   .feed-header {
     display: flex;
-    justify-content: flex-end;
+    width: 100%;
   }
 
   .add-task-btn {
-    display: inline-flex;
+    display: flex;
     align-items: center;
+    justify-content: center;
     gap: var(--spacing-xs);
+    width: 100%;
     padding: var(--spacing-xs) var(--spacing-sm);
     background: transparent;
     border: 1px dashed var(--border-default);
