@@ -2261,6 +2261,8 @@ export class NymeriaAPI {
       callableName: data.callable_name ?? null,
       callableDescription: data.callable_description ?? null,
       callableMaxIterations: data.callable_max_iterations ?? null,
+      enabledSkills: data.enabled_skills ?? [],
+      disabledSkills: data.disabled_skills ?? [],
       injectTodosInPrompt: data.inject_todos_in_prompt ?? false,
       showAutonomousPrompts: data.show_autonomous_prompts ?? false,
       showPromptMetadata: data.show_prompt_metadata ?? false,
@@ -2347,6 +2349,17 @@ export class NymeriaAPI {
     }
     const data = await response.json();
     return this._normalizeThreadConfig(data);
+  }
+
+  async getGlobalSkills(userId?: string): Promise<string[]> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
+    const response = await fetch(
+      `${this.getBaseUrl()}/settings/global-skills?${params.toString()}`,
+      { headers: this.getHeaders() },
+    );
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    const data = await response.json();
+    return (data.enabled_global_skills ?? []) as string[];
   }
 
   async getOptionalTools(): Promise<import('$lib/types').OptionalTool[]> {

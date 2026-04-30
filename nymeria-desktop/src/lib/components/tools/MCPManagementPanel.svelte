@@ -85,6 +85,9 @@
           </span>
         </div>
       </div>
+      <p class="panel-hint">
+        Toggle discovered server tools on to add them to the default core tool set inherited by every new thread.
+      </p>
 
       {#if totalWithCallable > 25}
         <div class="inline-warning">
@@ -193,6 +196,13 @@
     color: #f59e0b;
     background: rgba(245, 158, 11, 0.08);
     font-size: 0.83rem;
+  }
+
+  .panel-hint {
+    margin: 0.65rem 0 0;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1.4;
   }
 
   .panel-footer {
