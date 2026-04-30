@@ -314,3 +314,58 @@ def test_history_treats_string_blocks_before_tool_calls_as_response_text():
     ]
     assert assistant["steps"][0]["content"] == "I'll check that now."
     assert assistant["intermediate_content"] is None
+
+
+def test_history_shows_compaction_marker_as_notice():
+    history = _history_for([
+        HumanMessage(
+            content="Context compacted",
+            additional_kwargs={
+                "internal": True,
+                "internal_type": "compaction_marker",
+                "summary": "Important prior context.",
+                "messages_removed": 12,
+                "auto_resumed": True,
+                "timestamp": "2026-04-30T00:00:00Z",
+            },
+        ),
+    ])
+
+    assert history == [
+        {
+            "id": "thread-1-1",
+            "role": "system",
+            "kind": "compaction_notice",
+            "content": "Context compacted",
+            "context_summary": "Important prior context.",
+            "messages_removed": 12,
+            "auto_resumed": True,
+            "timestamp": "2026-04-30T00:00:00Z",
+        }
+    ]
+
+
+def test_history_hides_auto_resume_prompt_but_keeps_resumed_output():
+    history = _history_for([
+        HumanMessage(
+            content="Context compacted",
+            additional_kwargs={
+                "internal": True,
+                "internal_type": "compaction_marker",
+                "summary": "Important prior context.",
+                "messages_removed": 12,
+                "auto_resumed": True,
+            },
+        ),
+        HumanMessage(
+            content="[Auto-compact resume prompt with summary]",
+            additional_kwargs={"internal": True, "internal_type": "auto_resume"},
+        ),
+        AIMessage(content="Continuing after compaction."),
+    ])
+
+    assert [item["kind"] for item in history if item.get("kind")] == [
+        "compaction_notice"
+    ]
+    assert history[1]["role"] == "assistant"
+    assert history[1]["content"] == "Continuing after compaction."

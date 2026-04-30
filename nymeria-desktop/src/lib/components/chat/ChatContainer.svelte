@@ -5,6 +5,7 @@
   import Spinner from '$lib/components/common/Spinner.svelte';
 
   let containerRef = $state<HTMLDivElement | null>(null);
+  let showCompactedEmpty = $derived((chatStore.contextStats?.compactionCount ?? 0) > 0);
 
   // Auto-scroll when new messages arrive or during streaming
   $effect(() => {
@@ -63,8 +64,12 @@
           />
         </svg>
       </div>
-      <h2>Start a conversation</h2>
-      <p>Send a message to begin chatting with Nymeria</p>
+      <h2>{showCompactedEmpty ? 'Context compacted' : 'Start a conversation'}</h2>
+      <p>
+        {showCompactedEmpty
+          ? 'Older messages were summarized. Send a message to continue.'
+          : 'Send a message to begin chatting with Nymeria'}
+      </p>
     </div>
   {:else}
     <div class="messages">

@@ -363,9 +363,11 @@
         break;
       }
 
-      case 'compacting':
-        // No longer used - compacting shown via 'thinking' event in AI bubble
+      case 'compacting': {
+        const data = event.data as { message: string };
+        chatStore.setCompacting(true, data.message);
         break;
+      }
 
       case 'compact_result':
         // No longer used - result shown via 'response' event in AI bubble
@@ -374,7 +376,7 @@
       case 'compacted': {
         // Conversation was compacted - clear UI and show notification
         const data = event.data as { messagesRemoved: number; autoResumed: boolean; summary?: string };
-        chatStore.handleCompacted(data.messagesRemoved, data.summary);
+        chatStore.handleCompacted(data.messagesRemoved, data.summary, data.autoResumed);
         break;
       }
 

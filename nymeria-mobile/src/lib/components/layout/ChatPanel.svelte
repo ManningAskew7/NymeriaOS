@@ -185,8 +185,8 @@
         break;
 
       case 'compacted': {
-        const cd = event.data as { messagesRemoved: number; summary?: string };
-        chatStore.handleCompacted(cd.messagesRemoved, cd.summary);
+        const cd = event.data as { messagesRemoved: number; autoResumed?: boolean; summary?: string };
+        chatStore.handleCompacted(cd.messagesRemoved, cd.summary, cd.autoResumed ?? false);
         break;
       }
 

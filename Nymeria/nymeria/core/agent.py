@@ -640,6 +640,27 @@ def _create_human_message(
     return HumanMessage(content=content, additional_kwargs=kwargs)
 
 
+def _create_compaction_marker(
+    *,
+    summary: str,
+    messages_removed: int,
+    auto_resumed: bool,
+) -> HumanMessage:
+    """Create the durable marker shown in user-facing history after compaction."""
+    marker = _create_human_message(
+        "Context compacted",
+        internal=True,
+        internal_type="compaction_marker",
+    )
+    marker.additional_kwargs.update({
+        "summary": summary,
+        "messages_removed": messages_removed,
+        "auto_resumed": auto_resumed,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    })
+    return marker
+
+
 class NymeriaAgent:
     """
     Nymeria Agent - wraps LangGraph ReactAgent with additional features.
@@ -1855,36 +1876,35 @@ class NymeriaAgent:
 
         return 0, 0
 
+    def _should_auto_compact_now(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> bool:
+        """Return True when token tracking says this thread should auto-compact."""
+        if self.settings.context_management != "auto_compact":
+            return False
+
+        llm_config = self._get_llm_config_for_thread(thread_id)
+        model_limit = get_context_limit(llm_config.model)
+        threshold = self.settings.compact_threshold
+
+        return self._token_tracker.should_compact(thread_id, model_limit, threshold)
+
     async def _check_and_compact(
         self,
         thread_id: str,
         user_id: str,
     ) -> Optional[Dict[str, Any]]:
         """
-        Check if compaction is needed and perform it (auto-compact).
+        Check if compaction is needed and prepare it (auto-compact).
 
-        When triggered automatically, the agent continues working after
-        compaction without waiting for user input.
-
-        Args:
-            thread_id: Thread identifier
-            user_id: User identifier
-
-        Returns:
-            Compaction result dict, or None if no compaction needed
+        Returns a compaction result containing the internal resume state.
+        The caller is responsible for streaming the resume graph invocation.
         """
-        # Only compact in auto_compact mode
-        if self.settings.context_management != "auto_compact":
+        if not self._should_auto_compact_now(thread_id, user_id):
             return None
 
-        llm_config = self._get_llm_config_for_thread(thread_id)
-        model_limit = get_context_limit(llm_config.model)
-        threshold = self.settings.compact_threshold
-
-        if not self._token_tracker.should_compact(thread_id, model_limit, threshold):
-            return None
-
-        # Perform auto-compaction (agent continues immediately)
         return await self._do_auto_compact(thread_id, user_id)
 
     async def _generate_summary(
@@ -1933,14 +1953,16 @@ class NymeriaAgent:
         self,
         thread_id: str,
         msg_count_before: int,
+        summary: str = "",
+        auto_resumed: bool = False,
     ) -> bool:
         """
         Clear all messages from a thread and reset token tracking.
 
         Uses LangGraph's RemoveMessage + aupdate_state() to properly clear
-        messages through the state reducer. A compaction marker SystemMessage
-        is included to prevent the state from becoming empty (which would
-        crash LangGraph's should_continue routing with IndexError).
+        messages through the state reducer. A compaction marker HumanMessage
+        is included to prevent the state from becoming empty and to provide a
+        visible history notice.
 
         Args:
             thread_id: Thread identifier
@@ -1967,10 +1989,10 @@ class NymeriaAgent:
             # should_continue node accesses messages[-1] after aupdate_state,
             # causing IndexError on empty state.
             remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-            compaction_marker = _create_human_message(
-                "[Context compacted — older messages have been summarized]",
-                internal=True,
-                internal_type="compaction_marker",
+            compaction_marker = _create_compaction_marker(
+                summary=summary,
+                messages_removed=msg_count_before,
+                auto_resumed=auto_resumed,
             )
             # Assign a stable ID so the marker can be identified later
             compaction_marker.id = str(_uuid.uuid4())
@@ -2050,12 +2072,11 @@ class NymeriaAgent:
         user_id: str,
     ) -> Dict[str, Any]:
         """
-        Perform auto-compaction (agent continues immediately).
+        Prepare auto-compaction (astream() streams the resume afterward).
 
         1. Generate summary
         2. Clear all messages
-        3. Inject resume prompt with summary
-        4. Agent continues where it left off
+        3. Build an internal resume prompt with summary
 
         Args:
             thread_id: Thread identifier
@@ -2092,13 +2113,17 @@ class NymeriaAgent:
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
-        # Clear all messages
-        cleared = await self._clear_and_reset(thread_id, msg_count_before)
+        # Clear all messages, leaving a visible compaction marker for history.
+        cleared = await self._clear_and_reset(
+            thread_id,
+            msg_count_before,
+            summary=summary,
+            auto_resumed=True,
+        )
         if not cleared:
             return {"success": False, "reason": "Failed to clear messages"}
 
-        # Inject resume prompt and let agent continue (marked as internal)
-        graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
+        # Build resume prompt for astream() to stream after the compacted event.
         resume_prompt = self._compactor.format_auto_resume(summary)
 
         # Append notepad content so thread context survives compaction
@@ -2112,20 +2137,16 @@ class NymeriaAgent:
             internal_type="auto_resume",
         )]}
 
-        # Run agent to continue (we don't need to capture output here,
-        # it will stream to the caller)
-        async for _ in graph.astream_events(input_state, config=config, version="v2"):
-            pass  # Agent runs and continues the work
-
-        logger.info(f"Thread {thread_id}: Auto-compact complete, agent resumed")
+        logger.info(f"Thread {thread_id}: Auto-compact prepared, resume pending")
 
         return {
             "success": True,
             "messages_before": msg_count_before,
-            "messages_after": 0,
+            "messages_after": 1,
             "messages_removed": msg_count_before,
             "auto_resumed": True,
-            "summary": summary[:500] if summary else None,
+            "summary": summary,
+            "resume_state": input_state,
         }
 
     # ------------------------------------------------------------------
@@ -2188,7 +2209,12 @@ class NymeriaAgent:
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
-        cleared = self._clear_and_reset_sync(thread_id, msg_count)
+        cleared = self._clear_and_reset_sync(
+            thread_id,
+            msg_count,
+            summary=summary,
+            auto_resumed=False,
+        )
         if not cleared:
             return {"success": False, "reason": "Failed to clear messages"}
 
@@ -2205,7 +2231,7 @@ class NymeriaAgent:
             "success": True,
             "messages_before": msg_count,
             "messages_removed": msg_count,
-            "summary": summary[:500] if summary else None,
+            "summary": summary,
         }
 
     def _generate_summary_sync(
@@ -2242,6 +2268,8 @@ class NymeriaAgent:
         self,
         thread_id: str,
         msg_count_before: int,
+        summary: str = "",
+        auto_resumed: bool = False,
     ) -> bool:
         """Clear all messages and reset tokens — sync version of _clear_and_reset()."""
         import uuid as _uuid
@@ -2257,10 +2285,10 @@ class NymeriaAgent:
                 return True
 
             remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-            compaction_marker = _create_human_message(
-                "[Context compacted — older messages have been summarized]",
-                internal=True,
-                internal_type="compaction_marker",
+            compaction_marker = _create_compaction_marker(
+                summary=summary,
+                messages_removed=msg_count_before,
+                auto_resumed=auto_resumed,
             )
             compaction_marker.id = str(_uuid.uuid4())
 
@@ -2489,8 +2517,13 @@ class NymeriaAgent:
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
-        # Clear all messages
-        cleared = await self._clear_and_reset(thread_id, msg_count_before)
+        # Clear all messages, leaving a visible compaction marker for history.
+        cleared = await self._clear_and_reset(
+            thread_id,
+            msg_count_before,
+            summary=summary,
+            auto_resumed=False,
+        )
         if not cleared:
             return {"success": False, "reason": "Failed to clear messages"}
 
@@ -2507,9 +2540,10 @@ class NymeriaAgent:
         return {
             "success": True,
             "messages_before": msg_count_before,
-            "messages_after": 0,
+            "messages_after": 1,
             "messages_removed": msg_count_before,
             "summary_pending": True,
+            "summary": summary,
         }
 
     def get_pending_summary(self, thread_id: str) -> Optional[str]:
@@ -5023,15 +5057,6 @@ class NymeriaAgent:
                 # into the next turn.
                 self._pending_tool_reload.pop(thread_id, None)
 
-                # Index conversation turn in RAG (if enabled)
-                if final_response_parts:
-                    self._index_conversation_turn(
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        user_message=message,
-                        ai_response="".join(final_response_parts),
-                    )
-
                 # Track token usage for auto-compact
                 # Get messages from state to extract usage metadata
                 try:
@@ -5062,7 +5087,13 @@ class NymeriaAgent:
 
                 # Context management: auto-compact or sliding window
                 if self.settings.context_management == "auto_compact":
-                    # Check for auto-compaction (agent continues automatically)
+                    # Check before generating the summary so the UI can show
+                    # an explicit compaction status while that slow turn runs.
+                    if self._should_auto_compact_now(thread_id, user_id):
+                        yield {
+                            "type": "compacting",
+                            "message": "Compacting context and preparing a continuation...",
+                        }
                     compact_result = await self._check_and_compact(thread_id, user_id)
                     if compact_result and compact_result.get("success"):
                         yield {
@@ -5071,9 +5102,30 @@ class NymeriaAgent:
                             "auto_resumed": compact_result.get("auto_resumed", False),
                             "summary": compact_result.get("summary"),
                         }
+
+                        resume_state = compact_result.get("resume_state")
+                        if resume_state:
+                            resume_graph = self._get_async_graph_for_user(
+                                user_id,
+                                is_autonomous=_is_self_invoke,
+                                thread_id=thread_id,
+                            )
+                            async for evt in _drive_graph_events(resume_graph, resume_state):
+                                yield evt
+                            graph = resume_graph
                 elif self.settings.context_management == "sliding_window":
                     # Legacy sliding window trimming
                     self.trim_context_window(thread_id, user_id=user_id)
+
+                # Index conversation turn in RAG (if enabled). This runs after
+                # auto-compact so streamed resume output is included too.
+                if final_response_parts:
+                    self._index_conversation_turn(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        user_message=message,
+                        ai_response="".join(final_response_parts),
+                    )
 
                 _elapsed = _time.monotonic() - _stream_start
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
@@ -5151,8 +5203,9 @@ class NymeriaAgent:
             #
             # Filtering behavior by internal_type:
             # - autonomous_wakeup: Hide the prompt, but SHOW the AI response (user wants to see task output)
-            # - compact_prompt: Hide both prompt AND response (internal housekeeping)
-            # - auto_resume: Hide both prompt AND response (internal housekeeping)
+            # - compact_prompt: Hide both prompt AND response (summary-generation housekeeping)
+            # - compaction_marker: Show as a system compaction notice
+            # - auto_resume: Hide only the prompt; SHOW the resumed assistant output
             if not include_internal:
                 filtered_messages = []
                 skip_until_next_human = False
@@ -5178,9 +5231,14 @@ class NymeriaAgent:
                                     skip_until_next_human = False
                                     continue
                             elif internal_type == 'compaction_marker':
-                                # Standalone post-compact divider — hide it, but don't
-                                # suppress anything that comes after (there is no paired
-                                # AI response to skip).
+                                # Standalone post-compact divider — keep it so the
+                                # formatting pass can render a visible system notice.
+                                skip_until_next_human = False
+                                filtered_messages.append(msg)
+                                continue
+                            elif internal_type == 'auto_resume':
+                                # Hide the internal continuation prompt, but keep
+                                # the assistant output that follows it.
                                 skip_until_next_human = False
                                 continue
                             elif internal_type == 'tool_reload_resume':
@@ -5191,7 +5249,8 @@ class NymeriaAgent:
                                 skip_until_next_human = False
                                 continue
                             else:
-                                # For compact_prompt, auto_resume: skip prompt AND following responses
+                                # For compact_prompt and unknown internal prompts:
+                                # skip prompt AND following responses.
                                 skip_until_next_human = True
                                 continue
                         else:
@@ -5230,6 +5289,33 @@ class NymeriaAgent:
 
                 # Map LangChain types to frontend roles
                 if isinstance(msg, HumanMessage):
+                    if (hasattr(msg, 'additional_kwargs') and
+                            msg.additional_kwargs.get('internal_type') == 'compaction_marker'):
+                        if current_turn:
+                            history.append(current_turn)
+                            current_turn = None
+
+                        msg_counter += 1
+                        marker_kwargs = msg.additional_kwargs or {}
+                        messages_removed = marker_kwargs.get("messages_removed", 0)
+                        timestamp_iso = (
+                            marker_kwargs.get("timestamp") or
+                            (timestamp_map.get(msg.id) if msg.id else None)
+                        )
+                        entry: Dict[str, Any] = {
+                            "id": f"{thread_id}-{msg_counter}",
+                            "role": "system",
+                            "kind": "compaction_notice",
+                            "content": "Context compacted",
+                            "context_summary": marker_kwargs.get("summary") or "",
+                            "messages_removed": messages_removed,
+                            "auto_resumed": bool(marker_kwargs.get("auto_resumed", False)),
+                        }
+                        if timestamp_iso:
+                            entry["timestamp"] = timestamp_iso
+                        history.append(entry)
+                        continue
+
                     # Check for tool_reload_resume boundary marker
                     if (hasattr(msg, 'additional_kwargs') and
                             msg.additional_kwargs.get('internal_type') == 'tool_reload_resume'):

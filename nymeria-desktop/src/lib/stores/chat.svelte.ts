@@ -909,22 +909,44 @@ function createChatStore() {
      * Handle a "compacted" event from the backend.
      * Clears the UI chat history and shows a system-style notification.
      */
-    handleCompacted(messagesRemoved: number, summary?: string) {
+    handleCompacted(messagesRemoved: number, summary?: string, autoResumed: boolean = false) {
+      this._forceFlush();
       // Clear all messages and streaming state
-      messages = [];
       activeToolCalls = new Map();
-      isStreaming = false;
+      isStreaming = autoResumed;
       isQueued = false;
+      isCompacting = false;
+      compactingMessage = '';
 
-      // Add a system-style message so the user knows what happened
-      const summarySnippet = summary ? `\n\n> ${summary.slice(0, 200)}${summary.length > 200 ? '...' : ''}` : '';
-      messages = [{
+      const notice: Message = {
         id: generateId(),
         role: 'system' as const,
-        content: `Conversation compacted (${messagesRemoved} messages summarized).${summarySnippet}`,
+        kind: 'compaction_notice',
+        content: 'Context compacted',
+        contextSummary: summary,
+        messagesRemoved,
+        autoResumed,
         timestamp: new Date(),
         status: 'complete' as const
-      }];
+      };
+
+      if (autoResumed) {
+        messages = [
+          notice,
+          {
+            id: generateId(),
+            role: 'assistant' as const,
+            content: '',
+            steps: [],
+            intermediateContent: '',
+            timestamp: new Date(),
+            status: 'streaming' as const,
+            toolCalls: []
+          }
+        ];
+      } else {
+        messages = [notice];
+      }
 
       // Show the compact result indicator for 5s
       lastCompactResult = { messagesRemoved };

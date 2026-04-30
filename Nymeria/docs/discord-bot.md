@@ -102,6 +102,8 @@ docker logs nymeria-discord-bot --tail 15
 
 `/ask` also fetches the last ~10 channel messages as context (configurable, see `/channel-context`).
 
+During streamed replies, Discord now surfaces compaction events instead of hiding them: `compacting` posts a short status line, `compacted` posts a "Context compacted" embed with a summary preview, and any resumed assistant output continues streaming normally after that embed.
+
 ### Model & Thinking
 
 | Command | Description |

@@ -52,6 +52,7 @@ export interface ToolReloadInfo {
 export interface Message {
   id: string;
   role: MessageRole;
+  kind?: 'compaction_notice';
   content: string;
   steps?: MessageStep[];          // Ordered list of thinking/tool_call steps
   intermediateContent?: string;   // Legacy: concatenated thinking (computed from steps)
@@ -60,6 +61,8 @@ export interface Message {
   toolCalls?: ToolCall[];         // Legacy: all tool calls (computed from steps)
   attachments?: FileAttachment[]; // File attachments for multimodal messages
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
+  messagesRemoved?: number;       // Number of messages summarized by compaction
+  autoResumed?: boolean;          // True when assistant output resumed after compaction
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
   toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
 }

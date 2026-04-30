@@ -298,6 +298,8 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 
 Current example: `workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`, but only desktop renders it today via `ToolCallCard.svelte` + `WorkspaceArtifactModal.svelte`.
 
+Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and `services/api.svelte.ts` aligned for this flow.
+
 ### Modifying chat streaming logic
 
 1. Update `stores/chat.svelte.ts` on both platforms

@@ -30,12 +30,14 @@ Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when tok
                                     and never block compaction.
 4.   _clear_and_reset()           — RemoveMessage commands wipe all messages from state,
                                     then one HumanMessage with internal_type='compaction_marker'
-                                    is written as a single-message placeholder
+                                    is written as a single-message placeholder with
+                                    summary/messages_removed/auto_resumed/timestamp metadata
 5.   _prune_checkpoints_before()  — raw SQL DELETEs all pre-compact rows
-6.   _pending_summaries[thread_id] = summary   (attached to the user's next message)
+6.   Manual/sync compact: _pending_summaries[thread_id] = summary
+     Async auto-compact: stream compacted, then stream the resume turn immediately
 ```
 
-The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is hidden from the UI by the display filter (see "Display filter internal_types" below).
+The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is also projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary.
 
 The pre-compact RAG flush (step 3) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
 
@@ -91,8 +93,8 @@ Frontend calls `/history` on: thread switch, sync-poll every 5 s while a thread 
 | --------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `autonomous_wakeup`   | Ticker / watchdog / trigger wake-up    | Hide the prompt, **show the AI response** (user wants to see task output). `show_autonomous_prompts=True` reveals the prompt. |
 | `compact_prompt`      | Pre-flight compact ("summarise this…") | Hide prompt **and** AI response (internal housekeeping).                                   |
-| `auto_resume`         | Auto-compact follow-up prompt          | Hide prompt **and** AI response.                                                           |
-| `compaction_marker`   | Single placeholder after `_clear_and_reset` | Hide the marker, **don't suppress anything after** (nothing paired to skip). Added 2026-04-21. |
+| `auto_resume`         | Auto-compact follow-up prompt          | Hide the prompt, **show the resumed assistant output**.                                     |
+| `compaction_marker`   | Single placeholder after `_clear_and_reset` | Show as a `system` `compaction_notice` with summary metadata, **don't suppress anything after**. |
 
 **The filter uses a `skip_until_next_human` flag** that stays active until a non-internal HumanMessage arrives. The `autonomous_wakeup` hide-path now explicitly resets this flag — otherwise a preceding `compact_prompt` / `auto_resume` / (historically) `compaction_marker` would swallow the wakeup's response.
 
@@ -132,6 +134,7 @@ Then call `/history?include_internal=true` — if that returns messages but `/hi
 
 - A new `internal_type` was introduced without adding an explicit branch to the filter at `core/agent.py:3925`. Anything unrecognised falls into the catch-all that sets `skip_until_next_human=True`, dropping every message until a non-internal HumanMessage arrives.
 - Two consecutive internals where the second didn't reset `skip_until_next_human`.
+- The frontend is older than the `compaction_notice` history shape. Current desktop/mobile render the marker; if no marker is present but context stats show prior compaction, they fall back to a "Context compacted" empty state instead of "Start a conversation".
 
 **Fix pattern:** add an explicit `elif internal_type == 'your_new_type':` branch to the filter that handles whether following responses should be suppressed.
 
@@ -219,7 +222,7 @@ Only `core/` files should show constructor calls. If you see them in `triggers/a
 
 - **Multiple checkpoint_ns values** — LangGraph supports multiple namespaces per thread; Nymeria only uses `''`. The prune SQL scopes to `checkpoint_ns = ''` explicitly to avoid touching any future subgraph checkpoints.
 
-- **Auto-compact firing mid-streaming** — the thread lock prevents concurrent writes, so the compact waits for the current turn to finish. No interleaving with the prune.
+- **Auto-compact firing during an async `/chat` stream** — compaction runs after the current graph invocation finishes while the thread lock is still held. The stream emits `compacting`, persists the `compaction_notice`, emits `compacted` with the full summary, then streams the internal auto-resume turn's normal `thinking`/`tool_call`/`tool_result`/`response` events.
 
 - **Cross-thread contamination** — not possible; all SQL is scoped by `thread_id`.
 
