@@ -26,7 +26,7 @@
 
   let { threadId, open, onClose }: Props = $props();
 
-  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'triggers';
+  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'triggers';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
   let activeTab = $state<Tab>('instructions');
@@ -67,6 +67,10 @@
   let toolSearch = $state('');
   let showToolWarning = $state(false);
 
+  function isMcpToolName(name: string): boolean {
+    return name.startsWith('mcp__');
+  }
+
   // UI state
   let saving = $state(false);
   let error = $state('');
@@ -98,19 +102,32 @@
       .map(t => ({ name: t.name, description: t.description }));
   });
 
-  // MCP tools grouped by server ID (optional, not in core set)
-  const mcpToolsByServer = $derived(() => {
-    if (!defaultToolsStore.loaded) return {} as Record<string, { name: string; description: string }[]>;
+  // MCP tools grouped by server. Default MCP tools can be disabled for this
+  // thread; non-default MCP tools can be enabled for this thread.
+  const mcpServersForThread = $derived(() => {
+    if (!defaultToolsStore.loaded) return [] as {
+      id: string;
+      name: string;
+      enabled: boolean;
+      discoveredCount: number;
+      tools: { name: string; shortName: string; description: string; isDefault: boolean }[];
+    }[];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    const mcpTools = defaultToolsStore.tools.filter(t => t.name.startsWith('mcp__') && !coreSet.has(t.name));
-    const grouped: Record<string, { name: string; description: string }[]> = {};
-    for (const t of mcpTools) {
-      const parts = t.name.split('__');
-      const serverId = parts[1] ?? 'unknown';
-      if (!grouped[serverId]) grouped[serverId] = [];
-      grouped[serverId].push({ name: t.name, description: t.description });
-    }
-    return grouped;
+    return mcpServersStore.servers.map(server => ({
+      id: server.id,
+      name: server.name,
+      enabled: server.enabled,
+      discoveredCount: server.discoveredTools.length,
+      tools: server.discoveredTools.map(tool => {
+        const name = `mcp__${server.id}__${tool.name}`;
+        return {
+          name,
+          shortName: tool.name,
+          description: tool.description,
+          isDefault: coreSet.has(name),
+        };
+      }),
+    }));
   });
 
   // MCP UI state
@@ -119,22 +136,36 @@
   let mcpAddError = $state<string | null>(null);
   let expandedMcpServer = $state<string | null>(null);
 
-  function getServerName(serverId: string): string {
-    const server = mcpServersStore.servers.find(s => s.id === serverId);
-    return server?.name ?? serverId;
-  }
-
-  function toggleAllMcpTools(tools: { name: string }[], enable: boolean) {
-    const next = new Set(enabledTools);
+  function toggleAllMcpTools(tools: { name: string; isDefault?: boolean }[], enable: boolean) {
+    const nextEnabled = new Set(enabledTools);
+    const nextDisabled = new Set(disabledTools);
     for (const t of tools) {
-      if (enable) next.add(t.name);
-      else next.delete(t.name);
+      if (t.isDefault) {
+        if (enable) nextDisabled.delete(t.name);
+        else nextDisabled.add(t.name);
+      } else {
+        if (enable) nextEnabled.add(t.name);
+        else nextEnabled.delete(t.name);
+      }
     }
-    enabledTools = next;
+    enabledTools = nextEnabled;
+    disabledTools = nextDisabled;
   }
 
-  function areMcpToolsAllEnabled(tools: { name: string }[]): boolean {
-    return tools.every(t => enabledTools.has(t.name));
+  function areMcpToolsAllEnabled(tools: { name: string; isDefault?: boolean }[]): boolean {
+    return tools.every(t => isMcpThreadToolEnabled(t));
+  }
+
+  function isMcpThreadToolEnabled(tool: { name: string; isDefault?: boolean }): boolean {
+    return tool.isDefault ? !disabledTools.has(tool.name) : enabledTools.has(tool.name);
+  }
+
+  function toggleMcpThreadTool(tool: { name: string; isDefault?: boolean }) {
+    if (tool.isDefault) {
+      toggleTool(tool.name);
+    } else {
+      toggleOptionalTool(tool.name);
+    }
   }
 
   async function handleMcpAdd(data: MCPServerCreateRequest) {
@@ -171,7 +202,7 @@
     if (!defaultToolsStore.loaded) return [];
 
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name));
+    let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name) && !isMcpToolName(t.name) && t.category !== 'mcp_server');
     if (!toolSearch.trim()) return allTools;
     const q = toolSearch.toLowerCase();
     return allTools.filter(
@@ -182,8 +213,12 @@
     );
   });
 
-  const disabledToolCount = $derived(disabledTools.size);
-  const enabledToolCount = $derived(enabledTools.size);
+  const disabledToolCount = $derived([...disabledTools].filter((name) => !isMcpToolName(name)).length);
+  const enabledToolCount = $derived([...enabledTools].filter((name) => !isMcpToolName(name)).length);
+  const mcpOverrideCount = $derived(
+    [...disabledTools].filter(isMcpToolName).length +
+    [...enabledTools].filter(isMcpToolName).length
+  );
 
   // Trigger count for badge
   const activeTriggerCount = $derived(
@@ -492,6 +527,10 @@
       <button class="tab-btn" class:active={activeTab === 'tools'} onclick={() => (activeTab = 'tools')}>
         Tools
         {#if disabledToolCount > 0}<span class="tab-badge">{disabledToolCount}</span>{/if}
+      </button>
+      <button class="tab-btn" class:active={activeTab === 'mcp'} onclick={() => (activeTab = 'mcp')}>
+        MCP
+        {#if mcpOverrideCount > 0}<span class="tab-badge">{mcpOverrideCount}</span>{/if}
       </button>
       <button class="tab-btn" class:active={activeTab === 'triggers'} onclick={() => (activeTab = 'triggers')}>
         Triggers
@@ -820,70 +859,85 @@
             </div>
           {/if}
 
-          <!-- MCP Servers subsection -->
-          {#if Object.keys(mcpToolsByServer()).length > 0 || mcpServersStore.servers.length > 0}
-            <div class="section-divider">
-              <span class="section-title">
-                <Icon name="terminal" size={14} />
-                MCP Servers
-              </span>
-              <p class="hint">Tools from MCP servers. Enable for this thread.</p>
-            </div>
+        {/if}
 
-            {#each Object.entries(mcpToolsByServer()) as [serverId, tools]}
+      {:else if activeTab === 'mcp'}
+        {#if toolsLoadError}
+          <div class="loading-state">{toolsLoadError}</div>
+        {:else if toolsLoading}
+          <div class="loading-state">Loading MCP tools...</div>
+        {:else}
+          <div class="section-divider">
+            <span class="section-title">
+              <Icon name="terminal" size={14} />
+              MCP Servers
+            </span>
+            <p class="hint">Tools from MCP servers. Enable for this thread.</p>
+          </div>
+
+          {#if mcpServersForThread().length === 0}
+            <div class="loading-state">No MCP servers installed.</div>
+          {:else}
+            {#each mcpServersForThread() as server (server.id)}
               <div class="mcp-server-group">
                 <div class="mcp-server-header-row">
                   <button
                     class="mcp-server-header"
-                    onclick={() => expandedMcpServer = expandedMcpServer === serverId ? null : serverId}
+                    onclick={() => expandedMcpServer = expandedMcpServer === server.id ? null : server.id}
                   >
-                    <span class="mcp-server-name">{getServerName(serverId)}</span>
-                    <span class="mcp-tool-count">{tools.filter(t => enabledTools.has(t.name)).length}/{tools.length}</span>
+                    <span class="mcp-server-name">{server.name}</span>
+                    <span class="mcp-tool-count">{server.tools.filter(isMcpThreadToolEnabled).length}/{server.tools.length}</span>
                   </button>
                   <button
                     class="mcp-bulk-btn"
                     type="button"
-                    onclick={() => toggleAllMcpTools(tools, !areMcpToolsAllEnabled(tools))}
+                    onclick={() => toggleAllMcpTools(server.tools, !areMcpToolsAllEnabled(server.tools))}
                   >
-                    {areMcpToolsAllEnabled(tools) ? 'Disable all' : 'Enable all'}
+                    {areMcpToolsAllEnabled(server.tools) ? 'Disable all' : 'Enable all'}
                   </button>
                 </div>
-                {#if expandedMcpServer === serverId}
+                {#if expandedMcpServer === server.id}
                   <div class="mcp-tool-list">
-                    {#each tools as tool (tool.name)}
-                      <div class="tool-row" class:tool-enabled={enabledTools.has(tool.name)}>
-                        <div class="tool-info">
-                          <span class="tool-name">{tool.name.split('__').pop()}</span>
-                          <span class="tool-desc">{tool.description}</span>
+                    {#if server.tools.length === 0}
+                      <div class="loading-state">No tools discovered for this server.</div>
+                    {:else}
+                      {#each server.tools as tool (tool.name)}
+                        {@const isEnabled = isMcpThreadToolEnabled(tool)}
+                        <div class="tool-row" class:tool-enabled={isEnabled} class:tool-disabled={!isEnabled && tool.isDefault}>
+                          <div class="tool-info">
+                            <span class="tool-name">{tool.shortName}</span>
+                            <span class="tool-desc">{tool.description}</span>
+                          </div>
+                          <button
+                            class="toggle-btn"
+                            class:off={!isEnabled}
+                            onclick={() => toggleMcpThreadTool(tool)}
+                            type="button"
+                            title={isEnabled ? 'Disable for this thread' : 'Enable for this thread'}
+                          >
+                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                          </button>
                         </div>
-                        <button
-                          class="toggle-btn"
-                          class:off={!enabledTools.has(tool.name)}
-                          onclick={() => toggleOptionalTool(tool.name)}
-                          type="button"
-                        >
-                          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                        </button>
-                      </div>
-                    {/each}
+                      {/each}
+                    {/if}
                   </div>
                 {/if}
               </div>
             {/each}
+          {/if}
 
-            {#if showMcpAddForm}
-              <MCPServerForm
-                mode="add"
-                loading={mcpAddLoading}
-                error={mcpAddError}
-                onSubmit={handleMcpAdd}
-                onCancel={() => { showMcpAddForm = false; mcpAddError = null; }}
-              />
-            {:else}
-              <button class="mcp-add-btn" onclick={() => showMcpAddForm = true}>
-                <Icon name="plus" size={14} /> Add MCP Server
-              </button>
-            {/if}
+          {#if showMcpAddForm}
+            <MCPServerForm
+              mode="add"
+              loading={mcpAddLoading}
+              error={mcpAddError}
+              onSubmit={handleMcpAdd}
+              onCancel={() => { showMcpAddForm = false; mcpAddError = null; }}
+            />
+          {:else}
+            <button class="mcp-add-btn" onclick={() => showMcpAddForm = true}>
+              <Icon name="plus" size={14} /> Add MCP Server
+            </button>
           {/if}
         {/if}
 

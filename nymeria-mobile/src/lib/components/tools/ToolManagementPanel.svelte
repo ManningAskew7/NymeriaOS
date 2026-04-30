@@ -3,7 +3,6 @@
   import { configStore } from '$lib/stores/config.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
-  import MCPServerPanel from './MCPServerPanel.svelte';
   import { onMount } from 'svelte';
 
   // Tools whose runtime is gated by require_admin_user on the backend.
@@ -24,6 +23,16 @@
 
   let searchQuery = $state('');
 
+  function isMcpToolName(name: string): boolean {
+    return name.startsWith('mcp__');
+  }
+
+  const visibleTools = $derived(
+    unifiedToolsStore.tools.filter((tool) => tool.category !== 'mcp_server' && !isMcpToolName(tool.name))
+  );
+
+  const visibleEnabledCount = $derived(visibleTools.filter((tool) => tool.enabled).length);
+
   onMount(() => {
     if (!unifiedToolsStore.loaded) {
       unifiedToolsStore.loadTools();
@@ -31,18 +40,18 @@
   });
 
   let filteredCategories = $derived.by(() => {
-    const byCategory = unifiedToolsStore.toolsByCategory;
     const query = searchQuery.toLowerCase();
-
-    if (!query) return byCategory;
-
     const filtered: Record<string, typeof unifiedToolsStore.tools> = {};
-    for (const [cat, tools] of Object.entries(byCategory)) {
-      const matching = tools.filter(t =>
-        t.name.toLowerCase().includes(query) ||
-        t.description.toLowerCase().includes(query)
-      );
-      if (matching.length > 0) filtered[cat] = matching;
+
+    for (const tool of visibleTools) {
+      if (query && !(
+        tool.name.toLowerCase().includes(query) ||
+        tool.description.toLowerCase().includes(query)
+      )) {
+        continue;
+      }
+      if (!filtered[tool.category]) filtered[tool.category] = [];
+      filtered[tool.category].push(tool);
     }
     return filtered;
   });
@@ -60,7 +69,7 @@
       </button>
       <h2>Tools</h2>
       <span class="tool-count">
-        {unifiedToolsStore.enabledTools.length}/{unifiedToolsStore.tools.length}
+        {visibleEnabledCount}/{visibleTools.length}
       </span>
     </div>
 
@@ -79,8 +88,6 @@
           <Spinner size="md" />
         </div>
       {:else}
-        <MCPServerPanel />
-
         {#each Object.entries(filteredCategories) as [category, tools]}
           {@const info = unifiedToolsStore.getCategoryInfo(category)}
           <div class="category">

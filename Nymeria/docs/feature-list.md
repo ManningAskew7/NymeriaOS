@@ -343,12 +343,12 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Thread Management
 - Unlimited threads with folders, pinning, search/filter
-- Per-thread configuration panel: instructions, system prompt, Agent/callable settings, tools, LLM, and skills
+- Per-thread configuration panel: instructions, system prompt, Agent/callable settings, tools, MCP, LLM, and skills
 - Desktop thread sharing via `.nymeria-thread.json`: exports portable config only and imports into a new empty thread
 
 ### Tool Management
 - Built-in tool browser by category, custom HTTP/MCP tool creation
-- MCP server panel with install wizard and auto-discovery
+- Dedicated MCP server panel with install wizard and auto-discovery
 - Tool testing, import/export, default tool configuration
 
 ### Dashboard
