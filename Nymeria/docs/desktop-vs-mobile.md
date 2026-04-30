@@ -213,6 +213,7 @@ Advanced section of Thread Settings.
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
 | `components/common/StartupOverlay.svelte` | Backend startup/readiness overlay | Desktop-only Tauri startup behavior |
 | `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |
+| `components/chat/AgentActivityIndicator.svelte` | Streaming activity card for silent tool-call chains, with temporary A/B/C prototype variants in `nymeria-tool-activity-variant` localStorage | Desktop-only v1; mobile still uses its existing dots/ThinkingIndicator flow |
 | `components/tools/ToolForm.svelte` | Create/edit custom tool form | Desktop-only today |
 | `components/tools/ToolTestPanel.svelte` | Test tool with parameters | Desktop-only today |
 | `stores/backendProcess.svelte.ts` | Tracks embedded backend startup state | Desktop-only |
@@ -305,6 +306,12 @@ Compaction UX is shared across both apps: `/history` maps `kind: "compaction_not
 1. Update `stores/chat.svelte.ts` on both platforms
 2. If rendering changes, update `MessageBubble.svelte` on both platforms
 3. Compare diffs before copying because both files have already diverged
+
+Desktop currently has an extra presentation-only streaming component,
+`AgentActivityIndicator.svelte`, mounted from `MessageBubble.svelte` when an
+assistant stream is active but no response text is streaming. It derives phase
+copy and parallel-tool counts from existing `message.steps`; it does not add SSE
+events or backend state. Mobile has not been replicated yet.
 
 ### Adding a new theme
 
