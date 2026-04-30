@@ -213,7 +213,7 @@ Advanced section of Thread Settings.
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
 | `components/common/StartupOverlay.svelte` | Backend startup/readiness overlay | Desktop-only Tauri startup behavior |
 | `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |
-| `components/chat/AgentActivityIndicator.svelte` | Inline animated phase text for active assistant streams (`Processing...`, `Thinking...`, `Typing...`, `Formulating tool calls...`, `Waiting...`) | Desktop-only v1; mobile still uses its existing dots/ThinkingIndicator flow |
+| `components/chat/AgentActivityIndicator.svelte` | Inline animated phase text for active assistant streams (`Processing...`, `Thinking...`, `Typing...`, `Formulating tool calls...`, `Waiting...`), driven by SSE activity state with silence fallback before visible output | Desktop-only v1; mobile still uses its existing dots/ThinkingIndicator flow |
 | `components/tools/ToolForm.svelte` | Create/edit custom tool form | Desktop-only today |
 | `components/tools/ToolTestPanel.svelte` | Test tool with parameters | Desktop-only today |
 | `stores/backendProcess.svelte.ts` | Tracks embedded backend startup state | Desktop-only |

@@ -1,6 +1,7 @@
 // Message types
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'error';
+export type AssistantActivityPhase = 'processing' | 'thinking' | 'typing' | 'formulating' | 'waiting';
 
 // File type discriminator for attachments
 export type FileType = 'image' | 'document';
@@ -58,6 +59,8 @@ export interface Message {
   intermediateContent?: string;   // Legacy: concatenated thinking (computed from steps)
   timestamp: Date;
   status: MessageStatus;
+  activityPhase?: AssistantActivityPhase; // Streaming UI hint for silent model/tool transitions
+  activityUpdatedAt?: Date;
   toolCalls?: ToolCall[];         // Legacy: all tool calls (computed from steps)
   attachments?: FileAttachment[]; // File attachments for multimodal messages
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)

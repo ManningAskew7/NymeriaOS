@@ -1,5 +1,6 @@
 import type {
   Message,
+  AssistantActivityPhase,
   MessageStep,
   ToolCall,
   ToolCallStatus,
@@ -66,6 +67,24 @@ function createChatStore() {
   let _thinkingBuffer = '';
   let _lastFlushTime = 0;
   let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function setLastAssistantActivityPhase(phase: AssistantActivityPhase) {
+    if (messages.length === 0) return;
+
+    const lastIndex = messages.length - 1;
+    const lastMessage = messages[lastIndex];
+
+    if (lastMessage.role === 'assistant' && lastMessage.status === 'streaming') {
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          activityPhase: phase,
+          activityUpdatedAt: new Date()
+        }
+      ];
+    }
+  }
 
   return {
     get messages() {
@@ -143,6 +162,8 @@ function createChatStore() {
         intermediateContent: '',      // Legacy field (computed from steps)
         timestamp: new Date(),
         status: 'streaming',
+        activityPhase: 'processing',
+        activityUpdatedAt: new Date(),
         toolCalls: []                 // Legacy field (computed from steps)
       };
       messages = [...messages, message];
@@ -150,6 +171,7 @@ function createChatStore() {
     },
 
     appendToLastMessage(content: string) {
+      setLastAssistantActivityPhase('typing');
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;
@@ -168,6 +190,7 @@ function createChatStore() {
     },
 
     setLastMessageContent(content: string) {
+      setLastAssistantActivityPhase('typing');
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;
@@ -213,7 +236,12 @@ function createChatStore() {
       if (lastMessage.role === 'assistant' && lastMessage.status !== 'streaming') {
         messages = [
           ...messages.slice(0, lastIndex),
-          { ...lastMessage, status: 'streaming' as const }
+          {
+            ...lastMessage,
+            status: 'streaming' as const,
+            activityPhase: lastMessage.activityPhase || 'processing',
+            activityUpdatedAt: new Date()
+          }
         ];
       }
     },
@@ -429,6 +457,7 @@ function createChatStore() {
      * chunks buffer for FLUSH_INTERVAL ms to reduce array reconstructions.
      */
     addThinkingStep(content: string) {
+      setLastAssistantActivityPhase('thinking');
       if (messages.length === 0) return;
 
       _thinkingBuffer += content;
@@ -499,6 +528,7 @@ function createChatStore() {
       const lastMessage = messages[lastIndex];
 
       if (lastMessage.role === 'assistant') {
+        const activityUpdatedAt = new Date();
         const toolCall: ToolCall = {
           id,
           name,
@@ -530,6 +560,8 @@ function createChatStore() {
             ...lastMessage,
             steps: updatedSteps,
             toolCalls: legacyToolCalls,
+            activityPhase: 'waiting',
+            activityUpdatedAt,
           }
         ];
       }
@@ -562,10 +594,20 @@ function createChatStore() {
             }
             return step;
           });
+          const hasRunningTools = updatedSteps.some(
+            (step) => step.type === 'tool_call' && step.status === 'running'
+          );
+          const activityPhase: AssistantActivityPhase = hasRunningTools ? 'waiting' : 'formulating';
           return {
             ...msg,
             steps: updatedSteps,
-            toolCalls: this._computeToolCalls(updatedSteps)
+            toolCalls: this._computeToolCalls(updatedSteps),
+            ...(msg.status === 'streaming'
+              ? {
+                  activityPhase,
+                  activityUpdatedAt: new Date()
+                }
+              : {})
           };
         }
         return msg;
@@ -616,6 +658,7 @@ function createChatStore() {
      * chunks buffer for FLUSH_INTERVAL ms to reduce array reconstructions + re-parses.
      */
     addResponseStep(content: string) {
+      setLastAssistantActivityPhase('typing');
       if (messages.length === 0) return;
 
       if (_thinkingBuffer) {
@@ -685,6 +728,7 @@ function createChatStore() {
      * Legacy method - kept for backwards compatibility.
      */
     setResponseContent(content: string) {
+      setLastAssistantActivityPhase('typing');
       if (messages.length === 0) return;
 
       const lastIndex = messages.length - 1;
@@ -941,6 +985,8 @@ function createChatStore() {
             intermediateContent: '',
             timestamp: new Date(),
             status: 'streaming' as const,
+            activityPhase: 'processing' as const,
+            activityUpdatedAt: new Date(),
             toolCalls: []
           }
         ];
@@ -975,6 +1021,8 @@ function createChatStore() {
           steps: [],
           timestamp: new Date(),
           status: 'streaming' as const,
+          activityPhase: 'processing' as const,
+          activityUpdatedAt: new Date(),
           toolReloadInfo: { tools, ttl } as ToolReloadInfo,
         }
       ];

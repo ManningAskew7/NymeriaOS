@@ -1,15 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Message, MessageStep } from '$lib/types';
+  import type { AssistantActivityPhase, Message, MessageStep } from '$lib/types';
 
   interface Props {
     message: Message;
   }
 
-  type ActivityPhase = 'processing' | 'thinking' | 'typing' | 'formulating' | 'waiting';
   type ToolStep = MessageStep & { type: 'tool_call' };
 
-  const PHASE_TEXT: Record<ActivityPhase, string> = {
+  const QUIET_TO_FORMULATING_MS = 1000;
+
+  const PHASE_TEXT: Record<AssistantActivityPhase, string> = {
     processing: 'Processing',
     thinking: 'Thinking',
     typing: 'Typing',
@@ -20,8 +21,6 @@
   let { message }: Props = $props();
   let pulse = $state(0);
   let now = $state(Date.now());
-  let lastVisibleText = $state('');
-  let lastVisibleTextChangeAt = $state(Date.now());
 
   onMount(() => {
     const timer = setInterval(() => {
@@ -36,41 +35,32 @@
     return step.type === 'tool_call';
   }
 
-  function latestStepText(steps: MessageStep[]): string {
-    for (let i = steps.length - 1; i >= 0; i -= 1) {
-      const step = steps[i];
-      if (step.type === 'response' || step.type === 'thinking') {
-        return step.content || '';
-      }
-    }
-    return message.content || '';
-  }
-
-  let visibleText = $derived(latestStepText(message.steps || []));
-
-  $effect(() => {
-    if (visibleText !== lastVisibleText) {
-      lastVisibleText = visibleText;
-      lastVisibleTextChangeAt = Date.now();
-    }
-  });
-
-  let phase = $derived.by((): ActivityPhase => {
+  function inferPhaseFromSteps(): AssistantActivityPhase {
     const steps = message.steps || [];
     const toolSteps = steps.filter(isToolStep);
     const runningTools = toolSteps.filter((step) => step.status === 'running');
     const latestStep = steps[steps.length - 1];
-    const textQuietMs = now - lastVisibleTextChangeAt;
 
     if (runningTools.length > 0) return 'waiting';
-    if (latestStep?.type === 'thinking') {
-      return textQuietMs < 1000 ? 'thinking' : 'formulating';
-    }
-    if (latestStep?.type === 'response' || (!latestStep && visibleText)) {
-      return textQuietMs < 1000 ? 'typing' : 'formulating';
-    }
+    if (latestStep?.type === 'thinking') return 'thinking';
+    if (latestStep?.type === 'response' || (!latestStep && message.content)) return 'typing';
     if (toolSteps.length > 0) return 'formulating';
     return 'processing';
+  }
+
+  let phase = $derived.by((): AssistantActivityPhase => {
+    const basePhase = message.activityPhase || inferPhaseFromSteps();
+    const updatedAt = message.activityUpdatedAt?.getTime() || message.timestamp.getTime();
+    const quietMs = now - updatedAt;
+
+    if (
+      (basePhase === 'processing' || basePhase === 'thinking') &&
+      quietMs >= QUIET_TO_FORMULATING_MS
+    ) {
+      return 'formulating';
+    }
+
+    return basePhase;
   });
 
   let dots = $derived('.'.repeat((pulse % 3) + 1));
