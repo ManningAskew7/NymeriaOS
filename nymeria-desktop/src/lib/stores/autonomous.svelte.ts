@@ -259,6 +259,16 @@ function createAutonomousStore() {
         }
         break;
 
+      case 'tool_call_delta':
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          chatStore.setAssistantActivityPhase('formulating');
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          const buf = _pendingEvents.get(event.thread_id) || [];
+          buf.push(event);
+          _pendingEvents.set(event.thread_id, buf);
+        }
+        break;
+
       case 'tool_call':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           const toolId = (event.id as string) || `${event.name}-${Date.now()}`;

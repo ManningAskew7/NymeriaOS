@@ -1,7 +1,13 @@
 // Message types
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'error';
-export type AssistantActivityPhase = 'processing' | 'thinking' | 'typing' | 'formulating' | 'waiting';
+export type AssistantActivityPhase =
+  | 'processing'
+  | 'thinking'
+  | 'typing'
+  | 'formulating'
+  | 'processing_results'
+  | 'waiting';
 
 // File type discriminator for attachments
 export type FileType = 'image' | 'document';
@@ -435,6 +441,7 @@ export interface AttachmentValidationResult {
 // SSE Event types
 export type SSEEventType =
   | 'thinking'
+  | 'tool_call_delta'
   | 'tool_call'
   | 'tool_result'
   | 'workspace_artifact'

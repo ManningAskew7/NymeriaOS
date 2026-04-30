@@ -1916,7 +1916,7 @@ class NymeriaAgent:
         Generate a summary of the conversation.
 
         Injects a summarization prompt and runs the agent (which sees full
-        context and can call profile_save for persistent facts).
+        context and can call memory_add for persistent facts).
 
         Args:
             thread_id: Thread identifier
@@ -3625,6 +3625,9 @@ class NymeriaAgent:
             from .custom_tools import get_custom_tool_loader
 
             self._custom_tool_loader = get_custom_tool_loader()
+            old_custom_names = set(getattr(self._custom_tool_loader, "_tools", {}).keys())
+            for name in old_custom_names:
+                self.tool_registry.unregister(name)
             custom_tools = self._custom_tool_loader.load_all()
 
             if custom_tools:
@@ -3740,6 +3743,9 @@ class NymeriaAgent:
             from .custom_tools import get_custom_tool_loader
 
             loader = get_custom_tool_loader()
+            old_custom_names = set(getattr(loader, "_tools", {}).keys())
+            for name in old_custom_names:
+                self.tool_registry.unregister(name)
             custom_tools = loader.load_all()
 
             # Re-register custom tools (they replace existing ones with same name)
@@ -4024,8 +4030,11 @@ class NymeriaAgent:
                         else:
                             ttl_phrase = f"for the next {m}m"
                     resume_text = (
-                        f"[System: tools {', '.join(new_tools)} are now loaded "
-                        f"{ttl_phrase}. Continue the user's task using the new tools.]"
+                        f"[System: tool reload complete. The following tools are now "
+                        f"bound to you {ttl_phrase}: {', '.join(new_tools)}. This is "
+                        "the automatic resume after tool_search(action=\"enable\"). "
+                        "Continue the user's original task now; you may call these "
+                        "newly-loaded tools in this resumed step.]"
                     )
                     resume_msg = _create_human_message(
                         resume_text,
@@ -4810,6 +4819,7 @@ class NymeriaAgent:
                 emitted_tool_starts: set = set()
                 emitted_tool_ends: set = set()
                 emitted_openai_reasoning_chunks: set = set()
+                emitted_tool_call_delta = False
                 streamed_text_in_current_llm_call = False
                 inline_text_stripper = _InlineThinkingTextStripper()
 
@@ -4820,6 +4830,17 @@ class NymeriaAgent:
                         return False
                     emitted_openai_reasoning_chunks.add(text)
                     return True
+
+                def has_tool_call_delta(tool_call_chunks: Any) -> bool:
+                    if not tool_call_chunks:
+                        return False
+                    for tool_call_chunk in tool_call_chunks:
+                        if isinstance(tool_call_chunk, dict):
+                            if any(tool_call_chunk.get(key) for key in ("args", "name", "id")):
+                                return True
+                        elif any(getattr(tool_call_chunk, key, None) for key in ("args", "name", "id")):
+                            return True
+                    return False
 
                 async for event in graph_obj.astream_events(
                     in_state, config=config, version="v2"
@@ -4837,6 +4858,7 @@ class NymeriaAgent:
 
                     if event_type == "on_chat_model_start":
                         streamed_text_in_current_llm_call = False
+                        emitted_tool_call_delta = False
                         emitted_openai_reasoning_chunks.clear()
                         inline_text_stripper.reset()
 
@@ -4892,6 +4914,11 @@ class NymeriaAgent:
                     elif event_type == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
                         if chunk:
+                            tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
+                            if not emitted_tool_call_delta and has_tool_call_delta(tool_call_chunks):
+                                emitted_tool_call_delta = True
+                                yield {"type": "tool_call_delta"}
+
                             # OpenAI-compatible reasoning summaries (gpt-5.x via
                             # CLIProxy Codex, DeepSeek-R1/Qwen via OpenRouter).
                             # ChatOpenAIWithReasoning stashes plaintext deltas
@@ -5033,8 +5060,11 @@ class NymeriaAgent:
                         else:
                             ttl_phrase = f"for the next {m}m"
                     resume_text = (
-                        f"[System: tools {', '.join(new_tools)} are now loaded "
-                        f"{ttl_phrase}. Continue the user's task using the new tools.]"
+                        f"[System: tool reload complete. The following tools are now "
+                        f"bound to you {ttl_phrase}: {', '.join(new_tools)}. This is "
+                        "the automatic resume after tool_search(action=\"enable\"). "
+                        "Continue the user's original task now; you may call these "
+                        "newly-loaded tools in this resumed step.]"
                     )
                     resume_msg = _create_human_message(
                         resume_text,
