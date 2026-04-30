@@ -308,7 +308,7 @@ GET /threads/{thread_id}/history
 Authorization: Bearer <token>
 ```
 
-Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups, compaction markers) that are hidden by default.
+Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`.
 
 **Response:**
 ```json
@@ -325,6 +325,15 @@ Optional query: `include_internal=true` returns system-generated messages (auton
         {"type": "response", "content": "Hi there!"}
       ],
       "intermediate_content": "Reasoning summary..."
+    },
+    {
+      "id": "abc123-3",
+      "role": "system",
+      "kind": "compaction_notice",
+      "content": "Context compacted",
+      "context_summary": "Summary of prior work...",
+      "messages_removed": 42,
+      "auto_resumed": true
     }
   ]
 }
@@ -419,11 +428,12 @@ Manually trigger context compaction for a thread.
 {
   "success": true,
   "messages_removed": 42,
-  "summary_pending": true
+  "summary_pending": true,
+  "summary": "Summary of prior context..."
 }
 ```
 
-When `summary_pending` is `true`, the summary will be attached to the user's next message in that thread.
+Manual compaction persists a visible `compaction_notice` immediately. When `summary_pending` is `true`, the same summary will be attached to the user's next message in that thread.
 
 ---
 
@@ -469,7 +479,8 @@ Manage the default tool set applied to newly created threads.
 | `tool_reload` | Tool registry was reloaded mid-turn; resume metadata for next iteration | `tools`, `ttl_key` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
-| `compacted` | Auto-compact triggered, agent resuming | `messages_removed`, `auto_resumed` |
+| `compacting` | Context summary generation has started | `message` |
+| `compacted` | Context was compacted; async streams may resume afterward | `messages_removed`, `auto_resumed`, `summary` |
 | `queued` | Thread is busy with another turn; client should wait | `content` |
 | `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection | `content`, `reason`, `max_iterations`, `tool_call_count`, optional `repeated_tool_name`, `repeated_count` |
 | `error` | Error message | `content` |
@@ -483,7 +494,7 @@ The `/chat` endpoint supports slash commands. Send the command as the message:
 
 | Command | Description |
 |---------|-------------|
-| `/compact` | Manually trigger context compaction. Emits a `compacted` event followed by a `response` confirmation. |
+| `/compact` | Manually trigger context compaction. Emits `compacting`, `compacted`, then a `response` confirmation. |
 
 Example:
 ```json
@@ -492,12 +503,13 @@ Example:
 
 Response:
 ```
-data: {"type": "compacted", "messages_removed": 42, "auto_resumed": false, "thread_id": "abc123"}
+data: {"type": "compacting", "message": "Compacting context...", "thread_id": "abc123"}
+data: {"type": "compacted", "messages_removed": 42, "auto_resumed": false, "summary": "...", "thread_id": "abc123"}
 data: {"type": "response", "content": "✓ Conversation compacted. 42 messages summarized."}
 data: {"type": "done", "thread_id": "abc123", "context_stats": {...}, "model": "..."}
 ```
 
-After `/compact`, the summary is attached to the user's **next** message. The UI should show an indicator like "(context summary attached)".
+After manual `/compact`, the summary is attached to the user's **next** message. Automatic async compaction differs: after `compacted`, Nymeria streams the resumed assistant output immediately below the compaction notice.
 
 ---
 

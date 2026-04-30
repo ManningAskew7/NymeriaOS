@@ -2512,13 +2512,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         logger.info(f"[CHAT] Received message: '{request.message}' stripped: '{msg_stripped}' is_compact: {msg_stripped == '/compact'}")
         if msg_stripped == "/compact":
             async def compact_command_response():
+                yield f"data: {json.dumps({'type': 'compacting', 'message': 'Compacting context...', 'thread_id': thread_id})}\n\n"
                 # Perform compaction (this may take a few seconds)
                 result = await agent.compact_now(thread_id, user_id)
                 # Send response based on result
                 if result.get("success"):
                     messages_removed = result.get('messages_removed', 0)
                     # Emit compacted event so frontend clears chat UI
-                    yield f"data: {json.dumps({'type': 'compacted', 'messages_removed': messages_removed, 'auto_resumed': False, 'thread_id': thread_id})}\n\n"
+                    yield f"data: {json.dumps({'type': 'compacted', 'messages_removed': messages_removed, 'auto_resumed': False, 'summary': result.get('summary'), 'thread_id': thread_id})}\n\n"
                     msg = f"✓ Conversation compacted. {messages_removed} messages summarized."
                 else:
                     msg = f"Could not compact: {result.get('reason', 'unknown error')}"
@@ -2668,7 +2669,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     # live progress (tool_call, tool_result, thinking, response).
                     if autonomous_task_id:
                         ctype = chunk.get("type")
-                        if ctype in ("tool_call", "tool_result", "thinking", "response", "workspace_artifact"):
+                        if ctype in (
+                            "tool_call",
+                            "tool_result",
+                            "thinking",
+                            "response",
+                            "workspace_artifact",
+                            "compacting",
+                            "compacted",
+                            "context_attached",
+                        ):
                             payload = {k: v for k, v in chunk.items() if k != "type"}
                             publish_autonomous_event(
                                 event_type=ctype,

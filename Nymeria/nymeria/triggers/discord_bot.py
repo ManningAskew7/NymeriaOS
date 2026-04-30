@@ -2399,6 +2399,25 @@ class NymeriaDiscordBot(discord.Client):
             """Finalize current text segment (flush + reset for next segment)."""
             await _flush_buffer(final=True)
 
+        async def _send_compaction_embed(
+            summary: Any,
+            messages_removed: int = 0,
+            title: str = "Context compacted",
+        ) -> None:
+            summary_text = str(summary or "").strip()
+            if len(summary_text) > 1000:
+                summary_text = summary_text[:997].rstrip() + "..."
+            embed = discord.Embed(color=discord.Color.dark_grey())
+            embed.set_author(name=title)
+            if messages_removed:
+                embed.description = f"{messages_removed} messages summarized."
+            if summary_text:
+                embed.add_field(name="Summary", value=summary_text, inline=False)
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                logger.warning("Failed to send compaction embed: %s", e)
+
         try:
             async for event in self.api.chat_stream(
                 message,
@@ -2415,6 +2434,24 @@ class NymeriaDiscordBot(discord.Client):
                         await channel.trigger_typing()
                     except Exception:
                         pass
+
+                elif etype == "compacting":
+                    await _finalize_text()
+                    await _send(event.get("message") or "Compacting context...")
+
+                elif etype == "compacted":
+                    await _finalize_text()
+                    await _send_compaction_embed(
+                        event.get("summary", ""),
+                        int(event.get("messages_removed") or 0),
+                    )
+
+                elif etype == "context_attached":
+                    await _finalize_text()
+                    await _send_compaction_embed(
+                        event.get("summary", ""),
+                        title="Context summary attached",
+                    )
 
                 elif etype == "response":
                     chunk = event.get("content", "")
@@ -2534,7 +2571,7 @@ class NymeriaDiscordBot(discord.Client):
                             pass
                     await _flush_buffer(final=True)
 
-                # Silently ignore: queued, compacted, context_attached
+                # Silently ignore: queued
 
             # Stream ended — flush any remaining buffer
             await _clear_thinking()

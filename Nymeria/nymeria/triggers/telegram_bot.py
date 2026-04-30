@@ -172,6 +172,24 @@ def format_tool_result_html(result: Any, max_len: int = 800) -> str:
     return f"<b>Result:</b>\n<pre>{escape_html(result_str)}</pre>"
 
 
+def format_compaction_notice_html(
+    summary: Any,
+    messages_removed: int = 0,
+    max_summary_len: int = 900,
+    title: str = "Context compacted",
+) -> str:
+    """Render a compact Telegram notice for compaction events."""
+    parts = [f"<b>{escape_html(title)}</b>"]
+    if messages_removed:
+        parts.append(f"<i>{messages_removed} messages summarized.</i>")
+    summary_text = str(summary or "").strip()
+    if summary_text:
+        if len(summary_text) > max_summary_len:
+            summary_text = summary_text[: max_summary_len - 3].rstrip() + "..."
+        parts.append(f"<blockquote>{escape_html(summary_text)}</blockquote>")
+    return "\n".join(parts)
+
+
 _ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
 
 
@@ -957,6 +975,42 @@ class NymeriaTelegramBot:
                 if etype == "thinking":
                     pass  # typing indicator already running
 
+                elif etype == "compacting":
+                    await _flush(final=True)
+                    try:
+                        status = event.get("message") or "Compacting context..."
+                        await self._send_html(chat_id, f"<i>{escape_html(status)}</i>", context)
+                    except Exception as e:
+                        logger.warning(f"Failed to send compacting status: {e}")
+
+                elif etype == "compacted":
+                    await _flush(final=True)
+                    try:
+                        await self._send_html(
+                            chat_id,
+                            format_compaction_notice_html(
+                                event.get("summary", ""),
+                                int(event.get("messages_removed") or 0),
+                            ),
+                            context,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send compaction notice: {e}")
+
+                elif etype == "context_attached":
+                    await _flush(final=True)
+                    try:
+                        await self._send_html(
+                            chat_id,
+                            format_compaction_notice_html(
+                                event.get("summary", ""),
+                                title="Context summary attached",
+                            ),
+                            context,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send attached context notice: {e}")
+
                 elif etype == "response":
                     chunk = event.get("content", "")
                     if chunk:
@@ -1045,7 +1099,7 @@ class NymeriaTelegramBot:
                             pass
                     await _flush(final=True)
 
-                # Silently ignore: queued, compacted, context_attached
+                # Silently ignore: queued
 
             # Stream ended — flush any remaining buffer
             if text_buffer:

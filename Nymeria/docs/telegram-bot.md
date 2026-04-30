@@ -100,6 +100,8 @@ Or use the `/thread` command — it shows the full thread ID including the chat 
 
 You can also send plain text in DMs without any command prefix.
 
+During streamed replies, Telegram surfaces compaction events instead of hiding them: `compacting` sends a short italic status, `compacted` sends a compact "Context compacted" HTML notice with a summary preview, and resumed assistant output continues in normal response bubbles after the notice.
+
 ### Model & Thinking
 
 | Command | Description |

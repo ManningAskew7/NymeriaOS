@@ -194,7 +194,31 @@
   );
 </script>
 
-{#if !isHiddenMessage}
+{#if message.kind === 'compaction_notice'}
+<div class="compaction-notice">
+  <div class="compaction-icon">
+    <Icon name="info" size={18} />
+  </div>
+  <div class="compaction-body">
+    <div class="compaction-title">Context compacted</div>
+    <div class="compaction-meta">
+      {#if message.messagesRemoved}
+        {message.messagesRemoved} messages summarized
+      {:else}
+        Older messages summarized
+      {/if}
+    </div>
+    {#if message.contextSummary}
+      <details class="context-summary-collapsible">
+        <summary>View summary</summary>
+        <div class="context-summary-content">
+          {@html renderMarkdown(message.contextSummary)}
+        </div>
+      </details>
+    {/if}
+  </div>
+</div>
+{:else if !isHiddenMessage}
 <div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource}>
   <div class="bubble-content">
     {#if isUser}
@@ -341,6 +365,48 @@
 <ImageModal image={modalFile} onClose={closeModal} />
 
 <style>
+  .compaction-notice {
+    align-self: center;
+    display: flex;
+    gap: var(--spacing-sm);
+    width: 100%;
+    margin: var(--spacing-sm) 0 var(--spacing-md);
+    padding: var(--spacing-md);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent-primary));
+    color: var(--text-primary);
+    animation: slideUp var(--transition-normal);
+  }
+
+  .compaction-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    flex-shrink: 0;
+  }
+
+  .compaction-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .compaction-title {
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+  }
+
+  .compaction-meta {
+    margin-top: 2px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
   .message-bubble {
     display: flex;
     flex-direction: column;

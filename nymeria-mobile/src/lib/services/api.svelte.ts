@@ -1075,6 +1075,7 @@ export class NymeriaAPI {
       (m: Record<string, unknown>) => ({
         id: (m.id as string) || crypto.randomUUID(),
         role: m.role as 'user' | 'assistant' | 'system',
+        kind: m.kind as Message['kind'],
         content: m.content as string,
         steps: Array.isArray(m.steps)
           ? m.steps
@@ -1090,6 +1091,9 @@ export class NymeriaAPI {
               .filter((toolCall): toolCall is ToolCall => toolCall !== null)
           : undefined,
         attachments: m.attachments as Message['attachments'],
+        contextSummary: (m.context_summary as string | undefined) || (m.contextSummary as string | undefined),
+        messagesRemoved: (m.messages_removed as number | undefined) ?? (m.messagesRemoved as number | undefined),
+        autoResumed: (m.auto_resumed as boolean | undefined) ?? (m.autoResumed as boolean | undefined),
         autonomousSource: m.autonomous_source as string | undefined
       })
     );
