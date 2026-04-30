@@ -39,6 +39,9 @@
     </div>
 
     <div class="panel-body">
+      <p class="panel-hint">
+        Toggle discovered server tools on to add them to the default core tool set inherited by every new thread.
+      </p>
       <MCPServerPanel />
     </div>
   </div>
@@ -95,5 +98,12 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: var(--spacing-sm) var(--spacing-md) calc(var(--spacing-xl) + env(safe-area-inset-bottom));
+  }
+
+  .panel-hint {
+    margin: 0.25rem 0 0.75rem;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
   }
 </style>

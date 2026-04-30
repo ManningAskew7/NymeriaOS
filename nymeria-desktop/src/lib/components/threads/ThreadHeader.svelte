@@ -4,6 +4,7 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { skillsStore } from '$lib/stores/skills.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
 
   interface Props {
@@ -55,19 +56,67 @@
     return null;
   });
 
-  const disabledCount = $derived(threadConfig?.disabledTools?.length ?? 0);
-  const enabledOptionalCount = $derived(threadConfig?.enabledTools?.length ?? 0);
+  function isMcpToolName(name: string): boolean {
+    return name.startsWith('mcp__');
+  }
+
+  $effect(() => {
+    if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) {
+      skillsStore.loadGlobal();
+    }
+  });
+
+  const disabledNonMcpCount = $derived(
+    (threadConfig?.disabledTools ?? []).filter((name) => !isMcpToolName(name)).length
+  );
+  const enabledOptionalNonMcpCount = $derived(
+    (threadConfig?.enabledTools ?? []).filter((name) => !isMcpToolName(name)).length
+  );
+  const disabledMcpCount = $derived(
+    (threadConfig?.disabledTools ?? []).filter(isMcpToolName).length
+  );
+  const enabledOptionalMcpCount = $derived(
+    (threadConfig?.enabledTools ?? []).filter(isMcpToolName).length
+  );
 
   const activeToolCount = $derived.by(() => {
     if (!defaultToolsStore.loaded) return null;
-    return defaultToolsStore.defaultToolNames.length - disabledCount + enabledOptionalCount;
+    const defaultNonMcpCount = defaultToolsStore.defaultToolNames.filter((name) => !isMcpToolName(name)).length;
+    return defaultNonMcpCount - disabledNonMcpCount + enabledOptionalNonMcpCount;
+  });
+
+  const activeMcpToolCount = $derived.by(() => {
+    if (!defaultToolsStore.loaded) return null;
+    const defaultMcpCount = defaultToolsStore.defaultToolNames.filter(isMcpToolName).length;
+    return defaultMcpCount - disabledMcpCount + enabledOptionalMcpCount;
+  });
+
+  const activeSkillCount = $derived.by(() => {
+    if (!skillsStore.enabledGlobalLoaded) return null;
+    const disabled = new Set(threadConfig?.disabledSkills ?? []);
+    const active = new Set<string>();
+    for (const name of skillsStore.enabledGlobal) {
+      if (!disabled.has(name)) active.add(name);
+    }
+    for (const name of threadConfig?.enabledSkills ?? []) {
+      if (!disabled.has(name)) active.add(name);
+    }
+    return active.size;
   });
 
   const toolsTooltip = $derived.by(() => {
     if (activeToolCount === null) return '';
     const parts = [`${activeToolCount} active`];
-    if (disabledCount > 0) parts.push(`${disabledCount} disabled`);
-    if (enabledOptionalCount > 0) parts.push(`${enabledOptionalCount} optional enabled`);
+    if (disabledNonMcpCount > 0) parts.push(`${disabledNonMcpCount} disabled`);
+    if (enabledOptionalNonMcpCount > 0) parts.push(`${enabledOptionalNonMcpCount} optional enabled`);
+    return parts.join(', ');
+  });
+
+  const mcpTooltip = $derived.by(() => {
+    if (activeMcpToolCount === null) return '';
+    const parts = [`${activeMcpToolCount} MCP active`];
+    if (disabledMcpCount > 0) parts.push(`${disabledMcpCount} disabled`);
+    if (enabledOptionalMcpCount > 0) parts.push(`${enabledOptionalMcpCount} optional enabled`);
     return parts.join(', ');
   });
 
@@ -103,15 +152,25 @@
       {#if activeToolCount !== null}
         <span
           class="badge tools-badge"
-          class:reduced={disabledCount > 0}
+          class:reduced={disabledNonMcpCount > 0}
           title={toolsTooltip}
         >
           {activeToolCount} tools
         </span>
       {/if}
+      {#if activeMcpToolCount !== null}
+        <span class="badge mcp-badge" class:reduced={disabledMcpCount > 0} title={mcpTooltip}>
+          {activeMcpToolCount} MCP
+        </span>
+      {/if}
       {#if callableCount > 0}
         <span class="badge callables-badge" title="{callableCount} callable thread{callableCount !== 1 ? 's' : ''} available as tools">
           {callableCount} callable{callableCount !== 1 ? 's' : ''}
+        </span>
+      {/if}
+      {#if activeSkillCount !== null}
+        <span class="badge skills-badge" title="{activeSkillCount} active skill{activeSkillCount !== 1 ? 's' : ''}">
+          {activeSkillCount} skill{activeSkillCount !== 1 ? 's' : ''}
         </span>
       {/if}
       {#if triggerCount > 0}
@@ -243,10 +302,28 @@
     border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
   }
 
+  .mcp-badge {
+    background: color-mix(in srgb, var(--info, #38bdf8) 18%, transparent);
+    color: var(--info, #38bdf8);
+    border: 1px solid color-mix(in srgb, var(--info, #38bdf8) 30%, transparent);
+  }
+
+  .mcp-badge.reduced {
+    background: color-mix(in srgb, var(--warning, #f59e0b) 18%, transparent);
+    color: var(--warning, #f59e0b);
+    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+  }
+
   .callables-badge {
     background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-primary);
     border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+
+  .skills-badge {
+    background: color-mix(in srgb, var(--success, #10b981) 16%, transparent);
+    color: var(--success, #10b981);
+    border: 1px solid color-mix(in srgb, var(--success, #10b981) 28%, transparent);
   }
 
   .triggers-badge {

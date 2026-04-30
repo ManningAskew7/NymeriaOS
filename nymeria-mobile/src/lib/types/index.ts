@@ -132,6 +132,8 @@ export interface ThreadConfig {
   callableName?: string | null;
   callableDescription?: string | null;
   callableMaxIterations?: number | null;
+  enabledSkills: string[];
+  disabledSkills: string[];
   injectTodosInPrompt: boolean;
   showAutonomousPrompts: boolean;
   showPromptMetadata?: boolean;
@@ -146,6 +148,8 @@ export interface ThreadConfigUpdateRequest {
   instructions?: string | null;
   disabled_tools?: string[] | null;
   enabled_tools?: string[] | null;
+  enabled_skills?: string[] | null;
+  disabled_skills?: string[] | null;
   llm_config?: Partial<ThreadLLMConfig> | null;
   system_prompt?: string | null;
   callable?: boolean;
