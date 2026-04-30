@@ -184,8 +184,7 @@
   let showStreamingContent = $derived(isStreaming && message.content && !isRawJson);
   // Check if steps contain response steps (content is rendered there, not in bottom section)
   let hasResponseSteps = $derived(message.steps?.some(s => s.type === 'response') || false);
-  // Check if the last step is NOT a response step (show dots during tool calls and thinking,
-  // but not while response text is actively streaming with its own cursor indicator)
+  // Check if the last step is NOT a response step (show activity text during tool calls and thinking).
   let lastStepIsNotResponse = $derived(
     message.steps && message.steps.length > 0 &&
     message.steps[message.steps.length - 1].type !== 'response'
@@ -194,8 +193,13 @@
     message.steps && message.steps.length > 0 &&
     message.steps[message.steps.length - 1].type === 'response'
   );
+  let showActivityAfterResponse = $derived(
+    isStreaming &&
+    lastStepIsResponse &&
+    message.activityPhase === 'formulating'
+  );
 
-  // Check if a step is the last step and actively streaming (show cursor after it)
+  // Check if a step is the last step and actively streaming.
   let streamingLastStepIndex = $derived(
     isStreaming && message.steps && message.steps.length > 0
       ? message.steps.length - 1
@@ -438,8 +442,8 @@
       {:else if isStreaming && lastStepIsNotResponse}
         <!-- Show activity indicator while streaming tool calls or thinking. -->
         <AgentActivityIndicator {message} />
-      {:else if isStreaming && lastStepIsResponse}
-        <!-- Show lightweight activity text while response chunks are arriving or have paused. -->
+      {:else if showActivityAfterResponse}
+        <!-- Show activity text only when a response preamble is followed by tool-argument streaming. -->
         <AgentActivityIndicator {message} />
       {:else if message.content && !hasResponseSteps}
         <!-- Legacy fallback: render message.content only if not already in response steps -->
@@ -814,22 +818,6 @@
 
   .message-content {
     margin-top: var(--spacing-sm);
-  }
-
-  /* Injected via {@html} so must be :global to bypass scoping */
-  .markdown-content :global(.streaming-cursor) {
-    display: inline-block;
-    width: 2px;
-    height: 1.1em;
-    background: var(--accent-primary);
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    animation: cursorBlink 0.8s ease-in-out infinite;
-  }
-
-  @keyframes cursorBlink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
   }
 
   .message-footer {

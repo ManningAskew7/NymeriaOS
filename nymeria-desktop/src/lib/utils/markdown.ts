@@ -83,30 +83,19 @@ export function renderMarkdown(content: string): string {
   }
 }
 
-const CURSOR_HTML = '<span class="streaming-cursor"></span>';
-
 /**
  * Render markdown for actively streaming content.
- * Uses remend to close incomplete syntax, then injects a blinking cursor
- * inline at the end of the last block-level element.
+ * Uses remend to close incomplete syntax without adding a visible cursor.
  */
 export function renderMarkdownStreaming(content: string): string {
-  let html: string;
   try {
     // Remend's default link repair uses the placeholder URL
     // `streamdown:incomplete-link`, which can leak into the UI while tokens are
     // still arriving. Text-only mode keeps partial links readable without a fake
     // href, while preserving the other useful streaming repairs.
-    html = marked.parse(remend(content, { linkMode: 'text-only' })) as string;
+    return marked.parse(remend(content, { linkMode: 'text-only' })) as string;
   } catch (e) {
     console.error('Streaming markdown rendering failed:', e);
-    html = content;
+    return content;
   }
-
-  // Insert cursor before the last closing block tag so it appears inline
-  const match = html.match(/<\/[^>]+>\s*$/);
-  if (match && match.index !== undefined) {
-    return html.slice(0, match.index) + CURSOR_HTML + html.slice(match.index);
-  }
-  return html + CURSOR_HTML;
 }

@@ -13,7 +13,7 @@
   const PHASE_TEXT: Record<AssistantActivityPhase, string> = {
     processing: 'Processing',
     thinking: 'Thinking',
-    typing: 'Typing',
+    typing: 'Processing',
     formulating: 'Formulating',
     processing_results: 'Processing results',
     waiting: 'Waiting',
