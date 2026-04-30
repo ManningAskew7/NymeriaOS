@@ -6,21 +6,27 @@
     message: Message;
   }
 
-  type ActivityPhase = 'formulating' | 'waiting' | 'analyzing';
+  type ActivityPhase = 'processing' | 'thinking' | 'typing' | 'formulating' | 'waiting';
   type ToolStep = MessageStep & { type: 'tool_call' };
 
   const PHASE_TEXT: Record<ActivityPhase, string> = {
+    processing: 'Processing',
+    thinking: 'Thinking',
+    typing: 'Typing',
     formulating: 'Formulating tool calls',
-    waiting: 'Waiting for tool call results',
-    analyzing: 'Analyzing results',
+    waiting: 'Waiting',
   };
 
   let { message }: Props = $props();
   let pulse = $state(0);
+  let now = $state(Date.now());
+  let lastVisibleText = $state('');
+  let lastVisibleTextChangeAt = $state(Date.now());
 
   onMount(() => {
     const timer = setInterval(() => {
       pulse += 1;
+      now = Date.now();
     }, 420);
 
     return () => clearInterval(timer);
@@ -30,24 +36,47 @@
     return step.type === 'tool_call';
   }
 
+  function latestStepText(steps: MessageStep[]): string {
+    for (let i = steps.length - 1; i >= 0; i -= 1) {
+      const step = steps[i];
+      if (step.type === 'response' || step.type === 'thinking') {
+        return step.content || '';
+      }
+    }
+    return message.content || '';
+  }
+
+  let visibleText = $derived(latestStepText(message.steps || []));
+
+  $effect(() => {
+    if (visibleText !== lastVisibleText) {
+      lastVisibleText = visibleText;
+      lastVisibleTextChangeAt = Date.now();
+    }
+  });
+
   let phase = $derived.by((): ActivityPhase => {
     const steps = message.steps || [];
     const toolSteps = steps.filter(isToolStep);
     const runningTools = toolSteps.filter((step) => step.status === 'running');
+    const latestStep = steps[steps.length - 1];
+    const textQuietMs = now - lastVisibleTextChangeAt;
 
     if (runningTools.length > 0) return 'waiting';
-    if (toolSteps.length > 0) return 'analyzing';
-    return 'formulating';
+    if (latestStep?.type === 'thinking') {
+      return textQuietMs < 1000 ? 'thinking' : 'formulating';
+    }
+    if (latestStep?.type === 'response' || (!latestStep && visibleText)) {
+      return textQuietMs < 1000 ? 'typing' : 'formulating';
+    }
+    if (toolSteps.length > 0) return 'formulating';
+    return 'processing';
   });
 
   let dots = $derived('.'.repeat((pulse % 3) + 1));
 </script>
 
 <div class="activity-line" aria-label={`${PHASE_TEXT[phase]}...`}>
-  <span class="activity-glyph" aria-hidden="true">
-    <span class="glyph-core"></span>
-    <span class="glyph-ring"></span>
-  </span>
   {#key phase}
     <span class="activity-text" data-phase={phase}>
       {PHASE_TEXT[phase]}<span class="dots" aria-hidden="true">{dots}</span>
@@ -59,43 +88,11 @@
   .activity-line {
     display: inline-flex;
     align-items: center;
-    gap: var(--spacing-xs);
     padding: var(--spacing-sm) 0 2px;
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
     line-height: 1.4;
     min-height: 28px;
-  }
-
-  .activity-glyph {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    flex-shrink: 0;
-  }
-
-  .glyph-core,
-  .glyph-ring {
-    position: absolute;
-    border-radius: 50%;
-  }
-
-  .glyph-core {
-    width: 6px;
-    height: 6px;
-    background: var(--accent-primary);
-    box-shadow: var(--accent-glow-sm);
-    animation: glyphPulse 1.45s ease-in-out infinite;
-  }
-
-  .glyph-ring {
-    width: 14px;
-    height: 14px;
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 55%, transparent);
-    animation: glyphRing 1.45s ease-out infinite;
   }
 
   .activity-text {
@@ -130,28 +127,6 @@
     color: currentColor;
   }
 
-  @keyframes glyphPulse {
-    0%, 100% {
-      opacity: 0.5;
-      transform: scale(0.78);
-    }
-    50% {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-
-  @keyframes glyphRing {
-    0% {
-      opacity: 0.65;
-      transform: scale(0.68);
-    }
-    100% {
-      opacity: 0;
-      transform: scale(1.35);
-    }
-  }
-
   @keyframes phaseSwap {
     from {
       opacity: 0;
@@ -171,8 +146,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .glyph-core,
-    .glyph-ring,
     .activity-text {
       animation: none;
     }
