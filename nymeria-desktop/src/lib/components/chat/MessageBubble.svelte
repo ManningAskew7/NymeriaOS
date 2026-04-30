@@ -190,6 +190,10 @@
     message.steps && message.steps.length > 0 &&
     message.steps[message.steps.length - 1].type !== 'response'
   );
+  let lastStepIsResponse = $derived(
+    message.steps && message.steps.length > 0 &&
+    message.steps[message.steps.length - 1].type === 'response'
+  );
 
   // Check if a step is the last step and actively streaming (show cursor after it)
   let streamingLastStepIndex = $derived(
@@ -432,7 +436,10 @@
           </div>
         </div>
       {:else if isStreaming && lastStepIsNotResponse}
-        <!-- Show activity indicator while streaming (tool calls, thinking) but not during response text -->
+        <!-- Show activity indicator while streaming tool calls or thinking. -->
+        <AgentActivityIndicator {message} />
+      {:else if isStreaming && lastStepIsResponse}
+        <!-- Show lightweight activity text while response chunks are arriving or have paused. -->
         <AgentActivityIndicator {message} />
       {:else if message.content && !hasResponseSteps}
         <!-- Legacy fallback: render message.content only if not already in response steps -->
