@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Message, FileAttachment } from '$lib/types';
-  import { Icon, ThinkingIndicator, Modal } from '$lib/components/common';
+  import { Icon, Modal } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
   import { messageToMarkdown, messageToResponseText } from '$lib/utils/messageToMarkdown';
@@ -10,6 +10,7 @@
   import { api } from '$lib/services/api.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
+  import AgentActivityIndicator from './AgentActivityIndicator.svelte';
   import SkillCard from '../skills/SkillCard.svelte';
   import ImageModal from './ImageModal.svelte';
 
@@ -422,7 +423,7 @@
       <!-- Final content at bottom (after all steps) -->
       {#if isStreaming && !message.content && !hasSteps && !hasToolCalls && !hasIntermediateContent}
         <!-- Only show streaming indicator if nothing else is visible -->
-        <ThinkingIndicator />
+        <AgentActivityIndicator {message} />
       {:else if showStreamingContent && !hasResponseSteps}
         <!-- Show streaming content only if it's not raw JSON and not already in response steps -->
         <div class="message-content">
@@ -432,11 +433,7 @@
         </div>
       {:else if isStreaming && lastStepIsNotResponse}
         <!-- Show activity indicator while streaming (tool calls, thinking) but not during response text -->
-        <div class="generating-indicator">
-          <span class="dot"></span>
-          <span class="dot"></span>
-          <span class="dot"></span>
-        </div>
+        <AgentActivityIndicator {message} />
       {:else if message.content && !hasResponseSteps}
         <!-- Legacy fallback: render message.content only if not already in response steps -->
         <div class="message-content">
@@ -827,40 +824,6 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
   }
-
-  .generating-indicator {
-    display: flex;
-    gap: 4px;
-    padding: var(--spacing-sm) 0;
-  }
-
-  .generating-indicator .dot {
-    width: 6px;
-    height: 6px;
-    background: var(--text-muted);
-    border-radius: 50%;
-    animation: dotBounce 1.4s infinite ease-in-out both;
-  }
-
-  .generating-indicator .dot:nth-child(1) {
-    animation-delay: -0.32s;
-  }
-
-  .generating-indicator .dot:nth-child(2) {
-    animation-delay: -0.16s;
-  }
-
-  @keyframes dotBounce {
-    0%, 80%, 100% {
-      transform: scale(0.6);
-      opacity: 0.4;
-    }
-    40% {
-      transform: scale(1);
-      opacity: 1;
-    }
-  }
-
 
   .message-footer {
     display: flex;
