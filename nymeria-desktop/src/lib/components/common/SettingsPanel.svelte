@@ -10,7 +10,7 @@
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
-  import { ToolManagementPanel } from '../tools';
+  import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import SkillsPanel from '../skills/SkillsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import { AccountTab, UsersTab } from '../account';
@@ -213,7 +213,7 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'skills' | 'voice' | 'proxy' | 'account' | 'users';
+  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'skills' | 'voice' | 'proxy' | 'account' | 'users';
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
@@ -499,6 +499,14 @@
       disabled={!serverSettings}
     >
       Tools
+    </button>
+    <button
+      class="tab"
+      class:active={activeTab === 'mcp'}
+      onclick={() => (activeTab = 'mcp')}
+      disabled={!serverSettings}
+    >
+      MCP
     </button>
     <button
       class="tab"
@@ -1170,6 +1178,13 @@
   {#if activeTab === 'tools'}
     <div class="tab-content tab-tools-flex">
       <ToolManagementPanel />
+    </div>
+  {/if}
+
+  <!-- MCP Tab -->
+  {#if activeTab === 'mcp'}
+    <div class="tab-content tab-tools-flex">
+      <MCPManagementPanel />
     </div>
   {/if}
 

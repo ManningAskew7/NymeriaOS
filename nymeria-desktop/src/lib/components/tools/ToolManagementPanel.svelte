@@ -10,7 +10,6 @@
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
   import ToolCountWarning from './ToolCountWarning.svelte';
-  import MCPServerPanel from './MCPServerPanel.svelte';
 
   // --- Default tools state (absorbed from DefaultToolsPanel) ---
   let selectedTools = $state<Set<string>>(new Set());
@@ -34,10 +33,9 @@
     calendar: { name: 'Google Calendar', icon: 'calendar' },
     skills: { name: 'Agent Skills', icon: 'bolt' },
     custom: { name: 'Custom', icon: 'puzzle' },
-    mcp_server: { name: 'MCP Servers', icon: 'server' },
   };
 
-  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'skills', 'self_modify', 'subagent', 'mcp_server', 'custom'];
+  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'skills', 'self_modify', 'subagent', 'custom'];
 
   // Tools whose runtime is gated by require_admin_user on the backend
   // (Nymeria/nymeria/triggers/api.py around the optional-tool toggle path).
@@ -97,10 +95,15 @@
   });
 
   // Filtered tools by search
+  function isMcpDefaultTool(tool: DefaultToolInfo): boolean {
+    return tool.category === 'mcp_server' || tool.name.startsWith('mcp__');
+  }
+
   const filteredTools = $derived(() => {
-    if (!searchQuery.trim()) return defaultToolsStore.tools;
+    const visibleTools = defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool));
+    if (!searchQuery.trim()) return visibleTools;
     const q = searchQuery.toLowerCase();
-    return defaultToolsStore.tools.filter(
+    return visibleTools.filter(
       (t: DefaultToolInfo) =>
         t.name.toLowerCase().includes(q) ||
         t.description.toLowerCase().includes(q) ||
@@ -131,9 +134,12 @@
     return result;
   });
 
-  const coreCount = $derived(selectedTools.size);
-  const availableCount = $derived(defaultToolsStore.tools.length - selectedTools.size);
-  const totalWithCallable = $derived(selectedTools.size + defaultToolsStore.callableThreadCount);
+  const visibleDefaultToolCount = $derived(defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool)).length);
+  const coreCount = $derived(
+    defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool) && selectedTools.has(tool.name)).length
+  );
+  const availableCount = $derived(visibleDefaultToolCount - coreCount);
+  const totalWithCallable = $derived(coreCount + defaultToolsStore.callableThreadCount);
 
   // Match counts within the current search, per section. Used to show
   // "no results" hints inside sections the search failed to find anything in.
@@ -185,9 +191,21 @@
   }
 
   async function handleReset() {
+    const mcpToolsToPreserve = defaultToolsStore.defaultToolNames.filter((name) => name.startsWith('mcp__'));
     const ok = await defaultToolsStore.reset();
     if (ok) {
-      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      const mergedDefaults = Array.from(new Set([
+        ...defaultToolsStore.defaultToolNames.filter((name) => !name.startsWith('mcp__')),
+        ...mcpToolsToPreserve,
+      ]));
+      const savedAfterReset = new Set(defaultToolsStore.defaultToolNames);
+      const needsMcpRestore =
+        mergedDefaults.length !== savedAfterReset.size ||
+        mergedDefaults.some((name) => !savedAfterReset.has(name));
+      if (needsMcpRestore) {
+        await defaultToolsStore.save(mergedDefaults);
+      }
+      selectedTools = new Set(mergedDefaults);
       saveStatus = 'success';
       saveMessage = 'Reset to Nymeria defaults';
     } else {
@@ -587,12 +605,6 @@
     {/if}
 
   {/if}
-
-  <!-- MCP Servers Section -->
-  <div class="custom-tools-divider">
-    <span>MCP Servers</span>
-  </div>
-  <MCPServerPanel {selectedTools} onToggleTool={toggleTool} />
 
   <!-- Custom Tools Section -->
   <div class="custom-tools-divider">

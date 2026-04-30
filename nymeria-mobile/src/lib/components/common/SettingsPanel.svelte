@@ -10,7 +10,7 @@
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel } from '$lib/types';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
-  import { ToolManagementPanel } from '../tools';
+  import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import { AccountTab, UsersTab } from '../account';
 
   interface Props {
@@ -21,7 +21,7 @@
 
   let { open, onClose, initialTab }: Props = $props();
 
-  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'voice' | 'account' | 'users';
+  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'voice' | 'account' | 'users';
   let activeTab = $state<Tab>('connection');
   let isAdmin = $derived(configStore.identity?.role === 'admin');
 
@@ -267,6 +267,7 @@
         { id: 'llm', label: 'LLM', disabled: !serverSettings },
         { id: 'agent', label: 'Agent', disabled: !serverSettings },
         { id: 'tools', label: 'Tools', disabled: !serverSettings },
+        { id: 'mcp', label: 'MCP', disabled: !serverSettings },
         { id: 'voice', label: 'Voice', disabled: !serverSettings },
         { id: 'account', label: 'Account', disabled: false },
         ...(isAdmin ? [{ id: 'users', label: 'Users', disabled: false }] : [])
@@ -662,6 +663,9 @@
       <!-- Tools Tab -->
       {:else if activeTab === 'tools'}
         <ToolManagementPanel open={true} onClose={onClose} />
+
+      {:else if activeTab === 'mcp'}
+        <MCPManagementPanel open={true} onClose={onClose} />
 
       {:else if activeTab === 'voice'}
         {#if loadingSettings}

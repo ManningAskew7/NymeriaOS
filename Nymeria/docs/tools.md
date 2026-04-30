@@ -1094,7 +1094,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
 5. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
 
-The desktop/mobile Thread Settings tools tab mirrors this split: the first list only shows tools in `default_thread_tools`, and the optional/MCP sections show tools outside that default set.
+The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread.
 
 **Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains tools like `claude_code`, `sticky_note`, `hello_test`, `reload_all`, and `self_modify_rollback`.
 
@@ -1150,6 +1150,8 @@ HTTP tools make REST API calls with configurable:
 MCP tools connect to external MCP servers via JSON-RPC over stdio or HTTP.
 
 The MCP paste installer accepts Claude Desktop JSON, bare stdio commands, HTTP/SSE URLs, npm package pages, PyPI package pages, Git repository URLs, registry ids, bundle URLs, and uploaded `.mcpb`/`.dxt`/`.zip` bundles. The desktop installer previews the plan before running anything, asks for confirmation before Git/local-path/bundle installs, and saves failed installs as disabled drafts with logs so they can be retried. Sensitive pasted config values are encrypted with `NYMERIA_SECRETS_KEY`.
+
+Managed MCP servers and their discovered tools are configured from the dedicated **Settings → MCP** tab on desktop and mobile. Legacy user-created MCP custom tools remain under **Settings → Tools** with the other custom tools.
 
 For stdio servers, Nymeria launches the command from the backend process. In Docker, that means paths and Python/Node dependencies must exist inside the `nymeria-api` container, and host services should normally be referenced as `host.docker.internal:<port>` rather than `localhost:<port>`. Startup and discovery failures include the server process's recent stderr when available.
 

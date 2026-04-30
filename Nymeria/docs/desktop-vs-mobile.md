@@ -102,7 +102,7 @@ These files share core logic but have platform-specific adaptations. When making
 
 #### `components/common/SettingsPanel.svelte`
 
-Desktop: 1129 lines. Mobile: 957 lines. Same settings categories (Connection, Appearance/Theme, LLM, Agent, Tools).
+Desktop: 1129 lines. Mobile: 957 lines. Same settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP).
 
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
@@ -150,7 +150,7 @@ Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for m
 
 #### `components/threads/ThreadSettingsPanel.svelte`
 
-Both exist and provide per-thread LLM config UI plus a dedicated Agent tab for callable-thread settings. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
+Both exist and provide per-thread LLM config UI plus dedicated Agent and MCP tabs for callable-thread settings and MCP tool overrides. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
 
 Per-thread attention settings are shared conceptually across both apps:
 `telegram_autonomous_delivery` controls whether Telegram gets full autonomous
