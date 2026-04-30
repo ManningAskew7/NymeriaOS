@@ -4832,13 +4832,21 @@ class NymeriaAgent:
                     return True
 
                 def has_tool_call_delta(tool_call_chunks: Any) -> bool:
-                    if not tool_call_chunks:
+                    return bool(tool_call_chunks)
+
+                def has_tool_call_content_delta(content: Any) -> bool:
+                    if not isinstance(content, list):
                         return False
-                    for tool_call_chunk in tool_call_chunks:
-                        if isinstance(tool_call_chunk, dict):
-                            if any(tool_call_chunk.get(key) for key in ("args", "name", "id")):
-                                return True
-                        elif any(getattr(tool_call_chunk, key, None) for key in ("args", "name", "id")):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") in {
+                            "function_call",
+                            "tool_call",
+                            "tool_call_chunk",
+                            "tool_use",
+                            "input_json_delta",
+                        }:
                             return True
                     return False
 
@@ -4915,7 +4923,14 @@ class NymeriaAgent:
                         chunk = event.get("data", {}).get("chunk")
                         if chunk:
                             tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
-                            if not emitted_tool_call_delta and has_tool_call_delta(tool_call_chunks):
+                            content = getattr(chunk, "content", None)
+                            if (
+                                not emitted_tool_call_delta
+                                and (
+                                    has_tool_call_delta(tool_call_chunks)
+                                    or has_tool_call_content_delta(content)
+                                )
+                            ):
                                 emitted_tool_call_delta = True
                                 yield {"type": "tool_call_delta"}
 
@@ -4930,9 +4945,7 @@ class NymeriaAgent:
                                 inline_text_stripper.reset()
                                 yield {"type": "thinking", "content": reasoning}
 
-                            if hasattr(chunk, "content") and chunk.content:
-                                content = chunk.content
-
+                            if content:
                                 if isinstance(content, list):
                                     # Extended thinking (Anthropic native): typed blocks
                                     for block in content:

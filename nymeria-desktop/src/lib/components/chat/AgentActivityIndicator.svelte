@@ -8,21 +8,25 @@
 
   type ToolStep = MessageStep & { type: 'tool_call' };
 
+  const QUIET_TO_FORMULATING_MS = 1000;
+
   const PHASE_TEXT: Record<AssistantActivityPhase, string> = {
     processing: 'Processing',
     thinking: 'Thinking',
     typing: 'Typing',
-    formulating: 'Formulating tool calls',
+    formulating: 'Formulating',
     processing_results: 'Processing results',
     waiting: 'Waiting',
   };
 
   let { message }: Props = $props();
   let pulse = $state(0);
+  let now = $state(Date.now());
 
   onMount(() => {
     const timer = setInterval(() => {
       pulse += 1;
+      now = Date.now();
     }, 420);
 
     return () => clearInterval(timer);
@@ -46,7 +50,17 @@
   }
 
   let phase = $derived.by((): AssistantActivityPhase => {
-    return message.activityPhase || inferPhaseFromSteps();
+    const basePhase = message.activityPhase || inferPhaseFromSteps();
+    const updatedAt = message.activityUpdatedAt?.getTime() || message.timestamp.getTime();
+
+    if (
+      (basePhase === 'processing' || basePhase === 'thinking') &&
+      now - updatedAt >= QUIET_TO_FORMULATING_MS
+    ) {
+      return 'formulating';
+    }
+
+    return basePhase;
   });
 
   let dots = $derived('.'.repeat((pulse % 3) + 1));
