@@ -944,6 +944,14 @@ export class NymeriaAPI {
             threadId
           };
 
+        case 'tool_call_delta':
+          return {
+            type: 'tool_call_delta',
+            data: {},
+            timestamp: new Date(),
+            threadId
+          };
+
         case 'tool_call':
           // Nymeria sends: { type, id, name, args }
           return {

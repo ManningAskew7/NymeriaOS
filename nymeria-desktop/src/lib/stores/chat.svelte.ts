@@ -354,6 +354,11 @@ function createChatStore() {
         const newMap = new Map(activeToolCalls);
         newMap.set(id, updated);
         activeToolCalls = newMap;
+        setLastAssistantActivityPhase(
+          Array.from(newMap.values()).some((tc) => tc.status === 'running')
+            ? 'waiting'
+            : 'processing_results'
+        );
 
         // Update in the message as well
         messages = messages.map((msg) => {
@@ -399,6 +404,11 @@ function createChatStore() {
         const newMap = new Map(activeToolCalls);
         newMap.set(foundId, updated);
         activeToolCalls = newMap;
+        setLastAssistantActivityPhase(
+          Array.from(newMap.values()).some((tc) => tc.status === 'running')
+            ? 'waiting'
+            : 'processing_results'
+        );
 
         // Update in the message as well
         messages = messages.map((msg) => {
@@ -418,6 +428,10 @@ function createChatStore() {
 
     clearActiveToolCalls() {
       activeToolCalls = new Map();
+    },
+
+    setAssistantActivityPhase(phase: AssistantActivityPhase) {
+      setLastAssistantActivityPhase(phase);
     },
 
     setStreaming(streaming: boolean) {
@@ -597,7 +611,7 @@ function createChatStore() {
           const hasRunningTools = updatedSteps.some(
             (step) => step.type === 'tool_call' && step.status === 'running'
           );
-          const activityPhase: AssistantActivityPhase = hasRunningTools ? 'waiting' : 'formulating';
+          const activityPhase: AssistantActivityPhase = hasRunningTools ? 'waiting' : 'processing_results';
           return {
             ...msg,
             steps: updatedSteps,

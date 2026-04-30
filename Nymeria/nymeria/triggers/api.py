@@ -2493,6 +2493,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         The response is streamed as Server-Sent Events (SSE) with the following event types:
         - `thinking`: Agent reasoning/planning
+        - `tool_call_delta`: Model is streaming tool-call argument chunks
         - `tool_call`: Tool being invoked
         - `tool_result`: Tool execution result
         - `response`: Final response text
@@ -2670,6 +2671,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     if autonomous_task_id:
                         ctype = chunk.get("type")
                         if ctype in (
+                            "tool_call_delta",
                             "tool_call",
                             "tool_result",
                             "thinking",
@@ -5103,6 +5105,20 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             recurrence=item.recurrence,
         )
 
+    def _get_todo_schedule_db(settings: Settings):
+        """Create the schedule DB handle used by TODO routes."""
+        from ..core.todo_schedule_db import TodoScheduleDB
+
+        return TodoScheduleDB(settings.data_dir / "todo_schedule.db")
+
+    def _raise_if_todo_executing(schedule_db, todo_id: str, user_id: str) -> None:
+        """Reject user-facing TODO writes while a scheduled run owns the TODO."""
+        if schedule_db.is_execution_active(todo_id, user_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"TODO '{todo_id}' is currently executing; try again after the run finishes.",
+            )
+
     @app.post("/todos", response_model=TodoItemResponse, tags=["Dashboard"])
     async def create_todo(
         request: TodoCreateRequest,
@@ -5175,10 +5191,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         Update an existing TODO item.
         """
-        from ..core.todo_schedule_db import TodoScheduleDB
         from ..core.todo_constants import VALID_RECURRENCES
 
         todo_manager = TodoManager(settings.data_dir)
+        schedule_db = _get_todo_schedule_db(settings)
 
         # Parse status
         status = None
@@ -5206,6 +5222,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.scheduled_for and not request.clear_schedule:
             scheduled_for = _parse_scheduled_for(request.scheduled_for)
 
+        existing = todo_manager.get_todos(user_id).get_item(todo_id)
+        if not existing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TODO '{todo_id}' not found"
+            )
+        _raise_if_todo_executing(schedule_db, todo_id, user_id)
+
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
             if not item:
@@ -5213,6 +5237,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     status_code=404,
                     detail=f"TODO '{todo_id}' not found"
                 )
+
+            _raise_if_todo_executing(schedule_db, todo_id, user_id)
 
             success = todo_list.update_item(
                 todo_id=todo_id,
@@ -5253,7 +5279,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         # Sync schedule AFTER atomic_update saves the file
         # (sync_schedule_to_db reads from disk, so file must be saved first)
-        schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
         todo_manager.sync_schedule_to_db(user_id, updated_item.id, schedule_db)
         logger.info(f"[API] Schedule synced for TODO {updated_item.id}")
 
@@ -5269,11 +5294,27 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         Delete a TODO item.
         """
-        from ..core.todo_schedule_db import TodoScheduleDB
-
         todo_manager = TodoManager(settings.data_dir)
+        schedule_db = _get_todo_schedule_db(settings)
+
+        existing = todo_manager.get_todos(user_id).get_item(todo_id)
+        if not existing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TODO '{todo_id}' not found"
+            )
+        _raise_if_todo_executing(schedule_db, todo_id, user_id)
 
         with todo_manager.atomic_update(user_id) as todo_list:
+            item = todo_list.get_item(todo_id)
+            if not item:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found"
+                )
+
+            _raise_if_todo_executing(schedule_db, todo_id, user_id)
+
             deleted = todo_list.delete_item(todo_id)
             if not deleted:
                 raise HTTPException(
@@ -5282,7 +5323,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 )
 
             # Remove from schedule if it was scheduled
-            schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
             schedule_db.remove_scheduled(todo_id)
 
             return {"status": "ok", "deleted_id": todo_id}
@@ -5297,9 +5337,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         Mark a TODO item as done.
         """
-        from ..core.todo_schedule_db import TodoScheduleDB
-
         todo_manager = TodoManager(settings.data_dir)
+        schedule_db = _get_todo_schedule_db(settings)
+
+        existing = todo_manager.get_todos(user_id).get_item(todo_id)
+        if not existing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TODO '{todo_id}' not found"
+            )
+        _raise_if_todo_executing(schedule_db, todo_id, user_id)
 
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
@@ -5308,6 +5355,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     status_code=404,
                     detail=f"TODO '{todo_id}' not found"
                 )
+
+            _raise_if_todo_executing(schedule_db, todo_id, user_id)
 
             has_recurrence = item.recurrence
             success = todo_list.complete_item(todo_id)
@@ -5337,7 +5386,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             item = todo_list.get_item(todo_id)
 
             # Sync schedule
-            schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
             if has_recurrence and item.scheduled_for:
                 todo_manager.sync_schedule_to_db(user_id, todo_id, schedule_db)
             else:

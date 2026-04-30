@@ -244,6 +244,11 @@
         break;
       }
 
+      case 'tool_call_delta': {
+        chatStore.setAssistantActivityPhase('formulating');
+        break;
+      }
+
       case 'tool_call': {
         // Add tool call as a step (preserves order with thinking)
         const data = event.data as {
