@@ -545,6 +545,7 @@ function createAutonomousStore() {
 
       case 'tool_call_delta':
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
+          chatStore.flushStreamingBuffers();
           chatStore.setAssistantActivityPhase('formulating');
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);

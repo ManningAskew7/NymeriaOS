@@ -437,6 +437,14 @@ class _InlineThinkingTextStripper:
         self._maybe_dangling_thinking = False
         self._buffer = ""
 
+    @property
+    def is_holding_possible_inline_thinking(self) -> bool:
+        return self._maybe_dangling_thinking and bool(self._buffer)
+
+    @property
+    def buffered_length(self) -> int:
+        return len(self._buffer)
+
     def mark_possible_inline_thinking(self) -> None:
         """Buffer text after an empty reasoning placeholder until safe."""
         if not self._inside_thinking and not self._buffer:
@@ -4424,6 +4432,9 @@ class NymeriaAgent:
                 current_model_stream_events = 0
                 current_model_started_at: Optional[float] = None
                 graph_stream_started_at = _time.monotonic()
+                inline_hold_log_count = 0
+                inline_release_log_count = 0
+                inline_mark_log_count = 0
 
                 def log_stream_diagnostic(message: str, *args: Any, warning: bool = False) -> None:
                     if warning:
@@ -4432,6 +4443,43 @@ class NymeriaAgent:
                         logger.info(message, *args)
                     else:
                         logger.debug(message, *args)
+
+                def process_visible_text(text: str, run_id: Any) -> str:
+                    """Sanitize answer text and log when possible preamble is held."""
+                    nonlocal inline_hold_log_count, inline_release_log_count
+                    was_holding = inline_text_stripper.is_holding_possible_inline_thinking
+                    clean_text = inline_text_stripper.process_text(text)
+                    is_holding = inline_text_stripper.is_holding_possible_inline_thinking
+
+                    if is_holding and not clean_text:
+                        inline_hold_log_count += 1
+                        if inline_hold_log_count <= 3 or inline_hold_log_count % 25 == 0:
+                            log_stream_diagnostic(
+                                "[ASTREAM DIAG] inline_thinking_buffer_hold "
+                                "thread=%s autonomous=%s run_id=%s "
+                                "raw_chars=%d buffered_chars=%d hold_count=%d",
+                                thread_id,
+                                _is_self_invoke,
+                                run_id,
+                                len(text),
+                                inline_text_stripper.buffered_length,
+                                inline_hold_log_count,
+                            )
+                    elif was_holding and not is_holding:
+                        inline_release_log_count += 1
+                        log_stream_diagnostic(
+                            "[ASTREAM DIAG] inline_thinking_buffer_release "
+                            "thread=%s autonomous=%s run_id=%s emitted_chars=%d "
+                            "buffered_chars=%d release_count=%d",
+                            thread_id,
+                            _is_self_invoke,
+                            run_id,
+                            len(clean_text),
+                            inline_text_stripper.buffered_length,
+                            inline_release_log_count,
+                        )
+
+                    return clean_text
 
                 def should_emit_openai_reasoning(text: Any) -> bool:
                     if not isinstance(text, str) or not text:
@@ -4589,7 +4637,9 @@ class NymeriaAgent:
                                         if not isinstance(block, dict):
                                             if isinstance(block, str) and block:
                                                 streamed_text_in_current_llm_call = True
-                                                text = inline_text_stripper.process_text(block)
+                                                text = process_visible_text(
+                                                    block, event.get("run_id")
+                                                )
                                                 if text:
                                                     final_response_parts.append(text)
                                                     yield {"type": "response", "content": text}
@@ -4607,6 +4657,17 @@ class NymeriaAgent:
                                                 inline_text_stripper.reset()
                                             else:
                                                 inline_text_stripper.mark_possible_inline_thinking()
+                                                inline_mark_log_count += 1
+                                                if inline_mark_log_count <= 3:
+                                                    log_stream_diagnostic(
+                                                        "[ASTREAM DIAG] inline_thinking_possible "
+                                                        "thread=%s autonomous=%s run_id=%s "
+                                                        "stream_events=%d",
+                                                        thread_id,
+                                                        _is_self_invoke,
+                                                        event.get("run_id"),
+                                                        current_model_stream_events,
+                                                    )
                                             for text in reasoning_texts:
                                                 if should_emit_openai_reasoning(text):
                                                     streamed_reasoning_in_current_llm_call = True
@@ -4615,13 +4676,17 @@ class NymeriaAgent:
                                             text = block.get("text", "")
                                             if text:
                                                 streamed_text_in_current_llm_call = True
-                                                clean_text = inline_text_stripper.process_text(text)
+                                                clean_text = process_visible_text(
+                                                    text, event.get("run_id")
+                                                )
                                                 if clean_text:
                                                     final_response_parts.append(clean_text)
                                                     yield {"type": "response", "content": clean_text}
                                 elif isinstance(content, str):
                                     streamed_text_in_current_llm_call = True
-                                    clean_text = inline_text_stripper.process_text(content)
+                                    clean_text = process_visible_text(
+                                        content, event.get("run_id")
+                                    )
                                     if clean_text:
                                         final_response_parts.append(clean_text)
                                         yield {"type": "response", "content": clean_text}
@@ -4646,7 +4711,22 @@ class NymeriaAgent:
                                 event.get("run_id"),
                                 current_model_stream_events,
                             )
+                        was_holding_inline_text = (
+                            inline_text_stripper.is_holding_possible_inline_thinking
+                        )
+                        buffered_inline_chars = inline_text_stripper.buffered_length
                         clean_text = inline_text_stripper.flush()
+                        if was_holding_inline_text:
+                            log_stream_diagnostic(
+                                "[ASTREAM DIAG] inline_thinking_buffer_flush "
+                                "thread=%s autonomous=%s run_id=%s "
+                                "buffered_chars=%d emitted_chars=%d",
+                                thread_id,
+                                _is_self_invoke,
+                                event.get("run_id"),
+                                buffered_inline_chars,
+                                len(clean_text),
+                            )
                         if clean_text:
                             final_response_parts.append(clean_text)
                             yield {"type": "response", "content": clean_text}
