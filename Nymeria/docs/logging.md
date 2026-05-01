@@ -159,3 +159,22 @@ If autonomous output looks batched, compare these diagnostics:
 - `[LLM STREAM] chunks=1` with a large `text_chars` value means the provider or LangChain model wrapper only delivered one coarse async chunk.
 - `[LLM STREAM] chunks>1` but `[ASTREAM DIAG] model_stream_events=0` means LangGraph did not surface the provider chunks.
 - `[ASTREAM DIAG] model_stream_events>1` but `[STREAM_BRIDGE] chunks` is low means Nymeria's SSE conversion or autonomous bridge is dropping/coalescing events.
+
+If the worker streamed chunks but the desktop did not update live, trace the autonomous SSE path hop by hop:
+```
+[REDIS EVENT BUS] publish type=response count=1 redis_receivers=...
+[REDIS EVENT BUS] message_received type=response count=1 local_subscribers=...
+[REDIS EVENT BUS] queue_enqueue subscriber=... type=response count=1
+[AUTONOMOUS SSE] queue_receive subscriber=... type=response count=1
+[AUTONOMOUS SSE] yield subscriber=... type=response count=1
+[Autonomous] First stream byte received ...
+[Autonomous] First data event frame received ...
+[Autonomous] Event handled type=response count=1 total=...
+```
+
+Interpretation:
+- Worker publish present, but API `message_received` absent: Redis pub/sub or API subscriber thread problem.
+- API `message_received` has `local_subscribers=0`: no active `/autonomous/stream` client in that API process.
+- `queue_enqueue` present, but no `queue_receive`/`yield`: SSE generator or subscriber queue stalled.
+- `yield` present, but no desktop `Event handled`: browser stream connection, auth, network, or frontend parser/reconnect issue.
+- Desktop `idle_timeout` followed by reconnect is expected if heartbeat/data bytes stop arriving for the watchdog window; it should reconnect and refresh current history/context.

@@ -296,13 +296,19 @@ The **EventBus** enables real-time streaming of autonomous task execution to con
 
 **Architecture:**
 ```
-Ticker executes TODO
+Ticker / watchdog / trigger / self-invoke executes autonomous work
     ↓
 publish_autonomous_event(type, thread_id, task_id, data)
     ↓
-EventBus.publish() → distributes to all subscriber queues
+EventBus.publish()
+    ↓
+RedisEventBus publishes to Redis when Redis is enabled
+    ↓
+API container Redis subscriber receives the message and enqueues it locally
     ↓
 /autonomous/stream SSE endpoint reads from queue → sends to frontend
+    ↓
+Desktop fetch stream parses frames and updates the active chat thread
 ```
 
 **Event Types:**
@@ -324,7 +330,8 @@ EventBus.publish() → distributes to all subscriber queues
 - Per-subscriber `Queue` (maxsize=100)
 - Non-blocking publish (drops if queue full)
 - Subscribers identified by UUID
-- Events logged when no subscribers connected (helps debug frontend issues)
+- Events logged when no subscribers are connected, when Redis receives a message, when the API enqueues/receives/yields a message, and when queues drop events
+- High-volume events (`response`, `thinking`, `tool_call_delta`) log the first few chunks and then sample, so long runs remain debuggable without flooding logs
 
 **SSE Endpoint (`/autonomous/stream`):**
 ```python
@@ -335,6 +342,7 @@ Authorization: Bearer {key}
 - Sends heartbeat every 1 second when idle
 - Filters events to the authenticated user unless an admin caller uses `X-Nymeria-Act-As`; `client_id` suppresses same-client sync echoes
 - Unsubscribes on client disconnect
+- Desktop reconnects accidental drops, stream ends, HTTP errors, and idle timeouts; on reconnect it refreshes the current thread history/context and syncs the thread list to catch missed events
 
 ---
 

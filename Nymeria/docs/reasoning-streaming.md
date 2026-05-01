@@ -109,7 +109,7 @@ Reasoning arrives as typed blocks with `type: "reasoning"`. Nymeria streams and 
            ▼
 ┌─────────────────────────────┐
 │ triggers/api.py /chat       │  Serialises {type, content} to an SSE line
-│                             │  like `event: thinking\ndata: {...}`
+│                             │  like `data: {"type":"thinking",...}`
 └──────────┬──────────────────┘
            │
            ▼
@@ -218,11 +218,11 @@ Expected: 20+ chunks and a plaintext preview. If `reasoning chunks: 0` but the c
 
 ### Is the agent emitting thinking SSE events?
 
-Send a chat with `curl -N http://localhost:8000/chat ... --data-raw '{...}'` to a thread configured for the sidecar, then `grep -E '^event: thinking|^data:'` the stream. You should see `event: thinking` lines interleaved with `event: response` lines.
+Send a chat with `curl -N http://localhost:8000/chat ... --data-raw '{...}'` to a thread configured for the sidecar, then `grep -E '"type":"thinking"|"type":"response"'` the stream. You should see `data:` frames containing `"type":"thinking"` interleaved with `"type":"response"`.
 
 ### Is the frontend rendering them?
 
-Open devtools → Network → the `/chat` EventSource. Confirm `event: thinking` lines are arriving. If they are but the dropdown isn't appearing, the regression is in the frontend (chat store or ThinkingBlock), not the backend.
+Open devtools → Network → the `/chat` streaming request. Confirm SSE `data:` frames with `"type":"thinking"` are arriving. If they are but the dropdown isn't appearing, the regression is in the frontend (chat store or ThinkingBlock), not the backend.
 
 ### Is history rehydrating saved reasoning?
 
