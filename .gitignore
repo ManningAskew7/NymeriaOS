@@ -78,6 +78,7 @@ desktop.ini
 
 # === Claude Code ===
 .claude/
+.playwright-mcp/
 
 # === Project-specific exclusions ===
 Plans-fixes.txt
