@@ -76,10 +76,12 @@ function createTodosStore() {
   const completedCount = $derived(todos.filter((t) => t.status === 'done').length);
 
   let currentThreadFilter = $state<string | undefined>(undefined);
+  let currentStatusFilter = $state<string | undefined>(undefined);
 
   async function fetch(filterStatus?: string, threadId?: string): Promise<void> {
     loading = true;
     error = null;
+    currentStatusFilter = filterStatus;
     currentThreadFilter = threadId;
     try {
       const response = await api.getTodos(filterStatus, currentThreadFilter);
@@ -164,7 +166,7 @@ function createTodosStore() {
     update,
     delete: deleteTodo,
     complete,
-    onTodoToolCompleted: () => fetch()
+    onTodoToolCompleted: () => fetch(currentStatusFilter, currentThreadFilter)
   };
 }
 

@@ -14,6 +14,7 @@ import { todosStore } from './todos.svelte';
 import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
 import { api } from '$lib/services/api.svelte';
+import { isTodoTool } from '$lib/utils/todoTools';
 
 interface AutonomousEvent {
   type: string;
@@ -355,10 +356,6 @@ function createAutonomousStore() {
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
         }
-        // Refresh todos if it's a todo tool
-        if ((event.name as string)?.startsWith('todo')) {
-          todosStore.onTodoToolCompleted();
-        }
         break;
 
       case 'tool_result':
@@ -373,7 +370,7 @@ function createAutonomousStore() {
           bufferPendingEvent(event);
         }
         // Refresh relevant stores based on tool
-        if ((event.name as string)?.startsWith('todo')) {
+        if (isTodoTool(event.name as string | undefined)) {
           todosStore.onTodoToolCompleted();
           activityStore.fetch();
         }

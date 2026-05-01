@@ -8,10 +8,13 @@
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { activityStore } from '$lib/stores/activity.svelte';
+  import { todosStore } from '$lib/stores/todos.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { isTodoTool } from '$lib/utils/todoTools';
   import { untrack } from 'svelte';
   import type { FileAttachment, SSEEvent } from '$lib/types';
 
@@ -204,6 +207,10 @@
           chatStore.updateToolCallStepResult(tr.id, tr.result, tr.status === 'error' ? 'error' : 'success');
         } else {
           chatStore.updateToolCallResultByName(tr.name, tr.result, tr.status === 'error' ? 'error' : 'success');
+        }
+        if (isTodoTool(tr.name)) {
+          todosStore.onTodoToolCompleted();
+          activityStore.fetch();
         }
         break;
       }
