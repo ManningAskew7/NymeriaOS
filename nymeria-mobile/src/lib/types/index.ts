@@ -46,6 +46,7 @@ export interface MessageStep {
 export interface ToolReloadInfo {
   tools: string[];
   ttl: string;
+  ttlSeconds?: number | null;
   source?: string;
   skillName?: string | null;
   reason?: string | null;

@@ -1344,6 +1344,7 @@ export class NymeriaAPI {
         toolReloadInfo: m.tool_reload_info ? {
           tools: ((m.tool_reload_info as Record<string, unknown>).tools as string[]) || [],
           ttl: ((m.tool_reload_info as Record<string, unknown>).ttl as string) || '',
+          ttlSeconds: ((m.tool_reload_info as Record<string, unknown>).ttl_seconds as number | null) ?? null,
           source: ((m.tool_reload_info as Record<string, unknown>).source as string) || undefined,
           skillName: ((m.tool_reload_info as Record<string, unknown>).skill_name as string | null) || undefined,
           reason: ((m.tool_reload_info as Record<string, unknown>).reason as string | null) || undefined,

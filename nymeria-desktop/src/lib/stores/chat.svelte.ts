@@ -1044,7 +1044,7 @@ function createChatStore() {
           status: 'streaming' as const,
           activityPhase: 'processing' as const,
           activityUpdatedAt: new Date(),
-          toolReloadInfo: { tools, ttl, source, skillName, reason } as ToolReloadInfo,
+          toolReloadInfo: { tools, ttl, ttlSeconds, source, skillName, reason } as ToolReloadInfo,
         }
       ];
     },

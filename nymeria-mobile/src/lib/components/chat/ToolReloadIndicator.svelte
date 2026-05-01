@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ToolReloadInfo } from '$lib/types';
-  import Icon from '$lib/components/common/Icon.svelte';
+  import { Icon } from '$lib/components/common';
 
   interface Props {
     info: ToolReloadInfo;
@@ -85,14 +85,14 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: min(760px, 88%);
+    width: min(100%, 760px);
     margin: var(--spacing-xs) 0 var(--spacing-md);
     padding: 10px 12px;
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent-primary));
     border: 1px solid var(--border-subtle);
     color: var(--text-secondary);
-    animation: fadeSlide 150ms ease-out;
+    animation: slideUp var(--transition-normal);
   }
 
   .reload-header {
@@ -130,16 +130,5 @@
     color: var(--text-secondary);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-  }
-
-  @keyframes fadeSlide {
-    from {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
   }
 </style>

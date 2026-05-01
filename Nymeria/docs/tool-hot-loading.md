@@ -30,7 +30,7 @@ User: "convert report.docx to PDF"
   │    │    ├─ Persists to thread config (with TTL)
   │    │    ├─ Sets agent._pending_tool_reload[thread_id]
   │    │    ├─ Invalidates cached graph
-  │    │    └─ Returns Command(goto=END) → forces graph to finish
+  │    │    └─ Returns Command(goto=END) with "STOP NOW" guidance → forces graph to finish
   │    └─ Graph ends (no final AIMessage — Command routes to __end__)
   │
   ├─ astream() reload loop fires
@@ -47,6 +47,48 @@ User: "convert report.docx to PDF"
 ```
 
 From the client's perspective, the stream never stops. One user message in, one continuous response out.
+
+From the model's perspective, enabling and using a new tool are two separate steps. After an enable result that queues a reload, the model must stop immediately: no final answer, no explanatory text, and no follow-up tool call. The system injects `tool_reload_resume` after the fresh graph has the new tools bound; only that resumed step should continue the user's task and call the newly enabled tools.
+
+## Skill Kit Binding
+
+Skill Kits use the same reload path as `tool_search`. When `Skill(name=...)`
+activates a skill whose `metadata.nymeria.required_tools` list contains tools
+that are not currently bound, the Skill tool:
+
+1. Validates every required tool strictly (unknown, unloadable, or admin-only
+   dependencies fail before any config write).
+2. Writes the required tools to `temporary_tools` or `enabled_tools` using the
+   skill's `metadata.nymeria.tool_ttl` (`2h` by default).
+3. Removes required tools from `disabled_tools` when needed, matching
+   `tool_search(action="enable")`.
+4. Queues `_pending_tool_reload[thread_id]` with `source="skill_kit"`,
+   `skill_name`, and `reason`.
+5. Returns the skill body plus STOP guidance in a `Command(goto=END)` so the
+   resumed graph has both the instructions and the newly bound tool schemas.
+
+`allowed-tools` remains advisory Agent Skills metadata; it does not bind
+Nymeria tools. Activation warnings are only emitted when an `allowed-tools`
+entry is also a known Nymeria tool name that is missing from the current
+thread; portable names such as `Read`, `Write`, and `Bash(...)` stay quiet.
+
+## Tool Create Reloads
+
+`tool_create(action="publish")` also uses the reload loop after it writes a
+validated HTTP tool definition, reloads the custom-tool registry, and enables
+the new tool on the publishing thread. These reloads carry
+`source="tool_create"` and `reason="tool_published"` so history, resume text,
+and frontend indicators can distinguish agent-authored tools from a normal
+`tool_search(action="enable")` request.
+
+## Skill Publish Reloads
+
+`skill_config(action="publish", activate_current_thread=true)` uses the same
+reload loop after it writes a validated `SKILL.md`, reloads `SkillManager`,
+and updates `ThreadConfig.enabled_skills`. In this case the reload refreshes
+the generated `Skill` meta-tool index rather than binding a normal tool, so
+the emitted `tool_reload` event may have `tools: []` with
+`source="skill_config"`, `skill_name`, and `reason="skill_published"`.
 
 ## TTL (Time-to-Live) Enablements
 
@@ -115,7 +157,7 @@ Each requested tool is classified into exactly one bucket (checked in this prior
 After classification, if `newly_added` or `un_disabled` is non-empty **and** the reload cap hasn't been hit:
 
 1. Sets `agent._pending_tool_reload[thread_id]` with the new tool names and TTL info (`:462`)
-2. Returns `Command(goto=END, update={"messages": [ToolMessage(...)]})` (`:527`) — this forces the graph to end cleanly after the tool result, handing control back to `astream()`.
+2. Returns `Command(goto=END, update={"messages": [ToolMessage(...)]})` (`:527`) with explicit "STOP NOW" wording — this forces the graph to end cleanly after the tool result, handing control back to `astream()`.
 
 If the reload cap is already hit, returns a plain string instead. The enablement is still persisted, but the tool won't be bound until the next user message.
 
@@ -138,7 +180,7 @@ while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:  # default 3
 
 Each iteration:
 
-1. **Yields a `tool_reload` SSE event** (`:4149`) — new event type, currently ignored by frontends (unknown types are silently skipped). Can be used for UI decoration later.
+1. **Yields a `tool_reload` SSE event** (`:4149`) — frontends use this to render the reload/resume message between the pre-reload and post-reload response segments.
 
 2. **Invalidates the graph cache** and builds a fresh graph via `_get_async_graph_for_user()` (`:4159-4162`). The new graph has the just-enabled tools bound to the LLM.
 
@@ -183,14 +225,17 @@ def _resolve_temporary_tools(self, tc) -> set:
 
 ### History Filter: `get_conversation_history()` — `core/agent.py:4365`
 
-The `tool_reload_resume` HumanMessage is internal system plumbing — it should never appear in the chat UI. But the AI response that follows it (the tool calls, the report) **must** be visible.
+The `tool_reload_resume` HumanMessage is internal plumbing and is not returned
+as a normal user message. Its text is captured as reload metadata so frontends
+can render a visible "resume message" between the two assistant bubbles. The AI
+response that follows it (the tool calls, the report) **must** remain visible.
 
 The internal message filter handles this by skipping the prompt but keeping `skip_until_next_human = False`:
 
 ```python
 elif internal_type == 'tool_reload_resume':
     skip_until_next_human = False  # Show the agent's response
-    continue                       # But hide the system prompt
+    continue                       # Hide the raw internal message
 ```
 
 This matches the treatment of `autonomous_wakeup`. The AI messages from the second invocation are then picked up by the turn consolidation logic and rendered as a continuation of the assistant's turn — or as a separate message bubble if there was no active turn (which happens when `Command(goto=END)` ended the first invocation without a final AIMessage).
@@ -271,23 +316,31 @@ tool_call(tool_search enable) → tool_result → tool_reload → [second invoca
 | `tools` | `string[]` | Names of newly-loaded tools |
 | `ttl` | `string` | TTL preset key (`"2h"`, `"permanent"`, etc.) |
 | `ttl_seconds` | `int \| null` | TTL in seconds, or null for permanent |
+| `source` | `string` | `"tool_search"`, `"tool_create"`, `"skill_kit"`, or `"skill_config"` |
+| `skill_name` | `string \| null` | Skill Kit name when `source="skill_kit"` or `source="skill_config"` |
+| `reason` | `string \| null` | Human-readable reload reason |
 
-Current frontends ignore unknown event types, so this is invisible by default. A future UI update could show a brief "Reloading tools..." indicator.
+Existing clients can ignore `source`, `skill_name`, and `reason`; they are
+metadata-only additions.
 
 ## Frontend Rendering
 
 ### Live SSE Stream
 
-During streaming, the desktop frontend receives a `tool_reload` SSE event between the two graph invocations. The chat store:
+During streaming, the desktop and mobile frontends receive a `tool_reload` SSE event between the two graph invocations. The chat store:
 
-1. Finalizes the current assistant message (sets `toolReloadInfo` with tool names and TTL)
+1. Finalizes the current assistant message (sets `toolReloadInfo` with tool names, TTL, and source)
 2. Creates a new streaming assistant message for the second invocation
 
-A `ToolReloadIndicator` component renders between the two message bubbles — a centered pill showing the tool names and TTL, with an expandable dropdown for the system resume prompt.
+The frontend renders a visible reload/resume message between the two message
+bubbles. It shows the same resume text that the model receives, plus a compact
+label such as "Tool Created", "Skill Kit Binding", or "Skill Kit Published".
+This makes the graph-boundary explicit without drawing connector lines between
+separate assistant messages.
 
 ### After Refresh
 
-On refresh, the frontend calls `/threads/{id}/history` which invokes `get_conversation_history()`. The backend annotates the second assistant message with a `tool_reload_info` field (tools, TTL, resume prompt text). The frontend maps this to `Message.toolReloadInfo` and renders the same separator.
+On refresh, the frontend calls `/threads/{id}/history` which invokes `get_conversation_history()`. The backend annotates the second assistant message with a `tool_reload_info` field (tools, TTL, source, optional skill name/reason, resume message text). The frontend maps this to `Message.toolReloadInfo` and renders the same reload/resume message.
 
 The two bubbles appear separate because:
 
@@ -304,7 +357,7 @@ Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffere
 | File | Lines changed | What |
 |------|--------------|------|
 | `tools/tool_search.py` | +492 | TTL support, classification buckets, `Command(goto=END)` return, reload cap logic, preserve-on-disable, status/search annotations |
-| `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()` and `chat()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
+| `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()`, `chat()`, and legacy `stream()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
 | `core/thread_config.py` | +19 | `TemporaryToolEntry` model, `temporary_tools` field on `ThreadConfig` |
 | `tools/metadata.py` | +7 | Updated `tool_search` description |
 | `docs/tools.md` | +46 | Updated tool_search section with TTL and auto-continue docs |
