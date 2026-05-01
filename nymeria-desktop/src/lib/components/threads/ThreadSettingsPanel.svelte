@@ -1374,21 +1374,29 @@
             </p>
             <div class="skills-list">
               {#each skillsStore.installed as skill (skill.name)}
+                {@const defaultOn = skill.default_active}
                 {@const globalOn = skillsStore.enabledGlobal.includes(skill.name)}
                 {@const threadOn = threadEnabledSkills.has(skill.name)}
                 {@const threadOff = threadDisabledSkills.has(skill.name)}
-                {@const activeHere = (globalOn || threadOn) && !threadOff}
+                {@const activeHere = (defaultOn || globalOn || threadOn) && !threadOff}
                 <div class="skill-row" class:active={activeHere}>
                   <div class="skill-info">
                     <div class="skill-head">
                       <span class="skill-name">{skill.name}</span>
                       <span class="skill-scope">{skill.scope}</span>
+                      {#if defaultOn}<span class="skill-chip">default</span>{/if}
                       {#if globalOn}<span class="skill-chip">global</span>{/if}
+                      {#if skill.is_skill_kit}<span class="skill-chip">Skill Kit</span>{/if}
+                      {#each skill.required_tools as toolName}
+                        <span class="skill-chip skill-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
+                          {toolName}
+                        </span>
+                      {/each}
                     </div>
                     <p class="skill-desc">{skill.description}</p>
                   </div>
                   <div class="skill-toggles">
-                    {#if globalOn}
+                    {#if defaultOn || globalOn}
                       <button
                         class="skill-btn"
                         class:skill-btn-danger={threadOff}
@@ -2146,6 +2154,7 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
+    flex-wrap: wrap;
     margin-bottom: 4px;
   }
 
@@ -2168,6 +2177,10 @@
   .skills-thread-panel .skill-chip {
     color: var(--accent-primary);
     border-color: var(--accent-primary);
+  }
+  .skills-thread-panel .skill-required {
+    color: var(--text-secondary);
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-subtle));
   }
 
   .skills-thread-panel .skill-desc {

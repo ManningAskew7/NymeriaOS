@@ -1110,6 +1110,9 @@ export class NymeriaAPI {
               tools: (data.tools as string[]) || [],
               ttl: (data.ttl as string) || '',
               ttlSeconds: (data.ttl_seconds as number | null) ?? null,
+              source: data.source as string | undefined,
+              skillName: data.skill_name as string | null | undefined,
+              reason: data.reason as string | null | undefined,
             },
             timestamp: new Date(),
             threadId
@@ -1341,6 +1344,9 @@ export class NymeriaAPI {
         toolReloadInfo: m.tool_reload_info ? {
           tools: ((m.tool_reload_info as Record<string, unknown>).tools as string[]) || [],
           ttl: ((m.tool_reload_info as Record<string, unknown>).ttl as string) || '',
+          source: ((m.tool_reload_info as Record<string, unknown>).source as string) || undefined,
+          skillName: ((m.tool_reload_info as Record<string, unknown>).skill_name as string | null) || undefined,
+          reason: ((m.tool_reload_info as Record<string, unknown>).reason as string | null) || undefined,
           resumePrompt: ((m.tool_reload_info as Record<string, unknown>).resume_prompt as string) || undefined,
         } : undefined
       })

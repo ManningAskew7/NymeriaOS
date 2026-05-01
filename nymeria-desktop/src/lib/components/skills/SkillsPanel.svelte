@@ -94,9 +94,16 @@
                 <div class="skill-main">
                   <div class="skill-title-row">
                     <span class="skill-name">{skill.name}</span>
+                    {#if skill.default_active}<span class="chip chip-default">default</span>{/if}
+                    {#if skill.is_skill_kit}<span class="chip chip-kit">Skill Kit</span>{/if}
                     {#if skill.has_scripts}<span class="chip">scripts</span>{/if}
                     {#if skill.has_references}<span class="chip">references</span>{/if}
                     {#if skill.has_assets}<span class="chip">assets</span>{/if}
+                    {#each skill.required_tools as toolName}
+                      <span class="chip chip-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
+                        {toolName}
+                      </span>
+                    {/each}
                     {#if skill.allowed_tools.length > 0}
                       <span class="chip chip-tools" title={skill.allowed_tools.join(', ')}>
                         {skill.allowed_tools.length} allowed-tool{skill.allowed_tools.length > 1 ? 's' : ''}
@@ -115,13 +122,17 @@
                   </button>
                 </div>
                 <div class="skill-actions">
-                  <label class="toggle-wrap" title="Enable this skill by default on every new thread">
+                  <label
+                    class="toggle-wrap"
+                    title={skill.default_active ? 'Bundled default-active skill; disable per thread if needed' : 'Enable this skill by default on every new thread'}
+                  >
                     <input
                       type="checkbox"
-                      checked={isGlobal}
+                      checked={skill.default_active || isGlobal}
+                      disabled={skill.default_active}
                       onchange={() => handleToggleGlobal(skill)}
                     />
-                    <span class="toggle-text">Enable globally</span>
+                    <span class="toggle-text">{skill.default_active ? 'Default active' : 'Enable globally'}</span>
                   </label>
                   {#if skill.scope !== 'bundled'}
                     <button
@@ -284,6 +295,20 @@
   }
   .chip-tools {
     cursor: help;
+  }
+  .chip-kit {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-elevated));
+  }
+  .chip-default {
+    color: var(--status-success, var(--accent-primary));
+    border-color: color-mix(in srgb, var(--status-success, var(--accent-primary)) 55%, var(--border-subtle));
+    background: color-mix(in srgb, var(--status-success, var(--accent-primary)) 8%, var(--bg-elevated));
+  }
+  .chip-required {
+    color: var(--text-secondary);
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-subtle));
   }
 
   .skill-desc {

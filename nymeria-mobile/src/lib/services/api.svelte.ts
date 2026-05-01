@@ -894,6 +894,21 @@ export class NymeriaAPI {
             timestamp: new Date(),
             threadId
           };
+
+        case 'tool_reload':
+          return {
+            type: 'tool_reload',
+            data: {
+              tools: (data.tools as string[]) || [],
+              ttl: (data.ttl as string) || '',
+              ttlSeconds: (data.ttl_seconds as number | null) ?? null,
+              source: data.source as string | undefined,
+              skillName: data.skill_name as string | null | undefined,
+              reason: data.reason as string | null | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
       }
     }
 
@@ -1094,7 +1109,15 @@ export class NymeriaAPI {
         contextSummary: (m.context_summary as string | undefined) || (m.contextSummary as string | undefined),
         messagesRemoved: (m.messages_removed as number | undefined) ?? (m.messagesRemoved as number | undefined),
         autoResumed: (m.auto_resumed as boolean | undefined) ?? (m.autoResumed as boolean | undefined),
-        autonomousSource: m.autonomous_source as string | undefined
+        autonomousSource: m.autonomous_source as string | undefined,
+        toolReloadInfo: m.tool_reload_info ? {
+          tools: ((m.tool_reload_info as Record<string, unknown>).tools as string[]) || [],
+          ttl: ((m.tool_reload_info as Record<string, unknown>).ttl as string) || '',
+          source: ((m.tool_reload_info as Record<string, unknown>).source as string) || undefined,
+          skillName: ((m.tool_reload_info as Record<string, unknown>).skill_name as string | null) || undefined,
+          reason: ((m.tool_reload_info as Record<string, unknown>).reason as string | null) || undefined,
+          resumePrompt: ((m.tool_reload_info as Record<string, unknown>).resume_prompt as string) || undefined,
+        } : undefined
       })
     );
 
