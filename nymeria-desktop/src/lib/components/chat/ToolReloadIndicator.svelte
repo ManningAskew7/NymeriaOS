@@ -21,15 +21,24 @@
 
   const isSkillKit = $derived(info.source === 'skill_kit');
   const isSkillConfig = $derived(info.source === 'skill_config');
+  const isToolCreate = $derived(info.source === 'tool_create');
   const labelText = $derived(
-    isSkillConfig ? 'Skill Kit Published' : isSkillKit ? 'Skill Kit Binding' : 'Tool Binding'
+    isSkillConfig
+      ? 'Skill Kit Published'
+      : isSkillKit
+        ? 'Skill Kit Binding'
+        : isToolCreate
+          ? 'Tool Created'
+          : 'Tool Binding'
   );
   const sourceText = $derived(
     isSkillConfig && info.skillName
       ? `skill_config publishing ${info.skillName}`
       : isSkillKit && info.skillName
         ? `Skill Kit ${info.skillName}`
-        : 'tool_search'
+        : isToolCreate
+          ? 'tool_create'
+          : 'tool_search'
   );
 
   const promptText = $derived(
