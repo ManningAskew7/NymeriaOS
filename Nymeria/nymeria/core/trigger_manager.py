@@ -770,6 +770,7 @@ class TriggerManager:
         Returns (response_parts, thinking_parts, iteration_limit_hit).
         """
         from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
+        from .stream_bridge import iter_agent_astream
 
         response_parts: List[str] = []
         thinking_parts: List[str] = []
@@ -777,7 +778,8 @@ class TriggerManager:
         iteration_limit_hit = False
         started_published = False
 
-        for chunk in agent.stream(
+        for chunk in iter_agent_astream(
+            agent,
             message=prompt,
             thread_id=thread_id,
             user_id=user_id,

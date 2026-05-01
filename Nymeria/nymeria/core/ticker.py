@@ -23,6 +23,7 @@ from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notifications import create_notification
 from .response_handler import create_response
+from .stream_bridge import iter_agent_astream
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
@@ -463,15 +464,6 @@ class Ticker:
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
             logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
 
-            # Publish task_started immediately so frontend enters streaming mode
-            publish_autonomous_event(
-                event_type="task_started",
-                thread_id=thread_id,
-                user_id=entry.user_id,
-                task_id=todo.id,
-                data={"prompt": prompt, "todo_id": todo.id},
-            )
-
             response_parts = []
             thinking_parts = []
             pending_calls = {}  # call_id → {name, args} for console rendering
@@ -480,12 +472,24 @@ class Ticker:
             had_tool_calls = False
             chunk_count = 0
             iteration_limit_hit = False
-            for chunk in self.agent.stream(
+            started_published = False
+            for chunk in iter_agent_astream(
+                self.agent,
                 message=prompt,
                 thread_id=thread_id,
                 user_id=entry.user_id,
                 _is_self_invoke=True,
             ):
+                if not started_published:
+                    publish_autonomous_event(
+                        event_type="task_started",
+                        thread_id=thread_id,
+                        user_id=entry.user_id,
+                        task_id=todo.id,
+                        data={"prompt": prompt, "todo_id": todo.id},
+                    )
+                    started_published = True
+
                 chunk_count += 1
                 chunk_type = chunk.get('type', 'unknown')
                 chunk_content_preview = str(chunk.get('content', ''))[:100] if chunk.get('content') else ''
@@ -573,7 +577,8 @@ class Ticker:
                 )
                 continuation_limit_hit = False
 
-                for chunk in self.agent.stream(
+                for chunk in iter_agent_astream(
+                    self.agent,
                     message=continuation_prompt,
                     thread_id=thread_id,
                     user_id=entry.user_id,

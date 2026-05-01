@@ -285,6 +285,24 @@ function createAutonomousStore() {
         break;
       }
 
+      case 'workspace_artifact':
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          const toolId = event.tool_call_id as string | undefined;
+          const path = event.path as string | undefined;
+          const name = event.name as string | undefined;
+          if (toolId && path && name) {
+            chatStore.addToolCallArtifacts(toolId, [{
+              path,
+              name,
+              mimeType: (event.mime_type as string) || 'application/octet-stream',
+              sizeBytes: (event.size_bytes as number) || 0
+            }]);
+          }
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          bufferPendingEvent(event);
+        }
+        break;
+
       case 'response':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
           chatStore.addResponseStep(event.content as string || '');

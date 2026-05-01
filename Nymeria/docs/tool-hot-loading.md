@@ -358,6 +358,7 @@ Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffere
 |------|--------------|------|
 | `tools/tool_search.py` | +492 | TTL support, classification buckets, `Command(goto=END)` return, reload cap logic, preserve-on-disable, status/search annotations |
 | `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()`, `chat()`, and legacy `stream()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
+| `core/stream_bridge.py` | new | Sync worker bridge that lets scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` live |
 | `core/thread_config.py` | +19 | `TemporaryToolEntry` model, `temporary_tools` field on `ThreadConfig` |
 | `tools/metadata.py` | +7 | Updated `tool_search` description |
 | `docs/tools.md` | +46 | Updated tool_search section with TTL and auto-continue docs |

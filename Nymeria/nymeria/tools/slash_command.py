@@ -124,9 +124,9 @@ async def _dispatch_command(command: str, config: RunnableConfig) -> str:
 def _run_async_from_sync(coro_factory: Callable[[], Awaitable[str]]) -> str:
     """Run async slash-command dispatch from sync tool contexts.
 
-    Scheduled TODOs execute through agent.stream(), which uses the sync
-    LangGraph tool path. Provide a sync wrapper here so slash_command works
-    in both interactive and autonomous execution modes.
+    Some tool callers still need a synchronous return value. Provide a sync
+    wrapper here so slash_command works in both interactive and autonomous
+    execution modes.
     """
     try:
         asyncio.get_running_loop()

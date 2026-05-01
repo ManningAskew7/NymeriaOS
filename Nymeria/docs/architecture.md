@@ -222,9 +222,9 @@ TodoManager:
 Ticker finds due scheduled TODO:
     1. Claims an active-execution marker in TodoScheduleDB (skips duplicate claims)
     2. Reads the JSON TODO and marks it IN_PROGRESS
-    3. Publishes "task_started" event to EventBus
-    4. Calls agent.stream("Work on TODO {id}: {task}", _is_self_invoke=True)
-    5. Streams tool_call, tool_result, thinking, response events to frontend
+    3. Starts the agent via the async streaming bridge
+    4. Publishes "task_started" after the first stream chunk is available
+    5. Streams tool_reload, tool_call, tool_result, thinking, response, and other supported events to frontend
     6. If recurring: calculates next execution, reschedules
     7. If not recurring: clears schedule
     8. Publishes "task_completed" event
@@ -455,14 +455,15 @@ The agent provides two streaming methods with different use cases:
 - Uses `graph.stream()` with `stream_mode="updates"`
 - Returns complete node outputs after each node execution
 - Provides full tool call arguments (unlike `stream_mode="messages"` which has empty args)
-- Used by CLI interface and Ticker (autonomous mode)
-- Tools invoked from this path must support synchronous execution; async-backed tools such as `slash_command` need a sync bridge if they are expected to work during scheduled TODO runs
+- Used by the CLI and legacy synchronous callers
+- Supports in-turn reload/resume, but autonomous worker paths use the async bridge below so async-backed tools work the same way they do in chat
 
 **`astream()` (Asynchronous)**
 - Uses `graph.astream_events()` with `version="v2"`
 - Captures complete tool call information via `on_tool_start` events
 - Returns tool calls with full arguments
 - Used by FastAPI for SSE responses to desktop UI
+- Also used by scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch through `core/stream_bridge.py`, so autonomous work can call async-only tools such as `tool_create`
 
 **Why these stream modes?**
 

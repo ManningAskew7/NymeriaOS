@@ -597,7 +597,8 @@ def _invoke_spawned(
         tracing_v2_callback_var,
     )
 
-    from ..core.event_bus import publish_autonomous_event
+    from ..core.event_bus import publish_agent_stream_chunk, publish_autonomous_event
+    from ..core.stream_bridge import iter_agent_astream
 
     task_id = f"spawned-{uuid.uuid4().hex[:8]}"
 
@@ -609,17 +610,10 @@ def _invoke_spawned(
     collector_token = run_collector_var.set(None)
 
     try:
-        publish_autonomous_event(
-            event_type="task_started",
-            thread_id=child_thread_id,
-            user_id=user_id,
-            task_id=task_id,
-            data={"prompt": task, "callable_name": title, "trigger": "spawn_thread"},
-        )
-
         response_parts: List[str] = []
         thinking_parts: List[str] = []
         iteration_limit_hit = False
+        started_published = False
 
         parent_name = parent_thread_id or "unknown"
         if parent_thread_id:
@@ -633,60 +627,39 @@ def _invoke_spawned(
                 pass
         trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
 
-        for chunk in agent.stream(
+        for chunk in iter_agent_astream(
+            agent,
             message=task,
             thread_id=child_thread_id,
             user_id=user_id,
             _is_self_invoke=True,
             _trigger_override=trigger_override,
         ):
+            if not started_published:
+                publish_autonomous_event(
+                    event_type="task_started",
+                    thread_id=child_thread_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    data={"prompt": task, "callable_name": title, "trigger": "spawn_thread"},
+                )
+                started_published = True
+
             ctype = chunk.get("type")
-            if ctype == "tool_call":
-                publish_autonomous_event(
-                    event_type="tool_call",
-                    thread_id=child_thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "args": chunk.get("args", {}),
-                    },
-                )
-            elif ctype == "tool_result":
-                publish_autonomous_event(
-                    event_type="tool_result",
-                    thread_id=child_thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "result": chunk.get("result"),
-                    },
-                )
-            elif ctype == "thinking":
+            publish_agent_stream_chunk(
+                chunk,
+                thread_id=child_thread_id,
+                user_id=user_id,
+                task_id=task_id,
+            )
+            if ctype == "thinking":
                 content = chunk.get("content", "")
                 if content:
                     thinking_parts.append(content)
-                publish_autonomous_event(
-                    event_type="thinking",
-                    thread_id=child_thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={"content": content},
-                )
             elif ctype == "response":
                 content = chunk.get("content", "")
                 if content:
                     response_parts.append(content)
-                publish_autonomous_event(
-                    event_type="response",
-                    thread_id=child_thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={"content": content},
-                )
             elif ctype == "error":
                 raise RuntimeError(
                     chunk.get("content") or "spawned thread stream error"
