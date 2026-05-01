@@ -303,6 +303,13 @@ Current example: `workspace_artifact` is normalized in both apps' `types/index.t
 
 Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and `services/api.svelte.ts` aligned for this flow.
 
+TODO dashboard invalidation is also shared: live chat handlers and
+`stores/autonomous.svelte.ts` use `utils/todoTools.ts` to recognize TODO tool
+names (`nym_todo`, `nym_todo_delete`, legacy `todo_*`, and Nymeria MCP TODO
+names) and call `todosStore.onTodoToolCompleted()`. Keep that helper and the
+TODO store's current-filter-preserving refresh behavior aligned across desktop
+and mobile.
+
 ### Modifying chat streaming logic
 
 1. Update `stores/chat.svelte.ts` on both platforms

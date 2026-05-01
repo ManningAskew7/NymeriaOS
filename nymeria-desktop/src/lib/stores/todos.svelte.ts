@@ -99,10 +99,12 @@ function createTodosStore() {
   const completedCount = $derived(todos.filter((t) => t.status === 'done').length);
 
   let currentThreadFilter = $state<string | undefined>(undefined);
+  let currentStatusFilter = $state<string | undefined>(undefined);
 
   async function fetch(filterStatus?: string, threadId?: string): Promise<void> {
     loading = true;
     error = null;
+    currentStatusFilter = filterStatus;
     currentThreadFilter = threadId;
 
     try {
@@ -215,7 +217,7 @@ function createTodosStore() {
     delete: deleteTodo,
     complete,
     // Refresh when a todo tool completes
-    onTodoToolCompleted: () => fetch()
+    onTodoToolCompleted: () => fetch(currentStatusFilter, currentThreadFilter)
   };
 }
 

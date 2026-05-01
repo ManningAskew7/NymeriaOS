@@ -16,6 +16,7 @@
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { isTodoTool } from '$lib/utils/todoTools';
   import { updateMessageCount } from '$lib/stores/syncPoll.svelte';
   import { untrack } from 'svelte';
   import type {
@@ -280,8 +281,8 @@
           chatStore.updateToolCallResultByName(data.name, data.result, data.status, data.id);
         }
 
-        // Refresh TODOs when a todo* tool completes
-        if (data.name.startsWith('todo')) {
+        // Refresh TODOs when a TODO tool completes.
+        if (isTodoTool(data.name)) {
           todosStore.onTodoToolCompleted();
           // Also refresh activity since todo changes are logged
           activityStore.fetch();
