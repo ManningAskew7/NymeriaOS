@@ -919,7 +919,7 @@ function createChatStore() {
           timestamp: new Date(),
           status: 'streaming' as const,
           toolCalls: [],
-          toolReloadInfo: { tools, ttl, source, skillName, reason } as ToolReloadInfo,
+          toolReloadInfo: { tools, ttl, ttlSeconds, source, skillName, reason } as ToolReloadInfo,
         }
       ];
     },
