@@ -14,19 +14,14 @@ from .web import web_search
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
-    profile_save,
-    profile_forget,
-    profile_list,
+    memory_add,
+    memory_edit,
+    memory_read,
+    memory_clear_all,
     personality_set,
     rag_search,
-    PROFILE_TOOLS,
-)
-from .thread_notes import (
-    notepad_write,
-    notepad_read,
-    notepad_edit,
-    notepad_clear,
-    NOTEPAD_TOOLS,
+    rag_settings,
+    MEMORY_TOOLS,
 )
 from .todo import (
     nym_todo,
@@ -48,11 +43,8 @@ from .browser import BROWSER_TOOLS
 from .calendar import CALENDAR_TOOLS
 from .notify import notify, NOTIFY_TOOLS
 from .triggers import (
-    trigger_create,
-    trigger_list,
-    trigger_update,
-    trigger_delete,
-    trigger_inspect,
+    trigger_config,
+    trigger_info,
     TRIGGER_TOOLS,
 )
 from .hello_test import hello_test
@@ -68,6 +60,9 @@ from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_search import tool_search, TOOL_SEARCH_TOOLS
+from .http_api import http_request, api_discover, HTTP_API_TOOLS
+from .tool_create import tool_create, TOOL_CREATE_TOOLS
+from .skill_config import skill_config, SKILL_CONFIG_TOOLS
 from .search_skills import (
     list_installed_skills,
     search_skills,
@@ -116,6 +111,9 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
     + SLASH_COMMAND_TOOLS
+    + HTTP_API_TOOLS
+    + TOOL_CREATE_TOOLS
+    + SKILL_CONFIG_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
 )}
@@ -164,17 +162,12 @@ ALL_TOOLS = [
     file_write,
     web_search,
     consult,
-    # Profile tools (user memories & preferences)
-    profile_save,
-    profile_forget,
-    profile_list,
+    # Memory tools (unified profile + thread-notepad CRUD)
+    memory_add,
+    memory_edit,
+    memory_read,
     personality_set,
     rag_search,
-    # Notepad tools (per-thread notes)
-    notepad_write,
-    notepad_read,
-    notepad_edit,
-    notepad_clear,
     # TODO tools
     nym_todo,
     nym_todo_delete,
@@ -200,17 +193,14 @@ __all__ = [
     "consult",
     "CONSULT_TOOLS",
     "claude_code",
-    "profile_save",
-    "profile_forget",
-    "profile_list",
+    "memory_add",
+    "memory_edit",
+    "memory_read",
+    "memory_clear_all",
     "personality_set",
     "rag_search",
-    "PROFILE_TOOLS",
-    "notepad_write",
-    "notepad_read",
-    "notepad_edit",
-    "notepad_clear",
-    "NOTEPAD_TOOLS",
+    "rag_settings",
+    "MEMORY_TOOLS",
     "nym_todo",
     "nym_todo_delete",
     "nym_todo_list",
@@ -223,11 +213,8 @@ __all__ = [
     "SUBAGENT_TOOLS",
     "notify",
     "NOTIFY_TOOLS",
-    "trigger_create",
-    "trigger_list",
-    "trigger_update",
-    "trigger_delete",
-    "trigger_inspect",
+    "trigger_config",
+    "trigger_info",
     "TRIGGER_TOOLS",
     "AUTH_TOOLS",
     "EMAIL_TOOLS",
@@ -256,6 +243,13 @@ __all__ = [
     "SLASH_COMMAND_TOOLS",
     "tool_search",
     "TOOL_SEARCH_TOOLS",
+    "http_request",
+    "api_discover",
+    "HTTP_API_TOOLS",
+    "tool_create",
+    "TOOL_CREATE_TOOLS",
+    "skill_config",
+    "SKILL_CONFIG_TOOLS",
     "list_installed_skills",
     "search_skills",
     "install_skill",

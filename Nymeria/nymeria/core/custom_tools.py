@@ -12,6 +12,7 @@ Based on MCP best practices 2025-2026:
 - Request timeout and retry logic
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -25,6 +26,11 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from ..config import get_settings
 from ..tools.definitions.schema import CustomToolDefinition, HTTPToolConfig
+from ..tools.metadata import (
+    clear_custom_tool_metadata,
+    register_custom_tool_metadata,
+    unregister_custom_tool_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +84,7 @@ class CustomToolLoader:
         """
         self._definitions.clear()
         self._tools.clear()
+        clear_custom_tool_metadata()
 
         tools = []
         for json_file in self.tools_dir.glob("*.json"):
@@ -106,6 +113,7 @@ class CustomToolLoader:
 
             if not definition.enabled:
                 logger.debug(f"Skipping disabled tool: {definition.id}")
+                unregister_custom_tool_metadata(definition.id)
                 return None
 
             self._definitions[definition.id] = definition
@@ -120,6 +128,7 @@ class CustomToolLoader:
                 return None
 
             self._tools[definition.id] = tool
+            register_custom_tool_metadata(definition.id, definition.description)
             return tool
 
         except Exception as e:
@@ -218,6 +227,9 @@ class CustomToolLoader:
         )
 
         # Reload to update cache
+        self._definitions.pop(definition.id, None)
+        self._tools.pop(definition.id, None)
+        unregister_custom_tool_metadata(definition.id)
         self._load_tool_file(file_path)
 
         logger.info(f"Saved tool definition: {definition.id}")
@@ -242,6 +254,7 @@ class CustomToolLoader:
         # Remove from caches
         self._definitions.pop(tool_id, None)
         self._tools.pop(tool_id, None)
+        unregister_custom_tool_metadata(tool_id)
 
         logger.info(f"Deleted tool definition: {tool_id}")
         return True
@@ -272,6 +285,21 @@ def interpolate_env_vars(value: str) -> str:
         return var_value
 
     return ENV_VAR_PATTERN.sub(replace_env, value)
+
+
+def interpolate_env_vars_with_names(value: str) -> tuple[str, set[str]]:
+    """Replace env placeholders and return the variable names used."""
+    used: set[str] = set()
+
+    def replace_env(match: re.Match) -> str:
+        var_name = match.group(1)
+        var_value = os.environ.get(var_name)
+        if var_value is None:
+            raise ValueError(f"Environment variable not set: {var_name}")
+        used.add(var_name)
+        return var_value
+
+    return ENV_VAR_PATTERN.sub(replace_env, value), used
 
 
 def interpolate_params(template: str, params: Dict[str, Any]) -> str:
@@ -310,14 +338,19 @@ async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> s
         Response content as a string.
     """
     try:
+        used_env_secrets: set[str] = set()
+
         # Interpolate URL
         url = interpolate_params(config.url, params)
-        url = interpolate_env_vars(url)
+        url, used = interpolate_env_vars_with_names(url)
+        used_env_secrets.update(used)
 
         # Interpolate headers
         headers = {}
         for key, value in config.headers.items():
-            headers[key] = interpolate_env_vars(interpolate_params(value, params))
+            interpolated, used = interpolate_env_vars_with_names(interpolate_params(value, params))
+            headers[key] = interpolated
+            used_env_secrets.update(used)
 
         # Interpolate query params
         query_params = {}
@@ -328,42 +361,48 @@ async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> s
         body = None
         if config.body_template:
             body_str = interpolate_params(config.body_template, params)
-            body_str = interpolate_env_vars(body_str)
+            body_str, used = interpolate_env_vars_with_names(body_str)
+            used_env_secrets.update(used)
             try:
                 body = json.loads(body_str)
             except json.JSONDecodeError:
                 body = body_str
 
-        # Make the request
-        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
-            response = await client.request(
-                method=config.method,
-                url=url,
-                headers=headers,
-                params=query_params if query_params else None,
-                json=body if isinstance(body, dict) else None,
-                content=body if isinstance(body, str) else None,
-            )
+        from ..tools.http_api import _http_request_impl
 
-        # Parse response
-        if response.status_code >= 400:
-            return f"[Error]: HTTP {response.status_code} - {response.text[:500]}"
+        result = await asyncio.to_thread(
+            _http_request_impl,
+            method=config.method,
+            url=url,
+            headers=headers,
+            query=query_params if query_params else None,
+            body=body,
+            timeout_seconds=config.timeout_seconds,
+            follow_redirects=True,
+            response_format=config.response_format,
+            max_response_chars=200_000,
+            audit_tool_name="custom_http_tool",
+            used_env_secrets=sorted(used_env_secrets),
+        )
 
-        # Determine response format
-        content_type = response.headers.get("content-type", "")
-        if config.response_format == "json" or (
-            config.response_format == "auto" and "application/json" in content_type
-        ):
-            try:
-                data = response.json()
-                # Extract specific path if configured
-                if config.response_path:
-                    data = _extract_json_path(data, config.response_path)
-                return json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data)
-            except json.JSONDecodeError:
-                return response.text
-        else:
-            return response.text
+        if not result.get("ok"):
+            error = result.get("error") or {}
+            message = error.get("message") or str(error) or "Request failed"
+            if result.get("response", {}).get("status_code"):
+                return (
+                    f"[Error]: HTTP {result['response']['status_code']} - "
+                    f"{result.get('body_preview') or result.get('body') or message}"
+                )
+            return f"[Error]: {error.get('type', 'request_failed')} - {message}"
+
+        data = result.get("body")
+        if data is None and result.get("body_preview"):
+            return str(result["body_preview"])
+
+        if config.response_path and isinstance(data, (dict, list)):
+            data = _extract_json_path(data, config.response_path)
+
+        return json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data)
 
     except httpx.TimeoutException:
         return f"[Error]: Request timed out after {config.timeout_seconds} seconds"

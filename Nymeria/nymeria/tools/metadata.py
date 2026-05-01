@@ -13,13 +13,13 @@ class ToolCategory(str, Enum):
     """Categories for grouping related tools."""
 
     CORE = "core"           # bash_execute, file_read, file_write, web_search, claude_code
-    PROFILE = "profile"     # profile_save, profile_forget, profile_list, personality_set, rag_search
-    NOTEPAD = "notepad"     # notepad_write, notepad_read, notepad_clear
+    PROFILE = "profile"     # memory_add, memory_edit, memory_read, memory_clear_all, personality_set, rag_search, rag_settings
+    NOTEPAD = "notepad"     # legacy alias; per-thread notepad now reached via memory_* with scope="thread"
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # todo, todo_delete, todo_list
     AUTONOMY = "autonomy"   # activity feed and watchdog dispatch helpers
     SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
-    TRIGGER = "trigger"     # trigger_create, trigger_list, trigger_update, trigger_delete
+    TRIGGER = "trigger"     # trigger_config, trigger_info
     EMAIL = "email"         # Outlook auth + email tools (optional)
     BROWSER = "browser"     # Playwright browser automation tools (optional)
     CALENDAR = "calendar"   # Google Calendar auth + API tools (optional)
@@ -116,24 +116,30 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         description="Send notifications via Telegram, Discord, or Slack",
     ),
 
-    # Profile tools - user data management
-    "profile_save": ToolMetadata(
-        name="profile_save",
+    # Memory tools - unified profile + thread-notepad CRUD
+    "memory_add": ToolMetadata(
+        name="memory_add",
         category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
-        description="Save information about the user",
+        description="Save a memory. scope='global' (user profile, requires key) or scope='thread' (per-thread notepad). Empty content deletes.",
     ),
-    "profile_forget": ToolMetadata(
-        name="profile_forget",
+    "memory_edit": ToolMetadata(
+        name="memory_edit",
         category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
-        description="Remove saved information",
+        description="Find/replace within a memory's content. scope='global' edits a single keyed memory; scope='thread' edits the notepad. Empty replace deletes the matched text.",
     ),
-    "profile_list": ToolMetadata(
-        name="profile_list",
+    "memory_read": ToolMetadata(
+        name="memory_read",
         category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
-        description="List all saved memories and personality preferences",
+        description="Read memory. Get a single keyed entry, list all, or substring-filter via query.",
+    ),
+    "memory_clear_all": ToolMetadata(
+        name="memory_clear_all",
+        category=ToolCategory.PROFILE,
+        security_level=SecurityLevel.SAFE,
+        description="Wipe all global memories and personality preferences for this user. Irreversible. Does not touch thread notepads.",
     ),
     "personality_set": ToolMetadata(
         name="personality_set",
@@ -145,27 +151,13 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         name="rag_search",
         category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
-        description="Search conversation history",
+        description="Semantic search across past conversations and memories",
     ),
-
-    # Notepad tools - per-thread persistent notes
-    "notepad_write": ToolMetadata(
-        name="notepad_write",
-        category=ToolCategory.NOTEPAD,
+    "rag_settings": ToolMetadata(
+        name="rag_settings",
+        category=ToolCategory.PROFILE,
         security_level=SecurityLevel.SAFE,
-        description="Write to thread's persistent notepad",
-    ),
-    "notepad_read": ToolMetadata(
-        name="notepad_read",
-        category=ToolCategory.NOTEPAD,
-        security_level=SecurityLevel.SAFE,
-        description="Read thread's notepad content",
-    ),
-    "notepad_clear": ToolMetadata(
-        name="notepad_clear",
-        category=ToolCategory.NOTEPAD,
-        security_level=SecurityLevel.SAFE,
-        description="Clear thread's notepad",
+        description="Configure RAG (semantic search) settings",
     ),
 
     # Self-modification tools — SENSITIVE (can write arbitrary Python code)
@@ -265,41 +257,17 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
     ),
 
     # Trigger tools - event-driven automation (optional, not in ALL_TOOLS by default)
-    "trigger_create": ToolMetadata(
-        name="trigger_create",
+    "trigger_config": ToolMetadata(
+        name="trigger_config",
         category=ToolCategory.TRIGGER,
         security_level=SecurityLevel.MODERATE,
-        description="Create an event-driven trigger",
+        description="Create, update, enable/disable, or delete event triggers",
     ),
-    "trigger_list": ToolMetadata(
-        name="trigger_list",
+    "trigger_info": ToolMetadata(
+        name="trigger_info",
         category=ToolCategory.TRIGGER,
         security_level=SecurityLevel.SAFE,
-        description="List event triggers",
-    ),
-    "trigger_update": ToolMetadata(
-        name="trigger_update",
-        category=ToolCategory.TRIGGER,
-        security_level=SecurityLevel.MODERATE,
-        description="Update a trigger",
-    ),
-    "trigger_delete": ToolMetadata(
-        name="trigger_delete",
-        category=ToolCategory.TRIGGER,
-        security_level=SecurityLevel.MODERATE,
-        description="Delete a trigger",
-    ),
-    "trigger_inspect": ToolMetadata(
-        name="trigger_inspect",
-        category=ToolCategory.TRIGGER,
-        security_level=SecurityLevel.SAFE,
-        description="Inspect trigger configuration, health, history, or rendered test output",
-    ),
-    "trigger_sources_info": ToolMetadata(
-        name="trigger_sources_info",
-        category=ToolCategory.TRIGGER,
-        security_level=SecurityLevel.SAFE,
-        description="List trigger source types and their configuration schemas",
+        description="List triggers, inspect/test/history for one trigger, or show source schemas",
     ),
 
     # Test tool
@@ -711,14 +679,6 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         default_enabled=False,
     ),
 
-    # Notepad edit (missing from original registry)
-    "notepad_edit": ToolMetadata(
-        name="notepad_edit",
-        category=ToolCategory.NOTEPAD,
-        security_level=SecurityLevel.SAFE,
-        description="Edit specific sections of thread's notepad",
-    ),
-
     # Sticky note
     "sticky_note": ToolMetadata(
         name="sticky_note",
@@ -734,6 +694,34 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         category=ToolCategory.CORE,
         security_level=SecurityLevel.MODERATE,
         description="Invoke a Nymeria slash command on your own thread",
+        default_enabled=False,
+    ),
+    "http_request": ToolMetadata(
+        name="http_request",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.MODERATE,
+        description="Make a one-off HTTP request to a documented API endpoint",
+        default_enabled=False,
+    ),
+    "api_discover": ToolMetadata(
+        name="api_discover",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.MODERATE,
+        description="Discover OpenAPI/Swagger metadata for an API base URL",
+        default_enabled=False,
+    ),
+    "tool_create": ToolMetadata(
+        name="tool_create",
+        category=ToolCategory.CUSTOM,
+        security_level=SecurityLevel.MODERATE,
+        description="Draft, test, and publish reusable HTTP tools into the global custom-tool registry",
+        default_enabled=False,
+    ),
+    "skill_config": ToolMetadata(
+        name="skill_config",
+        category=ToolCategory.CUSTOM,
+        security_level=SecurityLevel.MODERATE,
+        description="Draft, validate, publish, list, and delete user-scoped Nymeria Skills and Skill Kits",
         default_enabled=False,
     ),
 
@@ -1209,6 +1197,11 @@ def unregister_custom_tool_metadata(tool_id: str) -> bool:
         del CUSTOM_TOOL_METADATA[tool_id]
         return True
     return False
+
+
+def clear_custom_tool_metadata() -> None:
+    """Clear all custom tool metadata (for reload)."""
+    CUSTOM_TOOL_METADATA.clear()
 
 
 def get_all_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:

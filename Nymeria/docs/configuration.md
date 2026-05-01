@@ -132,6 +132,24 @@ Set the API key for your chosen provider:
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `AUDIT_LOG_ENABLED` | `true` | Log all tool executions to audit log |
 
+### HTTP Tool Egress Policy
+
+These settings apply to `http_request`, `api_discover`, and saved custom HTTP
+tools. The model cannot override them per call.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HTTP_INTERNAL_ALLOWLIST` | - | Comma-separated exact internal hosts or `host:port` pairs that HTTP tools may reach, e.g. `host.docker.internal:1420,homeassistant.local:8123` |
+| `HTTP_DOMAIN_ALLOWLIST` | - | Optional comma-separated public-domain allowlist. Supports exact domains and `*.example.com` wildcards. Empty means public domains are allowed unless blocked. |
+| `HTTP_DOMAIN_BLOCKLIST` | - | Comma-separated public-domain blocklist. Supports exact domains and `*.example.com` wildcards. |
+| `HTTP_MAX_REDIRECTS` | `5` | Maximum redirects followed by HTTP tools (0-20) |
+| `HTTP_ALLOW_HTTPS_TO_HTTP_REDIRECT` | `false` | Whether HTTP tools may follow redirects from `https://` to `http://` |
+
+By default HTTP tools are public-internet-only. Loopback, private, link-local,
+reserved, unspecified, multicast, and metadata targets are blocked after DNS
+resolution unless the target is a non-metadata host explicitly listed in
+`HTTP_INTERNAL_ALLOWLIST`.
+
 ### Autonomous Operation
 
 | Variable | Default | Description |
@@ -280,6 +298,13 @@ API_PORT=8000
 # Logging
 LOG_LEVEL=INFO
 AUDIT_LOG_ENABLED=true
+
+# HTTP tool egress policy (optional - defaults shown)
+# HTTP_INTERNAL_ALLOWLIST=          # e.g. host.docker.internal:1420
+# HTTP_DOMAIN_ALLOWLIST=
+# HTTP_DOMAIN_BLOCKLIST=
+# HTTP_MAX_REDIRECTS=5
+# HTTP_ALLOW_HTTPS_TO_HTTP_REDIRECT=false
 
 # Autonomous Operation (optional - defaults shown)
 # TICKER_POLL_INTERVAL=5

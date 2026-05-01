@@ -77,6 +77,19 @@ class ThreadConfig(BaseModel):
         if isinstance(v, list):
             return migrate_tool_names([str(x) for x in v])
         return v
+
+    @field_validator("temporary_tools", mode="before")
+    @classmethod
+    def _migrate_legacy_temporary_tool_names(cls, v):
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            out = {}
+            for name, entry in v.items():
+                migrated = migrate_tool_names([str(name)])[0]
+                out.setdefault(migrated, entry)
+            return out
+        return v
     # Agent Skills (SKILL.md progressive-disclosure bundles).
     # enabled_skills extends the user's enabled_global_skills for this thread;
     # disabled_skills subtracts from it. Active set is (global ∪ enabled) − disabled.

@@ -13,9 +13,14 @@ lives in a ToolMessage (conversation history).
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Annotated, List, Optional, Union
 
+from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool as tool_decorator
+from langchain_core.tools import InjectedToolArg, InjectedToolCallId
+from langgraph.graph import END
+from langgraph.types import Command
 
 from . import AVAILABLE_SKILLS_CHAR_BUDGET, Skill, SkillManager
 
@@ -105,11 +110,57 @@ def _render_skill_body(skill: Skill) -> str:
             + ", ".join(skill.allowed_tools)
         )
 
+    if skill.required_tools:
+        aux_lines.append("")
+        aux_lines.append(
+            "Skill Kit required Nymeria tools: "
+            + ", ".join(skill.required_tools)
+            + f" (ttl: {skill.tool_ttl})"
+        )
+
     if aux_lines:
         parts.append("---")
         parts.extend(aux_lines)
 
     return "\n".join(parts)
+
+
+def _allowed_tool_name(value: str) -> str:
+    """Return the leading tool name from portable allowed-tools syntax."""
+    return str(value).split("(", 1)[0].strip()
+
+
+def _known_nymeria_tool_names() -> set[str]:
+    """Best-effort set of Nymeria tool names for advisory allowed-tools checks.
+
+    Agent Skills commonly use portable names such as Read, Write, and Bash.
+    Those are not Nymeria tool names, so they should not produce missing-tool
+    warnings unless a Nymeria tool with that exact name exists.
+    """
+    names: set[str] = set()
+    try:
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+
+        names.update(t.name for t in ALL_TOOLS)
+        names.update(OPTIONAL_TOOLS.keys())
+    except Exception:
+        pass
+
+    try:
+        from ..core.agent import get_current_agent
+
+        agent = get_current_agent()
+        registry = getattr(agent, "tool_registry", None) if agent else None
+        if registry is not None:
+            names.update(
+                str(item.get("name"))
+                for item in registry.list_tools()
+                if item.get("name")
+            )
+    except Exception:
+        pass
+
+    return names
 
 
 def create_skill_meta_tool(
@@ -127,8 +178,8 @@ def create_skill_meta_tool(
     If skill_manager is provided, bodies are re-read from disk at activation
     time — edits to SKILL.md take effect without rebuilding the graph. If the
     thread's current tool_names are provided, the returned body will also
-    include an advisory warning whenever the skill's declared allowed-tools
-    are missing from the thread.
+    include an advisory warning when the skill's declared allowed-tools name
+    actual Nymeria tools that are missing from the thread.
     """
     # Snapshot the active-skill set by name for the description and lookup.
     active_names = [s.name for s in active_skills]
@@ -144,7 +195,12 @@ def create_skill_meta_tool(
     thread_tools_set = set(thread_tool_names or [])
 
     @tool_decorator("Skill", return_direct=False)
-    def skill_meta_tool(name: str) -> str:
+    def skill_meta_tool(
+        name: str,
+        *,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        config: Annotated[RunnableConfig, InjectedToolArg],
+    ) -> Union[str, Command]:
         """Load the full body of the named skill (see tool description for the list).
 
         Args:
@@ -175,13 +231,51 @@ def create_skill_meta_tool(
         logger.info("skill activated: %s (scope=%s)", skill.name, skill.scope)
         body = _render_skill_body(skill)
 
-        # Advisory: warn the model if the skill declares allowed-tools that
-        # aren't actually available on this thread.
+        binding_text = ""
+        binding_reload_queued = False
+        binding_cap_hit = False
+        if skill.required_tools:
+            from ..tools.tool_search import bind_tools_for_thread
+            from ..tools.utils import get_thread_id, get_user_id
+
+            binding = bind_tools_for_thread(
+                skill.required_tools,
+                "",
+                get_thread_id(config),
+                get_user_id(config),
+                ttl=skill.tool_ttl,
+                strict=True,
+                source="skill_kit",
+                skill_name=skill.name,
+                reason="Skill Kit required_tools activation",
+            )
+            if not binding.ok:
+                return (
+                    f"[Skill Kit activation failed: {skill.name}]\n"
+                    f"{binding.text}\n\n"
+                    "No required tools were bound. Do not follow this skill's "
+                    "instructions until the dependency problem is fixed."
+                )
+
+            binding_text = binding.text
+            binding_reload_queued = bool(binding.reload_tools and not binding.cap_hit)
+            binding_cap_hit = bool(binding.cap_hit)
+            body += (
+                "\n\n---\n"
+                f"Skill Kit binding result for {skill.name}:\n"
+                f"{binding_text}"
+            )
+
+        # Advisory: warn the model only when portable allowed-tools entries
+        # correspond to real Nymeria tool names missing from this thread.
         if thread_tools_set and skill.allowed_tools:
-            declared = [
-                t.split("(")[0].strip() for t in skill.allowed_tools if t
+            known_nymeria_tools = _known_nymeria_tool_names()
+            declared = [_allowed_tool_name(t) for t in skill.allowed_tools if t]
+            missing = [
+                t
+                for t in declared
+                if t and t in known_nymeria_tools and t not in thread_tools_set
             ]
-            missing = [t for t in declared if t and t not in thread_tools_set]
             if missing:
                 body += (
                     "\n\n---\n"
@@ -191,6 +285,33 @@ def create_skill_meta_tool(
                     + ". If the skill's instructions require them, ask the user "
                     "to enable those tools on this thread before proceeding."
                 )
+
+        if binding_reload_queued:
+            body += (
+                "\n\n---\n"
+                "[Skill Kit reload queued - STOP NOW]\n"
+                "This Skill Kit's required tools were just persisted, but they "
+                "are not callable in the current graph invocation. Stop after "
+                "this tool result. The system will automatically resume you "
+                "after rebuilding the tool list; continue the user's task only "
+                "after that resume."
+            )
+            return Command(
+                goto=END,
+                update={
+                    "messages": [
+                        ToolMessage(content=body, tool_call_id=tool_call_id)
+                    ]
+                },
+            )
+
+        if binding_cap_hit:
+            body += (
+                "\n\n---\n"
+                "[notice] This Skill Kit's required tools were persisted, but "
+                "the turn already hit the in-turn reload cap. Do not call those "
+                "new tools until the next user turn."
+            )
 
         return body
 

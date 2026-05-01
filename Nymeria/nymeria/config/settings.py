@@ -503,6 +503,32 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
     audit_log_enabled: bool = Field(default=True)
 
+    # HTTP tool egress policy. Internal/private/link-local/metadata targets are
+    # blocked by default; add exact host or host:port entries only when Nymeria
+    # should intentionally reach local/self-hosted HTTP services.
+    http_internal_allowlist: str = Field(
+        default="",
+        description="Comma-separated exact internal HTTP hosts or host:port pairs allowed for HTTP tools",
+    )
+    http_domain_allowlist: str = Field(
+        default="",
+        description="Optional comma-separated public domain allowlist for HTTP tools",
+    )
+    http_domain_blocklist: str = Field(
+        default="",
+        description="Comma-separated public domain blocklist for HTTP tools",
+    )
+    http_max_redirects: int = Field(
+        default=5,
+        ge=0,
+        le=20,
+        description="Maximum redirects followed by HTTP tools",
+    )
+    http_allow_https_to_http_redirect: bool = Field(
+        default=False,
+        description="Allow HTTP tools to follow redirects from HTTPS to HTTP",
+    )
+
     # Paths
     @property
     def project_root(self) -> Path:

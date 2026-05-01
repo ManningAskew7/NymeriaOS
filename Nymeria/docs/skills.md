@@ -39,6 +39,70 @@ A skill **does not register new Python tools** or Pydantic schemas. It is
 text + an advisory whitelist over Nymeria's *existing* tools. The body typically
 tells the agent to `file_read` a reference file or `bash_execute` a script.
 
+In the UI, **Skill** means instructions only. **Skill Kit** means a Skill that
+also declares Nymeria tool dependencies in `metadata.nymeria.required_tools`.
+
+## Skill Kits
+
+A **Skill Kit** is a normal Agent Skill that also declares exact Nymeria tools
+to bind when the agent activates it. This keeps the default tool list thin:
+the agent first sees only the skill name/description, then `Skill(name=...)`
+returns the instructions and temporarily binds the required tool schemas.
+
+Use `metadata.nymeria.required_tools`; do not use portable `allowed-tools` for
+Nymeria auto-binding:
+
+```yaml
+---
+name: trigger-management
+description: Configure, inspect, test, and troubleshoot Nymeria triggers.
+allowed-tools: Read
+metadata:
+  nymeria:
+    required_tools:
+      - trigger_config
+      - trigger_info
+    tool_ttl: 2h
+---
+```
+
+- `required_tools` must be exact Nymeria tool names. Categories, globs, and
+  Anthropic-style `Bash(...)` patterns are not interpreted.
+- `tool_ttl` accepts `30m`, `2h`, `6h`, `24h`, or `permanent`; default is `2h`.
+- `allowed-tools` remains advisory/portable and never auto-binds tools.
+- Binding is strict. If any required tool is unknown, unloadable, or blocked
+  by the admin-only gate, activation fails and no tool config is mutated.
+- Activation may remove required tools from `disabled_tools`, matching
+  `tool_search(action="enable")`; admin-only restrictions still apply.
+
+If a Skill Kit binds a new tool, the current graph invocation ends with
+`Command(goto=END)`, Nymeria rebuilds the graph, emits a `tool_reload` event
+with `source="skill_kit"` and `skill_name`, then resumes the same user turn
+with the new tools callable.
+
+### Bundled self-improve Skill Kit
+
+`self-improve` ships as a bundled Skill Kit and Nymeria initializes it in each
+user profile's `enabled_global_skills` list once. That means it is on by
+default for new threads, and the Settings → Skills "Enable globally" checkbox
+is the source of truth: unticking it removes `self-improve` from the user's
+default thread skill set and Nymeria will not silently re-add it.
+
+Use it when the user asks Nymeria to gain a durable capability, integration,
+or reusable workflow. Activation binds:
+
+- `api_discover`
+- `http_request`
+- `tool_create`
+- `skill_config`
+
+The Skill Kit teaches the end-to-end sequence: inspect existing capabilities,
+discover/test APIs, create a reusable HTTP tool when needed, then package the
+workflow into a user-scope Skill Kit with `skill_config`. Generated Skill Kits
+are enabled on the current thread by default through `ThreadConfig.enabled_skills`;
+they are not added to `enabled_global_skills` unless the user later enables
+them globally in Settings.
+
 ## Progressive disclosure (how the context budget stays small)
 
 Three layers:
@@ -68,9 +132,11 @@ Four scope layers, in precedence order (name collisions: user > global > bundled
 | Global | `data/skills/global/<skill-name>/` | marketplace install, global scope (admin) |
 | Bundled | `Nymeria/nymeria/skills_bundled/<skill-name>/` | ships with the repo |
 
-`enabled_global_skills` on the user profile picks which installed skills are
-active-by-default on every thread. Per-thread `enabled_skills` extends that
-set; per-thread `disabled_skills` subtracts from it.
+`enabled_global_skills` on the user profile contains skills active by default
+on every thread. Nymeria seeds new and unmigrated profiles with
+`self-improve`, but after that the list is fully user-controlled. Per-thread
+`enabled_skills` extends that set; per-thread `disabled_skills` subtracts from
+both global defaults and thread-local enables.
 
 ## REST API
 
@@ -87,6 +153,10 @@ set; per-thread `disabled_skills` subtracts from it.
 Plus: the existing `PATCH /threads/{id}/config` accepts `enabled_skills` and
 `disabled_skills` fields.
 
+Skill metadata responses include `required_tools`, `tool_ttl`,
+`is_skill_kit`, and `default_active` in addition to the portable Agent Skills
+fields.
+
 ## Agent-facing tools
 
 Registered in `ALL_TOOLS` so the agent can manage its own skill library:
@@ -94,6 +164,10 @@ Registered in `ALL_TOOLS` so the agent can manage its own skill library:
 - `list_installed_skills(scope='all'|'user'|'global'|'bundled')`
 - `search_skills(query, source='installed'|'anthropic', top_k=8)`
 - `install_skill(name, source='anthropic', scope='user'|'global')`
+
+`skill_config` is optional and is normally exposed by the `self-improve`
+Skill Kit. It drafts, validates, publishes, lists, and deletes generated
+Skills/Skill Kits, writing only validated `SKILL.md` files in v1.
 
 The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS` —
 it's synthesized per-graph in
@@ -146,8 +220,6 @@ frontmatter in-memory) and `fetch()` (extract a single skill's subtree)
 share that cache — a typical "search → install" flow hits the network
 exactly once.
 
-## Phase 1.5 — agent-authored skills (not yet implemented)
-
 ## Marketplace
 
 Phase 1 supports Anthropic's `anthropics/skills` repo only, fetched via the
@@ -160,13 +232,13 @@ bombs) and logs warnings; it does not hard-block.
 
 ## Graph cache invalidation
 
-`NymeriaAgent._get_memory_hash()` folds in a skills fingerprint (name + scope
-+ description hash + allowed_tools for each active skill). Any of these
+`NymeriaAgent._get_memory_hash()` folds in a skills fingerprint (name, scope,
+description hash, allowed_tools, and Skill Kit required tools/TTL for each active skill). Any of these
 invalidate the per-(user, thread) graph cache:
 
 - User toggles a skill in `enabled_global_skills`
 - Thread flips `enabled_skills` or `disabled_skills`
-- A `SKILL.md` description / allowed-tools changes on disk
+- A `SKILL.md` description, allowed-tools, required tools, or Skill Kit TTL changes on disk
 - A skill is installed or uninstalled via the REST endpoints
 
 The body itself is re-read from disk at activation time, so edits to a
@@ -176,22 +248,29 @@ skill's body (not frontmatter) propagate immediately without a cache flush.
 
 - **Settings → Skills** — install, uninstall, and toggle globally-enabled
   skills. "Browse Marketplace" opens a modal for searching
-  `anthropics/skills`.
+  `anthropics/skills`. Skill Kits show required-tool chips in their rows.
 - **Thread Settings → Skills** — per-thread enable/disable of any installed
-  skill, showing which are already active via the global default.
+  skill, showing which are already active via the global default and which
+  tools a Skill Kit will bind on activation.
 - **Chat rendering** — when the agent fires `Skill(name=...)` the invocation
   renders as a distinguishable `SkillCard` (colored border, markdown-rendered
   body) rather than a generic `ToolCallCard`.
 
-## Phase 1.5 — agent-authored skills (not yet implemented)
+## Agent-authored skills
 
-The architecture already admits skill-authoring tools:
-`create_skill(name, description, body, scope, allowed_tools)`,
-`edit_skill(name, ...)`, `delete_skill(name, scope)`. Until those ship, the
-agent can still author skills via the installed `skill-creator` skill plus
-`file_write` + the existing uninstall endpoint; the dedicated tools are a
-correctness/ergonomics upgrade (Pydantic-validated frontmatter, atomic
-`SkillManager.reload()`).
+`skill_config` is the agent-facing write path for generated Skills and Skill
+Kits. It supports `draft`, `validate`, `publish`, `list`, and `delete`.
+Generated skills are user-scope by default; global publish/delete requires
+admin. V1 writes only `SKILL.md`, rejects body text containing frontmatter,
+strictly validates Skill Kit `required_tools`, and refuses to publish a user
+skill that would shadow an existing bundled/global skill.
+
+When `activate_current_thread=true`, `skill_config(action="publish")` updates
+`ThreadConfig.enabled_skills`, reloads the skill manager, invalidates graph
+caches, and queues a same-turn reload with `source="skill_config"` and
+`reason="skill_published"`. The emitted `tool_reload` may carry an empty
+`tools` list because the refreshed capability is the `Skill` meta-tool index,
+not a newly bound normal tool.
 
 ## Security posture
 
@@ -199,9 +278,13 @@ correctness/ergonomics upgrade (Pydantic-validated frontmatter, atomic
   model. Actual side effects go through Nymeria's existing tools
   (`bash_execute`, `file_write`, etc.) which already honor the thread's
   enabled-tools and disabled-tools lists.
-- `allowed-tools` frontmatter is cross-checked at activation: if the skill
-  names a tool the thread has disabled, a notice appended to the returned
-  body asks the agent to request user permission before proceeding.
+- Skill Kits can only bind tools that the same user could enable through
+  `tool_search(action="enable")`; invalid, unloadable, and admin-blocked
+  dependencies fail strictly with no partial writes.
+- `allowed-tools` frontmatter is advisory and portable. Nymeria only appends
+  a missing-tool notice when an entry is also a known Nymeria tool name that
+  is absent from the current thread; portable names like `Read`, `Write`, and
+  `Bash(...)` do not warn.
 - Marketplace installs land in `users/<user_id>/` by default; promoting to
   `global/` is an explicit UI action. A suspicious-pattern scan flags obvious
   red flags in SKILL.md and scripts.
@@ -213,8 +296,9 @@ correctness/ergonomics upgrade (Pydantic-validated frontmatter, atomic
   can be used by pointing `EMBEDDING_BASE_URL` at the server and setting
   `EMBEDDING_API_KEY` to that server's accepted token. The current sqlite-vec
   schema expects 1536-dimensional vectors, so use a compatible model.
-- **Agent-authored skills tools** (`create_skill`, `edit_skill`,
-  `delete_skill`) — see the Phase 1.5 section above.
+- **Agent-authored skill resources** — v1 writes only `SKILL.md`; future work
+  can add validated reference files, assets, and scripts when a concrete use
+  case needs them.
 - **ClawHub + arbitrary git URL marketplaces** — the `marketplace.py`
   fetcher stubs are ready for Phase 2.
 - **Skill version pinning and semver resolution** — currently always

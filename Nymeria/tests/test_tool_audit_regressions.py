@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from datetime import datetime, timedelta, timezone
 
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools import auth_cache_utils
@@ -12,7 +14,10 @@ from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
 from nymeria.tools import _prv_a_products
 from nymeria.tools.metadata import get_all_tool_metadata
-from nymeria.tools.triggers import trigger_create, trigger_update
+from nymeria.tools import triggers as trigger_tools
+from nymeria.tools.tool_search import tool_search
+from nymeria.core.thread_config import ThreadConfig
+from nymeria.core.user_profile import ToolPreferences, migrate_tool_names
 
 
 def _config(user_id: str = "user-1", thread_id: str = "thread-1"):
@@ -151,13 +156,149 @@ def test_google_account_display_validation_refreshes_and_prunes(monkeypatch):
 
 
 def test_trigger_tool_schema_exposes_object_configs():
-    create_args = trigger_create.args
-    update_args = trigger_update.args
+    config_args = trigger_tools.trigger_config.args
+    info_args = trigger_tools.trigger_info.args
 
-    assert create_args["action_config"]["type"] == "object"
-    assert "action_config" in create_args
-    assert update_args["source_config"]["anyOf"][0]["type"] == "object"
-    assert update_args["action_config"]["anyOf"][0]["type"] == "object"
+    assert [tool.name for tool in trigger_tools.TRIGGER_TOOLS] == [
+        "trigger_config",
+        "trigger_info",
+    ]
+    assert config_args["source_config"]["anyOf"][0]["type"] == "object"
+    assert config_args["action_config"]["anyOf"][0]["type"] == "object"
+    assert config_args["conditions"]["anyOf"][0]["type"] == "array"
+    assert "current_thread_only" in info_args
+
+
+def test_trigger_dispatch_tools_route_to_existing_implementations(monkeypatch):
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(("create", kwargs))
+        return "created"
+
+    def fake_update(**kwargs):
+        calls.append(("update", kwargs))
+        return "updated"
+
+    def fake_delete(**kwargs):
+        calls.append(("delete", kwargs))
+        return "deleted"
+
+    monkeypatch.setattr(trigger_tools.trigger_create, "func", fake_create)
+    monkeypatch.setattr(trigger_tools.trigger_update, "func", fake_update)
+    monkeypatch.setattr(trigger_tools.trigger_delete, "func", fake_delete)
+
+    cfg = _config()
+    assert trigger_tools.trigger_config.func(
+        action="create",
+        name="Deploy alert",
+        source_type="webhook",
+        action_type="notify",
+        action_config={"message_template": "Deploy {status}"},
+        config=cfg,
+    ) == "created"
+    assert trigger_tools.trigger_config.func(
+        action="update",
+        trigger_id="abc12345",
+        enabled=False,
+        config=cfg,
+    ) == "updated"
+    assert trigger_tools.trigger_config.func(
+        action="delete",
+        trigger_id="abc12345",
+        config=cfg,
+    ) == "deleted"
+
+    assert [call[0] for call in calls] == ["create", "update", "delete"]
+    assert calls[0][1]["config"] == cfg
+    assert calls[1][1]["enabled"] is False
+    assert calls[2][1]["trigger_id"] == "abc12345"
+
+
+def test_trigger_info_tool_routes_read_actions(monkeypatch):
+    calls = []
+
+    def fake_list(**kwargs):
+        calls.append(("list", kwargs))
+        return "listed"
+
+    def fake_sources():
+        calls.append(("sources", {}))
+        return "sources"
+
+    def fake_inspect(**kwargs):
+        calls.append(("inspect", kwargs))
+        return kwargs["action"]
+
+    monkeypatch.setattr(trigger_tools.trigger_list, "func", fake_list)
+    monkeypatch.setattr(trigger_tools.trigger_sources_info, "func", fake_sources)
+    monkeypatch.setattr(trigger_tools.trigger_inspect, "func", fake_inspect)
+
+    cfg = _config()
+    assert trigger_tools.trigger_info.func(
+        action="list",
+        enabled_only=True,
+        current_thread_only=True,
+        config=cfg,
+    ) == "listed"
+    assert trigger_tools.trigger_info.func(action="sources", config=cfg) == "sources"
+    assert trigger_tools.trigger_info.func(
+        action="history",
+        trigger_id="abc12345",
+        limit=3,
+        config=cfg,
+    ) == "history"
+
+    assert [call[0] for call in calls] == ["list", "sources", "inspect"]
+    assert calls[0][1]["enabled_only"] is True
+    assert calls[2][1]["trigger_id"] == "abc12345"
+    assert calls[2][1]["limit"] == 3
+
+
+def test_legacy_trigger_tool_names_migrate_to_consolidated_tools():
+    assert migrate_tool_names([
+        "trigger_create",
+        "trigger_update",
+        "trigger_delete",
+        "trigger_list",
+        "trigger_inspect",
+        "trigger_sources_info",
+    ]) == ["trigger_config", "trigger_info"]
+
+    prefs = ToolPreferences(default_thread_tools=[
+        "trigger_create",
+        "trigger_update",
+        "trigger_list",
+    ])
+    assert prefs.default_thread_tools == ["trigger_config", "trigger_info"]
+
+    now = datetime.now(timezone.utc)
+    tc = ThreadConfig(
+        thread_id="thread-1",
+        enabled_tools=["trigger_create", "trigger_update", "trigger_list"],
+        disabled_tools=["trigger_delete"],
+        temporary_tools={
+            "trigger_inspect": {
+                "enabled_at": now.isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+            }
+        },
+    )
+    assert tc.enabled_tools == ["trigger_config", "trigger_info"]
+    assert tc.disabled_tools == ["trigger_config"]
+    assert list(tc.temporary_tools.keys()) == ["trigger_info"]
+
+
+def test_trigger_consolidation_and_tool_search_schema_budget():
+    trigger_schema_chars = sum(
+        len(tool.name)
+        + len(tool.description or "")
+        + len(json.dumps(tool.args, sort_keys=True))
+        for tool in trigger_tools.TRIGGER_TOOLS
+    )
+
+    assert trigger_schema_chars < 4000
+    assert len(tool_search.description or "") < 1200
 
 
 def test_builtin_tools_have_metadata():

@@ -67,7 +67,7 @@ Trigger system that fires agent prompts or actions in response to events.
 
 **Source types:** `webhook` (generic incoming), `outlook_email` (polls for new emails)
 
-**Components:** `core/trigger_manager.py`, `triggers/sources/base.py`, CRUD tools (`trigger_create/list/update/delete`)
+**Components:** `core/trigger_manager.py`, `triggers/sources/base.py`, trigger tools (`trigger_config`, `trigger_info`)
 
 ---
 

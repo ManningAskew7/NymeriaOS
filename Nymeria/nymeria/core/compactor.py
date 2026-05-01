@@ -34,12 +34,12 @@ The conversation is getting long and needs to be summarized. After your response
    - Config files referenced
    - Any notes or checklists created during this session
 
-4. **Save persistent facts** - Use `profile_save` for anything that should be remembered across ALL future conversations:
+4. **Save persistent facts** - Use `memory_add(scope="global", key=..., content=...)` for anything that should be remembered across ALL future conversations:
    - User's name, role, occupation
    - Project names and key technical details
    - Strong preferences or constraints
 
-5. **Save thread context** - Use `notepad_write` for thread-specific context that should survive compaction:
+5. **Save thread context** - Use `memory_add(scope="thread", content=...)` for thread-specific context that should survive compaction:
    - Current project state, file paths being worked on
    - Decisions made and their reasoning
    - Key findings or intermediate results

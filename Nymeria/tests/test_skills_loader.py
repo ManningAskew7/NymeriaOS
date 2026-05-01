@@ -34,6 +34,21 @@ Do the test thing.
 """
 
 
+SKILL_KIT = """---
+name: trigger-management
+description: Configure and inspect triggers.
+metadata:
+  nymeria:
+    required_tools:
+      - trigger_config
+      - trigger_info
+    tool_ttl: 6h
+---
+
+# Trigger kit
+"""
+
+
 def _write_skill(root: Path, name: str, content: str) -> Path:
     d = root / name
     d.mkdir(parents=True)
@@ -81,6 +96,18 @@ def test_load_skill_directory(tmp_path: Path):
     assert skill.scope == "user"
     assert skill.user_id == "tester"
     assert skill.body.startswith("# Test skill")
+    assert skill.required_tools == []
+    assert skill.tool_ttl == "2h"
+    assert skill.is_skill_kit is False
+
+
+def test_load_skill_kit_metadata(tmp_path: Path):
+    d = _write_skill(tmp_path, "trigger-management", SKILL_KIT)
+    skill = load_skill_directory(d, scope="bundled")
+    assert skill is not None
+    assert skill.required_tools == ["trigger_config", "trigger_info"]
+    assert skill.tool_ttl == "6h"
+    assert skill.is_skill_kit is True
 
 
 def test_manager_precedence_user_over_global(tmp_path: Path):

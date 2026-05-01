@@ -68,6 +68,16 @@ Starting Nymeria API server on 0.0.0.0:8000...
   - ReDoc: http://0.0.0.0:8000/redoc
 ```
 
+### Backend Validation
+
+`pytest` is installed with the backend dependencies. In Docker, the API service
+also mounts `./tests` at `/app/tests`, so focused checks can run against the
+live container:
+
+```bash
+docker exec nymeria-api python -m pytest -q /app/tests/test_notification_delivery_config.py
+```
+
 ## Step 5: Connect the Desktop App
 
 1. Open the Nymeria desktop app
