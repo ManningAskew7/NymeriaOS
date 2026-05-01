@@ -143,7 +143,7 @@ with manager.atomic_update("user123") as profile:
 
 **How Memories Work:**
 1. User says "My name is Alex"
-2. LLM calls `memory_save("name", "Alex")`
+2. LLM calls `memory_add(scope="global", key="name", content="Alex")`
 3. Profile saved to disk
 4. Next conversation: memories automatically included in system prompt
 5. LLM knows memories without needing to "recall" them
@@ -351,7 +351,7 @@ When token usage reaches the threshold (default: 80% of model's context limit):
 
 ```
 1. Agent generates summary (already has full context - no re-sending)
-2. Agent calls memory_save for important persistent facts
+2. Agent calls `memory_add(scope="global", ...)` for important persistent facts
 3. All messages cleared from thread (RemoveMessage + a single
    compaction_marker HumanMessage so the router can still read messages[-1])
 4. Pre-compact checkpoint rows pruned from the checkpointer via raw SQL
