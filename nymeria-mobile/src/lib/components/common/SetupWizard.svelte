@@ -38,7 +38,7 @@
 
   // Validates URL+token via probeConnection — a stateless module-level helper
   // that does NOT touch configStore. Writing apiUrl/apiKey here (as the
-  // pre-fix code did) flipped configStore.isFirstRun → false and unmounted
+  // pre-fix code did) flipped the root setup gate and unmounted
   // the wizard mid-await, dropping the user into the half-initialised app.
   // Only completeSetup() persists to configStore.
   async function testConnection() {

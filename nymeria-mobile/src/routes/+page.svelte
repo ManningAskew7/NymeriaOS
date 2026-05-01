@@ -96,9 +96,8 @@
       (async () => {
         try {
           const id = await configStore.refreshIdentity();
-          if (id === null && configStore.apiKey) {
+          if (id === null && !configStore.isConfigured) {
             console.warn('[Page] /me returned unauthorized; clearing apiKey');
-            configStore.apiKey = '';
             return;
           }
         } catch (e) {
@@ -121,7 +120,7 @@
   });
 </script>
 
-{#if configStore.isFirstRun}
+{#if configStore.needsSetup}
   <SetupWizard />
 {:else}
   <MobileShell />

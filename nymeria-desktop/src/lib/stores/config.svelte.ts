@@ -159,6 +159,25 @@ function createConfigStore() {
     saveConfig({ apiUrl, apiKey, setupCompleted, theme, suppressAttachmentWarnings, identity });
   }
 
+  function notifyIdentityReloadHooks(label: string): void {
+    for (const hook of reloadHooks) {
+      try {
+        hook();
+      } catch (e) {
+        console.error(`${label} reload hook failed:`, e);
+      }
+    }
+  }
+
+  function clearAuthSession(label: string): void {
+    apiKey = '';
+    setupCompleted = false;
+    identity = null;
+    currentIdentityId = null;
+    saveCurrentConfig();
+    notifyIdentityReloadHooks(label);
+  }
+
   /**
    * Fetch GET /me using the current apiUrl + apiKey, update identity state,
    * migrate legacy unscoped localStorage keys, and fire reload hooks so
@@ -180,11 +199,10 @@ function createConfigStore() {
       });
       if (!response.ok) {
         if (response.status === 401) {
-          // Token no longer valid — clear cached identity so callers can
-          // decide what to do (typically: send user back to Setup Wizard).
-          identity = null;
-          currentIdentityId = null;
-          saveCurrentConfig();
+          // Token no longer valid. Clear the auth session immediately so the
+          // root route renders SetupWizard instead of mounting app panels that
+          // will all fail with 401s.
+          clearAuthSession('refreshIdentity auth failure');
         }
         return null;
       }
@@ -223,18 +241,7 @@ function createConfigStore() {
    * are notified via the identity reload hooks.
    */
   function signOut(): void {
-    apiKey = '';
-    setupCompleted = false;
-    identity = null;
-    currentIdentityId = null;
-    saveCurrentConfig();
-    for (const hook of reloadHooks) {
-      try {
-        hook();
-      } catch (e) {
-        console.error('signOut reload hook failed:', e);
-      }
-    }
+    clearAuthSession('signOut');
   }
 
   /**
@@ -281,7 +288,10 @@ function createConfigStore() {
       saveCurrentConfig();
     },
     get isConfigured() {
-      return apiUrl.length > 0 && apiKey.length > 0;
+      return apiUrl.trim().length > 0 && apiKey.trim().length > 0;
+    },
+    get needsSetup() {
+      return !setupCompleted || apiUrl.trim().length === 0 || apiKey.trim().length === 0;
     },
     get isFirstRun() {
       return !setupCompleted && !apiKey;

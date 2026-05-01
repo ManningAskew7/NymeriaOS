@@ -131,7 +131,13 @@
     loadError = null;
     const result = await switchToThread(threadId);
     if (!result.success) {
-      loadError = 'Could not load chat history. The thread may have been created before syncing was fixed.';
+      if (/\b401\b|\b403\b|unauthori[sz]ed|forbidden|not signed in/i.test(result.error)) {
+        loadError = 'Your session is not authorized. Sign in again to load this thread.';
+      } else if (/\b404\b/.test(result.error)) {
+        loadError = 'That thread no longer exists on the backend.';
+      } else {
+        loadError = 'Could not load chat history. Check your connection and try again.';
+      }
     }
   }
 
