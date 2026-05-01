@@ -93,17 +93,35 @@
     return defaultMcpCount - disabledMcpCount + enabledOptionalMcpCount;
   });
 
-  const activeSkillCount = $derived.by(() => {
-    if (!skillsStore.enabledGlobalLoaded) return null;
-    const disabled = new Set(currentThreadConfig?.disabledSkills ?? []);
-    const active = new Set<string>();
-    for (const name of skillsStore.enabledGlobal) {
-      if (!disabled.has(name)) active.add(name);
+  let activeSkillCount = $state<number | null>(null);
+  let activeSkillRequestId = 0;
+
+  $effect(() => {
+    const threadId = threadsStore.currentThreadId;
+    const enabledSkillsKey = (currentThreadConfig?.enabledSkills ?? []).join('\x1f');
+    const disabledSkillsKey = (currentThreadConfig?.disabledSkills ?? []).join('\x1f');
+    const globalSkillsKey = skillsStore.enabledGlobal.join('\x1f');
+    const requestId = ++activeSkillRequestId;
+    activeSkillCount = null;
+
+    if (!threadId) {
+      return;
     }
-    for (const name of currentThreadConfig?.enabledSkills ?? []) {
-      if (!disabled.has(name)) active.add(name);
-    }
-    return active.size;
+
+    api.getThreadActiveSkills(threadId)
+      .then((response) => {
+        if (requestId !== activeSkillRequestId) return;
+        activeSkillCount = response.skills.length;
+      })
+      .catch((err) => {
+        if (requestId !== activeSkillRequestId) return;
+        console.warn('[ChatPanel] Failed to load active skills:', err);
+        activeSkillCount = null;
+      });
+
+    void enabledSkillsKey;
+    void disabledSkillsKey;
+    void globalSkillsKey;
   });
 
   const callableCount = $derived(defaultToolsStore.callableThreadCount);

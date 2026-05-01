@@ -12,15 +12,32 @@
   });
 
   const scopeOrder: SkillScope[] = ['user', 'global', 'bundled'];
+  type SkillKind = 'kits' | 'skills';
+  const skillKindOrder: SkillKind[] = ['kits', 'skills'];
   const scopeLabel: Record<SkillScope, string> = {
     user: 'User-installed',
     global: 'Global (all users)',
     bundled: 'Bundled (ships with Nymeria)',
   };
+  const skillKindLabel: Record<SkillKind, string> = {
+    kits: 'Skill Kits',
+    skills: 'Skills',
+  };
 
   const grouped = $derived.by(() => {
     const out: Record<SkillScope, SkillMetadata[]> = { user: [], global: [], bundled: [] };
     for (const s of skillsStore.installed) out[s.scope].push(s);
+    return out;
+  });
+  const groupedByKind = $derived.by(() => {
+    const out: Record<SkillScope, Record<SkillKind, SkillMetadata[]>> = {
+      user: { kits: [], skills: [] },
+      global: { kits: [], skills: [] },
+      bundled: { kits: [], skills: [] },
+    };
+    for (const s of skillsStore.installed) {
+      out[s.scope][s.is_skill_kit ? 'kits' : 'skills'].push(s);
+    }
     return out;
   });
 
@@ -53,9 +70,8 @@
       <h3 class="panel-title">Agent Skills</h3>
       <p class="panel-hint">
         Skills are bundles of procedural knowledge (SKILL.md + optional scripts).
-        When enabled on a thread, the agent sees their name + description and
-        loads the full body via a single <code>Skill(name)</code> tool call,
-        with no context cost for skills the agent doesn't activate this turn.
+        Skill Kits are skills that also bind required Nymeria tools when activated.
+        Both stay hidden until the agent calls <code>Skill(name)</code>.
       </p>
     </div>
     <button class="btn btn-primary" onclick={() => (showMarketplace = true)} type="button">
@@ -86,68 +102,78 @@
             {scopeLabel[scope]}
             <span class="scope-count">({grouped[scope].length})</span>
           </h4>
-          <div class="skills-list">
-            {#each grouped[scope] as skill (skill.name)}
-              {@const isGlobal = skillsStore.enabledGlobal.includes(skill.name)}
-              {@const pendingState = skillsStore.isPending(skill.name)}
-              <div class="skill-row" class:global-enabled={isGlobal}>
-                <div class="skill-main">
-                  <div class="skill-title-row">
-                    <span class="skill-name">{skill.name}</span>
-                    {#if skill.default_active}<span class="chip chip-default">default</span>{/if}
-                    {#if skill.is_skill_kit}<span class="chip chip-kit">Skill Kit</span>{/if}
-                    {#if skill.has_scripts}<span class="chip">scripts</span>{/if}
-                    {#if skill.has_references}<span class="chip">references</span>{/if}
-                    {#if skill.has_assets}<span class="chip">assets</span>{/if}
-                    {#each skill.required_tools as toolName}
-                      <span class="chip chip-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
-                        {toolName}
-                      </span>
-                    {/each}
-                    {#if skill.allowed_tools.length > 0}
-                      <span class="chip chip-tools" title={skill.allowed_tools.join(', ')}>
-                        {skill.allowed_tools.length} allowed-tool{skill.allowed_tools.length > 1 ? 's' : ''}
-                      </span>
-                    {/if}
-                  </div>
-                  <p class="skill-desc" class:collapsed={!expanded[skill.name]}>
-                    {skill.description}
-                  </p>
-                  <button
-                    class="expand-btn"
-                    onclick={() => toggleExpand(skill.name)}
-                    type="button"
-                  >
-                    {expanded[skill.name] ? 'Less' : 'More'}
-                  </button>
-                </div>
-                <div class="skill-actions">
-                  <label
-                    class="toggle-wrap"
-                    title={skill.default_active ? 'Bundled default-active skill; disable per thread if needed' : 'Enable this skill by default on every new thread'}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={skill.default_active || isGlobal}
-                      disabled={skill.default_active}
-                      onchange={() => handleToggleGlobal(skill)}
-                    />
-                    <span class="toggle-text">{skill.default_active ? 'Default active' : 'Enable globally'}</span>
-                  </label>
-                  {#if skill.scope !== 'bundled'}
-                    <button
-                      class="btn btn-danger-ghost"
-                      onclick={() => handleUninstall(skill)}
-                      disabled={pendingState === 'uninstalling'}
-                      type="button"
-                    >
-                      {pendingState === 'uninstalling' ? 'Removing…' : 'Remove'}
-                    </button>
-                  {/if}
+          {#each skillKindOrder as kind}
+            {@const kindSkills = groupedByKind[scope][kind]}
+            {#if kindSkills.length > 0}
+              <div class="kind-section">
+                <h5 class="kind-heading">
+                  {skillKindLabel[kind]}
+                  <span class="scope-count">({kindSkills.length})</span>
+                </h5>
+                <div class="skills-list">
+                  {#each kindSkills as skill (skill.name)}
+                    {@const isGlobal = skillsStore.enabledGlobal.includes(skill.name)}
+                    {@const pendingState = skillsStore.isPending(skill.name)}
+                    <div class="skill-row" class:global-enabled={isGlobal} class:skill-kit-row={skill.is_skill_kit}>
+                      <div class="skill-main">
+                        <div class="skill-title-row">
+                          <span class="skill-name">{skill.name}</span>
+                          {#if skill.default_active}<span class="chip chip-default">default</span>{/if}
+                          {#if skill.is_skill_kit}<span class="chip chip-kit">Skill Kit</span>{/if}
+                          {#if skill.has_scripts}<span class="chip">scripts</span>{/if}
+                          {#if skill.has_references}<span class="chip">references</span>{/if}
+                          {#if skill.has_assets}<span class="chip">assets</span>{/if}
+                          {#each skill.required_tools as toolName}
+                            <span class="chip chip-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
+                              {toolName}
+                            </span>
+                          {/each}
+                          {#if skill.allowed_tools.length > 0}
+                            <span class="chip chip-tools" title={skill.allowed_tools.join(', ')}>
+                              {skill.allowed_tools.length} allowed-tool{skill.allowed_tools.length > 1 ? 's' : ''}
+                            </span>
+                          {/if}
+                        </div>
+                        <p class="skill-desc" class:collapsed={!expanded[skill.name]}>
+                          {skill.description}
+                        </p>
+                        <button
+                          class="expand-btn"
+                          onclick={() => toggleExpand(skill.name)}
+                          type="button"
+                        >
+                          {expanded[skill.name] ? 'Less' : 'More'}
+                        </button>
+                      </div>
+                      <div class="skill-actions">
+                        <label
+                          class="toggle-wrap"
+                          title="Enable this skill by default on every new thread"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isGlobal}
+                            onchange={() => handleToggleGlobal(skill)}
+                          />
+                          <span class="toggle-text">Enable globally</span>
+                        </label>
+                        {#if skill.scope !== 'bundled'}
+                          <button
+                            class="btn btn-danger-ghost"
+                            onclick={() => handleUninstall(skill)}
+                            disabled={pendingState === 'uninstalling'}
+                            type="button"
+                          >
+                            {pendingState === 'uninstalling' ? 'Removing…' : 'Remove'}
+                          </button>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
                 </div>
               </div>
-            {/each}
-          </div>
+            {/if}
+          {/each}
         </section>
       {/if}
     {/each}
@@ -245,6 +271,17 @@
     color: var(--text-muted);
   }
 
+  .kind-section + .kind-section {
+    margin-top: var(--spacing-sm);
+  }
+
+  .kind-heading {
+    margin: 0 0 6px 0;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
   .skills-list {
     display: flex;
     flex-direction: column;
@@ -263,6 +300,9 @@
   .skill-row.global-enabled {
     border-color: var(--accent-primary);
     background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-base));
+  }
+  .skill-row.skill-kit-row {
+    border-left: 3px solid color-mix(in srgb, var(--accent-primary) 70%, var(--border-subtle));
   }
 
   .skill-main {

@@ -4,6 +4,7 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { api } from '$lib/services/api.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
 
@@ -60,10 +61,44 @@
     return name.startsWith('mcp__');
   }
 
+  let activeSkillCount = $state<number | null>(null);
+  let activeSkillTooltip = $state('');
+  let activeSkillRequestId = 0;
+
   $effect(() => {
     if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) {
       skillsStore.loadGlobal();
     }
+  });
+
+  $effect(() => {
+    const threadId = thread.id;
+    const enabledSkillsKey = (threadConfig?.enabledSkills ?? []).join('\x1f');
+    const disabledSkillsKey = (threadConfig?.disabledSkills ?? []).join('\x1f');
+    const globalSkillsKey = skillsStore.enabledGlobal.join('\x1f');
+    const requestId = ++activeSkillRequestId;
+    activeSkillCount = null;
+    activeSkillTooltip = '';
+
+    api.getThreadActiveSkills(threadId)
+      .then((response) => {
+        if (requestId !== activeSkillRequestId) return;
+        const names = response.skills.map((skill) => skill.name);
+        activeSkillCount = names.length;
+        activeSkillTooltip = names.length
+          ? `${names.length} active skill${names.length !== 1 ? 's' : ''}: ${names.join(', ')}`
+          : 'No active skills';
+      })
+      .catch((err) => {
+        if (requestId !== activeSkillRequestId) return;
+        console.warn('[ThreadHeader] Failed to load active skills:', err);
+        activeSkillCount = null;
+        activeSkillTooltip = '';
+      });
+
+    void enabledSkillsKey;
+    void disabledSkillsKey;
+    void globalSkillsKey;
   });
 
   const disabledNonMcpCount = $derived(
@@ -89,19 +124,6 @@
     if (!defaultToolsStore.loaded) return null;
     const defaultMcpCount = defaultToolsStore.defaultToolNames.filter(isMcpToolName).length;
     return defaultMcpCount - disabledMcpCount + enabledOptionalMcpCount;
-  });
-
-  const activeSkillCount = $derived.by(() => {
-    if (!skillsStore.enabledGlobalLoaded) return null;
-    const disabled = new Set(threadConfig?.disabledSkills ?? []);
-    const active = new Set<string>();
-    for (const name of skillsStore.enabledGlobal) {
-      if (!disabled.has(name)) active.add(name);
-    }
-    for (const name of threadConfig?.enabledSkills ?? []) {
-      if (!disabled.has(name)) active.add(name);
-    }
-    return active.size;
   });
 
   const toolsTooltip = $derived.by(() => {
@@ -169,7 +191,7 @@
         </span>
       {/if}
       {#if activeSkillCount !== null}
-        <span class="badge skills-badge" title="{activeSkillCount} active skill{activeSkillCount !== 1 ? 's' : ''}">
+        <span class="badge skills-badge" title={activeSkillTooltip}>
           {activeSkillCount} skill{activeSkillCount !== 1 ? 's' : ''}
         </span>
       {/if}
