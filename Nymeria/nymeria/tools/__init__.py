@@ -10,6 +10,7 @@ Callable thread tools are added per-graph in _build_graph_with_prompt(), not glo
 
 from .bash import bash_execute
 from .filesystem import file_read, file_write
+from .file_edit import file_edit, FILE_EDIT_TOOLS
 from .web import web_search
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
@@ -100,6 +101,7 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 # Maps tool name -> tool object. Users enable these via thread config UI.
 OPTIONAL_TOOLS = {t.name: t for t in (
     [claude_code, sticky_note, hello_test]
+    + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
@@ -189,6 +191,8 @@ __all__ = [
     "bash_execute",
     "file_read",
     "file_write",
+    "file_edit",
+    "FILE_EDIT_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

@@ -6,11 +6,11 @@ Nymeria's Telegram integration runs as a stateless gateway that translates Teleg
 
 ```
 Docker: nymeria-telegram-bot (profile: telegram)
-  └─ NymeriaTelegramBot
-       ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-       ├─ python-telegram-bot v22+ (async polling)
-       ├─ 35 bot commands + plain message handler
-       └─ SSE listener (autonomous task completion → chat posts)
+	  └─ NymeriaTelegramBot
+	       ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
+	       ├─ python-telegram-bot v22+ (async polling)
+	       ├─ 35 bot commands + plain message handler
+	       └─ SSE listener (autonomous task stream → chat posts)
 ```
 
 Like the Discord bot, the Telegram bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`) — users see text appear progressively as the model generates it, with tool call boundaries shown as separate message bubbles.
@@ -310,8 +310,10 @@ The bot maintains a background SSE connection to `GET /autonomous/stream`. When 
 - `response` chunks accumulate in a buffer and flush as a new message bubble at every `tool_call` boundary.
 - `tool_call` / `tool_result` markers are shown only when the chat has `/showtools` enabled.
 - `tool_reload` events flush buffered text and post a compact Tool Binding line before resumed tool calls/results.
+- Compaction, attached-context, and iteration-limit events are surfaced as compact status messages.
 - A small `Tool calls: N` italic footer is appended to the final bubble when tools were used.
 - No wrapper header — bubbles look identical to a regular reply, with the chat itself providing the autonomous-vs-user provenance.
+- `task_completed.content` is used only as a fallback when no live `response` chunks were received, so long streamed responses are not duplicated at completion.
 - On `task_completed` with `error: true`, a single short `Autonomous task error: ...` line is posted instead.
 - Explicit `notify` tool calls arrive as `notification` SSE events and are posted to the bound Telegram chat unless Telegram autonomous delivery is `off`.
 

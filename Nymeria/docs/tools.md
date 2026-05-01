@@ -61,6 +61,14 @@ Not loaded by default. Enable per-thread when the agent needs ad hoc API calls, 
 | 3 | `tool_create` | Custom | MODERATE | Draft, test, and publish reusable HTTP tools into the global custom-tool registry |
 | 4 | `skill_config` | Custom | MODERATE | Draft, validate, publish, list, and delete user-scoped Nymeria Skills and Skill Kits |
 
+### Optional: File Editing (1)
+
+Not loaded by default. Enable per-thread when the agent needs precise text edits instead of full-file rewrites.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `file_edit` | Core | MODERATE | Exact, all-or-nothing edits to existing text files |
+
 ### Optional: _PRV_A and Sheets Tools (8 + 1 attachment)
 
 Google Sheets-based tools for Acme Hardware RFQ processing. Generic `google_sheets_*` tools use the current user's Google OAuth. The dedicated `_prv_a_*` reference tools use the app-level `_PRV_A_SERVICE_ACCOUNT_FILE` service account with 5-minute in-memory caching, so _PRV_A lookups do not depend on whichever user is authenticated for Google Docs. The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module; it's placed here as a general-purpose extraction utility.
@@ -170,6 +178,39 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 **Returns:** Success/error message with character count. When `attach=True` and the file is inside the workspace directory, the raw tool result includes an `[attach:/path]` tag and clients receive a `workspace_artifact` event. If the file is outside the workspace, the write still succeeds but attachment delivery is skipped with an info note.
 
 **Protected paths:** Writes to `nymeria/core/`, `nymeria/config/`, `nymeria/triggers/`, `nymeria/gateway/`, and `nymeria/__init__.py` are blocked. Use the SelfModifyAgent for those directories.
+
+---
+
+### file_edit (Optional)
+
+Precisely edit an existing text file with exact, all-or-nothing operations. This is not loaded by default; enable it per-thread before use.
+
+```python
+file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: bool = False, expected_sha256: Optional[str] = None, max_diff_chars: int = 20000)
+```
+
+**Parameters:**
+- `file_path` (`str`): Absolute or relative path to an existing file
+- `edits` (`list[dict]`): Ordered edit operations. Each operation is applied to the in-memory result of prior operations.
+- `encoding` (`str`, default `"utf-8"`): File encoding
+- `dry_run` (`bool`, default `False`): Return validation and diff without writing
+- `expected_sha256` (`Optional[str]`, default `None`): Optional SHA-256 of the current file bytes; mismatches fail before edits are evaluated
+- `max_diff_chars` (`int`, default `20000`): Maximum unified diff characters to return; `0` suppresses the diff
+
+**Operations:**
+- `replace`: requires `old_text`; writes `new_text` in its place
+- `delete`: requires `old_text`; removes the match
+- `insert_before`: requires `old_text`; inserts `new_text` before the match
+- `insert_after`: requires `old_text`; inserts `new_text` after the match
+- `replace_range`: requires `start_line`, `end_line`, and `old_text`; replaces the 1-based inclusive line range with `new_text` only if `old_text` exactly equals the selected range
+
+**Matching rules:** `old_text` must be exact and non-empty. If `occurrence` is omitted, `old_text` must match exactly once. If `occurrence` is provided, it is 1-based and selects that exact match. Fuzzy matching is intentionally not used.
+
+**Returns:** JSON with `ok`, `dry_run`, `file_path`, `edits_applied`, `original_sha256`, `new_sha256`, `changed`, `diff`, and `diff_truncated`; errors include a structured `error.type`, message, and `edit_index` when relevant.
+
+**Safety:** Edits are all-or-nothing and written atomically. The tool does not create backups. It preserves the existing file mode and dominant newline style for inserted/replacement text.
+
+**Limits and protected paths:** Same 10 MB text-file limit and protected Nymeria paths as `file_write`.
 
 ---
 
@@ -1346,7 +1387,7 @@ Representative examples:
 
 **SAFE:** `file_read`, `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`
 
-**MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
+**MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 
 **SENSITIVE:** self-modify file mutation and rollback tools
 
