@@ -1,10 +1,10 @@
 """Thread-based callable executor.
 
-Delegates tasks to callable threads via NymeriaAgent.stream(), replacing the old
+Delegates tasks to callable threads via NymeriaAgent.astream(), replacing the old
 SubAgentExecutor for agents that have been migrated to thread-based execution.
 
 Key differences from SubAgentExecutor:
-- Uses agent.stream() directly — honors all thread config (system prompt, tools, LLM)
+- Uses the same async agent stream as chat — honors all thread config (system prompt, tools, LLM)
 - Publishes live events to the event bus so the frontend can stream callable thread activity
 - Conversation persists in SQLite/Postgres (not in-memory)
 - Thread is visible in the UI
@@ -15,6 +15,7 @@ import logging
 from uuid import uuid4
 
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
+from .stream_bridge import iter_agent_astream
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def _build_error_result(code: str, message: str, **metadata) -> str:
 
 def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
            trigger_override: str = None) -> str:
-    """Delegate a task to a callable thread via NymeriaAgent.stream().
+    """Delegate a task to a callable thread via NymeriaAgent.astream().
 
     Streams events in real-time to the event bus so the frontend can display
     live thinking, tool calls, and responses for the callable thread.
@@ -79,29 +80,32 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
             f"task_id={task_id}, user={caller_user_id}, task={task[:80]}..."
         )
 
-        # Publish task_started immediately so frontend can enter streaming mode
-        publish_autonomous_event(
-            event_type="task_started",
-            thread_id=thread_id,
-            user_id=caller_user_id,
-            task_id=task_id,
-            data={"prompt": task, "callable_name": callable_name},
-        )
-
         response_parts = []
         thinking_parts = []
         chunk_count = 0
         tool_call_count = 0
         iteration_limit_hit = False
         iteration_limit_event = None
+        started_published = False
 
-        for chunk in agent.stream(
+        for chunk in iter_agent_astream(
+            agent,
             message=task,
             thread_id=thread_id,
             user_id=caller_user_id,
             _is_self_invoke=False,
             _trigger_override=trigger_override,
         ):
+            if not started_published:
+                publish_autonomous_event(
+                    event_type="task_started",
+                    thread_id=thread_id,
+                    user_id=caller_user_id,
+                    task_id=task_id,
+                    data={"prompt": task, "callable_name": callable_name},
+                )
+                started_published = True
+
             chunk_type = chunk.get("type")
             chunk_count += 1
             publish_agent_stream_chunk(

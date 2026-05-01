@@ -535,7 +535,7 @@ When the agent calls `tool_search(action="enable", tools=[...])` during a turn, 
 
 To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_search(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
 
-`astream()` (REST/SSE), `stream()` (callable/autonomous sync streaming), and `chat()` (MCP/CLI final-string path) all honor the auto-continue. The two streaming paths emit `tool_reload` and then drive the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. `chat()` remains non-streaming and returns only the final string.
+`astream()` (REST/SSE and autonomous worker streaming), `stream()` (legacy sync streaming), and `chat()` (MCP/CLI final-string path) all honor the auto-continue. The streaming paths emit `tool_reload` and then drive the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. Scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` through `core/stream_bridge.py`, which keeps async-only tools such as `tool_create` available outside regular chat. `chat()` remains non-streaming and returns only the final string.
 
 #### TTL and eviction
 
@@ -729,7 +729,7 @@ slash_command(command: str)
 
 **Returns:** Plain-text result prefixed with `[Success]`, `[Error]`, or `[Info]`.
 
-**Runtime behavior:** Works in both normal conversation turns and autonomous scheduled TODO runs. Nymeria's ticker uses the synchronous `agent.stream()` path, so `slash_command` provides both sync and async invocation modes even though the underlying dispatcher talks to the local API asynchronously.
+**Runtime behavior:** Works in both normal conversation turns and autonomous scheduled TODO runs. Some tool callers still need a synchronous return value, so `slash_command` provides both sync and async invocation modes even though the underlying dispatcher talks to the local API asynchronously.
 
 **Requirements:**
 - `NYMERIA_API_URL` — defaults to `http://api:8000` inside Docker or `http://localhost:8000` outside.

@@ -525,7 +525,7 @@ GET /autonomous/stream?user_id=default&api_key=<token>
 
 **Note:** API key passed as query parameter because `EventSource` doesn't support custom headers.
 
-Connects to a Server-Sent Events stream for receiving real-time updates during autonomous task execution (scheduled TODOs).
+Connects to a Server-Sent Events stream for receiving real-time updates during autonomous task execution: scheduled TODOs, trigger actions, callable-thread runs, spawned-thread runs, and `/chat` calls with `is_self_invoke=true`.
 
 **Query Parameters:**
 | Parameter | Required | Default | Description |
@@ -537,7 +537,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 
 | Event | Description | Fields |
 |-------|-------------|--------|
-| `task_started` | Scheduled TODO execution begins | `thread_id`, `task_id`, `prompt`, `todo_id` |
+| `task_started` | Autonomous execution begins | `thread_id`, `task_id`, `prompt`, optional `todo_id`, `trigger_id`, `trigger_name`, `callable_name`, `source` |
 | `thinking` | Agent reasoning | `content` |
 | `tool_call_delta` | Status-only hint that the model is streaming tool-call argument chunks before the tool starts | none |
 | `tool_call` | Tool invocation | `id`, `name`, `args` |

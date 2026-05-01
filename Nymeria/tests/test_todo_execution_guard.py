@@ -17,6 +17,7 @@ from nymeria.core.ticker import Ticker
 from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from nymeria.core.trigger_manager import TriggerManager
+from nymeria.core import ticker as ticker_module
 from nymeria.triggers import api as api_module
 
 
@@ -61,6 +62,9 @@ class FakeAgent:
         pass
 
     def stream(self, *args, **kwargs):
+        raise AssertionError("autonomous scheduled TODOs should use astream()")
+
+    async def astream(self, *args, **kwargs):
         raise RuntimeError("boom")
 
 
@@ -192,3 +196,73 @@ def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path):
     ticker._execute_scheduled_todo(entry)
 
     assert not agent._schedule_db.is_execution_active(todo.id, "owner")
+
+
+def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, monkeypatch):
+    agent = FakeAgent(tmp_path)
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+    todo = _add_todo(agent)
+    entry = ScheduledTodoEntry(
+        todo_id=todo.id,
+        user_id="owner",
+        thread_id=todo.thread_id,
+        scheduled_for=time.time() - 1,
+        task_preview=todo.task,
+        created_at=time.time(),
+    )
+
+    calls = []
+
+    async def fake_astream(**kwargs):
+        calls.append(kwargs)
+        yield {
+            "type": "tool_reload",
+            "tools": ["tool_create"],
+            "ttl": "2h",
+            "ttl_seconds": 7200,
+            "source": "tool_search",
+        }
+        yield {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "tool_create",
+            "args": {"action": "draft"},
+        }
+        yield {
+            "type": "tool_result",
+            "id": "call-1",
+            "name": "tool_create",
+            "result": "drafted",
+        }
+        yield {"type": "response", "content": "done"}
+
+    agent.astream = fake_astream
+
+    events = []
+
+    def capture_autonomous_event(event_type, thread_id, user_id, task_id="", data=None):
+        events.append((event_type, data or {}))
+
+    def capture_stream_chunk(chunk, **kwargs):
+        events.append((chunk["type"], {k: v for k, v in chunk.items() if k != "type"}))
+        return True
+
+    monkeypatch.setattr(ticker_module, "publish_autonomous_event", capture_autonomous_event)
+    monkeypatch.setattr(ticker_module, "publish_agent_stream_chunk", capture_stream_chunk)
+
+    ticker._execute_scheduled_todo(entry)
+
+    assert calls
+    assert calls[0]["message"].startswith(f"Work on TODO {todo.id}:")
+    assert calls[0]["thread_id"] == todo.thread_id
+    assert calls[0]["user_id"] == "owner"
+    assert calls[0]["_is_self_invoke"] is True
+    assert [event[0] for event in events] == [
+        "task_started",
+        "tool_reload",
+        "tool_call",
+        "tool_result",
+        "response",
+        "task_completed",
+    ]
+    assert events[1][1]["ttl_seconds"] == 7200

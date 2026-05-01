@@ -1,8 +1,27 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo } from '$lib/types';
+import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 
 function generateId(): string {
   return crypto.randomUUID();
+}
+
+function mergeArtifacts(
+  existing: WorkspaceArtifact[] | undefined,
+  incoming: WorkspaceArtifact[] | undefined
+): WorkspaceArtifact[] | undefined {
+  if (!incoming?.length) return existing;
+  if (!existing?.length) return [...incoming];
+
+  const seen = new Set(existing.map((artifact) => `${artifact.path}:${artifact.name}`));
+  const merged = [...existing];
+  for (const artifact of incoming) {
+    const key = `${artifact.path}:${artifact.name}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(artifact);
+    }
+  }
+  return merged;
 }
 
 /**
@@ -545,6 +564,43 @@ function createChatStore() {
             toolCalls: this._computeToolCalls(updatedSteps)
           };
         }
+        return msg;
+      });
+    },
+
+    addToolCallArtifacts(id: string, artifacts: WorkspaceArtifact[]) {
+      if (!artifacts.length) return;
+
+      const existing = activeToolCalls.get(id);
+      if (existing) {
+        const updated: ToolCall = {
+          ...existing,
+          artifacts: mergeArtifacts(existing.artifacts, artifacts)
+        };
+        const newMap = new Map(activeToolCalls);
+        newMap.set(id, updated);
+        activeToolCalls = newMap;
+      }
+
+      messages = messages.map((msg) => {
+        if (msg.role === 'assistant' && msg.steps) {
+          const updatedSteps = msg.steps.map((step) => {
+            if (step.type === 'tool_call' && step.id === id) {
+              return {
+                ...step,
+                artifacts: mergeArtifacts(step.artifacts, artifacts)
+              };
+            }
+            return step;
+          });
+
+          return {
+            ...msg,
+            steps: updatedSteps,
+            toolCalls: this._computeToolCalls(updatedSteps)
+          };
+        }
+
         return msg;
       });
     },
