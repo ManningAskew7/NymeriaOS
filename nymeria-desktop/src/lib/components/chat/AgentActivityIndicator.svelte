@@ -98,16 +98,18 @@
       background: linear-gradient(
         100deg,
         var(--text-secondary) 0%,
-        var(--text-secondary) 32%,
-        color-mix(in srgb, var(--accent-primary) 85%, var(--text-primary)) 50%,
-        var(--text-secondary) 68%,
+        var(--text-secondary) 25%,
+        color-mix(in srgb, var(--accent-primary) 60%, var(--text-secondary)) 38%,
+        var(--accent-primary) 50%,
+        color-mix(in srgb, var(--accent-primary) 60%, var(--text-secondary)) 62%,
+        var(--text-secondary) 75%,
         var(--text-secondary) 100%
       );
-      background-size: 230% 100%;
+      background-size: 250% 100%;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
-      animation: phaseSwap 240ms ease-out, textShine 2.1s ease-in-out infinite;
+      animation: phaseSwap 240ms ease-out, textShine 2s ease-in-out infinite;
     }
   }
 
