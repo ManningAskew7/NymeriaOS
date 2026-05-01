@@ -46,7 +46,7 @@
         <span class="dot"></span>
         <span class="dot"></span>
       </span>
-      <span class="thinking-label streaming">Thinking...</span>
+      <span class="thinking-label streaming accent-wave-text">Thinking...</span>
     {:else}
       <span class="thinking-label">Thought</span>
     {/if}
@@ -108,7 +108,6 @@
 
   .thinking-label.streaming {
     font-style: italic;
-    color: var(--text-secondary);
   }
 
   .thinking-dots {

@@ -368,6 +368,74 @@ pre code {
   }
 }
 
+@keyframes accentWave {
+  0% {
+    background-position: 200% 0;
+    text-shadow: 0 0 0 transparent;
+  }
+  35% {
+    text-shadow:
+      0 0 10px rgba(var(--accent-primary-rgb), 0.55),
+      0 0 22px rgba(var(--accent-primary-rgb), 0.25);
+  }
+  65% {
+    text-shadow:
+      0 0 10px rgba(var(--accent-primary-rgb), 0.55),
+      0 0 22px rgba(var(--accent-primary-rgb), 0.25);
+  }
+  100% {
+    background-position: -100% 0;
+    text-shadow: 0 0 0 transparent;
+  }
+}
+
+@keyframes accentDotPulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+    box-shadow: 0 0 0 transparent;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(var(--accent-primary-rgb), 0.6);
+  }
+}
+
+.accent-wave-text {
+  color: var(--text-secondary);
+  text-shadow: 0 0 6px rgba(var(--accent-primary-rgb), 0.35);
+}
+
+@supports (-webkit-background-clip: text) {
+  .accent-wave-text {
+    background: linear-gradient(
+      100deg,
+      var(--text-secondary) 0%,
+      var(--text-secondary) 35%,
+      var(--accent-primary) 50%,
+      var(--text-secondary) 65%,
+      var(--text-secondary) 100%
+    );
+    background-size: 250% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: accentWave 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .accent-wave-text {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: var(--text-secondary);
+    text-shadow: none;
+  }
+}
+
 @keyframes checkBounce {
   0% { transform: scale(1); }
   40% { transform: scale(1.15); }
