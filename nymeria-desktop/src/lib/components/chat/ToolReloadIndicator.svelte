@@ -39,7 +39,7 @@
   const ttlText = $derived(ttlPhrase(info.ttlSeconds, info.ttl));
 
   function ttlPhrase(ttlSeconds: number | null | undefined, ttl: string): string {
-    if (ttlSeconds === null || ttl === 'permanent') return 'permanently';
+    if (ttl === 'permanent') return 'permanently';
     if (typeof ttlSeconds === 'number') {
       const hours = Math.floor(ttlSeconds / 3600);
       const minutes = Math.floor((ttlSeconds % 3600) / 60);
