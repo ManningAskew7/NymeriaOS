@@ -328,11 +328,12 @@ EventBus.publish() → distributes to all subscriber queues
 
 **SSE Endpoint (`/autonomous/stream`):**
 ```python
-GET /autonomous/stream?user_id=default&api_key={key}
+GET /autonomous/stream?user_id={user_id}&client_id={client_id}
+Authorization: Bearer {key}
 ```
-- API key passed as query param (EventSource doesn't support headers)
+- Desktop opens the stream with `fetch()` + `ReadableStream`, `Accept: text/event-stream`, and Bearer auth headers. The legacy `api_key` query parameter remains available for older EventSource-style clients.
 - Sends heartbeat every 1 second when idle
-- Filters events by user_id if specified
+- Filters events to the authenticated user unless an admin caller uses `X-Nymeria-Act-As`; `client_id` suppresses same-client sync echoes
 - Unsubscribes on client disconnect
 
 ---

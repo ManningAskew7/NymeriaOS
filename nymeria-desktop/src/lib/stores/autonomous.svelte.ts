@@ -45,15 +45,28 @@ const STREAMING_AUTONOMOUS_EVENT_TYPES = new Set([
   'response'
 ]);
 
+const HIGH_VOLUME_EVENT_TYPES = new Set(['response', 'thinking', 'tool_call_delta']);
+const BASE_RECONNECT_DELAY_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 30000;
+const IDLE_TIMEOUT_MS = 30000;
+
 // Debug: log when module loads
 console.log('[Autonomous] Store module loading...');
 
 function createAutonomousStore() {
   console.log('[Autonomous] Creating store instance');
   let connected = $state(false);
-  let eventSource: EventSource | null = null;
+  let streamAbortController: AbortController | null = null;
+  let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let connecting = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempts = $state(0);
+  let streamRunId = 0;
+  let intentionallyDisconnected = true;
+  let idleAbortReason: string | null = null;
+  let eventCounts = new Map<string, number>();
+  let totalEventCount = 0;
   let activeTaskId = $state<string | null>(null); // Track which autonomous task we're streaming
   let activeMessageId = $state<string | null>(null); // Track the message we created for this task
 
@@ -66,9 +79,6 @@ function createAutonomousStore() {
   let _pendingEvents = new Map<string, AutonomousEvent[]>();
   let _pendingReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  const MAX_RECONNECT_ATTEMPTS = 10;
-  const RECONNECT_DELAY_MS = 3000;
-
   function getStreamUrl(): string {
     const baseUrl = configStore.apiUrl.replace(/\/$/, '');
     const userId = configStore.identity?.id;
@@ -78,16 +88,89 @@ function createAutonomousStore() {
     return `${baseUrl}/autonomous/stream?user_id=${encodeURIComponent(userId)}&client_id=${clientId}`;
   }
 
+  function shouldLogEventSample(eventType: string, count: number): boolean {
+    if (count <= 3) return true;
+    if (HIGH_VOLUME_EVENT_TYPES.has(eventType)) return count % 100 === 0;
+    return count % 10 === 0;
+  }
+
+  function eventCountSummary(): string {
+    const counts = Array.from(eventCounts.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([type, count]) => `${type}:${count}`)
+      .join(', ');
+    return counts || 'none';
+  }
+
+  function logReceivedEvent(event: AutonomousEvent) {
+    const count = (eventCounts.get(event.type) || 0) + 1;
+    eventCounts.set(event.type, count);
+    totalEventCount += 1;
+
+    if (shouldLogEventSample(event.type, count)) {
+      console.log(
+        `[Autonomous] Event handled type=${event.type} count=${count} total=${totalEventCount} ` +
+        `thread=${event.thread_id || 'none'} task=${event.task_id || 'none'}`
+      );
+    }
+  }
+
+  function clearIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
+  function armIdleTimer(runId: number) {
+    clearIdleTimer();
+    idleTimer = setTimeout(() => {
+      if (runId !== streamRunId || intentionallyDisconnected) return;
+
+      idleAbortReason = 'idle_timeout';
+      console.warn(
+        `[Autonomous] Stream idle timeout after ${IDLE_TIMEOUT_MS}ms; aborting for reconnect ` +
+        `(run=${runId})`
+      );
+      streamAbortController?.abort();
+    }, IDLE_TIMEOUT_MS);
+  }
+
+  function catchUpAfterReconnect() {
+    const currentThread = threadsStore.currentThreadId;
+    if (currentThread && !chatStore.isStreaming) {
+      console.log('[Autonomous] Reconnected - catching up on thread', currentThread);
+      api.getThreadHistory(currentThread).then((history) => {
+        if (threadsStore.currentThreadId === currentThread && !chatStore.isStreaming) {
+          chatStore.setMessages(history.messages);
+        }
+      }).catch(() => {});
+      api.getThreadContextStats(currentThread).then((stats) => {
+        if (threadsStore.currentThreadId === currentThread) {
+          chatStore.setContextStats(stats);
+        }
+      }).catch(() => {});
+    }
+
+    threadsStore.syncFromBackend();
+  }
+
   function connect() {
-    if (eventSource) {
-      console.log('[Autonomous] Already connected, skipping');
-      return; // Already connected
+    if (streamAbortController || connecting) {
+      console.log('[Autonomous] Stream already active, skipping connect');
+      return;
+    }
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
 
     // Don't connect if not configured
     if (!configStore.isConfigured) {
       console.log('[Autonomous] Not connecting - config not ready (apiUrl:', configStore.apiUrl, 'apiKey present:', !!configStore.apiKey, ')');
-      scheduleReconnect();
+      intentionallyDisconnected = false;
+      scheduleReconnect('config_not_ready');
       return;
     }
 
@@ -96,110 +179,233 @@ function createAutonomousStore() {
       url = getStreamUrl();
     } catch (e) {
       console.log('[Autonomous] Not connecting - identity not resolved yet');
-      scheduleReconnect();
-      return;
-    }
-    console.log('[Autonomous] Connecting to SSE endpoint:', url);
-
-    // Note: EventSource doesn't support custom headers, so we can't send the API key
-    // The backend should handle this via query param or cookie for SSE
-    // For now, we'll add the API key as a query param
-    const urlWithAuth = `${url}&api_key=${configStore.apiKey}`;
-
-    try {
-      eventSource = new EventSource(urlWithAuth);
-      console.log('[Autonomous] EventSource created, waiting for connection...');
-    } catch (e) {
-      console.error('[Autonomous] Failed to create EventSource:', e);
-      scheduleReconnect();
+      intentionallyDisconnected = false;
+      scheduleReconnect('identity_not_ready');
       return;
     }
 
-    eventSource.onopen = () => {
-      console.log('[Autonomous] SSE connection established successfully');
-      const wasDisconnected = !connected;
-      connected = true;
-      reconnectAttempts = 0;
+    intentionallyDisconnected = false;
+    const runId = ++streamRunId;
+    const abortController = new AbortController();
+    streamAbortController = abortController;
+    connecting = true;
+    idleAbortReason = null;
+    eventCounts = new Map();
+    totalEventCount = 0;
 
-      // On reconnect (not initial connect), catch up on missed events
-      // by fetching current thread history and refreshing thread list
-      if (wasDisconnected) {
-        const currentThread = threadsStore.currentThreadId;
-        if (currentThread && !chatStore.isStreaming) {
-          console.log('[Autonomous] Reconnected — catching up on thread', currentThread);
-          api.getThreadHistory(currentThread).then((history) => {
-            if (threadsStore.currentThreadId === currentThread && !chatStore.isStreaming) {
-              chatStore.setMessages(history.messages);
-            }
-          }).catch(() => {});
-          // Also refresh context stats
-          api.getThreadContextStats(currentThread).then((stats) => {
-            if (threadsStore.currentThreadId === currentThread) {
-              chatStore.setContextStats(stats);
-            }
-          }).catch(() => {});
-        }
-        // Refresh thread list to catch metadata changes during disconnect
-        threadsStore.syncFromBackend();
+    console.log(
+      `[Autonomous] Connecting to SSE endpoint via fetch (run=${runId}, attempt=${reconnectAttempts + 1}):`,
+      url
+    );
+
+    void readStream(runId, url, abortController);
+  }
+
+  async function readStream(runId: number, url: string, abortController: AbortController) {
+    const decoder = new TextDecoder();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let buffer = '';
+    let firstByteSeen = false;
+    let firstFrameSeen = false;
+    let firstDataEventSeen = false;
+    let reconnectReason = 'stream_end';
+
+    function processFrame(frame: string) {
+      if (runId !== streamRunId) return;
+
+      if (!firstFrameSeen) {
+        firstFrameSeen = true;
+        console.log(
+          `[Autonomous] First SSE frame received (run=${runId}, ` +
+          `kind=${frame.startsWith(':') ? 'heartbeat' : 'data'})`
+        );
       }
-    };
 
-    eventSource.onmessage = (event) => {
-      if (!event.data || event.data.startsWith(':')) {
-        // Heartbeat or comment, ignore
+      if (!frame.trim() || frame.trimStart().startsWith(':')) {
         return;
       }
 
+      const dataLines = frame
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart());
+
+      if (dataLines.length === 0) {
+        return;
+      }
+
+      const jsonStr = dataLines.join('\n').trim();
+      if (!jsonStr || jsonStr === '[DONE]') {
+        return;
+      }
+
+      if (!firstDataEventSeen) {
+        firstDataEventSeen = true;
+        console.log(`[Autonomous] First data event frame received (run=${runId})`);
+      }
+
       try {
-        const data: AutonomousEvent = JSON.parse(event.data);
+        const data: AutonomousEvent = JSON.parse(jsonStr);
         handleEvent(data);
       } catch (e) {
-        console.error('[Autonomous] Failed to parse event:', e, event.data);
+        console.error('[Autonomous] Failed to parse event:', e, jsonStr);
       }
-    };
+    }
 
-    eventSource.onerror = (error) => {
-      // EventSource errors are often opaque, check readyState for more info
-      const state = eventSource?.readyState;
-      const stateStr = state === 0 ? 'CONNECTING' : state === 1 ? 'OPEN' : state === 2 ? 'CLOSED' : 'UNKNOWN';
-      console.error('[Autonomous] Connection error, readyState:', stateStr, 'error:', error);
-      connected = false;
-      disconnect();
-      scheduleReconnect();
-    };
+    try {
+      armIdleTimer(runId);
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${configStore.apiKey}`
+        },
+        signal: abortController.signal
+      });
+
+      console.log(
+        `[Autonomous] SSE HTTP status ${response.status} ${response.statusText || ''} (run=${runId})`
+      );
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        reconnectReason = `http_${response.status}`;
+        throw new Error(`Autonomous stream HTTP ${response.status}: ${text}`);
+      }
+
+      if (!response.body) {
+        reconnectReason = 'no_body';
+        throw new Error('Autonomous stream returned no response body');
+      }
+
+      const wasDisconnected = !connected;
+      connected = true;
+      connecting = false;
+      reconnectAttempts = 0;
+      console.log(`[Autonomous] SSE connection established successfully (run=${runId})`);
+
+      if (wasDisconnected) {
+        catchUpAfterReconnect();
+      }
+
+      reader = response.body.getReader();
+      streamReader = reader;
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          reconnectReason = 'stream_end';
+          console.warn(`[Autonomous] SSE stream ended by server (run=${runId})`);
+          break;
+        }
+
+        if (!firstByteSeen) {
+          firstByteSeen = true;
+          console.log(
+            `[Autonomous] First stream byte received (run=${runId}, bytes=${value.byteLength})`
+          );
+        }
+
+        armIdleTimer(runId);
+        buffer += decoder.decode(value, { stream: true });
+        buffer = buffer.replace(/\r\n/g, '\n');
+
+        let frameEnd = buffer.indexOf('\n\n');
+        while (frameEnd !== -1) {
+          const frame = buffer.slice(0, frameEnd);
+          buffer = buffer.slice(frameEnd + 2);
+          processFrame(frame);
+          frameEnd = buffer.indexOf('\n\n');
+        }
+      }
+
+      const trailing = `${buffer}${decoder.decode()}`.trim();
+      if (trailing) {
+        processFrame(trailing);
+      }
+    } catch (e) {
+      if (idleAbortReason === 'idle_timeout') {
+        reconnectReason = 'idle_timeout';
+        console.warn(`[Autonomous] SSE stream aborted after idle timeout (run=${runId})`);
+      } else if ((e as Error)?.name === 'AbortError') {
+        reconnectReason = 'aborted';
+        console.log(`[Autonomous] SSE stream aborted (run=${runId})`);
+      } else {
+        reconnectReason = reconnectReason === 'stream_end' ? 'error' : reconnectReason;
+        console.error('[Autonomous] SSE stream error:', e);
+      }
+    } finally {
+      clearIdleTimer();
+      try {
+        reader?.releaseLock();
+      } catch {
+        // Ignore release errors after abort/cancel.
+      }
+
+      if (runId === streamRunId) {
+        streamReader = null;
+        streamAbortController = null;
+        connecting = false;
+        connected = false;
+        idleAbortReason = null;
+        console.log(
+          `[Autonomous] Stream closed (run=${runId}, reason=${reconnectReason}, events={${eventCountSummary()}})`
+        );
+
+        if (!intentionallyDisconnected) {
+          scheduleReconnect(reconnectReason);
+        }
+      }
+    }
   }
 
   function disconnect() {
+    intentionallyDisconnected = true;
+    streamRunId++;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
+    clearIdleTimer();
+
+    try {
+      void streamReader?.cancel();
+    } catch {
+      // Ignore cancel failures; abort below is the authoritative stop signal.
     }
+    streamAbortController?.abort();
+    streamReader = null;
+    streamAbortController = null;
+    connecting = false;
+
     for (const timer of _pendingReplayTimers.values()) {
       clearTimeout(timer);
     }
     _pendingReplayTimers.clear();
     connected = false;
+    console.log(`[Autonomous] Stream intentionally disconnected (events={${eventCountSummary()}})`);
   }
 
-  function scheduleReconnect() {
+  function scheduleReconnect(reason: string) {
+    if (intentionallyDisconnected) {
+      console.log('[Autonomous] Not scheduling reconnect - stream was intentionally disconnected');
+      return;
+    }
+
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
     }
 
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      console.error('[Autonomous] Max reconnect attempts reached');
-      return;
-    }
-
     reconnectAttempts++;
-    const delay = RECONNECT_DELAY_MS * reconnectAttempts;
-    console.log(`[Autonomous] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+    const delay = Math.min(BASE_RECONNECT_DELAY_MS * reconnectAttempts, MAX_RECONNECT_DELAY_MS);
+    console.log(
+      `[Autonomous] Reconnecting in ${delay}ms ` +
+      `(attempt ${reconnectAttempts}, reason=${reason})`
+    );
 
     reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
       connect();
     }, delay);
   }
@@ -273,7 +479,7 @@ function createAutonomousStore() {
   }
 
   function handleEvent(event: AutonomousEvent) {
-    console.log('[Autonomous] Event:', event.type, event);
+    logReceivedEvent(event);
 
     const currentThreadId = threadsStore.currentThreadId;
     const isCurrentThread = event.thread_id === currentThreadId;

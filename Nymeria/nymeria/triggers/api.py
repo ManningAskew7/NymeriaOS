@@ -43,6 +43,7 @@ from ..core.event_bus import (
     publish_agent_stream_chunk,
     publish_autonomous_event,
     publish_sync_event,
+    should_log_stream_event_sample,
 )
 from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
@@ -5557,16 +5558,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def stream_autonomous_events(
         request: Request,
         user_id: str = Query(default="default", description="User ID to filter events"),
-        api_key: Optional[str] = Query(default=None, description="API key for browser EventSource (which can't set headers). Server-side callers should use Authorization header instead."),
+        api_key: Optional[str] = Query(default=None, description="Legacy API key fallback for clients that cannot send Authorization headers."),
         client_id: Optional[str] = Query(default=None, description="Client ID for origin filtering (prevents seeing own sync events)"),
         authorization: Optional[str] = Header(None),
         x_nymeria_act_as: Optional[str] = Header(None),
         settings: Settings = Depends(get_settings),
     ):
-        # Auth: prefer Authorization header (server-side callers like the
-        # Discord/Telegram bots), fall back to ?api_key= for browser
-        # EventSource which can't set custom headers. Both paths accept any
-        # valid account token (``nym_...``).
+        # Auth: prefer Authorization header, fall back to ?api_key= for
+        # legacy EventSource-style clients that cannot set custom headers.
+        # Both paths accept any valid account token (``nym_...``).
         presented: Optional[str] = None
         if authorization:
             parts = authorization.split()
@@ -5623,20 +5623,59 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         subscriber_id = str(uuid.uuid4())
         event_bus = get_event_bus()
         queue = event_bus.subscribe(subscriber_id)
-        logger.info(f"[AUTONOMOUS SSE] Client connected for user={user_id}, subscriber={subscriber_id[:8]}..., client_id={client_id[:8] if client_id else 'none'}...")
+        logger.info(
+            "[AUTONOMOUS SSE] subscriber_connect subscriber=%s user=%s firehose=%s "
+            "client_id=%s local_subscribers=%d",
+            subscriber_id[:8],
+            user_id,
+            firehose,
+            client_id[:8] if client_id else "none",
+            event_bus.get_subscriber_count(),
+        )
 
         async def event_generator():
             """Generate SSE events from the event bus."""
+            received_counts: Dict[str, int] = {}
+            yielded_counts: Dict[str, int] = {}
+            filtered_user_counts: Dict[str, int] = {}
+            filtered_origin_counts: Dict[str, int] = {}
+
+            def bump(counter: Dict[str, int], key: str) -> int:
+                counter[key] = counter.get(key, 0) + 1
+                return counter[key]
+
             try:
                 while True:
                     # Check if client disconnected
                     if await request.is_disconnected():
-                        logger.info(f"[AUTONOMOUS SSE] Client disconnected: {subscriber_id[:8]}...")
+                        logger.info(
+                            "[AUTONOMOUS SSE] subscriber_disconnected subscriber=%s user=%s "
+                            "reason=request_disconnected received=%s yielded=%s",
+                            subscriber_id[:8],
+                            user_id,
+                            received_counts,
+                            yielded_counts,
+                        )
                         break
 
                     try:
                         # Non-blocking check for events
                         event: AutonomousEvent = queue.get_nowait()
+                        received_count = bump(received_counts, event.event_type)
+                        if should_log_stream_event_sample(event.event_type, received_count):
+                            logger.info(
+                                "[AUTONOMOUS SSE] queue_receive subscriber=%s type=%s "
+                                "count=%d queue_size=%d stream_user=%s event_user=%s "
+                                "thread=%s task=%s",
+                                subscriber_id[:8],
+                                event.event_type,
+                                received_count,
+                                queue.qsize(),
+                                user_id,
+                                event.user_id,
+                                event.thread_id,
+                                event.task_id,
+                            )
 
                         # Filter by user_id unless the caller requested the
                         # firehose (admin + X-Nymeria-Act-As: *). "default" as
@@ -5644,11 +5683,37 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         # honored for backward compat with older browser
                         # clients, but the authenticated path is authoritative.
                         if not firehose and user_id != "default" and event.user_id != user_id:
+                            filtered_count = bump(filtered_user_counts, event.event_type)
+                            if should_log_stream_event_sample(event.event_type, filtered_count):
+                                logger.info(
+                                    "[AUTONOMOUS SSE] filter subscriber=%s reason=user_mismatch "
+                                    "type=%s count=%d stream_user=%s event_user=%s "
+                                    "thread=%s task=%s",
+                                    subscriber_id[:8],
+                                    event.event_type,
+                                    filtered_count,
+                                    user_id,
+                                    event.user_id,
+                                    event.thread_id,
+                                    event.task_id,
+                                )
                             continue
 
                         # Skip events that originated from this client (dedup)
                         origin = event.data.get("_origin_client_id")
                         if origin and client_id and origin == client_id:
+                            filtered_count = bump(filtered_origin_counts, event.event_type)
+                            if should_log_stream_event_sample(event.event_type, filtered_count):
+                                logger.info(
+                                    "[AUTONOMOUS SSE] filter subscriber=%s reason=origin_client "
+                                    "type=%s count=%d client_id=%s thread=%s task=%s",
+                                    subscriber_id[:8],
+                                    event.event_type,
+                                    filtered_count,
+                                    client_id[:8],
+                                    event.thread_id,
+                                    event.task_id,
+                                )
                             continue
 
                         # Build SSE payload, stripping internal fields and reserved keys
@@ -5666,7 +5731,20 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                             "timestamp": event.timestamp.isoformat(),
                             **payload,
                         }
-                        yield f"data: {json.dumps(event_data)}\n\n"
+                        serialized = json.dumps(event_data)
+                        yielded_count = bump(yielded_counts, event.event_type)
+                        if should_log_stream_event_sample(event.event_type, yielded_count):
+                            logger.info(
+                                "[AUTONOMOUS SSE] yield subscriber=%s type=%s count=%d "
+                                "bytes=%d thread=%s task=%s",
+                                subscriber_id[:8],
+                                event.event_type,
+                                yielded_count,
+                                len(serialized),
+                                event.thread_id,
+                                event.task_id,
+                            )
+                        yield f"data: {serialized}\n\n"
 
                     except Empty:
                         # No events, send heartbeat to keep connection alive
@@ -5675,6 +5753,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
             finally:
                 event_bus.unsubscribe(subscriber_id)
+                logger.info(
+                    "[AUTONOMOUS SSE] subscriber_cleanup subscriber=%s user=%s "
+                    "received=%s yielded=%s filtered_user=%s filtered_origin=%s",
+                    subscriber_id[:8],
+                    user_id,
+                    received_counts,
+                    yielded_counts,
+                    filtered_user_counts,
+                    filtered_origin_counts,
+                )
 
         return StreamingResponse(
             event_generator(),

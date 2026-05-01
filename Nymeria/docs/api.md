@@ -520,18 +520,20 @@ After manual `/compact`, the summary is attached to the user's **next** message.
 ### Autonomous Task Stream (SSE)
 
 ```http
-GET /autonomous/stream?user_id=default&api_key=<token>
+GET /autonomous/stream?user_id=<user_id>&client_id=<client_id>
+Authorization: Bearer <token>
 ```
 
-**Note:** API key passed as query parameter because `EventSource` doesn't support custom headers.
+**Auth:** Desktop uses `fetch()` streaming with `Authorization: Bearer <token>` and `Accept: text/event-stream`. The legacy `api_key` query parameter is still accepted for older EventSource clients, but new clients should not put tokens in the URL.
 
 Connects to a Server-Sent Events stream for receiving real-time updates during autonomous task execution: scheduled TODOs, trigger actions, callable-thread runs, spawned-thread runs, and `/chat` calls with `is_self_invoke=true`.
 
 **Query Parameters:**
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `user_id` | No | `"default"` | Filter events by user ID |
-| `api_key` | Yes | - | API authentication key |
+| `user_id` | No | `"default"` | Legacy/user hint. For normal Bearer auth, the authenticated account is authoritative; admin callers can use `X-Nymeria-Act-As` to stream another user or `*` for the firehose. |
+| `client_id` | No | - | Frontend client ID for filtering same-client sync events |
+| `api_key` | No | - | Legacy fallback token for clients that cannot set headers |
 
 **Event Types:**
 
