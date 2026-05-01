@@ -325,7 +325,9 @@ handoff from degrading into "final answer only after history reload."
 
 ### Frontend streaming handoff
 
-The frontend (`nymeria-desktop/src/lib/stores/autonomous.svelte.ts`) handles `task_started` like this:
+The desktop frontend (`nymeria-desktop/src/lib/stores/autonomous.svelte.ts`) keeps one long-lived `/autonomous/stream` connection open with `fetch()` + `ReadableStream`, `Accept: text/event-stream`, and Bearer auth headers. It reconnects accidental disconnects, stream ends, HTTP errors, and idle heartbeat/data timeouts. After reconnect it refreshes the current thread history/context and syncs the thread list so missed trigger/TODO output is reconciled from persisted state before the next visible event.
+
+`task_started` is still the normal UI handoff:
 
 ```typescript
 case 'task_started':
@@ -341,6 +343,14 @@ case 'task_started':
 Subsequent `response`, `thinking`, `tool_call`, `tool_result` events then append to the placeholder — same treatment as TODO autonomous streams.
 
 If the trigger fires into a thread the user is **not currently viewing**, events are still published but the streaming UI isn't engaged for that thread. The response is saved to history and visible next time the user opens the thread.
+
+For debugging, follow the event path in logs:
+
+1. Worker/API publishes to Redis: `[REDIS EVENT BUS] publish type=...`
+2. API receives Redis pub/sub: `[REDIS EVENT BUS] message_received type=... local_subscribers=...`
+3. API enqueues locally: `[REDIS EVENT BUS] queue_enqueue subscriber=...`
+4. `/autonomous/stream` consumes and yields: `[AUTONOMOUS SSE] queue_receive ...` then `[AUTONOMOUS SSE] yield ...`
+5. Desktop logs first byte/frame/data-event and sampled `[Autonomous] Event handled type=...`
 
 ### Cooldown & fire count
 
@@ -385,7 +395,7 @@ Which file does what, for quick navigation:
 | `nymeria/tools/triggers.py` | Agent-callable trigger tools: `trigger_config` for configuration mutations and `trigger_info` for read-only inspection. Auto-binds created triggers to the current thread via `get_thread_id(config)` |
 | `nymeria/core/event_bus.py` | `EventBus`, `AutonomousEvent`, `publish_autonomous_event`, `publish_sync_event`, factory `create_event_bus()` |
 | `nymeria/core/event_bus_redis.py` | `RedisEventBus` — pub/sub across containers |
-| `nymeria-desktop/src/lib/stores/autonomous.svelte.ts` | Frontend SSE subscriber. `handleEvent()` dispatches by type. `classifyAutonomousSource()` labels triggers via `event.trigger_id \|\| event.trigger_name` |
+| `nymeria-desktop/src/lib/stores/autonomous.svelte.ts` | Desktop autonomous SSE subscriber. Uses fetch streaming with Bearer auth, reconnect/idle guards, reconnect catch-up, sampled diagnostics, and `handleEvent()` dispatch by type. `classifyAutonomousSource()` labels triggers via `event.trigger_id \|\| event.trigger_name` |
 | `nymeria-desktop/src/lib/components/triggers/` | UI: `TriggerFeed`, `TriggerSetupWizard`, `TriggerItem`, `TriggerHistoryPanel` |
 
 ## Webhook Integration with External Services

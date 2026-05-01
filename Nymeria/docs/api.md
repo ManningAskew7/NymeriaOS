@@ -528,6 +528,8 @@ Authorization: Bearer <token>
 
 Connects to a Server-Sent Events stream for receiving real-time updates during autonomous task execution: scheduled TODOs, trigger actions, callable-thread runs, spawned-thread runs, and `/chat` calls with `is_self_invoke=true`.
 
+**Client behavior:** Treat this as a long-lived fetch stream, not a finite request. Heartbeats are SSE comments (`: heartbeat`) and do not carry JSON. Clients should reconnect when the response ends, errors, or stops receiving heartbeat/data bytes. The desktop client also refreshes current thread history/context and the thread list after reconnect so missed autonomous chunks are reconciled from persisted state.
+
 **Query Parameters:**
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
@@ -569,6 +571,13 @@ data: {"type":"task_completed","notify":false,"content":"Found 2 new emails.","t
 ```
 
 **Heartbeat:** Sent every ~1 second when no events to keep connection alive.
+
+**Operational diagnostics:** A healthy live path produces log lines for each hop:
+- Worker/API publish: `[REDIS EVENT BUS] publish ...`
+- API Redis receive: `[REDIS EVENT BUS] message_received ... local_subscribers=N`
+- API local enqueue: `[REDIS EVENT BUS] queue_enqueue ...`
+- API stream receive/yield: `[AUTONOMOUS SSE] queue_receive ...` then `[AUTONOMOUS SSE] yield ...`
+- Desktop receive: `[Autonomous] First data event frame received ...` and sampled `[Autonomous] Event handled type=...`
 
 ---
 

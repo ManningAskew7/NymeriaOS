@@ -177,6 +177,7 @@ Advanced section of Thread Settings.
 | **Notification polling** | Not started here | `notificationStore.startPolling()` on mount |
 | **Thread restore** | Complex: validates platform, falls back | Simple: direct load |
 | **SSE delay** | 500ms delay before connecting | Immediate |
+| **Autonomous SSE transport** | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, idle timeout reconnect, reconnect catch-up | `fetch()` + `ReadableStream`, Bearer auth header plus legacy query-token compatibility, mobile lifecycle reconnect |
 | **Debug logging** | Extensive `console.log` | Minimal |
 
 **When changing**: Changes to startup logic (thread sync, history loading, setup wizard flow) should be replicated, respecting each platform's lifecycle.
@@ -298,6 +299,8 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 2. Handle it in `stores/chat.svelte.ts` or `stores/autonomous.svelte.ts` on both platforms
 3. Update rendering in `MessageBubble.svelte` or any platform-specific component affected
 4. Verify both implementations, because these files are no longer guaranteed identical
+
+Autonomous stream transport is intentionally not byte-identical today. Desktop's `stores/autonomous.svelte.ts` is the proven runtime path for live autonomous TODO/trigger streaming: Bearer-auth fetch stream, heartbeat/idle guard, reconnect catch-up, and sampled console diagnostics. Mobile also uses fetch streaming because WebView EventSource behavior is unreliable, but it still includes the legacy `api_key` query parameter for compatibility while sending the Bearer header.
 
 Current example: `workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`, but only desktop renders it today via `ToolCallCard.svelte` + `WorkspaceArtifactModal.svelte`.
 
