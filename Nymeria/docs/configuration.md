@@ -176,7 +176,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 
 - **`auto_compact`** (default): When token usage reaches the threshold, Nymeria:
   1. Asks the agent to summarize the conversation (it already has full context)
-  2. Agent saves important facts to persistent memory via `memory_save`
+  2. Agent saves important facts to persistent memory via `memory_add(scope="global", ...)`
   3. Clears the conversation and persists a visible compaction notice with the summary
   4. On async `/chat` streams, emits `compacting`/`compacted` and streams the resumed assistant continuation; on sync/manual paths, attaches the summary to the next user message
 
