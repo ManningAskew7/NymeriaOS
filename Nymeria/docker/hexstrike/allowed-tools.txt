@@ -1,0 +1,50 @@
+# Curated HexStrike MCP surface for Nymeria/Codex.
+# Keep this list focused. Omitted classes include password cracking,
+# payload generation, shell command execution, file mutation, binary
+# exploitation, cloud exploitation, and process-control tools.
+
+server_health
+get_cache_stats
+get_telemetry
+display_system_metrics
+
+nmap_scan
+nmap_advanced_scan
+
+gobuster_scan
+ffuf_scan
+dirsearch_scan
+dirb_scan
+
+nikto_scan
+nuclei_scan
+sqlmap_scan
+wafw00f_scan
+
+subfinder_scan
+amass_scan
+dnsenum_scan
+fierce_scan
+
+httpx_probe
+hakrawler_crawl
+gau_discovery
+arjun_scan
+arjun_parameter_discovery
+paramspider_discovery
+paramspider_mining
+
+jwt_analyzer
+api_schema_analyzer
+graphql_scanner
+
+analyze_target_intelligence
+select_optimal_tools_ai
+optimize_tool_parameters_ai
+detect_technologies_ai
+intelligent_smart_scan
+ai_reconnaissance_workflow
+ai_vulnerability_assessment
+
+create_vulnerability_report
+create_scan_summary
