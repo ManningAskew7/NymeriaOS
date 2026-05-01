@@ -107,7 +107,7 @@ Per-thread overrides also work: Thread Settings → Model tab → Provider: Loca
 
 **Root cause** (`core/agent.py`): the async `astream()` SSE handler's `on_chat_model_end` branch only emitted content when `output.tool_calls` was also present (it was designed to catch preamble text alongside tool calls). When `streaming=False`, the entire response arrives via `on_chat_model_end` with no `tool_calls` (final answer case), so the content was silently dropped.
 
-**Fix** (`core/agent.py`): broadened the `on_chat_model_end` handler to emit content regardless of whether `tool_calls` are also present. The existing guard `if not streamed_text_in_current_llm_call` prevents double-emission when streaming works normally (e.g. Claude via CLIProxy). The sync `stream()` method (used by autonomous/ticker flows) was already correct — it reads directly from the graph state, not from streaming events.
+**Fix** (`core/agent.py`): broadened the `on_chat_model_end` handler to emit content regardless of whether `tool_calls` are also present. The existing guard `if not streamed_text_in_current_llm_call` prevents double-emission when streaming works normally (e.g. Claude via CLIProxy). Autonomous/ticker flows now consume this same `astream()` path through `core/stream_bridge.py`.
 
 ### Problem 4 — Dropdown reset bug (frontend)
 

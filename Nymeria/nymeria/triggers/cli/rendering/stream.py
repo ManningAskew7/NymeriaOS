@@ -36,7 +36,7 @@ def _format_args_preview(args: dict) -> str:
 
 class StreamRenderer:
     """
-    Renders agent.stream() events to the terminal.
+    Renders agent streaming events to the terminal.
 
     Uses Rich console.status() spinners during thinking/tool execution,
     compact one-liner tool cards, and final Markdown rendering.

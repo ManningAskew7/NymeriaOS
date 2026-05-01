@@ -2569,10 +2569,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             if request.is_self_invoke
             else None
         )
-        # Defer task_started publish until the first chunk arrives — this ensures
-        # the thread lock has been acquired and any prior user chat has released
-        # it. Otherwise the frontend receives task_started while its own chat is
-        # still streaming and skips the autonomous-streaming handoff.
+        # Defer task_started publish until the first non-queued chunk arrives.
+        # A queued chunk means the astream call is still waiting on the thread
+        # lock while a user chat may still be streaming, so publishing
+        # task_started there would make the frontend enter autonomous-streaming
+        # mode at the wrong time.
 
         def _trigger_fields() -> dict:
             """Common trigger identity fields for autonomous event payloads."""
@@ -2652,9 +2653,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                             logger.info(f"Client disconnected for thread {thread_id}, agent will continue in background")
                         continue
 
-                    # Publish task_started on the first chunk so the frontend
-                    # handoff happens only after the thread lock is acquired.
-                    if autonomous_task_id and not autonomous_started:
+                    # Publish task_started on the first non-queued chunk so the
+                    # frontend handoff happens only after the thread lock is
+                    # acquired.
+                    if (
+                        autonomous_task_id
+                        and not autonomous_started
+                        and chunk.get("type") != "queued"
+                    ):
                         publish_autonomous_event(
                             event_type="task_started",
                             thread_id=thread_id,

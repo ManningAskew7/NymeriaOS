@@ -61,9 +61,6 @@ class FakeAgent:
     def sync_agent_tools(self):
         pass
 
-    def stream(self, *args, **kwargs):
-        raise AssertionError("autonomous scheduled TODOs should use astream()")
-
     async def astream(self, *args, **kwargs):
         raise RuntimeError("boom")
 

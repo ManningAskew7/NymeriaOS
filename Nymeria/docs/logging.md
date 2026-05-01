@@ -63,8 +63,7 @@ Every subsystem uses a standardized `[TAG]` prefix. Filter by tag to isolate a s
 | Tag | Source file | Meaning |
 |-----|-------------|---------|
 | `[LLM]` | `vendor/react_agent/nodes.py` | LLM invocation and response. INFO shows message count + response summary. DEBUG shows full message array. |
-| `[STREAM]` | `core/agent.py` `stream()` | Sync streaming path (used by ticker, triggers, callable threads). |
-| `[ASTREAM]` | `core/agent.py` `astream()` | Async streaming path (used by the API's `/chat` endpoint, including watchdog self-invokes). |
+| `[ASTREAM]` | `core/agent.py` `astream()` | Agent streaming path. Used directly by `/chat` and via `iter_agent_astream()` for sync workers such as ticker, triggers, callable threads, and CLI. |
 | `[CALLABLE]` | `core/thread_agent_executor.py` | Callable thread lifecycle. Shows name, thread_id, task_id, task preview, timing. |
 | `[TICKER]` | `core/ticker.py` | Scheduled TODO execution. |
 | `[WATCHDOG]` | `triggers/watchdog_worker.py` | Stale TODO nudge lifecycle. Emitted by the standalone watchdog container; the API also logs `[ASTREAM]` when the resulting `/chat` self-invoke runs. |
@@ -101,11 +100,11 @@ Set `LOG_PROFILES=llm`. This enables DEBUG-level message dumps showing every mes
 Set `LOG_PROFILES=threads`. Trace the callable thread by its name:
 ```
 [CALLABLE] === START === name=ResearchAgent, thread=research-xyz, task_id=callable-ResearchAgent-a1b2c3d4, user=default, task=Find the latest pricing...
-[LLM] Invoking with 3 messages (0 tool rounds)       ← this is inside the callable's stream()
+[LLM] Invoking with 3 messages (0 tool rounds)       ← this is inside the callable's astream()
 [LLM] Response: 0 chars, final answer                 ← empty response = LLM returned nothing
 [CALLABLE] === END === name=ResearchAgent, ..., response_len=0, elapsed=3.1s
 ```
-Key: `response_len=0` confirms the callable returned empty. Check the `[STREAM] === START ===` line nested inside for the callable's thread_id to see its full stream lifecycle.
+Key: `response_len=0` confirms the callable returned empty. Check the nested `[ASTREAM] === START ===` line for the callable's thread_id to see its full stream lifecycle.
 
 **4. "Thread orchestration — which thread called which?"**
 When a main thread invokes callable threads, the log interleaves but each line has its `thread=` identifier:
@@ -114,8 +113,8 @@ When a main thread invokes callable threads, the log interleaves but each line h
 [LLM] Response: tool_calls=['ResearchAgent', 'CodeAgent']          ← main agent calls two callables
 [CALLABLE] === START === name=ResearchAgent, thread=research-123   ← child 1 starts
 [CALLABLE] === START === name=CodeAgent, thread=code-456           ← child 2 starts (concurrent)
-[STREAM] === START === thread=research-123, holder=user            ← child 1's inner stream
-[STREAM] === START === thread=code-456, holder=user                ← child 2's inner stream
+[ASTREAM] === START === thread=research-123, holder=user           ← child 1's inner stream
+[ASTREAM] === START === thread=code-456, holder=user               ← child 2's inner stream
 ...interleaved [LLM] calls from both children...
 [CALLABLE] === END === name=ResearchAgent, elapsed=6.2s            ← child 1 finishes
 [CALLABLE] === END === name=CodeAgent, elapsed=8.1s                ← child 2 finishes
@@ -135,16 +134,16 @@ Look for the cascade chain:
 ```
 [ASTREAM] Thread main-abc: Aborted by cancel signal               ← user's thread stopped
 Cascading abort from thread main-abc to child research-123         ← cascade to child
-[STREAM] Thread research-123: Aborted by cancel signal             ← child stopped
+[ASTREAM] Thread research-123: Aborted by cancel signal            ← child stopped
 ```
 
 **7. "Autonomous task (ticker/watchdog/trigger) — what happened?"**
-Autonomous tasks use `[STREAM]` (sync path) with `holder=autonomous`:
+Autonomous tasks use `[ASTREAM]` with `holder=autonomous`, even when the caller is a sync worker using `iter_agent_astream()`:
 ```
-[STREAM] === START === thread=todo-thread, user=default, holder=autonomous
+[ASTREAM] === START === thread=todo-thread, user=default, holder=autonomous
 [WATCHDOG] === START === thread=todo-thread, stale_todos=2
 ...
 [WATCHDOG] === END === thread=todo-thread, chunks=5, response_len=200, elapsed=12.3s
-[STREAM] === END === thread=todo-thread, chunks=5, elapsed=12.5s
+[ASTREAM] === END === thread=todo-thread, elapsed=12.5s
 ```
-Note the nested framing: `[WATCHDOG]` wraps the high-level nudge, `[STREAM]` wraps the inner `agent.stream()` call.
+Note the nested framing: `[WATCHDOG]` wraps the high-level nudge, `[ASTREAM]` wraps the inner agent execution.

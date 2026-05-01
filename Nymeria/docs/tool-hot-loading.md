@@ -283,16 +283,15 @@ The reload loop checks `abort_event.is_set()` before each iteration (`:4134`). I
 
 `_turn_reload_count` is cleaned up in `finally` at `:4288`.
 
-At the start of every new `chat()`, `stream()`, and `astream()` turn, Nymeria
+At the start of every new `chat()` and `astream()` turn, Nymeria
 also discards any pre-existing pending reload for that thread before resetting
 the per-turn counter. A pending reload is only valid inside the top-level turn
 that created it; carrying it into the next user message would attach a stale
 Tool Binding event to unrelated output.
 
-The legacy sync `stream()` path is used by callable thread execution. It does
-not run the in-turn reload loop; if a tool enable queues a reload there, the
-enablement is still persisted to thread config for the next turn, and the
-in-memory pending flag is cleared when the sync stream exits.
+Sync workers such as ticker, triggers, callable thread execution, spawned
+threads, and CLI use `core/stream_bridge.py` to consume `astream()` live, so
+they share the same in-turn reload loop as regular chat streaming.
 
 ### Dangling Tool Calls
 
@@ -357,7 +356,7 @@ Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffere
 | File | Lines changed | What |
 |------|--------------|------|
 | `tools/tool_search.py` | +492 | TTL support, classification buckets, `Command(goto=END)` return, reload cap logic, preserve-on-disable, status/search annotations |
-| `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()`, `chat()`, and legacy `stream()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
+| `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()` and `chat()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
 | `core/stream_bridge.py` | new | Sync worker bridge that lets scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` live |
 | `core/thread_config.py` | +19 | `TemporaryToolEntry` model, `temporary_tools` field on `ThreadConfig` |
 | `tools/metadata.py` | +7 | Updated `tool_search` description |

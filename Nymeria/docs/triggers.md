@@ -269,7 +269,7 @@ Ticker (30s loop)
     → TriggerManager.fire_action_batch() or fire_action()
       → TriggerManager._fire_agent_prompt()
         → TriggerManager._stream_live()
-          → agent.stream(..., _is_self_invoke=True)
+          → iter_agent_astream(..., _is_self_invoke=True)
           → publish_autonomous_event() for each chunk
 ```
 
@@ -292,7 +292,7 @@ For each `agent_prompt` fire, these events are published to the `/autonomous/str
 
 | Event | When | Purpose |
 |-------|------|---------|
-| `task_started` | First chunk after thread lock acquired | Frontend engages streaming UI |
+| `task_started` | First non-`queued` chunk after thread lock acquired | Frontend engages streaming UI |
 | `thinking` | During reasoning | Shows reasoning tokens |
 | `tool_call` / `tool_result` | Tool use | Shows tool invocations |
 | `response` | Each text chunk | Incremental streaming of reply |
@@ -306,15 +306,15 @@ Earlier versions published `task_started` the moment a trigger fire began. That 
 1. User chat is streaming → `chatStore.isStreaming = true` on the frontend.
 2. Trigger fires → publishes `task_started` → frontend receives it.
 3. Frontend's `task_started` handler guards on `!chatStore.isStreaming`, so it skips the autonomous-streaming handoff.
-4. Trigger's `agent.stream()` blocks on the per-thread `threading.Lock` until user chat finishes.
+4. Trigger execution waits on the per-thread lock until user chat finishes, yielding `queued` chunks while contended.
 5. Trigger starts streaming `response` chunks, but the frontend's `activeTaskId` was never set → chunks are silently dropped.
 6. `task_completed` triggers a full history reload → user sees the final response appear all at once after a delay.
 
-The fix: **defer `task_started` until the first streaming chunk actually arrives** from `agent.stream()` / `agent.astream()`. By that point the thread lock has been acquired and any prior user chat has released it, so `chatStore.isStreaming` is false and the frontend engages streaming mode cleanly.
+The fix: **defer `task_started` until the first non-`queued` streaming chunk actually arrives** from `agent.astream()` or the sync `iter_agent_astream()` bridge. By that point the thread lock has been acquired and any prior user chat has released it, so `chatStore.isStreaming` is false and the frontend engages streaming mode cleanly.
 
 This is implemented in both execution paths:
-- Path A: `TriggerManager._stream_live()` in `trigger_manager.py` — accepts `task_started_data` and publishes `task_started` on the first chunk.
-- Path B: `/chat` endpoint in `triggers/api.py` — tracks `autonomous_started` and publishes `task_started` on the first chunk of `agent.astream()`.
+- Path A: `TriggerManager._stream_live()` in `trigger_manager.py` — accepts `task_started_data` and publishes `task_started` on the first non-`queued` chunk.
+- Path B: `/chat` endpoint in `triggers/api.py` — tracks `autonomous_started` and publishes `task_started` on the first non-`queued` chunk of `agent.astream()`.
 
 ### Frontend streaming handoff
 

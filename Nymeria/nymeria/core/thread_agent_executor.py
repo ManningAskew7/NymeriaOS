@@ -96,7 +96,7 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
             _is_self_invoke=False,
             _trigger_override=trigger_override,
         ):
-            if not started_published:
+            if not started_published and chunk.get("type") != "queued":
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=thread_id,

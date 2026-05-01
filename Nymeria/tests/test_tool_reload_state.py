@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from types import SimpleNamespace
 
@@ -34,19 +35,6 @@ def test_prepare_turn_discards_stale_pending_reload_for_same_thread():
     }
     assert agent._turn_reload_count["thread-a"] == 0
     assert agent._turn_reload_count["thread-b"] == 1
-
-
-def test_sync_stream_cleanup_drops_unconsumed_pending_reload():
-    agent = _bare_agent()
-    agent._pending_tool_reload = {
-        "thread-a": {"new_tools": ["bash_execute"]},
-    }
-    agent._turn_reload_count = {"thread-a": 1}
-
-    agent._clear_tool_reload_state_after_stream("thread-a")
-
-    assert agent._pending_tool_reload == {}
-    assert "thread-a" not in agent._turn_reload_count
 
 
 def test_tool_reload_resume_message_preserves_ttl_seconds():
@@ -134,32 +122,32 @@ class _FakeLockManager:
         return self.abort_event
 
 
-class _FakeGraph:
+class _FakeAsyncGraph:
     def __init__(self, events):
         self.events = events
         self.stream_inputs = []
-        self.invoke_called = False
 
-    def stream(self, input_state, config=None, stream_mode=None):
-        self.stream_inputs.append((input_state, config, stream_mode))
-        yield from self.events()
+    async def astream_events(self, input_state, config=None, version=None):
+        self.stream_inputs.append((input_state, config, version))
+        async for event in self.events():
+            yield event
 
-    def invoke(self, input_state, config=None):
-        self.invoke_called = True
-        raise AssertionError("post-reload stream() must not use invoke()")
+    async def aget_state(self, config):
+        return SimpleNamespace(values={"messages": []})
 
     def get_state(self, config):
         return SimpleNamespace(values={"messages": []})
 
 
-def test_stream_reload_resume_streams_post_reload_tool_events():
+def test_astream_reload_resume_streams_post_reload_tool_events():
     agent = _bare_agent()
     agent._thread_locks = _FakeLockManager()
     agent._pending_notepads = {}
+    agent.scheduler = SimpleNamespace(cancel=lambda *args, **kwargs: None)
     agent.settings = SimpleNamespace(lock_timeout=1, context_management="none")
     agent._token_tracker = SimpleNamespace(record_usage=lambda *args, **kwargs: None)
     agent._get_time_context = lambda **kwargs: "[time]"
-    agent._check_and_compact_sync = lambda *args, **kwargs: None
+    agent._patch_dangling_tool_calls = lambda *args, **kwargs: 0
     agent.get_pending_summary = lambda thread_id: None
     agent._graph_run_config = lambda thread_id, user_id: {"configurable": {"thread_id": thread_id, "user_id": user_id}}
     agent._clean_tool_result_for_display = lambda result: result
@@ -170,32 +158,24 @@ def test_stream_reload_resume_streams_post_reload_tool_events():
     agent._max_iterations_for_thread = lambda thread_id: 20
     agent._analyze_turn_safety = lambda messages, max_iterations: SimpleNamespace(should_stop=False)
 
-    def initial_events():
+    async def initial_events():
         yield {
-            "agent": {
-                "messages": [
-                    AIMessage(
-                        content="",
-                        tool_calls=[{
-                            "id": "call-1",
-                            "name": "Skill",
-                            "args": {"name": "hello-kit"},
-                            "type": "tool_call",
-                        }],
-                    )
-                ]
-            }
+            "event": "on_tool_start",
+            "run_id": "call-1",
+            "name": "Skill",
+            "data": {"input": {"name": "hello-kit"}},
         }
         yield {
-            "tools": {
-                "messages": [
-                    ToolMessage(
-                        content="Skill Kit reload queued",
-                        tool_call_id="call-1",
-                        name="Skill",
-                    )
-                ]
-            }
+            "event": "on_tool_end",
+            "run_id": "call-1",
+            "name": "Skill",
+            "data": {
+                "output": ToolMessage(
+                    content="Skill Kit reload queued",
+                    tool_call_id="call-1",
+                    name="Skill",
+                )
+            },
         }
         agent._pending_tool_reload["thread-a"] = {
             "new_tools": ["hello_test"],
@@ -205,46 +185,47 @@ def test_stream_reload_resume_streams_post_reload_tool_events():
             "skill_name": "hello-kit",
         }
 
-    def reload_events():
+    async def reload_events():
         yield {
-            "agent": {
-                "messages": [
-                    AIMessage(
-                        content="",
-                        tool_calls=[{
-                            "id": "call-2",
-                            "name": "hello_test",
-                            "args": {"subject": "world"},
-                            "type": "tool_call",
-                        }],
-                    )
-                ]
-            }
+            "event": "on_tool_start",
+            "run_id": "call-2",
+            "name": "hello_test",
+            "data": {"input": {"subject": "world"}},
         }
         yield {
-            "tools": {
-                "messages": [
-                    ToolMessage(
-                        content="hello world",
-                        tool_call_id="call-2",
-                        name="hello_test",
-                    )
-                ]
-            }
+            "event": "on_tool_end",
+            "run_id": "call-2",
+            "name": "hello_test",
+            "data": {
+                "output": ToolMessage(
+                    content="hello world",
+                    tool_call_id="call-2",
+                    name="hello_test",
+                )
+            },
         }
-        yield {"agent": {"messages": [AIMessage(content="Done")]}}
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="Done")},
+        }
 
-    initial_graph = _FakeGraph(initial_events)
-    reload_graph = _FakeGraph(reload_events)
+    initial_graph = _FakeAsyncGraph(initial_events)
+    reload_graph = _FakeAsyncGraph(reload_events)
     graphs = [initial_graph, reload_graph]
-    agent._get_graph_for_user = lambda *args, **kwargs: graphs.pop(0)
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graphs.pop(0)
 
-    events = list(agent.stream(
-        "Use the hello kit",
-        thread_id="thread-a",
-        user_id="user-a",
-        _is_self_invoke=True,
-    ))
+    async def collect_events():
+        events = []
+        async for event in agent.astream(
+            "Use the hello kit",
+            thread_id="thread-a",
+            user_id="user-a",
+            _is_self_invoke=True,
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect_events())
 
     event_types = [event["type"] for event in events]
     assert event_types == [
@@ -259,5 +240,4 @@ def test_stream_reload_resume_streams_post_reload_tool_events():
     assert events[3]["name"] == "hello_test"
     assert events[4]["result"] == "hello world"
     assert events[5]["content"] == "Done"
-    assert reload_graph.stream_inputs[0][2] == "updates"
-    assert reload_graph.invoke_called is False
+    assert reload_graph.stream_inputs[0][2] == "v2"

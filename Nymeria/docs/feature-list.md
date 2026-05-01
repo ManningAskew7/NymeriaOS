@@ -460,7 +460,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 llm, tools, agent, threads, ticker, triggers, checkpoints, api, sse, compactor, all
 
 ### Log Tags
-`[LLM]`, `[STREAM]`, `[ASTREAM]`, `[CALLABLE]`, `[TICKER]`, `[WATCHDOG]`, `[TRIGGER]`
+`[LLM]`, `[ASTREAM]`, `[CALLABLE]`, `[TICKER]`, `[WATCHDOG]`, `[TRIGGER]`
 
 Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elapsed time, metrics. Per-module overrides via `LOG_MODULES`.
 

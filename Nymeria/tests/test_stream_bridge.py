@@ -9,9 +9,6 @@ class _FakeAgent:
     def __init__(self):
         self.calls = []
 
-    def stream(self, *args, **kwargs):  # pragma: no cover - regression guard
-        raise AssertionError("sync stream should not be used")
-
     async def astream(self, **kwargs):
         self.calls.append(kwargs)
         yield {"type": "thinking", "content": "working"}
@@ -41,3 +38,39 @@ def test_iter_agent_astream_yields_async_chunks_from_sync_context():
         "user_id": "owner",
         "_is_self_invoke": True,
     }]
+
+
+def test_iter_agent_astream_propagates_errors_after_prior_chunks():
+    class ErrorAgent:
+        async def astream(self, **kwargs):
+            yield {"type": "thinking", "content": "started"}
+            raise RuntimeError("astream failed")
+
+    iterator = iter_agent_astream(ErrorAgent(), message="x")
+
+    assert next(iterator) == {"type": "thinking", "content": "started"}
+    try:
+        next(iterator)
+    except RuntimeError as exc:
+        assert str(exc) == "astream failed"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("expected RuntimeError")
+
+
+def test_iter_agent_astream_closes_async_generator_when_consumer_stops():
+    released = []
+
+    class ReleasingAgent:
+        async def astream(self, **kwargs):
+            try:
+                yield {"type": "thinking", "content": "started"}
+                yield {"type": "response", "content": "unreached"}
+            finally:
+                released.append(True)
+
+    iterator = iter_agent_astream(ReleasingAgent(), message="x")
+
+    assert next(iterator) == {"type": "thinking", "content": "started"}
+    iterator.close()
+
+    assert released == [True]

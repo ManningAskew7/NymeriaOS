@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
-from queue import Queue
 from typing import Any, Dict, Iterator, Optional
 
 
@@ -22,7 +20,7 @@ def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
         yield from _iter_in_local_loop(agent, **kwargs)
         return
 
-    yield from _iter_in_worker_thread(agent, **kwargs)
+    raise RuntimeError("iter_agent_astream() is only supported from synchronous code")
 
 
 def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
@@ -55,37 +53,3 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
             asyncio.set_event_loop(previous_loop)
         else:
             asyncio.set_event_loop(None)
-
-
-def _iter_in_worker_thread(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
-    queue: Queue[tuple[str, Any]] = Queue()
-
-    def _runner() -> None:
-        async def _consume() -> None:
-            try:
-                async for chunk in agent.astream(**kwargs):
-                    queue.put(("chunk", chunk))
-            except BaseException as exc:
-                queue.put(("error", exc))
-            finally:
-                queue.put(("done", None))
-
-        asyncio.run(_consume())
-
-    thread = threading.Thread(
-        target=_runner,
-        name="agent-astream-sync-bridge",
-        daemon=True,
-    )
-    thread.start()
-
-    while True:
-        kind, payload = queue.get()
-        if kind == "chunk":
-            yield payload
-        elif kind == "error":
-            raise payload
-        else:
-            break
-
-    thread.join()
