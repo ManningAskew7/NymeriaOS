@@ -316,6 +316,13 @@ This is implemented in both execution paths:
 - Path A: `TriggerManager._stream_live()` in `trigger_manager.py` — accepts `task_started_data` and publishes `task_started` on the first non-`queued` chunk.
 - Path B: `/chat` endpoint in `triggers/api.py` — tracks `autonomous_started` and publishes `task_started` on the first non-`queued` chunk of `agent.astream()`.
 
+The frontend treats `task_started` as the normal handoff, but it also has a
+recovery path: if a current-thread autonomous `thinking`, `tool_call`,
+`tool_result`, `tool_reload`, `workspace_artifact`, or `response` event arrives
+while no autonomous assistant bubble is active, it creates/re-arms the streaming
+bubble and replays any buffered events. This prevents a missed or delayed
+handoff from degrading into "final answer only after history reload."
+
 ### Frontend streaming handoff
 
 The frontend (`nymeria-desktop/src/lib/stores/autonomous.svelte.ts`) handles `task_started` like this:

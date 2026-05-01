@@ -34,6 +34,16 @@ function classifyAutonomousSource(event: AutonomousEvent): string {
   return 'autonomous';
 }
 
+const STREAMING_AUTONOMOUS_EVENT_TYPES = new Set([
+  'thinking',
+  'tool_call_delta',
+  'tool_call',
+  'tool_result',
+  'tool_reload',
+  'workspace_artifact',
+  'response'
+]);
+
 // Debug: log when module loads
 console.log('[Autonomous] Store module loading...');
 
@@ -53,6 +63,7 @@ function createAutonomousStore() {
   // Buffer events that arrive during thread switch gap (between prepareForThreadSwitch
   // clearing isStreaming and the post-history-load recovery re-entering streaming)
   let _pendingEvents = new Map<string, AutonomousEvent[]>();
+  let _pendingReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const MAX_RECONNECT_ATTEMPTS = 10;
   const RECONNECT_DELAY_MS = 3000;
@@ -166,6 +177,10 @@ function createAutonomousStore() {
       eventSource.close();
       eventSource = null;
     }
+    for (const timer of _pendingReplayTimers.values()) {
+      clearTimeout(timer);
+    }
+    _pendingReplayTimers.clear();
     connected = false;
   }
 
@@ -201,6 +216,59 @@ function createAutonomousStore() {
     const buf = _pendingEvents.get(event.thread_id) || [];
     buf.push(event);
     _pendingEvents.set(event.thread_id, buf);
+    schedulePendingReplay(event.thread_id);
+  }
+
+  function schedulePendingReplay(threadId: string) {
+    if (_pendingReplayTimers.has(threadId)) return;
+
+    const timer = setTimeout(() => {
+      _pendingReplayTimers.delete(threadId);
+      replayPendingEventsForThread(threadId);
+    }, 250);
+    _pendingReplayTimers.set(threadId, timer);
+  }
+
+  function ensureStreamingForCurrentTask(event: AutonomousEvent, placeholder = 'Autonomous task in progress...'): boolean {
+    const taskId = event.task_id as string | undefined;
+    if (!taskId || event.thread_id !== threadsStore.currentThreadId || chatStore.isStreaming) {
+      return false;
+    }
+
+    activeTaskId = taskId;
+    let messageId = activeMessagesByThread.get(event.thread_id);
+    if (!messageId) {
+      messageId = chatStore.addAssistantMessage();
+      activeMessagesByThread = new Map(activeMessagesByThread).set(event.thread_id, messageId);
+    }
+    activeMessageId = messageId;
+    chatStore.setStreaming(true);
+    chatStore.setIntermediateContent(placeholder);
+    return true;
+  }
+
+  function canApplyStreamingEvent(event: AutonomousEvent, isCurrentThread: boolean, isOurTask: boolean): boolean {
+    return (
+      isCurrentThread &&
+      isOurTask &&
+      chatStore.isStreaming &&
+      activeMessagesByThread.has(event.thread_id)
+    );
+  }
+
+  function replayPendingEventsForThread(threadId: string) {
+    if (threadsStore.currentThreadId !== threadId) return;
+
+    const taskId = activeTasksByThread.get(threadId);
+    if (taskId) activeTaskId = taskId;
+
+    const pending = _pendingEvents.get(threadId);
+    if (!pending || pending.length === 0) return;
+
+    _pendingEvents.delete(threadId);
+    for (const evt of pending) {
+      handleEvent(evt);
+    }
   }
 
   function handleEvent(event: AutonomousEvent) {
@@ -209,8 +277,21 @@ function createAutonomousStore() {
     const currentThreadId = threadsStore.currentThreadId;
     const isCurrentThread = event.thread_id === currentThreadId;
     // Check both the legacy single-task tracking and per-thread tracking
-    const isOurTask = activeTaskId === event.task_id ||
+    let isOurTask = activeTaskId === event.task_id ||
       activeTasksByThread.get(event.thread_id) === event.task_id;
+    const isStreamingAutonomousEvent = STREAMING_AUTONOMOUS_EVENT_TYPES.has(event.type);
+
+    if (isCurrentThread && isStreamingAutonomousEvent && event.task_id && !isOurTask) {
+      activeTasksByThread = new Map(activeTasksByThread).set(
+        event.thread_id, event.task_id as string
+      );
+      threadsStore.setThreadActive(event.thread_id, true);
+      isOurTask = true;
+    }
+
+    if (isCurrentThread && isStreamingAutonomousEvent && isOurTask && !chatStore.isStreaming) {
+      ensureStreamingForCurrentTask(event);
+    }
 
     switch (event.type) {
       case 'task_started':
@@ -233,8 +314,6 @@ function createAutonomousStore() {
         // If on the same thread and not already streaming (user typing),
         // show that autonomous activity is starting
         if (isCurrentThread && !chatStore.isStreaming) {
-          activeTaskId = event.task_id;
-
           // Show autonomous prompt if thread config has it enabled
           // Only for scheduler/watchdog/trigger tasks, not callable thread invocations
           const threadCfg = threadConfigStore.getConfig(event.thread_id);
@@ -243,50 +322,38 @@ function createAutonomousStore() {
             chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
           }
 
-          // Add a placeholder message for the autonomous task and track its ID
-          activeMessageId = chatStore.addAssistantMessage();
-          activeMessagesByThread = new Map(activeMessagesByThread).set(
-            event.thread_id, activeMessageId!
-          );
-          chatStore.setStreaming(true);
-          chatStore.setIntermediateContent('Autonomous task started...');
+          ensureStreamingForCurrentTask(event, 'Autonomous task started...');
         }
         break;
 
       case 'thinking':
         // Only update if this is our autonomous task on the current thread
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           chatStore.addThinkingStep(event.content as string || 'Thinking...');
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
-          // Buffer during thread switch gap (streaming not yet re-armed)
-          const buf = _pendingEvents.get(event.thread_id) || [];
-          buf.push(event);
-          _pendingEvents.set(event.thread_id, buf);
+        } else if (isCurrentThread && isOurTask) {
+          // Buffer during thread switch gap or while user chat is still streaming.
+          bufferPendingEvent(event);
         }
         break;
 
       case 'tool_call_delta':
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           chatStore.setAssistantActivityPhase('formulating');
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
-          const buf = _pendingEvents.get(event.thread_id) || [];
-          buf.push(event);
-          _pendingEvents.set(event.thread_id, buf);
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
         }
         break;
 
       case 'tool_call':
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
           chatStore.addToolCallStep(
             toolId,
             event.name as string,
             (event.args as Record<string, unknown>) || {}
           );
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
-          const buf = _pendingEvents.get(event.thread_id) || [];
-          buf.push(event);
-          _pendingEvents.set(event.thread_id, buf);
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
         }
         // Refresh todos if it's a todo tool
         if ((event.name as string)?.startsWith('todo')) {
@@ -295,17 +362,15 @@ function createAutonomousStore() {
         break;
 
       case 'tool_result':
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           const toolId = event.id as string;
           chatStore.updateToolCallStepResult(
             toolId,
             event.result as string || '',
             'success'
           );
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
-          const buf = _pendingEvents.get(event.thread_id) || [];
-          buf.push(event);
-          _pendingEvents.set(event.thread_id, buf);
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
         }
         // Refresh relevant stores based on tool
         if ((event.name as string)?.startsWith('todo')) {
@@ -320,7 +385,7 @@ function createAutonomousStore() {
         break;
 
       case 'tool_reload': {
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           const ttlSeconds = event.ttl_seconds ?? event.ttlSeconds;
           chatStore.handleToolReload(
             (event.tools as string[]) || [],
@@ -330,14 +395,14 @@ function createAutonomousStore() {
             (event.skill_name as string | undefined) || (event.skillName as string | undefined),
             event.reason as string | undefined
           );
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+        } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
         }
         break;
       }
 
       case 'workspace_artifact':
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           const toolId = event.tool_call_id as string | undefined;
           const path = event.path as string | undefined;
           const name = event.name as string | undefined;
@@ -349,20 +414,16 @@ function createAutonomousStore() {
               sizeBytes: (event.size_bytes as number) || 0
             }]);
           }
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
-          const buf = _pendingEvents.get(event.thread_id) || [];
-          buf.push(event);
-          _pendingEvents.set(event.thread_id, buf);
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
         }
         break;
 
       case 'response':
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           chatStore.addResponseStep(event.content as string || '');
-        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
-          const buf = _pendingEvents.get(event.thread_id) || [];
-          buf.push(event);
-          _pendingEvents.set(event.thread_id, buf);
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
         }
         break;
 
@@ -374,6 +435,16 @@ function createAutonomousStore() {
           notificationStore.fetch();
         }
         refreshThreadTaskCounts();
+
+        if (
+          isCurrentThread &&
+          isOurTask &&
+          !activeMessagesByThread.has(event.thread_id) &&
+          !chatStore.isStreaming
+        ) {
+          replayPendingEventsForThread(event.thread_id);
+        }
+        const hadStreamingMessage = activeMessagesByThread.has(event.thread_id);
 
         // Clear per-thread tracking
         {
@@ -387,7 +458,7 @@ function createAutonomousStore() {
         }
         threadsStore.setThreadActive(event.thread_id, false);
 
-        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+        if (isCurrentThread && isOurTask && chatStore.isStreaming && hadStreamingMessage) {
           chatStore.setStreaming(false);
 
           // Handle error case - task failed
@@ -516,17 +587,7 @@ function createAutonomousStore() {
     /** Called after thread switch recovery re-arms streaming. Replays any events
      *  that arrived during the gap and syncs activeTaskId for consistency. */
     resumeStreamingForThread(threadId: string) {
-      const taskId = activeTasksByThread.get(threadId);
-      if (taskId) {
-        activeTaskId = taskId;
-      }
-      const pending = _pendingEvents.get(threadId);
-      if (pending && pending.length > 0) {
-        _pendingEvents.delete(threadId);
-        for (const evt of pending) {
-          handleEvent(evt);
-        }
-      }
+      replayPendingEventsForThread(threadId);
     }
   };
 }
