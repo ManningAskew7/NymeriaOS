@@ -454,6 +454,11 @@ The agent has one streaming implementation: `NymeriaAgent.astream()`.
 
 **`astream()` (Asynchronous)**
 - Uses `graph.astream_events()` with `version="v2"`
+- The ReAct agent node has an async implementation that consumes the model via
+  `llm_with_tools.astream()` and merges the chunks back into the final
+  `AIMessage`. This is what makes `on_chat_model_stream` provider-token events
+  available to regular chat and autonomous callers instead of batching one full
+  response per LLM turn.
 - Captures complete tool call information via `on_tool_start` events
 - Returns tool calls with full arguments
 - Used by FastAPI for SSE responses to desktop UI

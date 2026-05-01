@@ -63,7 +63,10 @@ Every subsystem uses a standardized `[TAG]` prefix. Filter by tag to isolate a s
 | Tag | Source file | Meaning |
 |-----|-------------|---------|
 | `[LLM]` | `vendor/react_agent/nodes.py` | LLM invocation and response. INFO shows message count + response summary. DEBUG shows full message array. |
+| `[LLM STREAM]` | `vendor/react_agent/nodes.py` | Async model-stream diagnostics. Shows provider chunk counts, first-chunk latency, text/reasoning/tool-call chunk counts, and whether the async node had to fall back to `ainvoke()`. |
 | `[ASTREAM]` | `core/agent.py` `astream()` | Agent streaming path. Used directly by `/chat` and via `iter_agent_astream()` for sync workers such as ticker, triggers, callable threads, and CLI. |
+| `[ASTREAM DIAG]` | `core/agent.py` `astream()` | Per-graph diagnostics for whether LangGraph emitted `on_chat_model_stream` events or fell back to full `on_chat_model_end` content. INFO for autonomous runs, DEBUG for regular user chat unless a warning condition occurs. |
+| `[STREAM_BRIDGE]` | `core/stream_bridge.py` | Sync bridge diagnostics for autonomous worker callers. Shows when a sync worker starts consuming `agent.astream()`, first yielded chunk timing/type, total yielded chunks, and elapsed time. |
 | `[CALLABLE]` | `core/thread_agent_executor.py` | Callable thread lifecycle. Shows name, thread_id, task_id, task preview, timing. |
 | `[TICKER]` | `core/ticker.py` | Scheduled TODO execution. |
 | `[WATCHDOG]` | `triggers/watchdog_worker.py` | Stale TODO nudge lifecycle. Emitted by the standalone watchdog container; the API also logs `[ASTREAM]` when the resulting `/chat` self-invoke runs. |
@@ -140,10 +143,19 @@ Cascading abort from thread main-abc to child research-123         ← cascade t
 **7. "Autonomous task (ticker/watchdog/trigger) — what happened?"**
 Autonomous tasks use `[ASTREAM]` with `holder=autonomous`, even when the caller is a sync worker using `iter_agent_astream()`:
 ```
+[STREAM_BRIDGE] start thread=todo-thread user=default autonomous=True
 [ASTREAM] === START === thread=todo-thread, user=default, holder=autonomous
+[LLM STREAM] async_complete chunks=42 text_chunks=18 text_chars=300 reasoning_chunks=12 reasoning_chars=900 tool_call_chunk_events=1 first_chunk_ms=650 elapsed_ms=5200
+[ASTREAM DIAG] graph_done thread=todo-thread autonomous=True model_calls=2 model_stream_events=43 model_end_without_stream=0 model_end_fallbacks=0 elapsed_ms=9000
+[STREAM_BRIDGE] end thread=todo-thread chunks=25 elapsed_ms=12300
 [WATCHDOG] === START === thread=todo-thread, stale_todos=2
 ...
 [WATCHDOG] === END === thread=todo-thread, chunks=5, response_len=200, elapsed=12.3s
 [ASTREAM] === END === thread=todo-thread, elapsed=12.5s
 ```
 Note the nested framing: `[WATCHDOG]` wraps the high-level nudge, `[ASTREAM]` wraps the inner agent execution.
+
+If autonomous output looks batched, compare these diagnostics:
+- `[LLM STREAM] chunks=1` with a large `text_chars` value means the provider or LangChain model wrapper only delivered one coarse async chunk.
+- `[LLM STREAM] chunks>1` but `[ASTREAM DIAG] model_stream_events=0` means LangGraph did not surface the provider chunks.
+- `[ASTREAM DIAG] model_stream_events>1` but `[STREAM_BRIDGE] chunks` is low means Nymeria's SSE conversion or autonomous bridge is dropping/coalescing events.

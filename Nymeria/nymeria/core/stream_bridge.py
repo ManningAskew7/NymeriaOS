@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import Any, Dict, Iterator, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
@@ -28,6 +32,17 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
     agen: Optional[Any] = None
     previous_loop = None
     had_previous_loop = True
+    chunk_count = 0
+    started_at = time.monotonic()
+    thread_id = kwargs.get("thread_id", "")
+    user_id = kwargs.get("user_id", "")
+    is_autonomous = bool(kwargs.get("_is_self_invoke"))
+    if is_autonomous:
+        logger.info(
+            "[STREAM_BRIDGE] start thread=%s user=%s autonomous=True",
+            thread_id,
+            user_id,
+        )
     try:
         try:
             previous_loop = asyncio.get_event_loop()
@@ -38,7 +53,16 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
         agen = agent.astream(**kwargs).__aiter__()
         while True:
             try:
-                yield loop.run_until_complete(agen.__anext__())
+                chunk = loop.run_until_complete(agen.__anext__())
+                chunk_count += 1
+                if is_autonomous and chunk_count == 1:
+                    logger.info(
+                        "[STREAM_BRIDGE] first_chunk thread=%s type=%s after_ms=%d",
+                        thread_id,
+                        chunk.get("type"),
+                        int((time.monotonic() - started_at) * 1000),
+                    )
+                yield chunk
             except StopAsyncIteration:
                 break
     finally:
@@ -53,3 +77,10 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
             asyncio.set_event_loop(previous_loop)
         else:
             asyncio.set_event_loop(None)
+        if is_autonomous:
+            logger.info(
+                "[STREAM_BRIDGE] end thread=%s chunks=%d elapsed_ms=%d",
+                thread_id,
+                chunk_count,
+                int((time.monotonic() - started_at) * 1000),
+            )

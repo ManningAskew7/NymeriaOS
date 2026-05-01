@@ -4417,6 +4417,21 @@ class NymeriaAgent:
                 streamed_text_in_current_llm_call = False
                 streamed_reasoning_in_current_llm_call = False
                 inline_text_stripper = _InlineThinkingTextStripper()
+                model_call_count = 0
+                model_stream_event_count = 0
+                model_end_without_stream_count = 0
+                model_end_fallback_count = 0
+                current_model_stream_events = 0
+                current_model_started_at: Optional[float] = None
+                graph_stream_started_at = _time.monotonic()
+
+                def log_stream_diagnostic(message: str, *args: Any, warning: bool = False) -> None:
+                    if warning:
+                        logger.warning(message, *args)
+                    elif _is_self_invoke:
+                        logger.info(message, *args)
+                    else:
+                        logger.debug(message, *args)
 
                 def should_emit_openai_reasoning(text: Any) -> bool:
                     if not isinstance(text, str) or not text:
@@ -4460,11 +4475,20 @@ class NymeriaAgent:
                     event_type = event.get("event")
 
                     if event_type == "on_chat_model_start":
+                        model_call_count += 1
+                        current_model_stream_events = 0
+                        current_model_started_at = _time.monotonic()
                         streamed_text_in_current_llm_call = False
                         streamed_reasoning_in_current_llm_call = False
                         emitted_tool_call_delta = False
                         emitted_openai_reasoning_chunks.clear()
                         inline_text_stripper.reset()
+                        log_stream_diagnostic(
+                            "[ASTREAM DIAG] llm_start thread=%s autonomous=%s run_id=%s",
+                            thread_id,
+                            _is_self_invoke,
+                            event.get("run_id"),
+                        )
 
                     elif event_type == "on_tool_start":
                         run_id = event.get("run_id")
@@ -4516,6 +4540,22 @@ class NymeriaAgent:
                                 yield extra_event
 
                     elif event_type == "on_chat_model_stream":
+                        model_stream_event_count += 1
+                        current_model_stream_events += 1
+                        if current_model_stream_events == 1:
+                            first_ms = (
+                                int((_time.monotonic() - current_model_started_at) * 1000)
+                                if current_model_started_at is not None
+                                else -1
+                            )
+                            log_stream_diagnostic(
+                                "[ASTREAM DIAG] first_model_stream thread=%s autonomous=%s "
+                                "run_id=%s after_ms=%d",
+                                thread_id,
+                                _is_self_invoke,
+                                event.get("run_id"),
+                                first_ms,
+                            )
                         chunk = event.get("data", {}).get("chunk")
                         if chunk:
                             tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
@@ -4587,6 +4627,25 @@ class NymeriaAgent:
                                         yield {"type": "response", "content": clean_text}
 
                     elif event_type == "on_chat_model_end":
+                        if current_model_stream_events == 0:
+                            model_end_without_stream_count += 1
+                            log_stream_diagnostic(
+                                "[ASTREAM DIAG] llm_end_without_stream thread=%s "
+                                "autonomous=%s run_id=%s",
+                                thread_id,
+                                _is_self_invoke,
+                                event.get("run_id"),
+                                warning=_is_self_invoke,
+                            )
+                        else:
+                            log_stream_diagnostic(
+                                "[ASTREAM DIAG] llm_end thread=%s autonomous=%s "
+                                "run_id=%s stream_events=%d",
+                                thread_id,
+                                _is_self_invoke,
+                                event.get("run_id"),
+                                current_model_stream_events,
+                            )
                         clean_text = inline_text_stripper.flush()
                         if clean_text:
                             final_response_parts.append(clean_text)
@@ -4594,6 +4653,16 @@ class NymeriaAgent:
                         if not streamed_text_in_current_llm_call:
                             output = event.get("data", {}).get("output")
                             if output and hasattr(output, "content") and output.content:
+                                model_end_fallback_count += 1
+                                log_stream_diagnostic(
+                                    "[ASTREAM DIAG] model_end_response_fallback thread=%s "
+                                    "autonomous=%s run_id=%s stream_events=%d",
+                                    thread_id,
+                                    _is_self_invoke,
+                                    event.get("run_id"),
+                                    current_model_stream_events,
+                                    warning=_is_self_invoke and current_model_stream_events == 0,
+                                )
                                 content = output.content
                                 if isinstance(content, str) and content.strip():
                                     text = _strip_inline_thinking_text(content)
@@ -4620,6 +4689,19 @@ class NymeriaAgent:
                                             if text:
                                                 final_response_parts.append(text)
                                                 yield {"type": "response", "content": text}
+
+                log_stream_diagnostic(
+                    "[ASTREAM DIAG] graph_done thread=%s autonomous=%s "
+                    "model_calls=%d model_stream_events=%d "
+                    "model_end_without_stream=%d model_end_fallbacks=%d elapsed_ms=%d",
+                    thread_id,
+                    _is_self_invoke,
+                    model_call_count,
+                    model_stream_event_count,
+                    model_end_without_stream_count,
+                    model_end_fallback_count,
+                    int((_time.monotonic() - graph_stream_started_at) * 1000),
+                )
 
             try:
                 # First pass: the user's message against the current graph.
