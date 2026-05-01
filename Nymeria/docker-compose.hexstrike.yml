@@ -1,0 +1,65 @@
+# HexStrike AI MCP sidecar.
+#
+# Usage:
+#   docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.hexstrike.yml up -d --build hexstrike-api hexstrike-mcp
+#
+# Host bindings are localhost-only. Nymeria containers use service DNS
+# (http://hexstrike-mcp:8889/mcp) over the shared Docker network.
+
+services:
+  hexstrike-api:
+    build:
+      context: .
+      dockerfile: docker/hexstrike/Dockerfile
+    container_name: hexstrike-api
+    restart: unless-stopped
+    init: true
+    environment:
+      HEXSTRIKE_HOST: 0.0.0.0
+      HEXSTRIKE_PORT: 8888
+    command: ["python3", "/opt/hexstrike-ai/hexstrike_server.py", "--port", "8888"]
+    ports:
+      - "127.0.0.1:${HEXSTRIKE_API_PORT:-8888}:8888"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 45s
+      retries: 5
+    networks:
+      - nymeria-network
+
+  hexstrike-mcp:
+    build:
+      context: .
+      dockerfile: docker/hexstrike/Dockerfile
+    container_name: hexstrike-mcp
+    restart: unless-stopped
+    init: true
+    depends_on:
+      hexstrike-api:
+        condition: service_healthy
+    environment:
+      HEXSTRIKE_ALLOWED_TOOLS_FILE: /opt/hexstrike-ai/allowed-tools.txt
+    command:
+      - supergateway
+      - --stdio
+      - python3 /opt/hexstrike-ai/hexstrike_mcp_limited.py --server http://hexstrike-api:8888
+      - --outputTransport
+      - streamableHttp
+      - --streamableHttpPath
+      - /mcp
+      - --port
+      - "8889"
+      - --logLevel
+      - info
+    ports:
+      - "127.0.0.1:${HEXSTRIKE_MCP_PORT:-8889}:8889"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'supergateway' >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+    networks:
+      - nymeria-network
