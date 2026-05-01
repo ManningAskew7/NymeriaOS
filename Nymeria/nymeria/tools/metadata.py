@@ -90,6 +90,13 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         security_level=SecurityLevel.MODERATE,
         description="Write content to files",
     ),
+    "file_edit": ToolMetadata(
+        name="file_edit",
+        category=ToolCategory.CORE,
+        security_level=SecurityLevel.MODERATE,
+        description="Precisely edit existing text files with exact, all-or-nothing operations",
+        default_enabled=False,
+    ),
     # file_list: Removed — redundant with bash_execute
     "web_search": ToolMetadata(
         name="web_search",

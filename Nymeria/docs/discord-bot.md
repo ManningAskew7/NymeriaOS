@@ -6,10 +6,10 @@ Nymeria's Discord integration runs as a stateless gateway that translates Discor
 
 ```
 Docker: nymeria-discord-bot (profile: discord)
-  └─ NymeriaDiscordBot(discord.Client)
-       ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-       ├─ CommandTree (30 slash commands across 6 groups)
-       └─ SSE listener (autonomous task completion → channel posts)
+	 └─ NymeriaDiscordBot(discord.Client)
+	      ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
+	      ├─ CommandTree (30 slash commands across 6 groups)
+	      └─ SSE listener (autonomous task stream → channel posts)
 ```
 
 Unlike the Twitch bot (which calls `agent.chat()` directly), the Discord bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`) — users see text appear progressively as the model generates it, with tool call boundaries shown as visual separators. This means:
@@ -182,7 +182,13 @@ If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint au
 
 ## Autonomous Task Delivery
 
-The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO completes on a Discord thread, the bot receives a `task_completed` event and posts an embed to the originating channel with the task description and result. Mid-turn `tool_reload` events are posted as compact Tool Binding embeds before the resumed work continues.
+The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO, watchdog nudge, or trigger runs on a Discord thread, the bot streams the same event types it uses for regular chat into the originating channel:
+
+- `response` chunks are edited into live messages and flushed near Discord's 2000-character limit.
+- `tool_call` / `tool_result` markers follow the channel's `/show-tools` setting.
+- `tool_reload`, compaction, context summary, iteration-limit, and error events are surfaced inline.
+- `workspace_artifact` events are uploaded as Discord attachments, with legacy `[attach:/path]` tags still supported as a fallback.
+- `task_completed` ends the stream and only falls back to the aggregate `content` field if no live response chunks were received.
 
 This means TODOs created via `/todos add` in a Discord channel will have their results delivered back to that channel automatically.
 

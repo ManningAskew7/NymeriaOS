@@ -340,7 +340,7 @@ class NymeriaTelegramBot:
         self._start_time = time.time()
         self._show_tool_calls: Dict[int, bool] = {}  # chat_id -> show
         # Per-thread streaming state for autonomous task delivery.
-        # thread_id -> { chat_id, buffer (response text), tool_count }
+        # thread_id -> { chat_id, buffer (response text), tool_count, response_seen }
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._application = None
         # Telegram user_id -> (Nymeria account user_id or None, expires_at)
@@ -3136,7 +3136,12 @@ class NymeriaTelegramBot:
         def _ensure_state() -> Dict[str, Any]:
             nonlocal state
             if state is None:
-                state = {"chat_id": chat_id, "buffer": "", "tool_count": 0}
+                state = {
+                    "chat_id": chat_id,
+                    "buffer": "",
+                    "tool_count": 0,
+                    "response_seen": False,
+                }
                 self._autonomous_state[thread_id] = state
             return state
 
@@ -3168,11 +3173,49 @@ class NymeriaTelegramBot:
                 # Same as regular chat — silently ignored.
                 return
 
+            elif event_type == "compacting":
+                _ensure_state()
+                await _flush_buffer()
+                try:
+                    status = event.get("message") or "Compacting context..."
+                    await self._send_html(chat_id, f"<i>{escape_html(status)}</i>")
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous compacting status: {e}")
+
+            elif event_type == "compacted":
+                _ensure_state()
+                await _flush_buffer()
+                try:
+                    await self._send_html(
+                        chat_id,
+                        format_compaction_notice_html(
+                            event.get("summary", ""),
+                            int(event.get("messages_removed") or 0),
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous compaction notice: {e}")
+
+            elif event_type == "context_attached":
+                _ensure_state()
+                await _flush_buffer()
+                try:
+                    await self._send_html(
+                        chat_id,
+                        format_compaction_notice_html(
+                            event.get("summary", ""),
+                            title="Context summary attached",
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous context notice: {e}")
+
             elif event_type == "response":
                 s = _ensure_state()
                 chunk = event.get("content", "")
                 if not chunk:
                     return
+                s["response_seen"] = True
                 s["buffer"] += chunk
                 # Flush early if a single segment grows large enough that we'd
                 # otherwise risk hitting the 4096-char Telegram limit mid-stream.
@@ -3227,6 +3270,17 @@ class NymeriaTelegramBot:
                 if isinstance(attach_path, str) and attach_path:
                     await self._send_file_attachment(chat_id, attach_path)
 
+            elif event_type == "iteration_limit":
+                content = event.get("content", "")
+                if content:
+                    try:
+                        await self._send_html(
+                            chat_id,
+                            f"<i>{escape_html(str(content))}</i>",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send autonomous iteration notice: {e}")
+
             elif event_type == "task_completed":
                 if event.get("error"):
                     err = event.get("content") or "Unknown error"
@@ -3241,7 +3295,7 @@ class NymeriaTelegramBot:
                     s = _ensure_state()
                     # If we received no per-event responses (older API or
                     # non-streaming task), fall back to the aggregated content.
-                    if not s["buffer"] and not s["tool_count"]:
+                    if not s["response_seen"] and not s["buffer"] and not s["tool_count"]:
                         fallback = event.get("content") or ""
                         if fallback:
                             s["buffer"] = fallback

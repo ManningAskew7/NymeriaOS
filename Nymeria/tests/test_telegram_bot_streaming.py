@@ -64,6 +64,11 @@ class _FakeEventAPI:
             yield event
 
 
+async def _deliver_autonomous(bot: NymeriaTelegramBot, events: list[dict]) -> None:
+    for event in events:
+        await bot._handle_sse_event(event)
+
+
 def test_telegram_stream_splits_single_oversized_response_chunk():
     long_response = "A" * (TELEGRAM_TEXT_LIMIT * 2 + 211)
     fake_bot = _FakeBot()
@@ -122,3 +127,63 @@ def test_telegram_stream_surfaces_compaction_events():
     assert any("Compacting context" in text for text in texts)
     assert any("Context compacted" in text and "Prior task state" in text for text in texts)
     assert any("Continuing now." in text for text in texts)
+
+
+def test_telegram_autonomous_does_not_duplicate_flushed_response_on_completion():
+    long_response = "A" * (TELEGRAM_TEXT_LIMIT + 211)
+    fake_bot = _FakeBot()
+    bot = NymeriaTelegramBot(
+        api=_FakeEventAPI([]),
+        bot_token="test-token",
+    )
+    bot._application = SimpleNamespace(bot=fake_bot)
+
+    asyncio.run(_deliver_autonomous(bot, [
+        {"type": "task_started", "thread_id": "telegram_123"},
+        {"type": "response", "thread_id": "telegram_123", "content": long_response},
+        {
+            "type": "task_completed",
+            "thread_id": "telegram_123",
+            "content": long_response,
+        },
+    ]))
+
+    sent_text = "".join(msg.text for msg in fake_bot.messages)
+    assert sent_text == long_response
+    assert len(fake_bot.messages) >= 2
+    assert bot._autonomous_state == {}
+
+
+def test_telegram_autonomous_surfaces_compaction_and_iteration_events():
+    fake_bot = _FakeBot()
+    bot = NymeriaTelegramBot(
+        api=_FakeEventAPI([]),
+        bot_token="test-token",
+    )
+    bot._application = SimpleNamespace(bot=fake_bot)
+
+    asyncio.run(_deliver_autonomous(bot, [
+        {"type": "task_started", "thread_id": "telegram_123"},
+        {
+            "type": "compacted",
+            "thread_id": "telegram_123",
+            "messages_removed": 7,
+            "summary": "Prior task state.",
+        },
+        {
+            "type": "context_attached",
+            "thread_id": "telegram_123",
+            "summary": "Attached summary.",
+        },
+        {
+            "type": "iteration_limit",
+            "thread_id": "telegram_123",
+            "content": "Stopped after too many tool calls.",
+        },
+        {"type": "task_completed", "thread_id": "telegram_123", "content": ""},
+    ]))
+
+    texts = [msg.text for msg in fake_bot.messages]
+    assert any("Context compacted" in text and "Prior task state" in text for text in texts)
+    assert any("Context summary attached" in text and "Attached summary" in text for text in texts)
+    assert any("Stopped after too many tool calls" in text for text in texts)
