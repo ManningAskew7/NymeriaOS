@@ -97,7 +97,7 @@ export type ConnectionProbeResult =
  * configStore. Module-level on purpose: NymeriaAPI methods all read from
  * configStore, and routing this through the class would invite a future
  * maintainer to "helpfully" use this.getHeaders() and reintroduce the bug
- * where the wizard's render gate (configStore.isFirstRun) flips mid-test.
+ * where the wizard's render gate flips mid-test.
  *
  * No configStore reads. No errorsStore writes (a wrong-token-while-typing
  * must not trip pushAuthInvalid and sign the user out).

@@ -174,10 +174,9 @@
     window.addEventListener('focus', () => {
       if (configStore.isConfigured) {
         configStore.refreshIdentity().then((id) => {
-          if (id === null && configStore.apiKey) {
+          if (id === null && !configStore.isConfigured) {
             // Token invalid — clear setup so the SetupWizard shows.
             console.warn('[Page] Token no longer valid, routing to SetupWizard');
-            configStore.apiKey = '';
           }
         });
       }
@@ -200,9 +199,8 @@
       // momentarily flashes the previous user's thread on a returning user.
       try {
         const id = await configStore.refreshIdentity();
-        if (id === null && configStore.apiKey) {
+        if (id === null && !configStore.isConfigured) {
           console.warn('[Page] /me returned unauthorized; clearing apiKey to route to SetupWizard');
-          configStore.apiKey = '';
           return;
         }
         if (id) {
@@ -242,7 +240,7 @@
 
 {#if !backendProcessStore.isReady && backendProcessStore.isTauri}
   <StartupOverlay />
-{:else if configStore.isFirstRun}
+{:else if configStore.needsSetup}
   <SetupWizard />
 {:else}
   <AppShell>

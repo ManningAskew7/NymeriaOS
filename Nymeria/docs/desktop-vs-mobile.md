@@ -51,6 +51,8 @@ The default `apiUrl` still differs by platform, but this is no longer the only d
 |-|---------|--------|
 | Default `apiUrl` | `'http://localhost:8000'` | `''` (empty) |
 | Reset `apiUrl` | `'http://localhost:8000'` | `''` |
+| Setup gate | `needsSetup` is true when setup is incomplete or URL/token is blank | Same |
+| `/me` 401 handling | Clears token, setup flag, identity, and identity scope | Same |
 
 **When changing**: replicate configuration logic carefully, while preserving platform-specific defaults and any mobile setup behavior tied to first-run connection flow.
 

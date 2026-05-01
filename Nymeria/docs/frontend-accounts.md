@@ -92,6 +92,9 @@ User launches app
   ↓
 configStore loads from localStorage (apiUrl, apiKey, last-known identity)
   ↓
+Root route renders SetupWizard if configStore.needsSetup is true
+  (missing URL, missing token, or setup not completed)
+  ↓
 routes/+page.svelte onMount calls configStore.refreshIdentity()
   ↓
 GET /me (Bearer apiKey)
@@ -105,6 +108,13 @@ Per-feature stores (threads, todos, etc.) re-read from their now-scoped keys
   ↓
 AccountBadge renders the resolved identity reactively
 ```
+
+`needsSetup` is deliberately stricter than the older first-run flag: a stored
+`setupCompleted=true` value is not enough to mount the main shell if the API URL
+or token is missing. On a `/me` 401, `refreshIdentity()` clears the auth session
+(`apiKey`, `setupCompleted`, cached identity, and identity scope) so the app
+routes back to SetupWizard before sidebar panels and pollers keep issuing
+unauthorized requests.
 
 ### AccountSwitcher (desktop)
 
@@ -297,7 +307,7 @@ If you add a new account/admin endpoint, follow this exact pattern so error toas
 | "Issue token" button is greyed out | `TokenManagementSection.svelte` — `disabled={issuing}` only; if it's stuck, check `issuing` state. The fix from commit `10a7697` ensures `loading` no longer disables it. | Historical bug — `disabled={loading}` + `$effect` racing was the original problem. |
 | AccountSwitcher rows show "Tap to verify" | `connections.svelte.ts::verifyEntry` failed for that entry — either the URL is unreachable or the token is bad. Check `connection.identityError`. | The auto-verify on boot only runs for the active entry; others stay unverified until the user opens the switcher and triggers per-row Re-verify. |
 | Copy-once dialog never appears after issue | `TokenManagementSection.svelte::handleIssue` — verify `showCopyDialog = true` runs after the `await api.issueMyToken()` and that `issuedRawToken` is populated. | Both must be set before the modal renders. |
-| 401 on every account endpoint after backend restart | `routes/+page.svelte` mounts `ErrorToast`; the new admin/me methods auto-trigger `pushAuthInvalid` on 401. The user should land on SetupWizard with a "Session expired" toast. | If they don't, `_toastAndExtractError` may not have been invoked — check the endpoint follows the pattern. |
+| 401 on every account endpoint after backend restart | `routes/+page.svelte` gates the main shell on `configStore.needsSetup`; `refreshIdentity()` clears dead tokens on `/me` 401, and the new admin/me methods auto-trigger `pushAuthInvalid` on 401. The user should land on SetupWizard with a "Session expired" toast when the toast path runs. | If they don't, check whether the failing endpoint follows `_toastAndExtractError`; generic API wrappers may still throw plain `API error: 401`. |
 | 403 from `/admin/users/...` | Caller is not admin. `UsersTab` is gated on `isAdmin` so this shouldn't happen from inside the app, but a stale localStorage with a demoted user could trigger it. | Demote-yourself isn't possible (last-admin guard) so this is rare; usually means the token belongs to a non-admin and the UI was loaded from cache. |
 | 409 deleting a user | Backend refuses if target owns threads / todos. Toast says "Cannot delete". User must reassign or delete those resources first. | Ownership counts are visible in the UsersTab side panel (`thread_count`, `todo_count` on `AdminUser`). |
 | 409 on PATCH role | Last-admin guard. Demoting / disabling the only enabled admin returns 409 with "last admin" or "only enabled admin" in the body. The toast surfaces as `last_admin` kind. | Add another admin first. |
