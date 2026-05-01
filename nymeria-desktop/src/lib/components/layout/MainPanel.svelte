@@ -246,6 +246,7 @@
       }
 
       case 'tool_call_delta': {
+        chatStore.flushStreamingBuffers();
         chatStore.setAssistantActivityPhase('formulating');
         break;
       }

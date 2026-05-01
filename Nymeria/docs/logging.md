@@ -159,6 +159,8 @@ If autonomous output looks batched, compare these diagnostics:
 - `[LLM STREAM] chunks=1` with a large `text_chars` value means the provider or LangChain model wrapper only delivered one coarse async chunk.
 - `[LLM STREAM] chunks>1` but `[ASTREAM DIAG] model_stream_events=0` means LangGraph did not surface the provider chunks.
 - `[ASTREAM DIAG] model_stream_events>1` but `[STREAM_BRIDGE] chunks` is low means Nymeria's SSE conversion or autonomous bridge is dropping/coalescing events.
+- `[ASTREAM DIAG] inline_thinking_possible` followed by `inline_thinking_buffer_hold` means Nymeria saw an empty provider reasoning block and is temporarily holding normal text to verify it is not leaked `<think>` content.
+- `inline_thinking_buffer_release` means that held text was released before model end; `inline_thinking_buffer_flush` means it was released at `on_chat_model_end`, which can make pre-tool preamble appear right before the first tool card.
 
 If the worker streamed chunks but the desktop did not update live, trace the autonomous SSE path hop by hop:
 ```

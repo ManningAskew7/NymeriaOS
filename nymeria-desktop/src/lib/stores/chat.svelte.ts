@@ -439,6 +439,11 @@ function createChatStore() {
       isStreaming = streaming;
     },
 
+    /** Public transition hook for stream handlers that need pending text visible now. */
+    flushStreamingBuffers() {
+      this._forceFlush();
+    },
+
     setLoadingHistory(loading: boolean) {
       isLoadingHistory = loading;
     },

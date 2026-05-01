@@ -323,7 +323,10 @@ Desktop currently has an extra presentation-only streaming component,
 `AgentActivityIndicator.svelte`, mounted from `MessageBubble.svelte` when an
 assistant stream is active but no response text is streaming. It derives its
 inline phase text from existing `message.steps`; it does not add SSE events or
-backend state. Mobile has not been replicated yet.
+backend state. On desktop, `tool_call_delta` also flushes any pending response
+or thinking buffer before switching the activity phase to `Formulating...`, so
+pre-tool preamble text is visible before the phase label is shown. Mobile has
+not been replicated yet.
 
 ### Adding a new theme
 
