@@ -37,7 +37,13 @@ from ..core.accounts import (
 )
 from ..core import secrets as nymeria_secrets
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
-from ..core.event_bus import get_event_bus, AutonomousEvent, publish_autonomous_event, publish_sync_event
+from ..core.event_bus import (
+    AutonomousEvent,
+    get_event_bus,
+    publish_agent_stream_chunk,
+    publish_autonomous_event,
+    publish_sync_event,
+)
 from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
 from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
@@ -2667,30 +2673,17 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
                     # Mirror streaming chunks to the autonomous event bus for
                     # self-invoke calls so /autonomous/stream subscribers see
-                    # live progress (tool_call, tool_result, thinking, response).
+                    # live progress.
                     if autonomous_task_id:
                         ctype = chunk.get("type")
-                        if ctype in (
-                            "tool_call_delta",
-                            "tool_call",
-                            "tool_result",
-                            "thinking",
-                            "response",
-                            "workspace_artifact",
-                            "compacting",
-                            "compacted",
-                            "context_attached",
-                        ):
-                            payload = {k: v for k, v in chunk.items() if k != "type"}
-                            publish_autonomous_event(
-                                event_type=ctype,
-                                thread_id=thread_id,
-                                user_id=user_id,
-                                task_id=autonomous_task_id,
-                                data=payload,
-                            )
-                            if ctype == "response":
-                                autonomous_final_content_parts.append(chunk.get("content", ""))
+                        publish_agent_stream_chunk(
+                            chunk,
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            task_id=autonomous_task_id,
+                        )
+                        if ctype == "response":
+                            autonomous_final_content_parts.append(chunk.get("content", ""))
 
                 # Only send done event if client is still connected
                 if not client_disconnected and not await http_request.is_disconnected():
@@ -4159,6 +4152,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         description: str
         scope: str
         allowed_tools: List[str] = []
+        required_tools: List[str] = []
+        tool_ttl: str = "2h"
+        is_skill_kit: bool = False
+        default_active: bool = False
         has_scripts: bool = False
         has_references: bool = False
         has_assets: bool = False
@@ -4193,6 +4190,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "description": skill.description,
             "scope": skill.scope,
             "allowed_tools": skill.allowed_tools,
+            "required_tools": skill.required_tools,
+            "tool_ttl": skill.tool_ttl,
+            "is_skill_kit": skill.is_skill_kit,
+            "default_active": False,
             "has_scripts": skill.has_scripts,
             "has_references": skill.has_references,
             "has_assets": skill.has_assets,
@@ -4366,6 +4367,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         )
         return {
             "thread_id": thread_id,
+            "default_enabled": [],
             "enabled_global": enabled_global,
             "thread_enabled": enabled_thread,
             "thread_disabled": disabled_thread,

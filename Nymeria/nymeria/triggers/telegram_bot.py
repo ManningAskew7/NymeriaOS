@@ -304,6 +304,11 @@ _THREAD_CONFIG_CACHE_TTL_SECONDS = 60
 # without hammering the API.
 _USER_BOT_SUPERVISOR_INTERVAL_SECONDS = 15
 
+# Telegram accepts up to 4096 characters in a text message. Keep generated
+# chunks below that to leave room for HTML tags/entities added by formatting.
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_SAFE_CHUNK_LENGTH = 3500
+
 
 # =============================================================================
 # Telegram Bot Client
@@ -894,6 +899,7 @@ class NymeriaTelegramBot:
 
         text_buffer = ""
         current_msg: Optional[Message] = None
+        stop_button_msg: Optional[Message] = None
         last_edit = 0.0
         tool_call_count = 0
         typing_task: Optional[asyncio.Task] = None
@@ -911,49 +917,81 @@ class NymeriaTelegramBot:
                 await asyncio.sleep(4)
 
         async def _flush(final: bool = False):
-            nonlocal text_buffer, current_msg, last_edit, first_msg_sent
+            nonlocal text_buffer, current_msg, last_edit, first_msg_sent, stop_button_msg
             if not text_buffer:
                 if final:
                     current_msg = None
                 return
 
-            display = markdown_to_html(text_buffer)
+            raw_chunks = (
+                split_message(text_buffer, TELEGRAM_SAFE_CHUNK_LENGTH)
+                if final
+                else [text_buffer]
+            )
 
             try:
-                if current_msg is None:
-                    # Attach stop button to first message
-                    reply_markup = None
-                    if not first_msg_sent:
-                        reply_markup = InlineKeyboardMarkup([[
-                            InlineKeyboardButton(
-                                "\u23f9 Stop", callback_data=f"stop:{thread_id}"
-                            )
-                        ]])
-                    current_msg = await self._send_html(
-                        chat_id, display, context, reply_markup=reply_markup
-                    )
-                    first_msg_sent = True
-                    last_edit = time.monotonic()
-                else:
-                    await self._edit_html(current_msg, display)
-                    last_edit = time.monotonic()
+                for idx, raw_chunk in enumerate(raw_chunks):
+                    display = markdown_to_html(raw_chunk)
+                    if len(display) > TELEGRAM_TEXT_LIMIT:
+                        logger.debug(
+                            "Formatted Telegram chunk exceeded %d chars; splitting formatted text",
+                            TELEGRAM_TEXT_LIMIT,
+                        )
+                        display_chunks = split_message(display, TELEGRAM_SAFE_CHUNK_LENGTH)
+                    else:
+                        display_chunks = [display]
+
+                    for sub_idx, display_chunk in enumerate(display_chunks):
+                        is_first_piece = idx == 0 and sub_idx == 0
+                        if current_msg is not None and is_first_piece:
+                            await self._edit_html(current_msg, display_chunk)
+                            last_edit = time.monotonic()
+                            continue
+
+                        # Attach stop button only to the first generated message.
+                        reply_markup = None
+                        if not first_msg_sent:
+                            reply_markup = InlineKeyboardMarkup([[
+                                InlineKeyboardButton(
+                                    "\u23f9 Stop", callback_data=f"stop:{thread_id}"
+                                )
+                            ]])
+                        current_msg = await self._send_html(
+                            chat_id, display_chunk, context, reply_markup=reply_markup
+                        )
+                        if reply_markup is not None:
+                            stop_button_msg = current_msg
+                        first_msg_sent = True
+                        last_edit = time.monotonic()
             except Exception:
-                # Edit/send failed — try sending a new plain message
-                try:
-                    current_msg = await context.bot.send_message(
-                        chat_id=chat_id, text=text_buffer
-                    )
-                    last_edit = time.monotonic()
-                except Exception:
-                    pass
+                logger.warning(
+                    "Telegram flush failed for %d chars; retrying as plain chunks",
+                    len(text_buffer),
+                    exc_info=True,
+                )
+                for raw_chunk in split_message(text_buffer, TELEGRAM_SAFE_CHUNK_LENGTH):
+                    try:
+                        current_msg = await context.bot.send_message(
+                            chat_id=chat_id, text=raw_chunk
+                        )
+                        first_msg_sent = True
+                        last_edit = time.monotonic()
+                    except Exception:
+                        logger.warning(
+                            "Telegram plain chunk send failed (%d chars)",
+                            len(raw_chunk),
+                            exc_info=True,
+                        )
 
             if final:
                 # Remove stop button from finalized message
-                if current_msg:
+                button_msg = stop_button_msg or current_msg
+                if button_msg:
                     try:
-                        await current_msg.edit_reply_markup(reply_markup=None)
+                        await button_msg.edit_reply_markup(reply_markup=None)
                     except Exception:
                         pass
+                stop_button_msg = None
                 text_buffer = ""
                 current_msg = None
 
@@ -1015,7 +1053,7 @@ class NymeriaTelegramBot:
                     chunk = event.get("content", "")
                     if chunk:
                         text_buffer += chunk
-                        if len(text_buffer) > 3800:
+                        if len(text_buffer) > TELEGRAM_SAFE_CHUNK_LENGTH:
                             await _flush(final=True)
                         elif time.monotonic() - last_edit >= EDIT_INTERVAL:
                             await _flush()
@@ -3166,6 +3204,23 @@ class NymeriaTelegramBot:
                         logger.warning(f"Failed to send autonomous tool result: {e}")
                 for attach_path in parse_attach_paths(event.get("result", "")):
                     await self._send_file_attachment(chat_id, attach_path)
+
+            elif event_type == "tool_reload":
+                _ensure_state()
+                await _flush_buffer()
+                tools = event.get("tools") or []
+                ttl = event.get("ttl") or ""
+                names = ", ".join(str(tool) for tool in tools) if tools else "tools"
+                try:
+                    await self._send_html(
+                        chat_id,
+                        (
+                            f"<i>Tool Binding: <b>{escape_html(names)}</b>"
+                            f"{f' ({escape_html(str(ttl))})' if ttl else ''}</i>"
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous tool reload message: {e}")
 
             elif event_type == "workspace_artifact":
                 attach_path = event.get("path")

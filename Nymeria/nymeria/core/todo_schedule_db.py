@@ -14,6 +14,8 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+ACTIVE_EXECUTION_STALE_SECONDS = 24 * 60 * 60
+
 
 def _datetime_to_timestamp(dt: datetime) -> float:
     """
@@ -91,6 +93,18 @@ class TodoScheduleDB:
         ON scheduled_todos(scheduled_for);
     CREATE INDEX IF NOT EXISTS idx_scheduled_user
         ON scheduled_todos(user_id);
+
+    CREATE TABLE IF NOT EXISTS active_todo_executions (
+        todo_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        thread_id TEXT,
+        started_at REAL NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_active_todo_executions_user
+        ON active_todo_executions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_active_todo_executions_started
+        ON active_todo_executions(started_at);
     """
 
     def __init__(self, db_path: Path):
@@ -123,6 +137,145 @@ class TodoScheduleDB:
             try:
                 conn.executescript(self.SCHEMA)
                 conn.commit()
+            finally:
+                conn.close()
+
+    def _delete_stale_executions(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        now: float,
+        stale_after_seconds: int,
+    ) -> int:
+        """Delete crashed-worker execution markers older than the stale cutoff."""
+        cutoff = now - stale_after_seconds
+        cursor = conn.execute(
+            "DELETE FROM active_todo_executions WHERE started_at < ?",
+            (cutoff,),
+        )
+        deleted = cursor.rowcount if cursor.rowcount is not None else 0
+        if deleted:
+            logger.warning(
+                "Removed %s stale active TODO execution marker(s) older than %ss",
+                deleted,
+                stale_after_seconds,
+            )
+        return deleted
+
+    def mark_execution_started(
+        self,
+        todo_id: str,
+        user_id: str,
+        thread_id: Optional[str] = None,
+        *,
+        stale_after_seconds: int = ACTIVE_EXECUTION_STALE_SECONDS,
+    ) -> bool:
+        """
+        Mark a scheduled TODO as actively executing.
+
+        Returns False when another live worker already owns the TODO.
+        Stale markers are removed first so a crashed worker cannot lock a TODO
+        forever.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                now = time.time()
+                self._delete_stale_executions(
+                    conn,
+                    now=now,
+                    stale_after_seconds=stale_after_seconds,
+                )
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO active_todo_executions
+                    (todo_id, user_id, thread_id, started_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (todo_id, user_id, thread_id, now),
+                )
+                conn.commit()
+                if cursor.rowcount == 1:
+                    logger.info("Marked TODO %s as actively executing", todo_id)
+                    return True
+                logger.info("TODO %s is already actively executing", todo_id)
+                return False
+            except Exception as e:
+                logger.error(f"Failed to mark active TODO execution: {e}")
+                conn.rollback()
+                return False
+            finally:
+                conn.close()
+
+    def clear_execution(self, todo_id: str, user_id: Optional[str] = None) -> bool:
+        """
+        Clear an active scheduled TODO execution marker.
+
+        Returns True if the marker was removed or was already absent.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                if user_id is None:
+                    conn.execute(
+                        "DELETE FROM active_todo_executions WHERE todo_id = ?",
+                        (todo_id,),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        DELETE FROM active_todo_executions
+                        WHERE todo_id = ? AND user_id = ?
+                        """,
+                        (todo_id, user_id),
+                    )
+                conn.commit()
+                logger.debug("Cleared active execution marker for TODO %s", todo_id)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to clear active TODO execution marker: {e}")
+                conn.rollback()
+                return False
+            finally:
+                conn.close()
+
+    def is_execution_active(
+        self,
+        todo_id: str,
+        user_id: Optional[str] = None,
+        *,
+        stale_after_seconds: int = ACTIVE_EXECUTION_STALE_SECONDS,
+    ) -> bool:
+        """Return whether a scheduled TODO is actively executing."""
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                now = time.time()
+                self._delete_stale_executions(
+                    conn,
+                    now=now,
+                    stale_after_seconds=stale_after_seconds,
+                )
+                if user_id is None:
+                    cursor = conn.execute(
+                        "SELECT 1 FROM active_todo_executions WHERE todo_id = ?",
+                        (todo_id,),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        SELECT 1 FROM active_todo_executions
+                        WHERE todo_id = ? AND user_id = ?
+                        """,
+                        (todo_id, user_id),
+                    )
+                active = cursor.fetchone() is not None
+                conn.commit()
+                return active
+            except Exception as e:
+                logger.error(f"Failed to check active TODO execution marker: {e}")
+                conn.rollback()
+                return False
             finally:
                 conn.close()
 

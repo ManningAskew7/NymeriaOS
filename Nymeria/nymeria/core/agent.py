@@ -297,10 +297,16 @@ def _classify_autonomous_source(text: str) -> str:
 
 
 def _extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
-    """Extract plaintext reasoning summary from a Responses API content block."""
-    parts: List[str] = []
+    """Extract plaintext reasoning from one Responses API reasoning block.
 
-    def add(value: Any) -> None:
+    A single Responses ``reasoning`` item can contain multiple ``summary``
+    sections. Keep that provider item as one frontend thinking step instead of
+    turning each summary section into a separate Thought block.
+    """
+    content_parts: List[str] = []
+    summary_parts: List[str] = []
+
+    def add(value: Any, parts: List[str]) -> None:
         if isinstance(value, str) and value:
             parts.append(value)
         elif isinstance(value, dict):
@@ -310,26 +316,31 @@ def _extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
                 value.get("text")
                 or value.get("content")
                 or value.get("reasoning")
-                or value.get("summary")
+                or value.get("summary"),
+                parts,
             )
         elif isinstance(value, list):
             for item in value:
-                add(item)
+                add(item, parts)
 
-    add(block.get("reasoning"))
-    add(block.get("content"))
+    add(block.get("reasoning"), content_parts)
+    add(block.get("content"), content_parts)
 
     summary = block.get("summary")
     if isinstance(summary, str):
-        add(summary)
+        add(summary, summary_parts)
     elif isinstance(summary, list):
         for part in summary:
-            if isinstance(part, str):
-                add(part)
-            elif isinstance(part, dict):
-                add(part.get("text") or part.get("content") or part.get("summary"))
+            add(part, summary_parts)
 
-    return parts
+    sections: List[str] = []
+    if content_parts:
+        sections.append("".join(content_parts))
+    if summary_parts:
+        sections.append("\n\n".join(summary_parts))
+
+    joined = "\n\n".join(section for section in sections if section)
+    return [joined] if joined else []
 
 
 def _extract_reasoning_text_from_details(details: Any) -> List[str]:
@@ -1045,15 +1056,7 @@ class NymeriaAgent:
             turn_counts[thread_id] = 0
 
     def _clear_tool_reload_state_after_stream(self, thread_id: str) -> None:
-        """Drop reload state after the legacy sync stream path finishes.
-
-        ``stream()`` is used by callable thread execution and does not run the
-        in-turn reload loop that ``chat()`` and ``astream()`` run. If a tool
-        enable queues a reload there, the enablement is already persisted to the
-        thread config for the next turn; leaving the in-memory pending flag set
-        would cause the next unrelated ``astream()``/``chat()`` turn to consume
-        it and display a bogus Tool Binding event.
-        """
+        """Drop any residual reload state after the sync stream path finishes."""
         turn_counts = getattr(self, "_turn_reload_count", None)
         if isinstance(turn_counts, dict):
             turn_counts.pop(thread_id, None)
@@ -1068,6 +1071,73 @@ class NymeriaAgent:
                     thread_id,
                     stale.get("new_tools", []),
                 )
+
+    def _tool_reload_ttl_phrase(self, ttl_seconds: Optional[int]) -> str:
+        if ttl_seconds is None:
+            return "permanently"
+        h, rem = divmod(ttl_seconds, 3600)
+        m, _ = divmod(rem, 60)
+        if h > 0 and m > 0:
+            return f"for the next {h}h {m}m"
+        if h > 0:
+            return f"for the next {h}h"
+        return f"for the next {m}m"
+
+    def _tool_reload_source_label(self, reload_info: dict) -> str:
+        source = reload_info.get("source") or "tool_search"
+        if source == "skill_kit":
+            skill_name = reload_info.get("skill_name")
+            if skill_name:
+                return f'Skill Kit "{skill_name}"'
+            return "a Skill Kit"
+        if source == "skill_config":
+            skill_name = reload_info.get("skill_name")
+            if skill_name:
+                return f'skill_config publishing Skill Kit "{skill_name}"'
+            return "skill_config"
+        if source == "tool_create":
+            return "tool_create publishing a new tool"
+        return 'tool_search(action="enable")'
+
+    def _create_tool_reload_resume_message(self, reload_info: dict) -> HumanMessage:
+        new_tools = reload_info.get("new_tools", [])
+        ttl_key = reload_info.get("ttl", "2h")
+        ttl_seconds = reload_info.get("ttl_seconds")
+        source = reload_info.get("source") or "tool_search"
+        skill_name = reload_info.get("skill_name")
+        reason = reload_info.get("reason")
+        source_label = self._tool_reload_source_label(reload_info)
+        reason_text = f" Reason: {reason}." if reason else ""
+        ttl_phrase = self._tool_reload_ttl_phrase(ttl_seconds)
+        if new_tools:
+            resume_text = (
+                f"[System: tool reload complete. The following tools are now "
+                f"bound to you {ttl_phrase}: {', '.join(new_tools)}. This is "
+                f"the automatic resume after {source_label}.{reason_text} "
+                "Continue the user's original task now; you may call these "
+                "newly-loaded tools in this resumed step.]"
+            )
+        else:
+            resume_text = (
+                f"[System: capability reload complete. The thread's skill "
+                f"list and tool schemas have been refreshed. This is the "
+                f"automatic resume after {source_label}.{reason_text} "
+                "Continue the user's original task now.]"
+            )
+        resume_msg = _create_human_message(
+            resume_text,
+            internal=True,
+            internal_type="tool_reload_resume",
+        )
+        resume_msg.additional_kwargs["tool_reload_tools"] = new_tools
+        resume_msg.additional_kwargs["tool_reload_ttl"] = ttl_key
+        resume_msg.additional_kwargs["tool_reload_source"] = source
+        if skill_name:
+            resume_msg.additional_kwargs["tool_reload_skill_name"] = skill_name
+        if reason:
+            resume_msg.additional_kwargs["tool_reload_reason"] = reason
+        resume_msg.additional_kwargs["tool_reload_ttl_seconds"] = ttl_seconds
+        return resume_msg
 
     def _build_checkpointer_config(self) -> CheckpointerConfig:
         """Build the checkpointer configuration."""
@@ -1231,12 +1301,14 @@ class NymeriaAgent:
         """Get a hash of the user's memories, thread-scoped TODOs, and tool preferences to detect changes."""
         # For callable threads with custom system_prompt, skip memory/TODO/personality hash
         tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+        live_temp_tools = sorted(self._resolve_temporary_tools(tc)) if tc else []
         if tc and tc.callable and tc.system_prompt:
             thread_config_str = (
                 f"sp:{hash(tc.system_prompt or '')}"
                 f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
                 f"|dt:{sorted(tc.disabled_tools)}"
                 f"|et:{sorted(tc.enabled_tools)}"
+                f"|tt:{live_temp_tools}"
                 f"|es:{sorted(tc.enabled_skills)}"
                 f"|ds:{sorted(tc.disabled_skills)}"
                 f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
@@ -1275,6 +1347,7 @@ class NymeriaAgent:
                 f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
                 f"|dt:{sorted(tc.disabled_tools)}"
                 f"|et:{sorted(tc.enabled_tools)}"
+                f"|tt:{live_temp_tools}"
                 f"|es:{sorted(tc.enabled_skills)}"
                 f"|ds:{sorted(tc.disabled_skills)}"
                 f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
@@ -2873,7 +2946,8 @@ class NymeriaAgent:
             thread_disabled_skills=disabled_thread,
         )
         parts = [
-            f"{s.name}:{s.scope}:{hash(s.description)}:{sorted(s.allowed_tools)}"
+            f"{s.name}:{s.scope}:{hash(s.description)}:{sorted(s.allowed_tools)}:"
+            f"{sorted(s.required_tools)}:{s.tool_ttl}"
             for s in active
         ]
         return f"sk:{hash('|'.join(parts))}"
@@ -4008,8 +4082,6 @@ class NymeriaAgent:
                     reload_count += 1
                     self._turn_reload_count[thread_id] = reload_count
                     new_tools = reload_info.get("new_tools", [])
-                    ttl_key = reload_info.get("ttl", "2h")
-                    ttl_seconds = reload_info.get("ttl_seconds")
                     logger.info(
                         f"[CHAT] Thread {thread_id}: tool reload #{reload_count} — "
                         f"{len(new_tools)} new tool(s): {', '.join(new_tools)}"
@@ -4018,31 +4090,7 @@ class NymeriaAgent:
                     reload_graph = self._get_graph_for_user(
                         user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
                     )
-                    if ttl_seconds is None:
-                        ttl_phrase = "permanently"
-                    else:
-                        h, rem = divmod(ttl_seconds, 3600)
-                        m, _ = divmod(rem, 60)
-                        if h > 0 and m > 0:
-                            ttl_phrase = f"for the next {h}h {m}m"
-                        elif h > 0:
-                            ttl_phrase = f"for the next {h}h"
-                        else:
-                            ttl_phrase = f"for the next {m}m"
-                    resume_text = (
-                        f"[System: tool reload complete. The following tools are now "
-                        f"bound to you {ttl_phrase}: {', '.join(new_tools)}. This is "
-                        "the automatic resume after tool_search(action=\"enable\"). "
-                        "Continue the user's original task now; you may call these "
-                        "newly-loaded tools in this resumed step.]"
-                    )
-                    resume_msg = _create_human_message(
-                        resume_text,
-                        internal=True,
-                        internal_type="tool_reload_resume",
-                    )
-                    resume_msg.additional_kwargs["tool_reload_tools"] = new_tools
-                    resume_msg.additional_kwargs["tool_reload_ttl"] = ttl_key
+                    resume_msg = self._create_tool_reload_resume_message(reload_info)
                     result = reload_graph.invoke(
                         {"messages": [resume_msg]}, config=config
                     )
@@ -4108,6 +4156,208 @@ class NymeriaAgent:
             self._pending_tool_reload.pop(thread_id, None)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
+
+    def _stream_graph_update_events(
+        self,
+        graph_obj: Any,
+        input_state: Dict[str, Any],
+        config: Dict[str, Any],
+        abort_event: threading.Event,
+        thread_id: str,
+        final_response_parts: List[str],
+        stats: Optional[Dict[str, int]] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Convert LangGraph ``stream_mode="updates"`` chunks to UI events."""
+        pending_tool_calls: Dict[str, Dict[str, Any]] = {}
+        emitted_tool_calls: set = set()
+
+        # Use stream_mode="updates" to get complete node outputs with full
+        # tool_calls. This provides populated args unlike stream_mode="messages".
+        for update in graph_obj.stream(input_state, config=config, stream_mode="updates"):
+            if abort_event.is_set():
+                logger.info(f"[STREAM] Thread {thread_id}: Aborted by cancel signal")
+                yield {
+                    "type": "error",
+                    "content": "Operation was cancelled.",
+                    "code": "cancelled",
+                }
+                return
+
+            if stats is not None:
+                stats["stream_chunk_count"] = stats.get("stream_chunk_count", 0) + 1
+                stream_chunk_count = stats["stream_chunk_count"]
+            else:
+                stream_chunk_count = 0
+            logger.debug(
+                f"[STREAM] Update #{stream_chunk_count}: "
+                f"keys={list(update.keys()) if isinstance(update, dict) else type(update)}"
+            )
+
+            # update is a dict like {"agent": {"messages": [...]}} or
+            # {"tools": {"messages": [...]}}
+            if not isinstance(update, dict):
+                continue
+
+            for node_name, node_output in update.items():
+                if not isinstance(node_output, dict):
+                    continue
+
+                messages = node_output.get("messages", [])
+                if not isinstance(messages, list):
+                    messages = [messages]
+
+                for msg in messages:
+                    if isinstance(msg, AIMessage):
+                        # Emit content and tool calls in order, preserving
+                        # interleaved thinking between tool calls.
+                        if msg.content and msg.tool_calls and isinstance(msg.content, list):
+                            for block in msg.content:
+                                if not isinstance(block, dict):
+                                    if isinstance(block, str) and block:
+                                        text = _strip_inline_thinking_text(block)
+                                        if text:
+                                            final_response_parts.append(text)
+                                            yield {"type": "response", "content": text}
+                                    continue
+                                block_type = block.get("type")
+                                if block_type == "thinking":
+                                    text = block.get("thinking", "")
+                                    if text:
+                                        yield {"type": "thinking", "content": text}
+                                elif block_type == "reasoning":
+                                    for text in _extract_reasoning_text_from_block(block):
+                                        yield {"type": "thinking", "content": text}
+                                elif block_type in ("text", "output_text"):
+                                    text = _strip_inline_thinking_text(block.get("text", ""))
+                                    if text:
+                                        final_response_parts.append(text)
+                                        yield {"type": "response", "content": text}
+                                elif block_type in ("tool_use", "function_call", "custom_tool_call"):
+                                    tool_id = block.get("id", "")
+                                    if block_type != "tool_use":
+                                        tool_id = block.get("call_id", tool_id)
+                                    tool_name = block.get("name", "")
+                                    tool_args = block.get("input", {})
+                                    if not tool_args:
+                                        tool_args = block.get("arguments", {})
+                                    if isinstance(tool_args, str):
+                                        try:
+                                            tool_args = json.loads(tool_args)
+                                        except json.JSONDecodeError:
+                                            tool_args = {"arguments": tool_args}
+                                    if tool_name and tool_id:
+                                        pending_tool_calls[tool_id] = {
+                                            "name": tool_name,
+                                            "args": tool_args,
+                                        }
+                                        if tool_id not in emitted_tool_calls:
+                                            emitted_tool_calls.add(tool_id)
+                                            logger.debug(
+                                                f"[STREAM] Emitting tool_call: "
+                                                f"id={tool_id}, name={tool_name}, args={tool_args}"
+                                            )
+                                            yield {
+                                                "type": "tool_call",
+                                                "id": tool_id,
+                                                "name": tool_name,
+                                                "args": tool_args,
+                                            }
+                        elif msg.content and msg.tool_calls:
+                            # String content: emit preamble first, then tool calls.
+                            preamble_text, preamble_thinking = _extract_content_parts(msg.content)
+                            for thinking_text in preamble_thinking:
+                                if thinking_text:
+                                    yield {"type": "thinking", "content": thinking_text}
+                            if preamble_text:
+                                final_response_parts.append(preamble_text)
+                                yield {"type": "response", "content": preamble_text}
+                            for tool_call in msg.tool_calls:
+                                tool_id = tool_call.get("id")
+                                tool_name = tool_call.get("name")
+                                tool_args = tool_call.get("args", {})
+                                logger.debug(
+                                    f"[STREAM] Tool call from agent node: "
+                                    f"id={tool_id}, name={tool_name}, args={tool_args}"
+                                )
+                                if tool_name and tool_id:
+                                    pending_tool_calls[tool_id] = {
+                                        "name": tool_name,
+                                        "args": tool_args,
+                                    }
+                                    if tool_id not in emitted_tool_calls:
+                                        emitted_tool_calls.add(tool_id)
+                                        logger.debug(
+                                            f"[STREAM] Emitting tool_call: "
+                                            f"id={tool_id}, name={tool_name}, args={tool_args}"
+                                        )
+                                        yield {
+                                            "type": "tool_call",
+                                            "id": tool_id,
+                                            "name": tool_name,
+                                            "args": tool_args,
+                                        }
+                        elif msg.tool_calls:
+                            # Tool calls without content.
+                            for tool_call in msg.tool_calls:
+                                tool_id = tool_call.get("id")
+                                tool_name = tool_call.get("name")
+                                tool_args = tool_call.get("args", {})
+                                logger.debug(
+                                    f"[STREAM] Tool call from agent node: "
+                                    f"id={tool_id}, name={tool_name}, args={tool_args}"
+                                )
+                                if tool_name and tool_id:
+                                    pending_tool_calls[tool_id] = {
+                                        "name": tool_name,
+                                        "args": tool_args,
+                                    }
+                                    if tool_id not in emitted_tool_calls:
+                                        emitted_tool_calls.add(tool_id)
+                                        logger.debug(
+                                            f"[STREAM] Emitting tool_call: "
+                                            f"id={tool_id}, name={tool_name}, args={tool_args}"
+                                        )
+                                        yield {
+                                            "type": "tool_call",
+                                            "id": tool_id,
+                                            "name": tool_name,
+                                            "args": tool_args,
+                                        }
+
+                        # Emit response content only if there are no tool calls.
+                        if msg.content and not msg.tool_calls:
+                            resp_text, resp_thinking = _extract_content_parts(msg.content)
+                            for thinking_text in resp_thinking:
+                                if thinking_text:
+                                    yield {"type": "thinking", "content": thinking_text}
+                            if resp_text:
+                                final_response_parts.append(resp_text)
+                                yield {"type": "response", "content": resp_text}
+
+                    elif isinstance(msg, ToolMessage):
+                        tool_call_id = msg.tool_call_id
+                        tool_name = msg.name
+
+                        logger.debug(
+                            f"[STREAM] ToolMessage: id={tool_call_id}, name={tool_name}"
+                        )
+
+                        raw_result = msg.content if isinstance(msg.content, str) else str(msg.content)
+                        display_result = self._clean_tool_result_for_display(raw_result)
+
+                        yield {
+                            "type": "tool_result",
+                            "id": tool_call_id,
+                            "name": tool_name,
+                            "result": display_result,
+                        }
+
+                        for extra_event in self._tool_result_extra_events(
+                            tool_name or "",
+                            raw_result,
+                            tool_call_id,
+                        ):
+                            yield extra_event
 
     def stream(
         self,
@@ -4286,9 +4536,6 @@ class NymeriaAgent:
                 human_msg = HumanMessage(content=msg_content)
             input_state = {"messages": [human_msg]}
 
-            # Track tool calls: id -> {name, args} (only emit when args are populated)
-            pending_tool_calls: Dict[str, Dict[str, Any]] = {}
-            emitted_tool_calls: set = set()
             # Track final response for RAG indexing
             final_response_parts: List[str] = []
 
@@ -4307,175 +4554,67 @@ class NymeriaAgent:
 
             try:
                 logger.debug(f"[STREAM] Calling graph.stream() with stream_mode='updates' config={config}")
-                stream_chunk_count = 0
+                stream_stats = {"stream_chunk_count": 0}
                 self._prepare_tool_reload_state_for_turn(thread_id, "stream")
 
-                # Use stream_mode="updates" to get complete node outputs with full tool_calls
-                # This provides populated args unlike stream_mode="messages" which has empty args
-                for update in graph.stream(
-                    input_state, config=config, stream_mode="updates"
+                for evt in self._stream_graph_update_events(
+                    graph,
+                    input_state,
+                    config,
+                    abort_event,
+                    thread_id,
+                    final_response_parts,
+                    stream_stats,
                 ):
-                    # Check for abort signal between graph iterations
+                    yield evt
+
+                reload_count = 0
+                while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
                     if abort_event.is_set():
-                        logger.info(f"[STREAM] Thread {thread_id}: Aborted by cancel signal")
-                        yield {
-                            "type": "error",
-                            "content": "Operation was cancelled.",
-                            "code": "cancelled",
-                        }
                         break
+                    reload_info = self._pending_tool_reload.pop(thread_id, None)
+                    if not reload_info:
+                        break
+                    reload_count += 1
+                    self._turn_reload_count[thread_id] = reload_count
+                    new_tools = reload_info.get("new_tools", [])
+                    ttl_key = reload_info.get("ttl", "2h")
+                    ttl_seconds = reload_info.get("ttl_seconds")
+                    source = reload_info.get("source") or "tool_search"
+                    skill_name = reload_info.get("skill_name")
+                    reason = reload_info.get("reason")
+                    logger.info(
+                        f"[STREAM] Thread {thread_id}: tool reload #{reload_count} — "
+                        f"{len(new_tools)} new tool(s): {', '.join(new_tools)} (ttl={ttl_key})"
+                    )
+                    yield {
+                        "type": "tool_reload",
+                        "tools": new_tools,
+                        "ttl": ttl_key,
+                        "ttl_seconds": ttl_seconds,
+                        "source": source,
+                        "skill_name": skill_name,
+                        "reason": reason,
+                    }
+                    self.invalidate_thread_config_cache(thread_id)
+                    reload_graph = self._get_graph_for_user(
+                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                    )
+                    resume_msg = self._create_tool_reload_resume_message(reload_info)
+                    resume_state = {"messages": [resume_msg]}
+                    for evt in self._stream_graph_update_events(
+                        reload_graph,
+                        resume_state,
+                        config,
+                        abort_event,
+                        thread_id,
+                        final_response_parts,
+                        stream_stats,
+                    ):
+                        yield evt
+                    graph = reload_graph
 
-                    stream_chunk_count += 1
-                    logger.debug(f"[STREAM] Update #{stream_chunk_count}: keys={list(update.keys()) if isinstance(update, dict) else type(update)}")
-
-                    # update is a dict like {"agent": {"messages": [...]}} or {"tools": {"messages": [...]}}
-                    if not isinstance(update, dict):
-                        continue
-
-                    for node_name, node_output in update.items():
-                        if not isinstance(node_output, dict):
-                            continue
-
-                        messages = node_output.get("messages", [])
-                        if not isinstance(messages, list):
-                            messages = [messages]
-
-                        for msg in messages:
-                            if isinstance(msg, AIMessage):
-                                # Emit content and tool calls in order
-                                # (preserves interleaved thinking between tool calls)
-                                if msg.content and msg.tool_calls and isinstance(msg.content, list):
-                                    for block in msg.content:
-                                        if not isinstance(block, dict):
-                                            if isinstance(block, str) and block:
-                                                text = _strip_inline_thinking_text(block)
-                                                if text:
-                                                    final_response_parts.append(text)
-                                                    yield {"type": "response", "content": text}
-                                            continue
-                                        block_type = block.get("type")
-                                        if block_type == "thinking":
-                                            text = block.get("thinking", "")
-                                            if text:
-                                                yield {"type": "thinking", "content": text}
-                                        elif block_type == "reasoning":
-                                            for text in _extract_reasoning_text_from_block(block):
-                                                yield {"type": "thinking", "content": text}
-                                        elif block_type in ("text", "output_text"):
-                                            text = _strip_inline_thinking_text(block.get("text", ""))
-                                            if text:
-                                                final_response_parts.append(text)
-                                                yield {"type": "response", "content": text}
-                                        elif block_type in ("tool_use", "function_call", "custom_tool_call"):
-                                            tool_id = block.get("id", "")
-                                            if block_type != "tool_use":
-                                                tool_id = block.get("call_id", tool_id)
-                                            tool_name = block.get("name", "")
-                                            tool_args = block.get("input", {})
-                                            if not tool_args:
-                                                tool_args = block.get("arguments", {})
-                                            if isinstance(tool_args, str):
-                                                try:
-                                                    tool_args = json.loads(tool_args)
-                                                except json.JSONDecodeError:
-                                                    tool_args = {"arguments": tool_args}
-                                            if tool_name and tool_id:
-                                                pending_tool_calls[tool_id] = {
-                                                    "name": tool_name,
-                                                    "args": tool_args,
-                                                }
-                                                if tool_id not in emitted_tool_calls:
-                                                    emitted_tool_calls.add(tool_id)
-                                                    logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
-                                                    yield {
-                                                        "type": "tool_call",
-                                                        "id": tool_id,
-                                                        "name": tool_name,
-                                                        "args": tool_args,
-                                                    }
-                                elif msg.content and msg.tool_calls:
-                                    # String content: emit preamble first, then tool calls
-                                    preamble_text, preamble_thinking = _extract_content_parts(msg.content)
-                                    for thinking_text in preamble_thinking:
-                                        if thinking_text:
-                                            yield {"type": "thinking", "content": thinking_text}
-                                    if preamble_text:
-                                        final_response_parts.append(preamble_text)
-                                        yield {"type": "response", "content": preamble_text}
-                                    for tool_call in msg.tool_calls:
-                                        tool_id = tool_call.get("id")
-                                        tool_name = tool_call.get("name")
-                                        tool_args = tool_call.get("args", {})
-                                        logger.debug(f"[STREAM] Tool call from agent node: id={tool_id}, name={tool_name}, args={tool_args}")
-                                        if tool_name and tool_id:
-                                            pending_tool_calls[tool_id] = {
-                                                "name": tool_name,
-                                                "args": tool_args,
-                                            }
-                                            if tool_id not in emitted_tool_calls:
-                                                emitted_tool_calls.add(tool_id)
-                                                logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
-                                                yield {
-                                                    "type": "tool_call",
-                                                    "id": tool_id,
-                                                    "name": tool_name,
-                                                    "args": tool_args,
-                                                }
-                                elif msg.tool_calls:
-                                    # Tool calls without content
-                                    for tool_call in msg.tool_calls:
-                                        tool_id = tool_call.get("id")
-                                        tool_name = tool_call.get("name")
-                                        tool_args = tool_call.get("args", {})
-                                        logger.debug(f"[STREAM] Tool call from agent node: id={tool_id}, name={tool_name}, args={tool_args}")
-                                        if tool_name and tool_id:
-                                            pending_tool_calls[tool_id] = {
-                                                "name": tool_name,
-                                                "args": tool_args,
-                                            }
-                                            if tool_id not in emitted_tool_calls:
-                                                emitted_tool_calls.add(tool_id)
-                                                logger.debug(f"[STREAM] Emitting tool_call: id={tool_id}, name={tool_name}, args={tool_args}")
-                                                yield {
-                                                    "type": "tool_call",
-                                                    "id": tool_id,
-                                                    "name": tool_name,
-                                                    "args": tool_args,
-                                                }
-
-                                # THIRD: Emit response content (only if NO tool calls)
-                                if msg.content and not msg.tool_calls:
-                                    resp_text, resp_thinking = _extract_content_parts(msg.content)
-                                    for thinking_text in resp_thinking:
-                                        if thinking_text:
-                                            yield {"type": "thinking", "content": thinking_text}
-                                    if resp_text:
-                                        final_response_parts.append(resp_text)
-                                        yield {"type": "response", "content": resp_text}
-
-                            elif isinstance(msg, ToolMessage):
-                                # Emit tool_result
-                                tool_call_id = msg.tool_call_id
-                                tool_name = msg.name
-
-                                logger.debug(f"[STREAM] ToolMessage: id={tool_call_id}, name={tool_name}")
-
-                                raw_result = msg.content if isinstance(msg.content, str) else str(msg.content)
-                                display_result = self._clean_tool_result_for_display(raw_result)
-
-                                yield {
-                                    "type": "tool_result",
-                                    "id": tool_call_id,
-                                    "name": tool_name,
-                                    "result": display_result,
-                                }
-
-                                for extra_event in self._tool_result_extra_events(
-                                    tool_name or "",
-                                    raw_result,
-                                    tool_call_id,
-                                ):
-                                    yield extra_event
+                self._pending_tool_reload.pop(thread_id, None)
 
                 # Index conversation turn in RAG (if enabled)
                 if final_response_parts:
@@ -4487,7 +4626,10 @@ class NymeriaAgent:
                     )
 
                 _elapsed = _time.monotonic() - _stream_start
-                logger.info(f"[STREAM] === END === thread={thread_id}, chunks={stream_chunk_count}, elapsed={_elapsed:.1f}s")
+                logger.info(
+                    f"[STREAM] === END === thread={thread_id}, "
+                    f"chunks={stream_stats['stream_chunk_count']}, elapsed={_elapsed:.1f}s"
+                )
 
                 # Track token usage from final state
                 try:
@@ -4821,6 +4963,7 @@ class NymeriaAgent:
                 emitted_openai_reasoning_chunks: set = set()
                 emitted_tool_call_delta = False
                 streamed_text_in_current_llm_call = False
+                streamed_reasoning_in_current_llm_call = False
                 inline_text_stripper = _InlineThinkingTextStripper()
 
                 def should_emit_openai_reasoning(text: Any) -> bool:
@@ -4866,6 +5009,7 @@ class NymeriaAgent:
 
                     if event_type == "on_chat_model_start":
                         streamed_text_in_current_llm_call = False
+                        streamed_reasoning_in_current_llm_call = False
                         emitted_tool_call_delta = False
                         emitted_openai_reasoning_chunks.clear()
                         inline_text_stripper.reset()
@@ -4943,6 +5087,7 @@ class NymeriaAgent:
                             reasoning = extras.get("reasoning_content")
                             if should_emit_openai_reasoning(reasoning):
                                 inline_text_stripper.reset()
+                                streamed_reasoning_in_current_llm_call = True
                                 yield {"type": "thinking", "content": reasoning}
 
                             if content:
@@ -4962,6 +5107,7 @@ class NymeriaAgent:
                                             text = block.get("thinking", "")
                                             if text:
                                                 inline_text_stripper.reset()
+                                                streamed_reasoning_in_current_llm_call = True
                                                 yield {"type": "thinking", "content": text}
                                         elif block_type == "reasoning":
                                             reasoning_texts = _extract_reasoning_text_from_block(block)
@@ -4971,6 +5117,7 @@ class NymeriaAgent:
                                                 inline_text_stripper.mark_possible_inline_thinking()
                                             for text in reasoning_texts:
                                                 if should_emit_openai_reasoning(text):
+                                                    streamed_reasoning_in_current_llm_call = True
                                                     yield {"type": "thinking", "content": text}
                                         elif block_type in ("text", "output_text"):
                                             text = block.get("text", "")
@@ -5011,6 +5158,8 @@ class NymeriaAgent:
                                                     yield {"type": "response", "content": text}
                                             continue
                                         if block.get("type") == "reasoning":
+                                            if streamed_reasoning_in_current_llm_call:
+                                                continue
                                             for text in _extract_reasoning_text_from_block(block):
                                                 if should_emit_openai_reasoning(text):
                                                     yield {"type": "thinking", "content": text}
@@ -5041,6 +5190,9 @@ class NymeriaAgent:
                     new_tools = reload_info.get("new_tools", [])
                     ttl_key = reload_info.get("ttl", "2h")
                     ttl_seconds = reload_info.get("ttl_seconds")
+                    source = reload_info.get("source") or "tool_search"
+                    skill_name = reload_info.get("skill_name")
+                    reason = reload_info.get("reason")
 
                     logger.info(
                         f"[ASTREAM] Thread {thread_id}: tool reload #{reload_count} — "
@@ -5051,6 +5203,9 @@ class NymeriaAgent:
                         "tools": new_tools,
                         "ttl": ttl_key,
                         "ttl_seconds": ttl_seconds,
+                        "source": source,
+                        "skill_name": skill_name,
+                        "reason": reason,
                     }
 
                     # Build a fresh graph — invalidate_thread_config_cache was
@@ -5061,31 +5216,7 @@ class NymeriaAgent:
                         user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
                     )
 
-                    if ttl_seconds is None:
-                        ttl_phrase = "permanently"
-                    else:
-                        h, rem = divmod(ttl_seconds, 3600)
-                        m, _ = divmod(rem, 60)
-                        if h > 0 and m > 0:
-                            ttl_phrase = f"for the next {h}h {m}m"
-                        elif h > 0:
-                            ttl_phrase = f"for the next {h}h"
-                        else:
-                            ttl_phrase = f"for the next {m}m"
-                    resume_text = (
-                        f"[System: tool reload complete. The following tools are now "
-                        f"bound to you {ttl_phrase}: {', '.join(new_tools)}. This is "
-                        "the automatic resume after tool_search(action=\"enable\"). "
-                        "Continue the user's original task now; you may call these "
-                        "newly-loaded tools in this resumed step.]"
-                    )
-                    resume_msg = _create_human_message(
-                        resume_text,
-                        internal=True,
-                        internal_type="tool_reload_resume",
-                    )
-                    resume_msg.additional_kwargs["tool_reload_tools"] = new_tools
-                    resume_msg.additional_kwargs["tool_reload_ttl"] = ttl_key
+                    resume_msg = self._create_tool_reload_resume_message(reload_info)
                     resume_state = {"messages": [resume_msg]}
 
                     async for evt in _drive_graph_events(reload_graph, resume_state):
@@ -5369,6 +5500,10 @@ class NymeriaAgent:
                         _pending_reload_info = {
                             "tools": msg.additional_kwargs.get("tool_reload_tools", []),
                             "ttl": msg.additional_kwargs.get("tool_reload_ttl", ""),
+                            "ttl_seconds": msg.additional_kwargs.get("tool_reload_ttl_seconds"),
+                            "source": msg.additional_kwargs.get("tool_reload_source", "tool_search"),
+                            "skill_name": msg.additional_kwargs.get("tool_reload_skill_name"),
+                            "reason": msg.additional_kwargs.get("tool_reload_reason"),
                             "resume_prompt": content_str,
                         }
                         continue

@@ -226,6 +226,11 @@ its bindings; the supervisor stops the polling loop on its next refresh.
 
 Chat responses (`/ask` and plain text DMs) are streamed via SSE. Users see text appear progressively as the model generates it, with edits every ~1.5 seconds.
 
+Regular chat delivery splits every finalized response segment before sending it
+to Telegram. This covers both normal token-by-token streaming and providers
+that emit a whole final answer in one large SSE `response` event; no single
+Telegram message should exceed the platform's 4096-character text limit.
+
 **Tool call display modes:**
 
 - **Hidden (default):** Pre-tool text and post-tool text are sent as separate message bubbles. Telegram's chat bubble layout provides natural visual separation — no separators needed. Toggle with `/showtools`.
@@ -304,6 +309,7 @@ The bot maintains a background SSE connection to `GET /autonomous/stream`. When 
 - Per-thread state is kept in memory keyed by the Nymeria thread ID, so concurrent autonomous runs in different chats don't interleave.
 - `response` chunks accumulate in a buffer and flush as a new message bubble at every `tool_call` boundary.
 - `tool_call` / `tool_result` markers are shown only when the chat has `/showtools` enabled.
+- `tool_reload` events flush buffered text and post a compact Tool Binding line before resumed tool calls/results.
 - A small `Tool calls: N` italic footer is appended to the final bubble when tools were used.
 - No wrapper header — bubbles look identical to a regular reply, with the chat itself providing the autonomous-vs-user provenance.
 - On `task_completed` with `error: true`, a single short `Autonomous task error: ...` line is posted instead.

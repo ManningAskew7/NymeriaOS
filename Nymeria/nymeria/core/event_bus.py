@@ -178,6 +178,55 @@ def publish_autonomous_event(
     get_event_bus().publish(event)
 
 
+AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
+    "tool_call_delta",
+    "tool_call",
+    "tool_result",
+    "thinking",
+    "response",
+    "workspace_artifact",
+    "compacting",
+    "compacted",
+    "context_attached",
+    "iteration_limit",
+    "tool_reload",
+})
+
+
+def agent_stream_chunk_to_autonomous_event_data(
+    chunk: Dict[str, Any],
+) -> Optional[tuple[str, Dict[str, Any]]]:
+    """Convert an agent stream chunk into an autonomous event payload."""
+    chunk_type = chunk.get("type")
+    if not isinstance(chunk_type, str):
+        return None
+    if chunk_type not in AGENT_STREAM_AUTONOMOUS_EVENT_TYPES:
+        return None
+    return chunk_type, {k: v for k, v in chunk.items() if k != "type"}
+
+
+def publish_agent_stream_chunk(
+    chunk: Dict[str, Any],
+    *,
+    thread_id: str,
+    user_id: str,
+    task_id: str,
+) -> bool:
+    """Forward a supported agent stream chunk to ``/autonomous/stream``."""
+    converted = agent_stream_chunk_to_autonomous_event_data(chunk)
+    if converted is None:
+        return False
+    event_type, data = converted
+    publish_autonomous_event(
+        event_type=event_type,
+        thread_id=thread_id,
+        user_id=user_id,
+        task_id=task_id,
+        data=data,
+    )
+    return True
+
+
 def publish_sync_event(
     event_type: str,
     thread_id: str,

@@ -14,7 +14,7 @@ import json
 import logging
 from uuid import uuid4
 
-from .event_bus import publish_autonomous_event
+from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 
 logger = logging.getLogger(__name__)
 
@@ -104,60 +104,30 @@ def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
         ):
             chunk_type = chunk.get("type")
             chunk_count += 1
+            publish_agent_stream_chunk(
+                chunk,
+                thread_id=thread_id,
+                user_id=caller_user_id,
+                task_id=task_id,
+            )
 
             if chunk_type == "tool_call":
                 tool_call_count += 1
                 logger.debug(f"[CALLABLE] {callable_name}: tool_call #{tool_call_count} name={chunk.get('name')}")
-                publish_autonomous_event(
-                    event_type="tool_call",
-                    thread_id=thread_id,
-                    user_id=caller_user_id,
-                    task_id=task_id,
-                    data={
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "args": chunk.get("args", {}),
-                    },
-                )
 
             elif chunk_type == "tool_result":
                 result_preview = str(chunk.get("result", ""))[:100]
                 logger.debug(f"[CALLABLE] {callable_name}: tool_result name={chunk.get('name')}, result={result_preview}...")
-                publish_autonomous_event(
-                    event_type="tool_result",
-                    thread_id=thread_id,
-                    user_id=caller_user_id,
-                    task_id=task_id,
-                    data={
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "result": chunk.get("result"),
-                    },
-                )
 
             elif chunk_type == "thinking":
                 content = chunk.get("content", "")
                 if content:
                     thinking_parts.append(content)
-                publish_autonomous_event(
-                    event_type="thinking",
-                    thread_id=thread_id,
-                    user_id=caller_user_id,
-                    task_id=task_id,
-                    data={"content": content},
-                )
 
             elif chunk_type == "response":
                 content = chunk.get("content", "")
                 if content:
                     response_parts.append(content)
-                publish_autonomous_event(
-                    event_type="response",
-                    thread_id=thread_id,
-                    user_id=caller_user_id,
-                    task_id=task_id,
-                    data={"content": content},
-                )
 
             elif chunk_type == "error":
                 # Stream-level error (e.g. lock timeout, LLM failure)
