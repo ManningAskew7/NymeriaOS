@@ -769,7 +769,7 @@ class TriggerManager:
 
         Returns (response_parts, thinking_parts, iteration_limit_hit).
         """
-        from .event_bus import publish_autonomous_event
+        from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 
         response_parts: List[str] = []
         thinking_parts: List[str] = []
@@ -797,53 +797,21 @@ class TriggerManager:
             chunk_type = chunk.get("type")
             chunk_count += 1
             logger.debug(f"[TRIGGER] thread={thread_id}: chunk #{chunk_count} type={chunk_type}")
+            publish_agent_stream_chunk(
+                chunk,
+                thread_id=thread_id,
+                user_id=user_id,
+                task_id=task_id,
+            )
 
-            if chunk_type == "tool_call":
-                publish_autonomous_event(
-                    event_type="tool_call",
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "args": chunk.get("args", {}),
-                    },
-                )
-            elif chunk_type == "tool_result":
-                publish_autonomous_event(
-                    event_type="tool_result",
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "result": chunk.get("result"),
-                    },
-                )
-            elif chunk_type == "thinking":
+            if chunk_type == "thinking":
                 content = chunk.get("content", "")
                 if content:
                     thinking_parts.append(content)
-                publish_autonomous_event(
-                    event_type="thinking",
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={"content": content},
-                )
             elif chunk_type == "response":
                 content = chunk.get("content", "")
                 if content:
                     response_parts.append(content)
-                    publish_autonomous_event(
-                        event_type="response",
-                        thread_id=thread_id,
-                        user_id=user_id,
-                        task_id=task_id,
-                        data={"content": content},
-                    )
 
             elif chunk_type == "error":
                 error_content = chunk.get("content", "")

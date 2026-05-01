@@ -2885,6 +2885,18 @@ class NymeriaDiscordBot(discord.Client):
             if not channel or not hasattr(channel, "send"):
                 return
 
+            if event_type == "tool_reload":
+                tools = event.get("tools") or []
+                ttl = event.get("ttl") or ""
+                names = ", ".join(str(tool) for tool in tools) if tools else "tools"
+                embed = discord.Embed(
+                    description=f"**{names}**{f' ({ttl})' if ttl else ''}",
+                    color=discord.Color.dark_grey(),
+                )
+                embed.set_author(name="Tool Binding")
+                await channel.send(embed=embed)
+                return
+
             if event_type == "workspace_artifact":
                 attach_path = event.get("path")
                 if isinstance(attach_path, str) and attach_path:

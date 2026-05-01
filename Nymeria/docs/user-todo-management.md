@@ -275,8 +275,9 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 **Risk:** Ticker executes TODO while user is editing it.
 
 **Mitigation:**
-- Ticker uses `_processing` set to track in-flight TODOs
-- API should check if TODO is currently executing before allowing edits
+- Ticker claims an `active_todo_executions` marker in `TodoScheduleDB` before reading the TODO body and clears it when the scheduled run exits.
+- REST update, complete, and delete endpoints check that marker and return `409 Conflict` while the TODO is actively executing.
+- Stale markers older than 24 hours are removed automatically so a crashed worker cannot lock a TODO forever.
 
 ### 3. Thread Deletion
 

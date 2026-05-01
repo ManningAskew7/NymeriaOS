@@ -19,7 +19,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from .activity_log import ActivityType, log_activity
-from .event_bus import publish_autonomous_event
+from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notifications import create_notification
 from .response_handler import create_response
@@ -401,16 +401,22 @@ class Ticker:
         Args:
             entry: The scheduled TODO entry to execute
         """
+        if not self.schedule_db.mark_execution_started(entry.todo_id, entry.user_id, entry.thread_id):
+            logger.info(f"Scheduled TODO {entry.todo_id} is already executing, skipping duplicate run")
+            return
+
         # Get the full TODO from the manager
         todo = self.todo_manager.get_todo_by_id(entry.user_id, entry.todo_id)
         if not todo:
             logger.warning(f"Scheduled TODO {entry.todo_id} not found, removing from schedule")
             self.schedule_db.remove_scheduled(entry.todo_id)
+            self.schedule_db.clear_execution(entry.todo_id, entry.user_id)
             return
 
         if not todo.is_active():
             logger.info(f"Scheduled TODO {entry.todo_id} is no longer active, removing from schedule")
             self.schedule_db.remove_scheduled(entry.todo_id)
+            self.schedule_db.clear_execution(entry.todo_id, entry.user_id)
             return
 
         # Determine thread_id - use stored or generate from TODO
@@ -419,8 +425,12 @@ class Ticker:
         logger.info(f"Executing scheduled TODO {todo.id} for user {entry.user_id}: {todo.task[:50]}...")
 
         # Mark TODO as in_progress
-        with self.todo_manager.atomic_update(entry.user_id) as todo_list:
-            todo_list.update_item(todo.id, status=TodoStatus.IN_PROGRESS)
+        try:
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                todo_list.update_item(todo.id, status=TodoStatus.IN_PROGRESS)
+        except Exception:
+            self.schedule_db.clear_execution(todo.id, entry.user_id)
+            raise
 
         # Log activity for scheduled execution start
         log_activity(
@@ -481,6 +491,12 @@ class Ticker:
                 chunk_content_preview = str(chunk.get('content', ''))[:100] if chunk.get('content') else ''
                 logger.info(f"[TICKER] Chunk #{chunk_count}: type={chunk_type}, content_preview={chunk_content_preview}")
                 chunk_type = chunk.get("type")
+                publish_agent_stream_chunk(
+                    chunk,
+                    thread_id=thread_id,
+                    user_id=entry.user_id,
+                    task_id=todo.id,
+                )
 
                 # Publish each event live as it arrives
                 if chunk_type == "tool_call":
@@ -502,54 +518,18 @@ class Ticker:
                         "name": chunk.get("name", "unknown"),
                         "args": chunk.get("args", {}),
                     }
-                    publish_autonomous_event(
-                        event_type="tool_call",
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                        data={
-                            "id": chunk.get("id"),
-                            "name": chunk.get("name"),
-                            "args": chunk.get("args", {}),
-                        },
-                    )
                 elif chunk_type == "tool_result":
                     _render_tool_line(pending_calls, chunk)
                     had_tool_calls = True
-                    publish_autonomous_event(
-                        event_type="tool_result",
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                        data={
-                            "id": chunk.get("id"),
-                            "name": chunk.get("name"),
-                            "result": chunk.get("result"),
-                        },
-                    )
                 elif chunk_type == "thinking":
                     content = chunk.get("content", "")
                     if content:
                         thinking_parts.append(content)
-                    publish_autonomous_event(
-                        event_type="thinking",
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                        data={"content": content},
-                    )
                 elif chunk_type == "response":
                     content = chunk.get("content", "")
                     if content:
                         response_parts.append(content)
                         response_buffer += content
-                        publish_autonomous_event(
-                            event_type="response",
-                            thread_id=thread_id,
-                            user_id=entry.user_id,
-                            task_id=todo.id,
-                            data={"content": content},
-                        )
 
                 elif chunk_type == "error":
                     error_content = chunk.get("content", "")
@@ -601,6 +581,12 @@ class Ticker:
                 ):
                     chunk_count += 1
                     chunk_type = chunk.get("type")
+                    publish_agent_stream_chunk(
+                        chunk,
+                        thread_id=thread_id,
+                        user_id=entry.user_id,
+                        task_id=todo.id,
+                    )
 
                     if chunk_type == "tool_call":
                         # Flush buffered preamble text
@@ -621,54 +607,18 @@ class Ticker:
                             "name": chunk.get("name", "unknown"),
                             "args": chunk.get("args", {}),
                         }
-                        publish_autonomous_event(
-                            event_type="tool_call",
-                            thread_id=thread_id,
-                            user_id=entry.user_id,
-                            task_id=todo.id,
-                            data={
-                                "id": chunk.get("id"),
-                                "name": chunk.get("name"),
-                                "args": chunk.get("args", {}),
-                            },
-                        )
                     elif chunk_type == "tool_result":
                         _render_tool_line(pending_calls, chunk)
                         had_tool_calls = True
-                        publish_autonomous_event(
-                            event_type="tool_result",
-                            thread_id=thread_id,
-                            user_id=entry.user_id,
-                            task_id=todo.id,
-                            data={
-                                "id": chunk.get("id"),
-                                "name": chunk.get("name"),
-                                "result": chunk.get("result"),
-                            },
-                        )
                     elif chunk_type == "thinking":
                         content = chunk.get("content", "")
                         if content:
                             thinking_parts.append(content)
-                        publish_autonomous_event(
-                            event_type="thinking",
-                            thread_id=thread_id,
-                            user_id=entry.user_id,
-                            task_id=todo.id,
-                            data={"content": content},
-                        )
                     elif chunk_type == "response":
                         content = chunk.get("content", "")
                         if content:
                             response_parts.append(content)
                             response_buffer += content
-                            publish_autonomous_event(
-                                event_type="response",
-                                thread_id=thread_id,
-                                user_id=entry.user_id,
-                                task_id=todo.id,
-                                data={"content": content},
-                            )
                     elif chunk_type == "error":
                         error_content = chunk.get("content", "")
                         error_code = chunk.get("code", "unknown")
@@ -727,6 +677,7 @@ class Ticker:
                             "todo_id": todo.id,
                         },
                     )
+                    self.schedule_db.clear_execution(todo.id, entry.user_id)
                     return
             # --- End continuation ---
 
@@ -954,6 +905,8 @@ class Ticker:
             else:
                 # Keep in schedule for retry
                 logger.info(f"TODO {todo.id} will retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
+
+        self.schedule_db.clear_execution(todo.id, entry.user_id)
 
     def _index_todo_completion(
         self,

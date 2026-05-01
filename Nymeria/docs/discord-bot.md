@@ -182,7 +182,7 @@ If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint au
 
 ## Autonomous Task Delivery
 
-The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO completes on a Discord thread, the bot receives a `task_completed` event and posts an embed to the originating channel with the task description and result.
+The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO completes on a Discord thread, the bot receives a `task_completed` event and posts an embed to the originating channel with the task description and result. Mid-turn `tool_reload` events are posted as compact Tool Binding embeds before the resumed work continues.
 
 This means TODOs created via `/todos add` in a Discord channel will have their results delivered back to that channel automatically.
 

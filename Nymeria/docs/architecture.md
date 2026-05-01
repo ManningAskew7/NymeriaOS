@@ -197,7 +197,7 @@ Manages autonomous operation for 24/7 functionality through the **TODO system** 
 
 **Components:**
 - `TodoManager`: Manages user TODO lists with atomic updates (JSON files in `data/todos/`)
-- `TodoScheduleDB`: SQLite index for efficient polling (not source of truth - mirrors JSON)
+- `TodoScheduleDB`: SQLite index for efficient polling and cross-process active-execution markers (not source of truth - mirrors JSON)
 - `RateLimiter`: Sliding window rate limiting (extracted to `rate_limiter.py`)
 - `Ticker`: Global daemon thread that executes due scheduled TODOs
 - `EventBus`: Pub/sub system for streaming autonomous events to frontend (see Section 4.1)
@@ -220,14 +220,16 @@ TodoManager:
 [Ticker polls every 5 seconds (configurable via TICKER_POLL_INTERVAL)...]
     ↓
 Ticker finds due scheduled TODO:
-    1. Marks TODO as IN_PROGRESS (prevents duplicates)
-    2. Publishes "task_started" event to EventBus
-    3. Calls agent.stream("Work on TODO {id}: {task}", _is_self_invoke=True)
-    4. Streams tool_call, tool_result, thinking, response events to frontend
-    5. Publishes "task_completed" event
-    7. If recurring: calculates next execution, reschedules
-    8. If not recurring: clears schedule, marks done
+    1. Claims an active-execution marker in TodoScheduleDB (skips duplicate claims)
+    2. Reads the JSON TODO and marks it IN_PROGRESS
+    3. Publishes "task_started" event to EventBus
+    4. Calls agent.stream("Work on TODO {id}: {task}", _is_self_invoke=True)
+    5. Streams tool_call, tool_result, thinking, response events to frontend
+    6. If recurring: calculates next execution, reschedules
+    7. If not recurring: clears schedule
+    8. Publishes "task_completed" event
     9. Auto-compacts context if needed (or trims if using legacy sliding window)
+    10. Clears the active-execution marker when the run exits
 ```
 
 Autonomous executions append `AUTONOMOUS_MODE_RULES` from `core/prompts.py`.
@@ -307,9 +309,14 @@ EventBus.publish() → distributes to all subscriber queues
 |-------|---------------|------|
 | `task_started` | TODO execution begins | `prompt`, `todo_id` |
 | `thinking` | LLM reasoning | `content` |
+| `tool_call_delta` | Model is preparing tool-call arguments | none |
 | `tool_call` | Tool invocation | `id`, `name`, `args` |
 | `tool_result` | Tool returns | `id`, `name`, `result` |
+| `workspace_artifact` | Tool generated an attachable workspace file | `path`, `name`, `mime_type`, `size_bytes` |
+| `tool_reload` | Tool registry was reloaded mid-turn | `tools`, `ttl`, `ttl_seconds`, `source`, `skill_name`, `reason` |
 | `response` | Final response chunks | `content` |
+| `context_attached` / `compacting` / `compacted` | Context-management progress | summary/progress fields |
+| `iteration_limit` | Turn safety stop | limit and repeated-tool metadata |
 | `task_completed` | Execution finishes | `notify`, `content`, `summary` |
 
 **Subscriber Management:**
@@ -421,7 +428,7 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 | Category | Tools |
 |----------|-------|
 | Core System | bash_execute, file_read, file_write, web_search, consult, claude_code |
-| Profile & RAG | memory_save, memory_forget, personality_set, rag_search, rag_settings |
+| Profile & RAG | memory_add, memory_edit, memory_read, personality_set, rag_search |
 | TODO | todo, todo_delete, todo_list |
 | Runtime / utility | consult, notify and other currently registered core utilities |
 
@@ -480,7 +487,7 @@ The `get_conversation_history()` method (used for page refresh/checkpoint rebuil
 
 **Callable Thread Streaming**
 
-Callable thread invocations stream SSE events (thinking, tool_call, tool_result, response) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Parent→child invocations are tracked for cascading abort support.
+Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Parent→child invocations are tracked for cascading abort support.
 
 ---
 
@@ -581,7 +588,7 @@ Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defau
 | Pre-clear | Before `POST /threads/{id}/clear` deletes checkpoints | `Agent._pre_trim_memory_flush` |
 | Delete cleanup | During the full `DELETE /threads/{id}` cascade | `MemoryIndex.delete_by_thread` plus thread-bound resource cleanup |
 
-Agents query the index via the `rag_search` tool. Users can opt out at any time via `rag_settings(enabled=False)`; the migration watermark prevents re-flipping.
+Agents query the index via the `rag_search` tool. Users can opt out at any time via the RAG settings API or frontend settings UI; the migration watermark prevents re-flipping.
 
 ---
 
@@ -617,7 +624,8 @@ SQLite stores scheduled TODOs for autonomous execution:
 - Located at `data/todo_schedule.db` (managed by `TodoScheduleDB`)
 - Scheduled TODOs survive application restarts
 - Missed scheduled TODOs are recovered on startup
-- Schema: todo_id, user_id, thread_id, scheduled_for, task_preview, created_at
+- `scheduled_todos` schema: todo_id, user_id, thread_id, scheduled_for, task_preview, created_at
+- `active_todo_executions` tracks TODOs currently owned by a ticker worker so API edit/complete/delete requests can return `409 Conflict` while a run is in progress. Markers older than 24 hours are treated as stale crash leftovers and removed automatically.
 
 **Legacy Task Storage (Deprecated):**
 - Located at `data/tasks.db` (via `_deprecated/task_db.py`)

@@ -158,6 +158,49 @@ def test_history_rehydrates_responses_reasoning_summary_block():
     ]
 
 
+def test_history_keeps_one_responses_reasoning_block_as_one_thinking_step():
+    history = _history_for([
+        HumanMessage(content="Hello"),
+        AIMessage(
+            content=[
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "First section"},
+                        {"type": "summary_text", "text": "Second section"},
+                        {"type": "summary_text", "text": "Third section"},
+                    ],
+                },
+                {
+                    "type": "function_call",
+                    "name": "tool_create",
+                    "call_id": "call-1",
+                    "arguments": '{"action": "draft"}',
+                },
+            ],
+            tool_calls=[{
+                "id": "call-1",
+                "name": "tool_create",
+                "args": {"action": "draft"},
+            }],
+        ),
+        ToolMessage(content="drafted", tool_call_id="call-1"),
+        AIMessage(content="Done"),
+    ])
+
+    assistant = history[1]
+    assert [step["type"] for step in assistant["steps"]] == [
+        "thinking",
+        "tool_call",
+        "response",
+    ]
+    assert assistant["steps"][0] == {
+        "type": "thinking",
+        "content": "First section\n\nSecond section\n\nThird section",
+    }
+    assert assistant["steps"][1]["name"] == "tool_create"
+
+
 def test_history_rehydrates_responses_reasoning_content_block():
     history = _history_for([
         HumanMessage(content="Hello"),
