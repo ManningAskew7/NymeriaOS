@@ -828,8 +828,10 @@ Actions:
 
     args = parser.parse_args()
 
-    # Setup logging (except for service commands which handle their own logging)
-    if args.command != "service":
+    # Setup logging (except for service commands and STDIO MCP, which must keep
+    # stdout reserved for JSON-RPC messages. The MCP server configures stderr
+    # logging internally so client transports are not corrupted.
+    if args.command not in ("service", "mcp"):
         setup_logging(args.log_level)
 
     # Validate configuration before running commands that need it
