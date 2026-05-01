@@ -635,7 +635,7 @@ def _invoke_spawned(
             _is_self_invoke=True,
             _trigger_override=trigger_override,
         ):
-            if not started_published:
+            if not started_published and chunk.get("type") != "queued":
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=child_thread_id,

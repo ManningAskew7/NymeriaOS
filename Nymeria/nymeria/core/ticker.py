@@ -480,7 +480,11 @@ class Ticker:
                 user_id=entry.user_id,
                 _is_self_invoke=True,
             ):
-                if not started_published:
+                # Hold task_started until astream actually owns the thread
+                # lock — otherwise a `queued` chunk (user chat in progress)
+                # would flip the frontend into autonomous-streaming mode
+                # mid-conversation.
+                if not started_published and chunk.get("type") != "queued":
                     publish_autonomous_event(
                         event_type="task_started",
                         thread_id=thread_id,

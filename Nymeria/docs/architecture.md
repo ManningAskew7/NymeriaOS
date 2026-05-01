@@ -71,7 +71,7 @@ Main orchestrator that:
 - Initializes the LangGraph execution graph
 - Manages tool registration and hot-reloading
 - Injects time context and user memories into each conversation
-- Provides `chat()`, `stream()`, and `astream()` methods
+- Provides `chat()` and `astream()` methods
 - Caches user-specific graphs (rebuilds when memories change)
 
 ```python
@@ -98,7 +98,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
-| `thread_agent_executor.py` | Delegates tasks to callable threads via `NymeriaAgent.stream()`. Publishes live SSE events. |
+| `thread_agent_executor.py` | Delegates tasks to callable threads through the sync `iter_agent_astream()` bridge over `NymeriaAgent.astream()`. Publishes live SSE events. |
 | `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
 | `activity_log.py` | Per-thread activity feed with time-based retention |
 | `prompts.py` | System prompt templates, mode-specific rules, time context generation |
@@ -173,7 +173,8 @@ User: "Research Python tutorials"
     ↓
 LLM calls: ResearchAgent(task="Find Python tutorials")
     ↓
-thread_agent_executor delegates to callable thread's NymeriaAgent.stream()
+thread_agent_executor delegates to callable thread's NymeriaAgent.astream()
+through iter_agent_astream()
     ↓
 Callable thread runs with its own system prompt, tools, and LLM settings
     ↓
@@ -449,34 +450,26 @@ See [Tools Reference](./tools.md) for detailed documentation.
 
 ### 8. Streaming Implementation
 
-The agent provides two streaming methods with different use cases:
-
-**`stream()` (Synchronous)**
-- Uses `graph.stream()` with `stream_mode="updates"`
-- Returns complete node outputs after each node execution
-- Provides full tool call arguments (unlike `stream_mode="messages"` which has empty args)
-- Used by the CLI and legacy synchronous callers
-- Supports in-turn reload/resume, but autonomous worker paths use the async bridge below so async-backed tools work the same way they do in chat
+The agent has one streaming implementation: `NymeriaAgent.astream()`.
 
 **`astream()` (Asynchronous)**
 - Uses `graph.astream_events()` with `version="v2"`
 - Captures complete tool call information via `on_tool_start` events
 - Returns tool calls with full arguments
 - Used by FastAPI for SSE responses to desktop UI
-- Also used by scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch through `core/stream_bridge.py`, so autonomous work can call async-only tools such as `tool_create`
+- Also used by the CLI, scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch through `core/stream_bridge.py`, so non-API callers use the same path and can call async-only tools such as `tool_create`
 
 **Why these stream modes?**
 
-LangGraph's `stream_mode="messages"` doesn't include tool arguments in streaming chunks - only the tool name and ID are available until after execution. Both methods now provide complete tool arguments:
+LangGraph's `stream_mode="messages"` doesn't include tool arguments in streaming chunks - only the tool name and ID are available until after execution. `astream_events` provides complete tool arguments:
 
-- `stream_mode="updates"`: Complete AIMessage with tool_calls after agent node
 - `astream_events`: `on_tool_start` event with complete input arguments
 
-This enables the desktop UI to display tool call arguments in real-time for both interactive and autonomous modes.
+This enables the desktop UI to display tool call arguments in real time for both interactive and autonomous modes.
 
 **Content Block Classification**
 
-Anthropic models produce typed content blocks: `thinking` (internal reasoning), `text` (preamble/response), `tool_use`, `redacted_thinking`, and `signature`. OpenAI-compatible providers may also expose visible assistant text as bare string content blocks. Both `stream()` and `astream()` iterate content blocks in order and emit correctly typed SSE events:
+Anthropic models produce typed content blocks: `thinking` (internal reasoning), `text` (preamble/response), `tool_use`, `redacted_thinking`, and `signature`. OpenAI-compatible providers may also expose visible assistant text as bare string content blocks. `astream()` iterates content blocks in order and emits correctly typed SSE events:
 
 - `thinking` blocks → `type: "thinking"` events (rendered as collapsible ThinkingBlock)
 - `text` blocks and bare string blocks → `type: "response"` events (rendered as inline markdown)
@@ -611,8 +604,8 @@ SQLite stores conversation state per `thread_id` using LangGraph's checkpointer 
 - Auto-compact summarizes at 80% context (or legacy sliding window keeps last N cycles)
 
 **Dual-Saver Architecture:**
-- **SqliteSaver**: Handles sync operations (ticker, `stream()`, `chat()`)
-- **LazyAsyncSqliteSaver**: Handles async operations (`astream()` for API)
+- **SqliteSaver**: Handles sync operations such as `chat()`
+- **LazyAsyncSqliteSaver**: Handles async operations (`astream()` for API, CLI, scheduled TODOs, triggers, callable threads, and spawned threads)
 - Both share the same database file with WAL mode for concurrent access
 
 The async saver uses lazy initialization to avoid event loop issues in Windows services. Connection is established on first async call, not at startup.

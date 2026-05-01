@@ -786,7 +786,11 @@ class TriggerManager:
             _is_self_invoke=True,
             attachments=attachments,
         ):
-            if not started_published and task_started_data is not None:
+            if (
+                not started_published
+                and task_started_data is not None
+                and chunk.get("type") != "queued"
+            ):
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=thread_id,

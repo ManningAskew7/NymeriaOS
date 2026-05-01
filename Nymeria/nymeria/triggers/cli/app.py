@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from typing import Optional, TYPE_CHECKING
 
+from ...core.stream_bridge import iter_agent_astream
 from .state import CLIState
 from .commands import CommandRegistry
 from .rendering.welcome import render_welcome
@@ -127,7 +128,8 @@ class CLIApp:
         """Send a chat message and render the streaming response."""
         self.state.console.print()
 
-        events = self.state.agent.stream(
+        events = iter_agent_astream(
+            self.state.agent,
             message,
             thread_id=self.state.thread_id,
             user_id=self.state.user_id,

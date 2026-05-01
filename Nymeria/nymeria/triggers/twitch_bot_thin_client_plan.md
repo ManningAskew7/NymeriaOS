@@ -17,7 +17,7 @@ Other concrete consequences of Twitch staying fat:
 Mirror the Discord/Telegram pattern:
 
 1. Replace the in-process `NymeriaAgent` with a `NymeriaAPIClient` (`triggers/discord_api_client.py`) pointed at `http://nymeria-api:8000`.
-2. Route chat through `POST /chat` (streaming SSE), not `agent.stream()`.
+2. Route chat through `POST /chat` (streaming SSE), not in-process agent streaming.
 3. Pull settings, model lists, and per-thread config through API endpoints — not direct Postgres reads.
 4. Remove `NymeriaAgent(...)` from `run_twitch_bot` in `run.py`. Twitch becomes pure I/O glue.
 
@@ -25,7 +25,7 @@ Mirror the Discord/Telegram pattern:
 
 Three features currently rely on in-process agent access and need API-side support first:
 
-- **Chat buffer + pulse**: Twitch aggregates rapid chat messages into a single agent invocation. Today this happens by buffering locally and calling `agent.stream(...)` directly. Thin-client version needs a `POST /chat` that accepts a batch of messages, or the buffering stays client-side but flushes to `/chat` on pulse.
+- **Chat buffer + pulse**: Twitch aggregates rapid chat messages into a single agent invocation. Today this happens by buffering locally and calling the in-process agent directly. Thin-client version needs a `POST /chat` that accepts a batch of messages, or the buffering stays client-side but flushes to `/chat` on pulse.
 - **Per-thread model override**: Twitch lets different channels use different LLMs. `PATCH /threads/{id}/config` already supports this — likely a straight port, but needs verification that all the Twitch-specific fields are covered.
 - **Async voice pipeline**: audio transcription → LLM → TTS is driven locally. The LLM step needs to flow through `/chat`, but the audio I/O stays in the Twitch container. Streaming SSE should be sufficient; the pipeline is already async.
 
