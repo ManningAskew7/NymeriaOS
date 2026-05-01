@@ -1370,7 +1370,7 @@
             </div>
           {:else}
             <p class="field-hint">
-              Turn skills on or off for this thread. Globally-enabled skills are on by default and can be disabled here; other installed skills can be enabled for this thread only.
+              Turn skills on or off for this thread. Skill Kits are skills that bind required tools when activated. Globally-enabled entries are on by default and can be disabled here; other installed entries can be enabled for this thread only.
             </p>
             <div class="skills-list">
               {#each skillsStore.installed as skill (skill.name)}
