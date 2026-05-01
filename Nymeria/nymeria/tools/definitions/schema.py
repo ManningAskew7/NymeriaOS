@@ -113,7 +113,7 @@ class HTTPToolConfig(BaseModel):
         body_template: '{"query": "${query}", "limit": ${limit}}'
     """
 
-    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"] = Field(
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] = Field(
         default="GET",
         description="HTTP method",
     )

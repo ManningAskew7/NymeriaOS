@@ -52,14 +52,14 @@ Nymeria threads don't just respond — they learn. Three interconnected systems 
 - **Scope**: Global — shared across ALL threads for a user
 - **Purpose**: Universal facts (name, role, preferences, API keys, communication style)
 - **Auto-injected**: Into every thread's system prompt (configurable per-thread)
-- **Tools**: `profile_save`, `profile_forget`, `profile_list`, `personality_set`
+- **Tools**: `memory_add(scope="global", ...)`, `memory_edit(scope="global", ...)`, `memory_read(scope="global", ...)`, `personality_set`
 - **Limits**: 100 memories, 1000 chars each
 
 ### Notepad (Per-Thread Knowledge Base)
 - **Scope**: Thread-local — isolated to one conversation
 - **Purpose**: Thread-specific state: project context, decisions, findings, strategy, file paths
 - **Survives compaction**: Automatically re-injected after context summarization
-- **Tools**: `notepad_write` (append/replace), `notepad_read`, `notepad_edit` (find-and-replace), `notepad_clear`
+- **Tools**: `memory_add(scope="thread", ...)`, `memory_edit(scope="thread", ...)`, `memory_read(scope="thread", ...)` (same unified verbs as profile, just `scope="thread"`)
 - **Limit**: 50KB per thread
 - **Used by autonomous tasks**: Ticker reads notepad for context continuity
 
@@ -103,6 +103,8 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ### In-Turn Hot-Loading
 - **Mid-stream graph rebuild** — Enable a tool and use it in the same turn (up to 3 reloads per turn)
 - Agent calls `tool_search(action="enable")` → graph ends → fresh graph compiled with new tool → agent continues in same SSE stream
+- Skill Kit activation uses the same path when `metadata.nymeria.required_tools` declares required tool schemas
+- `skill_config(action="publish")` uses the reload loop to refresh the `Skill` meta-tool index after publishing a generated Skill Kit
 - **Sliding renewal** — Re-enabling refreshes expiry; promoting to permanent upgrades classification
 - **Lazy eviction** — Expired TTL tools filtered at graph-build time, no background scheduler
 
@@ -116,6 +118,9 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **`install_skill`** — Install skill bundles from Anthropic `anthropics/skills` repo
 - **Security scanning** — Detects curl|bash pipes, rm -rf, eval base64, fork bombs before install
 - **Progressive disclosure** — Only name + description loaded; full body on activation
+- **Skill Kits** — Skills may declare exact Nymeria `required_tools`; activation strictly binds them with TTL
+- **Self-improve Skill Kit** — Bundled workflow seeded into user global skills by default; users can untick "Enable globally" while generated Skill Kits activate only on the current thread unless explicitly made global
+- **`skill_config`** — Validated agent-facing writer for generated `SKILL.md` files; strict dependency checks, user scope by default, global scope admin-only
 - **Per-thread control** — Enable/disable skills per thread; four scopes (thread > user > global > bundled)
 
 ---
@@ -160,9 +165,8 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **Shell & Files** | `bash_execute`, `file_read`, `file_write` |
 | **Web** | `web_search` (Perplexity, 3 depth levels) |
 | **Multi-Model** | `consult` (Gemini second opinion), `claude_code` (headless CLI) |
-| **Memory** | `profile_save`, `profile_forget`, `profile_list`, `personality_set`, `rag_search` |
+| **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
-| **Notepad** | `notepad_write`, `notepad_read`, `notepad_edit`, `notepad_clear` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Self-Customization** | `tool_search`, `mcp_search`, `mcp_install`, `list_installed_skills`, `search_skills`, `install_skill`, `reload_all` |
 
@@ -184,7 +188,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Callable thread tools** — Any thread with `callable=True` becomes a tool
 - **Custom HTTP tools** — REST API calls with templates and JSONPath extraction
 - **MCP server tools** — Auto-discovered from installed MCP servers
-- **Skill meta-tool** — Synthesized `Skill(name)` tool per thread
+- **Skill meta-tool** — Synthesized `Skill(name)` tool per thread; Skill Kits hot-bind required tools on activation
 
 ---
 
@@ -359,7 +363,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - Setup wizard, trigger feed with enable/disable/test, execution history
 
 ### Skills
-- Installed skills panel, marketplace search and install, global defaults
+- Installed skills panel, Skill Kit required-tool chips, marketplace search and install, global defaults
 
 ### Settings
 - LLM config (provider, model, temperature, thinking), context management, voice, logging
@@ -441,6 +445,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | `data/thread_notes/{thread_id}.md` | Thread notepads (per-thread knowledge base) |
 | `data/thread_configs/{thread_id}.json` | Per-thread configuration |
 | `data/custom_tools/` | Custom tool definitions |
+| `data/skill_drafts/` | Agent-authored Skill/Skill Kit drafts |
 | `data/mcp_servers/` | MCP server configurations |
 | `data/skills/` | Installed skills (user/global scope) |
 | `data/triggers/` | Trigger definitions and execution logs |

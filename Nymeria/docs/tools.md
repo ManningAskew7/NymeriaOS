@@ -13,42 +13,34 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 3 | `file_write` | Core | MODERATE | On | Write content to files |
 | 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
-| 6 | `profile_save` | Profile | SAFE | On | Save a user memory |
-| 7 | `profile_forget` | Profile | SAFE | On | Remove a memory by key |
-| 8 | `profile_list` | Profile | SAFE | On | List all saved memories and preferences |
+| 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
+| 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
+| 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
 | 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
 | 10 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
 | 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
 | 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
 | 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
-| 14 | `notepad_write` | Notepad | SAFE | On | Write to thread's persistent notepad |
-| 15 | `notepad_read` | Notepad | SAFE | On | Read thread's notepad content |
-| 16 | `notepad_edit` | Notepad | SAFE | On | Find-and-replace edit in thread's notepad |
-| 17 | `notepad_clear` | Notepad | SAFE | On | Clear thread's notepad |
-| 18 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
-| 19 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
-| 20 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
-| 21 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
-| 22 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
-| 23 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
-| 24 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude JSON, command, URL, package page, registry id, or bundle) |
+| 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
+| 15 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
+| 16 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
+| 17 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
+| 18 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
+| 19 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
+| 20 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude JSON, command, URL, package page, registry id, or bundle) |
 
-> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. See `docs/skills.md`.
+> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. See `docs/skills.md`.
 
 > **Note:** `claude_code`, `reload_all`, and `self_modify_rollback` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `SUBAGENT_TOOLS`, `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them per-thread, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
 
-### Optional: Trigger Tools (6)
+### Optional: Trigger Tools (2)
 
 Not loaded by default. Enable per-thread via thread config, or use through SelfModifyAgent.
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
-| 1 | `trigger_create` | Trigger | MODERATE | Create an event-driven trigger |
-| 2 | `trigger_list` | Trigger | SAFE | List triggers |
-| 3 | `trigger_update` | Trigger | MODERATE | Update a trigger |
-| 4 | `trigger_delete` | Trigger | MODERATE | Delete a trigger |
-| 5 | `trigger_inspect` | Trigger | SAFE | Inspect a trigger — view detail, dry-run test, or execution history |
-| 6 | `trigger_sources_info` | Trigger | SAFE | List available trigger sources with config schemas and template variables |
+| 1 | `trigger_config` | Trigger | MODERATE | Create, update, enable/disable, or delete event triggers |
+| 2 | `trigger_info` | Trigger | SAFE | List triggers, inspect/test/history for one trigger, or show source schemas |
 
 ### Optional: Slash Command Tool (1)
 
@@ -57,6 +49,17 @@ Not loaded by default. Enable per-thread to let the agent invoke the same user-f
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
 | 1 | `slash_command` | Self | MODERATE | Run a Nymeria slash command on the current thread (config, env, tools, memory, TODOs, notepad, status). Destructive commands blocked. |
+
+### Optional: HTTP/API and Skill Authoring (4)
+
+Not loaded by default. Enable per-thread when the agent needs ad hoc API calls, machine-readable API discovery, a reusable public HTTP tool, or a generated Skill Kit.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `http_request` | Core | MODERATE | Make a one-off HTTP request to a documented API endpoint |
+| 2 | `api_discover` | Core | MODERATE | Discover OpenAPI/Swagger metadata for an API base URL |
+| 3 | `tool_create` | Custom | MODERATE | Draft, test, and publish reusable HTTP tools into the global custom-tool registry |
+| 4 | `skill_config` | Custom | MODERATE | Draft, validate, publish, list, and delete user-scoped Nymeria Skills and Skill Kits |
 
 ### Optional: _PRV_A and Sheets Tools (8 + 1 attachment)
 
@@ -253,70 +256,97 @@ claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet
 
 ---
 
-## Profile Tools
+## Memory Tools
 
-Profile memories are **automatically injected** into Nymeria's system prompt. The `profile_list` tool provides an explicit way for models to retrieve exact keys before updating or deleting.
+Three unified primitives — `memory_add`, `memory_edit`, `memory_read` — cover both global user-profile facts and per-thread notepad content. The `scope` argument selects which store:
 
-> **Implementation note:** `profile_save`, `profile_forget`, `profile_list`, `personality_set`, and `rag_search` all accept a `config: Annotated[RunnableConfig, InjectedToolArg]` parameter that is automatically injected by LangGraph. The LLM never passes this parameter.
+- `scope="global"` — keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread. Storage: `data/users/{user_id}/profile.json`.
+- `scope="thread"` — free-form markdown notepad for the active thread, re-injected after context compaction. Storage: `data/thread_notes/{thread_id}.md`.
 
-### profile_save
+Empty `content` (in `memory_add`) or empty `replace` whose result empties the entry (in `memory_edit`) deletes cleanly: profile rows are popped, notepad files are unlinked. There is no separate `memory_forget` because the storage layer treats blank-as-delete, so edit-to-blank leaves no zombie entries.
 
-Save a memory about the user to persistent storage.
+> **Implementation note:** `memory_add`, `memory_edit`, `memory_read`, `personality_set`, and `rag_search` accept an `Annotated[RunnableConfig, InjectedToolArg]` parameter that LangGraph injects automatically. The LLM never passes it.
+
+### memory_add
+
+Save a memory. Creates a new entry or overwrites an existing one.
 
 ```python
-profile_save(key: str, value: str)
+memory_add(scope: str, content: str, key: Optional[str] = None)
 ```
 
 **Parameters:**
-- `key` (`str`): Category identifier (e.g., `"user_name"`, `"occupation"`)
-- `value` (`str`): Information to remember (truncated to 1000 characters)
+- `scope` (`"global"` | `"thread"`): which store to write to.
+- `content` (`str`): the memory text. Empty string deletes.
+- `key` (`str`, required for `scope="global"`): identifier for the profile entry. Ignored for `scope="thread"`.
 
-**Returns:** Confirmation message, or error if limit reached.
+**Examples:**
+```python
+memory_add(scope="global", key="prefers_typescript", content="Yes")
+memory_add(scope="global", key="timezone", content="Australia/Sydney")
+memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
+memory_add(scope="global", key="prefers_typescript", content="")   # deletes the entry
+memory_add(scope="thread", content="")                             # deletes the notepad
+```
 
 **Behavior:**
-- If a memory with the same `key` exists, it's updated (not duplicated).
-- Also indexed in RAG for semantic search if RAG is enabled.
-
-**Limits:** 100 memories per user (`MAX_MEMORIES` in `UserProfile`).
+- `scope="global"` upserts into `UserProfile.memories` and re-indexes in the RAG store if RAG is enabled.
+- `scope="thread"` overwrites the notepad (replace semantics; for append-style writes, read-then-add).
+- Notepad max size: 50 KB. Profile max entries: 100. Profile values are truncated to 1000 chars.
 
 ---
 
-### profile_forget
+### memory_edit
 
-Remove a memory or personality preference by key.
+Surgical find/replace within an existing memory.
 
 ```python
-profile_forget(key: str)
+memory_edit(scope: str, find: str, replace: str = "", key: Optional[str] = None)
 ```
 
 **Parameters:**
-- `key` (`str`): Memory key or personality trait to delete
+- `scope` (`"global"` | `"thread"`).
+- `find` (`str`): exact substring to locate (first occurrence).
+- `replace` (`str`, default `""`): replacement text. Empty string deletes the matched substring.
+- `key` (`str`, required for `scope="global"`): which profile entry to edit.
 
-**Returns:** Confirmation, or error with list of available keys (memories + personality traits) if not found.
-
-**Behavior:** Tries memories first, then personality preferences. Use `profile_list` to see exact keys before calling.
-
----
-
-### profile_list
-
-List all saved memories and personality preferences for the current user.
-
+**Examples:**
 ```python
-profile_list()
+memory_edit(scope="global", key="job_title", find="Engineer", replace="Senior Engineer")
+memory_edit(scope="thread", find="deadline Friday", replace="deadline Monday")
+memory_edit(scope="thread", find="obsolete bullet point\n", replace="")   # delete the line
 ```
 
-**Returns:** Formatted list of all memories (key: value) and personality preferences (trait: value), or a message indicating no memories are stored.
-
-**Notes:**
-- Use this before `profile_forget` to get exact key names.
-- Memories are also auto-injected into the system prompt, but weaker models may struggle to extract exact keys from long prompts.
+**Behavior:**
+- If the resulting value is empty, the entry/notepad is removed.
+- For long profile values use `memory_add` to overwrite — `memory_edit` shines for thread-notepad surgical edits.
 
 ---
 
-### ~~memory_clear_all~~ (removed)
+### memory_read
 
-Removed — a cheap model could hallucinate this call and wipe all user memories irreversibly. Delete memories individually with `profile_forget` instead.
+Read memory: get one entry, list everything, or substring-filter.
+
+```python
+memory_read(scope: str, key: Optional[str] = None, query: Optional[str] = None)
+```
+
+**Parameters:**
+- `scope` (`"global"` | `"thread"`).
+- `key` (`str`, global only): fetch a single profile memory by key.
+- `query` (`str`): substring filter (case-insensitive). For semantic search use `rag_search`.
+
+**Examples:**
+```python
+memory_read(scope="global")                              # list all memories + personality
+memory_read(scope="global", key="timezone")              # get one
+memory_read(scope="global", query="prefers")             # filter by substring
+memory_read(scope="thread")                              # full notepad
+memory_read(scope="thread", query="deadline")            # only matching notepad lines
+```
+
+**Notes:**
+- Profile memories are auto-injected into the system prompt, but weaker models may struggle to extract exact keys from long prompts — `memory_read(scope="global")` gives an explicit listing.
 
 ---
 
@@ -357,57 +387,7 @@ rag_search(query: str, max_results: int = 5)
 3. **Pre-clear** — `POST /threads/{id}/clear` flushes before deleting checkpoints.
 4. **Delete cleanup** — `DELETE /threads/{id}` runs the full thread cascade, including `MemoryIndex.delete_by_thread`, so `rag_search` doesn't surface chunks from deleted threads and thread-bound TODOs/triggers cannot wake the deleted thread again.
 
-To opt out, call `rag_settings(enabled=False)`. The migration watermark prevents re-flipping on subsequent loads.
-
----
-
-## Notepad Tools
-
-Per-thread persistent notes that survive context compaction. Unlike profile memories (which are global and injected into the system prompt), notepad content is thread-specific and only re-injected after compaction events.
-
-Storage: `data/thread_notes/{thread_id}.md`
-
-> **Implementation note:** All notepad tools accept a `config: Annotated[RunnableConfig, InjectedToolArg]` parameter automatically injected by LangGraph. The `thread_id` is extracted from this config.
-
-### notepad_write
-
-Write to the thread's persistent notepad.
-
-```python
-notepad_write(content: str, mode: str = "append")
-```
-
-**Parameters:**
-- `content` (`str`): Text to write
-- `mode` (`str`): `"append"` (default) adds with `\n\n` separator, `"replace"` overwrites entirely
-
-**Returns:** Confirmation with byte count.
-
-**Limits:** 50KB max per notepad.
-
----
-
-### notepad_read
-
-Read the thread's notepad content.
-
-```python
-notepad_read()
-```
-
-**Returns:** Current notepad content, or `"[empty]"` if nothing saved.
-
----
-
-### notepad_clear
-
-Clear the thread's notepad entirely.
-
-```python
-notepad_clear()
-```
-
-**Returns:** Confirmation message.
+To opt out, use the RAG settings API or the frontend settings UI. The migration watermark prevents re-flipping on subsequent loads.
 
 ---
 
@@ -523,7 +503,7 @@ tool_search(action: str, query: str = "", category: str = "", tools: list[str] =
 **Actions:**
 - `search` — Search tools by keyword and/or category. Returns up to 15 results with name, description, category, security level, and enabled status (including TTL remaining).
 - `enable` — Enable tools by name (`tools` param) or by category (`category` param). In `astream()` (REST/SSE) and `chat()` (MCP/CLI sync path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
-- `disable` — Disable tools for the thread (`tools` param). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`). A tool like `notepad_read` is in both, so it needs `force=True` to disable; but a tool in `ALL_TOOLS` that's absent from `default_thread_tools` is still core-protected even though it isn't default-bound.
+- `disable` — Disable tools for the thread (`tools` param). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`). A tool like `memory_read` is in both, so it needs `force=True` to disable; but a tool in `ALL_TOOLS` that's absent from `default_thread_tools` is still core-protected even though it isn't default-bound.
 - `list_categories` — List all tool categories with tool counts.
 - `status` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
@@ -545,17 +525,17 @@ The classifier sources its default-bound set from the same place as graph-build 
 
 #### In-turn auto-continue
 
-When the agent calls `tool_search(action="enable", tools=[...])` during a turn, the harness:
+When the agent calls `tool_search(action="enable", tools=[...])` during a turn, the enable result explicitly tells the agent to stop after that tool result. It should not write a final answer, explain the enablement, or attempt to call the newly enabled tool in the same graph invocation. The harness then:
 
 1. Persists the enablement to the thread config (with TTL) and invalidates the cached graph.
 2. Finishes the current graph invocation normally.
-3. Emits a `tool_reload` SSE event (`{type: "tool_reload", tools, ttl, ttl_seconds}`).
+3. Emits a `tool_reload` SSE event (`{type: "tool_reload", tools, ttl, ttl_seconds, source, skill_name, reason}`).
 4. Builds a fresh graph with the new tools bound to the LLM.
 5. Injects an internal resume message (`internal_type="tool_reload_resume"`) and drives the new graph against it, streaming into the same SSE connection.
 
-To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` (default `3`) rebuilds per user turn to bound token usage. Once the cap is hit, `tool_search(action="enable")` detects it, stops returning `Command(goto=END)`, and instead returns a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
+To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_search(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
 
-Both `astream()` (REST/SSE) and `chat()` (MCP/CLI sync path) honor the auto-continue. The legacy sync `stream()` path used by callable thread execution persists the enablement for the next turn but does not auto-continue; it clears any unconsumed pending reload when the stream exits so a stale Tool Binding event cannot attach to a later unrelated turn.
+`astream()` (REST/SSE), `stream()` (callable/autonomous sync streaming), and `chat()` (MCP/CLI final-string path) all honor the auto-continue. The two streaming paths emit `tool_reload` and then drive the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. `chat()` remains non-streaming and returns only the final string.
 
 #### TTL and eviction
 
@@ -565,7 +545,7 @@ Each enablement (other than `ttl="permanent"`) gets an `expires_at` timestamp st
 2. Persists the cleaned config back to disk.
 3. Returns the still-live set for inclusion in the tool list.
 
-Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run — there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` removes from both buckets immediately (next-message effect).
+Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run — there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` adds the name to `disabled_tools` without deleting preserved permanent/TTL state, so a later enable restores that state.
 
 Pick the shortest TTL that covers your task. `2h` is a sensible default for multi-step tasks; `30m` for one-shots; `6h`/`24h` for sustained workflows; `permanent` only if the tool should remain as a standing capability on the thread.
 
@@ -614,18 +594,35 @@ Event-driven automation — triggers fire agent prompts or actions in response t
 
 > **Note:** Trigger tools are **not loaded by default** for the main agent. They are available in `OPTIONAL_TOOLS` for per-thread enabling, and are always available to SelfModifyAgent.
 
-### trigger_create
+### trigger_config
 
-Create a new event-driven trigger.
+Create, update, enable/disable, or delete event triggers.
 
 ```python
-trigger_create(name: str, source_type: str, action_type: str, action_config: dict,
-               source_config: Optional[dict] = None, cooldown_seconds: int = 0)
+trigger_config(
+    action: str,
+    trigger_id: Optional[str] = None,
+    name: Optional[str] = None,
+    source_type: Optional[str] = None,
+    action_type: Optional[str] = None,
+    action_config: Optional[dict] = None,
+    source_config: Optional[dict] = None,
+    cooldown_seconds: Optional[int] = None,
+    conditions: Optional[list] = None,
+    enabled: Optional[bool] = None,
+)
 ```
 
+**Actions:**
+- `create` — Create a new trigger, bound to the current thread.
+- `update` — Patch an existing trigger's display name, enabled state, source/action config, cooldown, or conditions.
+- `delete` — Delete a trigger permanently.
+
 **Parameters:**
+- `action` (`str`): `"create"`, `"update"`, or `"delete"`
+- `trigger_id` (`Optional[str]`): Required for `update` and `delete`
 - `name` (`str`): Human-friendly trigger name (e.g., `"Wake-up morning briefing"`)
-- `source_type` (`str`): Event source type. Use `"webhook"` for HTTP push triggers. Call `trigger_list_sources()` to see available sources.
+- `source_type` (`str`): Event source type. Use `"webhook"` for HTTP push triggers. Call `trigger_info(action="sources")` to see available sources.
 - `action_type` (`str`): What to do when triggered:
   - `"agent_prompt"` — send a prompt to the agent (most powerful, triggers an LLM call)
   - `"notify"` — send a notification to the user (no LLM call)
@@ -637,115 +634,65 @@ trigger_create(name: str, source_type: str, action_type: str, action_config: dic
   - Templates support `{variable}` interpolation from event data.
 - `source_config` (`Optional[dict]`, default `None`): Source-specific config (e.g., `{"secret": "mykey"}` for webhooks)
 - `cooldown_seconds` (`int`, default `0`): Minimum seconds between trigger firings
+- `conditions` (`Optional[list]`): Filter conditions; pass `[]` on update to clear conditions
+- `enabled` (`Optional[bool]`): Enable or disable a trigger on update
 
-**Returns:** Success message with trigger ID and webhook URL (for webhook sources), or error.
+**Returns:** Success or error message. Create returns the trigger ID and webhook URL for webhook sources.
 
 **Examples:**
 ```python
-trigger_create("Wake-up briefing", "webhook", "agent_prompt",
-    {"prompt_template": "User woke up at {fired_at}. Create morning briefing."})
+trigger_config(
+    action="create",
+    name="Wake-up briefing",
+    source_type="webhook",
+    action_type="agent_prompt",
+    action_config={"prompt_template": "User woke up at {fired_at}. Create morning briefing."},
+)
 
-trigger_create("Deployment alert", "webhook", "notify",
-    {"message_template": "Deploy event: {status}"}, {"secret": "s3cr3t"}, cooldown_seconds=60)
+trigger_config(action="update", trigger_id="a1b2c3d4", enabled=False)
+trigger_config(action="delete", trigger_id="a1b2c3d4")
 ```
 
 ---
 
-### trigger_list
+### trigger_info
 
-List all event triggers with their status and configuration.
+List triggers, inspect one trigger, dry-run test one trigger, fetch execution history, or list trigger source schemas.
 
 ```python
-trigger_list(enabled_only: bool = False)
+trigger_info(
+    action: str = "list",
+    trigger_id: Optional[str] = None,
+    enabled_only: bool = False,
+    current_thread_only: bool = False,
+    limit: int = 10,
+)
 ```
 
+**Actions:**
+- `list` — List trigger summaries.
+- `detail` — Show one trigger's configuration, health, conditions, pending events, and thread binding.
+- `test` — Dry-run one trigger with sample event data. Does not fire the trigger.
+- `history` — Show recent execution history for one trigger.
+- `sources` — Show available trigger source types, config fields, template variables, and examples.
+
 **Parameters:**
+- `action` (`str`, default `"list"`): `"list"`, `"detail"`, `"test"`, `"history"`, or `"sources"`
+- `trigger_id` (`Optional[str]`): Required for `detail`, `test`, and `history`
 - `enabled_only` (`bool`, default `False`): If `True`, only show enabled triggers
+- `current_thread_only` (`bool`, default `False`): If `True`, only show triggers bound to the current thread
+- `limit` (`int`, default `10`, max `50`): Number of executions for `action="history"`
 
-**Returns:** Formatted list of triggers with ID, status (ON/OFF), name, source type, action type, fire count, and last fired timestamp.
-
----
-
-### trigger_update
-
-Update an existing trigger's configuration or enable/disable it.
-
-```python
-trigger_update(trigger_id: str, name: Optional[str] = None, enabled: Optional[bool] = None,
-               source_config: Optional[dict] = None, action_type: Optional[str] = None,
-               action_config: Optional[dict] = None, cooldown_seconds: Optional[int] = None)
-```
-
-**Parameters:**
-- `trigger_id` (`str`): The 8-char trigger ID
-- `name` (`Optional[str]`): New display name
-- `enabled` (`Optional[bool]`): Enable (`True`) or disable (`False`) the trigger
-- `source_config` (`Optional[dict]`): Updated source configuration
-- `action_type` (`Optional[str]`): New action type
-- `action_config` (`Optional[dict]`): New action config
-- `cooldown_seconds` (`Optional[int]`): New cooldown in seconds
-
-**Returns:** Success or error message. Returns error if no updates are specified.
-
----
-
-### trigger_delete
-
-Delete a trigger permanently.
-
-```python
-trigger_delete(trigger_id: str)
-```
-
-**Parameters:**
-- `trigger_id` (`str`): The 8-char trigger ID
-
-**Returns:** Success or error message.
-
----
-
-### trigger_inspect
-
-Inspect a trigger in one of three modes: view full configuration, dry-run with sample data, or fetch execution history.
-
-```python
-trigger_inspect(trigger_id: str, action: str = "detail", limit: int = 10)
-```
-
-**Parameters:**
-- `trigger_id` (`str`): The 8-char trigger ID to inspect
-- `action` (`str`, default `"detail"`): One of:
-  - `"detail"` — Full trigger configuration, health status, conditions, pending events, thread binding
-  - `"test"` — Dry-run with sample event data; renders the action template and reports whether conditions would pass. Does **not** fire the trigger.
-  - `"history"` — Recent execution history (status, duration, error messages)
-- `limit` (`int`, default `10`, max `50`): Number of executions to return for `action="history"`
-
-**Returns:** Formatted trigger details, test results, or execution history.
+**Returns:** Formatted trigger summaries, trigger details, test output, execution history, or source catalog.
 
 **Examples:**
 ```python
-trigger_inspect("a1b2c3d4")                          # detail
-trigger_inspect("a1b2c3d4", action="test")           # dry-run
-trigger_inspect("a1b2c3d4", action="history", limit=5)
+trigger_info(action="list", current_thread_only=True)
+trigger_info(action="detail", trigger_id="a1b2c3d4")
+trigger_info(action="test", trigger_id="a1b2c3d4")
+trigger_info(action="history", trigger_id="a1b2c3d4", limit=5)
+trigger_info(action="sources")
 ```
-
----
-
-### trigger_sources_info
-
-Get a formatted catalog of all available trigger sources with their config fields, template variables, and example configs. Useful for LLM-assisted trigger creation.
-
-```python
-trigger_sources_info()
-```
-
-**Parameters:** None.
-
-**Returns:** Formatted text listing each source with:
-- Name, description, category
-- Config fields with types, defaults, and required flags
-- Template variables available for action templates
-- Example config
 
 ---
 
@@ -791,6 +738,146 @@ slash_command(command: str)
 **Security note:** The tool runs in-process against the local API as the calling user (via act-as routing). `/env get` returns unmasked secrets and is admin-only at the API layer — non-admin callers will get 403 if they try to invoke admin-gated slash commands like `/env_get`, `/restart`, or `/config_*`.
 
 **Implementation:** See `nymeria/tools/slash_command.py` (parser + denylist + tool entry point) and `nymeria/triggers/slash_dispatcher.py` (command → API-method routing and plain-text formatting). Mirrors the Telegram bot's command handlers but emits plain text instead of HTML.
+
+---
+
+## HTTP/API and Skill Authoring Tools (Optional)
+
+General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP tools, and generated Skill Kits. These are not loaded by default; enable per-thread with `tool_search`, a Skill Kit, or thread config.
+
+### http_request
+
+Make a single HTTP request and return structured JSON.
+
+```python
+http_request(
+    method: str,
+    url: str,
+    headers: Optional[dict] = None,
+    query: Optional[dict] = None,
+    body: Optional[Any] = None,
+    timeout_seconds: int = 30,
+    follow_redirects: bool = True,
+    response_format: str = "auto",
+    max_response_chars: int = 20000,
+)
+```
+
+**Parameters:**
+- `method` (`str`): `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, or `OPTIONS`
+- `url` (`str`): Absolute `http://` or `https://` URL
+- `headers` (`dict`, optional): Request headers
+- `query` (`dict`, optional): Query parameters
+- `body` (`Any`, optional): JSON-serializable body; strings are sent as raw content
+- `timeout_seconds` (`int`, default `30`): Clamped to 1-300 seconds
+- `follow_redirects` (`bool`, default `True`): Follow redirects
+- `response_format` (`str`, default `"auto"`): `"auto"`, `"json"`, or `"text"`
+- `max_response_chars` (`int`, default `20000`): Body truncation limit, clamped to 1-200000
+
+**Returns:** JSON with `tool_version`, `ok`, `http_ok`, `format_ok`, request method/url, response status/final URL/selected headers/elapsed time, policy metadata, body metadata, and error details. `ok` means the HTTP status was successful and the requested response format was satisfied. `http_ok` only reflects the HTTP status. `format_ok` is false when, for example, `response_format="json"` was requested but the response body was not JSON. Validation/network/policy errors set `http_ok` and `format_ok` to `null` because no HTTP response body was parsed.
+
+**Body shape:** Complete JSON responses return `body_type="json"` and `body` as an object/list. Complete text returns `body_type="text"` and `body` as a string. Truncated responses keep `body` as `null` and put the returned excerpt in `body_preview`, so agents do not confuse truncated JSON text for a complete parsed object. JSON parse attempts include `json_parse_ok`; failed forced-JSON parsing includes `parse_error`. Binary responses set `body_type="binary"`, `body_omitted=true`, and describe the omitted payload in `body_preview`.
+
+**Network policy:** HTTP tools are public-internet-only by default. The runtime blocks loopback, private, link-local, reserved, unspecified, multicast, and metadata targets, including hostnames that resolve to those addresses. Internal/local access requires server-side `HTTP_INTERNAL_ALLOWLIST` entries; the model cannot opt into it per request. Blocked requests return `error.type="blocked_network_target"` and a `policy` object with the reason.
+
+Redirects are followed manually by default so every hop is policy-checked. Redirects to blocked targets are refused before the target is requested. HTTPS-to-HTTP redirects are blocked unless `HTTP_ALLOW_HTTPS_TO_HTTP_REDIRECT=true`. Successful redirect-following responses include `redirect_chain`. When `follow_redirects=false`, 3xx responses return `error.type="http_redirect"` instead of the generic `http_status`; if a `Location` header is present, the error includes both `location` and an absolute `redirect_url`.
+
+Response headers are limited to operational headers such as content type, content length, date, server, etag, location, retry-after, and rate-limit headers.
+
+**Example:**
+
+```json
+{
+  "method": "POST",
+  "url": "https://api.example.com/v1/items",
+  "headers": {"Authorization": "Bearer ..."},
+  "query": {"source": "nymeria"},
+  "body": {"name": "Test item"}
+}
+```
+
+### api_discover
+
+Probe an API base URL for OpenAPI/Swagger metadata and summarize the spec.
+
+```python
+api_discover(
+    base_url: str,
+    docs_url: Optional[str] = None,
+    timeout_seconds: int = 20,
+    max_response_chars: int = 50000,
+)
+```
+
+**Discovery order:** optional `docs_url`, then common paths including `/openapi.json`, `/openapi.yaml`, `/swagger.json`, `/swagger.yaml`, `/api-docs`, `/v3/api-docs`, `/docs/openapi.json`, and `/.well-known/openapi.json`. HTML docs are scanned for direct OpenAPI/Swagger/API-doc links and Swagger UI config scripts such as `swagger-initializer.js`; those scripts are inspected for spec URLs before falling back to generic hints.
+
+**Returns:** JSON with `tool_version`, `found`, `spec_url`, `spec_format`, a summary containing title/version/servers/path count/sample methods/security scheme names, every tried URL, and hints when no spec is found. Discovery requests use the same HTTP egress policy as `http_request`.
+
+**Relationship to custom HTTP tools:** `http_request` is the ad hoc primitive for one-off API calls. Custom HTTP tools remain the reusable connector mechanism: they store parameterized URL/header/body templates in `data/custom_tools/` and expose a named tool after setup. Custom HTTP tools use the same egress policy and audit redaction as `http_request`.
+
+### tool_create
+
+Draft, test, and publish reusable HTTP tools from inside an agent conversation.
+
+```python
+tool_create(
+    action: str,
+    tool_id: str = "",
+    name: str = "",
+    description: str = "",
+    parameters: Optional[dict] = None,
+    http_config: Optional[dict] = None,
+    draft_id: str = "",
+    sample_params: Optional[dict] = None,
+    ttl: str = "2h",
+)
+```
+
+**Actions:**
+- `draft` — Save or update a per-user draft in `data/tool_drafts/{user_id}/`. Requires `tool_id`, `description`, `parameters`, and `http_config`.
+- `test` — Execute a saved draft with `sample_params` and record whether the request succeeded.
+- `publish` — Save a successfully tested draft into the global `data/custom_tools/` registry, reload custom tools, and enable the new tool on the current thread.
+- `list` — Show this user's drafts plus globally published custom tools without exposing request headers or bodies.
+- `delete` — Delete this user's draft only. It does not delete a globally published tool.
+
+**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`30m`, `2h`, `6h`, `24h`, or `permanent`; default `2h`) using the same in-turn auto-reload path as `tool_search(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
+
+**V1 limits:** Only `implementation_type="http"` is supported. Agent-created tools reject inline secrets, `Authorization`/API-key/cookie headers, and `${env:...}` references. For authenticated reusable tools, use the Desktop/REST custom-tool flow for now; future production work should add domain/method/path-scoped secret injection.
+
+**Audit and deferred production safety:** HTTP tool calls append redacted HTTP events to the audit log when `AUDIT_LOG_ENABLED=true`. Raw bearer/API-key-like values are best-effort redacted and custom HTTP `${env:VAR}` usage records the variable names, not the values. Future hardening still needs a first-class encrypted secret injection interface with domain/method/path scopes, stronger per-user audit context, rate-limit budgets per task, pagination helpers, and policy hooks for actions that send messages, delete data, spend money, modify production systems, post publicly, or change infrastructure.
+
+### skill_config
+
+Draft, validate, publish, list, and delete Nymeria Skills and Skill Kits from inside an agent conversation.
+
+```python
+skill_config(
+    action: str,
+    name: str = "",
+    description: str = "",
+    body: str = "",
+    allowed_tools: Optional[list[str] | str] = None,
+    required_tools: Optional[list[str] | str] = None,
+    tool_ttl: str = "2h",
+    draft_id: str = "",
+    scope: str = "user",
+    overwrite: bool = False,
+    activate_current_thread: bool = True,
+)
+```
+
+**Actions:**
+- `draft` — Validate and save a per-user draft in `data/skill_drafts/{user_id}/`.
+- `validate` — Validate inline fields or a saved draft without publishing.
+- `publish` — Write a validated `SKILL.md` to `data/skills/users/{user_id}/` or admin-only `data/skills/global/`, reload skills, and by default enable it on the current thread.
+- `list` — Show this user's drafts plus installed skills visible to the user.
+- `delete` — With `scope="draft"`, delete a draft. With `scope="user"` or `scope="global"`, uninstall that skill scope; global delete requires admin.
+
+**V1 limits:** `skill_config` writes only `SKILL.md`. It cannot create scripts, assets, references, or arbitrary paths. It rejects body text that includes YAML frontmatter; agents pass `name`, `description`, `allowed_tools`, `required_tools`, and `tool_ttl` as structured parameters.
+
+**Skill Kit dependency checks:** `required_tools` are validated before any publish write. Unknown, unloadable, or admin-blocked tools fail strictly. Publishing a user skill that would shadow an existing bundled/global skill is rejected; replacing an existing generated skill requires `overwrite=true` and the existing directory must contain only `SKILL.md`.
+
+**Same-turn activation:** When `activate_current_thread=true`, publish adds the skill name to `ThreadConfig.enabled_skills`, reloads the skill manager, invalidates graph caches, and queues a same-turn `tool_reload` with `source="skill_config"` and `reason="skill_published"`. The event may have an empty `tools` list because the reload refreshes the `Skill` meta-tool index rather than binding a new normal tool.
 
 ---
 
@@ -1076,7 +1163,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 
 **Currently available (representative categories):**
 - Outlook tools: 4 auth + 13 email + 1 attachment = 18 total
-- Trigger tools: 4
+- Trigger tools: 2
 - Browser tools: 9
 - Calendar tools: 4 auth + 11 event = 15 total
 - Self-modify tools: 8
@@ -1085,7 +1172,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
-- Utility tools: `claude_code`, `sticky_note`, `hello_test` = 3
+- Utility tools: `claude_code`, `sticky_note`, `hello_test`, `http_request`, `api_discover`, `tool_create` = 6
 
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
@@ -1102,7 +1189,7 @@ The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows no
 
 ## Custom Tools
 
-Custom tools extend Nymeria's capabilities without writing Python. Created via the **Desktop UI** (Settings → Tools) or the **REST API**.
+Custom tools extend Nymeria's capabilities without writing Python. Created via the **Desktop UI** (Settings → Tools), the **REST API**, or the agent-facing `tool_create` workflow for public unauthenticated HTTP tools.
 
 ### Tool Types
 
@@ -1114,7 +1201,7 @@ Custom tools extend Nymeria's capabilities without writing Python. Created via t
 ### HTTP Tools
 
 HTTP tools make REST API calls with configurable:
-- **Method**: GET, POST, PUT, DELETE, PATCH
+- **Method**: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS
 - **URL**: Supports `${param}` interpolation for dynamic URLs
 - **Headers**: Including `${env:VAR_NAME}` for secrets from environment
 - **Body Template**: JSON template with parameter placeholders
@@ -1211,6 +1298,16 @@ POST /tools/custom/{tool_id}/test  # Test a tool
 
 **Storage:** Custom tools are stored as JSON files in `data/custom_tools/`, one `.json` per tool ID.
 
+**Agent-created tools:** `tool_create(action="publish")` writes the same JSON definition format into `data/custom_tools/`, then reloads the custom-tool loader and registers metadata so `tool_search(action="search")` can find the new tool. Agent-created tools are global but remain opt-in per thread.
+
+### HexStrike MCP Sidecar
+
+HexStrike AI is available as an optional Kali-based sidecar through
+`docker-compose.hexstrike.yml`. It exposes a curated subset of upstream
+HexStrike tools over Streamable HTTP at `http://hexstrike-mcp:8889/mcp` for
+Nymeria containers and `http://localhost:8889/mcp` for local MCP clients. See
+`docs/hexstrike-mcp.md` for build, registration, and allowlist details.
+
 ---
 
 ## Scheduled TODO Execution
@@ -1247,9 +1344,9 @@ Tool metadata is defined in `tools/metadata.py`. Each tool has a category, secur
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search`, `consult`, `profile_save`, `profile_forget`, `profile_list`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`, `notepad_write`, `notepad_read`, `notepad_edit`, `notepad_clear`
+**SAFE:** `file_read`, `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`
 
-**MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, many trigger/email/calendar/browser actions
+**MODERATE:** `bash_execute`, `file_write`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 
 **SENSITIVE:** self-modify file mutation and rollback tools
 

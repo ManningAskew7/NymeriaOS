@@ -11,7 +11,7 @@ Scope model (precedence for name collisions, highest wins):
 
 A skill is "active" on a thread if its name appears in the union of:
     user_profile.enabled_global_skills + ThreadConfig.enabled_skills
-minus ThreadConfig.disabled_skills.
+    minus ThreadConfig.disabled_skills.
 
 Only the (name, description) of active skills are always-present (injected into
 the Skill meta-tool's description). The full body loads only when the agent
@@ -38,6 +38,8 @@ SkillScope = Literal["bundled", "global", "user"]
 
 # Anthropic's documented upper bound on the <available_skills> block.
 AVAILABLE_SKILLS_CHAR_BUDGET = 15_000
+SKILL_KIT_TTL_PRESETS = frozenset({"30m", "2h", "6h", "24h", "permanent"})
+DEFAULT_SKILL_KIT_TOOL_TTL = "2h"
 
 
 class SkillParseError(Exception):
@@ -84,6 +86,51 @@ class Skill(BaseModel):
     path: Path
     scope: SkillScope
     user_id: Optional[str] = None
+
+    @property
+    def _nymeria_metadata(self) -> Dict:
+        metadata = self.metadata if isinstance(self.metadata, dict) else {}
+        nymeria = metadata.get("nymeria", {})
+        return nymeria if isinstance(nymeria, dict) else {}
+
+    @property
+    def required_tools(self) -> List[str]:
+        """Nymeria tools this skill must bind when activated.
+
+        This intentionally reads from ``metadata.nymeria.required_tools`` so
+        portable ``allowed-tools`` remains advisory Agent Skills metadata.
+        """
+        raw = self._nymeria_metadata.get("required_tools", [])
+        if isinstance(raw, str):
+            values = [raw]
+        elif isinstance(raw, list):
+            values = raw
+        else:
+            values = []
+
+        out: List[str] = []
+        seen = set()
+        for value in values:
+            name = str(value).strip()
+            if not name or name in seen:
+                continue
+            out.append(name)
+            seen.add(name)
+        return out
+
+    @property
+    def tool_ttl(self) -> str:
+        """TTL preset for Skill Kit tool bindings, defaulting to 2h."""
+        value = str(
+            self._nymeria_metadata.get("tool_ttl", DEFAULT_SKILL_KIT_TOOL_TTL)
+        ).strip().lower()
+        if value in SKILL_KIT_TTL_PRESETS:
+            return value
+        return DEFAULT_SKILL_KIT_TOOL_TTL
+
+    @property
+    def is_skill_kit(self) -> bool:
+        return bool(self.required_tools)
 
     @property
     def has_scripts(self) -> bool:
@@ -371,12 +418,14 @@ class SkillManager:
     ) -> List[Skill]:
         """Resolve the set of skills active for a given thread.
 
-        Active set = (enabled_global_skills ∪ thread_enabled_skills) − thread_disabled_skills,
-        with each name resolved via get() (user > global > bundled precedence).
+        Active set = (enabled_global_skills ∪ thread_enabled_skills) −
+        thread_disabled_skills, with each name resolved via get()
+        (user > global > bundled precedence).
         """
         active_names: List[str] = []
         seen = set()
-        for name in list(enabled_global_skills) + list(thread_enabled_skills):
+        configured_names = list(enabled_global_skills) + list(thread_enabled_skills)
+        for name in configured_names:
             if name in seen or name in thread_disabled_skills:
                 continue
             seen.add(name)

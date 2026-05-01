@@ -190,7 +190,7 @@ Optional `thread_id` in the body binds the trigger to an existing thread instead
 
 ### Via LLM Conversation
 
-Ask Nymeria directly: "Create a trigger that watches my inbox for emails from X and summarizes them." The agent uses `trigger_create`, `trigger_list`, `trigger_update`, `trigger_delete`, and `trigger_inspect` tools. Triggers created this way auto-bind to the current conversation thread.
+Ask Nymeria directly: "Create a trigger that watches my inbox for emails from X and summarizes them." The agent uses `trigger_config` for create/update/delete and `trigger_info` for list/detail/test/history/source schemas. Triggers created this way auto-bind to the current conversation thread.
 
 ### Via Desktop/Mobile UI
 
@@ -375,7 +375,7 @@ Which file does what, for quick navigation:
 | `nymeria/triggers/trigger_api.py` | REST router mounted at `/triggers`: CRUD, `/fire/{id}` webhook endpoint (public, routes internal POST to `/chat`), `/test`, `/executions/recent`, `/sources/list` |
 | `nymeria/triggers/api.py` | Main API app. `/chat` endpoint publishes autonomous events when `is_self_invoke=True`. `/autonomous/stream` SSE endpoint consumes the event bus queue |
 | `nymeria/triggers/sources/` | Individual source implementations (webhook, outlook_email, rss, http_poll, slack, teams). Each exposes `check()`, `validate_config()`, `get_sample_event()` |
-| `nymeria/tools/triggers.py` | Agent-callable trigger tools: `trigger_create`, `trigger_list`, `trigger_update`, `trigger_delete`, `trigger_inspect`. Auto-binds to current thread via `get_thread_id(config)` |
+| `nymeria/tools/triggers.py` | Agent-callable trigger tools: `trigger_config` for configuration mutations and `trigger_info` for read-only inspection. Auto-binds created triggers to the current thread via `get_thread_id(config)` |
 | `nymeria/core/event_bus.py` | `EventBus`, `AutonomousEvent`, `publish_autonomous_event`, `publish_sync_event`, factory `create_event_bus()` |
 | `nymeria/core/event_bus_redis.py` | `RedisEventBus` — pub/sub across containers |
 | `nymeria-desktop/src/lib/stores/autonomous.svelte.ts` | Frontend SSE subscriber. `handleEvent()` dispatches by type. `classifyAutonomousSource()` labels triggers via `event.trigger_id \|\| event.trigger_name` |

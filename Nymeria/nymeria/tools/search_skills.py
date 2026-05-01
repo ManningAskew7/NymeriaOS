@@ -50,7 +50,8 @@ def list_installed_skills(
 
     Returns:
         JSON string with a list of {name, description, scope, allowed_tools,
-        has_scripts, has_references} entries.
+        required_tools, tool_ttl, is_skill_kit, default_active, has_scripts,
+        has_references} entries.
     """
     agent = _agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
@@ -67,6 +68,10 @@ def list_installed_skills(
             "description": s.description,
             "scope": s.scope,
             "allowed_tools": s.allowed_tools,
+            "required_tools": s.required_tools,
+            "tool_ttl": s.tool_ttl,
+            "is_skill_kit": s.is_skill_kit,
+            "default_active": False,
             "has_scripts": s.has_scripts,
             "has_references": s.has_references,
         }

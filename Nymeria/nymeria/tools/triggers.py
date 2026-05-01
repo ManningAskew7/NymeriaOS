@@ -195,7 +195,7 @@ def trigger_list(
         msg = "[Info]: No triggers found"
         if current_thread_only:
             msg += " for this thread"
-        msg += ". Use trigger_create to set one up."
+        msg += ". Use trigger_config(action='create') to set one up."
         return msg
 
     lines = [f"Triggers ({len(triggers)} total):"]
@@ -504,12 +504,139 @@ def trigger_sources_info() -> str:
     return "\n".join(lines)
 
 
+@tool
+def trigger_config(
+    action: str,
+    trigger_id: Optional[str] = None,
+    name: Optional[str] = None,
+    source_type: Optional[str] = None,
+    action_type: Optional[str] = None,
+    action_config: Optional[dict] = None,
+    source_config: Optional[dict] = None,
+    cooldown_seconds: Optional[int] = None,
+    conditions: Optional[list] = None,
+    enabled: Optional[bool] = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """Create, update, or delete event triggers.
+
+    Use action="create" for a new trigger, action="update" to change one,
+    and action="delete" to remove one. Triggers auto-bind to the current
+    thread. Use trigger_info(action="sources") before creating when you need
+    source config fields or template variables.
+
+    Args:
+        action: "create", "update", or "delete".
+        trigger_id: Required for update/delete.
+        name: Trigger display name.
+        source_type: Event source type for create, such as "webhook".
+        action_type: "agent_prompt", "notify", or "create_todo".
+        action_config: Action config dict, such as {"prompt_template": "..."}.
+        source_config: Source-specific config dict.
+        cooldown_seconds: Minimum seconds between firings.
+        conditions: Optional filter conditions; [] clears conditions on update.
+        enabled: Enable or disable an existing trigger on update.
+    """
+    action_key = (action or "").strip().lower()
+
+    if action_key == "create":
+        missing = [
+            field
+            for field, value in (
+                ("name", name),
+                ("source_type", source_type),
+                ("action_type", action_type),
+                ("action_config", action_config),
+            )
+            if value is None or value == ""
+        ]
+        if missing:
+            return f"[Error]: create requires: {', '.join(missing)}."
+        return trigger_create.func(
+            name=name,
+            source_type=source_type,
+            action_type=action_type,
+            action_config=action_config or {},
+            source_config=source_config,
+            cooldown_seconds=cooldown_seconds or 0,
+            conditions=conditions,
+            config=config,
+        )
+
+    if action_key == "update":
+        if not trigger_id:
+            return "[Error]: update requires trigger_id."
+        return trigger_update.func(
+            trigger_id=trigger_id,
+            name=name,
+            enabled=enabled,
+            source_config=source_config,
+            action_type=action_type,
+            action_config=action_config,
+            cooldown_seconds=cooldown_seconds,
+            conditions=conditions,
+            config=config,
+        )
+
+    if action_key == "delete":
+        if not trigger_id:
+            return "[Error]: delete requires trigger_id."
+        return trigger_delete.func(trigger_id=trigger_id, config=config)
+
+    return "[Error]: action must be one of: create, update, delete."
+
+
+@tool
+def trigger_info(
+    action: str = "list",
+    trigger_id: Optional[str] = None,
+    enabled_only: bool = False,
+    current_thread_only: bool = False,
+    limit: int = 10,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """List or inspect event triggers and trigger source types.
+
+    Actions: "list" for trigger summaries, "detail" for one trigger,
+    "test" for a dry-run render, "history" for recent executions, and
+    "sources" for source config schemas and template variables.
+
+    Args:
+        action: "list", "detail", "test", "history", or "sources".
+        trigger_id: Required for detail/test/history.
+        enabled_only: List only enabled triggers.
+        current_thread_only: List only triggers bound to this thread.
+        limit: Max history rows for action="history" (1-50).
+    """
+    action_key = (action or "list").strip().lower()
+
+    if action_key == "list":
+        return trigger_list.func(
+            enabled_only=enabled_only,
+            current_thread_only=current_thread_only,
+            config=config,
+        )
+
+    if action_key == "sources":
+        return trigger_sources_info.func()
+
+    if action_key in {"detail", "test", "history"}:
+        if not trigger_id:
+            return f"[Error]: {action_key} requires trigger_id."
+        return trigger_inspect.func(
+            trigger_id=trigger_id,
+            action=action_key,
+            limit=limit,
+            config=config,
+        )
+
+    return "[Error]: action must be one of: list, detail, test, history, sources."
+
+
 # Grouped export for ALL_TOOLS registration
 TRIGGER_TOOLS = [
-    trigger_create,
-    trigger_list,
-    trigger_update,
-    trigger_delete,
-    trigger_inspect,
-    trigger_sources_info,
+    trigger_config,
+    trigger_info,
 ]

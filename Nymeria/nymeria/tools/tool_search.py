@@ -12,6 +12,7 @@ and `docs/tools.md` for the full flow.
 """
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union
 
@@ -35,6 +36,19 @@ TTL_PRESETS: Dict[str, Optional[int]] = {
     "permanent": None,
 }
 DEFAULT_TTL = "2h"
+
+
+@dataclass
+class ToolBindingResult:
+    ok: bool
+    text: str
+    reload_tools: List[str] = field(default_factory=list)
+    ttl_key: str = DEFAULT_TTL
+    ttl_seconds: Optional[int] = None
+    cap_hit: bool = False
+    source: str = "tool_search"
+    skill_name: Optional[str] = None
+    reason: Optional[str] = None
 
 
 def _format_remaining(expires_at: datetime) -> str:
@@ -243,18 +257,24 @@ def _search(query: str, category: str, thread_id: str) -> str:
     return "\n".join(lines)
 
 
-def _enable(
+def bind_tools_for_thread(
     tool_names: List[str],
     category: str,
     thread_id: str,
     user_id: str,
     ttl: str = DEFAULT_TTL,
-    tool_call_id: Optional[str] = None,
-) -> Union[str, Command]:
-    """Enable tools for a thread. Returns a string for no-op / refresh-only
-    cases, or a Command(goto=END) when a genuinely new tool was added so the
-    graph terminates immediately and the astream() reload hook can rebuild
-    the tool list before the next agent step.
+    *,
+    strict: bool = False,
+    source: str = "tool_search",
+    skill_name: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> ToolBindingResult:
+    """Validate and bind tools for a thread.
+
+    ``strict=True`` is used by Skill Kits: any invalid, unloadable, or
+    admin-blocked dependency aborts before the thread config is mutated.
+    ``strict=False`` preserves tool_search's partial-success behavior for
+    invalid names mixed into an otherwise valid enable request.
     """
     from ..core.agent import get_current_agent
     from ..core.thread_config import ThreadConfig, TemporaryToolEntry
@@ -263,12 +283,24 @@ def _enable(
 
     agent = get_current_agent()
     if agent is None:
-        return "[Error]: No active agent. Cannot modify thread config."
+        return ToolBindingResult(
+            ok=False,
+            text="[Error]: No active agent. Cannot modify thread config.",
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
 
     ttl_key = (ttl or DEFAULT_TTL).strip().lower()
     if ttl_key not in TTL_PRESETS:
         options = ", ".join(f'"{k}"' for k in TTL_PRESETS)
-        return f"[Error]: Invalid ttl '{ttl}'. Must be one of: {options}."
+        return ToolBindingResult(
+            ok=False,
+            text=f"[Error]: Invalid ttl '{ttl}'. Must be one of: {options}.",
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
     ttl_seconds = TTL_PRESETS[ttl_key]
 
     if category and not tool_names:
@@ -278,15 +310,39 @@ def _enable(
         except ValueError:
             from .metadata import get_all_categories
             cats = ", ".join(get_all_categories())
-            return f"[Error]: Unknown category '{category}'. Available: {cats}"
+            return ToolBindingResult(
+                ok=False,
+                text=f"[Error]: Unknown category '{category}'. Available: {cats}",
+                ttl_key=ttl_key,
+                ttl_seconds=ttl_seconds,
+                source=source,
+                skill_name=skill_name,
+                reason=reason,
+            )
 
         catalog = _build_catalog()
         tool_names = [c["name"] for c in catalog.values() if c["category"] == cat_key]
         if not tool_names:
-            return f"[Error]: No tools in category '{category}'."
+            return ToolBindingResult(
+                ok=False,
+                text=f"[Error]: No tools in category '{category}'.",
+                ttl_key=ttl_key,
+                ttl_seconds=ttl_seconds,
+                source=source,
+                skill_name=skill_name,
+                reason=reason,
+            )
 
     if not tool_names:
-        return "[Error]: Provide tool names via 'tools' or a category via 'category'."
+        return ToolBindingResult(
+            ok=False,
+            text="[Error]: Provide tool names via 'tools' or a category via 'category'.",
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
 
     catalog = _build_catalog()
     all_known = set(catalog.keys())
@@ -315,14 +371,46 @@ def _enable(
         if meta and meta.security_level == SecurityLevel.SENSITIVE:
             warnings.append(f"'{name}' is SENSITIVE")
 
+    if strict and (invalid or unloadable):
+        lines = ["[Error]: Tool dependency validation failed; no tools were bound."]
+        if invalid:
+            lines.append(f"[Not found]: {', '.join(invalid)}")
+        if unloadable:
+            lines.append(_format_unloadable_error(unloadable))
+        return ToolBindingResult(
+            ok=False,
+            text="\n".join(lines),
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
+
     if not valid:
         # Surface unloadable details first (more actionable for the agent).
         if unloadable:
             err = _format_unloadable_error(unloadable)
             if invalid:
                 err += f"\n[Not found]: {', '.join(invalid)}"
-            return err
-        return f"[Error]: No valid tools to enable. Unknown: {', '.join(invalid)}"
+            return ToolBindingResult(
+                ok=False,
+                text=err,
+                ttl_key=ttl_key,
+                ttl_seconds=ttl_seconds,
+                source=source,
+                skill_name=skill_name,
+                reason=reason,
+            )
+        return ToolBindingResult(
+            ok=False,
+            text=f"[Error]: No valid tools to enable. Unknown: {', '.join(invalid)}",
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
 
     # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config —
     # without this, an agent could call tool_search(action="enable",
@@ -333,16 +421,28 @@ def _enable(
     user_role = user.role if user else "user"
     allowed, blocked = filter_admin_only_tools(valid, user_role)
     if blocked:
-        return (
-            f"[Error]: Admin-only tools cannot be enabled by this user: "
-            f"{sorted(blocked)}. Ask an administrator to enable them on this "
-            f"thread, or pick a non-admin alternative."
+        return ToolBindingResult(
+            ok=False,
+            text=(
+                f"[Error]: Admin-only tools cannot be enabled by this user: "
+                f"{sorted(blocked)}. Ask an administrator to enable them on this "
+                f"thread, or pick a non-admin alternative."
+            ),
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
         )
     valid = [n for n in valid if n in allowed]
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
         tc = ThreadConfig(thread_id=thread_id)
+    elif hasattr(agent, "_resolve_temporary_tools"):
+        # Expired TTL entries must not make enable look like a refresh-only
+        # no-op. Evict them before classifying requested names.
+        agent._resolve_temporary_tools(tc)
 
     # Compute the thread's *actual* default-bound tool set. A user profile
     # can override ALL_TOOLS via profile.tool_preferences.default_thread_tools
@@ -355,7 +455,7 @@ def _enable(
     # source of truth as graph-build (`agent.py::_build_graph_with_prompt`)
     # keeps classification honest.
     try:
-        profile = agent.profile_manager.get_profile("default")
+        profile = agent.profile_manager.get_profile(user_id or "default")
         default_tools_pref = profile.tool_preferences.default_thread_tools
     except Exception:
         default_tools_pref = None
@@ -370,6 +470,10 @@ def _enable(
     already_default: List[str] = []   # already in default-bound set — no write
     already_permanent: List[str] = [] # already in tc.enabled_tools — no write
     un_disabled: List[str] = []       # removed from tc.disabled_tools
+
+    original_enabled = list(tc.enabled_tools)
+    original_disabled = list(tc.disabled_tools)
+    original_temporary = dict(tc.temporary_tools)
 
     new_enabled = set(tc.enabled_tools)
     new_temporary = dict(tc.temporary_tools)
@@ -455,9 +559,21 @@ def _enable(
     tc.temporary_tools = new_temporary
 
     if not agent.thread_config_manager.save_config(tc):
-        return "[Error]: Failed to save thread config."
+        tc.enabled_tools = original_enabled
+        tc.disabled_tools = original_disabled
+        tc.temporary_tools = original_temporary
+        return ToolBindingResult(
+            ok=False,
+            text="[Error]: Failed to save thread config.",
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
 
-    agent.invalidate_thread_config_cache(thread_id)
+    if hasattr(agent, "invalidate_thread_config_cache"):
+        agent.invalidate_thread_config_cache(thread_id)
 
     # An in-turn reload is needed when we added a genuinely new binding —
     # that's newly_added (optional tools new to the graph) OR un_disabled
@@ -476,10 +592,15 @@ def _enable(
     cap_hit = reload_tools and current_reloads >= reload_cap
 
     if reload_tools and not cap_hit:
+        if not hasattr(agent, "_pending_tool_reload"):
+            agent._pending_tool_reload = {}
         agent._pending_tool_reload[thread_id] = {
             "new_tools": reload_tools,
             "ttl": ttl_key,
             "ttl_seconds": ttl_seconds,
+            "source": source,
+            "skill_name": skill_name,
+            "reason": reason,
         }
 
     ttl_desc = "permanent" if ttl_seconds is None else ttl_key
@@ -518,10 +639,15 @@ def _enable(
     lines.append("")
     if reload_tools and not cap_hit:
         lines.append(
-            "Newly-loaded tools are NOT yet bound to the model in this "
-            "iteration. Your current turn will end after this tool result "
-            "and the system will rebuild the tool list, then resume you with "
-            "the new tools available. Do not attempt to call them here."
+            "[Tool reload queued - STOP NOW]\n"
+            "The newly-loaded tools are NOT bound to the model in this "
+            "iteration. Do not write a final answer, do not explain the "
+            "enablement to the user, and do not call another tool now. This "
+            "graph invocation is ending after this tool result so the system "
+            "can rebuild the tool list. The system will automatically prompt "
+            "you again with tool_reload_resume after the tools are bound; "
+            "continue the user's task and call the new tools only after that "
+            "automatic resume."
         )
     elif reload_tools and cap_hit:
         lines.append(
@@ -529,27 +655,70 @@ def _enable(
             f"{current_reloads}/{reload_cap} in-turn graph rebuilds. The new "
             "binding was persisted to this thread's config, but will NOT be "
             "bound to the model until the next user message. Do not attempt "
-            "to call the newly-enabled tool(s) in this turn."
+            "to call the newly-enabled tool(s) in this turn; answer only with "
+            "that limitation if a response is needed."
         )
     else:
         lines.append("No binding changes; nothing to reload.")
     result_text = "\n".join(lines)
+
+    return ToolBindingResult(
+        ok=True,
+        text=result_text,
+        reload_tools=reload_tools,
+        ttl_key=ttl_key,
+        ttl_seconds=ttl_seconds,
+        cap_hit=bool(cap_hit),
+        source=source,
+        skill_name=skill_name,
+        reason=reason,
+    )
+
+
+def _enable(
+    tool_names: List[str],
+    category: str,
+    thread_id: str,
+    user_id: str,
+    ttl: str = DEFAULT_TTL,
+    tool_call_id: Optional[str] = None,
+    *,
+    source: str = "tool_search",
+    skill_name: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Union[str, Command]:
+    """Enable tools for a thread. Returns a string for no-op / refresh-only
+    cases, or a Command(goto=END) when a genuinely new tool was added so the
+    graph terminates immediately and the astream() reload hook can rebuild
+    the tool list before the next agent step.
+    """
+    binding = bind_tools_for_thread(
+        tool_names,
+        category,
+        thread_id,
+        user_id,
+        ttl=ttl,
+        strict=False,
+        source=source,
+        skill_name=skill_name,
+        reason=reason,
+    )
 
     # When a reload is queued AND we're under the cap, force the graph to
     # END after this tool result so the astream()/chat() reload hook fires
     # immediately. Past the cap, return a plain string so the LLM can
     # respond in-turn (avoids leaving an orphan tool_result with no
     # follow-up response when the cap would otherwise eat the reload).
-    if reload_tools and tool_call_id and not cap_hit:
+    if binding.reload_tools and tool_call_id and not binding.cap_hit:
         return Command(
             goto=END,
             update={
                 "messages": [
-                    ToolMessage(content=result_text, tool_call_id=tool_call_id)
+                    ToolMessage(content=binding.text, tool_call_id=tool_call_id)
                 ]
             },
         )
-    return result_text
+    return binding.text
 
 
 def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
@@ -730,108 +899,22 @@ def tool_search(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> Union[str, Command]:
     """
-    Search, enable, and disable optional tools for this thread.
-
-    There are 100+ tools organized by category (email, browser, calendar,
-    google_docs, twitch, _prv_a, trigger, self_modify, etc.). Use this tool
-    to discover and activate them for the current thread.
-
-    HOW ENABLE WORKS (important, read carefully):
-
-    When you call action="enable" and at least one tool is genuinely new,
-    your CURRENT turn ends immediately after the tool result. The harness
-    then rebuilds the tool list with the new tools bound to the model and
-    resumes you in a fresh agent step where the new tools ARE callable.
-
-    Concretely: you do NOT call the new tool in the same iteration as the
-    enable. That fails because the model is bound to the old tool list
-    for the rest of the iteration. After your enable returns, the system
-    will resume you automatically (no user reply needed) and THAT is where
-    you invoke the newly-enabled tool. Treat the enable + use as two
-    discrete steps: enable now, end of turn happens, then use after resume.
-
-    Enabling a tool that's already in the bound set (refresh / no-op /
-    promotion to permanent) does NOT trigger a turn-end; the agent just
-    keeps going.
-
-    TTL: each tool enablement expires unless marked permanent. Pick the
-    shortest TTL that covers your task to keep the tool list lean:
-      "30m":       one-shot operation
-      "2h":        default, typical multi-step task
-      "6h":        sustained workflow in a single session
-      "24h":       multi-session workflow, e.g. across a workday
-      "permanent": only if you're confident the user wants this as a
-                   standing capability on this thread
-    Calling enable again on a TTL'd tool resets its expiry. Calling it
-    with ttl="permanent" promotes it out of the TTL bucket. Expired
-    entries are evicted at the start of the next turn (lazy, no surprise
-    ejections mid-turn).
-
-    MCP tools: if you try to enable an mcp__<server>__<tool> whose backing
-    server is installed but disabled, enable will reject it. Use
-    mcp_install (which auto-enables) or activate the server in
-    Settings → MCP first, then retry.
-
-    Disabling core tools (bash_execute, file_read, tool_search itself, etc.)
-    can cripple the thread, so disable refuses core names by default. Set
-    force=True to override. "Core" here means a tool that's in the codebase's
-    hardcoded ALL_TOOLS list (the superset of essential tools), which is
-    broader than the "default-bound" set the classifier uses. A user's
-    default_thread_tools preference curates a subset of ALL_TOOLS, so a
-    tool can be default-bound for your thread but still protected by this
-    guard. Mixed batches (core + non-core) succeed for the non-core portion
-    and refuse only the core names; retry the refused subset separately with
-    force=True if you actually want them disabled. There is no symmetric
-    guard on the desktop Settings → Tools UI; this rule only applies to the
-    agent-facing path.
-
-    Disable now preserves the tool's prior permanent/TTL state. If you had
-    a tool as permanent and force-disable it, the entry stays in
-    enabled_tools but is suppressed from the bound set via disabled_tools.
-    Un-disabling via enable restores the original state, so the permanent
-    badge survives the round-trip.
+    Search, enable, disable, and inspect available tools for this thread.
 
     Actions:
-      search:          Search tools by keyword and/or category
-      enable:          Enable tools (ends the turn if new tools were added)
-      disable:         Disable tools for this thread (next-message effect)
-      list_categories: List all tool categories with counts
-      status:          Show enabled/disabled tools (with TTL remaining)
-
-    Enable response breakdown. Every input tool is classified in exactly
-    one of these buckets, checked in this priority order:
-      Un-disabled:             the name was in tc.disabled_tools and got
-                               removed. Any preserved permanent or TTL
-                               entry is restored AS-IS, so the requested
-                               `ttl` does NOT apply (preventing a batch-
-                               level TTL from silently promoting an
-                               unrelated tool). Only when there's no
-                               preserved state and no default binding does
-                               a fresh entry get written using `ttl`.
-      Already permanent:       already in tc.enabled_tools (persisted,
-                               no expiry). TTL requests are rejected, so no
-                               demotion from permanent to TTL.
-      Already bound (default): part of the thread's default-bound tool set
-                               (ALL_TOOLS or the user's default_thread_tools
-                               override). Already callable, nothing written.
-                               NOTE: "default-bound" is NOT the same as the
-                               "core" protection used by disable; disable
-                               protects ALL_TOOLS essentials (broader).
-      TTL refreshed:           existed in tc.temporary_tools; expires_at
-                               pushed out by ttl.
-      Promoted to permanent:   existed in tc.temporary_tools; moved to
-                               tc.enabled_tools (loses TTL, gains persistence).
-      Newly loaded:            none of the above; written fresh to
-                               enabled_tools (ttl=permanent) or
-                               temporary_tools (ttl=30m/2h/6h/24h).
+      search: find tools by query/category.
+      enable: bind tools or a category. If new tools are added, stop after
+        this tool result; the harness reloads and resumes with them callable.
+      disable: unbind tools. Core tools require force=True.
+      list_categories: show categories.
+      status: show enabled/disabled tools and TTLs.
 
     Args:
         action: One of: search, enable, disable, list_categories, status
         query: Search keyword (for 'search' action)
         category: Category name to filter or enable (e.g. "email", "twitch")
         tools: List of tool names to enable or disable
-        ttl: TTL preset for 'enable'. One of "30m", "2h" (default), "6h",
-             "24h", or "permanent". Ignored for other actions.
+        ttl: For enable: "30m", "2h" (default), "6h", "24h", or "permanent"
         force: For 'disable' only. Set True to allow disabling core tools.
     """
     action = action.strip().lower()

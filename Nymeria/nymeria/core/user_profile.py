@@ -19,7 +19,25 @@ LEGACY_TOOL_RENAMES: Dict[str, str] = {
     "todo": "nym_todo",
     "todo_delete": "nym_todo_delete",
     "todo_list": "nym_todo_list",
+    # 2026-04-30: profile_* + notepad_* collapsed into memory_add/edit/read.
+    # Deletion (profile_forget, notepad_clear) is now memory_add(content="").
+    "profile_save": "memory_add",
+    "profile_forget": "memory_add",
+    "profile_list": "memory_read",
+    "notepad_write": "memory_add",
+    "notepad_read": "memory_read",
+    "notepad_edit": "memory_edit",
+    "notepad_clear": "memory_add",
+    # 2026-04-30: six trigger tools collapsed into read/write dispatchers.
+    "trigger_create": "trigger_config",
+    "trigger_update": "trigger_config",
+    "trigger_delete": "trigger_config",
+    "trigger_list": "trigger_info",
+    "trigger_inspect": "trigger_info",
+    "trigger_sources_info": "trigger_info",
 }
+
+DEFAULT_GLOBAL_SKILLS: List[str] = ["self-improve"]
 
 
 def migrate_tool_names(names: List[str]) -> List[str]:
@@ -180,6 +198,13 @@ class UserProfile(BaseModel):
         description=(
             "Agent Skills turned on by default for all of this user's threads. "
             "Per-thread enabled_skills/disabled_skills extend/override this set."
+        ),
+    )
+    global_skill_defaults_migrated: bool = Field(
+        default=False,
+        description=(
+            "Watermark: True once the one-time default global Skill migration "
+            "has run for this profile"
         ),
     )
 
@@ -366,14 +391,15 @@ class UserProfileManager:
                 profile = UserProfile.model_validate(data)
                 logger.debug(f"Loaded profile for user: {user_id}")
                 profile = self._migrate_rag_enabled(profile)
+                profile = self._migrate_default_global_skills(profile)
                 return profile
             except Exception as e:
                 logger.error(f"Failed to load profile for {user_id}: {e}")
                 # Return new profile on error
-                return UserProfile(user_id=user_id)
+                return self._migrate_default_global_skills(UserProfile(user_id=user_id))
         else:
             logger.debug(f"Creating new profile for user: {user_id}")
-            return UserProfile(user_id=user_id)
+            return self._migrate_default_global_skills(UserProfile(user_id=user_id))
 
     def _migrate_rag_enabled(self, profile: UserProfile) -> UserProfile:
         """One-time migration: ensure existing profiles get rag_enabled=True.
@@ -399,6 +425,43 @@ class UserProfileManager:
                 logger.info(f"Migrated profile {profile.user_id}: rag_enabled=True")
             except Exception as e:
                 logger.warning(f"Failed to persist rag migration for {profile.user_id}: {e}")
+        return profile
+
+    def _migrate_default_global_skills(self, profile: UserProfile) -> UserProfile:
+        """One-time migration: make bundled self-improvement opt-out via UI.
+
+        ``self-improve`` should be on by default, but through the same
+        enabled_global_skills setting the frontend checkbox edits. The
+        watermark prevents re-adding it after the user unticks the box.
+        """
+        if profile.global_skill_defaults_migrated:
+            return profile
+
+        lock = self._get_lock(profile.user_id)
+        with lock:
+            if profile.global_skill_defaults_migrated:
+                return profile
+            changed = False
+            for skill_name in DEFAULT_GLOBAL_SKILLS:
+                if skill_name not in profile.enabled_global_skills:
+                    profile.enabled_global_skills.append(skill_name)
+                    changed = True
+            profile.global_skill_defaults_migrated = True
+            if changed:
+                profile.updated_at = datetime.utcnow()
+            try:
+                self.save_profile(profile)
+                logger.info(
+                    "Migrated profile %s: default global skills=%s",
+                    profile.user_id,
+                    DEFAULT_GLOBAL_SKILLS,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to persist default global skill migration for %s: %s",
+                    profile.user_id,
+                    e,
+                )
         return profile
 
     def save_profile(self, profile: UserProfile) -> bool:

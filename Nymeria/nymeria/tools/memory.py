@@ -1,11 +1,25 @@
-"""Memory tools for Nymeria - save and manage user memories.
+"""Memory tools for Nymeria — unified CRUD over global profile + per-thread notepad.
 
-Memories are automatically injected into the system prompt, so Nymeria
-always knows them without needing to call a recall tool.
+The agent sees three primitives that dispatch on ``scope``:
+
+- ``memory_add(scope, key?, content)`` — create or upsert.
+- ``memory_edit(scope, key?, find, replace)`` — surgical find/replace within an entry.
+- ``memory_read(scope, key?, query?)`` — get one, list all, or substring-filter.
+
+``scope="global"`` operates on key/value entries in the user profile (auto-injected
+into every future conversation). ``scope="thread"`` operates on the active thread's
+notepad (markdown file that survives context compaction).
+
+Empty content / replace-to-empty triggers deletion at the storage layer:
+the profile entry is popped (no zombie blanks in ``memory_read`` output),
+and the notepad file is unlinked.
+
+Bulk wipe (``memory_clear_all``), personality preferences (``personality_set``),
+and semantic search (``rag_search`` / ``rag_settings``) stay separate — they're
+different mental models and warrant lexically distinct tools.
 """
 
 import logging
-from pathlib import Path
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -13,9 +27,12 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.user_profile import UserProfileManager
 from ..core.memory_index import MemoryIndex
-from .utils import get_user_id
+from . import thread_notes
+from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
+
+VALID_SCOPES = ("global", "thread")
 
 # Global profile manager instance (initialized lazily)
 _profile_manager: Optional[UserProfileManager] = None
@@ -25,7 +42,6 @@ def _get_profile_manager() -> UserProfileManager:
     """Get or create the global profile manager."""
     global _profile_manager
     if _profile_manager is None:
-        # Default to standard data directory
         from ..config import get_settings
         settings = get_settings()
         _profile_manager = UserProfileManager(settings.data_dir)
@@ -44,7 +60,6 @@ def _get_memory_index(user_id: str) -> Optional[MemoryIndex]:
         from ..config import get_settings
         settings = get_settings()
 
-        # Sanitize user_id for path safety
         safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
         if not safe_user_id:
             safe_user_id = "default"
@@ -56,124 +71,245 @@ def _get_memory_index(user_id: str) -> Optional[MemoryIndex]:
         return None
 
 
+def _validate_scope(scope: str) -> Optional[str]:
+    """Return an error string if scope is invalid, else None."""
+    if scope not in VALID_SCOPES:
+        return f"[Error]: scope must be one of {VALID_SCOPES}, got '{scope}'."
+    return None
+
+
+def _rag_index_global(user_id: str, key: str, value: str) -> None:
+    """Replace a key's chunk in the RAG index. Silently swallows failures."""
+    memory_index = _get_memory_index(user_id)
+    if not memory_index:
+        return
+    try:
+        memory_index.delete_memory_key(user_id, key)
+        memory_index.add_chunk(
+            content=f"{key}: {value}",
+            metadata={"key": key},
+            chunk_type="memory",
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to index memory in RAG: {e}")
+
+
+def _rag_remove_global(user_id: str, key: str) -> None:
+    """Remove a key from the RAG index. Silently swallows failures."""
+    memory_index = _get_memory_index(user_id)
+    if not memory_index:
+        return
+    try:
+        memory_index.delete_memory_key(user_id, key)
+    except Exception as e:
+        logger.warning(f"Failed to remove memory from RAG index: {e}")
+
+
 @tool
-def profile_save(
-    key: str,
-    value: str,
+def memory_add(
+    scope: str,
+    content: str,
+    key: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Save a memory about the user. Auto-injected into future conversations.
+    Save a memory. Creates a new entry or overwrites an existing one.
+
+    scope="global": persistent fact about the user. Requires `key` (e.g.
+        "occupation", "favorite_language"). Auto-injected into every future
+        conversation. Examples:
+          memory_add(scope="global", key="prefers_typescript", content="Yes")
+          memory_add(scope="global", key="timezone", content="Australia/Sydney")
+
+    scope="thread": per-thread notepad text that survives compaction. No `key`
+        — there is one notepad per thread. Overwrites the entire notepad.
+        Example:
+          memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
+
+    Empty `content` deletes the entry (global) or the notepad (thread).
 
     Args:
-        key: Category identifier (e.g., "user_name", "occupation")
-        value: Information to remember (max 1000 chars)
+        scope: "global" (user profile) or "thread" (per-thread notepad).
+        content: The memory text. Empty string deletes.
+        key: Required when scope="global". Ignored when scope="thread".
     """
-    logger.info(f"profile_save called: key={key}")
+    err = _validate_scope(scope)
+    if err:
+        return err
 
-    user_id = get_user_id(config)
-    manager = _get_profile_manager()
+    if scope == "global":
+        if not key:
+            return "[Error]: scope='global' requires a key (e.g., 'occupation')."
 
-    # Use atomic update to prevent race conditions
-    with manager.atomic_update(user_id) as profile:
-        success = profile.add_memory(key, value)
-        if success:
-            logger.info(f"Memory saved for user {user_id}: {key}={value[:50]}")
+        user_id = get_user_id(config)
+        manager = _get_profile_manager()
 
-            # Also index in RAG for semantic search
-            memory_index = _get_memory_index(user_id)
-            if memory_index:
-                try:
-                    memory_index.delete_memory_key(user_id, key)
-                    memory_index.add_chunk(
-                        content=f"{key}: {value}",
-                        metadata={"key": key},
-                        chunk_type="memory",
-                        user_id=user_id,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to index memory in RAG: {e}")
+        if content == "":
+            with manager.atomic_update(user_id) as profile:
+                if profile.remove_memory(key):
+                    logger.info(f"Memory deleted via memory_add(empty content) for user {user_id}: {key}")
+                    _rag_remove_global(user_id, key)
+                    return f"[Deleted]: Forgot '{key}'. This will no longer appear in future conversations."
+                return f"[Info]: No memory with key '{key}' to delete."
 
+        with manager.atomic_update(user_id) as profile:
+            ok = profile.add_memory(key, content)
+            if not ok:
+                return f"[Error]: Memory limit reached ({profile.MAX_MEMORIES} memories). Delete some first."
+            logger.info(f"Memory saved for user {user_id}: {key}={content[:50]}")
+            _rag_index_global(user_id, key, content)
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
-        else:
-            return f"[Error]: Memory limit reached ({profile.MAX_MEMORIES} memories). Use profile_forget to remove old ones first."
+
+    # scope == "thread"
+    thread_id = get_thread_id(config)
+    return thread_notes.write_notepad(thread_id, content, mode="replace")
 
 
 @tool
-def profile_forget(
-    key: str,
+def memory_edit(
+    scope: str,
+    find: str,
+    replace: str = "",
+    key: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Remove a memory or personality preference by key.
+    Surgical edit of an existing memory. Find a substring and replace it.
+
+    scope="global": find/replace within a single profile memory's value.
+        Requires `key`. If the resulting value is empty, the entry is removed.
+        Example:
+          memory_edit(scope="global", key="job_title", find="Engineer", replace="Senior Engineer")
+
+    scope="thread": find/replace within the thread notepad's markdown.
+        No `key`. Empty `replace` deletes the matched text. If the notepad
+        becomes empty, the file is deleted.
+        Example:
+          memory_edit(scope="thread", find="deadline Friday", replace="deadline Monday")
 
     Args:
-        key: The memory key or personality trait to delete
+        scope: "global" or "thread".
+        find: Exact substring to locate (first occurrence).
+        replace: Replacement text. Empty string deletes the matched substring.
+        key: Required when scope="global". Ignored when scope="thread".
     """
-    logger.info(f"profile_forget called: key={key}")
+    err = _validate_scope(scope)
+    if err:
+        return err
 
-    user_id = get_user_id(config)
-    manager = _get_profile_manager()
+    if scope == "global":
+        if not key:
+            return "[Error]: scope='global' requires a key."
+        if not find:
+            return "[Error]: 'find' must be non-empty."
 
-    # Use atomic update to prevent race conditions
-    with manager.atomic_update(user_id) as profile:
-        # Try memories first, then personality preferences
-        if profile.remove_memory(key):
-            logger.info(f"Memory deleted for user {user_id}: {key}")
-            memory_index = _get_memory_index(user_id)
-            if memory_index:
-                try:
-                    memory_index.delete_memory_key(user_id, key)
-                except Exception as e:
-                    logger.warning(f"Failed to remove memory from RAG index: {e}")
-            return f"[Deleted]: Forgot '{key}'. This will no longer appear in future conversations."
-        if profile.clear_personality(key):
-            logger.info(f"Personality preference deleted for user {user_id}: {key}")
-            return f"[Deleted]: Removed personality preference '{key}'."
+        user_id = get_user_id(config)
+        manager = _get_profile_manager()
 
-        # Not found in either — list available keys to help
-        keys = profile.list_memory_keys()
-        traits = list(profile.personality_overrides.keys())
-        available = keys + traits
-        if available:
-            return f"[Error]: No memory or preference found with key '{key}'. Available keys: {', '.join(available)}"
-        return f"[Error]: No memories stored yet."
+        with manager.atomic_update(user_id) as profile:
+            mem = profile.get_memory(key)
+            if not mem:
+                return f"[Error]: No memory with key '{key}'."
+
+            if find not in mem.value:
+                return f"[Error]: Could not find '{find}' in memory '{key}'."
+
+            updated_value = mem.value.replace(find, replace, 1)
+
+            if updated_value == "":
+                profile.remove_memory(key)
+                logger.info(f"Memory '{key}' edited to empty -> removed for user {user_id}")
+                _rag_remove_global(user_id, key)
+                return f"[Deleted]: Edit emptied '{key}'; entry removed."
+
+            profile.add_memory(key, updated_value)
+            logger.info(f"Memory '{key}' edited for user {user_id}")
+            _rag_index_global(user_id, key, updated_value)
+            return f"[Saved]: Updated '{key}'."
+
+    # scope == "thread"
+    thread_id = get_thread_id(config)
+    return thread_notes.edit_notepad(thread_id, find, replace)
 
 
 @tool
-def profile_list(
+def memory_read(
+    scope: str,
+    key: Optional[str] = None,
+    query: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    List all memories currently stored for this user.
+    Read memory. Get a specific entry, list everything, or substring-filter.
 
-    Use this to show the user what you remember about them.
+    scope="global": user profile memories.
+        - No `key`, no `query`: list all memories + personality preferences.
+        - `key` provided: return that one memory's value.
+        - `query` provided: list memories whose key or value contains the query
+          (substring, case-insensitive). For semantic search use `rag_search`.
 
-    Returns:
-        List of all stored memories with their values
+    scope="thread": per-thread notepad.
+        - No `query`: return full notepad contents (or "[empty]").
+        - `query` provided: return only the notepad lines containing the query.
+
+    Args:
+        scope: "global" or "thread".
+        key: (global only) fetch a single memory by key.
+        query: substring filter (both scopes).
     """
-    logger.info("profile_list called")
+    err = _validate_scope(scope)
+    if err:
+        return err
 
-    user_id = get_user_id(config)
-    manager = _get_profile_manager()
-    profile = manager.get_profile(user_id)
+    if scope == "global":
+        user_id = get_user_id(config)
+        manager = _get_profile_manager()
+        profile = manager.get_profile(user_id)
 
-    if not profile.memories:
-        return "[Info]: No memories stored yet. Use profile_save to remember things about the user."
+        if key:
+            mem = profile.get_memory(key)
+            if not mem:
+                return f"[Info]: No memory with key '{key}'."
+            return f"{mem.key}: {mem.value}"
 
-    lines = [f"Stored memories ({len(profile.memories)} total):"]
-    for mem in sorted(profile.memories, key=lambda m: m.key):
-        lines.append(f"- {mem.key}: {mem.value}")
+        memories = profile.memories
+        if query:
+            memories = profile.search_memories(query)
 
-    if profile.personality_overrides:
-        lines.append("\nPersonality preferences:")
-        for trait, value in profile.personality_overrides.items():
-            lines.append(f"- {trait}: {value}")
+        if not memories and not profile.personality_overrides:
+            return "[Info]: No memories stored yet. Use memory_add(scope='global', key=..., content=...) to remember things about the user."
 
-    return "\n".join(lines)
+        lines = [f"Stored memories ({len(memories)} shown):"] if memories else []
+        for mem in sorted(memories, key=lambda m: m.key):
+            lines.append(f"- {mem.key}: {mem.value}")
+
+        if profile.personality_overrides and not query:
+            lines.append("\nPersonality preferences:")
+            for trait, value in profile.personality_overrides.items():
+                lines.append(f"- {trait}: {value}")
+
+        if not lines:
+            return f"[Info]: No memories match '{query}'."
+        return "\n".join(lines)
+
+    # scope == "thread"
+    thread_id = get_thread_id(config)
+    content = thread_notes.read_notepad(thread_id)
+    if not content:
+        return "[empty]"
+
+    if query:
+        q_lower = query.lower()
+        matched = [line for line in content.splitlines() if q_lower in line.lower()]
+        if not matched:
+            return f"[Info]: No notepad lines match '{query}'."
+        return "\n".join(matched)
+
+    return content
 
 
 @tool
@@ -182,10 +318,11 @@ def memory_clear_all(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Clear ALL memories for this user.
+    Clear ALL global memories for this user.
 
     Use this when the user explicitly asks you to forget everything about them.
-    This is irreversible - all memories and personality preferences will be deleted.
+    This is irreversible — all memories and personality preferences will be deleted.
+    Does NOT touch per-thread notepads.
 
     Returns:
         Confirmation message
@@ -195,7 +332,6 @@ def memory_clear_all(
     user_id = get_user_id(config)
     manager = _get_profile_manager()
 
-    # Use atomic update to prevent race conditions
     with manager.atomic_update(user_id) as profile:
         count = len(profile.memories)
         personality_count = len(profile.personality_overrides)
@@ -234,7 +370,6 @@ def personality_set(
     user_id = get_user_id(config)
     manager = _get_profile_manager()
 
-    # Use atomic update to prevent race conditions
     with manager.atomic_update(user_id) as profile:
         profile.set_personality(trait, value)
         logger.info(f"Personality set for user {user_id}: {trait}={value}")
@@ -261,23 +396,19 @@ def rag_search(
     manager = _get_profile_manager()
     profile = manager.get_profile(user_id)
 
-    # Check if RAG is enabled
     if not profile.opt_in.rag_enabled:
         return (
             "[RAG Disabled]: RAG is not enabled for this user. "
             "Use rag_settings(enabled=True) to enable it first."
         )
 
-    # Get memory index
     memory_index = _get_memory_index(user_id)
     if not memory_index:
         return "[Error]: Could not access memory index."
 
     try:
-        # Get RAG preferences
         rag_prefs = profile.get_rag_preferences()
 
-        # Build chunk types filter based on preferences
         chunk_types = []
         if rag_prefs.get("include_conversations", True):
             chunk_types.append("conversation")
@@ -289,10 +420,8 @@ def rag_search(
         if not chunk_types:
             return "[Info]: All content types are disabled in RAG settings."
 
-        # Clamp max_results
         max_results = max(1, min(10, max_results))
 
-        # Search
         results = memory_index.search(
             query=query,
             user_id=user_id,
@@ -303,7 +432,6 @@ def rag_search(
         if not results:
             return f"[No Results]: No relevant context found for '{query}'."
 
-        # Format results
         lines = [f"Found {len(results)} relevant result(s) for '{query}':\n"]
 
         for i, result in enumerate(results, 1):
@@ -313,7 +441,6 @@ def rag_search(
                 'todo': '✅',
             }.get(result.chunk_type, '📝')
 
-            # Truncate long content
             content = result.content
             if len(content) > 400:
                 content = content[:397] + "..."
@@ -351,19 +478,17 @@ def rag_settings(
         include_todos: Include completed TODOs
         auto_flush: Preserve context before window trims
     """
-    logger.info(f"rag_settings called")
+    logger.info("rag_settings called")
 
     user_id = get_user_id(config)
     manager = _get_profile_manager()
 
     with manager.atomic_update(user_id) as profile:
-        # Apply changes
         if enabled is not None:
             profile.opt_in.rag_enabled = enabled
             logger.info(f"RAG {'enabled' if enabled else 'disabled'} for user {user_id}")
 
         if max_chunks is not None:
-            # Clamp to valid range
             max_chunks = max(1, min(10, max_chunks))
             profile.set_rag_preference("max_chunks", max_chunks)
 
@@ -379,7 +504,6 @@ def rag_settings(
         if auto_flush is not None:
             profile.set_rag_preference("auto_flush", auto_flush)
 
-        # Build status response
         rag_prefs = profile.get_rag_preferences()
         status = "enabled" if profile.opt_in.rag_enabled else "disabled"
 
@@ -394,11 +518,10 @@ def rag_settings(
         ]
 
         if profile.opt_in.rag_enabled:
-            # Get stats if RAG is enabled
             memory_index = _get_memory_index(user_id)
             if memory_index:
                 stats = memory_index.get_stats(user_id)
-                lines.append(f"\nIndex stats:")
+                lines.append("\nIndex stats:")
                 lines.append(f"- Total chunks: {stats.get('total_chunks', 0)}")
                 for chunk_type, count in stats.get('by_type', {}).items():
                     lines.append(f"  - {chunk_type}: {count}")
@@ -407,12 +530,10 @@ def rag_settings(
 
 
 # Export memory tools
-# memory_clear_all removed - dangerous, cheap models could hallucinate and wipe all memories
-# rag_settings removed - should be configured via UI settings
-PROFILE_TOOLS = [
-    profile_save,
-    profile_forget,
-    profile_list,
+MEMORY_TOOLS = [
+    memory_add,
+    memory_edit,
+    memory_read,
     personality_set,
     rag_search,
 ]

@@ -166,6 +166,7 @@ services:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
       - ./nymeria:/app/nymeria        # Bind mount: live code sync
+      - ./tests:/app/tests:ro         # Bind mount: focused backend tests for live validation
       - ./run.py:/app/run.py          # Bind mount: live entry point
       - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro

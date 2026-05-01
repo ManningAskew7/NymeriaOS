@@ -147,8 +147,8 @@ The outgoing request uses `input`, not `messages`:
       "type": "function_call",
       "id": "fc_...",
       "call_id": "call_...",
-      "name": "notepad_read",
-      "arguments": "{}"
+      "name": "memory_read",
+      "arguments": "{\"scope\": \"thread\"}"
     },
     {
       "type": "function_call_output",
@@ -593,12 +593,9 @@ reasoning text.
 Run focused backend tests after changing provider code:
 
 ```bash
-cd /opt/NymeriaOS
-docker run --rm \
-  -v /opt/NymeriaOS/Nymeria:/work \
-  -w /work \
-  nymeria-api \
-  bash -lc 'uv run --with pytest python -m pytest -q tests/test_reasoning_history.py tests/test_openai_responses_config.py'
+docker exec nymeria-api python -m pytest -q \
+  /app/tests/test_reasoning_history.py \
+  /app/tests/test_openai_responses_config.py
 ```
 
 Run a live MCP smoke if `OPENROUTER_API_KEY` is configured:
