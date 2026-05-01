@@ -197,6 +197,12 @@ function createAutonomousStore() {
     }
   }
 
+  function bufferPendingEvent(event: AutonomousEvent) {
+    const buf = _pendingEvents.get(event.thread_id) || [];
+    buf.push(event);
+    _pendingEvents.set(event.thread_id, buf);
+  }
+
   function handleEvent(event: AutonomousEvent) {
     console.log('[Autonomous] Event:', event.type, event);
 
@@ -312,6 +318,23 @@ function createAutonomousStore() {
           activityStore.fetch();
         }
         break;
+
+      case 'tool_reload': {
+        if (isCurrentThread && isOurTask && chatStore.isStreaming) {
+          const ttlSeconds = event.ttl_seconds ?? event.ttlSeconds;
+          chatStore.handleToolReload(
+            (event.tools as string[]) || [],
+            (event.ttl as string) || '',
+            typeof ttlSeconds === 'number' ? ttlSeconds : null,
+            event.source as string | undefined,
+            (event.skill_name as string | undefined) || (event.skillName as string | undefined),
+            event.reason as string | undefined
+          );
+        } else if (isCurrentThread && isOurTask && !chatStore.isStreaming) {
+          bufferPendingEvent(event);
+        }
+        break;
+      }
 
       case 'workspace_artifact':
         if (isCurrentThread && isOurTask && chatStore.isStreaming) {
