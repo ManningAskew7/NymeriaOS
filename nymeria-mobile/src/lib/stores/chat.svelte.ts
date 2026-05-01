@@ -1,4 +1,4 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats } from '$lib/types';
+import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 
 function generateId(): string {
@@ -888,6 +888,40 @@ function createChatStore() {
       setTimeout(() => {
         lastCompactResult = null;
       }, 5000);
+    },
+
+    handleToolReload(
+      tools: string[],
+      ttl: string,
+      ttlSeconds: number | null,
+      source?: string,
+      skillName?: string | null,
+      reason?: string | null
+    ) {
+      this._forceFlush();
+
+      const lastIndex = messages.length - 1;
+      if (lastIndex >= 0 && messages[lastIndex].role === 'assistant') {
+        messages = [
+          ...messages.slice(0, lastIndex),
+          { ...messages[lastIndex], status: 'complete' as const }
+        ];
+      }
+
+      messages = [
+        ...messages,
+        {
+          id: generateId(),
+          role: 'assistant' as const,
+          content: '',
+          steps: [],
+          intermediateContent: '',
+          timestamp: new Date(),
+          status: 'streaming' as const,
+          toolCalls: [],
+          toolReloadInfo: { tools, ttl, source, skillName, reason } as ToolReloadInfo,
+        }
+      ];
     },
 
     // Context stats methods

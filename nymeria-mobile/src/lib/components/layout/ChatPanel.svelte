@@ -245,6 +245,19 @@
           );
         }
         break;
+
+      case 'tool_reload': {
+        const data = event.data as {
+          tools: string[];
+          ttl: string;
+          ttlSeconds: number | null;
+          source?: string;
+          skillName?: string | null;
+          reason?: string | null;
+        };
+        chatStore.handleToolReload(data.tools, data.ttl, data.ttlSeconds, data.source, data.skillName, data.reason);
+        break;
+      }
     }
   }
 </script>

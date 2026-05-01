@@ -19,11 +19,26 @@
     info.tools.length > 0 ? info.tools.join(', ') : ''
   );
 
+  const isSkillKit = $derived(info.source === 'skill_kit');
+  const isSkillConfig = $derived(info.source === 'skill_config');
+  const labelText = $derived(
+    isSkillConfig ? 'Skill Kit Published' : isSkillKit ? 'Skill Kit Binding' : 'Tool Binding'
+  );
+  const sourceText = $derived(
+    isSkillConfig && info.skillName
+      ? `skill_config publishing ${info.skillName}`
+      : isSkillKit && info.skillName
+        ? `Skill Kit ${info.skillName}`
+        : 'tool_search'
+  );
+
   const promptText = $derived(
     info.resumePrompt ||
-    (info.tools.length > 0
-      ? `[System: tools ${info.tools.join(', ')} are now loaded ${info.ttl === 'permanent' ? 'permanently' : `for the next ${info.ttl || '2h'}`}. Continue the user's task using the new tools.]`
-      : `[System: tools reloaded ${info.ttl === 'permanent' ? 'permanently' : `for the next ${info.ttl || '2h'}`}. Continue the user's task using the new tools.]`)
+    (isSkillConfig
+      ? `[System: capability reload complete after ${sourceText}. Continue the user's task with the refreshed skill list.]`
+      : info.tools.length > 0
+      ? `[System: tools ${info.tools.join(', ')} are now loaded ${info.ttl === 'permanent' ? 'permanently' : `for the next ${info.ttl || '2h'}`} by ${sourceText}. Continue the user's task using the new tools.]`
+      : `[System: tools reloaded ${info.ttl === 'permanent' ? 'permanently' : `for the next ${info.ttl || '2h'}`} by ${sourceText}. Continue the user's task using the new tools.]`)
   );
 </script>
 
@@ -34,12 +49,14 @@
       <span class="icon">
         <Icon name="cog" size={12} />
       </span>
-      <span class="label">Tool Binding</span>
+      <span class="label">{labelText}</span>
       {#if toolNames}
         <span class="sep">-</span>
         <span class="tools">{toolNames}</span>
       {/if}
-      <span class="ttl">({ttlLabel(info.ttl)})</span>
+      {#if !isSkillConfig}
+        <span class="ttl">({ttlLabel(info.ttl)})</span>
+      {/if}
       <span class="chevron" class:open={expanded}>
         <Icon name="chevronRight" size={10} />
       </span>

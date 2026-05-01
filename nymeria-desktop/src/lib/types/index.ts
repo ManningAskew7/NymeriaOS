@@ -53,6 +53,9 @@ export interface MessageStep {
 export interface ToolReloadInfo {
   tools: string[];
   ttl: string;
+  source?: string;
+  skillName?: string | null;
+  reason?: string | null;
   resumePrompt?: string;
 }
 
@@ -219,6 +222,10 @@ export interface SkillMetadata {
   description: string;
   scope: SkillScope;
   allowed_tools: string[];
+  required_tools: string[];
+  tool_ttl: string;
+  is_skill_kit: boolean;
+  default_active: boolean;
   has_scripts: boolean;
   has_references: boolean;
   has_assets: boolean;
@@ -247,6 +254,7 @@ export interface SkillInstallRequest {
 
 export interface ThreadActiveSkillsResponse {
   thread_id: string;
+  default_enabled: string[];
   enabled_global: string[];
   thread_enabled: string[];
   thread_disabled: string[];

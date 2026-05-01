@@ -1015,7 +1015,14 @@ function createChatStore() {
       }, 5000);
     },
 
-    handleToolReload(tools: string[], ttl: string, ttlSeconds: number | null) {
+    handleToolReload(
+      tools: string[],
+      ttl: string,
+      ttlSeconds: number | null,
+      source?: string,
+      skillName?: string | null,
+      reason?: string | null
+    ) {
       this._forceFlush();
 
       const lastIndex = messages.length - 1;
@@ -1037,7 +1044,7 @@ function createChatStore() {
           status: 'streaming' as const,
           activityPhase: 'processing' as const,
           activityUpdatedAt: new Date(),
-          toolReloadInfo: { tools, ttl } as ToolReloadInfo,
+          toolReloadInfo: { tools, ttl, source, skillName, reason } as ToolReloadInfo,
         }
       ];
     },

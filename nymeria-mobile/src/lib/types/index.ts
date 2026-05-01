@@ -43,6 +43,15 @@ export interface MessageStep {
   endTime?: Date;
 }
 
+export interface ToolReloadInfo {
+  tools: string[];
+  ttl: string;
+  source?: string;
+  skillName?: string | null;
+  reason?: string | null;
+  resumePrompt?: string;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -58,6 +67,7 @@ export interface Message {
   messagesRemoved?: number;       // Number of messages summarized by compaction
   autoResumed?: boolean;          // True when assistant output resumed after compaction
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
+  toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
 }
 
 export interface ToolCall {
@@ -166,6 +176,44 @@ export interface ThreadConfigUpdateRequest {
   clear_enabled_tools?: boolean;
   clear_llm_config?: boolean;
   clear_system_prompt?: boolean;
+}
+
+// =========================================================================
+// Agent Skills (SKILL.md progressive-disclosure bundles)
+// =========================================================================
+
+export type SkillScope = 'bundled' | 'global' | 'user';
+export type SkillMarketplaceSource = 'anthropic' | 'clawhub' | 'git';
+
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  scope: SkillScope;
+  allowed_tools: string[];
+  required_tools: string[];
+  tool_ttl: string;
+  is_skill_kit: boolean;
+  default_active: boolean;
+  has_scripts: boolean;
+  has_references: boolean;
+  has_assets: boolean;
+}
+
+export interface SkillDetail extends SkillMetadata {
+  body: string;
+  path: string;
+  license?: string | null;
+  scripts: string[];
+  references: string[];
+}
+
+export interface ThreadActiveSkillsResponse {
+  thread_id: string;
+  default_enabled: string[];
+  enabled_global: string[];
+  thread_enabled: string[];
+  thread_disabled: string[];
+  skills: SkillMetadata[];
 }
 
 export interface AgentTemplate {
@@ -367,7 +415,8 @@ export type SSEEventType =
   | 'compact_result'
   | 'compacted'
   | 'context_attached'
-  | 'iteration_limit';
+  | 'iteration_limit'
+  | 'tool_reload';
 
 export interface SSEEvent {
   type: SSEEventType;
