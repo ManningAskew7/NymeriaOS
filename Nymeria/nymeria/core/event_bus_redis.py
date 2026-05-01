@@ -6,10 +6,10 @@ import logging
 import threading
 from dataclasses import asdict
 from datetime import datetime
-from queue import Queue, Empty
+from queue import Full, Queue, Empty
 from typing import Any, Dict, Optional
 
-from .event_bus import AutonomousEvent, EventBus
+from .event_bus import AutonomousEvent, EventBus, should_log_stream_event_sample
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,8 @@ class RedisEventBus(EventBus):
         self._subscriber_thread: Optional[threading.Thread] = None
         self._running = False
         self._connected = False
+        self._redis_publish_counts: Dict[str, int] = {}
+        self._redis_receive_counts: Dict[str, int] = {}
 
         # Try to connect to Redis
         self._connect()
@@ -110,6 +112,23 @@ class RedisEventBus(EventBus):
                                 data=data["data"],
                                 timestamp=datetime.fromisoformat(data["timestamp"]),
                             )
+                            with self._lock:
+                                receive_count = self._bump_counter(
+                                    self._redis_receive_counts,
+                                    event.event_type,
+                                )
+                                local_subscribers = len(self._subscribers)
+                            if should_log_stream_event_sample(event.event_type, receive_count):
+                                logger.info(
+                                    "[REDIS EVENT BUS] message_received type=%s count=%d "
+                                    "local_subscribers=%d thread=%s user=%s task=%s",
+                                    event.event_type,
+                                    receive_count,
+                                    local_subscribers,
+                                    event.thread_id,
+                                    event.user_id,
+                                    event.task_id,
+                                )
                             # Dispatch to local subscribers using parent class method
                             self._dispatch_local(event)
                         except (json.JSONDecodeError, KeyError) as e:
@@ -138,13 +157,48 @@ class RedisEventBus(EventBus):
         with self._lock:
             subscriber_count = len(self._subscribers)
             if subscriber_count == 0:
+                no_subscriber_key = f"redis:no_subscribers:{event.event_type}"
+                no_subscriber_count = self._bump_counter(self._drop_counts, no_subscriber_key)
+                if should_log_stream_event_sample(event.event_type, no_subscriber_count):
+                    logger.info(
+                        "[REDIS EVENT BUS] no_local_subscribers type=%s count=%d "
+                        "thread=%s user=%s task=%s",
+                        event.event_type,
+                        no_subscriber_count,
+                        event.thread_id,
+                        event.user_id,
+                        event.task_id,
+                    )
                 return
 
             for sub_id, queue in list(self._subscribers.items()):
                 try:
                     queue.put_nowait(event)
-                except Exception:
-                    logger.warning(f"Queue full for subscriber {sub_id}, dropping event")
+                    enqueue_key = f"redis:{sub_id}:{event.event_type}"
+                    enqueue_count = self._bump_counter(self._enqueue_counts, enqueue_key)
+                    if should_log_stream_event_sample(event.event_type, enqueue_count):
+                        logger.info(
+                            "[REDIS EVENT BUS] queue_enqueue subscriber=%s type=%s count=%d "
+                            "queue_size=%d thread=%s task=%s",
+                            sub_id[:8],
+                            event.event_type,
+                            enqueue_count,
+                            queue.qsize(),
+                            event.thread_id,
+                            event.task_id,
+                        )
+                except Full:
+                    drop_key = f"redis:{sub_id}:{event.event_type}"
+                    drop_count = self._bump_counter(self._drop_counts, drop_key)
+                    logger.warning(
+                        "[REDIS EVENT BUS] queue_drop_full subscriber=%s type=%s "
+                        "drop_count=%d thread=%s task=%s",
+                        sub_id[:8],
+                        event.event_type,
+                        drop_count,
+                        event.thread_id,
+                        event.task_id,
+                    )
 
     def publish(self, event: AutonomousEvent) -> None:
         """
@@ -159,6 +213,11 @@ class RedisEventBus(EventBus):
             return
 
         try:
+            with self._lock:
+                publish_count = self._bump_counter(
+                    self._redis_publish_counts,
+                    event.event_type,
+                )
             # Serialize event to JSON
             event_data = {
                 "event_type": event.event_type,
@@ -172,10 +231,17 @@ class RedisEventBus(EventBus):
 
             # Publish to Redis
             receivers = self._redis_client.publish(self.CHANNEL_NAME, message)
-            logger.info(
-                f"[REDIS EVENT BUS] Published {event.event_type} to {receivers} receiver(s) "
-                f"(thread={event.thread_id})"
-            )
+            if should_log_stream_event_sample(event.event_type, publish_count):
+                logger.info(
+                    "[REDIS EVENT BUS] publish type=%s count=%d redis_receivers=%s "
+                    "thread=%s user=%s task=%s",
+                    event.event_type,
+                    publish_count,
+                    receivers,
+                    event.thread_id,
+                    event.user_id,
+                    event.task_id,
+                )
 
         except Exception as e:
             logger.error(f"[REDIS EVENT BUS] Publish failed: {e}, falling back to local")

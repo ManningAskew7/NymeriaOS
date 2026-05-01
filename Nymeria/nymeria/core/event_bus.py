@@ -6,12 +6,23 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, TYPE_CHECKING
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 
 if TYPE_CHECKING:
     from ..config import Settings
 
 logger = logging.getLogger(__name__)
+
+HIGH_VOLUME_EVENT_TYPES = frozenset({"response", "thinking", "tool_call_delta"})
+
+
+def should_log_stream_event_sample(event_type: str, count: int) -> bool:
+    """Return True for first events and sampled high-volume stream chunks."""
+    if count <= 3:
+        return True
+    if event_type in HIGH_VOLUME_EVENT_TYPES:
+        return count % 100 == 0
+    return count % 10 == 0
 
 
 @dataclass
@@ -38,7 +49,14 @@ class EventBus:
     def __init__(self):
         self._subscribers: Dict[str, Queue] = {}
         self._lock = threading.Lock()
+        self._publish_counts: Dict[str, int] = {}
+        self._enqueue_counts: Dict[str, int] = {}
+        self._drop_counts: Dict[str, int] = {}
         logger.info("EventBus initialized")
+
+    def _bump_counter(self, counter: Dict[str, int], key: str) -> int:
+        counter[key] = counter.get(key, 0) + 1
+        return counter[key]
 
     def subscribe(self, subscriber_id: str) -> Queue:
         """
@@ -81,26 +99,64 @@ class EventBus:
         """
         with self._lock:
             subscriber_count = len(self._subscribers)
+            publish_count = self._bump_counter(self._publish_counts, event.event_type)
             if subscriber_count == 0:
                 # Log when important events are dropped due to no subscribers
-                if event.event_type in ("task_started", "task_completed", "response",
-                                        "interactive_done", "thread_updated", "thread_deleted"):
+                if should_log_stream_event_sample(event.event_type, publish_count):
                     logger.warning(
-                        f"[EVENT BUS] No subscribers! Dropping {event.event_type} event "
-                        f"(thread={event.thread_id}). "
-                        f"Frontend may not be connected to /autonomous/stream"
+                        "[EVENT BUS] publish_drop_no_subscribers type=%s count=%d "
+                        "thread=%s user=%s task=%s. Frontend may not be connected "
+                        "to /autonomous/stream",
+                        event.event_type,
+                        publish_count,
+                        event.thread_id,
+                        event.user_id,
+                        event.task_id,
                     )
                 return
+
+            if should_log_stream_event_sample(event.event_type, publish_count):
+                logger.info(
+                    "[EVENT BUS] publish type=%s count=%d local_subscribers=%d "
+                    "thread=%s user=%s task=%s",
+                    event.event_type,
+                    publish_count,
+                    subscriber_count,
+                    event.thread_id,
+                    event.user_id,
+                    event.task_id,
+                )
 
             for sub_id, queue in list(self._subscribers.items()):
                 try:
                     # Non-blocking put, drop if queue is full
                     queue.put_nowait(event)
-                except Exception:
+                    enqueue_key = f"{sub_id}:{event.event_type}"
+                    enqueue_count = self._bump_counter(self._enqueue_counts, enqueue_key)
+                    if should_log_stream_event_sample(event.event_type, enqueue_count):
+                        logger.info(
+                            "[EVENT BUS] queue_enqueue subscriber=%s type=%s count=%d "
+                            "queue_size=%d thread=%s task=%s",
+                            sub_id[:8],
+                            event.event_type,
+                            enqueue_count,
+                            queue.qsize(),
+                            event.thread_id,
+                            event.task_id,
+                        )
+                except Full:
                     # Queue full, skip this subscriber
-                    logger.warning(f"Queue full for subscriber {sub_id}, dropping event")
-
-        logger.info(f"[EVENT BUS] Published {event.event_type} to {subscriber_count} subscriber(s) (thread={event.thread_id})")
+                    drop_key = f"{sub_id}:{event.event_type}"
+                    drop_count = self._bump_counter(self._drop_counts, drop_key)
+                    logger.warning(
+                        "[EVENT BUS] queue_drop_full subscriber=%s type=%s drop_count=%d "
+                        "thread=%s task=%s",
+                        sub_id[:8],
+                        event.event_type,
+                        drop_count,
+                        event.thread_id,
+                        event.task_id,
+                    )
 
     def get_subscriber_count(self) -> int:
         """Get the number of active subscribers."""
