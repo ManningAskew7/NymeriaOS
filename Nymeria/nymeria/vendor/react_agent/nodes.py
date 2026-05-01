@@ -9,10 +9,13 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, List, Callable, Optional
 from urllib.parse import urlparse
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages.utils import message_chunk_to_message
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.prebuilt import ToolNode
@@ -316,15 +319,7 @@ def create_agent_node(
     Returns:
         Agent node function compatible with LangGraph
     """
-    def agent_node(state: AgentState) -> dict:
-        """
-        The 'reasoning' node - asks the LLM what to do next.
-
-        Returns AIMessage that either:
-        - Has content (final answer to user)
-        - Has tool_calls (instructions to call tools)
-        - Has both (explaining what it's about to do)
-        """
+    def _prepare_messages(state: AgentState) -> List[BaseMessage]:
         messages = _sanitize_messages_for_anthropic(state["messages"], llm_config)
 
         # Summary line at INFO (always visible)
@@ -346,13 +341,11 @@ def create_agent_node(
                 logger.debug(f"[LLM]   [{i}] {msg_type}{tool_info}: {content_preview}...")
 
         # Prepend system prompt (not stored in state)
-        messages_with_system = [
+        return [
             SystemMessage(content=_format_system_prompt(system_prompt, llm_config))
         ] + messages
 
-        # Call the LLM
-        response = llm_with_tools.invoke(messages_with_system)
-
+    def _finish_response(response: AIMessage) -> dict:
         # Sanitize tool call names — some models emit leading/trailing whitespace
         # (e.g. ' CalendarAgent' instead of 'CalendarAgent') which breaks routing.
         if hasattr(response, 'tool_calls') and response.tool_calls:
@@ -382,7 +375,111 @@ def create_agent_node(
 
         return {"messages": [response]}
 
-    return agent_node
+    def agent_node(state: AgentState) -> dict:
+        """
+        The 'reasoning' node - asks the LLM what to do next.
+
+        Returns AIMessage that either:
+        - Has content (final answer to user)
+        - Has tool_calls (instructions to call tools)
+        - Has both (explaining what it's about to do)
+        """
+        messages_with_system = _prepare_messages(state)
+
+        # Sync graph callers use the normal invoke path. User-facing live
+        # streaming runs through the async node below.
+        response = llm_with_tools.invoke(messages_with_system)
+        return _finish_response(response)
+
+    async def async_agent_node(state: AgentState) -> dict:
+        """
+        Async reasoning node that consumes the LLM stream.
+
+        LangGraph only emits `on_chat_model_stream` events when the model is
+        actually consumed through its streaming interface. The sync node above
+        calls `invoke()`, which collapses provider deltas into a single final
+        model event. Autonomous and API streaming both use `astream_events()`,
+        so this async implementation preserves token-level provider chunks and
+        then merges them back into the final AIMessage required by the graph.
+        """
+        messages_with_system = _prepare_messages(state)
+        merged_chunk = None
+        stream_started_at = time.monotonic()
+        first_chunk_ms: Optional[int] = None
+        stream_chunks = 0
+        text_chunks = 0
+        text_chars = 0
+        reasoning_chunks = 0
+        reasoning_chars = 0
+        tool_call_chunk_events = 0
+
+        async for chunk in llm_with_tools.astream(messages_with_system):
+            stream_chunks += 1
+            if first_chunk_ms is None:
+                first_chunk_ms = int((time.monotonic() - stream_started_at) * 1000)
+
+            content = getattr(chunk, "content", None)
+            if isinstance(content, str):
+                if content:
+                    text_chunks += 1
+                    text_chars += len(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        if block:
+                            text_chunks += 1
+                            text_chars += len(block)
+                        continue
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type")
+                    if block_type in ("text", "output_text"):
+                        text = block.get("text", "")
+                        if text:
+                            text_chunks += 1
+                            text_chars += len(text)
+                    elif block_type in ("thinking", "reasoning"):
+                        # Count typed reasoning blocks without logging content.
+                        reasoning_chunks += 1
+
+            extras = getattr(chunk, "additional_kwargs", None) or {}
+            reasoning = extras.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                reasoning_chunks += 1
+                reasoning_chars += len(reasoning)
+
+            if getattr(chunk, "tool_call_chunks", None):
+                tool_call_chunk_events += 1
+
+            if merged_chunk is None:
+                merged_chunk = chunk
+            else:
+                merged_chunk = merged_chunk + chunk
+
+        if merged_chunk is None:
+            # Defensive fallback for custom models that implement astream() but
+            # produce no chunks.
+            logger.warning("[LLM STREAM] async astream yielded zero chunks; falling back to ainvoke()")
+            response = await llm_with_tools.ainvoke(messages_with_system)
+        else:
+            response = message_chunk_to_message(merged_chunk)
+
+        logger.info(
+            "[LLM STREAM] async_complete chunks=%d text_chunks=%d text_chars=%d "
+            "reasoning_chunks=%d reasoning_chars=%d tool_call_chunk_events=%d "
+            "first_chunk_ms=%s elapsed_ms=%d",
+            stream_chunks,
+            text_chunks,
+            text_chars,
+            reasoning_chunks,
+            reasoning_chars,
+            tool_call_chunk_events,
+            first_chunk_ms if first_chunk_ms is not None else "none",
+            int((time.monotonic() - stream_started_at) * 1000),
+        )
+        return _finish_response(response)
+
+    return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")
 
 
 def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_timeout: Optional[int] = None, on_timeout: Optional[Callable] = None) -> "SafeToolNode":
