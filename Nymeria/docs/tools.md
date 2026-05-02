@@ -121,6 +121,8 @@ Callable tools default to blocking `mode="ask"`, which returns the target thread
 
 Callable teams can scope which callable threads a thread sees. When a thread has `callable_team_id`, graph building includes only the owner's callable threads with the same team id. Unteamed threads keep the existing owner-wide callable visibility for backward compatibility. The desktop sidebar has a folder/team organization toggle and a bulk Team action for creating teams from selected threads.
 
+The frontend header count uses `GET /threads/{thread_id}/callable-tools`, which mirrors runtime visibility for that caller thread: ownership, team scoping, self-exclusion, disabled tools, and name conflicts.
+
 ---
 
 ## Core System Tools

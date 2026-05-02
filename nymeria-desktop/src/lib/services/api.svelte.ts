@@ -2959,6 +2959,19 @@ export class NymeriaAPI {
     return (await response.json()) as import('$lib/types').ThreadActiveSkillsResponse;
   }
 
+  async getThreadCallableTools(
+    threadId: string,
+    userId?: string,
+  ): Promise<import('$lib/types').ThreadCallableToolsResponse> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/callable-tools?${params.toString()}`,
+      { headers: this.getHeaders() },
+    );
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    return (await response.json()) as import('$lib/types').ThreadCallableToolsResponse;
+  }
+
   async getGlobalSkills(userId?: string): Promise<string[]> {
     const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(

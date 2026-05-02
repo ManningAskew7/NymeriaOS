@@ -4236,6 +4236,74 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 seen.add(name)
         return {"tools": result}
 
+    @app.get("/threads/{thread_id}/callable-tools", tags=["Tools"])
+    async def get_thread_callable_tools(
+        thread_id: str,
+        user_id: str = Depends(_authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Return callable threads actually available to a caller thread.
+
+        Mirrors the runtime callable-tool binding rules: ownership scoping,
+        callable-team scoping, self-exclusion, duplicate-name suppression, and
+        per-thread disabled-tool filtering.
+        """
+        _require_thread_access(user, thread_id)
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+
+        agent = get_agent()
+        profile = agent.profile_manager.get_profile(user_id)
+        caller_tc = agent.thread_config_manager.get_config(thread_id)
+        disabled = set(caller_tc.disabled_tools if caller_tc else [])
+        own_callable_name = (
+            caller_tc.callable_name
+            if caller_tc and caller_tc.callable and caller_tc.callable_name
+            else None
+        )
+
+        all_tools_dict = {t.name: t for t in ALL_TOOLS}
+        all_tools_dict.update(OPTIONAL_TOOLS)
+        default_tools = profile.tool_preferences.default_thread_tools
+        core_names = (
+            default_tools
+            if default_tools is not None
+            else [t.name for t in ALL_TOOLS]
+        )
+        existing_names = {name for name in core_names if name in all_tools_dict}
+        if default_tools is not None:
+            existing_names.update(
+                name
+                for name in core_names
+                if name.startswith("mcp__") and agent.tool_registry.get_tool(name)
+            )
+
+        visible = []
+        seen_names: set[str] = set(existing_names)
+        for tc in agent._get_team_scoped_callable_threads(
+            user_id=user_id,
+            caller_thread_id=thread_id,
+        ):
+            if tc.thread_id == thread_id or not tc.callable_name:
+                continue
+            if own_callable_name and tc.callable_name == own_callable_name:
+                continue
+            if tc.callable_name in disabled or tc.callable_name in seen_names:
+                continue
+            seen_names.add(tc.callable_name)
+            visible.append({
+                "thread_id": tc.thread_id,
+                "name": tc.callable_name,
+                "description": tc.callable_description,
+                "team_id": tc.callable_team_id,
+                "team_name": tc.callable_team_name,
+            })
+
+        return {
+            "thread_id": thread_id,
+            "callable_thread_count": len(visible),
+            "callable_threads": visible,
+        }
+
     @app.get("/tools/defaults", tags=["Tools"])
     async def get_default_tools(
         user_id: str = Depends(_authed_user_id),

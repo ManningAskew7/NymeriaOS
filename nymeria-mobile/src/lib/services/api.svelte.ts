@@ -2286,6 +2286,8 @@ export class NymeriaAPI {
       callableName: data.callable_name ?? null,
       callableDescription: data.callable_description ?? null,
       callableMaxIterations: data.callable_max_iterations ?? null,
+      callableTeamId: data.callable_team_id ?? null,
+      callableTeamName: data.callable_team_name ?? null,
       enabledSkills: data.enabled_skills ?? [],
       disabledSkills: data.disabled_skills ?? [],
       injectTodosInPrompt: data.inject_todos_in_prompt ?? false,
@@ -2398,6 +2400,19 @@ export class NymeriaAPI {
     );
     if (!response.ok) throw new Error(`API error: ${response.status}`);
     return (await response.json()) as import('$lib/types').ThreadActiveSkillsResponse;
+  }
+
+  async getThreadCallableTools(
+    threadId: string,
+    userId?: string,
+  ): Promise<import('$lib/types').ThreadCallableToolsResponse> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/callable-tools?${params.toString()}`,
+      { headers: this.getHeaders() },
+    );
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    return (await response.json()) as import('$lib/types').ThreadCallableToolsResponse;
   }
 
   async getOptionalTools(): Promise<import('$lib/types').OptionalTool[]> {

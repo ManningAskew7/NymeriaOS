@@ -210,7 +210,7 @@ Advanced section of Thread Settings.
 | `components/layout/AppShell.svelte` | 3-panel flexbox with collapsible sidebars | Replaced by `MobileShell.svelte` |
 | `components/layout/Sidebar.svelte` | Left sidebar container | Replaced by `LeftPanel.svelte` |
 | `components/layout/MainPanel.svelte` | Center panel container | Replaced by `ChatPanel.svelte` |
-| `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator | Integrated into `ChatPanel` header |
+| `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator; callable count badge uses the per-thread `/threads/{id}/callable-tools` endpoint | Integrated into `ChatPanel` header with the same per-thread callable count lookup |
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
 | Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
