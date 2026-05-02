@@ -8,7 +8,7 @@
   import FolderItem from './FolderItem.svelte';
   import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
   import { Icon, Modal, Button } from '$lib/components/common';
-  import type { Thread, ThreadConfig, SortMode } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadFolder, ThreadTeam, SortMode } from '$lib/types';
 
   let loadError = $state<string | null>(null);
   let configureThread = $state<Thread | null>(null);
@@ -29,7 +29,9 @@
 
   // Folder picker (for bulk group action)
   let showFolderPicker = $state(false);
+  let showTeamPicker = $state(false);
   let newFolderName = $state('');
+  let newTeamName = $state('');
 
   const sortOptions: { value: SortMode; label: string }[] = [
     { value: 'recent',       label: 'Recent' },
@@ -43,10 +45,107 @@
     return sortOptions.find(o => o.value === threadsStore.sortMode)?.label ?? 'Recent';
   }
 
+  function pinFirst(a: Thread, b: Thread): number {
+    return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+  }
+
+  function sortThreadsForMode(items: Thread[]): Thread[] {
+    switch (threadsStore.sortMode) {
+      case 'recent':
+        return [...items].sort((a, b) => pinFirst(a, b) || b.updatedAt.getTime() - a.updatedAt.getTime());
+      case 'oldest':
+        return [...items].sort((a, b) => pinFirst(a, b) || a.createdAt.getTime() - b.createdAt.getTime());
+      case 'alphabetical':
+        return [...items].sort((a, b) => pinFirst(a, b) || a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+      case 'tasks':
+        return [...items].sort((a, b) => pinFirst(a, b) || (threadsStore.getThreadTaskCount(b.id) - threadsStore.getThreadTaskCount(a.id)) || b.updatedAt.getTime() - a.updatedAt.getTime());
+      case 'active':
+        return [...items].sort((a, b) => {
+          const p = pinFirst(a, b);
+          if (p !== 0) return p;
+          const aActive = threadsStore.isThreadActive(a.id) ? 1 : 0;
+          const bActive = threadsStore.isThreadActive(b.id) ? 1 : 0;
+          return bActive - aActive || b.updatedAt.getTime() - a.updatedAt.getTime();
+        });
+      default:
+        return items;
+    }
+  }
+
+  function groupThreadsByDate(items: Thread[]): { label: string; threads: Thread[] }[] {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const weekAgo = new Date(today);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+
+    const pinnedGroup: { label: string; threads: Thread[] } = { label: 'Pinned', threads: [] };
+    const groups: { label: string; threads: Thread[] }[] = [
+      { label: 'Today', threads: [] },
+      { label: 'Yesterday', threads: [] },
+      { label: 'Previous 7 Days', threads: [] },
+      { label: 'Older', threads: [] },
+    ];
+
+    for (const thread of [...items].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())) {
+      if (thread.pinned) {
+        pinnedGroup.threads.push(thread);
+        continue;
+      }
+      const threadDate = new Date(thread.updatedAt.getFullYear(), thread.updatedAt.getMonth(), thread.updatedAt.getDate());
+      if (threadDate >= today) groups[0].threads.push(thread);
+      else if (threadDate >= yesterday) groups[1].threads.push(thread);
+      else if (threadDate >= weekAgo) groups[2].threads.push(thread);
+      else groups[3].threads.push(thread);
+    }
+
+    const result: { label: string; threads: Thread[] }[] = [];
+    if (pinnedGroup.threads.length > 0) result.push(pinnedGroup);
+    for (const group of groups) {
+      if (group.threads.length > 0) result.push(group);
+    }
+    return result;
+  }
+
+  function getUnteamedThreads(): Thread[] {
+    const teamed = new Set(threadsStore.threadTeams.flatMap((team) => team.threadIds));
+    return threadsStore.threads.filter((thread) => !teamed.has(thread.id));
+  }
+
+  function teamAsFolder(team: ThreadTeam): ThreadFolder {
+    return {
+      id: team.id,
+      name: team.name,
+      createdAt: new Date(),
+      order: 0,
+      threadIds: team.threadIds,
+      collapsed: team.collapsed,
+    };
+  }
+
   // Build ordered list of all visible thread IDs for Shift+Click range selection
   function getVisibleThreadIds(): string[] {
     const ids: string[] = [];
     const threadMap = new Map(threadsStore.threads.map(t => [t.id, t]));
+
+    if (threadsStore.organizationMode === 'teams') {
+      for (const team of threadsStore.threadTeams) {
+        if (!team.collapsed) {
+          const resolved = team.threadIds
+            .map(tid => threadMap.get(tid))
+            .filter((t): t is Thread => t !== undefined)
+            .sort(pinFirst);
+          for (const thread of resolved) ids.push(thread.id);
+        }
+      }
+      const unteamed = getUnteamedThreads();
+      const visibleUnteamed = threadsStore.sortMode === 'recent'
+        ? groupThreadsByDate(unteamed).flatMap(group => group.threads)
+        : sortThreadsForMode(unteamed);
+      for (const thread of visibleUnteamed) ids.push(thread.id);
+      return ids;
+    }
 
     // Folders first (pinned folders first, then by order)
     const sortedFolders = [...threadsStore.folders].sort((a, b) =>
@@ -289,6 +388,7 @@
 
   function handleBulkGroup() {
     showFolderPicker = true;
+    showTeamPicker = false;
   }
 
   function handleCreateFolderAndGroup() {
@@ -309,10 +409,59 @@
     lastClickedId = null;
   }
 
+  function handleBulkTeam() {
+    showTeamPicker = true;
+    showFolderPicker = false;
+  }
+
+  async function handleCreateTeamAndGroup() {
+    const trimmed = newTeamName.trim();
+    if (!trimmed) return;
+    try {
+      await threadsStore.createThreadTeam(trimmed, [...selectedIds]);
+      newTeamName = '';
+      showTeamPicker = false;
+      selectedIds = new Set();
+      lastClickedId = null;
+      threadsStore.setOrganizationMode('teams');
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to create team';
+    }
+  }
+
+  async function handleGroupIntoExistingTeam(teamId: string) {
+    try {
+      await threadsStore.addThreadsToTeam(teamId, [...selectedIds]);
+      showTeamPicker = false;
+      selectedIds = new Set();
+      lastClickedId = null;
+      threadsStore.setOrganizationMode('teams');
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to update team';
+    }
+  }
+
+  async function handleRenameTeam(teamId: string, name: string) {
+    try {
+      await threadsStore.renameThreadTeam(teamId, name);
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to rename team';
+    }
+  }
+
+  async function handleDeleteTeam(teamId: string) {
+    try {
+      await threadsStore.deleteThreadTeam(teamId);
+    } catch (e) {
+      loadError = e instanceof Error ? e.message : 'Failed to delete team';
+    }
+  }
+
   function clearSelection() {
     selectedIds = new Set();
     lastClickedId = null;
     showFolderPicker = false;
+    showTeamPicker = false;
   }
 
   function handleNewFolderKeydown(e: KeyboardEvent) {
@@ -321,6 +470,15 @@
       handleCreateFolderAndGroup();
     } else if (e.key === 'Escape') {
       showFolderPicker = false;
+    }
+  }
+
+  function handleNewTeamKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void handleCreateTeamAndGroup();
+    } else if (e.key === 'Escape') {
+      showTeamPicker = false;
     }
   }
 
@@ -336,6 +494,7 @@
     // Close folder picker if selection is cleared
     if (selectedIds.size === 0) {
       showFolderPicker = false;
+      showTeamPicker = false;
     }
   });
 </script>
@@ -352,6 +511,26 @@
       <span>{getCurrentSortLabel()}</span>
       <Icon name="chevronDown" size={12} />
     </button>
+    <div class="organization-toggle" aria-label="Thread organization">
+      <button
+        class="mode-btn"
+        class:active={threadsStore.organizationMode === 'folders'}
+        type="button"
+        title="Show folders"
+        onclick={() => threadsStore.setOrganizationMode('folders')}
+      >
+        <Icon name="folder" size={14} />
+      </button>
+      <button
+        class="mode-btn"
+        class:active={threadsStore.organizationMode === 'teams'}
+        type="button"
+        title="Show teams"
+        onclick={() => threadsStore.setOrganizationMode('teams')}
+      >
+        <Icon name="users" size={14} />
+      </button>
+    </div>
     <button
       class="import-trigger"
       type="button"
@@ -400,92 +579,179 @@
       <p class="hint">Start a new chat to begin</p>
     </div>
   {:else}
-    <!-- Folders section -->
-    {#each [...threadsStore.folders].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || a.order - b.order) as folder (folder.id)}
-      <FolderItem
-        {folder}
-        threads={resolveFolderThreads(folder.threadIds)}
-        currentThreadId={threadsStore.currentThreadId}
-        {selectedIds}
-        isPinned={folder.pinned ?? false}
-        isThreadPinned={(id) => threadsStore.isThreadPinned(id)}
-        getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
-        isThreadActive={(id) => threadsStore.isThreadActive(id)}
-        getCustomConfig={(id) => threadConfigStore.getConfig(id)}
-        onSelectThread={handleThreadClick}
-        onDeleteThread={handleDeleteThread}
-        onRenameThread={handleRenameThread}
-        onConfigureThread={handleConfigureThread}
-        onOpenAgentConfigThread={handleOpenAgentConfig}
-        onToggleCollapse={() => threadsStore.toggleFolderCollapse(folder.id)}
-        onRenameFolder={(name) => threadsStore.renameFolder(folder.id, name)}
-        onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
-        onTogglePin={() => threadsStore.togglePinFolder(folder.id)}
-        onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
-        onExportThread={handleExportThread}
-      />
-    {/each}
-
-    {#if threadsStore.folders.length > 0 && threadsStore.unfiledThreads.length > 0}
-      <div class="folders-divider"></div>
-    {/if}
-
-    <!-- Unfiled threads -->
-    {#if threadsStore.sortMode === 'recent'}
-      {#each threadsStore.groupedUnfiledThreads as group (group.label)}
-        <div class="thread-group">
-          <h3 class="group-label">{group.label}</h3>
-          <div class="group-threads">
-            {#each group.threads as thread (thread.id)}
-              <ThreadItem
-                {thread}
-                isActive={thread.id === threadsStore.currentThreadId}
-                isSelected={selectedIds.has(thread.id)}
-                isPinned={thread.pinned ?? false}
-                taskCount={threadsStore.getThreadTaskCount(thread.id)}
-                hasActiveTask={threadsStore.isThreadActive(thread.id)}
-                isCallable={threadConfigStore.isCallableThread(thread.id)}
-                hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
-                onSelect={(e) => handleThreadClick(thread.id, e)}
-                onDelete={() => handleDeleteThread(thread.id)}
-                onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
-                onConfigure={() => handleConfigureThread(thread)}
-                onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
-                onTogglePin={() => threadsStore.togglePinThread(thread.id)}
-                onExport={() => handleExportThread(thread)}
-              />
-            {/each}
-          </div>
-        </div>
+    {#if threadsStore.organizationMode === 'teams'}
+      {#each threadsStore.threadTeams as team (team.id)}
+        <FolderItem
+          kind="team"
+          folder={teamAsFolder(team)}
+          threads={resolveFolderThreads(team.threadIds)}
+          currentThreadId={threadsStore.currentThreadId}
+          {selectedIds}
+          isThreadPinned={(id) => threadsStore.isThreadPinned(id)}
+          getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
+          isThreadActive={(id) => threadsStore.isThreadActive(id)}
+          getCustomConfig={(id) => threadConfigStore.getConfig(id)}
+          onSelectThread={handleThreadClick}
+          onDeleteThread={handleDeleteThread}
+          onRenameThread={handleRenameThread}
+          onConfigureThread={handleConfigureThread}
+          onOpenAgentConfigThread={handleOpenAgentConfig}
+          onToggleCollapse={() => threadsStore.toggleTeamCollapse(team.id)}
+          onRenameFolder={(name) => void handleRenameTeam(team.id, name)}
+          onDeleteFolder={() => void handleDeleteTeam(team.id)}
+          onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
+          onExportThread={handleExportThread}
+        />
       {/each}
-    {:else}
-      <div class="group-threads">
-        {#each threadsStore.sortedUnfiledThreads as thread (thread.id)}
-          <ThreadItem
-            {thread}
-            isActive={thread.id === threadsStore.currentThreadId}
-            isSelected={selectedIds.has(thread.id)}
-            isPinned={thread.pinned ?? false}
-            taskCount={threadsStore.getThreadTaskCount(thread.id)}
-            hasActiveTask={threadsStore.isThreadActive(thread.id)}
-            isCallable={threadConfigStore.isCallableThread(thread.id)}
-            hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
-            onSelect={(e) => handleThreadClick(thread.id, e)}
-            onDelete={() => handleDeleteThread(thread.id)}
-            onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
-            onConfigure={() => handleConfigureThread(thread)}
-            onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
-            onTogglePin={() => threadsStore.togglePinThread(thread.id)}
-            onExport={() => handleExportThread(thread)}
-          />
-        {/each}
-      </div>
-    {/if}
 
-    {#if threadsStore.unfiledThreads.length === 0 && threadsStore.folders.length > 0}
-      <div class="empty-state">
-        <p class="hint">All threads are in folders</p>
-      </div>
+      {#if threadsStore.threadTeams.length > 0 && getUnteamedThreads().length > 0}
+        <div class="folders-divider"></div>
+      {/if}
+
+      {#if threadsStore.sortMode === 'recent'}
+        {#each groupThreadsByDate(getUnteamedThreads()) as group (group.label)}
+          <div class="thread-group">
+            <h3 class="group-label">{group.label}</h3>
+            <div class="group-threads">
+              {#each group.threads as thread (thread.id)}
+                <ThreadItem
+                  {thread}
+                  isActive={thread.id === threadsStore.currentThreadId}
+                  isSelected={selectedIds.has(thread.id)}
+                  isPinned={thread.pinned ?? false}
+                  taskCount={threadsStore.getThreadTaskCount(thread.id)}
+                  hasActiveTask={threadsStore.isThreadActive(thread.id)}
+                  isCallable={threadConfigStore.isCallableThread(thread.id)}
+                  hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+                  onSelect={(e) => handleThreadClick(thread.id, e)}
+                  onDelete={() => handleDeleteThread(thread.id)}
+                  onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+                  onConfigure={() => handleConfigureThread(thread)}
+                  onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
+                  onTogglePin={() => threadsStore.togglePinThread(thread.id)}
+                  onExport={() => handleExportThread(thread)}
+                />
+              {/each}
+            </div>
+          </div>
+        {/each}
+      {:else}
+        <div class="group-threads">
+          {#each sortThreadsForMode(getUnteamedThreads()) as thread (thread.id)}
+            <ThreadItem
+              {thread}
+              isActive={thread.id === threadsStore.currentThreadId}
+              isSelected={selectedIds.has(thread.id)}
+              isPinned={thread.pinned ?? false}
+              taskCount={threadsStore.getThreadTaskCount(thread.id)}
+              hasActiveTask={threadsStore.isThreadActive(thread.id)}
+              isCallable={threadConfigStore.isCallableThread(thread.id)}
+              hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+              onSelect={(e) => handleThreadClick(thread.id, e)}
+              onDelete={() => handleDeleteThread(thread.id)}
+              onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+              onConfigure={() => handleConfigureThread(thread)}
+              onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
+              onTogglePin={() => threadsStore.togglePinThread(thread.id)}
+              onExport={() => handleExportThread(thread)}
+            />
+          {/each}
+        </div>
+      {/if}
+
+      {#if getUnteamedThreads().length === 0 && threadsStore.threadTeams.length > 0}
+        <div class="empty-state">
+          <p class="hint">All threads are in teams</p>
+        </div>
+      {/if}
+    {:else}
+      <!-- Folders section -->
+      {#each [...threadsStore.folders].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || a.order - b.order) as folder (folder.id)}
+        <FolderItem
+          {folder}
+          threads={resolveFolderThreads(folder.threadIds)}
+          currentThreadId={threadsStore.currentThreadId}
+          {selectedIds}
+          isPinned={folder.pinned ?? false}
+          isThreadPinned={(id) => threadsStore.isThreadPinned(id)}
+          getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
+          isThreadActive={(id) => threadsStore.isThreadActive(id)}
+          getCustomConfig={(id) => threadConfigStore.getConfig(id)}
+          onSelectThread={handleThreadClick}
+          onDeleteThread={handleDeleteThread}
+          onRenameThread={handleRenameThread}
+          onConfigureThread={handleConfigureThread}
+          onOpenAgentConfigThread={handleOpenAgentConfig}
+          onToggleCollapse={() => threadsStore.toggleFolderCollapse(folder.id)}
+          onRenameFolder={(name) => threadsStore.renameFolder(folder.id, name)}
+          onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
+          onTogglePin={() => threadsStore.togglePinFolder(folder.id)}
+          onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
+          onExportThread={handleExportThread}
+        />
+      {/each}
+
+      {#if threadsStore.folders.length > 0 && threadsStore.unfiledThreads.length > 0}
+        <div class="folders-divider"></div>
+      {/if}
+
+      <!-- Unfiled threads -->
+      {#if threadsStore.sortMode === 'recent'}
+        {#each threadsStore.groupedUnfiledThreads as group (group.label)}
+          <div class="thread-group">
+            <h3 class="group-label">{group.label}</h3>
+            <div class="group-threads">
+              {#each group.threads as thread (thread.id)}
+                <ThreadItem
+                  {thread}
+                  isActive={thread.id === threadsStore.currentThreadId}
+                  isSelected={selectedIds.has(thread.id)}
+                  isPinned={thread.pinned ?? false}
+                  taskCount={threadsStore.getThreadTaskCount(thread.id)}
+                  hasActiveTask={threadsStore.isThreadActive(thread.id)}
+                  isCallable={threadConfigStore.isCallableThread(thread.id)}
+                  hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+                  onSelect={(e) => handleThreadClick(thread.id, e)}
+                  onDelete={() => handleDeleteThread(thread.id)}
+                  onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+                  onConfigure={() => handleConfigureThread(thread)}
+                  onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
+                  onTogglePin={() => threadsStore.togglePinThread(thread.id)}
+                  onExport={() => handleExportThread(thread)}
+                />
+              {/each}
+            </div>
+          </div>
+        {/each}
+      {:else}
+        <div class="group-threads">
+          {#each threadsStore.sortedUnfiledThreads as thread (thread.id)}
+            <ThreadItem
+              {thread}
+              isActive={thread.id === threadsStore.currentThreadId}
+              isSelected={selectedIds.has(thread.id)}
+              isPinned={thread.pinned ?? false}
+              taskCount={threadsStore.getThreadTaskCount(thread.id)}
+              hasActiveTask={threadsStore.isThreadActive(thread.id)}
+              isCallable={threadConfigStore.isCallableThread(thread.id)}
+              hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+              onSelect={(e) => handleThreadClick(thread.id, e)}
+              onDelete={() => handleDeleteThread(thread.id)}
+              onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
+              onConfigure={() => handleConfigureThread(thread)}
+              onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
+              onTogglePin={() => threadsStore.togglePinThread(thread.id)}
+              onExport={() => handleExportThread(thread)}
+            />
+          {/each}
+        </div>
+      {/if}
+
+      {#if threadsStore.unfiledThreads.length === 0 && threadsStore.folders.length > 0}
+        <div class="empty-state">
+          <p class="hint">All threads are in folders</p>
+        </div>
+      {/if}
     {/if}
   {/if}
 
@@ -526,11 +792,49 @@
           {/if}
         </div>
       {/if}
+      {#if showTeamPicker}
+        <div class="folder-picker">
+          <div class="folder-picker-header">Add to team</div>
+          <div class="folder-picker-new">
+            <input
+              type="text"
+              class="folder-picker-input"
+              placeholder="New team name..."
+              bind:value={newTeamName}
+              onkeydown={handleNewTeamKeydown}
+            />
+            <button
+              class="folder-picker-create-btn"
+              type="button"
+              disabled={!newTeamName.trim()}
+              onclick={() => void handleCreateTeamAndGroup()}
+            >Create</button>
+          </div>
+          {#if threadsStore.threadTeams.length > 0}
+            <div class="folder-picker-existing">
+              {#each threadsStore.threadTeams as team (team.id)}
+                <button
+                  class="folder-picker-option"
+                  type="button"
+                  onclick={() => void handleGroupIntoExistingTeam(team.id)}
+                >
+                  <Icon name="users" size={14} />
+                  <span>{team.name}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
       <div class="bulk-action-content">
         <span class="bulk-count">{selectedIds.size} selected</span>
         <button class="bulk-btn bulk-group" type="button" onclick={handleBulkGroup}>
           <Icon name="folder" size={14} />
-          Group
+          Folder
+        </button>
+        <button class="bulk-btn bulk-group" type="button" onclick={handleBulkTeam}>
+          <Icon name="users" size={14} />
+          Team
         </button>
         <button class="bulk-btn bulk-delete" type="button" onclick={handleBulkDelete}>
           <Icon name="trash" size={14} />
@@ -672,7 +976,8 @@
   }
 
   .sort-trigger,
-  .import-trigger {
+  .import-trigger,
+  .mode-btn {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -686,6 +991,29 @@
     transition: all var(--transition-fast);
   }
 
+  .organization-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: transparent;
+  }
+
+  .mode-btn {
+    width: 24px;
+    height: 22px;
+    justify-content: center;
+    padding: 0;
+    border: none;
+  }
+
+  .mode-btn.active {
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+  }
+
   .import-trigger {
     margin-left: auto;
   }
@@ -695,7 +1023,8 @@
   }
 
   .sort-trigger:hover,
-  .import-trigger:hover:not(:disabled) {
+  .import-trigger:hover:not(:disabled),
+  .mode-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
     border-color: var(--border-default);

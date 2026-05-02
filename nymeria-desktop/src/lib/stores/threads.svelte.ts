@@ -1,4 +1,4 @@
-import type { Thread, ThreadPlatform, ThreadFolder, SortMode } from '$lib/types';
+import type { Thread, ThreadPlatform, ThreadFolder, ThreadTeam, ThreadTeamApi, SortMode, OrganizationMode } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 
@@ -9,10 +9,14 @@ import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 const STORAGE_KEY_BASE = 'nymeria-threads';
 const CURRENT_THREAD_KEY_BASE = 'nymeria-current-thread';
 const FOLDERS_KEY_BASE = 'nymeria-thread-folders';
+const TEAM_UI_KEY_BASE = 'nymeria-thread-team-ui';
+const ORGANIZATION_MODE_KEY_BASE = 'nymeria-thread-organization-mode';
 const SORT_MODE_KEY_BASE = 'nymeria-thread-sort-mode';
 const STORAGE_KEY = () => scopedKey(STORAGE_KEY_BASE);
 const CURRENT_THREAD_KEY = () => scopedKey(CURRENT_THREAD_KEY_BASE);
 const FOLDERS_KEY = () => scopedKey(FOLDERS_KEY_BASE);
+const TEAM_UI_KEY = () => scopedKey(TEAM_UI_KEY_BASE);
+const ORGANIZATION_MODE_KEY = () => scopedKey(ORGANIZATION_MODE_KEY_BASE);
 const SORT_MODE_KEY = () => scopedKey(SORT_MODE_KEY_BASE);
 
 // Guard against concurrent sync calls (e.g. Vite dev mode double-mount)
@@ -88,6 +92,49 @@ function saveFolders(folders: ThreadFolder[]): void {
   }
 }
 
+function loadTeamUi(): Record<string, { collapsed?: boolean }> {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const stored = localStorage.getItem(TEAM_UI_KEY());
+    return stored ? JSON.parse(stored) : {};
+  } catch (e) {
+    console.error('Failed to load team UI state:', e);
+  }
+  return {};
+}
+
+function saveTeamUi(teams: ThreadTeam[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const state = Object.fromEntries(
+      teams.map((team) => [team.id, { collapsed: team.collapsed }])
+    );
+    localStorage.setItem(TEAM_UI_KEY(), JSON.stringify(state));
+  } catch (e) {
+    console.error('Failed to save team UI state:', e);
+  }
+}
+
+function loadOrganizationMode(): OrganizationMode {
+  if (typeof localStorage === 'undefined') return 'folders';
+  try {
+    const stored = localStorage.getItem(ORGANIZATION_MODE_KEY());
+    if (stored === 'folders' || stored === 'teams') return stored;
+  } catch (e) {
+    console.error('Failed to load organization mode:', e);
+  }
+  return 'folders';
+}
+
+function saveOrganizationMode(mode: OrganizationMode): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(ORGANIZATION_MODE_KEY(), mode);
+  } catch (e) {
+    console.error('Failed to save organization mode:', e);
+  }
+}
+
 function loadSortMode(): SortMode {
   if (typeof localStorage === 'undefined') return 'recent';
   try {
@@ -151,6 +198,8 @@ function createThreadsStore() {
   let threadTaskCounts = $state<Record<string, number>>({});
   let activeThreadTasks = $state<Set<string>>(new Set());
   let folders = $state<ThreadFolder[]>(loadFolders());
+  let threadTeams = $state<ThreadTeam[]>([]);
+  let organizationMode = $state<OrganizationMode>(loadOrganizationMode());
   let sortMode = $state<SortMode>(loadSortMode());
 
   // When the connected user changes (GET /me returns a different id), all
@@ -160,8 +209,23 @@ function createThreadsStore() {
     threads = loadThreads();
     currentThreadId = loadCurrentThreadId(threads);
     folders = loadFolders();
+    threadTeams = [];
+    organizationMode = loadOrganizationMode();
     sortMode = loadSortMode();
   });
+
+  function applyThreadTeams(apiTeams: ThreadTeamApi[]): void {
+    const ui = loadTeamUi();
+    threadTeams = apiTeams
+      .map((team) => ({
+        id: team.id,
+        name: team.name,
+        threadIds: team.thread_ids ?? [],
+        collapsed: ui[team.id]?.collapsed ?? false,
+      }))
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    saveTeamUi(threadTeams);
+  }
 
   /**
    * Ensure any spawned- threads that aren't in a folder get filed into
@@ -276,6 +340,12 @@ function createThreadsStore() {
     // Folder & sort getters
     get folders() {
       return folders;
+    },
+    get threadTeams() {
+      return threadTeams;
+    },
+    get organizationMode() {
+      return organizationMode;
     },
     get sortMode() {
       return sortMode;
@@ -428,6 +498,11 @@ function createThreadsStore() {
         );
         saveFolders(folders);
       }
+      threadTeams = threadTeams.map(team => ({
+        ...team,
+        threadIds: team.threadIds.filter(tid => tid !== id),
+      })).filter(team => team.threadIds.length > 0);
+      saveTeamUi(threadTeams);
       saveThreads(threads);
 
       // Write-through: delete metadata, checkpoints, and config on backend
@@ -537,10 +612,12 @@ function createThreadsStore() {
     reset() {
       threads = [];
       folders = [];
+      threadTeams = [];
       currentThreadId = null;
       syncInProgress = false;
       saveThreads([]);
       saveFolders([]);
+      saveTeamUi([]);
       saveCurrentThreadId(null);
     },
 
@@ -575,6 +652,7 @@ function createThreadsStore() {
             // Re-fetch to get the merged data
             const refreshed = await api.listThreadsWithMetadata();
             this._applyBackendThreads(refreshed.threads);
+            await this.loadThreadTeams();
             return;
           } catch (err) {
             console.warn('[Threads] Migration failed, using backend data as-is:', err);
@@ -582,6 +660,7 @@ function createThreadsStore() {
         }
 
         this._applyBackendThreads(backendThreads);
+        await this.loadThreadTeams();
       } catch (e) {
         console.warn('[Threads] Backend sync failed:', e);
       } finally {
@@ -667,6 +746,51 @@ function createThreadsStore() {
     setSortMode(mode: SortMode) {
       sortMode = mode;
       saveSortMode(mode);
+    },
+
+    setOrganizationMode(mode: OrganizationMode) {
+      organizationMode = mode;
+      saveOrganizationMode(mode);
+    },
+
+    async loadThreadTeams() {
+      try {
+        const teams = await api.listThreadTeams();
+        applyThreadTeams(teams);
+      } catch (e) {
+        console.warn('[Threads] Failed to load thread teams:', e);
+      }
+    },
+
+    async createThreadTeam(name: string, threadIds: string[]): Promise<ThreadTeam | null> {
+      const team = await api.createThreadTeam({ name, thread_ids: threadIds });
+      applyThreadTeams(await api.listThreadTeams());
+      return threadTeams.find((t) => t.id === team.id) ?? null;
+    },
+
+    async renameThreadTeam(id: string, name: string) {
+      await api.updateThreadTeam(id, { name });
+      applyThreadTeams(await api.listThreadTeams());
+    },
+
+    async addThreadsToTeam(teamId: string, threadIds: string[]) {
+      const current = threadTeams.find((team) => team.id === teamId);
+      if (!current) return;
+      const merged = [...new Set([...current.threadIds, ...threadIds])];
+      await api.updateThreadTeam(teamId, { thread_ids: merged });
+      applyThreadTeams(await api.listThreadTeams());
+    },
+
+    async deleteThreadTeam(id: string) {
+      await api.deleteThreadTeam(id);
+      applyThreadTeams(await api.listThreadTeams());
+    },
+
+    toggleTeamCollapse(id: string) {
+      threadTeams = threadTeams.map(team =>
+        team.id === id ? { ...team, collapsed: !team.collapsed } : team
+      );
+      saveTeamUi(threadTeams);
     },
 
     // Folder methods
@@ -792,6 +916,11 @@ function createThreadsStore() {
         );
         saveFolders(folders);
       }
+      threadTeams = threadTeams.map(team => ({
+        ...team,
+        threadIds: team.threadIds.filter(tid => tid !== id),
+      })).filter(team => team.threadIds.length > 0);
+      saveTeamUi(threadTeams);
       saveThreads(threads);
     },
 

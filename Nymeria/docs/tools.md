@@ -117,6 +117,10 @@ Any thread with `callable=True` in its thread config becomes a tool that other t
 
 Create a callable thread: open thread settings → Agent → check "Make Callable" → set a name and description. On desktop, the thread row's Agent shortcut opens this tab directly. The thread becomes available as a tool to **the creator's own threads** after `sync_agent_tools()` runs — callables are scoped to their owner (the user who created them) and the `_thread_owners` table determines visibility. Two users can independently create callables with the same `callable_name`; each user's graph binds their own version, and the runtime ownership gate in `agents/tool_factory.py` blocks cross-user invocation.
 
+Callable tools default to blocking `mode="ask"`, which returns the target thread's final answer. Use `mode="handoff"` to transfer work to the target thread without waiting; the caller receives only a dispatch receipt while the target thread streams through its normal autonomous output channels.
+
+Callable teams can scope which callable threads a thread sees. When a thread has `callable_team_id`, graph building includes only the owner's callable threads with the same team id. Unteamed threads keep the existing owner-wide callable visibility for backward compatibility. The desktop sidebar has a folder/team organization toggle and a bulk Team action for creating teams from selected threads.
+
 ---
 
 ## Core System Tools
@@ -1067,10 +1071,21 @@ Create a callable thread: open thread settings → Agent → check "Make Callabl
 The tool signature for any callable thread is:
 
 ```python
-ThreadName(task: str) -> str
+ThreadName(
+    task: str,
+    mode: Literal["ask", "handoff"] = "ask",
+    scheduled_for: Optional[str] = None,
+    if_busy: Literal["queue", "error"] = "queue",
+) -> str
 ```
 
-The `task` parameter is the instruction. An injected `config` parameter provides user/thread context. Callable threads are created dynamically by `agents/tool_factory.py` via `create_callable_thread_tool()`, which wraps `thread_agent_executor` in a LangChain `BaseTool`. The factory also handles circular call detection to prevent deadlock.
+The `task` parameter is the instruction. `mode="ask"` preserves the legacy behavior: the caller waits and receives the target thread's final response. `mode="handoff"` starts an autonomous run in the target thread and returns `[HandedOff]` metadata (`handoff_id`, target thread, and optional TODO id) without returning the target's final output.
+
+For handoffs, `scheduled_for` can delay execution with values such as `"30s"`, `"5m"`, `"1h"`, `"1d"`, or `"YYYY-MM-DD HH:MM"`; delayed handoffs are stored as scheduled TODOs on the target thread. Omit `scheduled_for` for immediate handoff. For immediate handoffs, `if_busy="queue"` lets the target thread wait for its lock in the background, while `if_busy="error"` returns a busy response if the target is already running. In blocking ask mode, `if_busy="error"` performs a best-effort busy check before waiting.
+
+Handoff prompts include source-thread metadata so the target thread can call the original callable thread later if useful. There is no automatic completion callback. If the target thread is bound to Telegram and `telegram_autonomous_delivery="full"`, its handoff output is delivered through Telegram like other autonomous output.
+
+An injected `config` parameter provides user/thread context. Callable threads are created dynamically by `agents/tool_factory.py` via `create_callable_thread_tool()`, which wraps `thread_agent_executor` in a LangChain `BaseTool`. The factory handles circular call detection for blocking asks; non-blocking handoffs intentionally skip the wait graph so a child can hand work back to its caller. The factory also performs a runtime team-visibility check so stale cached graphs cannot invoke callables outside the caller's team.
 
 ### Browser Tools (9)
 

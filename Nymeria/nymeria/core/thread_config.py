@@ -108,6 +108,10 @@ class ThreadConfig(BaseModel):
         le=1000,
         description="Max ReAct tool calls for this callable thread (1-1000). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
     )
+    # Callable team membership. When a thread belongs to a team, its callable
+    # tool list is scoped to callable threads in the same team.
+    callable_team_id: Optional[str] = Field(default=None, max_length=120)
+    callable_team_name: Optional[str] = Field(default=None, max_length=120)
     # Inject user profile (saved facts, personality) into the system prompt
     inject_profile_in_prompt: bool = False
     # Inject active TODOs into the system prompt so the LLM sees them without tool calls
@@ -168,6 +172,8 @@ class ThreadConfig(BaseModel):
         if self.callable:
             return True
         if self.callable_max_iterations is not None:
+            return True
+        if self.callable_team_id or self.callable_team_name:
             return True
         if self.inject_todos_in_prompt:
             return True

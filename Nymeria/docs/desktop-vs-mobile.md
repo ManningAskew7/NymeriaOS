@@ -132,7 +132,7 @@ Desktop: 725 lines. Mobile: 145 lines. **Most divergent file.**
 
 | Feature | Desktop | Mobile |
 |---------|---------|--------|
-| **Folders** | Full folder CRUD, drag into folders | Not implemented |
+| **Folders / teams** | Folder CRUD plus a folder/team organization toggle; teams are backed by the callable-team API and can be created from multi-select | Not implemented |
 | **Multi-select** | Ctrl+Click, Shift+Click range | Not implemented |
 | **Bulk actions** | Bulk delete, bulk group | Not implemented |
 | **Sort modes** | 5 modes (recent, oldest, A-Z, tasks, active) | None (always recent) |
