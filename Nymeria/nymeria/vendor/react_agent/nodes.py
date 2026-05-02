@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, List, Callable, Optional
 from urllib.parse import urlparse
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, HumanMessage, ToolMessage
@@ -19,6 +19,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Command
 
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
@@ -35,6 +36,73 @@ _CLIPROXY_BILLING_SYSTEM_BLOCK = {
     "type": "text",
     "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
 }
+_RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
+_RETRYABLE_EXCEPTION_NAMES = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "ConnectError",
+    "ConnectionError",
+    "ConnectionResetError",
+    "ConnectTimeout",
+    "HTTPError",
+    "NetworkError",
+    "ReadError",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "TimeoutError",
+    "WriteError",
+    "WriteTimeout",
+}
+_RETRYABLE_ERROR_MARKERS = (
+    "server_error",
+    "internal server error",
+    "temporarily unavailable",
+    "service unavailable",
+    "overloaded",
+    "upstream error",
+    "bad gateway",
+    "gateway timeout",
+    "connection reset",
+    "connection aborted",
+    "connection failed",
+    "connection error",
+    "stream disconnected",
+    "stream closed",
+    "remote protocol",
+    "read timeout",
+    "timed out",
+    "timeout",
+)
+_NON_RETRYABLE_ERROR_MARKERS = (
+    "context_length_exceeded",
+    "context window",
+    "maximum context length",
+    "max context length",
+    "too many tokens",
+    "input is too long",
+    "prompt is too long",
+    "reduce the length",
+    "bad request",
+    "invalid_request_error",
+    "invalid request",
+    "invalid schema",
+    "schema validation",
+    "invalid tool",
+    "tool payload",
+    "invalid function",
+    "invalid json",
+    "malformed",
+    "unauthorized",
+    "authentication",
+    "api key",
+    "permission denied",
+    "forbidden",
+    "insufficient_quota",
+    "insufficient credits",
+    "insufficient credit",
+    "quota exceeded",
+    "billing",
+)
 
 
 @dataclass(frozen=True)
@@ -71,6 +139,204 @@ def _canonical_json(value: Any) -> str:
         )
     except Exception:
         return repr(value)
+
+
+def _safe_error_text(value: Any, *, max_chars: int = 4000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = repr(value)
+    return text[:max_chars]
+
+
+def _iter_exception_chain(exc: BaseException) -> List[BaseException]:
+    seen: set[int] = set()
+    stack: List[BaseException] = [exc]
+    chain: List[BaseException] = []
+
+    while stack:
+        current = stack.pop(0)
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        chain.append(current)
+
+        grouped = getattr(current, "exceptions", None)
+        if isinstance(grouped, (list, tuple)):
+            stack.extend(e for e in grouped if isinstance(e, BaseException))
+
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if isinstance(cause, BaseException):
+            stack.append(cause)
+        if isinstance(context, BaseException):
+            stack.append(context)
+
+    return chain
+
+
+def _extract_status_code(exc: BaseException) -> Optional[int]:
+    for current in _iter_exception_chain(exc):
+        for attr in ("status_code", "status", "http_status"):
+            status = getattr(current, attr, None)
+            if isinstance(status, int):
+                return status
+        response = getattr(current, "response", None)
+        if response is not None:
+            status = getattr(response, "status_code", None)
+            if isinstance(status, int):
+                return status
+    return None
+
+
+def _llm_exception_text(exc: BaseException) -> str:
+    parts: List[str] = []
+    for current in _iter_exception_chain(exc):
+        parts.append(_safe_error_text(current))
+        parts.append(_safe_error_text(repr(current)))
+        for attr in ("code", "type", "body", "message", "error"):
+            parts.append(_safe_error_text(getattr(current, attr, None)))
+        response = getattr(current, "response", None)
+        if response is not None:
+            parts.append(_safe_error_text(getattr(response, "text", None)))
+            parts.append(_safe_error_text(getattr(response, "content", None)))
+    return " ".join(part for part in parts if part).lower()
+
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    text = _llm_exception_text(exc)
+    if any(marker in text for marker in _NON_RETRYABLE_ERROR_MARKERS):
+        return False
+
+    status_code = _extract_status_code(exc)
+    if status_code is not None:
+        return status_code in _RETRYABLE_STATUS_CODES or status_code >= 500
+
+    if any(
+        current.__class__.__name__ in _RETRYABLE_EXCEPTION_NAMES
+        for current in _iter_exception_chain(exc)
+    ):
+        return True
+
+    return any(marker in text for marker in _RETRYABLE_ERROR_MARKERS)
+
+
+def _llm_retry_delay(llm_config: Optional[LLMConfig], retry_index: int) -> float:
+    initial = max(0.0, float(getattr(llm_config, "stream_retry_initial_delay", 1.0) or 0.0))
+    maximum = max(0.0, float(getattr(llm_config, "stream_retry_max_delay", 8.0) or 0.0))
+    if initial == 0.0 or maximum == 0.0:
+        return 0.0
+    return min(maximum, initial * (2 ** max(0, retry_index - 1)))
+
+
+def _llm_max_retries(llm_config: Optional[LLMConfig]) -> int:
+    return max(0, int(getattr(llm_config, "stream_max_retries", 2) or 0))
+
+
+def _invoke_llm_with_retries(
+    invoke: Callable[[], AIMessage],
+    llm_config: Optional[LLMConfig],
+) -> AIMessage:
+    max_retries = _llm_max_retries(llm_config)
+
+    for attempt in range(max_retries + 1):
+        try:
+            return invoke()
+        except Exception as exc:
+            if attempt >= max_retries or not _is_retryable_llm_error(exc):
+                raise
+
+            retry_index = attempt + 1
+            delay = _llm_retry_delay(llm_config, retry_index)
+            logger.warning(
+                "[LLM RETRY] transient sync call failure; retry %d/%d in %.2fs: %s",
+                retry_index,
+                max_retries,
+                delay,
+                exc,
+            )
+            if delay > 0:
+                time.sleep(delay)
+
+    raise RuntimeError("LLM retry loop exited unexpectedly")
+
+
+def _truncate_tool_content(content: Any, max_chars: int) -> Any:
+    if max_chars <= 0:
+        return content
+
+    if isinstance(content, str):
+        text = content
+    else:
+        text = _canonical_json(content)
+        if len(text) <= max_chars:
+            return content
+
+    if len(text) <= max_chars:
+        return content
+
+    head_chars = min(75000, max(1, int(max_chars * 0.75)))
+    tail_chars = min(25000, max(1, max_chars - head_chars))
+    omitted_chars = max(0, len(text) - head_chars - tail_chars)
+    marker = (
+        "\n\n[Tool output truncated: "
+        f"original {len(text)} chars, omitted {omitted_chars} chars. "
+        f"Showing first {head_chars} chars and last {tail_chars} chars.]\n\n"
+    )
+    return text[:head_chars] + marker + text[-tail_chars:]
+
+
+def _truncate_tool_message(message: ToolMessage, max_chars: int) -> ToolMessage:
+    content = getattr(message, "content", None)
+    truncated = _truncate_tool_content(content, max_chars)
+    if truncated == content:
+        return message
+
+    logger.warning(
+        "[TOOLS] Truncated tool output call_id=%s original_chars=%d max_chars=%d",
+        getattr(message, "tool_call_id", None),
+        len(content) if isinstance(content, str) else len(_canonical_json(content)),
+        max_chars,
+    )
+    return message.model_copy(update={"content": truncated})
+
+
+def _truncate_tool_messages_in_result(result: Any, max_chars: int) -> Any:
+    if max_chars <= 0:
+        return result
+
+    if isinstance(result, ToolMessage):
+        return _truncate_tool_message(result, max_chars)
+
+    if isinstance(result, list):
+        updated = [_truncate_tool_messages_in_result(item, max_chars) for item in result]
+        return result if all(a is b for a, b in zip(updated, result)) else updated
+
+    if isinstance(result, dict):
+        messages = result.get("messages")
+        if isinstance(messages, list):
+            updated_messages = [
+                _truncate_tool_messages_in_result(item, max_chars)
+                for item in messages
+            ]
+            if any(a is not b for a, b in zip(updated_messages, messages)):
+                updated = dict(result)
+                updated["messages"] = updated_messages
+                return updated
+        return result
+
+    if isinstance(result, Command):
+        updated = _truncate_tool_messages_in_result(result.update, max_chars)
+        if updated is not result.update:
+            return replace(result, update=updated)
+        return result
+
+    return result
 
 
 def _tool_call_signature(tool_call: dict) -> tuple[str, str]:
@@ -389,7 +655,10 @@ def create_agent_node(
 
         # Sync graph callers use the normal invoke path. User-facing live
         # streaming runs through the async node below.
-        response = llm_with_tools.invoke(messages_with_system)
+        response = _invoke_llm_with_retries(
+            lambda: llm_with_tools.invoke(messages_with_system),
+            llm_config,
+        )
         return _finish_response(response)
 
     async def async_agent_node(state: AgentState) -> dict:
@@ -414,56 +683,85 @@ def create_agent_node(
         reasoning_chars = 0
         tool_call_chunk_events = 0
 
-        async for chunk in llm_with_tools.astream(messages_with_system):
-            stream_chunks += 1
-            if first_chunk_ms is None:
-                first_chunk_ms = int((time.monotonic() - stream_started_at) * 1000)
+        max_retries = _llm_max_retries(llm_config)
+        attempt = 0
+        while True:
+            chunks_this_attempt = 0
+            try:
+                async for chunk in llm_with_tools.astream(messages_with_system):
+                    chunks_this_attempt += 1
+                    stream_chunks += 1
+                    if first_chunk_ms is None:
+                        first_chunk_ms = int((time.monotonic() - stream_started_at) * 1000)
 
-            content = getattr(chunk, "content", None)
-            if isinstance(content, str):
-                if content:
-                    text_chunks += 1
-                    text_chars += len(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, str):
-                        if block:
+                    content = getattr(chunk, "content", None)
+                    if isinstance(content, str):
+                        if content:
                             text_chunks += 1
-                            text_chars += len(block)
-                        continue
-                    if not isinstance(block, dict):
-                        continue
-                    block_type = block.get("type")
-                    if block_type in ("text", "output_text"):
-                        text = block.get("text", "")
-                        if text:
-                            text_chunks += 1
-                            text_chars += len(text)
-                    elif block_type in ("thinking", "reasoning"):
-                        # Count typed reasoning blocks without logging content.
+                            text_chars += len(content)
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, str):
+                                if block:
+                                    text_chunks += 1
+                                    text_chars += len(block)
+                                continue
+                            if not isinstance(block, dict):
+                                continue
+                            block_type = block.get("type")
+                            if block_type in ("text", "output_text"):
+                                text = block.get("text", "")
+                                if text:
+                                    text_chunks += 1
+                                    text_chars += len(text)
+                            elif block_type in ("thinking", "reasoning"):
+                                # Count typed reasoning blocks without logging content.
+                                reasoning_chunks += 1
+
+                    extras = getattr(chunk, "additional_kwargs", None) or {}
+                    reasoning = extras.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
                         reasoning_chunks += 1
+                        reasoning_chars += len(reasoning)
 
-            extras = getattr(chunk, "additional_kwargs", None) or {}
-            reasoning = extras.get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning:
-                reasoning_chunks += 1
-                reasoning_chars += len(reasoning)
+                    if getattr(chunk, "tool_call_chunks", None):
+                        tool_call_chunk_events += 1
 
-            if getattr(chunk, "tool_call_chunks", None):
-                tool_call_chunk_events += 1
+                    if merged_chunk is None:
+                        merged_chunk = chunk
+                    else:
+                        merged_chunk = merged_chunk + chunk
 
-            if merged_chunk is None:
-                merged_chunk = chunk
-            else:
-                merged_chunk = merged_chunk + chunk
+                if merged_chunk is None:
+                    # Defensive fallback for custom models that implement astream() but
+                    # produce no chunks.
+                    logger.warning("[LLM STREAM] async astream yielded zero chunks; falling back to ainvoke()")
+                    response = await llm_with_tools.ainvoke(messages_with_system)
+                else:
+                    response = message_chunk_to_message(merged_chunk)
+                break
+            except Exception as exc:
+                if chunks_this_attempt > 0:
+                    logger.warning(
+                        "[LLM RETRY] stream failed after %d chunk(s); not retrying to avoid duplicated output: %s",
+                        chunks_this_attempt,
+                        exc,
+                    )
+                    raise
+                if attempt >= max_retries or not _is_retryable_llm_error(exc):
+                    raise
 
-        if merged_chunk is None:
-            # Defensive fallback for custom models that implement astream() but
-            # produce no chunks.
-            logger.warning("[LLM STREAM] async astream yielded zero chunks; falling back to ainvoke()")
-            response = await llm_with_tools.ainvoke(messages_with_system)
-        else:
-            response = message_chunk_to_message(merged_chunk)
+                attempt += 1
+                delay = _llm_retry_delay(llm_config, attempt)
+                logger.warning(
+                    "[LLM RETRY] transient stream failure before chunks; retry %d/%d in %.2fs: %s",
+                    attempt,
+                    max_retries,
+                    delay,
+                    exc,
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
 
         logger.info(
             "[LLM STREAM] async_complete chunks=%d text_chunks=%d text_chars=%d "
@@ -483,7 +781,13 @@ def create_agent_node(
     return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")
 
 
-def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_timeout: Optional[int] = None, on_timeout: Optional[Callable] = None) -> "SafeToolNode":
+def create_tools_node(
+    tools: List[BaseTool],
+    handle_errors: bool = True,
+    tool_timeout: Optional[int] = None,
+    on_timeout: Optional[Callable] = None,
+    tool_output_max_chars: int = 100000,
+) -> "SafeToolNode":
     """
     Create a tools node that executes tool calls.
 
@@ -493,11 +797,18 @@ def create_tools_node(tools: List[BaseTool], handle_errors: bool = True, tool_ti
                       instead of letting them bubble up
         tool_timeout: Seconds before a tool invocation is terminated (default 300)
         on_timeout: Optional callback invoked with the input dict when a timeout occurs
+        tool_output_max_chars: Maximum stored characters per ToolMessage result
 
     Returns:
         SafeToolNode instance that handles errors and timeouts gracefully
     """
-    return SafeToolNode(tools, handle_tool_errors=handle_errors, tool_timeout=tool_timeout, on_timeout=on_timeout)
+    return SafeToolNode(
+        tools,
+        handle_tool_errors=handle_errors,
+        tool_timeout=tool_timeout,
+        on_timeout=on_timeout,
+        tool_output_max_chars=tool_output_max_chars,
+    )
 
 
 class SafeToolNode(ToolNode):
@@ -512,11 +823,19 @@ class SafeToolNode(ToolNode):
 
     DEFAULT_TOOL_TIMEOUT = 300  # 5 minutes
 
-    def __init__(self, tools: List[BaseTool], handle_tool_errors: bool = True, tool_timeout: Optional[int] = None, on_timeout: Optional[Callable] = None):
+    def __init__(
+        self,
+        tools: List[BaseTool],
+        handle_tool_errors: bool = True,
+        tool_timeout: Optional[int] = None,
+        on_timeout: Optional[Callable] = None,
+        tool_output_max_chars: int = 100000,
+    ):
         super().__init__(tools, handle_tool_errors=handle_tool_errors)
         self._handle_errors = handle_tool_errors
         self._tool_timeout = tool_timeout if tool_timeout is not None else self.DEFAULT_TOOL_TIMEOUT
         self._on_timeout = on_timeout  # Optional callback: fn(input_dict) -> None
+        self._tool_output_max_chars = tool_output_max_chars
 
     def invoke(self, input, config=None, **kwargs):
         """Execute tools with a timeout to prevent indefinite hangs.
@@ -535,7 +854,7 @@ class SafeToolNode(ToolNode):
         try:
             result = future.result(timeout=self._tool_timeout)
             executor.shutdown(wait=False)
-            return result
+            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
         except concurrent.futures.TimeoutError:
             # shutdown(wait=False) returns immediately — the daemon worker
             # thread will finish on its own (or when the process exits).
@@ -545,22 +864,29 @@ class SafeToolNode(ToolNode):
                     self._on_timeout(input)
                 except Exception as e:
                     logger.warning(f"on_timeout callback failed: {e}")
-            return self._build_timeout_response(input)
+            return _truncate_tool_messages_in_result(
+                self._build_timeout_response(input),
+                self._tool_output_max_chars,
+            )
 
     async def ainvoke(self, input, config=None, **kwargs):
         """Async tool execution with timeout."""
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 super().ainvoke(input, config, **kwargs),
                 timeout=self._tool_timeout,
             )
+            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
         except asyncio.TimeoutError:
             if self._on_timeout:
                 try:
                     self._on_timeout(input)
                 except Exception as e:
                     logger.warning(f"on_timeout callback failed: {e}")
-            return self._build_timeout_response(input)
+            return _truncate_tool_messages_in_result(
+                self._build_timeout_response(input),
+                self._tool_output_max_chars,
+            )
 
     def _build_timeout_response(self, input) -> dict:
         """Build error ToolMessages for timed-out tool calls.
@@ -732,6 +1058,7 @@ class NodeFactory:
             self.tools,
             tool_timeout=self.config.tool_timeout,
             on_timeout=self.config.on_timeout,
+            tool_output_max_chars=self.config.tool_output_max_chars,
         )
 
     def create_router(self) -> Callable[[AgentState], str]:

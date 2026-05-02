@@ -40,6 +40,12 @@ class LLMConfig:
     # SubAgentExecutor sets 120s explicitly for sub-agent LLM calls.
     request_timeout: Optional[int] = None
 
+    # Retry transient provider/transport failures. Streaming retries are only
+    # used before any model chunks are emitted to avoid duplicated output.
+    stream_max_retries: int = 2
+    stream_retry_initial_delay: float = 1.0
+    stream_retry_max_delay: float = 8.0
+
     # For custom providers
     custom_llm: Optional[object] = field(default=None, repr=False)
 
@@ -96,6 +102,7 @@ Guidelines:
     recursion_limit: int = 1025  # LangGraph recursion limit (must exceed 2x max_iterations)
     repeated_tool_result_limit: int = 5  # Stop repeated same tool+args+result loops
     tool_timeout: int = 300  # Per-tool-node timeout in seconds (5 minutes)
+    tool_output_max_chars: int = 100000  # Max stored characters per tool result
     on_timeout: Optional[object] = field(default=None, repr=False)  # Callback for tool timeout: fn(input_dict) -> None
 
     # Debug settings

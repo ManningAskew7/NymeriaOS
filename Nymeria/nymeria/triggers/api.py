@@ -214,13 +214,16 @@ class ServerSettingsResponse(BaseModel):
     llm_use_model_defaults: bool = False
     llm_base_url: Optional[str] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = "responses"
+    llm_stream_max_retries: int
+    llm_stream_retry_initial_delay: float
+    llm_stream_retry_max_delay: float
     # Context management settings
     context_management: str
     compact_threshold: float
-    compact_soft_token_limit: int
     compact_keep_messages: int
     compact_model: Optional[str] = None
     sliding_window_cycles: int
+    tool_output_max_chars: int
     max_self_invokes_per_hour: int
     log_level: str
     watchdog_enabled: bool
@@ -257,13 +260,16 @@ class ServerSettingsUpdate(BaseModel):
     llm_use_model_defaults: Optional[bool] = None
     llm_base_url: Optional[str] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
+    llm_stream_max_retries: Optional[int] = None
+    llm_stream_retry_initial_delay: Optional[float] = None
+    llm_stream_retry_max_delay: Optional[float] = None
     # Context management settings
     context_management: Optional[str] = None
     compact_threshold: Optional[float] = None
-    compact_soft_token_limit: Optional[int] = None
     compact_keep_messages: Optional[int] = None
     compact_model: Optional[str] = None
     sliding_window_cycles: Optional[int] = None
+    tool_output_max_chars: Optional[int] = None
     max_self_invokes_per_hour: Optional[int] = None
     log_level: Optional[str] = None
     watchdog_enabled: Optional[bool] = None
@@ -4881,12 +4887,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             llm_use_model_defaults=settings.llm_use_model_defaults,
             llm_base_url=settings.llm_base_url,
             openai_api_mode=settings.openai_api_mode,
+            llm_stream_max_retries=settings.llm_stream_max_retries,
+            llm_stream_retry_initial_delay=settings.llm_stream_retry_initial_delay,
+            llm_stream_retry_max_delay=settings.llm_stream_retry_max_delay,
             context_management=settings.context_management,
             compact_threshold=settings.compact_threshold,
-            compact_soft_token_limit=settings.compact_soft_token_limit,
             compact_keep_messages=settings.compact_keep_messages,
             compact_model=settings.compact_model,
             sliding_window_cycles=settings.sliding_window_cycles,
+            tool_output_max_chars=settings.tool_output_max_chars,
             max_self_invokes_per_hour=settings.max_self_invokes_per_hour,
             log_level=settings.log_level,
             watchdog_enabled=settings.watchdog_enabled,
@@ -5026,13 +5035,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "llm_use_model_defaults": "LLM_USE_MODEL_DEFAULTS",
             "llm_base_url": "LLM_BASE_URL",
             "openai_api_mode": "OPENAI_API_MODE",
+            "llm_stream_max_retries": "LLM_STREAM_MAX_RETRIES",
+            "llm_stream_retry_initial_delay": "LLM_STREAM_RETRY_INITIAL_DELAY",
+            "llm_stream_retry_max_delay": "LLM_STREAM_RETRY_MAX_DELAY",
             "context_management": "CONTEXT_MANAGEMENT",
             "compact_threshold": "COMPACT_THRESHOLD",
-            "compact_soft_token_limit": "COMPACT_SOFT_TOKEN_LIMIT",
             "compact_keep_messages": "COMPACT_KEEP_MESSAGES",
             "compact_model": "COMPACT_MODEL",
             "sliding_window_cycles": "SLIDING_WINDOW_CYCLES",
             "max_self_invokes_per_hour": "MAX_SELF_INVOKES_PER_HOUR",
+            "tool_output_max_chars": "TOOL_OUTPUT_MAX_CHARS",
             "log_level": "LOG_LEVEL",
             "watchdog_enabled": "WATCHDOG_ENABLED",
             "watchdog_interval_minutes": "WATCHDOG_INTERVAL_MINUTES",
@@ -5155,8 +5167,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                        "llm_frequency_penalty", "llm_presence_penalty",
                        "llm_reasoning_effort", "llm_extended_thinking",
                        "llm_use_model_defaults", "llm_base_url",
-                       "openai_api_mode"}
-        if llm_fields & set(updates_dict.keys()):
+                       "openai_api_mode", "llm_stream_max_retries",
+                       "llm_stream_retry_initial_delay",
+                       "llm_stream_retry_max_delay"}
+        graph_fields = llm_fields | {"tool_output_max_chars"}
+        if graph_fields & set(updates_dict.keys()):
             # Clear graph caches so they rebuild with new LLM config
             with agent._graph_cache_lock:
                 agent._user_graphs.clear()
@@ -5164,7 +5179,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             # Rebuild default graphs
             agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
             agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
-            logger.info(f"Hot-reloaded LLM settings: {llm_fields & set(updates_dict.keys())}")
+            logger.info(f"Hot-reloaded graph settings: {graph_fields & set(updates_dict.keys())}")
 
         needs_restart = bool(restart_required_keys & set(updates_dict.keys()))
         return {
@@ -5214,7 +5229,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "llm_top_p", "llm_top_k", "llm_frequency_penalty",
                 "llm_presence_penalty", "llm_reasoning_effort",
                 "llm_extended_thinking", "llm_use_model_defaults", "llm_base_url",
-                "openai_api_mode",
+                "openai_api_mode", "llm_stream_max_retries",
+                "llm_stream_retry_initial_delay", "llm_stream_retry_max_delay",
             ],
             "API Keys": [
                 "nymeria_api_key", "openai_api_key", "anthropic_api_key",
@@ -5223,13 +5239,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "gemini_api_key", "gemini_extraction_model",
             ],
             "Context": [
-                "context_management", "compact_threshold", "compact_soft_token_limit",
-                "compact_keep_messages", "compact_model", "sliding_window_cycles",
+                "context_management", "compact_threshold", "compact_keep_messages",
+                "compact_model", "sliding_window_cycles",
             ],
             "System": [
                 "log_level", "watchdog_enabled", "watchdog_interval_minutes",
                 "user_timezone", "nymeria_data_dir",
-                "tool_timeout", "lock_timeout",
+                "tool_timeout", "tool_output_max_chars", "lock_timeout",
             ],
             "Tasks": [
                 "ticker_poll_interval", "max_concurrent_autonomous",

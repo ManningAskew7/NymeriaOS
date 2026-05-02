@@ -264,6 +264,24 @@ class Settings(BaseSettings):
         default="responses",
         description="Default OpenAI-compatible API mode when no per-thread override is set: 'responses' or 'chat_completions'"
     )
+    llm_stream_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Max retries for transient LLM call/stream failures before any model output is emitted"
+    )
+    llm_stream_retry_initial_delay: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=60.0,
+        description="Initial backoff delay in seconds for transient LLM call/stream retries"
+    )
+    llm_stream_retry_max_delay: float = Field(
+        default=8.0,
+        ge=0.0,
+        le=300.0,
+        description="Maximum backoff delay in seconds for transient LLM call/stream retries"
+    )
 
     # API Keys
     openai_api_key: Optional[str] = Field(default=None)
@@ -352,12 +370,6 @@ class Settings(BaseSettings):
         le=0.95,
         description="Trigger auto-compact at this percentage of context window"
     )
-    compact_soft_token_limit: int = Field(
-        default=120000,
-        ge=0,
-        le=2000000,
-        description="Absolute input-token trigger for auto-compaction; 0 disables"
-    )
     compact_keep_messages: int = Field(
         default=4,
         ge=2,
@@ -388,6 +400,12 @@ class Settings(BaseSettings):
         ge=30,
         le=900,
         description="Max seconds a single tool/agent invocation can run before being terminated (default 5 minutes)"
+    )
+    tool_output_max_chars: int = Field(
+        default=100000,
+        ge=1000,
+        le=2000000,
+        description="Maximum characters stored for a single tool result; oversized results keep head and tail with a truncation marker"
     )
 
     # Watchdog/TODO Configuration

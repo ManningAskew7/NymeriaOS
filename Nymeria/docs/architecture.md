@@ -468,6 +468,9 @@ The agent has one streaming implementation: `NymeriaAgent.astream()`.
   `AIMessage`. This is what makes `on_chat_model_stream` provider-token events
   available to regular chat and autonomous callers instead of batching one full
   response per LLM turn.
+- Transient provider or transport failures are retried with exponential backoff
+  only before a model chunk has been emitted, so visible streamed output and
+  downstream tool side effects are not duplicated.
 - Captures complete tool call information via `on_tool_start` events
 - Returns tool calls with full arguments
 - Used by FastAPI for SSE responses to desktop UI
@@ -555,7 +558,7 @@ Input interfaces and event-driven adapters that route messages to the agent:
 4. User memories loaded and formatted into system prompt
 5. Message wrapped in `HumanMessage` and sent to graph
 6. LLM decides: respond directly OR call tools
-7. If tools needed: execute tools, feed results back to LLM
+7. If tools needed: execute tools, truncate oversized tool results, then feed results back to LLM
 8. All tool calls logged to audit log
 9. Loop until LLM generates final response, hits the turn tool-call budget, or repeats the same tool call/result 5 times in a row
 10. State saved to SQLite for conversation continuity

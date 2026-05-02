@@ -697,7 +697,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, and `openai_api_mode`; context settings such as `context_management`, `compact_threshold`, `compact_soft_token_limit`, and `compact_keep_messages`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `openai_api_mode`, and LLM stream retry settings; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user.
 
@@ -734,7 +734,10 @@ Authorization: Bearer <token>
   "llm_reasoning_effort": "medium",
   "llm_use_model_defaults": false,
   "openai_api_mode": "responses",
-  "compact_soft_token_limit": 120000
+  "llm_stream_max_retries": 2,
+  "llm_stream_retry_initial_delay": 1.0,
+  "llm_stream_retry_max_delay": 8.0,
+  "tool_output_max_chars": 100000
 }
 ```
 
@@ -751,7 +754,10 @@ Authorization: Bearer <token>
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI provider API mode. `responses` is the default; `chat_completions` is a compatibility override and is not recommended if thinking is enabled. |
-| `compact_soft_token_limit` | int | 0-2000000 | Absolute input-token trigger for auto-compaction. The lower of this and `compact_threshold * context_limit` is used; `0` disables the absolute cap. |
+| `llm_stream_max_retries` | int | 0-10 | Retries for transient LLM call/stream failures before any model output is emitted |
+| `llm_stream_retry_initial_delay` | float | 0-60 | Initial LLM retry backoff delay in seconds |
+| `llm_stream_retry_max_delay` | float | 0-300 | Maximum LLM retry backoff delay in seconds |
+| `tool_output_max_chars` | int | 1000-2000000 | Max stored characters per tool result; larger outputs keep head and tail with a marker |
 
 **Response:**
 ```json
