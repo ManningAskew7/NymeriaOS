@@ -348,7 +348,7 @@ class Settings(BaseSettings):
     )
     compact_threshold: float = Field(
         default=0.8,
-        ge=0.2,
+        ge=0.05,
         le=0.95,
         description="Trigger auto-compact at this percentage of context window"
     )

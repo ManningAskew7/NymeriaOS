@@ -18,7 +18,7 @@ A thread's conversation lives in three places:
 
 ## Compaction flow
 
-Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses `COMPACT_THRESHOLD` of the model's context limit.
+Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses `COMPACT_THRESHOLD` of the model's context limit. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`; Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
 
 ```
 1. compact_now()  (or _do_auto_compact() / _do_compact_sync())

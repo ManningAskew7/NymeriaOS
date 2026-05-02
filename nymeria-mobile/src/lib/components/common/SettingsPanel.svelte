@@ -61,6 +61,7 @@
 
   // Agent settings
   let contextManagement = $state<string>('auto_compact');
+  let compactThreshold = $state(0.8);
   let slidingWindowCycles = $state(5);
   let maxSelfInvokesPerHour = $state(50);
   let logLevel = $state<LogLevel>('INFO');
@@ -110,6 +111,7 @@
       llmBaseUrl = serverSettings.llm_base_url || '';
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
       contextManagement = serverSettings.context_management;
+      compactThreshold = serverSettings.compact_threshold ?? 0.8;
       slidingWindowCycles = serverSettings.sliding_window_cycles;
       maxSelfInvokesPerHour = serverSettings.max_self_invokes_per_hour;
       logLevel = serverSettings.log_level;
@@ -213,6 +215,7 @@
         llm_base_url: llmBaseUrl || null,
         openai_api_mode: openaiApiMode,
         context_management: contextManagement,
+        compact_threshold: compactThreshold,
         sliding_window_cycles: slidingWindowCycles,
         max_self_invokes_per_hour: maxSelfInvokesPerHour,
         log_level: logLevel,
@@ -586,6 +589,21 @@
               {/if}
             </p>
           </div>
+
+          {#if contextManagement === 'auto_compact'}
+            <div class="setting-group">
+              <label class="setting-label" for="compact-threshold">Auto-Compact Threshold: {Math.round(compactThreshold * 100)}%</label>
+              <input
+                id="compact-threshold"
+                type="range"
+                min="0.05"
+                max="0.95"
+                step="0.01"
+                bind:value={compactThreshold}
+              />
+              <p class="hint">Context usage percentage that triggers summarization</p>
+            </div>
+          {/if}
 
           {#if contextManagement === 'sliding_window'}
             <div class="setting-group">

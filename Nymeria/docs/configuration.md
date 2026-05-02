@@ -167,7 +167,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGEMENT` | `auto_compact` | Strategy: `auto_compact`, `sliding_window`, or `none` |
-| `COMPACT_THRESHOLD` | `0.8` | Trigger compaction at this % of context window (0.5-0.95) |
+| `COMPACT_THRESHOLD` | `0.8` | Trigger compaction at this fraction of the model context window (0.05-0.95). Example: `0.38` is about 400k tokens on GPT-5.5's 1.05M window. |
 | `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
 | `COMPACT_MODEL` | (main model) | Optional cheaper model for summarization |
 | `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
@@ -313,7 +313,7 @@ AUDIT_LOG_ENABLED=true
 
 # Context Management (optional - defaults shown)
 # CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none
-# COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit
+# COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit (0.05-0.95)
 # COMPACT_MODEL=                   # Use cheaper model for summarization
 # SLIDING_WINDOW_CYCLES=5          # For legacy sliding_window mode
 
