@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from nymeria.core.agent import set_current_agent
 from nymeria.core.thread_config import ThreadConfigManager
+from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.core.user_profile import UserProfileManager
 from nymeria.skills import SkillManager
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
@@ -142,7 +143,8 @@ def test_skill_config_publish_user_skill_activates_thread_and_queues_reload(tmp_
         set_current_agent(None)
 
     assert isinstance(result, Command)
-    content = result.update["messages"][0].content
+    message = result.update["messages"][0]
+    content = message.content
     payload = _json_prefix(content)
     assert payload["ok"] is True
     assert payload["skill"]["name"] == "hello-workflow"
@@ -152,6 +154,7 @@ def test_skill_config_publish_user_skill_activates_thread_and_queues_reload(tmp_
     tc = agent.thread_config_manager.get_config("thread-a")
     assert tc is not None
     assert "hello-workflow" in tc.enabled_skills
+    assert message.additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
     assert agent._pending_tool_reload["thread-a"]["source"] == "skill_config"
     assert agent._pending_tool_reload["thread-a"]["skill_name"] == "hello-workflow"
 

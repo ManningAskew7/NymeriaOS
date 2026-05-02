@@ -380,7 +380,11 @@ def create_graph(
         factory.create_router(),
         {"tools": "tools", "end": END}
     )
-    graph.add_edge("tools", "agent")
+    graph.add_conditional_edges(
+        "tools",
+        factory.create_tools_router(),
+        {"agent": "agent", "end": END}
+    )
 
     # Create or use provided checkpointer
     if checkpointer is None:

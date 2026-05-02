@@ -14,16 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Optional, Union
 
-from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
-from langgraph.graph import END
 from langgraph.types import Command
 from pydantic import BaseModel, Field, ValidationError
 
 from ..config import get_settings
 from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
+from ..core.tool_reload import tool_reload_command
 from ..tools.definitions.schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
 from .tool_search import DEFAULT_TTL, TTL_PRESETS, _enable
 from .utils import get_thread_id, get_user_id
@@ -328,17 +327,7 @@ def _prefix_command_result(result: Union[str, Command], prefix: str, tool_call_i
                 old_content = str(messages[0].content)
         except Exception:
             old_content = ""
-        return Command(
-            goto=END,
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=f"{prefix}\n\n{old_content}".strip(),
-                        tool_call_id=tool_call_id,
-                    )
-                ]
-            },
-        )
+        return tool_reload_command(f"{prefix}\n\n{old_content}".strip(), tool_call_id)
     return f"{prefix}\n\n{result}".strip()
 
 

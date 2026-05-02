@@ -622,6 +622,7 @@ export interface ServerSettings {
   openai_api_mode: OpenAIApiMode | null;
   context_management: string;
   compact_threshold: number;
+  compact_soft_token_limit: number;
   compact_keep_messages: number;
   compact_model: string | null;
   sliding_window_cycles: number;
@@ -661,6 +662,7 @@ export interface ServerSettingsUpdate {
   openai_api_mode?: OpenAIApiMode | null;
   context_management?: string;
   compact_threshold?: number;
+  compact_soft_token_limit?: number;
   compact_keep_messages?: number;
   compact_model?: string | null;
   sliding_window_cycles?: number;
