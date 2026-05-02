@@ -40,6 +40,17 @@ def _openrouter_config(**overrides) -> LLMConfig:
     return LLMConfig(**values)
 
 
+def _anthropic_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "api_key": "test-key",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
 def test_openai_responses_mode_replays_checkpoint_items_payload():
     llm = create_llm(
         _openai_config(
@@ -108,6 +119,13 @@ def test_openai_default_mode_uses_responses_payload():
     assert payload["store"] is False
 
 
+def test_openai_client_retries_disabled_for_central_retry_policy():
+    llm = create_llm(_openai_config())
+
+    assert llm.root_client.max_retries == 0
+    assert llm.root_async_client.max_retries == 0
+
+
 def test_openrouter_default_mode_uses_responses_payload():
     llm = create_llm(
         _openrouter_config(
@@ -128,6 +146,19 @@ def test_openrouter_default_mode_uses_responses_payload():
     assert payload["store"] is False
     assert payload["max_output_tokens"] == 1234
     assert payload["reasoning"] == {"summary": "auto", "effort": "high"}
+
+
+def test_openrouter_client_retries_disabled_for_central_retry_policy():
+    llm = create_llm(_openrouter_config())
+
+    assert llm.root_client.max_retries == 0
+    assert llm.root_async_client.max_retries == 0
+
+
+def test_anthropic_client_retries_disabled_for_central_retry_policy():
+    llm = create_llm(_anthropic_config())
+
+    assert llm.max_retries == 0
 
 
 def test_openrouter_chat_completions_mode_stays_on_messages_payload():
