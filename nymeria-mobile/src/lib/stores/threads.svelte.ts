@@ -165,8 +165,14 @@ function createThreadsStore() {
         // Use metadata platform if available, fall back to ID-prefix detection
         const thread = threads.find(t => t.id === id);
         const platform = thread?.platform || detectPlatform(id);
-        // Only persist desktop and callable threads — not trigger/discord/telegram/slack
-        if (platform !== 'desktop' && platform !== 'callable') {
+        const platformNativeId =
+          id.startsWith('discord_') ||
+          id.startsWith('telegram_') ||
+          id.startsWith('slack_') ||
+          id.startsWith('trigger-');
+        // Only skip native platform threads. A desktop-created UUID can still
+        // render as Telegram after a chat-app binding and should restore.
+        if (platform !== 'desktop' && platform !== 'callable' && platformNativeId) {
           localStorage.removeItem(CURRENT_THREAD_KEY());
           return;
         }

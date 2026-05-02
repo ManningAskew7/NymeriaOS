@@ -1020,6 +1020,21 @@ def _is_shared_channel_thread(thread_id: str) -> bool:
     return False
 
 
+def _classify_thread_platform_from_id(thread_id: str) -> str:
+    """Classify a thread ID into its platform origin."""
+    if thread_id.startswith("trigger-"):
+        return "trigger"
+    if thread_id.startswith("discord_"):
+        return "discord"
+    if thread_id.startswith("telegram_"):
+        return "telegram"
+    if thread_id.startswith("slack_"):
+        return "slack"
+    if thread_id.startswith("agent-") or thread_id.startswith("spawned-"):
+        return "callable"
+    return "desktop"
+
+
 def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
     """
     Enforce that ``user`` owns ``thread_id`` (or is admin).
@@ -1214,6 +1229,48 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
+
+    def _bound_chatapp_platform(thread_id: str) -> Optional[str]:
+        """Return the sidebar platform implied by an explicit chat-app binding."""
+        try:
+            if get_agent().accounts_repo.lookup_thread_binding_by_thread(
+                "telegram", thread_id
+            ):
+                return "telegram"
+        except Exception as e:
+            logger.warning(
+                "Failed to inspect chat-app binding platform for %s: %s",
+                thread_id,
+                e,
+            )
+        return None
+
+    def _thread_list_platform(thread_id: str, meta=None) -> str:
+        """Resolve the platform value the frontend should render for a thread."""
+        platform = meta.platform if meta else _classify_thread_platform_from_id(thread_id)
+        thread_config_manager = getattr(get_agent(), "thread_config_manager", None)
+        tc = (
+            thread_config_manager.get_config(thread_id)
+            if thread_config_manager is not None
+            else None
+        )
+        if tc and tc.callable:
+            platform = "callable"
+        elif platform == "callable":
+            platform = "desktop"
+
+        return _bound_chatapp_platform(thread_id) or platform
+
+    def _publish_chatapp_platform_sync(thread_id: str, user_id: str, origin_client_id: str = "") -> None:
+        """Notify clients when a chat-app binding changes a thread's platform icon."""
+        meta = get_agent().thread_metadata_manager.get_thread(user_id, thread_id)
+        publish_sync_event(
+            event_type="thread_updated",
+            thread_id=thread_id,
+            user_id=user_id,
+            data={"platform": _thread_list_platform(thread_id, meta)},
+            origin_client_id=origin_client_id,
+        )
 
     # ========================================================================
     # Frontend static hosting (Outlook add-in / web UI)
@@ -1846,6 +1903,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             )
         except BindingAlreadyExists as e:
             raise HTTPException(status_code=409, detail=str(e))
+        _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
             thread_id=binding.thread_id,
@@ -1873,6 +1931,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Bypass the user_id check by passing the binding's owner — admin
         # path is operating on behalf of whoever owns it.
         repo.delete_thread_binding(binding.id, user_id=binding.user_id)
+        _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return {"unbound": True, "thread_id": binding.thread_id}
 
     @app.post(
@@ -1942,6 +2001,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             )
         except BindingAlreadyExists as e:
             raise HTTPException(status_code=409, detail=str(e))
+        _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
             thread_id=binding.thread_id,
@@ -2201,6 +2261,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         tags=["Threads"],
     )
     async def delete_thread_chatapp_binding(
+        http_request: Request,
         thread_id: str,
         binding_id: int,
         user: AuthenticatedUser = Depends(verify_api_key),
@@ -2211,9 +2272,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         _require_thread_access(user, thread_id)
         repo = get_agent().accounts_repo
+        bindings = repo.list_thread_bindings(thread_id)
+        binding = next(
+            (b for b in bindings if b.id == binding_id and b.user_id == user.id),
+            None,
+        )
         ok = repo.delete_thread_binding(binding_id, user_id=user.id)
         if not ok:
             raise HTTPException(status_code=404, detail="Binding not found")
+        if binding is not None:
+            client_id = http_request.headers.get("x-nymeria-client-id", "")
+            _publish_chatapp_platform_sync(
+                binding.thread_id,
+                binding.user_id,
+                origin_client_id=client_id,
+            )
         return {"unbound": True}
 
     # --- self-service BYO Telegram bots -----------------------------------
@@ -2389,9 +2462,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         supervisor's next refresh.
         """
         repo = get_agent().accounts_repo
+        affected_bindings = [
+            b
+            for b in repo.list_thread_bindings_for_user(user.id)
+            if b.user_telegram_bot_id == bot_id
+        ]
         ok = repo.delete_user_telegram_bot(bot_id, owner_user_id=user.id)
         if not ok:
             raise HTTPException(status_code=404, detail="Bot not found")
+        for binding in affected_bindings:
+            _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return {"deleted": True}
 
     @app.post("/restart", tags=["System"])
@@ -2928,20 +3008,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # Thread Listing
     # =========================================================================
 
-    def _classify_thread_platform(thread_id: str) -> str:
-        """Classify a thread ID into its platform origin."""
-        if thread_id.startswith("trigger-"):
-            return "trigger"
-        if thread_id.startswith("discord_"):
-            return "discord"
-        if thread_id.startswith("telegram_"):
-            return "telegram"
-        if thread_id.startswith("slack_"):
-            return "slack"
-        if thread_id.startswith("agent-") or thread_id.startswith("spawned-"):
-            return "callable"
-        return "desktop"
-
     def _get_checkpoint_thread_ids() -> list[str]:
         """Query distinct thread IDs from the checkpoint database."""
         settings = get_settings()
@@ -3098,22 +3164,25 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "thread_id": thread_id,
                 "title": "Recovered thread" if recovered else "New Chat",
                 "pinned": False,
-                "platform": _classify_thread_platform(thread_id),
+                "platform": _classify_thread_platform_from_id(thread_id),
                 "platform_meta": None,
                 "created_at": None,
                 "updated_at": None,
                 "title_source": "recovered" if recovered else "default",
             }
-        tc = get_agent().thread_config_manager.get_config(thread_id)
+        payload["platform"] = _thread_list_platform(thread_id, meta)
+        thread_config_manager = getattr(get_agent(), "thread_config_manager", None)
+        tc = (
+            thread_config_manager.get_config(thread_id)
+            if thread_config_manager is not None
+            else None
+        )
         is_callable = bool(tc and tc.callable)
         payload["callable"] = is_callable
         if is_callable:
-            payload["platform"] = "callable"
             if tc.callable_name:
                 payload["title"] = tc.callable_name
                 payload["title_source"] = "callable"
-        elif payload.get("platform") == "callable":
-            payload["platform"] = "desktop"
         payload["recovered"] = recovered
         payload["recovery_sources"] = sorted(recovery_sources or [])
         return payload
