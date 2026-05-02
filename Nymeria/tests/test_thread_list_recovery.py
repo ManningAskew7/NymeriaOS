@@ -137,3 +137,109 @@ def test_threads_revert_bound_desktop_platform_after_unbind(tmp_path: Path, monk
     assert response.status_code == 200
     rows = {row["thread_id"]: row for row in response.json()["threads"]}
     assert rows[thread_id]["platform"] == "desktop"
+
+
+def test_admin_chatapp_switch_moves_binding_between_owned_threads(
+    tmp_path: Path, monkeypatch
+):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
+    agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
+    admin_token = agent.accounts_repo.issue_token("admin")
+    agent.accounts_repo.claim_thread("old-thread", "bob")
+    agent.accounts_repo.claim_thread("new-thread", "bob")
+    agent.accounts_repo.create_thread_binding(
+        thread_id="old-thread",
+        provider="telegram",
+        platform_chat_id="5551234567",
+        user_id="bob",
+    )
+
+    response = client.post(
+        "/admin/chatapp/bindings/switch",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "provider": "telegram",
+            "platform_chat_id": "5551234567",
+            "thread_id": "new-thread",
+            "user_id": "bob",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["thread_id"] == "new-thread"
+    assert response.json()["previous_thread_id"] == "old-thread"
+    assert (
+        agent.accounts_repo.lookup_thread_binding_by_chat(
+            "telegram", "5551234567"
+        ).thread_id
+        == "new-thread"
+    )
+    assert agent.accounts_repo.lookup_thread_binding_by_thread("telegram", "old-thread") is None
+
+
+def test_admin_chatapp_switch_rejects_thread_already_bound_elsewhere(
+    tmp_path: Path, monkeypatch
+):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
+    agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
+    admin_token = agent.accounts_repo.issue_token("admin")
+    agent.accounts_repo.claim_thread("old-thread", "bob")
+    agent.accounts_repo.claim_thread("new-thread", "bob")
+    agent.accounts_repo.create_thread_binding(
+        thread_id="old-thread",
+        provider="telegram",
+        platform_chat_id="111",
+        user_id="bob",
+    )
+    agent.accounts_repo.create_thread_binding(
+        thread_id="new-thread",
+        provider="telegram",
+        platform_chat_id="222",
+        user_id="bob",
+    )
+
+    response = client.post(
+        "/admin/chatapp/bindings/switch",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "provider": "telegram",
+            "platform_chat_id": "111",
+            "thread_id": "new-thread",
+            "user_id": "bob",
+        },
+    )
+
+    assert response.status_code == 409
+    assert (
+        agent.accounts_repo.lookup_thread_binding_by_chat("telegram", "111").thread_id
+        == "old-thread"
+    )
+    assert (
+        agent.accounts_repo.lookup_thread_binding_by_chat("telegram", "222").thread_id
+        == "new-thread"
+    )
+
+
+def test_admin_chatapp_switch_rejects_native_platform_targets(
+    tmp_path: Path, monkeypatch
+):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
+    agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
+    admin_token = agent.accounts_repo.issue_token("admin")
+    agent.accounts_repo.claim_thread("telegram_5551234567", "bob")
+
+    response = client.post(
+        "/admin/chatapp/bindings/switch",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "provider": "telegram",
+            "platform_chat_id": "5551234567",
+            "thread_id": "telegram_5551234567",
+            "user_id": "bob",
+        },
+    )
+
+    assert response.status_code == 400

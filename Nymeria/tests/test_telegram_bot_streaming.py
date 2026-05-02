@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from telegram.error import BadRequest
 
-from nymeria.triggers.telegram_bot import NymeriaTelegramBot, TELEGRAM_TEXT_LIMIT
+from nymeria.triggers.telegram_bot import (
+    NymeriaTelegramBot,
+    TELEGRAM_TEXT_LIMIT,
+    _find_thread_match,
+    _sorted_switchable_threads,
+)
 
 
 class _FakeMessage:
@@ -67,6 +72,49 @@ class _FakeEventAPI:
 async def _deliver_autonomous(bot: NymeriaTelegramBot, events: list[dict]) -> None:
     for event in events:
         await bot._handle_sse_event(event)
+
+
+def test_telegram_thread_match_prefers_titles_and_skips_native_threads():
+    rows = [
+        {"thread_id": "telegram_123", "title": "Default Telegram"},
+        {"thread_id": "desktop-a", "title": "Project Alpha", "updated_at": "2026-05-01"},
+        {"thread_id": "desktop-b", "title": "Project Beta", "updated_at": "2026-05-02"},
+    ]
+
+    switchable = _sorted_switchable_threads(rows)
+    assert [row["thread_id"] for row in switchable] == ["desktop-b", "desktop-a"]
+
+    match, ambiguous, reason = _find_thread_match(rows, "Project Alpha")
+    assert reason == "exact_title"
+    assert ambiguous == []
+    assert match["thread_id"] == "desktop-a"
+
+
+def test_telegram_thread_match_reports_ambiguous_title_substrings():
+    rows = [
+        {"thread_id": "desktop-a", "title": "Project Alpha"},
+        {"thread_id": "desktop-b", "title": "Project Beta"},
+    ]
+
+    match, ambiguous, reason = _find_thread_match(rows, "project")
+
+    assert match is None
+    assert reason == "ambiguous"
+    assert {row["thread_id"] for row in ambiguous} == {"desktop-a", "desktop-b"}
+
+
+def test_telegram_thread_match_uses_cached_numbers():
+    rows = [
+        {"thread_id": "desktop-a", "title": "Project Alpha"},
+        {"thread_id": "desktop-b", "title": "Project Beta"},
+    ]
+    cached = [rows[1], rows[0]]
+
+    match, ambiguous, reason = _find_thread_match(rows, "2", cached)
+
+    assert reason == "number"
+    assert ambiguous == []
+    assert match["thread_id"] == "desktop-a"
 
 
 def test_telegram_stream_splits_single_oversized_response_chunk():

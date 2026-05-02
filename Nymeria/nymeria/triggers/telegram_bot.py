@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -308,6 +309,103 @@ _USER_BOT_SUPERVISOR_INTERVAL_SECONDS = 15
 # chunks below that to leave room for HTML tags/entities added by formatting.
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_SAFE_CHUNK_LENGTH = 3500
+THREAD_PICKER_CACHE_TTL_SECONDS = 10 * 60
+THREAD_PICKER_LIMIT = 15
+_NATIVE_SWITCH_THREAD_PREFIXES = (
+    "discord_",
+    "telegram_",
+    "slack_",
+    "trigger-",
+    "twitch_",
+)
+
+
+def _thread_title(thread: dict) -> str:
+    title = str(thread.get("title") or "").strip()
+    return title or "New Chat"
+
+
+def _normalize_thread_label(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _is_switchable_thread(thread: dict) -> bool:
+    thread_id = str(thread.get("thread_id") or "")
+    return bool(thread_id) and not thread_id.startswith(_NATIVE_SWITCH_THREAD_PREFIXES)
+
+
+def _thread_sort_key(thread: dict) -> tuple:
+    return (
+        bool(thread.get("pinned")),
+        str(thread.get("updated_at") or thread.get("created_at") or ""),
+        _normalize_thread_label(_thread_title(thread)),
+        str(thread.get("thread_id") or ""),
+    )
+
+
+def _sorted_switchable_threads(threads: List[dict]) -> List[dict]:
+    return sorted(
+        [thread for thread in threads if _is_switchable_thread(thread)],
+        key=_thread_sort_key,
+        reverse=True,
+    )
+
+
+def _find_thread_match(
+    threads: List[dict],
+    query: str,
+    cached_threads: Optional[List[dict]] = None,
+) -> tuple[Optional[dict], List[dict], str]:
+    """Find a switch target by number, title, or thread id.
+
+    Returns ``(match, ambiguous_matches, reason)``.
+    """
+    needle = query.strip()
+    if not needle:
+        return None, [], "empty"
+
+    if needle.isdigit():
+        index = int(needle) - 1
+        choices = cached_threads or _sorted_switchable_threads(threads)
+        if 0 <= index < len(choices):
+            return choices[index], [], "number"
+        if cached_threads is not None:
+            return None, [], "number_out_of_range"
+
+    candidates = _sorted_switchable_threads(threads)
+    exact_id = [t for t in candidates if str(t.get("thread_id") or "") == needle]
+    if exact_id:
+        return exact_id[0], [], "exact_id"
+
+    normalized = _normalize_thread_label(needle)
+    exact_title = [
+        t for t in candidates
+        if _normalize_thread_label(_thread_title(t)) == normalized
+    ]
+    if len(exact_title) == 1:
+        return exact_title[0], [], "exact_title"
+    if len(exact_title) > 1:
+        return None, exact_title, "ambiguous"
+
+    id_prefix = [
+        t for t in candidates
+        if str(t.get("thread_id") or "").startswith(needle)
+    ]
+    if len(id_prefix) == 1:
+        return id_prefix[0], [], "id_prefix"
+    if len(id_prefix) > 1:
+        return None, id_prefix, "ambiguous"
+
+    title_contains = [
+        t for t in candidates
+        if normalized in _normalize_thread_label(_thread_title(t))
+    ]
+    if len(title_contains) == 1:
+        return title_contains[0], [], "title_contains"
+    if len(title_contains) > 1:
+        return None, title_contains, "ambiguous"
+
+    return None, [], "not_found"
 
 
 # =============================================================================
@@ -356,6 +454,9 @@ class NymeriaTelegramBot:
         # Filtered to bindings served by THIS bot (user_telegram_bot_id matches).
         self._bindings: Dict[int, str] = {}              # chat_id -> thread_id
         self._reverse_bindings: Dict[str, int] = {}      # thread_id -> chat_id
+        # chat_id -> (expires_at_monotonic, thread choices). Lets users run
+        # /threads first, then /switch 2 without relying on fragile titles.
+        self._thread_picker_cache: Dict[int, tuple[float, List[dict]]] = {}
         # Shared-bot only: subordinate user-owned bots, keyed by row id.
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
@@ -695,6 +796,9 @@ class NymeriaTelegramBot:
             BotCommand("notepad_write", "Write to notepad"),
             BotCommand("notepad_clear", "Clear notepad"),
             BotCommand("bind", "Bind this chat to a desktop thread"),
+            BotCommand("threads", "List switchable threads"),
+            BotCommand("switch", "Switch this chat to a thread"),
+            BotCommand("new", "Start a fresh thread"),
             BotCommand("unbind", "Remove this chat's thread binding"),
         ]
         await application.bot.set_my_commands(commands)
@@ -779,6 +883,9 @@ class NymeriaTelegramBot:
 
         # Chat-app binding commands
         app.add_handler(CommandHandler("bind", self._cmd_bind))
+        app.add_handler(CommandHandler("threads", self._cmd_threads))
+        app.add_handler(CommandHandler("switch", self._cmd_switch))
+        app.add_handler(CommandHandler("new", self._cmd_new))
         app.add_handler(CommandHandler("unbind", self._cmd_unbind))
 
         # Callback query handler (stop button)
@@ -876,6 +983,55 @@ class NymeriaTelegramBot:
     def _parse_args(self, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Get the text after the command."""
         return " ".join(context.args) if context.args else ""
+
+    def _set_local_binding(self, chat_id: int, thread_id: str) -> None:
+        """Update this bot's in-memory chat<->thread maps after an API move."""
+        chat_id = int(chat_id)
+        for existing_thread_id, existing_chat_id in list(self._reverse_bindings.items()):
+            if existing_chat_id == chat_id and existing_thread_id != thread_id:
+                self._reverse_bindings.pop(existing_thread_id, None)
+        self._bindings[chat_id] = thread_id
+        self._reverse_bindings[thread_id] = chat_id
+
+    def _get_cached_thread_choices(self, chat_id: int) -> Optional[List[dict]]:
+        cached = self._thread_picker_cache.get(int(chat_id))
+        if cached is None:
+            return None
+        expires_at, threads = cached
+        if time.monotonic() >= expires_at:
+            self._thread_picker_cache.pop(int(chat_id), None)
+            return None
+        return threads
+
+    def _cache_thread_choices(self, chat_id: int, threads: List[dict]) -> List[dict]:
+        choices = threads[:THREAD_PICKER_LIMIT]
+        self._thread_picker_cache[int(chat_id)] = (
+            time.monotonic() + THREAD_PICKER_CACHE_TTL_SECONDS,
+            choices,
+        )
+        return choices
+
+    def _format_thread_choices(
+        self,
+        threads: List[dict],
+        current_thread_id: str,
+        *,
+        heading: str = "Switchable Threads",
+        hint: str = "Use /switch 2 or /switch thread title.",
+    ) -> str:
+        lines = [f"<b>{escape_html(heading)}</b>"]
+        for index, thread in enumerate(threads[:THREAD_PICKER_LIMIT], start=1):
+            thread_id = str(thread.get("thread_id") or "")
+            title = _thread_title(thread)
+            marker = " <i>(current)</i>" if thread_id == current_thread_id else ""
+            lines.append(
+                f"{index}. {escape_html(title[:80])}{marker}\n"
+                f"   <code>{escape_html(thread_id)}</code>"
+            )
+        if len(threads) > THREAD_PICKER_LIMIT:
+            lines.append(f"\n<i>Showing {THREAD_PICKER_LIMIT} of {len(threads)}</i>")
+        lines.append(f"\n<i>{escape_html(hint)}</i>")
+        return "\n".join(lines)
 
     # =========================================================================
     # Streaming chat dispatcher
@@ -1337,6 +1493,166 @@ class NymeriaTelegramBot:
             "Messages here now feed into your desktop thread, and replies "
             "stream both ways.",
             parse_mode=ParseMode.HTML,
+        )
+
+    async def _cmd_threads(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /threads [query]. List threads this chat can switch to."""
+        if update.message is None or update.effective_chat is None:
+            return
+        chat_id = int(update.effective_chat.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
+        query = self._parse_args(context).strip()
+        try:
+            threads = _sorted_switchable_threads(await self.api.list_threads(user_id))
+        except Exception as e:  # noqa: BLE001
+            logger.exception("thread list failed")
+            await update.message.reply_text(f"Couldn't list threads: {e}")
+            return
+
+        if query:
+            needle = _normalize_thread_label(query)
+            threads = [
+                thread for thread in threads
+                if needle in _normalize_thread_label(_thread_title(thread))
+                or needle in _normalize_thread_label(thread.get("thread_id"))
+            ]
+
+        if not threads:
+            suffix = f" matching '{query}'" if query else ""
+            await update.message.reply_text(f"No switchable threads{suffix}.")
+            return
+
+        self._cache_thread_choices(chat_id, threads)
+        await self._send_html(
+            chat_id,
+            self._format_thread_choices(
+                threads,
+                self.resolve_thread_id_for_chat(chat_id),
+            ),
+            context,
+        )
+
+    async def _cmd_switch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /switch <title|number|id>. Move this chat to another thread."""
+        if update.message is None or update.effective_chat is None:
+            return
+        chat_id = int(update.effective_chat.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
+        query = self._parse_args(context).strip()
+        if not query:
+            await update.message.reply_text(
+                "Usage: /switch <thread title, list number, or thread id>\n"
+                "Use /threads to see numbered choices."
+            )
+            return
+
+        try:
+            threads = await self.api.list_threads(user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("thread list failed for switch")
+            await update.message.reply_text(f"Couldn't list threads: {e}")
+            return
+
+        match, ambiguous, reason = _find_thread_match(
+            threads,
+            query,
+            self._get_cached_thread_choices(chat_id),
+        )
+        if ambiguous:
+            self._cache_thread_choices(chat_id, ambiguous)
+            await self._send_html(
+                chat_id,
+                self._format_thread_choices(
+                    ambiguous,
+                    self.resolve_thread_id_for_chat(chat_id),
+                    heading="Multiple Matches",
+                    hint="Use /switch 1, /switch 2, etc. to choose one.",
+                ),
+                context,
+            )
+            return
+        if match is None:
+            if reason == "number_out_of_range":
+                await update.message.reply_text(
+                    "That number isn't in the current /threads list."
+                )
+            else:
+                await update.message.reply_text(
+                    f"No switchable thread matched '{query}'. Use /threads <query>."
+                )
+            return
+
+        target_thread_id = str(match.get("thread_id") or "")
+        current_thread_id = self.resolve_thread_id_for_chat(chat_id)
+        if target_thread_id == current_thread_id:
+            await update.message.reply_text(
+                f"This chat is already using {_thread_title(match)}."
+            )
+            return
+
+        try:
+            await self.api.switch_chatapp_binding(
+                provider="telegram",
+                platform_chat_id=str(chat_id),
+                thread_id=target_thread_id,
+                user_id=user_id,
+                user_telegram_bot_id=self.user_telegram_bot_id,
+            )
+        except httpx.HTTPStatusError as e:
+            await update.message.reply_text(f"Couldn't switch: {_safe_error_detail(e)}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("thread switch failed")
+            await update.message.reply_text(f"Couldn't switch: {e}")
+            return
+
+        self._set_local_binding(chat_id, target_thread_id)
+        await self._send_html(
+            chat_id,
+            f"Switched this chat to <b>{escape_html(_thread_title(match))}</b>.",
+            context,
+        )
+
+    async def _cmd_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /new [title]. Create and switch to a fresh thread."""
+        if update.message is None or update.effective_chat is None:
+            return
+        chat_id = int(update.effective_chat.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
+        title = self._parse_args(context).strip()
+        thread_id = str(uuid.uuid4())
+        try:
+            await self.api.claim_thread(thread_id, user_id)
+            if title:
+                await self.api.update_thread_metadata(thread_id, user_id, title=title)
+            await self.api.switch_chatapp_binding(
+                provider="telegram",
+                platform_chat_id=str(chat_id),
+                thread_id=thread_id,
+                user_id=user_id,
+                user_telegram_bot_id=self.user_telegram_bot_id,
+            )
+        except httpx.HTTPStatusError as e:
+            await update.message.reply_text(f"Couldn't create thread: {_safe_error_detail(e)}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("new thread failed")
+            await update.message.reply_text(f"Couldn't create thread: {e}")
+            return
+
+        self._set_local_binding(chat_id, thread_id)
+        display_title = title or "New Chat"
+        await self._send_html(
+            chat_id,
+            f"Started a fresh thread: <b>{escape_html(display_title)}</b>.\n"
+            f"<code>{escape_html(thread_id)}</code>",
+            context,
         )
 
     async def _cmd_unbind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1985,6 +2301,12 @@ class NymeriaTelegramBot:
             "/thread: Thread info\n"
             "/context: Context breakdown\n"
             "/tasks [status]: Scheduled tasks\n\n"
+            "<b>Thread Binding</b>\n"
+            "/bind &lt;code&gt;: Bind this chat to a desktop thread\n"
+            "/threads [query]: List switchable threads\n"
+            "/switch &lt;title|number|id&gt;: Switch this chat to a thread\n"
+            "/new [title]: Start a fresh thread\n"
+            "/unbind: Remove this chat's thread binding\n\n"
             "<b>TODOs</b>\n"
             "/todo_add &lt;task&gt; | &lt;schedule&gt; | &lt;repeat&gt;\n"
             "/todo_list [status]: List TODOs\n"
