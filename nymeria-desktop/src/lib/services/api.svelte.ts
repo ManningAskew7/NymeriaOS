@@ -2630,6 +2630,8 @@ export class NymeriaAPI {
       callableName: data.callable_name ?? null,
       callableDescription: data.callable_description ?? null,
       callableMaxIterations: data.callable_max_iterations ?? null,
+      callableTeamId: data.callable_team_id ?? null,
+      callableTeamName: data.callable_team_name ?? null,
       enabledSkills: data.enabled_skills ?? [],
       disabledSkills: data.disabled_skills ?? [],
       injectTodosInPrompt: data.inject_todos_in_prompt ?? false,
@@ -2718,6 +2720,56 @@ export class NymeriaAPI {
     }
     const data = await response.json();
     return this._normalizeThreadConfig(data);
+  }
+
+  async listThreadTeams(): Promise<import('$lib/types').ThreadTeamApi[]> {
+    const response = await fetch(`${this.getBaseUrl()}/thread-teams`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to load thread teams'));
+    }
+    const data = await response.json();
+    return data.teams ?? [];
+  }
+
+  async createThreadTeam(
+    request: { name: string; thread_ids: string[] }
+  ): Promise<import('$lib/types').ThreadTeamApi> {
+    const response = await fetch(`${this.getBaseUrl()}/thread-teams`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to create thread team'));
+    }
+    return response.json();
+  }
+
+  async updateThreadTeam(
+    teamId: string,
+    updates: { name?: string; thread_ids?: string[] }
+  ): Promise<import('$lib/types').ThreadTeamApi> {
+    const response = await fetch(`${this.getBaseUrl()}/thread-teams/${encodeURIComponent(teamId)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify(updates),
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update thread team'));
+    }
+    return response.json();
+  }
+
+  async deleteThreadTeam(teamId: string): Promise<void> {
+    const response = await fetch(`${this.getBaseUrl()}/thread-teams/${encodeURIComponent(teamId)}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to delete thread team'));
+    }
   }
 
   async getOptionalTools(): Promise<import('$lib/types').OptionalTool[]> {

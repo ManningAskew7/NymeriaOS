@@ -1297,6 +1297,7 @@ class NymeriaAgent:
             thread_config_str = (
                 f"sp:{hash(tc.system_prompt or '')}"
                 f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
+                f"|ct:{tc.callable_team_id or ''}:{tc.callable_team_name or ''}"
                 f"|dt:{sorted(tc.disabled_tools)}"
                 f"|et:{sorted(tc.enabled_tools)}"
                 f"|tt:{live_temp_tools}"
@@ -1336,6 +1337,7 @@ class NymeriaAgent:
                 f"|tc:{tc.instructions or ''}"
                 f"|sp:{hash(tc.system_prompt or '')}"
                 f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
+                f"|ct:{tc.callable_team_id or ''}:{tc.callable_team_name or ''}"
                 f"|dt:{sorted(tc.disabled_tools)}"
                 f"|et:{sorted(tc.enabled_tools)}"
                 f"|tt:{live_temp_tools}"
@@ -2828,6 +2830,53 @@ class NymeriaAgent:
             openai_api_mode=(tc.openai_api_mode if tc else None) or self.settings.openai_api_mode,
         )
 
+    def _get_team_scoped_callable_threads(
+        self,
+        *,
+        user_id: str,
+        caller_thread_id: str,
+    ) -> List:
+        """Return the caller's owned callable threads, scoped by team if set.
+
+        Team membership is caller-scoped for backward compatibility: unteamed
+        threads keep the existing owner-wide callable list, while a thread with
+        ``callable_team_id`` sees only callable threads in the same team.
+        """
+        owned = set(self.accounts_repo.list_threads_for_user(user_id))
+        owned_callables = self.thread_config_manager.list_callable_threads(
+            owned_thread_ids=owned
+        )
+
+        caller_tc = (
+            self.thread_config_manager.get_config(caller_thread_id)
+            if caller_thread_id
+            else None
+        )
+        team_id = getattr(caller_tc, "callable_team_id", None) if caller_tc else None
+        if not team_id:
+            return owned_callables
+        return [
+            callable_tc
+            for callable_tc in owned_callables
+            if getattr(callable_tc, "callable_team_id", None) == team_id
+        ]
+
+    def is_callable_visible_to_thread(self, caller_thread_id: str, target_thread_id: str) -> bool:
+        """Runtime defense for team-scoped callable tool visibility.
+
+        A stale graph may still contain a callable tool after team membership
+        changes. If the caller belongs to a team, only same-team callables are
+        invocable. Unteamed callers preserve legacy owner-wide visibility.
+        """
+        if not caller_thread_id:
+            return True
+        caller_tc = self.thread_config_manager.get_config(caller_thread_id)
+        caller_team_id = getattr(caller_tc, "callable_team_id", None) if caller_tc else None
+        if not caller_team_id:
+            return True
+        target_tc = self.thread_config_manager.get_config(target_thread_id)
+        return bool(target_tc and target_tc.callable_team_id == caller_team_id)
+
     def _get_callable_thread_tools(self, tc) -> List[BaseTool]:
         """Get tools for a callable thread.
 
@@ -2856,9 +2905,9 @@ class NymeriaAgent:
 
         # Include the owner's other callable thread tools (excluding self).
         existing_names = {t.name for t in tools}
-        owned = set(self.accounts_repo.list_threads_for_user(owner_id))
-        owned_callables = self.thread_config_manager.list_callable_threads(
-            owned_thread_ids=owned
+        owned_callables = self._get_team_scoped_callable_threads(
+            user_id=owner_id,
+            caller_thread_id=tc.thread_id,
         )
         from ..agents.tool_factory import create_callable_thread_tool
         for callable_tc in owned_callables:
@@ -2996,9 +3045,9 @@ class NymeriaAgent:
             # The runtime ownership gate in create_callable_thread_tool is the
             # second line of defense; this filter is the first.
             existing_names = {t.name for t in tools}
-            owned = set(self.accounts_repo.list_threads_for_user(user_id))
-            owned_callables = self.thread_config_manager.list_callable_threads(
-                owned_thread_ids=owned
+            owned_callables = self._get_team_scoped_callable_threads(
+                user_id=user_id,
+                caller_thread_id=thread_id,
             )
             from ..agents.tool_factory import create_callable_thread_tool
             for callable_tc in owned_callables:
@@ -3143,9 +3192,9 @@ class NymeriaAgent:
             # for the rationale. Builds fresh closures from the caller's
             # owned callable threads so cross-user descriptions don't leak.
             existing_names = {t.name for t in tools}
-            owned = set(self.accounts_repo.list_threads_for_user(user_id))
-            owned_callables = self.thread_config_manager.list_callable_threads(
-                owned_thread_ids=owned
+            owned_callables = self._get_team_scoped_callable_threads(
+                user_id=user_id,
+                caller_thread_id=thread_id,
             )
             from ..agents.tool_factory import create_callable_thread_tool
             for callable_tc in owned_callables:

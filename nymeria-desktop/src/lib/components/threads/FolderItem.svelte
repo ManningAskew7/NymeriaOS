@@ -6,6 +6,7 @@
   interface Props {
     folder: ThreadFolder;
     threads: Thread[];
+    kind?: 'folder' | 'team';
     currentThreadId: string | null;
     selectedIds: Set<string>;
     isPinned?: boolean;
@@ -29,6 +30,7 @@
   let {
     folder,
     threads,
+    kind = 'folder',
     currentThreadId,
     selectedIds,
     isPinned = false,
@@ -48,6 +50,8 @@
     onTogglePin,
     onTogglePinThread,
   }: Props = $props();
+
+  const iconName = $derived(kind === 'team' ? 'users' : (folder.collapsed ? 'folder' : 'folderOpen'));
 
   let isEditingName = $state(false);
   let editName = $state('');
@@ -126,7 +130,7 @@
       <Icon name="chevronDown" size={14} />
     </span>
     <span class="folder-icon">
-      <Icon name={folder.collapsed ? 'folder' : 'folderOpen'} size={16} />
+      <Icon name={iconName} size={16} />
     </span>
     {#if isEditingName}
       <!-- svelte-ignore a11y_autofocus -->

@@ -127,6 +127,21 @@ export interface ThreadFolder {
   pinned?: boolean;
 }
 
+export type OrganizationMode = 'folders' | 'teams';
+
+export interface ThreadTeam {
+  id: string;
+  name: string;
+  threadIds: string[];
+  collapsed: boolean;
+}
+
+export interface ThreadTeamApi {
+  id: string;
+  name: string;
+  thread_ids: string[];
+}
+
 // Per-thread configuration types
 export interface ThreadLLMConfig {
   provider?: LLMProvider | null;
@@ -152,6 +167,8 @@ export interface ThreadConfig {
   callableName?: string | null;
   callableDescription?: string | null;
   callableMaxIterations?: number | null;
+  callableTeamId?: string | null;
+  callableTeamName?: string | null;
   enabledSkills: string[];
   disabledSkills: string[];
   injectTodosInPrompt: boolean;
@@ -176,6 +193,8 @@ export interface ThreadConfigUpdateRequest {
   callable_name?: string | null;
   callable_description?: string | null;
   callable_max_iterations?: number | null;
+  callable_team_id?: string | null;
+  callable_team_name?: string | null;
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;

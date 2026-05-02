@@ -541,7 +541,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 
 | Event | Description | Fields |
 |-------|-------------|--------|
-| `task_started` | Autonomous execution begins | `thread_id`, `task_id`, `prompt`, optional `todo_id`, `trigger_id`, `trigger_name`, `callable_name`, `source` |
+| `task_started` | Autonomous execution begins | `thread_id`, `task_id`, `prompt`, optional `todo_id`, `trigger_id`, `trigger_name`, `callable_name`, `source`, `handoff_id`, `caller_thread_id`, `caller_thread_name` |
 | `thinking` | Agent reasoning | `content` |
 | `tool_call_delta` | Status-only hint that the model is streaming tool-call argument chunks before the tool starts | none |
 | `tool_call` | Tool invocation | `id`, `name`, `args` |
@@ -554,7 +554,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 | `compacted` | Context was compacted | `messages_removed`, `auto_resumed`, `summary` |
 | `iteration_limit` | Agent hit a turn safety stop | `content`, `reason`, `max_iterations`, `tool_call_count`, optional repeated-tool fields |
 | `notification` | Explicit `notify` tool event or new in-app notification | `message`, `summary`, `in_app_only` |
-| `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id` |
+| `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id`, optional `handoff_id`, `caller_thread_id`, `caller_thread_name` |
 
 **Example Stream:**
 ```
@@ -1364,6 +1364,8 @@ Import tools from a JSON array.
 
 Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool — but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.
 
+Callable teams optionally narrow that owner-wide list. If the caller thread has `callable_team_id`, it only receives callable tools whose thread configs have the same `callable_team_id`. Threads without a team keep the legacy owner-wide callable list.
+
 ### List Callable Threads
 
 ```http
@@ -1382,6 +1384,44 @@ Content-Type: application/json
 ```
 
 Creates a callable thread directly from the API.
+
+---
+
+### Callable Teams
+
+```http
+GET /thread-teams
+Authorization: Bearer <token>
+```
+
+Returns `{"teams": [{"id": "...", "name": "...", "thread_ids": [...]}], "total": N}` for the authenticated user's thread teams.
+
+```http
+POST /thread-teams
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"name": "Ops", "thread_ids": ["thread-a", "thread-b"]}
+```
+
+Creates a team and moves the listed owned threads into it.
+
+```http
+PATCH /thread-teams/{team_id}
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"name": "Ops Team", "thread_ids": ["thread-b", "thread-c"]}
+```
+
+Renames a team and/or replaces its membership. Moving a thread into a team removes it from any previous callable team.
+
+```http
+DELETE /thread-teams/{team_id}
+Authorization: Bearer <token>
+```
+
+Deletes a team by clearing membership from its threads. Team changes invalidate cached graphs for the user's threads so subsequent turns rebuild callable-tool visibility.
 
 ---
 
@@ -1407,6 +1447,8 @@ Updates thread config. Key fields for callable threads:
 | `callable` | bool | Whether this thread is callable as a tool |
 | `callable_name` | string | Tool name visible to the LLM (must be unique) |
 | `callable_description` | string | Tool description shown to the LLM |
+| `callable_team_id` | string | Optional callable visibility team id |
+| `callable_team_name` | string | Optional callable visibility team display name |
 | `custom_instructions` | string | System prompt for this thread |
 | `disabled_tools` | array | Tool names to exclude |
 | `enabled_tools` | array | Optional tool names to include |

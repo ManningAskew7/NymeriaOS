@@ -953,6 +953,7 @@ def _require_same_user_or_admin(user: AuthenticatedUser, path_user_id: str) -> N
 
 
 _CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_THREAD_TEAM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 
 
 def _validate_callable_name(name: str) -> None:
@@ -975,6 +976,22 @@ def _validate_callable_name(name: str) -> None:
                 "or punctuation)."
             ),
         )
+
+
+def _normalize_thread_team_name(name: str) -> str:
+    normalized = " ".join((name or "").strip().split())
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Team name is required")
+    if len(normalized) > 120:
+        raise HTTPException(status_code=400, detail="Team name must be 120 characters or fewer")
+    return normalized
+
+
+def _make_thread_team_id(name: str) -> str:
+    slug = _THREAD_TEAM_SLUG_RE.sub("-", name.strip().lower()).strip("-_")
+    if not slug:
+        slug = "team"
+    return f"team-{slug[:48]}-{uuid.uuid4().hex[:8]}"
 
 
 def _is_shared_channel_thread(thread_id: str) -> bool:
@@ -3473,6 +3490,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         callable_name: Optional[str] = Field(default=None, max_length=64)
         callable_description: Optional[str] = Field(default=None, max_length=500)
         callable_max_iterations: Optional[int] = Field(default=None, ge=1, le=1000)
+        callable_team_id: Optional[str] = Field(default=None, max_length=120)
+        callable_team_name: Optional[str] = Field(default=None, max_length=120)
         inject_todos_in_prompt: Optional[bool] = None
         show_autonomous_prompts: Optional[bool] = None
         show_prompt_metadata: Optional[bool] = None
@@ -3511,6 +3530,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "callable_name": None,
             "callable_description": None,
             "callable_max_iterations": None,
+            "callable_team_id": None,
+            "callable_team_name": None,
             "inject_todos_in_prompt": False,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
@@ -3622,6 +3643,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tc.callable_description = request.callable_description
         if request.callable_max_iterations is not None:
             tc.callable_max_iterations = request.callable_max_iterations
+        if request.callable_team_id is not None:
+            tc.callable_team_id = request.callable_team_id
+        if request.callable_team_name is not None:
+            tc.callable_team_name = request.callable_team_name
         if request.inject_todos_in_prompt is not None:
             tc.inject_todos_in_prompt = request.inject_todos_in_prompt
         if request.show_autonomous_prompts is not None:
@@ -3637,6 +3662,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail="Failed to save thread config")
 
         agent.invalidate_thread_config_cache(thread_id)
+        if request.callable_team_id is not None or request.callable_team_name is not None:
+            for owned_thread_id in agent.accounts_repo.list_threads_for_user(user.id):
+                agent.invalidate_thread_config_cache(owned_thread_id)
+            agent.invalidate_thread_config_cache("")
 
         # If this is an agent thread config change, rebuild agent tools
         if (
@@ -3680,6 +3709,195 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if was_agent:
             agent.sync_agent_tools()
         return {"status": "ok", "thread_id": thread_id}
+
+    # =========================================================================
+    # Callable Thread Teams
+    # =========================================================================
+
+    class ThreadTeamCreateRequest(BaseModel):
+        name: str = Field(..., min_length=1, max_length=120)
+        thread_ids: List[str] = Field(default_factory=list)
+
+    class ThreadTeamUpdateRequest(BaseModel):
+        name: Optional[str] = Field(default=None, max_length=120)
+        thread_ids: Optional[List[str]] = None
+
+    def _serialize_thread_teams(agent, user_id: str) -> Dict[str, Any]:
+        owned = list(agent.accounts_repo.list_threads_for_user(user_id))
+        teams: Dict[str, Dict[str, Any]] = {}
+        for thread_id in owned:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            if not (tc and tc.callable_team_id):
+                continue
+            team_id = tc.callable_team_id
+            team = teams.setdefault(
+                team_id,
+                {
+                    "id": team_id,
+                    "name": tc.callable_team_name or team_id,
+                    "thread_ids": [],
+                },
+            )
+            team["thread_ids"].append(thread_id)
+            if tc.callable_team_name:
+                team["name"] = tc.callable_team_name
+
+        result = sorted(teams.values(), key=lambda t: str(t["name"]).lower())
+        return {"teams": result, "total": len(result)}
+
+    def _get_thread_team(agent, user_id: str, team_id: str) -> Optional[Dict[str, Any]]:
+        for team in _serialize_thread_teams(agent, user_id)["teams"]:
+            if team["id"] == team_id:
+                return team
+        return None
+
+    def _thread_team_name_exists(
+        agent,
+        user_id: str,
+        name: str,
+        *,
+        excluding_team_id: Optional[str] = None,
+    ) -> bool:
+        needle = name.strip().lower()
+        for team in _serialize_thread_teams(agent, user_id)["teams"]:
+            if excluding_team_id and team["id"] == excluding_team_id:
+                continue
+            if str(team["name"]).strip().lower() == needle:
+                return True
+        return False
+
+    def _require_team_thread_ids(user: AuthenticatedUser, thread_ids: List[str]) -> List[str]:
+        seen: set[str] = set()
+        clean: List[str] = []
+        for raw_id in thread_ids:
+            thread_id = str(raw_id or "").strip()
+            if not thread_id or thread_id in seen:
+                continue
+            _require_thread_access(user, thread_id)
+            clean.append(thread_id)
+            seen.add(thread_id)
+        if not clean:
+            raise HTTPException(status_code=400, detail="At least one thread is required")
+        return clean
+
+    def _save_thread_team_membership(
+        agent,
+        thread_id: str,
+        *,
+        team_id: Optional[str],
+        team_name: Optional[str],
+    ) -> None:
+        from ..core.thread_config import ThreadConfig
+
+        tc = agent.thread_config_manager.get_config(thread_id)
+        if tc is None:
+            tc = ThreadConfig(thread_id=thread_id)
+        tc.callable_team_id = team_id
+        tc.callable_team_name = team_name
+        if not agent.thread_config_manager.save_config(tc):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save team membership for thread {thread_id}",
+            )
+
+    def _invalidate_user_team_graphs(agent, user_id: str) -> None:
+        for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
+            agent.invalidate_thread_config_cache(owned_thread_id)
+        # Also clear per-user no-custom sentinel graphs, whose key uses "".
+        agent.invalidate_thread_config_cache("")
+
+    @app.get("/thread-teams", tags=["Threads"])
+    async def list_thread_teams(user: AuthenticatedUser = Depends(verify_api_key)):
+        """List callable visibility teams for the authenticated user's threads."""
+        agent = get_agent()
+        return _serialize_thread_teams(agent, user.id)
+
+    @app.post("/thread-teams", tags=["Threads"])
+    async def create_thread_team(
+        request: ThreadTeamCreateRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Create a callable team and move the requested threads into it."""
+        agent = get_agent()
+        name = _normalize_thread_team_name(request.name)
+        if _thread_team_name_exists(agent, user.id, name):
+            raise HTTPException(status_code=409, detail=f"Thread team '{name}' already exists")
+        thread_ids = _require_team_thread_ids(user, request.thread_ids)
+        team_id = _make_thread_team_id(name)
+        for thread_id in thread_ids:
+            _save_thread_team_membership(
+                agent,
+                thread_id,
+                team_id=team_id,
+                team_name=name,
+            )
+        _invalidate_user_team_graphs(agent, user.id)
+        team = _get_thread_team(agent, user.id, team_id)
+        return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
+
+    @app.patch("/thread-teams/{team_id}", tags=["Threads"])
+    async def update_thread_team(
+        team_id: str,
+        request: ThreadTeamUpdateRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Rename a callable team and/or replace its thread membership."""
+        agent = get_agent()
+        existing = _get_thread_team(agent, user.id, team_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Thread team not found")
+
+        name = str(existing["name"])
+        if request.name is not None:
+            name = _normalize_thread_team_name(request.name)
+            if _thread_team_name_exists(agent, user.id, name, excluding_team_id=team_id):
+                raise HTTPException(status_code=409, detail=f"Thread team '{name}' already exists")
+
+        if request.thread_ids is None:
+            thread_ids = list(existing["thread_ids"])
+        else:
+            thread_ids = _require_team_thread_ids(user, request.thread_ids)
+
+        old_ids = set(existing["thread_ids"])
+        new_ids = set(thread_ids)
+        for thread_id in sorted(old_ids - new_ids):
+            _save_thread_team_membership(
+                agent,
+                thread_id,
+                team_id=None,
+                team_name=None,
+            )
+        for thread_id in thread_ids:
+            _save_thread_team_membership(
+                agent,
+                thread_id,
+                team_id=team_id,
+                team_name=name,
+            )
+
+        _invalidate_user_team_graphs(agent, user.id)
+        team = _get_thread_team(agent, user.id, team_id)
+        return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
+
+    @app.delete("/thread-teams/{team_id}", tags=["Threads"])
+    async def delete_thread_team(
+        team_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Delete a callable team by clearing membership from its threads."""
+        agent = get_agent()
+        existing = _get_thread_team(agent, user.id, team_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Thread team not found")
+        for thread_id in existing["thread_ids"]:
+            _save_thread_team_membership(
+                agent,
+                thread_id,
+                team_id=None,
+                team_name=None,
+            )
+        _invalidate_user_team_graphs(agent, user.id)
+        return {"status": "ok", "team_id": team_id}
 
     def _thread_share_available_tool_names(agent) -> tuple[set[str], set[str], set[str]]:
         """Return (available tools, admin-only tools, callable tool names)."""
