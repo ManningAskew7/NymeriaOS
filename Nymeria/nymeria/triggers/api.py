@@ -2938,7 +2938,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             return "telegram"
         if thread_id.startswith("slack_"):
             return "slack"
-        if thread_id.startswith("agent-"):
+        if thread_id.startswith("agent-") or thread_id.startswith("spawned-"):
             return "callable"
         return "desktop"
 
@@ -3104,6 +3104,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "updated_at": None,
                 "title_source": "recovered" if recovered else "default",
             }
+        tc = get_agent().thread_config_manager.get_config(thread_id)
+        is_callable = bool(tc and tc.callable)
+        payload["callable"] = is_callable
+        if is_callable:
+            payload["platform"] = "callable"
+            if tc.callable_name:
+                payload["title"] = tc.callable_name
+                payload["title_source"] = "callable"
         payload["recovered"] = recovered
         payload["recovery_sources"] = sorted(recovery_sources or [])
         return payload

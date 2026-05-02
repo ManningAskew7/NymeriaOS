@@ -41,6 +41,7 @@ function loadThreads(): Thread[] {
         createdAt: new Date(t.createdAt),
         updatedAt: new Date(t.updatedAt),
         platform: t.platform || detectPlatform(t.id),
+        callable: t.callable ?? t.platform === 'callable',
       }));
     }
   } catch (e) {
@@ -532,6 +533,7 @@ function createThreadsStore() {
       title: string;
       pinned: boolean;
       platform: string;
+      callable?: boolean;
       platform_meta: Record<string, string> | null;
       created_at: string | null;
       updated_at: string | null;
@@ -549,6 +551,7 @@ function createThreadsStore() {
           title: bt.title || local?.title || 'New Chat',
           pinned: bt.pinned ?? local?.pinned ?? false,
           platform: (bt.platform as ThreadPlatform) || detectPlatform(bt.thread_id),
+          callable: bt.callable ?? local?.callable ?? bt.platform === 'callable',
           platformMeta: bt.platform_meta ? {
             guildName: bt.platform_meta.guild_name,
             channelName: bt.platform_meta.channel_name,

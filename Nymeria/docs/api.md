@@ -793,6 +793,9 @@ Authorization: Bearer <token>
 ```
 
 Returns all threads with server-authoritative metadata (titles, pins, platform).
+When a thread's saved config has `callable=true`, the list response reports
+`callable=true`, `platform="callable"`, and uses `callable_name` as the title
+even if older thread metadata still says `desktop`.
 The list also includes recoverable thread IDs referenced by thread-bound
 resources such as TODOs, scheduled TODO rows, triggers, chat bindings, bind
 codes, and safe orphan checkpoints. Those rows are marked with
@@ -811,6 +814,7 @@ owned by another user is not returned.
       "title_source": "auto",
       "pinned": false,
       "platform": "desktop",
+      "callable": false,
       "created_at": "2026-02-27T10:00:00Z",
       "updated_at": "2026-02-27T10:30:00Z",
       "recovered": false,
@@ -826,6 +830,7 @@ owned by another user is not returned.
 | `title_source` | `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name) |
 | `pinned` | Whether thread is pinned to top |
 | `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"webhook"` |
+| `callable` | Whether the saved per-thread config currently marks the thread callable |
 | `recovered` | `true` when this row was included because a resource survived without the normal complete thread listing path and the effective caller can open it |
 | `recovery_sources` | Storage surfaces that referenced the recovered thread, e.g. `"metadata"`, `"todo"`, `"scheduled_todo"`, `"trigger"`, `"chat_binding"`, `"bind_code"`, `"checkpoint"` |
 

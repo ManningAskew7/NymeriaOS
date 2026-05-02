@@ -446,6 +446,12 @@
     opacity: 0.95;
   }
 
+  .thread-item.callable .agent-btn {
+    background: var(--accent-primary-alpha);
+    box-shadow: var(--accent-glow-sm);
+    opacity: 1;
+  }
+
   .agent-btn:hover {
     color: var(--accent-primary);
     background: var(--bg-elevated-2);

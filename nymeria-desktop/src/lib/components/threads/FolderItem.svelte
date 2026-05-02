@@ -115,6 +115,14 @@
       if (isEditingName) saveRename();
     }, 150);
   }
+
+  function isCallableThread(thread: Thread): boolean {
+    return (
+      thread.callable === true ||
+      (thread.callable === undefined && thread.platform === 'callable') ||
+      (getCustomConfig(thread.id)?.callable ?? false)
+    );
+  }
 </script>
 
 <div class="folder-item">
@@ -165,7 +173,7 @@
             isPinned={isThreadPinned?.(thread.id) ?? false}
             taskCount={getThreadTaskCount(thread.id)}
             hasActiveTask={isThreadActive(thread.id)}
-            isCallable={getCustomConfig(thread.id)?.callable ?? false}
+            isCallable={isCallableThread(thread)}
             hasCustomConfig={getCustomConfig(thread.id)?.hasCustomizations}
             onSelect={(e) => onSelectThread(thread.id, e)}
             onDelete={() => onDeleteThread(thread.id)}
