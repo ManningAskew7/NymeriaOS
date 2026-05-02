@@ -998,6 +998,7 @@ export class NymeriaAPI {
       title: string;
       pinned: boolean;
       platform: string;
+      callable?: boolean;
       platform_meta: Record<string, string> | null;
       created_at: string | null;
       updated_at: string | null;

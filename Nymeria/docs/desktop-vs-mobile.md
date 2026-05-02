@@ -148,7 +148,7 @@ Desktop: 725 lines. Mobile: 145 lines. **Most divergent file.**
 
 #### `components/threads/ThreadItem.svelte`
 
-Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for multi-select), callable/config badges, and an accent-colored Agent settings shortcut that remains visible for callable threads while staying hover/focus-only for other threads. Mobile version is simplified with just select + delete callbacks.
+Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for multi-select), callable/config badges, and an accent-glowing Agent settings shortcut that remains visible for callable threads while staying hover/focus-only for other threads. Mobile version is simplified with just select + delete callbacks.
 
 #### `components/threads/ThreadSettingsPanel.svelte`
 

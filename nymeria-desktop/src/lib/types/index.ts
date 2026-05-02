@@ -109,6 +109,7 @@ export interface Thread {
     channelId?: string;
   };
   hasCustomConfig?: boolean;
+  callable?: boolean;
   pinned?: boolean;
   recovered?: boolean;
   recoverySources?: string[];
