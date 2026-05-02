@@ -18,7 +18,7 @@ A thread's conversation lives in three places:
 
 ## Compaction flow
 
-Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses `COMPACT_THRESHOLD` of the model's context limit. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`; Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
+Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the lower of `COMPACT_THRESHOLD * context_limit` and `COMPACT_SOFT_TOKEN_LIMIT`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`; `COMPACT_SOFT_TOKEN_LIMIT` defaults to `120000` input tokens and can be set to `0` to disable the absolute cap. Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
 
 ```
 1. compact_now()  (or _do_auto_compact() / _do_compact_sync())
@@ -33,8 +33,8 @@ Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when tok
                                     is written as a single-message placeholder with
                                     summary/messages_removed/auto_resumed/timestamp metadata
 5.   _prune_checkpoints_before()  — raw SQL DELETEs all pre-compact rows
-6.   Manual/sync compact: _pending_summaries[thread_id] = summary
-     Async auto-compact: stream compacted, then stream the resume turn immediately
+6.   Manual/sync/pre-flight compact: _pending_summaries[thread_id] = summary
+     Post-turn async auto-compact: stream compacted, then stream the resume turn immediately
 ```
 
 The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is also projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary.
@@ -216,13 +216,13 @@ Only `core/` files should show constructor calls. If you see them in `triggers/a
 
 ## Known edge cases
 
-- **Threads that have never been compacted** — they still pay the full `get_state_history` walk cost on `/history`, because there are no pre-compact checkpoints to prune. Current thresholds (default 80% of context) trigger auto-compact before threads get absurdly long, but a thread with very low volume over a long period (e.g. a rarely-used Discord DM) can accumulate a few hundred checkpoints without ever hitting the token threshold. If this becomes a problem, the next lever is caching `_build_message_timestamp_map` output keyed on `(thread_id, latest_checkpoint_id)` and invalidating on write.
+- **Threads that have never been compacted** — they still pay the full `get_state_history` walk cost on `/history`, because there are no pre-compact checkpoints to prune. The default trigger is the lower of 80% of the model context and the 120k-token soft cap, so very large-context models still compact before provider requests become unwieldy. A thread with very low volume over a long period can still accumulate many checkpoints without ever hitting the token threshold; if this becomes a problem, the next lever is caching `_build_message_timestamp_map` output keyed on `(thread_id, latest_checkpoint_id)` and invalidating on write.
 
 - **Time travel and state forking are NOT supported.** The pruning relies on this: it deletes `checkpoint_id < boundary` outright, so LangGraph's `update_state(config, ..., as_node=...)` with an older `checkpoint_id` would fail to find the parent. Nymeria doesn't use this feature.
 
 - **Multiple checkpoint_ns values** — LangGraph supports multiple namespaces per thread; Nymeria only uses `''`. The prune SQL scopes to `checkpoint_ns = ''` explicitly to avoid touching any future subgraph checkpoints.
 
-- **Auto-compact firing during an async `/chat` stream** — compaction runs after the current graph invocation finishes while the thread lock is still held. The stream emits `compacting`, persists the `compaction_notice`, emits `compacted` with the full summary, then streams the internal auto-resume turn's normal `thinking`/`tool_call`/`tool_result`/`response` events.
+- **Auto-compact firing during an async `/chat` stream** — if prior token usage already crossed the trigger, pre-flight compaction runs before the new user message is sent to the model and the summary is attached to that message. If usage crosses the trigger after a graph invocation finishes, the stream emits `compacting`, persists the `compaction_notice`, emits `compacted` with the full summary, then streams the internal auto-resume turn's normal `thinking`/`tool_call`/`tool_result`/`response` events.
 
 - **Cross-thread contamination** — not possible; all SQL is scoped by `thread_id`.
 

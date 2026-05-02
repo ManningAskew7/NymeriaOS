@@ -1946,16 +1946,32 @@ class NymeriaAgent:
         self,
         thread_id: str,
         user_id: str,
+        *,
+        rehydrate_if_empty: bool = False,
     ) -> bool:
         """Return True when token tracking says this thread should auto-compact."""
         if self.settings.context_management != "auto_compact":
             return False
 
+        usage = self._token_tracker.get_usage(thread_id)
+        if rehydrate_if_empty and usage.context_tokens == 0 and usage.total_tokens == 0:
+            self._rehydrate_token_usage(thread_id)
+
         llm_config = self._get_llm_config_for_thread(thread_id)
         model_limit = get_context_limit(llm_config.model)
         threshold = self.settings.compact_threshold
+        trigger_tokens = self._compact_trigger_tokens(model_limit, threshold)
 
-        return self._token_tracker.should_compact(thread_id, model_limit, threshold)
+        usage = self._token_tracker.get_usage(thread_id)
+        return usage.context_tokens >= trigger_tokens
+
+    def _compact_trigger_tokens(self, model_limit: int, threshold: float) -> int:
+        """Return the input-token count that should trigger auto-compaction."""
+        percentage_trigger = max(1, int(model_limit * threshold))
+        soft_limit = int(getattr(self.settings, "compact_soft_token_limit", 0) or 0)
+        if soft_limit > 0:
+            return min(percentage_trigger, soft_limit)
+        return percentage_trigger
 
     async def _check_and_compact(
         self,
@@ -1972,6 +1988,24 @@ class NymeriaAgent:
             return None
 
         return await self._do_auto_compact(thread_id, user_id)
+
+    async def _check_and_compact_for_next_turn(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Pre-flight async compaction; stores summary for the user message."""
+        if not self._should_auto_compact_now(
+            thread_id,
+            user_id,
+            rehydrate_if_empty=True,
+        ):
+            return None
+
+        result = await self.compact_now(thread_id, user_id)
+        if result.get("success"):
+            result["auto_preflight"] = True
+        return result
 
     async def _generate_summary(
         self,
@@ -2241,8 +2275,10 @@ class NymeriaAgent:
         llm_config = self._get_llm_config_for_thread(thread_id)
         model_limit = get_context_limit(llm_config.model)
         threshold = self.settings.compact_threshold
+        trigger_tokens = self._compact_trigger_tokens(model_limit, threshold)
+        usage = self._token_tracker.get_usage(thread_id)
 
-        if not self._token_tracker.should_compact(thread_id, model_limit, threshold):
+        if usage.context_tokens < trigger_tokens:
             return None
 
         return self._do_compact_sync(thread_id, user_id)
@@ -4300,6 +4336,43 @@ class NymeriaAgent:
             # Inject time context into the message (includes trigger type for autonomous wake-ups)
             time_context = self._get_time_context(is_autonomous=_is_self_invoke, trigger_override=_trigger_override)
             message_with_context = f"{time_context}\n\n{message}"
+
+            # Pre-flight auto-compact for streaming chat. Without this, a
+            # bloated thread can fail on the first provider call before the
+            # post-turn auto-compact hook gets a chance to run.
+            if self.settings.context_management == "auto_compact":
+                try:
+                    if self._should_auto_compact_now(
+                        thread_id,
+                        user_id,
+                        rehydrate_if_empty=True,
+                    ):
+                        yield {
+                            "type": "compacting",
+                            "message": "Compacting context before continuing...",
+                        }
+                        compact_result = await self._check_and_compact_for_next_turn(
+                            thread_id,
+                            user_id,
+                        )
+                        if compact_result and compact_result.get("success"):
+                            yield {
+                                "type": "compacted",
+                                "messages_removed": compact_result.get("messages_removed", 0),
+                                "auto_resumed": False,
+                                "summary": compact_result.get("summary"),
+                            }
+                        elif compact_result:
+                            logger.warning(
+                                "Thread %s: Pre-flight compact skipped/failed: %s",
+                                thread_id,
+                                compact_result.get("reason", compact_result),
+                            )
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: Pre-flight compact failed in astream(): {e}",
+                        exc_info=True,
+                    )
 
             # Check for pending summary from manual /compact
             # If present, attach it to the user's message (for LLM context)

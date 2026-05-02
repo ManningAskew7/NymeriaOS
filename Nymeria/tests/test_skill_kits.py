@@ -10,6 +10,7 @@ from langgraph.types import Command
 
 from nymeria.core.agent import NymeriaAgent, set_current_agent
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, TemporaryToolEntry
+from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.skills import load_skill_directory
 from nymeria.skills.meta_tool import create_skill_meta_tool
 from nymeria.tools.tool_search import bind_tools_for_thread
@@ -210,6 +211,7 @@ def test_skill_meta_tool_returns_command_when_skill_kit_queues_reload(tmp_path: 
     messages = result.update["messages"]
     assert "Hello Kit" in messages[0].content
     assert "Skill Kit reload queued" in messages[0].content
+    assert messages[0].additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
     assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit"
 
 

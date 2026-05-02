@@ -16,12 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union
 
-from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
-from langgraph.graph import END
 from langgraph.types import Command
 
+from ..core.tool_reload import tool_reload_command
 from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
@@ -710,14 +709,7 @@ def _enable(
     # respond in-turn (avoids leaving an orphan tool_result with no
     # follow-up response when the cap would otherwise eat the reload).
     if binding.reload_tools and tool_call_id and not binding.cap_hit:
-        return Command(
-            goto=END,
-            update={
-                "messages": [
-                    ToolMessage(content=binding.text, tool_call_id=tool_call_id)
-                ]
-            },
-        )
+        return tool_reload_command(binding.text, tool_call_id)
     return binding.text
 
 

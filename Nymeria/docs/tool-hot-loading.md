@@ -30,8 +30,8 @@ User: "convert report.docx to PDF"
   │    │    ├─ Persists to thread config (with TTL)
   │    │    ├─ Sets agent._pending_tool_reload[thread_id]
   │    │    ├─ Invalidates cached graph
-  │    │    └─ Returns Command(goto=END) with "STOP NOW" guidance → forces graph to finish
-  │    └─ Graph ends (no final AIMessage — Command routes to __end__)
+  │    │    └─ Returns Command(goto=END) with a marked ToolMessage and "STOP NOW" guidance
+  │    └─ Post-tools router sees the reload marker and ends the graph
   │
   ├─ astream() reload loop fires
   │    ├─ Pops _pending_tool_reload[thread_id]
@@ -50,6 +50,13 @@ From the client's perspective, the stream never stops. One user message in, one 
 
 From the model's perspective, enabling and using a new tool are two separate steps. After an enable result that queues a reload, the model must stop immediately: no final answer, no explanatory text, and no follow-up tool call. The system injects `tool_reload_resume` after the fresh graph has the new tools bound; only that resumed step should continue the user's task and call the newly enabled tools.
 
+The graph does not rely on the model obeying the STOP wording. Reload-queued
+tool results also carry a private `nymeria_tool_reload_queued` marker in
+`ToolMessage.additional_kwargs`. After the tools node finishes, the ReAct graph
+routes to `END` when the latest tool-result batch contains that marker;
+otherwise it routes back to the agent normally. This guards the reload boundary
+even when LangGraph also sees a regular post-tools edge.
+
 ## Skill Kit Binding
 
 Skill Kits use the same reload path as `tool_search`. When `Skill(name=...)`
@@ -64,8 +71,9 @@ that are not currently bound, the Skill tool:
    `tool_search(action="enable")`.
 4. Queues `_pending_tool_reload[thread_id]` with `source="skill_kit"`,
    `skill_name`, and `reason`.
-5. Returns the skill body plus STOP guidance in a `Command(goto=END)` so the
-   resumed graph has both the instructions and the newly bound tool schemas.
+5. Returns the skill body plus STOP guidance in a marked `Command(goto=END)`
+   tool result so the resumed graph has both the instructions and the newly
+   bound tool schemas.
 
 `allowed-tools` remains advisory Agent Skills metadata; it does not bind
 Nymeria tools. Activation warnings are only emitted when an `allowed-tools`
@@ -157,7 +165,7 @@ Each requested tool is classified into exactly one bucket (checked in this prior
 After classification, if `newly_added` or `un_disabled` is non-empty **and** the reload cap hasn't been hit:
 
 1. Sets `agent._pending_tool_reload[thread_id]` with the new tool names and TTL info (`:462`)
-2. Returns `Command(goto=END, update={"messages": [ToolMessage(...)]})` (`:527`) with explicit "STOP NOW" wording — this forces the graph to end cleanly after the tool result, handing control back to `astream()`.
+2. Returns `Command(goto=END, update={"messages": [ToolMessage(...)]})` (`:527`) with explicit "STOP NOW" wording and the private reload marker. The post-tools router uses that marker to end the graph cleanly after the tool result, handing control back to `astream()`.
 
 If the reload cap is already hit, returns a plain string instead. The enablement is still persisted, but the tool won't be bound until the next user message.
 
@@ -343,7 +351,7 @@ On refresh, the frontend calls `/threads/{id}/history` which invokes `get_conver
 
 The two bubbles appear separate because:
 
-1. The first invocation ends with `Command(goto=END)` after the `tool_search` tool result — no final AIMessage.
+1. The first invocation ends after the marked reload tool result — no final AIMessage.
 2. The `tool_reload_resume` HumanMessage is filtered out (hidden), but its metadata is captured into a queue.
 3. The second invocation's AIMessages start a new turn; the queued metadata is attached to it as `tool_reload_info`.
 
@@ -356,6 +364,7 @@ Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffere
 | File | Lines changed | What |
 |------|--------------|------|
 | `tools/tool_search.py` | +492 | TTL support, classification buckets, `Command(goto=END)` return, reload cap logic, preserve-on-disable, status/search annotations |
+| `core/tool_reload.py` + `vendor/react_agent/{graph,nodes}.py` | small | Private reload marker plus post-tools routing guard so same-turn reloads end before the model continues |
 | `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()` and `chat()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
 | `core/stream_bridge.py` | new | Sync worker bridge that lets scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` live |
 | `core/thread_config.py` | +19 | `TemporaryToolEntry` model, `temporary_tools` field on `ThreadConfig` |

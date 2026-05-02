@@ -142,7 +142,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Autonomous events**: `task_started`, `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `task_completed`, `webhook_message`
 
 ### Context Management
-- **Auto-compaction** (default) — Automatic summarization at configurable threshold (default 80% of model limit)
+- **Auto-compaction** (default) — Automatic summarization at the lower of configurable model-window threshold (default 80%) and a 120k-token soft cap
 - **In-context summarization** — Agent generates its own summary, no separate LLM call
 - **Pre-compaction RAG flush** — All messages indexed before trimming (nothing lost)
 - **Checkpoint pruning** — Old checkpoint rows cleaned up after compaction

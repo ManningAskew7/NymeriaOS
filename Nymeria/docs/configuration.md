@@ -168,6 +168,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 |----------|---------|-------------|
 | `CONTEXT_MANAGEMENT` | `auto_compact` | Strategy: `auto_compact`, `sliding_window`, or `none` |
 | `COMPACT_THRESHOLD` | `0.8` | Trigger compaction at this fraction of the model context window (0.05-0.95). Example: `0.38` is about 400k tokens on GPT-5.5's 1.05M window. |
+| `COMPACT_SOFT_TOKEN_LIMIT` | `120000` | Absolute input-token trigger for auto-compaction. The lower of this value and `COMPACT_THRESHOLD * context_limit` is used. Set `0` to disable the soft cap. |
 | `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
 | `COMPACT_MODEL` | (main model) | Optional cheaper model for summarization |
 | `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
@@ -178,7 +179,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
   1. Asks the agent to summarize the conversation (it already has full context)
   2. Agent saves important facts to persistent memory via `memory_add(scope="global", ...)`
   3. Clears the conversation and persists a visible compaction notice with the summary
-  4. On async `/chat` streams, emits `compacting`/`compacted` and streams the resumed assistant continuation; on sync/manual paths, attaches the summary to the next user message
+  4. On async `/chat` streams, compacts before the next provider call when prior usage already crossed the trigger; post-turn async compaction emits `compacting`/`compacted` and streams the resumed assistant continuation. Sync/manual paths attach the summary to the next user message.
 
 - **`sliding_window`**: Legacy mode that simply removes old messages, keeping the last N cycles
 
@@ -314,6 +315,7 @@ AUDIT_LOG_ENABLED=true
 # Context Management (optional - defaults shown)
 # CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none
 # COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit (0.05-0.95)
+# COMPACT_SOFT_TOKEN_LIMIT=120000  # Absolute trigger; 0 disables
 # COMPACT_MODEL=                   # Use cheaper model for summarization
 # SLIDING_WINDOW_CYCLES=5          # For legacy sliding_window mode
 

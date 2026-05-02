@@ -352,6 +352,12 @@ class Settings(BaseSettings):
         le=0.95,
         description="Trigger auto-compact at this percentage of context window"
     )
+    compact_soft_token_limit: int = Field(
+        default=120000,
+        ge=0,
+        le=2000000,
+        description="Absolute input-token trigger for auto-compaction; 0 disables"
+    )
     compact_keep_messages: int = Field(
         default=4,
         ge=2,

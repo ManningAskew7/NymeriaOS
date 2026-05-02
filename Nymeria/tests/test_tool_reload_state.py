@@ -5,11 +5,21 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.types import Command
 
+from nymeria.core.tool_reload import (
+    TOOL_RELOAD_QUEUED_KEY,
+    tool_reload_command,
+)
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.event_bus import agent_stream_chunk_to_autonomous_event_data
+from nymeria.vendor.react_agent.nodes import create_tools_node, route_after_tools
 
 
 def _bare_agent() -> NymeriaAgent:
@@ -99,6 +109,83 @@ def test_autonomous_forwarding_helper_forwards_tool_reload_and_strips_only_type(
             "reason": "required",
         },
     )
+
+
+def test_tool_reload_command_marks_tool_result_and_routes_to_end():
+    command = tool_reload_command("Skill Kit reload queued", "call-1")
+    message = command.update["messages"][0]
+
+    assert message.additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
+    assert route_after_tools({
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Skill",
+                        "args": {"name": "hello-kit"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            message,
+        ]
+    }) == "end"
+
+
+class _MiniGraphState(TypedDict):
+    messages: Annotated[list, add_messages]
+
+
+def test_reload_tool_result_ends_graph_before_agent_continues():
+    calls = {"agent": 0}
+
+    @tool
+    def queue_reload() -> Command:
+        """Queue a tool reload."""
+        return tool_reload_command("reload queued", "call-1")
+
+    def agent_node(state):
+        calls["agent"] += 1
+        if calls["agent"] == 1:
+            return {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "queue_reload",
+                                "args": {},
+                                "id": "call-1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            }
+        return {"messages": [AIMessage(content="continued without reload")]}
+
+    def agent_router(state):
+        last = state["messages"][-1]
+        return "tools" if isinstance(last, AIMessage) and last.tool_calls else "end"
+
+    graph = StateGraph(_MiniGraphState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", create_tools_node([queue_reload]))
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", agent_router, {"tools": "tools", "end": END})
+    graph.add_conditional_edges(
+        "tools",
+        route_after_tools,
+        {"agent": "agent", "end": END},
+    )
+
+    result = graph.compile().invoke({"messages": []})
+
+    assert calls["agent"] == 1
+    assert isinstance(result["messages"][-1], ToolMessage)
+    assert result["messages"][-1].additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
 
 
 class _FakeLockManager:

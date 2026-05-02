@@ -23,6 +23,7 @@ from langgraph.prebuilt import ToolNode
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
+from ...core.tool_reload import latest_tool_batch_queued_reload
 
 logger = logging.getLogger(__name__)
 
@@ -680,6 +681,13 @@ def simple_should_continue(state: AgentState) -> str:
     return "end"
 
 
+def route_after_tools(state: AgentState) -> str:
+    """Route after tool execution, stopping immediately for queued reloads."""
+    if latest_tool_batch_queued_reload(state["messages"]):
+        return "end"
+    return "agent"
+
+
 class NodeFactory:
     """
     Factory class for creating all nodes from a single configuration.
@@ -732,6 +740,10 @@ class NodeFactory:
             self.config.max_iterations,
             self.config.repeated_tool_result_limit,
         )
+
+    def create_tools_router(self) -> Callable[[AgentState], str]:
+        """Create the post-tools routing function."""
+        return route_after_tools
 
 
 # === BACKWARD COMPATIBILITY ===

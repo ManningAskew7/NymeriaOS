@@ -697,7 +697,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, and `openai_api_mode`, plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, and `openai_api_mode`; context settings such as `context_management`, `compact_threshold`, `compact_soft_token_limit`, and `compact_keep_messages`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user.
 
@@ -733,7 +733,8 @@ Authorization: Bearer <token>
   "llm_presence_penalty": 0.3,
   "llm_reasoning_effort": "medium",
   "llm_use_model_defaults": false,
-  "openai_api_mode": "responses"
+  "openai_api_mode": "responses",
+  "compact_soft_token_limit": 120000
 }
 ```
 
@@ -750,6 +751,7 @@ Authorization: Bearer <token>
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI provider API mode. `responses` is the default; `chat_completions` is a compatibility override and is not recommended if thinking is enabled. |
+| `compact_soft_token_limit` | int | 0-2000000 | Absolute input-token trigger for auto-compaction. The lower of this and `compact_threshold * context_limit` is used; `0` disables the absolute cap. |
 
 **Response:**
 ```json

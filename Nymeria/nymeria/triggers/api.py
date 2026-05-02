@@ -217,6 +217,7 @@ class ServerSettingsResponse(BaseModel):
     # Context management settings
     context_management: str
     compact_threshold: float
+    compact_soft_token_limit: int
     compact_keep_messages: int
     compact_model: Optional[str] = None
     sliding_window_cycles: int
@@ -259,6 +260,7 @@ class ServerSettingsUpdate(BaseModel):
     # Context management settings
     context_management: Optional[str] = None
     compact_threshold: Optional[float] = None
+    compact_soft_token_limit: Optional[int] = None
     compact_keep_messages: Optional[int] = None
     compact_model: Optional[str] = None
     sliding_window_cycles: Optional[int] = None
@@ -4881,6 +4883,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             openai_api_mode=settings.openai_api_mode,
             context_management=settings.context_management,
             compact_threshold=settings.compact_threshold,
+            compact_soft_token_limit=settings.compact_soft_token_limit,
             compact_keep_messages=settings.compact_keep_messages,
             compact_model=settings.compact_model,
             sliding_window_cycles=settings.sliding_window_cycles,
@@ -5025,6 +5028,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "openai_api_mode": "OPENAI_API_MODE",
             "context_management": "CONTEXT_MANAGEMENT",
             "compact_threshold": "COMPACT_THRESHOLD",
+            "compact_soft_token_limit": "COMPACT_SOFT_TOKEN_LIMIT",
             "compact_keep_messages": "COMPACT_KEEP_MESSAGES",
             "compact_model": "COMPACT_MODEL",
             "sliding_window_cycles": "SLIDING_WINDOW_CYCLES",
@@ -5219,8 +5223,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "gemini_api_key", "gemini_extraction_model",
             ],
             "Context": [
-                "context_management", "compact_threshold", "compact_keep_messages",
-                "compact_model", "sliding_window_cycles",
+                "context_management", "compact_threshold", "compact_soft_token_limit",
+                "compact_keep_messages", "compact_model", "sliding_window_cycles",
             ],
             "System": [
                 "log_level", "watchdog_enabled", "watchdog_interval_minutes",

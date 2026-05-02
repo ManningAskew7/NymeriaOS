@@ -13,14 +13,13 @@ from pathlib import Path
 from typing import Annotated, Any, List, Optional, Union
 
 import yaml
-from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
-from langgraph.graph import END
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
+from ..core.tool_reload import tool_reload_command
 from ..core.thread_config import ThreadConfig
 from ..skills import (
     DEFAULT_SKILL_KIT_TOOL_TTL,
@@ -501,10 +500,7 @@ def _publish_skill(
 
 def _command_or_text(text: str, queued_reload: bool, tool_call_id: str) -> Union[str, Command]:
     if queued_reload and tool_call_id:
-        return Command(
-            goto=END,
-            update={"messages": [ToolMessage(content=text, tool_call_id=tool_call_id)]},
-        )
+        return tool_reload_command(text, tool_call_id)
     return text
 
 

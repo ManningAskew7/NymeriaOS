@@ -15,13 +15,12 @@ from __future__ import annotations
 import logging
 from typing import Annotated, List, Optional, Union
 
-from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool as tool_decorator
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId
-from langgraph.graph import END
 from langgraph.types import Command
 
+from ..core.tool_reload import tool_reload_command
 from . import AVAILABLE_SKILLS_CHAR_BUDGET, Skill, SkillManager
 
 logger = logging.getLogger(__name__)
@@ -296,14 +295,7 @@ def create_skill_meta_tool(
                 "after rebuilding the tool list; continue the user's task only "
                 "after that resume."
             )
-            return Command(
-                goto=END,
-                update={
-                    "messages": [
-                        ToolMessage(content=body, tool_call_id=tool_call_id)
-                    ]
-                },
-            )
+            return tool_reload_command(body, tool_call_id)
 
         if binding_cap_hit:
             body += (
