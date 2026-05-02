@@ -483,7 +483,7 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 | Ticker poll interval | 5 seconds | Yes (1–60s) |
 | Lock timeout | 120 seconds | Yes |
 | Tool timeout | 300 seconds | Yes |
-| Compact threshold | 80% | Yes (50–95%) |
+| Compact threshold | 80% | Yes (5–95%) |
 | Graph cache | 50 entries | No |
 | Active TODOs | 50 per user | No |
 | TODO auto-archive | 7 days | Yes (1–30) |

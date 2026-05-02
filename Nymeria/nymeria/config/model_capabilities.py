@@ -5,6 +5,7 @@ Falls back to static lists if API is unavailable.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
@@ -79,6 +80,46 @@ DEFAULT_CONTEXT_LIMITS = {
     "claude-opus-4": 200000,
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
+    "openai/gpt-5.5": 1050000,
+    "openai/gpt-5.5-pro": 1050000,
+    "gpt-5.5": 1050000,
+    "gpt-5.5-pro": 1050000,
+    "gpt-5.5-2026-04-23": 1050000,
+    "gpt-5.5-pro-2026-04-23": 1050000,
+    "openai/gpt-5.4": 1050000,
+    "openai/gpt-5.4-pro": 1050000,
+    "gpt-5.4": 1050000,
+    "gpt-5.4-pro": 1050000,
+    "openai/gpt-5.4-mini": 400000,
+    "openai/gpt-5.4-nano": 400000,
+    "gpt-5.4-mini": 400000,
+    "gpt-5.4-nano": 400000,
+    "openai/gpt-5.3-codex": 400000,
+    "openai/gpt-5.3-codex-spark": 128000,
+    "gpt-5.3-codex": 400000,
+    "gpt-5.3-codex-spark": 128000,
+    "openai/gpt-5.2": 400000,
+    "openai/gpt-5.2-codex": 400000,
+    "gpt-5.2": 400000,
+    "gpt-5.2-codex": 400000,
+    "openai/gpt-5.1": 400000,
+    "openai/gpt-5.1-codex": 400000,
+    "openai/gpt-5.1-codex-mini": 400000,
+    "openai/gpt-5.1-codex-max": 400000,
+    "gpt-5.1": 400000,
+    "gpt-5.1-codex": 400000,
+    "gpt-5.1-codex-mini": 400000,
+    "gpt-5.1-codex-max": 400000,
+    "openai/gpt-5": 400000,
+    "openai/gpt-5-mini": 400000,
+    "openai/gpt-5-nano": 400000,
+    "openai/gpt-5-codex": 400000,
+    "openai/gpt-5-codex-mini": 400000,
+    "gpt-5": 400000,
+    "gpt-5-mini": 400000,
+    "gpt-5-nano": 400000,
+    "gpt-5-codex": 400000,
+    "gpt-5-codex-mini": 400000,
     "openai/gpt-4o": 128000,
     "openai/gpt-4o-mini": 128000,
     "openai/gpt-4-turbo": 128000,
@@ -90,6 +131,73 @@ DEFAULT_CONTEXT_LIMITS = {
     "google/gemini-2.5-pro": 1000000,
     "_default": 128000,
 }
+
+_OPENAI_SNAPSHOT_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_REASONING_SUFFIX_RE = re.compile(r"\((?:none|minimal|low|medium|high|xhigh)\)$")
+
+
+def _dedupe_preserving_order(values: List[str]) -> List[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _looks_like_openai_model(model_id: str) -> bool:
+    return model_id.startswith(("gpt-", "chatgpt-", "codex-")) or re.match(r"^o\d", model_id) is not None
+
+
+def _strip_openai_snapshot_suffix(model_id: str) -> str:
+    return _OPENAI_SNAPSHOT_SUFFIX_RE.sub("", model_id)
+
+
+def _is_safe_cache_variant_match(requested: str, cached: str) -> bool:
+    """Match OpenRouter-style variants without collapsing distinct model IDs.
+
+    Variants such as ``:online`` share the same base model. Hyphenated names
+    like ``gpt-5.4`` and ``gpt-5.4-mini`` are distinct models and must not be
+    treated as prefix aliases.
+    """
+    return requested.startswith(f"{cached}:") or cached.startswith(f"{requested}:")
+
+
+def _model_id_candidates(model_id: str) -> List[str]:
+    """Return metadata lookup candidates for provider-qualified and bare IDs.
+
+    CLIProxy's OpenAI-compatible endpoint exposes bare IDs such as ``gpt-5.5``,
+    while OpenRouter metadata uses provider-qualified IDs like
+    ``openai/gpt-5.5``. Generate both forms so runtime metadata remains useful
+    even when the proxy's /v1/models response is intentionally minimal.
+    """
+    if not model_id:
+        return []
+
+    raw = _REASONING_SUFFIX_RE.sub("", model_id.strip().lower())
+    if not raw:
+        return []
+
+    candidates = [raw]
+
+    provider = ""
+    bare = raw
+    if "/" in raw:
+        provider, bare = raw.split("/", 1)
+        candidates.append(bare)
+
+    stripped_raw = _strip_openai_snapshot_suffix(raw)
+    stripped_bare = _strip_openai_snapshot_suffix(bare)
+    candidates.extend([stripped_raw, stripped_bare])
+
+    if _looks_like_openai_model(bare):
+        candidates.append(f"openai/{bare}")
+        candidates.append(f"openai/{stripped_bare}")
+    elif provider == "openai" and _looks_like_openai_model(stripped_bare):
+        candidates.append(f"openai/{stripped_bare}")
+
+    return _dedupe_preserving_order(candidates)
 
 
 def _safe_float(value, allow_zero: bool = False) -> Optional[float]:
@@ -189,15 +297,16 @@ def _lookup_model(model_id: str) -> Optional[ModelInfo]:
         return None
 
     cache = _ensure_cache()
-    model_lower = model_id.lower()
+    candidates = _model_id_candidates(model_id)
 
-    # Direct match
-    if model_lower in cache:
-        return cache[model_lower]
+    # Direct and provider-alias matches
+    for candidate in candidates:
+        if candidate in cache:
+            return cache[candidate]
 
     # Prefix matching (e.g., "anthropic/claude-3-sonnet" matches "anthropic/claude-3-sonnet:beta")
     for cached_id, info in cache.items():
-        if model_lower.startswith(cached_id) or cached_id.startswith(model_lower):
+        if any(_is_safe_cache_variant_match(candidate, cached_id) for candidate in candidates):
             return info
 
     return None
@@ -326,8 +435,14 @@ def get_context_limit(model_id: str) -> int:
         return info.context_length
 
     # Fallback to static defaults
+    candidates = _model_id_candidates(model_id)
+    for candidate in candidates:
+        limit = DEFAULT_CONTEXT_LIMITS.get(candidate)
+        if limit:
+            return limit
+
     model_lower = model_id.lower()
-    for known_model, limit in DEFAULT_CONTEXT_LIMITS.items():
+    for known_model, limit in sorted(DEFAULT_CONTEXT_LIMITS.items(), key=lambda item: len(item[0]), reverse=True):
         if known_model == "_default":
             continue
         if known_model.lower() in model_lower or model_lower in known_model.lower():

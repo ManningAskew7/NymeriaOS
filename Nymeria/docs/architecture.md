@@ -41,7 +41,7 @@ Nymeria wraps LangGraph's ReAct (Reasoning + Acting) agent pattern with addition
 │                           ▼                                          │
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │              Auto-Compact Context Management                   │  │
-│  │      (Summarizes at 80% context, saves to memory)              │  │
+│  │      (Summarizes at configured context threshold, saves memory) │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                           │                                          │
 │                           ▼                                          │
@@ -376,14 +376,14 @@ When token usage reaches the threshold (default: 80% of model's context limit):
 - `TokenTracker` (`token_tracker.py`): Tracks cumulative tokens per thread
 - `ConversationCompactor` (`compactor.py`): Generates summary prompts, formats resume context
 - `NymeriaAgent._prune_checkpoints_before()` (`core/agent.py`): raw-SQL pruner invoked by `_clear_and_reset`
-- Model limits fetched from OpenRouter API with static fallbacks
+- Model limits are resolved from live model metadata when available, including bare OpenAI IDs routed through CLIProxy (`gpt-5.5` -> `openai/gpt-5.5`), with static fallbacks for known long-context models
 
 See [compaction-and-checkpoints.md](./compaction-and-checkpoints.md) for the end-to-end flow, the display filter's `internal_type` branches (including the `compaction_marker` edge case), and a troubleshooting playbook.
 
 **Configuration:**
 ```bash
 CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none
-COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit
+COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit (0.05-0.95)
 COMPACT_MODEL=                   # Optional: use cheaper model for summarization
 ```
 
@@ -615,7 +615,7 @@ SQLite stores conversation state per `thread_id` using LangGraph's checkpointer 
 - Each thread is an isolated conversation
 - **Survives application restarts** (true persistence, not in-memory)
 - Located at `data/nymeria.db`
-- Auto-compact summarizes at 80% context (or legacy sliding window keeps last N cycles)
+- Auto-compact summarizes at the configured threshold, defaulting to 80% context (or legacy sliding window keeps last N cycles)
 
 **Dual-Saver Architecture:**
 - **SqliteSaver**: Handles sync operations such as `chat()`
