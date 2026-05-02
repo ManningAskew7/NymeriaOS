@@ -739,11 +739,18 @@ function createAutonomousStore() {
         break;
 
       case 'thread_updated':
-        // Another client renamed or pinned a thread
+        // Another client changed thread metadata or routing.
         {
-          const updates: Partial<{ title: string; pinned: boolean }> = {};
+          const updates: Partial<{
+            title: string;
+            pinned: boolean;
+            platform: import('$lib/types').ThreadPlatform;
+          }> = {};
           if (event.title !== undefined) updates.title = event.title as string;
           if (event.pinned !== undefined) updates.pinned = event.pinned as boolean;
+          if (event.platform !== undefined) {
+            updates.platform = event.platform as import('$lib/types').ThreadPlatform;
+          }
           threadsStore.updateThreadFromSync(event.thread_id, updates);
         }
         break;

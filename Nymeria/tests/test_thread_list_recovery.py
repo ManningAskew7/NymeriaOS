@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
+from nymeria.core.thread_config import ThreadConfigManager
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import TodoScheduleDB
@@ -39,6 +40,7 @@ class FakeSettings:
 class FakeAgent:
     def __init__(self, data_dir: Path):
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
+        self.thread_config_manager = ThreadConfigManager(data_dir)
         self.thread_metadata_manager = ThreadMetadataManager(data_dir)
         self.todo_manager = TodoManager(data_dir)
         self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
@@ -91,3 +93,47 @@ def test_threads_keeps_ownerless_metadata_recovery_rows(tmp_path: Path, monkeypa
     rows = {row["thread_id"]: row for row in response.json()["threads"]}
     assert rows["legacy-thread"]["recovered"] is True
     assert rows["legacy-thread"]["recovery_sources"] == ["metadata"]
+
+
+def test_threads_use_telegram_platform_for_bound_desktop_threads(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
+    token = agent.accounts_repo.issue_token("bob")
+    thread_id = "desktop-thread"
+    agent.accounts_repo.claim_thread(thread_id, "bob")
+    agent.thread_metadata_manager.upsert_thread("bob", thread_id, title="Bound")
+    agent.accounts_repo.create_thread_binding(
+        thread_id=thread_id,
+        provider="telegram",
+        platform_chat_id="5551234567",
+        user_id="bob",
+    )
+
+    response = client.get("/threads", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    rows = {row["thread_id"]: row for row in response.json()["threads"]}
+    assert rows[thread_id]["platform"] == "telegram"
+    assert rows[thread_id]["callable"] is False
+
+
+def test_threads_revert_bound_desktop_platform_after_unbind(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
+    token = agent.accounts_repo.issue_token("bob")
+    thread_id = "desktop-thread"
+    agent.accounts_repo.claim_thread(thread_id, "bob")
+    agent.thread_metadata_manager.upsert_thread("bob", thread_id, title="Bound")
+    binding = agent.accounts_repo.create_thread_binding(
+        thread_id=thread_id,
+        provider="telegram",
+        platform_chat_id="5551234567",
+        user_id="bob",
+    )
+    agent.accounts_repo.delete_thread_binding(binding.id, user_id="bob")
+
+    response = client.get("/threads", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    rows = {row["thread_id"]: row for row in response.json()["threads"]}
+    assert rows[thread_id]["platform"] == "desktop"

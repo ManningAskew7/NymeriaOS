@@ -65,6 +65,7 @@
   async function handleUnbindChatApp(bindingId: number) {
     try {
       await chatAppBindingsStore.unbind(thread.id, bindingId);
+      await threadsStore.syncFromBackend();
     } catch (err) {
       chatAppLoadError = err instanceof Error ? err.message : String(err);
     }
@@ -1580,6 +1581,7 @@
         onBound={() => {
           // Refresh the panel's binding list so the row appears immediately.
           chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
+          threadsStore.syncFromBackend().catch(() => {});
         }}
       />
     </div>
@@ -1594,6 +1596,7 @@
         onClose={() => (showMyBotWizard = false)}
         onBound={() => {
           chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
+          threadsStore.syncFromBackend().catch(() => {});
         }}
       />
     </div>
