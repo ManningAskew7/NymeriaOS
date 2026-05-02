@@ -467,6 +467,31 @@ Authorization: Bearer <token>
 
 Manage the default tool set applied to newly created threads.
 
+### Thread Callable Tools
+
+```http
+GET /threads/{thread_id}/callable-tools
+Authorization: Bearer <token>
+```
+
+Returns the callable thread tools actually available from that caller thread after ownership filtering, callable-team scoping, self-exclusion, disabled-tool filtering, and tool-name conflict suppression. The response shape is:
+
+```json
+{
+  "thread_id": "thread-123",
+  "callable_thread_count": 2,
+  "callable_threads": [
+    {
+      "thread_id": "agent-456",
+      "name": "Researcher",
+      "description": "Research support",
+      "team_id": "team-a",
+      "team_name": "Research"
+    }
+  ]
+}
+```
+
 ---
 
 ## SSE Event Types

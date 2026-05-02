@@ -282,6 +282,20 @@ export interface ThreadActiveSkillsResponse {
   skills: SkillMetadata[];
 }
 
+export interface ThreadCallableToolInfo {
+  thread_id: string;
+  name: string;
+  description?: string | null;
+  team_id?: string | null;
+  team_name?: string | null;
+}
+
+export interface ThreadCallableToolsResponse {
+  thread_id: string;
+  callable_thread_count: number;
+  callable_threads: ThreadCallableToolInfo[];
+}
+
 export interface AgentTemplate {
   name: string;
   description: string;

@@ -3,6 +3,7 @@
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { threadsStore } from '$lib/stores/threads.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { api } from '$lib/services/api.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
@@ -64,6 +65,9 @@
   let activeSkillCount = $state<number | null>(null);
   let activeSkillTooltip = $state('');
   let activeSkillRequestId = 0;
+  let callableCount = $state<number | null>(null);
+  let callableTooltip = $state('');
+  let callableRequestId = 0;
 
   $effect(() => {
     if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) {
@@ -99,6 +103,44 @@
     void enabledSkillsKey;
     void disabledSkillsKey;
     void globalSkillsKey;
+  });
+
+  $effect(() => {
+    const threadId = thread.id;
+    const disabledToolsKey = (threadConfig?.disabledTools ?? []).join('\x1f');
+    const callableTeamKey = `${threadConfig?.callableTeamId ?? ''}\x1f${threadConfig?.callableTeamName ?? ''}`;
+    const callableStateKey = `${threadConfig?.callable ?? false}\x1f${threadConfig?.callableName ?? ''}`;
+    const callableThreadsKey = threadsStore.threads
+      .map((item) => `${item.id}:${item.callable ?? false}:${item.platform ?? ''}`)
+      .join('\x1f');
+    const threadTeamsKey = threadsStore.threadTeams
+      .map((team) => `${team.id}:${team.name}:${team.threadIds.join(',')}`)
+      .join('\x1f');
+    const requestId = ++callableRequestId;
+    callableCount = null;
+    callableTooltip = '';
+
+    api.getThreadCallableTools(threadId)
+      .then((response) => {
+        if (requestId !== callableRequestId) return;
+        const names = response.callable_threads.map((item) => item.name);
+        callableCount = response.callable_thread_count;
+        callableTooltip = names.length
+          ? `${names.length} callable thread${names.length !== 1 ? 's' : ''}: ${names.join(', ')}`
+          : 'No callable threads available from this thread';
+      })
+      .catch((err) => {
+        if (requestId !== callableRequestId) return;
+        console.warn('[ThreadHeader] Failed to load callable tools:', err);
+        callableCount = null;
+        callableTooltip = '';
+      });
+
+    void disabledToolsKey;
+    void callableTeamKey;
+    void callableStateKey;
+    void callableThreadsKey;
+    void threadTeamsKey;
   });
 
   const disabledNonMcpCount = $derived(
@@ -142,8 +184,6 @@
     return parts.join(', ');
   });
 
-  const callableCount = $derived(defaultToolsStore.callableThreadCount);
-
   const triggerCount = $derived(
     triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length
   );
@@ -185,8 +225,8 @@
           {activeMcpToolCount} MCP
         </span>
       {/if}
-      {#if callableCount > 0}
-        <span class="badge callables-badge" title="{callableCount} callable thread{callableCount !== 1 ? 's' : ''} available as tools">
+      {#if callableCount !== null && callableCount > 0}
+        <span class="badge callables-badge" title={callableTooltip}>
           {callableCount} callable{callableCount !== 1 ? 's' : ''}
         </span>
       {/if}

@@ -98,6 +98,8 @@
 
   let activeSkillCount = $state<number | null>(null);
   let activeSkillRequestId = 0;
+  let callableCount = $state<number | null>(null);
+  let callableRequestId = 0;
 
   $effect(() => {
     const threadId = threadsStore.currentThreadId;
@@ -127,7 +129,37 @@
     void globalSkillsKey;
   });
 
-  const callableCount = $derived(defaultToolsStore.callableThreadCount);
+  $effect(() => {
+    const threadId = threadsStore.currentThreadId;
+    const disabledToolsKey = (currentThreadConfig?.disabledTools ?? []).join('\x1f');
+    const callableTeamKey = `${currentThreadConfig?.callableTeamId ?? ''}\x1f${currentThreadConfig?.callableTeamName ?? ''}`;
+    const callableStateKey = `${currentThreadConfig?.callable ?? false}\x1f${currentThreadConfig?.callableName ?? ''}`;
+    const callableThreadsKey = threadsStore.threads
+      .map((item) => `${item.id}:${item.callable ?? false}:${item.platform ?? ''}`)
+      .join('\x1f');
+    const requestId = ++callableRequestId;
+    callableCount = null;
+
+    if (!threadId) {
+      return;
+    }
+
+    api.getThreadCallableTools(threadId)
+      .then((response) => {
+        if (requestId !== callableRequestId) return;
+        callableCount = response.callable_thread_count;
+      })
+      .catch((err) => {
+        if (requestId !== callableRequestId) return;
+        console.warn('[ChatPanel] Failed to load callable tools:', err);
+        callableCount = null;
+      });
+
+    void disabledToolsKey;
+    void callableTeamKey;
+    void callableStateKey;
+    void callableThreadsKey;
+  });
 
   const triggerCount = $derived(
     threadsStore.currentThreadId
@@ -138,7 +170,7 @@
   const hasInstructions = $derived(!!currentThreadConfig?.instructions);
   const isCallable = $derived(currentThreadConfig?.callable ?? false);
   const hasBadges = $derived(
-    effectiveModel !== null || activeToolCount !== null || callableCount > 0 ||
+    effectiveModel !== null || activeToolCount !== null || (callableCount !== null && callableCount > 0) ||
     activeMcpToolCount !== null || activeSkillCount !== null ||
     triggerCount > 0 || hasInstructions || isCallable
   );
@@ -323,7 +355,7 @@
               {activeMcpToolCount} MCP
             </span>
           {/if}
-          {#if callableCount > 0}
+          {#if callableCount !== null && callableCount > 0}
             <span class="badge callables-badge">
               {callableCount} callable{callableCount !== 1 ? 's' : ''}
             </span>
