@@ -912,6 +912,7 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
         "model": config.model,
         "api_key": config.api_key,
         "base_url": config.base_url or "https://openrouter.ai/api/v1",
+        "max_retries": 0,
     }
 
     # Temperature: only send if not None (None = let OpenRouter apply model defaults)
@@ -1022,6 +1023,7 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     kwargs = {
         "model": config.model,
         "api_key": api_key,
+        "max_retries": 0,
     }
 
     if config.temperature is not None:
@@ -1141,6 +1143,7 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     kwargs = {
         "model": config.model,
         "api_key": api_key,
+        "max_retries": 0,
     }
 
     if config.base_url:
