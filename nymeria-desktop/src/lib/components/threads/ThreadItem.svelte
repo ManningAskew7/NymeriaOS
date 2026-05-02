@@ -147,6 +147,8 @@
   class:active={isActive}
   class:selected={isSelected}
   class:editing={isEditing}
+  class:callable={isCallable}
+  class:actionsOpen={showActions}
   onclick={handleClick}
   oncontextmenu={handleContextMenu}
   onkeydown={handleKeydown}
@@ -214,7 +216,7 @@
 
   {#if !showActions && !isEditing}
     <div class="thread-badges">
-      {#if isCallable}
+      {#if isCallable && !onOpenAgentConfig}
         <span class="callable-indicator" title="Callable">&lt;</span>
       {/if}
       {#if isPinned}
@@ -237,25 +239,27 @@
     </div>
   {/if}
 
-  {#if showActions && !isEditing}
+  {#if (showActions || (isCallable && !!onOpenAgentConfig)) && !isEditing}
     <div class="action-buttons">
       {#if onOpenAgentConfig}
         <button
           class="agent-btn"
           onclick={handleOpenAgentConfig}
           type="button"
-          title="Agent settings"
-          aria-label="Agent settings"
+          title={isCallable ? 'Callable agent settings' : 'Agent settings'}
+          aria-label={isCallable ? 'Callable agent settings' : 'Agent settings'}
         >
           <Icon name="tool" size={14} />
         </button>
       {/if}
+      {#if showActions}
       <button class="edit-btn" onclick={startEditing} type="button" title="Rename thread">
         <Icon name="edit" size={14} />
       </button>
       <button class="delete-btn" onclick={handleDelete} type="button" title="Delete thread">
         <Icon name="trash" size={14} />
       </button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -340,6 +344,10 @@
   .thread-item.selected {
     background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-hover));
     outline: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
+  }
+
+  .thread-item.callable:not(.actionsOpen) .thread-badges {
+    padding-right: calc(24px + var(--spacing-sm));
   }
 
   .selection-check {
@@ -431,6 +439,11 @@
     border-radius: var(--radius-sm);
     transition: all var(--transition-fast);
     opacity: 0.7;
+  }
+
+  .agent-btn {
+    color: var(--accent-primary);
+    opacity: 0.95;
   }
 
   .agent-btn:hover {
