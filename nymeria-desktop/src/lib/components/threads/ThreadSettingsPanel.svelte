@@ -688,6 +688,14 @@
       if (isCallable && callableName.trim()) {
         threadsStore.applyBackendTitle(thread.id, callableName.trim());
       }
+      threadsStore.updateThread(thread.id, {
+        callable: result.callable,
+        platform: result.callable
+          ? 'callable'
+          : thread.platform === 'callable'
+            ? 'desktop'
+            : thread.platform,
+      });
 
       onSaved(result);
 
@@ -733,6 +741,10 @@
       showPromptMetadata = false;
       telegramAutonomousDelivery = 'full';
       inAppNotificationLevel = 'notify_only';
+      threadsStore.updateThread(thread.id, {
+        callable: false,
+        platform: thread.platform === 'callable' ? 'desktop' : thread.platform,
+      });
       onSaved({
         threadId: thread.id,
         instructions: null,

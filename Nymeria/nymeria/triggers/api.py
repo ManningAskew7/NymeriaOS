@@ -3112,6 +3112,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             if tc.callable_name:
                 payload["title"] = tc.callable_name
                 payload["title_source"] = "callable"
+        elif payload.get("platform") == "callable":
+            payload["platform"] = "desktop"
         payload["recovered"] = recovered
         payload["recovery_sources"] = sorted(recovery_sources or [])
         return payload

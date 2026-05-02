@@ -454,12 +454,21 @@
       updates.telegram_autonomous_delivery = telegramAutonomousDelivery;
       updates.in_app_notification_level = inAppNotificationLevel;
 
-      await threadConfigStore.updateConfig(threadId, updates);
+      const result = await threadConfigStore.updateConfig(threadId, updates);
 
       // Sync sidebar title to callable name
       if (isCallable && callableName.trim()) {
         threadsStore.applyBackendTitle(threadId, callableName.trim());
       }
+      const thread = threadsStore.threads.find((item) => item.id === threadId);
+      threadsStore.updateThread(threadId, {
+        callable: result.callable,
+        platform: result.callable
+          ? 'callable'
+          : thread?.platform === 'callable'
+            ? 'desktop'
+            : thread?.platform,
+      });
 
       // Refresh context stats
       api.getThreadContextStats(threadId).then((stats) => {
@@ -483,6 +492,11 @@
     try {
       await threadConfigStore.deleteConfig(threadId);
       initFormFromConfig(null);
+      const thread = threadsStore.threads.find((item) => item.id === threadId);
+      threadsStore.updateThread(threadId, {
+        callable: false,
+        platform: thread?.platform === 'callable' ? 'desktop' : thread?.platform,
+      });
 
       api.getThreadContextStats(threadId).then((stats) => {
         if (stats && threadsStore.currentThreadId === threadId) {

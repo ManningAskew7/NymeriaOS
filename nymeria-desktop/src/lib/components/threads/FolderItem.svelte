@@ -117,10 +117,11 @@
   }
 
   function isCallableThread(thread: Thread): boolean {
+    const config = getCustomConfig(thread.id);
+    if (config) return config.callable ?? false;
     return (
       thread.callable === true ||
-      (thread.callable === undefined && thread.platform === 'callable') ||
-      (getCustomConfig(thread.id)?.callable ?? false)
+      (thread.callable === undefined && thread.platform === 'callable')
     );
   }
 </script>
