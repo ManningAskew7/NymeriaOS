@@ -187,6 +187,33 @@ class NymeriaAPIClient:
         """Delete all history for a thread."""
         return await self._delete(f"/threads/{thread_id}", act_as=user_id)
 
+    async def list_threads(self, user_id: str) -> List[dict]:
+        """List threads visible to a user."""
+        data = await self._get("/threads", act_as=user_id)
+        return data.get("threads", [])
+
+    async def claim_thread(self, thread_id: str, user_id: str) -> dict:
+        """Eagerly claim a new user-owned thread."""
+        return await self._post(f"/threads/{thread_id}/claim", act_as=user_id)
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: str,
+        *,
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> dict:
+        """Update a thread's title and/or pinned state."""
+        body: Dict[str, Any] = {}
+        if title is not None:
+            body["title"] = title
+        if pinned is not None:
+            body["pinned"] = pinned
+        return await self._patch(
+            f"/threads/{thread_id}/metadata", json=body, act_as=user_id
+        )
+
     async def clear_thread(self, thread_id: str, user_id: str = "default") -> dict:
         """Clear conversation history only (preserve notepad + config)."""
         return await self._post(
@@ -506,6 +533,25 @@ class NymeriaAPIClient:
             "/admin/chatapp/bindings/by-chat",
             params={"provider": provider, "platform_chat_id": str(platform_chat_id)},
         )
+
+    async def switch_chatapp_binding(
+        self,
+        *,
+        provider: str,
+        platform_chat_id: str,
+        thread_id: str,
+        user_id: str,
+        user_telegram_bot_id: Optional[int] = None,
+    ) -> dict:
+        """Move a chat-app chat binding to an existing user-owned thread."""
+        body: Dict[str, Any] = {
+            "provider": provider,
+            "platform_chat_id": str(platform_chat_id),
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "user_telegram_bot_id": user_telegram_bot_id,
+        }
+        return await self._post("/admin/chatapp/bindings/switch", json=body)
 
     async def claim_platform_link_code(
         self, *, code: str, provider: str, platform_user_id: str

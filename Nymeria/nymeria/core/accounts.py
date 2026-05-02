@@ -22,7 +22,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -805,6 +805,104 @@ class AccountsRepo:
                 user_id=user_id,
                 created_at=now,
                 user_telegram_bot_id=user_telegram_bot_id,
+            )
+
+    def switch_thread_binding_for_chat(
+        self,
+        *,
+        thread_id: str,
+        provider: Provider,
+        platform_chat_id: str,
+        user_id: str,
+        user_telegram_bot_id: Optional[int] = None,
+    ) -> Tuple[ThreadPlatformBinding, Optional[str]]:
+        """Move a chat-app chat binding to ``thread_id`` atomically.
+
+        Returns ``(binding, previous_thread_id)``. ``previous_thread_id`` is
+        None when this created a new binding or the chat was already bound to
+        the requested thread.
+        """
+        if self.get_user_by_id(user_id) is None:
+            raise UserNotFound(user_id)
+        chat_id = str(platform_chat_id)
+        now = _now()
+        with self._lock, self._connect() as conn:
+            current_row = conn.execute(
+                "SELECT * FROM thread_platform_bindings "
+                "WHERE provider = ? AND platform_chat_id = ?",
+                (provider, chat_id),
+            ).fetchone()
+            target_row = conn.execute(
+                "SELECT * FROM thread_platform_bindings "
+                "WHERE provider = ? AND thread_id = ?",
+                (provider, thread_id),
+            ).fetchone()
+
+            current = _row_to_binding(current_row) if current_row else None
+            target = _row_to_binding(target_row) if target_row else None
+
+            if current is not None:
+                if (
+                    current.user_id != user_id
+                    or current.user_telegram_bot_id != user_telegram_bot_id
+                ):
+                    raise BindingAlreadyExists(
+                        "Chat is already bound to another Nymeria user or Telegram bot"
+                    )
+
+            if target is not None:
+                same_chat = (
+                    target.platform_chat_id == chat_id
+                    and target.user_id == user_id
+                    and target.user_telegram_bot_id == user_telegram_bot_id
+                )
+                if not same_chat:
+                    raise BindingAlreadyExists(
+                        "Thread is already bound to another Telegram chat"
+                    )
+                previous = (
+                    current.thread_id
+                    if current is not None and current.thread_id != target.thread_id
+                    else None
+                )
+                return target, previous
+
+            previous_thread_id = current.thread_id if current is not None else None
+            try:
+                if current is not None:
+                    conn.execute(
+                        "DELETE FROM thread_platform_bindings WHERE id = ?",
+                        (current.id,),
+                    )
+                cur = conn.execute(
+                    "INSERT INTO thread_platform_bindings "
+                    "(thread_id, provider, platform_chat_id, user_id, "
+                    " user_telegram_bot_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        thread_id,
+                        provider,
+                        chat_id,
+                        user_id,
+                        user_telegram_bot_id,
+                        now,
+                    ),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as e:
+                conn.rollback()
+                raise BindingAlreadyExists(str(e)) from e
+            return (
+                ThreadPlatformBinding(
+                    id=int(cur.lastrowid),
+                    thread_id=thread_id,
+                    provider=provider,
+                    platform_chat_id=chat_id,
+                    user_id=user_id,
+                    created_at=now,
+                    user_telegram_bot_id=user_telegram_bot_id,
+                ),
+                previous_thread_id,
             )
 
     def lookup_thread_binding_by_chat(

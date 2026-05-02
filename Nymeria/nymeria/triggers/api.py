@@ -697,6 +697,21 @@ class AdminChatAppBindClaimResponse(BaseModel):
     user_id: str
 
 
+class AdminChatAppSwitchRequest(BaseModel):
+    provider: Literal["telegram"]
+    platform_chat_id: str
+    thread_id: str
+    user_id: str
+    user_telegram_bot_id: Optional[int] = None
+
+
+class AdminChatAppSwitchResponse(BaseModel):
+    binding_id: int
+    thread_id: str
+    user_id: str
+    previous_thread_id: Optional[str] = None
+
+
 class AdminPlatformLinkClaimRequest(BaseModel):
     code: str
     provider: Literal["telegram"]
@@ -1033,6 +1048,13 @@ def _classify_thread_platform_from_id(thread_id: str) -> str:
     if thread_id.startswith("agent-") or thread_id.startswith("spawned-"):
         return "callable"
     return "desktop"
+
+
+def _is_native_platform_thread(thread_id: str) -> bool:
+    """Return True for platform-native IDs that should keep native routing."""
+    return thread_id.startswith(
+        ("discord_", "telegram_", "slack_", "trigger-", "twitch_")
+    )
 
 
 def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
@@ -1933,6 +1955,73 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         repo.delete_thread_binding(binding.id, user_id=binding.user_id)
         _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return {"unbound": True, "thread_id": binding.thread_id}
+
+    @app.post(
+        "/admin/chatapp/bindings/switch",
+        response_model=AdminChatAppSwitchResponse,
+        tags=["Admin"],
+    )
+    async def admin_switch_chatapp_binding(
+        body: AdminChatAppSwitchRequest,
+        _admin=Depends(require_admin_user),
+    ):
+        """Move a chat-app chat to another existing user-owned thread.
+
+        Called by Telegram ``/switch`` and ``/new``. Unlike bind-code claims,
+        this does not prove possession of a desktop-issued code; instead the
+        bot supplies the resolved Nymeria user id and the API verifies that
+        the target thread is already owned by that user.
+        """
+        repo = get_agent().accounts_repo
+        target_thread_id = body.thread_id.strip()
+        if not target_thread_id:
+            raise HTTPException(status_code=400, detail="thread_id is required")
+        if _is_native_platform_thread(target_thread_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Native platform threads cannot be switch targets; use "
+                    "/unbind to return a Telegram chat to its default thread"
+                ),
+            )
+        user = repo.get_user_by_id(body.user_id)
+        if user is None or user.disabled:
+            raise HTTPException(status_code=404, detail="User not found")
+        if target_thread_id not in set(repo.list_threads_for_user(body.user_id)):
+            raise HTTPException(status_code=404, detail="Target thread not found")
+
+        if body.user_telegram_bot_id is not None:
+            bot = repo.get_user_telegram_bot(body.user_telegram_bot_id)
+            if bot is None or not bot.enabled:
+                raise HTTPException(status_code=404, detail="Telegram bot not found")
+            if bot.owner_user_id != body.user_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Telegram bot belongs to a different Nymeria user",
+                )
+
+        try:
+            binding, previous_thread_id = repo.switch_thread_binding_for_chat(
+                thread_id=target_thread_id,
+                provider=body.provider,
+                platform_chat_id=body.platform_chat_id,
+                user_id=body.user_id,
+                user_telegram_bot_id=body.user_telegram_bot_id,
+            )
+        except BindingAlreadyExists as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except UserNotFound as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+        if previous_thread_id and previous_thread_id != binding.thread_id:
+            _publish_chatapp_platform_sync(previous_thread_id, binding.user_id)
+        _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
+        return AdminChatAppSwitchResponse(
+            binding_id=binding.id,
+            thread_id=binding.thread_id,
+            user_id=binding.user_id,
+            previous_thread_id=previous_thread_id,
+        )
 
     @app.post(
         "/admin/chatapp/bindings/claim-via-bot",

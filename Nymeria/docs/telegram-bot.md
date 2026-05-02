@@ -9,7 +9,7 @@ Docker: nymeria-telegram-bot (profile: telegram)
 	  └─ NymeriaTelegramBot
 	       ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
 	       ├─ python-telegram-bot v22+ (async polling)
-	       ├─ 35 bot commands + plain message handler
+	       ├─ 43 bot commands + plain message handler
 	       └─ SSE listener (autonomous task stream → chat posts)
 ```
 
@@ -21,7 +21,10 @@ Like the Discord bot, the Telegram bot communicates exclusively via the REST API
 |---------|-----------|---------|
 | Any chat | `telegram_{chat_id}` | `telegram_{user_id}` |
 
-Each Telegram chat (private or group) maps to one Nymeria thread.
+By default, each Telegram chat (private or group) maps to one
+`telegram_{chat_id}` Nymeria thread. A chat can also be explicitly bound to a
+desktop-created UUID thread through the desktop wizard, `/bind`, `/switch`, or
+`/new`.
 
 ### Telegram vs Discord Differences
 
@@ -97,6 +100,9 @@ Or use the `/thread` command — it shows the full thread ID including the chat 
 | `/showtools` | Toggle whether tool calls are shown as separate messages |
 | `/help` | List all available commands |
 | `/start` | Telegram's default entry point — shows welcome message |
+| `/threads [query]` | List desktop/user-owned threads this Telegram chat can switch to |
+| `/switch <title\|number\|id>` | Move this Telegram chat to another existing thread. Title matching is case-insensitive; use `/threads` first to get numbered choices for duplicate titles. |
+| `/new [title]` | Create a fresh desktop-style thread and switch this Telegram chat to it. If no title is given, the first chat message can still auto-title the thread. |
 
 You can also send plain text in DMs without any command prefix.
 
@@ -161,6 +167,9 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | Command | Description |
 |---------|-------------|
 | `/bind <code>` | Attach this Telegram chat to the desktop thread that issued the code. Codes are minted by the desktop "Connect Telegram" wizard (Thread Settings → Chat App → Connect Telegram). Single-use, 10-min TTL. |
+| `/threads [query]` | List existing switchable threads. Results are numbered for `/switch 1`, `/switch 2`, etc. Native platform threads like `telegram_<chat_id>` are excluded; use `/unbind` to return to the default Telegram thread. |
+| `/switch <title\|number\|id>` | Move this chat's binding to another owned thread by exact title, unique title substring, numbered `/threads` result, or thread ID. Ambiguous title matches return a numbered picker. |
+| `/new [title]` | Create a fresh UUID thread owned by the Telegram user's Nymeria account, bind this chat to it, and optionally set the title. |
 | `/unbind` | Remove this chat's thread binding. Future messages here revert to the default `telegram_<chat_id>` thread. |
 | `/start link_<code>` | Auto-handled when you tap a `t.me/<bot>?start=link_<code>` deep link from the desktop wizard's first step. Self-service alternative to `python run.py users link-platform`. |
 | `/start bind_<code>` | Auto-handled when you tap a `t.me/<bot>?start=bind_<code>` deep link. Equivalent to `/bind <code>` in the chat the deep link opens. |
@@ -175,6 +184,12 @@ The API also reports bound desktop-created threads as `platform: "telegram"` in
 `GET /threads` and emits `thread_updated` on bind/unbind, so frontend sidebars
 show or clear the Telegram icon without requiring a `telegram_<chat_id>` thread
 ID.
+
+The bot-side switch commands use the same binding table as the desktop wizard:
+`/switch` moves the current Telegram chat's row to another existing owned
+thread, and `/new` first claims a fresh UUID thread for the resolved Nymeria
+user before moving the row. The current user is resolved from the Telegram
+sender's linked platform identity, matching normal Telegram chat authorization.
 
 Setting `TELEGRAM_BOT_USERNAME=<bot>` (no `@`) in `.env.docker` lets the wizard
 produce one-tap `t.me/<bot>?start=...` deep links. With it unset, the wizard
