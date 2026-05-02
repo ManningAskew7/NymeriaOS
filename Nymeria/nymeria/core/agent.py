@@ -1967,11 +1967,7 @@ class NymeriaAgent:
 
     def _compact_trigger_tokens(self, model_limit: int, threshold: float) -> int:
         """Return the input-token count that should trigger auto-compaction."""
-        percentage_trigger = max(1, int(model_limit * threshold))
-        soft_limit = int(getattr(self.settings, "compact_soft_token_limit", 0) or 0)
-        if soft_limit > 0:
-            return min(percentage_trigger, soft_limit)
-        return percentage_trigger
+        return max(1, int(model_limit * threshold))
 
     async def _check_and_compact(
         self,
@@ -2864,6 +2860,9 @@ class NymeriaAgent:
             reasoning_effort=reasoning_effort,
             extended_thinking=extended_thinking,
             openai_api_mode=(tc.openai_api_mode if tc else None) or self.settings.openai_api_mode,
+            stream_max_retries=self.settings.llm_stream_max_retries,
+            stream_retry_initial_delay=self.settings.llm_stream_retry_initial_delay,
+            stream_retry_max_delay=self.settings.llm_stream_retry_max_delay,
         )
 
     def _get_team_scoped_callable_threads(
@@ -3052,6 +3051,7 @@ class NymeriaAgent:
             max_iterations=max_iters,
             repeated_tool_result_limit=self.TURN_SAME_TOOL_RESULT_LIMIT,
             tool_timeout=self.settings.tool_timeout,
+            tool_output_max_chars=self.settings.tool_output_max_chars,
             verbose=self.settings.log_level == "DEBUG",
             on_timeout=self._on_tool_timeout,
         )
@@ -3205,6 +3205,7 @@ class NymeriaAgent:
             max_iterations=max_iters,
             repeated_tool_result_limit=self.TURN_SAME_TOOL_RESULT_LIMIT,
             tool_timeout=self.settings.tool_timeout,
+            tool_output_max_chars=self.settings.tool_output_max_chars,
             verbose=self.settings.log_level == "DEBUG",
             on_timeout=self._on_tool_timeout,
         )

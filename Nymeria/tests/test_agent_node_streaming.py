@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Annotated, TypedDict
 
+import pytest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.tools import StructuredTool
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
 
 from nymeria.vendor.react_agent.config import (
     AgentConfig,
@@ -15,6 +19,7 @@ from nymeria.vendor.react_agent.config import (
     LLMConfig,
 )
 from nymeria.vendor.react_agent.graph import create_graph
+from nymeria.vendor.react_agent.nodes import create_tools_node
 
 
 class _StreamingFakeModel(BaseChatModel):
@@ -35,8 +40,72 @@ class _StreamingFakeModel(BaseChatModel):
             yield chunk
 
 
+class _TransientStreamError(RuntimeError):
+    status_code = 500
+
+
+class _RetryableBeforeChunkModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "retryable-before-chunk-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="sync"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if self.calls <= 2:
+            raise _TransientStreamError("server_error: temporary upstream failure")
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+        if run_manager:
+            await run_manager.on_llm_new_token("ok", chunk=chunk)
+        yield chunk
+
+
+class _FailAfterChunkModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "fail-after-chunk-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="sync"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content="partial"))
+        if run_manager:
+            await run_manager.on_llm_new_token("partial", chunk=chunk)
+        yield chunk
+        raise _TransientStreamError("server_error after content")
+
+
+class _NonRetryableBeforeChunkModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "non-retryable-before-chunk-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="sync"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if False:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""))
+        raise ValueError("context_length_exceeded: prompt is too long")
+
+
 async def _async_only_tool(value: str) -> str:
     return f"tool-ok:{value}"
+
+
+class _MiniGraphState(TypedDict):
+    messages: Annotated[list, add_messages]
 
 
 class _AsyncToolCallingModel(BaseChatModel):
@@ -100,6 +169,115 @@ def test_async_graph_emits_chat_model_stream_chunks():
     assert end_outputs[-1] == "hello"
 
 
+def test_async_graph_retries_retryable_stream_failure_before_chunks():
+    model = _RetryableBeforeChunkModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                custom_llm=model,
+                stream_max_retries=2,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    async def collect():
+        stream_chunks = []
+        end_outputs = []
+        async for event in graph.astream_events(
+            {"messages": [HumanMessage(content="hi")]},
+            config={"configurable": {"thread_id": "retry-before-chunk-test"}},
+            version="v2",
+        ):
+            if event.get("event") == "on_chat_model_stream":
+                content = getattr(event["data"]["chunk"], "content", "")
+                if content:
+                    stream_chunks.append(content)
+            elif event.get("event") == "on_chat_model_end":
+                output = event["data"].get("output")
+                end_outputs.append(getattr(output, "content", None))
+        return stream_chunks, end_outputs
+
+    stream_chunks, end_outputs = asyncio.run(collect())
+
+    assert model.calls == 3
+    assert stream_chunks == ["ok"]
+    assert end_outputs[-1] == "ok"
+
+
+def test_async_graph_does_not_retry_stream_failure_after_chunk():
+    model = _FailAfterChunkModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                custom_llm=model,
+                stream_max_retries=2,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    async def collect_until_error():
+        stream_chunks = []
+        with pytest.raises(_TransientStreamError):
+            async for event in graph.astream_events(
+                {"messages": [HumanMessage(content="hi")]},
+                config={"configurable": {"thread_id": "fail-after-chunk-test"}},
+                version="v2",
+            ):
+                if event.get("event") == "on_chat_model_stream":
+                    content = getattr(event["data"]["chunk"], "content", "")
+                    if content:
+                        stream_chunks.append(content)
+        return stream_chunks
+
+    stream_chunks = asyncio.run(collect_until_error())
+
+    assert model.calls == 1
+    assert stream_chunks == ["partial"]
+
+
+def test_async_graph_does_not_retry_non_retryable_stream_error():
+    model = _NonRetryableBeforeChunkModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                custom_llm=model,
+                stream_max_retries=2,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    async def collect_until_error():
+        with pytest.raises(ValueError):
+            async for _ in graph.astream_events(
+                {"messages": [HumanMessage(content="hi")]},
+                config={"configurable": {"thread_id": "non-retryable-test"}},
+                version="v2",
+            ):
+                pass
+
+    asyncio.run(collect_until_error())
+
+    assert model.calls == 1
+
+
 def test_async_graph_invokes_async_only_tools():
     async_tool = StructuredTool.from_function(
         coroutine=_async_only_tool,
@@ -130,3 +308,83 @@ def test_async_graph_invokes_async_only_tools():
         return outputs
 
     assert asyncio.run(collect_tool_outputs()) == ["tool-ok:x"]
+
+
+def test_tools_node_truncates_large_tool_output_and_preserves_call_id():
+    payload = "a" * 75_000 + "b" * 75_000
+
+    def long_tool() -> str:
+        """Return a large payload."""
+        return payload
+
+    result = _invoke_single_tool_graph(
+        tool=StructuredTool.from_function(long_tool, name="long_tool"),
+        tool_name="long_tool",
+        call_id="call-1",
+        tool_output_max_chars=100_000,
+    )
+
+    message = result["messages"][-1]
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "call-1"
+    assert "Tool output truncated" in message.content
+    assert "original 150000 chars" in message.content
+    assert "omitted 50000 chars" in message.content
+    assert message.content.startswith("a" * 100)
+    assert message.content.endswith("b" * 100)
+
+
+def test_tools_node_leaves_under_limit_tool_output_unchanged():
+    payload = "z" * 99_999
+
+    def short_tool() -> str:
+        """Return a payload under the truncation limit."""
+        return payload
+
+    result = _invoke_single_tool_graph(
+        tool=StructuredTool.from_function(short_tool, name="short_tool"),
+        tool_name="short_tool",
+        call_id="call-2",
+        tool_output_max_chars=100_000,
+    )
+
+    message = result["messages"][-1]
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "call-2"
+    assert message.content == payload
+
+
+def _invoke_single_tool_graph(*, tool, tool_name: str, call_id: str, tool_output_max_chars: int):
+    calls = {"agent": 0}
+
+    def agent_node(state):
+        calls["agent"] += 1
+        return {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": tool_name,
+                            "args": {},
+                            "id": call_id,
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        }
+
+    def agent_router(state):
+        return "tools" if calls["agent"] == 1 else "end"
+
+    graph = StateGraph(_MiniGraphState)
+    graph.add_node("agent", agent_node)
+    graph.add_node(
+        "tools",
+        create_tools_node([tool], tool_output_max_chars=tool_output_max_chars),
+    )
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", agent_router, {"tools": "tools", "end": END})
+    graph.add_edge("tools", END)
+    return graph.compile().invoke({"messages": []})

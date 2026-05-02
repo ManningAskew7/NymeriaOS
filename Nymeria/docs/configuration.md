@@ -32,6 +32,9 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
 | `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for `openrouter`, `openai`, or `anthropic` providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for `openai`/Codex CLIProxy, use the OpenAI-compatible `/v1` URL. Leave unset to use the provider's standard URL. |
 | `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers (`openai` and `openrouter`). `responses` is the default and recommended path for thinking/reasoning models; `chat_completions` is an explicit compatibility override and is not recommended if thinking is enabled. |
+| `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. Streaming retries only happen before any model chunk is emitted. |
+| `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
+| `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
@@ -159,6 +162,7 @@ resolution unless the target is a non-metadata host explicitly listed in
 | `MAX_SELF_INVOKES_PER_HOUR` | `50` | Rate limit per user to prevent runaway loops |
 | `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool/sub-agent invocation may run |
+| `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
 
 ### Context Management
 
@@ -168,7 +172,6 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 |----------|---------|-------------|
 | `CONTEXT_MANAGEMENT` | `auto_compact` | Strategy: `auto_compact`, `sliding_window`, or `none` |
 | `COMPACT_THRESHOLD` | `0.8` | Trigger compaction at this fraction of the model context window (0.05-0.95). Example: `0.38` is about 400k tokens on GPT-5.5's 1.05M window. |
-| `COMPACT_SOFT_TOKEN_LIMIT` | `120000` | Absolute input-token trigger for auto-compaction. The lower of this value and `COMPACT_THRESHOLD * context_limit` is used. Set `0` to disable the soft cap. |
 | `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
 | `COMPACT_MODEL` | (main model) | Optional cheaper model for summarization |
 | `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
@@ -272,6 +275,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Advanced LLM Settings (all optional)
 # LLM_BASE_URL=                       # Override API endpoint (e.g., local proxy)
 # OPENAI_API_MODE=responses           # OpenAI-compatible mode: responses or chat_completions
+# LLM_STREAM_MAX_RETRIES=2            # Retry transient failures before chunks stream
+# LLM_STREAM_RETRY_INITIAL_DELAY=1.0
+# LLM_STREAM_RETRY_MAX_DELAY=8.0
 # LLM_MAX_TOKENS=4096
 # LLM_TOP_P=0.95
 # LLM_TOP_K=40
@@ -315,9 +321,11 @@ AUDIT_LOG_ENABLED=true
 # Context Management (optional - defaults shown)
 # CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none
 # COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit (0.05-0.95)
-# COMPACT_SOFT_TOKEN_LIMIT=120000  # Absolute trigger; 0 disables
 # COMPACT_MODEL=                   # Use cheaper model for summarization
 # SLIDING_WINDOW_CYCLES=5          # For legacy sliding_window mode
+
+# Tool output safety
+# TOOL_OUTPUT_MAX_CHARS=100000     # Max stored characters per tool result
 
 # Activity Log (optional)
 # ACTIVITY_RETENTION_HOURS=12      # Hours to retain activity log entries
