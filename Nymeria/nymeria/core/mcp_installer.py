@@ -1,8 +1,8 @@
-"""Paste-friendly MCP server installer.
+"""Ready-source parser for MCP server installs.
 
-Parses whatever the user hands us (Claude Desktop config snippet, bare stdio
-command, HTTP URL, or registry ID) into a concrete MCPServerDefinition that
-MCPServerRegistry can save and discover.
+Parses ready install sources (Claude Desktop config snippet, bare stdio command,
+HTTP URL, package page, or registry ID) into a concrete MCPServerDefinition
+that MCPServerRegistry can save and discover.
 
 Registry ID resolution needs a live lookup, so a resolver callable is accepted
 (defaults to the real registry client). Everything else is pure.
@@ -12,49 +12,27 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import shlex
-import uuid
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from ..tools.definitions.schema import MCPServerDefinition
 from ..skills.marketplace import scan_for_suspicious_patterns
+from .mcp_sources import (
+    MCPInstallError,
+    classify_mcp_source,
+    describe_definition,  # re-exported for older mcp_installer callers
+    new_mcp_server_id,
+    package_command_source,
+)
 
 logger = logging.getLogger(__name__)
 
-# Matches "io.github.owner/name" style registry IDs. Conservative — no scheme,
-# no whitespace, one slash separating namespace from name.
-_REGISTRY_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9._-]+$")
-
-# Matches a slug fragment we can safely derive from a user-visible name.
-_SLUG_PATTERN = re.compile(r"[^a-zA-Z0-9]+")
-
-
-class MCPInstallError(ValueError):
-    """Raised when an MCP source string cannot be parsed or resolved."""
-
-
-def _slugify(raw: str) -> str:
-    slug = _SLUG_PATTERN.sub("-", raw.strip().lower()).strip("-")
-    return slug or "mcp"
-
-
-def _new_id(name: str) -> str:
-    return f"{_slugify(name)}-{uuid.uuid4().hex[:6]}"
+_new_id = new_mcp_server_id
 
 
 def _classify(source: str) -> str:
-    stripped = source.strip()
-    if not stripped:
-        raise MCPInstallError("source is empty")
-    if stripped.startswith("{"):
-        return "json"
-    if stripped.startswith(("http://", "https://")):
-        return "url"
-    if _REGISTRY_ID_PATTERN.match(stripped):
-        return "registry"
-    return "stdio"
+    return classify_mcp_source(source).kind
 
 
 def parse_mcp_source(
@@ -74,13 +52,19 @@ def parse_mcp_source(
     The optional `resolver` is called for registry IDs and must return a ready
     MCPServerDefinition. When omitted, the default MCP registry client is used.
     """
-    kind = _classify(source)
-    stripped = source.strip()
+    classification = classify_mcp_source(source)
+    kind = classification.kind
+    stripped = classification.source
 
     if kind == "json":
         return _parse_json_blob(stripped, name=name)
-    if kind == "url":
+    if kind in {"http", "git", "bundle_url"}:
         return _parse_url(stripped, name=name)
+    if kind in {"npm", "pypi"}:
+        return _parse_stdio_command(
+            package_command_source(classification),
+            name=name or classification.value,
+        )
     if kind == "registry":
         if resolver is None:
             from .mcp_registry_client import resolve_registry_id
@@ -122,7 +106,7 @@ def _parse_json_blob(blob: str, *, name: Optional[str]) -> MCPServerDefinition:
         if not isinstance(url, str) or not url:
             raise MCPInstallError("'url' must be a non-empty string")
         return MCPServerDefinition(
-            id=_new_id(display_name),
+            id=new_mcp_server_id(display_name),
             name=display_name,
             description=entry.get("description", ""),
             transport="http",
@@ -142,7 +126,7 @@ def _parse_json_blob(blob: str, *, name: Optional[str]) -> MCPServerDefinition:
     _reject_suspicious(command, args)
 
     return MCPServerDefinition(
-        id=_new_id(display_name),
+        id=new_mcp_server_id(display_name),
         name=display_name,
         description=entry.get("description", ""),
         transport="stdio",
@@ -158,7 +142,7 @@ def _parse_url(url: str, *, name: Optional[str]) -> MCPServerDefinition:
         raise MCPInstallError(f"URL has no host: {url}")
     display_name = name or parsed.hostname or "mcp-http"
     return MCPServerDefinition(
-        id=_new_id(display_name),
+        id=new_mcp_server_id(display_name),
         name=display_name,
         transport="http",
         url=url,
@@ -181,7 +165,7 @@ def _parse_stdio_command(command_str: str, *, name: Optional[str]) -> MCPServerD
     if derived is None:
         derived = next((a for a in reversed(args) if not a.startswith("-")), command)
     return MCPServerDefinition(
-        id=_new_id(derived),
+        id=new_mcp_server_id(derived),
         name=derived,
         transport="stdio",
         server_command=command,
@@ -196,11 +180,3 @@ def _reject_suspicious(command: str, args) -> None:
         raise MCPInstallError(
             f"refusing to install: command contains suspicious patterns ({', '.join(hits)})"
         )
-
-
-def describe_definition(defn: MCPServerDefinition) -> str:
-    """Return a human-readable summary for confirmation dialogs / chat echoes."""
-    if defn.transport == "http":
-        return f"HTTP MCP server '{defn.name}' at {defn.url}"
-    cmd = " ".join([defn.server_command, *defn.server_args])
-    return f"stdio MCP server '{defn.name}' running: {cmd}"

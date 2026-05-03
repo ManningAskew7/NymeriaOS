@@ -1,8 +1,8 @@
 """Managed install planning and runtime preparation for pasted MCP servers.
 
-This layer sits in front of :mod:`mcp_installer`. The old installer parsed a
-source directly into a command/URL and immediately tried discovery. The managed
-runtime path keeps that behavior for simple sources while adding:
+This layer owns MCP install previews, planning, and local runtime preparation.
+`mcp_sources` classifies the source string, and `mcp_installer` parses ready
+sources into concrete server definitions. The managed runtime path adds:
 
 - source previews and smart-confirm metadata
 - per-server cache/source directories
@@ -25,16 +25,20 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 from ..config import get_settings
 from ..tools.definitions.schema import MCPServerDefinition
 from . import secrets as nymeria_secrets
-from .mcp_installer import (
+from .mcp_installer import parse_mcp_source
+from .mcp_sources import (
     MCPInstallError,
-    _new_id,
+    SAFE_STDIO_COMMANDS,
+    classify_mcp_source,
     describe_definition,
-    parse_mcp_source,
+    extract_install_source,
+    new_mcp_server_id,
+    package_command_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,17 +46,6 @@ logger = logging.getLogger(__name__)
 PREVIEW_TTL_SECONDS = 60 * 30
 SECRET_NAME_RE = re.compile(r"(api[_-]?key|token|secret|password|credential|auth)", re.I)
 SHELL_META_RE = re.compile(r"[;&|`$<>]")
-SAFE_STDIO_COMMANDS = {
-    "uvx",
-    "uv",
-    "npx",
-    "npm",
-    "node",
-    "python",
-    "python3",
-    "deno",
-    "bun",
-}
 
 
 @dataclass
@@ -177,50 +170,6 @@ def consume_preview(token: str) -> None:
         _preview_path(token).unlink(missing_ok=True)
 
 
-def _strip_code_fence(source: str) -> str:
-    s = source.strip()
-    if s.startswith("```"):
-        lines = s.splitlines()
-        if len(lines) >= 3 and lines[-1].strip().startswith("```"):
-            body = "\n".join(lines[1:-1]).strip()
-            return _first_install_candidate(body) or body
-    if not s.startswith("{") and "{" in s and "}" in s:
-        start = s.find("{")
-        end = s.rfind("}")
-        candidate = s[start : end + 1].strip()
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-    fence = re.search(r"```[^\n]*\n(.*?)```", s, re.S)
-    if fence:
-        body = fence.group(1).strip()
-        return _first_install_candidate(body) or body
-    line_candidate = _first_install_candidate(s)
-    if line_candidate:
-        return line_candidate
-    return s
-
-
-def _first_install_candidate(text: str) -> Optional[str]:
-    registry_re = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9._-]+$")
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("$"):
-            line = line[1:].strip()
-        first = line.split(maxsplit=1)[0] if line else ""
-        if first in SAFE_STDIO_COMMANDS:
-            return line
-        if line.startswith(("http://", "https://")):
-            return line
-        if registry_re.match(line):
-            return line
-    return None
-
-
 def _is_secret_name(name: str) -> bool:
     return bool(SECRET_NAME_RE.search(name or ""))
 
@@ -267,25 +216,6 @@ def _base_plan(
     return defn, plan
 
 
-def _url_kind(url: str) -> Tuple[str, str]:
-    parsed = urlparse(url)
-    lower_path = unquote(parsed.path).lower()
-    host = (parsed.hostname or "").lower()
-    if lower_path.endswith((".mcpb", ".dxt", ".zip")):
-        return "bundle_url", "bundle"
-    if host == "www.npmjs.com" and "/package/" in lower_path:
-        pkg = unquote(lower_path.split("/package/", 1)[1].strip("/"))
-        return "npm", pkg
-    if host == "pypi.org" and lower_path.startswith("/project/"):
-        pkg = unquote(lower_path.split("/project/", 1)[1].strip("/").split("/")[0])
-        return "pypi", pkg
-    if host in {"github.com", "gitlab.com", "bitbucket.org"}:
-        return "git", url
-    if lower_path.endswith(".git"):
-        return "git", url
-    return "http", url
-
-
 def _required_config_from_env(env_vars: Dict[str, str]) -> List[Dict[str, Any]]:
     fields: List[Dict[str, Any]] = []
     for key, value in env_vars.items():
@@ -330,58 +260,63 @@ def _risk_for_command(command: str, args: List[str]) -> Tuple[str, bool, List[st
 
 
 def plan_text_source(source: str, *, name: Optional[str] = None) -> Tuple[MCPServerDefinition, MCPInstallPlan]:
-    stripped = _strip_code_fence(source)
-    if not stripped:
-        raise MCPInstallError("source is empty")
+    stripped = extract_install_source(source)
+    classification = classify_mcp_source(stripped)
 
-    if stripped.startswith(("http://", "https://")):
-        kind, value = _url_kind(stripped)
-        if kind == "npm":
-            defn = parse_mcp_source(f"npx -y {value}", name=name or value)
-            return _base_plan(defn, source_type="npm", runtime_type="npx")
-        if kind == "pypi":
-            defn = parse_mcp_source(f"uvx {value}", name=name or value)
-            return _base_plan(defn, source_type="pypi", runtime_type="uvx")
-        if kind == "git":
-            display = name or Path(urlparse(value).path).stem.removesuffix(".git") or "mcp-git"
-            defn = MCPServerDefinition(
-                id=_new_id(display),
-                name=display,
-                transport="stdio",
-                server_command="",
-                server_args=[],
-                install_status="draft",
-                original_source=stripped,
-            )
-            return _base_plan(
-                defn,
-                source_type="git",
-                runtime_type="git",
-                risk_level="medium",
-                confirmation_required=True,
-                warnings=["Nymeria will clone this repository and run its MCP server entrypoint."],
-                source_url=value,
-            )
-        if kind == "bundle_url":
-            display = name or Path(urlparse(value).path).stem or "mcp-bundle"
-            defn = MCPServerDefinition(
-                id=_new_id(display),
-                name=display,
-                transport="stdio",
-                server_command="",
-                server_args=[],
-                install_status="draft",
-                original_source=stripped,
-            )
-            return _base_plan(
-                defn,
-                source_type="bundle_url",
-                runtime_type="bundle",
-                risk_level="medium",
-                confirmation_required=True,
-                warnings=["Nymeria will download and unpack this MCP bundle before running it."],
-                source_url=value,
-            )
+    if classification.kind == "npm":
+        defn = parse_mcp_source(
+            package_command_source(classification),
+            name=name or classification.value,
+        )
+        return _base_plan(defn, source_type="npm", runtime_type="npx")
+    if classification.kind == "pypi":
+        defn = parse_mcp_source(
+            package_command_source(classification),
+            name=name or classification.value,
+        )
+        return _base_plan(defn, source_type="pypi", runtime_type="uvx")
+    if classification.kind == "git":
+        value = classification.value
+        display = name or Path(urlparse(value).path).stem.removesuffix(".git") or "mcp-git"
+        defn = MCPServerDefinition(
+            id=new_mcp_server_id(display),
+            name=display,
+            transport="stdio",
+            server_command="",
+            server_args=[],
+            install_status="draft",
+            original_source=stripped,
+        )
+        return _base_plan(
+            defn,
+            source_type="git",
+            runtime_type="git",
+            risk_level="medium",
+            confirmation_required=True,
+            warnings=["Nymeria will clone this repository and run its MCP server entrypoint."],
+            source_url=value,
+        )
+    if classification.kind == "bundle_url":
+        value = classification.value
+        display = name or Path(urlparse(value).path).stem or "mcp-bundle"
+        defn = MCPServerDefinition(
+            id=new_mcp_server_id(display),
+            name=display,
+            transport="stdio",
+            server_command="",
+            server_args=[],
+            install_status="draft",
+            original_source=stripped,
+        )
+        return _base_plan(
+            defn,
+            source_type="bundle_url",
+            runtime_type="bundle",
+            risk_level="medium",
+            confirmation_required=True,
+            warnings=["Nymeria will download and unpack this MCP bundle before running it."],
+            source_url=value,
+        )
 
     defn = parse_mcp_source(stripped, name=name)
     defn.original_source = stripped
@@ -415,7 +350,7 @@ def plan_bundle_file(bundle_path: Path, *, original_name: str = "", name: Option
     manifest = _read_manifest_from_zip(bundle_path)
     display = name or manifest.get("display_name") or manifest.get("name") or Path(original_name or bundle_path.name).stem
     defn = MCPServerDefinition(
-        id=_new_id(str(display)),
+        id=new_mcp_server_id(str(display)),
         name=str(display),
         description=manifest.get("description", "") or "",
         transport="stdio",

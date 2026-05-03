@@ -37,7 +37,7 @@ class MCPRegistryEntry:
     name: str  # human-readable short name
     description: str
     source: str  # "official", "smithery", ...
-    install_hint: Optional[str] = None  # stdio command string or URL; fed to parse_mcp_source
+    install_hint: Optional[str] = None  # stdio command string, package URL, or HTTP URL
 
 
 class RegistryError(Exception):
@@ -335,7 +335,8 @@ def resolve_registry_id(server_id: str) -> MCPServerDefinition:
     Uses the official MCP registry only. Raises MCPInstallError on any failure
     so the installer can surface a clean error to the caller.
     """
-    from .mcp_installer import MCPInstallError, _new_id, parse_mcp_source
+    from .mcp_installer import parse_mcp_source
+    from .mcp_sources import MCPInstallError, new_mcp_server_id
 
     fetcher = OfficialMCPRegistryFetcher()
     try:
@@ -349,7 +350,8 @@ def resolve_registry_id(server_id: str) -> MCPServerDefinition:
             f"registry entry '{server_id}' has no installable package (npm/pypi/remote)"
         )
 
-    # Delegate back to parse_mcp_source for stdio/URL handling and naming.
+    # Delegate back to the ready-source parser for stdio/package/HTTP handling
+    # and naming.
     defn = parse_mcp_source(
         install_hint,
         name=(
@@ -362,5 +364,5 @@ def resolve_registry_id(server_id: str) -> MCPServerDefinition:
     )
     defn.description = detail.get("description", "") or defn.description
     # Re-id to match the registry id slug for traceability.
-    defn.id = _new_id(defn.name)
+    defn.id = new_mcp_server_id(defn.name)
     return defn
