@@ -26,8 +26,8 @@ playwright install chromium
 npm install -g @anthropic-ai/claude-code
 
 # Configure
-cp .env.example .env
-# Edit .env with your API keys
+cp .env.docker.example .env.docker
+# Edit .env.docker with your API keys
 
 # Run
 python run.py api

@@ -1,6 +1,8 @@
 # Nymeria Configuration
 
-All configuration is done via environment variables. Copy `.env.minimal` to `.env` for a quick start, or `.env.example` for all options.
+All configuration is done via environment variables. The runtime loads `.env`
+and `.env.docker` if present. Copy `.env.docker.example` to `.env.docker` for
+the full template, or create `.env` manually for a lighter local setup.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
