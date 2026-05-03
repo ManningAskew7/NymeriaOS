@@ -1,0 +1,303 @@
+"""Regression tests for the FastAPI route surface and auth contracts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
+
+from nymeria.core.accounts import AccountsRepo
+from nymeria.triggers import api as api_module
+
+
+@dataclass
+class FakeSettings:
+    data_dir: Path
+    database_backend: str = "sqlite"
+    postgres_uri: str | None = None
+    redis_enabled: bool = False
+    redis_url: str | None = None
+    fcm_enabled: bool = False
+    fcm_credentials_json: str | None = None
+    cors_origins_list: list[str] | None = None
+
+    def __post_init__(self):
+        if self.cors_origins_list is None:
+            self.cors_origins_list = ["*"]
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "nymeria.db"
+
+
+class FakeAgent:
+    def __init__(self, data_dir: Path):
+        self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
+        self.synced_tools = 0
+
+    def sync_agent_tools(self):
+        self.synced_tools += 1
+
+
+EXPECTED_ROUTES = [
+    ("/activity", ("GET",)),
+    ("/admin/chatapp/bindings", ("GET",)),
+    ("/admin/chatapp/bindings/by-chat", ("DELETE",)),
+    ("/admin/chatapp/bindings/claim", ("POST",)),
+    ("/admin/chatapp/bindings/claim-via-bot", ("POST",)),
+    ("/admin/chatapp/bindings/lookup", ("GET",)),
+    ("/admin/chatapp/bindings/switch", ("POST",)),
+    ("/admin/platform/link-codes/claim", ("POST",)),
+    ("/admin/telegram-bots", ("GET",)),
+    ("/admin/telegram-bots/{bot_id}/seen", ("POST",)),
+    ("/admin/users", ("GET",)),
+    ("/admin/users", ("POST",)),
+    ("/admin/users/{user_id}", ("DELETE",)),
+    ("/admin/users/{user_id}", ("GET",)),
+    ("/admin/users/{user_id}", ("PATCH",)),
+    ("/admin/users/{user_id}/platforms", ("GET",)),
+    ("/admin/users/{user_id}/platforms", ("POST",)),
+    ("/admin/users/{user_id}/platforms/{provider}/{provider_user_id}", ("DELETE",)),
+    ("/admin/users/{user_id}/tokens", ("GET",)),
+    ("/admin/users/{user_id}/tokens", ("POST",)),
+    ("/admin/users/{user_id}/tokens/rotate", ("POST",)),
+    ("/admin/users/{user_id}/tokens/{token_hash_prefix}", ("DELETE",)),
+    ("/agents/templates", ("GET",)),
+    ("/agents/threads", ("GET",)),
+    ("/agents/threads", ("POST",)),
+    ("/autonomous/stream", ("GET",)),
+    ("/chat", ("POST",)),
+    ("/chat/sync", ("POST",)),
+    ("/devices/register", ("POST",)),
+    ("/devices/{token}", ("DELETE",)),
+    ("/health", ("GET",)),
+    ("/mcp-servers", ("GET",)),
+    ("/mcp-servers", ("POST",)),
+    ("/mcp-servers/install", ("POST",)),
+    ("/mcp-servers/install/preview", ("POST",)),
+    ("/mcp-servers/install/preview-upload", ("POST",)),
+    ("/mcp-servers/{server_id}", ("DELETE",)),
+    ("/mcp-servers/{server_id}", ("GET",)),
+    ("/mcp-servers/{server_id}", ("PUT",)),
+    ("/mcp-servers/{server_id}/discover", ("POST",)),
+    ("/mcp-servers/{server_id}/retry", ("POST",)),
+    ("/mcp-servers/{server_id}/test", ("POST",)),
+    ("/me", ("GET",)),
+    ("/me", ("PATCH",)),
+    ("/me/platform-link-codes", ("POST",)),
+    ("/me/platforms", ("GET",)),
+    ("/me/telegram-bots", ("GET",)),
+    ("/me/telegram-bots", ("POST",)),
+    ("/me/telegram-bots/{bot_id}", ("DELETE",)),
+    ("/me/telegram-bots/{bot_id}", ("GET",)),
+    ("/me/tokens", ("GET",)),
+    ("/me/tokens", ("POST",)),
+    ("/me/tokens/{token_hash_prefix}", ("DELETE",)),
+    ("/models", ("GET",)),
+    ("/models/available", ("GET",)),
+    ("/notifications", ("GET",)),
+    ("/notifications/read-all", ("POST",)),
+    ("/notifications/{notification_id}/read", ("POST",)),
+    ("/platform/resolve", ("GET",)),
+    ("/report", ("POST",)),
+    ("/restart", ("POST",)),
+    ("/settings", ("GET",)),
+    ("/settings", ("PATCH",)),
+    ("/settings/env", ("GET",)),
+    ("/settings/env/{key}", ("GET",)),
+    ("/settings/global-skills", ("GET",)),
+    ("/settings/global-skills", ("PUT",)),
+    ("/settings/llm/runtime", ("GET",)),
+    ("/skills", ("GET",)),
+    ("/skills/install", ("POST",)),
+    ("/skills/marketplace/search", ("GET",)),
+    ("/skills/{name}", ("DELETE",)),
+    ("/skills/{name}", ("GET",)),
+    ("/thread-teams", ("GET",)),
+    ("/thread-teams", ("POST",)),
+    ("/thread-teams/{team_id}", ("DELETE",)),
+    ("/thread-teams/{team_id}", ("PATCH",)),
+    ("/threads", ("GET",)),
+    ("/threads/import", ("POST",)),
+    ("/threads/metadata/migrate", ("POST",)),
+    ("/threads/{thread_id}", ("DELETE",)),
+    ("/threads/{thread_id}/attachments/validate", ("POST",)),
+    ("/threads/{thread_id}/callable-tools", ("GET",)),
+    ("/threads/{thread_id}/chatapp/bind-code", ("POST",)),
+    ("/threads/{thread_id}/chatapp/bindings", ("GET",)),
+    ("/threads/{thread_id}/chatapp/bindings/{binding_id}", ("DELETE",)),
+    ("/threads/{thread_id}/claim", ("POST",)),
+    ("/threads/{thread_id}/clear", ("POST",)),
+    ("/threads/{thread_id}/compact", ("POST",)),
+    ("/threads/{thread_id}/config", ("DELETE",)),
+    ("/threads/{thread_id}/config", ("GET",)),
+    ("/threads/{thread_id}/config", ("PATCH",)),
+    ("/threads/{thread_id}/context", ("GET",)),
+    ("/threads/{thread_id}/export", ("GET",)),
+    ("/threads/{thread_id}/history", ("GET",)),
+    ("/threads/{thread_id}/metadata", ("GET",)),
+    ("/threads/{thread_id}/metadata", ("PATCH",)),
+    ("/threads/{thread_id}/skills", ("GET",)),
+    ("/threads/{thread_id}/stop", ("POST",)),
+    ("/todos", ("GET",)),
+    ("/todos", ("POST",)),
+    ("/todos/thread-counts", ("GET",)),
+    ("/todos/users", ("GET",)),
+    ("/todos/{todo_id}", ("DELETE",)),
+    ("/todos/{todo_id}", ("PATCH",)),
+    ("/todos/{todo_id}/complete", ("POST",)),
+    ("/tools", ("GET",)),
+    ("/tools/categories", ("GET",)),
+    ("/tools/custom", ("GET",)),
+    ("/tools/custom", ("POST",)),
+    ("/tools/custom/export", ("GET",)),
+    ("/tools/custom/import", ("POST",)),
+    ("/tools/custom/{tool_id}", ("DELETE",)),
+    ("/tools/custom/{tool_id}", ("GET",)),
+    ("/tools/custom/{tool_id}", ("PUT",)),
+    ("/tools/custom/{tool_id}/test", ("POST",)),
+    ("/tools/defaults", ("DELETE",)),
+    ("/tools/defaults", ("GET",)),
+    ("/tools/defaults", ("PUT",)),
+    ("/tools/optional", ("GET",)),
+    ("/tools/unified", ("POST",)),
+    ("/tools/unified/{tool_id}", ("DELETE",)),
+    ("/tools/unified/{tool_id}", ("PUT",)),
+    ("/triggers", ("GET",)),
+    ("/triggers", ("POST",)),
+    ("/triggers/executions/recent", ("GET",)),
+    ("/triggers/fire/{trigger_id}", ("POST",)),
+    ("/triggers/sources/list", ("GET",)),
+    ("/triggers/sources/reload", ("POST",)),
+    ("/triggers/{trigger_id}", ("DELETE",)),
+    ("/triggers/{trigger_id}", ("GET",)),
+    ("/triggers/{trigger_id}", ("PATCH",)),
+    ("/triggers/{trigger_id}/executions", ("GET",)),
+    ("/triggers/{trigger_id}/test", ("POST",)),
+    ("/users/{user_id}/memories", ("GET",)),
+    ("/users/{user_id}/memories", ("POST",)),
+    ("/users/{user_id}/memories/search", ("GET",)),
+    ("/users/{user_id}/memories/{key}", ("DELETE",)),
+    ("/users/{user_id}/rag/index", ("DELETE",)),
+    ("/users/{user_id}/rag/reindex", ("POST",)),
+    ("/users/{user_id}/rag/search", ("GET",)),
+    ("/users/{user_id}/rag/settings", ("GET",)),
+    ("/users/{user_id}/rag/settings", ("PUT",)),
+    ("/users/{user_id}/rag/stats", ("GET",)),
+    ("/users/{user_id}/tools", ("GET",)),
+    ("/users/{user_id}/tools/preferences", ("GET",)),
+    ("/users/{user_id}/tools/reset", ("POST",)),
+    ("/users/{user_id}/tools/unified", ("GET",)),
+    ("/users/{user_id}/tools/unified/{tool_id}/config", ("PUT",)),
+    ("/users/{user_id}/tools/unified/{tool_id}/description", ("PUT",)),
+    ("/users/{user_id}/tools/unified/{tool_id}/enable", ("PUT",)),
+    ("/users/{user_id}/tools/{tool_name}/config", ("PUT",)),
+    ("/voice/chat", ("POST",)),
+    ("/voice/stt", ("POST",)),
+    ("/voice/tts", ("POST",)),
+    ("/workspace/download", ("GET",)),
+]
+
+
+def _schema_routes(app):
+    return sorted(
+        (route.path, tuple(sorted(route.methods)))
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.include_in_schema
+    )
+
+
+def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, FakeAgent]:
+    settings = FakeSettings(tmp_path)
+    agent = FakeAgent(tmp_path)
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    app = api_module.create_api_app(agent)
+    return TestClient(app), agent
+
+
+def _auth(token: str, **headers: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", **headers}
+
+
+def test_api_schema_route_inventory_is_stable(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+
+    assert _schema_routes(client.app) == EXPECTED_ROUTES
+    assert agent.synced_tools == 1
+
+
+def test_public_health_does_not_require_auth(tmp_path: Path, monkeypatch):
+    client, _agent = _client(tmp_path, monkeypatch)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_user_auth_contract_for_me_endpoint(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    token = agent.accounts_repo.issue_token("alice")
+
+    missing = client.get("/me")
+    invalid = client.get("/me", headers=_auth("nym_invalid"))
+    valid = client.get("/me", headers=_auth(token))
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+    assert valid.status_code == 200
+    assert valid.json() == {
+        "id": "alice",
+        "email": "alice@example.com",
+        "display_name": "Alice",
+        "role": "user",
+    }
+
+
+def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
+    user_token = agent.accounts_repo.issue_token("alice")
+    admin_token = agent.accounts_repo.issue_token("admin")
+
+    forbidden = client.get("/admin/users", headers=_auth(user_token))
+    allowed = client.get("/admin/users", headers=_auth(admin_token))
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    assert {row["id"] for row in allowed.json()} == {"alice", "admin"}
+
+
+def test_admin_service_token_style_act_as_resolves_target_user(
+    tmp_path: Path, monkeypatch
+):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    agent.accounts_repo.create_user("service", "service@example.com", "Service", role="admin")
+    service_token = agent.accounts_repo.issue_token("service")
+
+    response = client.get("/me", headers=_auth(service_token, **{"X-Nymeria-Act-As": "alice"}))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "alice",
+        "email": "alice@example.com",
+        "display_name": "Alice",
+        "role": "user",
+    }
+
+
+def test_non_admin_act_as_is_rejected(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    agent.accounts_repo.create_user("bob", "bob@example.com", "Bob")
+    token = agent.accounts_repo.issue_token("alice")
+
+    response = client.get("/me", headers=_auth(token, **{"X-Nymeria-Act-As": "bob"}))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Act-As requires admin"

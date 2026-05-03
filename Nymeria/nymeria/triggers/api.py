@@ -1181,11 +1181,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Add webhook router for messaging platform integrations
-    from .webhook import create_webhook_router
-    webhook_router = create_webhook_router(get_agent, get_settings)
-    app.include_router(webhook_router)
-
     # Add trigger system router (event-driven automation)
     from .trigger_api import create_trigger_router
     trigger_router = create_trigger_router(
@@ -3704,7 +3699,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.disabled_tools is not None and not request.clear_disabled_tools:
             tc.disabled_tools = request.disabled_tools
         if request.enabled_tools is not None and not request.clear_enabled_tools:
-            # Admin-only optional tools (self-modify, subagent reload) are
+            # Admin-only optional tools (self-modify, runtime-admin reload) are
             # equivalent to authenticated RCE on the shared backend — a
             # non-admin must not be able to enable them via thread config.
             if user.role != "admin":
@@ -4554,7 +4549,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if unknown:
             raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
 
-        # Self-modify / subagent-reload tools rewrite the shared codebase —
+        # Self-modify / runtime-admin reload tools rewrite the shared codebase —
         # only admin defaults may include them.
         if user.role != "admin":
             blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(tool_names)
@@ -5198,7 +5193,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         # Keys that should be masked in /env show
         secret_keys = {
-            "nymeria_api_key", "webhook_secret",
+            "nymeria_api_key",
             "openai_api_key", "anthropic_api_key", "anthropic_direct_api_key",
             "openrouter_api_key", "perplexity_api_key", "gemini_api_key",
             "discord_bot_token", "discord_webhook_url",
@@ -8085,7 +8080,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 detail=f"Tool '{tool_id}' not found",
             )
 
-        # Admin-only optional tools — self-modify, subagent reload — must
+        # Admin-only optional tools — self-modify, runtime-admin reload — must
         # not be enableable by a non-admin via the unified toggle.
         if (
             request.enabled

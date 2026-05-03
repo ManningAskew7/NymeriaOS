@@ -11,20 +11,50 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 from pydantic_settings.sources import EnvSettingsSource
 
 
+_PROJECT_ROOT_MARKERS: Tuple[Tuple[str, ...], ...] = (
+    ("run.py", "nymeria/config/soul.md"),
+    ("docker-compose.yml", "nymeria/config/settings.py"),
+)
+
+
+def _find_project_root(start: Path) -> Optional[Path]:
+    """Find a Nymeria backend root by walking up from ``start``."""
+    current = start.resolve()
+    if current.is_file():
+        current = current.parent
+
+    for candidate in (current, *current.parents):
+        for markers in _PROJECT_ROOT_MARKERS:
+            if all((candidate / marker).exists() for marker in markers):
+                return candidate
+    return None
+
+
 def _get_project_root() -> Path:
     """Get project root, supporting PyInstaller frozen builds.
 
     Resolution order:
-    1. NYMERIA_PROJECT_ROOT env var (set by Tauri launcher)
+    1. NYMERIA_PROJECT_ROOT env var (set by Tauri launcher/package entrypoints)
     2. PyInstaller frozen exe: directory containing the exe
-    3. Normal Python: three levels up from this file
+    3. Marker discovery above this module, then the current working directory
+    4. Compatibility fallback: three levels up from this file
     """
     env_root = os.environ.get("NYMERIA_PROJECT_ROOT")
     if env_root:
-        return Path(env_root)
+        return Path(env_root).expanduser().resolve()
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent.parent
+
+    module_path = Path(__file__).resolve()
+    discovered_root = _find_project_root(module_path.parent)
+    if discovered_root:
+        return discovered_root
+
+    cwd_root = _find_project_root(Path.cwd())
+    if cwd_root:
+        return cwd_root
+
+    return module_path.parent.parent.parent
 
 
 PROJECT_ROOT = _get_project_root()
@@ -126,12 +156,6 @@ class Settings(BaseSettings):
     worker_mode: bool = Field(
         default=False,
         description="Run in worker mode (ticker only, no API server)"
-    )
-
-    # Webhook security
-    webhook_secret: Optional[str] = Field(
-        default=None,
-        description="Secret for validating incoming webhooks"
     )
 
     # _PRV_A Google Sheets reference-data access. This is intentionally separate
