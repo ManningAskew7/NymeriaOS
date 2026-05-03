@@ -121,18 +121,15 @@ CORS_ORIGINS=http://192.168.1.100:1420,http://myphone.local:1420
 CORS_ORIGINS=*
 ```
 
-### Webhook Configuration
+### Messaging Integrations
 
-For receiving messages from Telegram/Discord/Slack:
+Telegram, Discord, and Twitch bots run as dedicated thin-client containers.
+Configure their tokens in `.env.docker` and enable their Docker Compose
+profiles — no external webhook URLs needed. See `docs/telegram-bot.md`,
+`docs/discord-bot.md`, and `docs/twitch-bot.md`.
 
-```bash
-WEBHOOK_SECRET=<generate-a-secret>
-```
-
-Then configure your platform to send webhooks to:
-- Telegram: `https://your-domain/webhook/telegram`
-- Discord: `https://your-domain/webhook/discord`
-- Slack: `https://your-domain/webhook/slack`
+For event-driven automations from external services (IFTTT, Zapier, etc.),
+use the trigger system: `POST /triggers/fire/{trigger_id}`. See `docs/triggers.md`.
 
 ## MCP Server (Agent-to-Agent Communication)
 
@@ -221,7 +218,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 
 1. **Account tokens**: Per-user bearer tokens (`nym_…`) are minted via `python run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`. Bots/ticker/watchdog authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
 2. **CORS**: Restrict origins in production
-3. **Webhook Secret**: Validate incoming webhooks
+3. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 4. **Network**: Use HTTPS in production (reverse proxy)
 5. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments.
 6. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive.
