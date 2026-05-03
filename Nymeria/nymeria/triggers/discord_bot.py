@@ -26,9 +26,9 @@ from discord import app_commands
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .message_splitter import split_discord_message as split_message
+from .sse_consumer import parse_attach_paths
 
 logger = logging.getLogger(__name__)
-_ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
 
 
 # =============================================================================
@@ -125,13 +125,6 @@ def parse_thread_id(thread_id: str) -> Dict[str, Any]:
         if len(parts) >= 3:
             return {"type": "guild", "guild_id": parts[1], "channel_id": parts[2]}
     return {"type": "unknown"}
-
-
-def parse_attach_paths(result: str) -> List[str]:
-    """Extract file paths from legacy attach tags in tool output."""
-    if not isinstance(result, str):
-        return []
-    return _ATTACH_RE.findall(result)
 
 
 # =============================================================================
