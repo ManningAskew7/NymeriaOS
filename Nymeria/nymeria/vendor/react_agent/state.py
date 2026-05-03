@@ -14,7 +14,7 @@ Extending State:
     Then use it with create_graph by passing a custom StateGraph.
 """
 
-from typing import Annotated, TypedDict, Optional, Dict, Any, List
+from typing import Annotated, TypedDict, List
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
@@ -30,23 +30,6 @@ class AgentState(TypedDict):
         messages: Conversation history (HumanMessage, AIMessage, ToolMessage)
     """
     messages: Annotated[List[BaseMessage], add_messages]
-
-
-class ExtendedAgentState(AgentState):
-    """
-    Extended state with common fields frameworks often need.
-
-    Use this as a starting point for custom state schemas.
-
-    Attributes:
-        messages: Conversation history
-        user_id: Optional user identifier for multi-tenant apps
-        session_metadata: Optional dict for session-specific data
-        tool_outputs: Optional cache for expensive tool results
-    """
-    user_id: Optional[str]
-    session_metadata: Optional[Dict[str, Any]]
-    tool_outputs: Optional[Dict[str, Any]]
 
 
 # Type alias for cleaner imports

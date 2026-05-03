@@ -8,9 +8,8 @@ and forwards requests unchanged to api.anthropic.com. Zero format translation â€
 tool definitions, tool calls, and streaming SSE pass through verbatim.
 
 Usage:
-    python scripts/claude_max_proxy.py          # Standalone
-    python run.py proxy                         # Via run.py
-    python run.py proxy --port 8318             # Custom port
+    python scripts/claude_max_proxy.py                  # Default (127.0.0.1:8318)
+    python scripts/claude_max_proxy.py --port 8318      # Custom port
 """
 
 import json

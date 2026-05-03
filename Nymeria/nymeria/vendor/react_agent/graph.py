@@ -17,8 +17,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from .state import AgentState
 from .config import AgentConfig, CheckpointerConfig, default_config
-from .nodes import NodeFactory, simple_should_continue
-from .tools import TOOLS as DEFAULT_TOOLS
+from .nodes import NodeFactory
 
 # Shared savers for consistent state + persistence
 _shared_sqlite_conn: Optional[sqlite3.Connection] = None
@@ -335,14 +334,14 @@ def create_graph(
 
     Args:
         config: AgentConfig with all settings. Defaults to default_config.
-        tools: List of tools. Defaults to DEFAULT_TOOLS.
+        tools: List of tools. Defaults to no tools.
         checkpointer: Override checkpointer (ignores config.checkpointer)
 
     Returns:
         A compiled LangGraph ready to be invoked.
 
     Usage:
-        # Default graph
+        # Graph with no tools
         graph = create_graph()
 
         # Custom configuration
@@ -360,7 +359,7 @@ def create_graph(
         )
     """
     config = config or default_config
-    tools = tools if tools is not None else DEFAULT_TOOLS
+    tools = tools if tools is not None else []
 
     # Create nodes using the factory
     factory = NodeFactory(config, tools)
@@ -423,112 +422,3 @@ def get_graph_with_memory(
         tools=tools,
         checkpointer=MemorySaver()
     )
-
-
-class ReactAgent:
-    """
-    High-level wrapper around the ReAct graph.
-
-    Provides a cleaner interface for framework integration.
-
-    Usage:
-        agent = ReactAgent(config=my_config, tools=my_tools)
-        response = agent.chat("Hello!", thread_id="user-123")
-        response = agent.chat("What's 2+2?", thread_id="user-123")
-    """
-
-    def __init__(
-        self,
-        config: Optional[AgentConfig] = None,
-        tools: Optional[List[BaseTool]] = None,
-        checkpointer: Optional[BaseCheckpointSaver] = None,
-    ):
-        self.config = config or default_config
-        self.tools = tools if tools is not None else DEFAULT_TOOLS
-        self._graph = create_graph(
-            config=self.config,
-            tools=self.tools,
-            checkpointer=checkpointer
-        )
-
-    @property
-    def graph(self):
-        """Access the underlying LangGraph."""
-        return self._graph
-
-    def chat(
-        self,
-        message: str,
-        thread_id: str = "default",
-        **kwargs
-    ) -> str:
-        """
-        Send a message and get a response.
-
-        Args:
-            message: User message
-            thread_id: Conversation thread ID for persistence
-            **kwargs: Additional config passed to graph.invoke
-
-        Returns:
-            Agent's response text
-
-        Raises:
-            ValueError: If message is empty or whitespace only
-        """
-        from langchain_core.messages import HumanMessage
-
-        # Input validation
-        if not message or not message.strip():
-            raise ValueError("Message cannot be empty")
-
-        result = self._graph.invoke(
-            {"messages": [HumanMessage(content=message)]},
-            config={"configurable": {"thread_id": thread_id}, **kwargs}
-        )
-
-        # Extract the last AI message
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and msg.content:
-                return msg.content
-
-        return ""
-
-    def stream(
-        self,
-        message: str,
-        thread_id: str = "default",
-        **kwargs
-    ):
-        """
-        Stream a response.
-
-        Args:
-            message: User message
-            thread_id: Conversation thread ID
-            **kwargs: Additional config
-
-        Yields:
-            State updates as they occur
-        """
-        from langchain_core.messages import HumanMessage
-
-        for chunk in self._graph.stream(
-            {"messages": [HumanMessage(content=message)]},
-            config={"configurable": {"thread_id": thread_id}, **kwargs}
-        ):
-            yield chunk
-
-
-# === DEFAULT GRAPH INSTANCE ===
-# Lazy-initialized to avoid crashing on import when env vars aren't set.
-graph = None
-
-
-def _get_default_graph():
-    """Lazily initialize the default graph on first use."""
-    global graph
-    if graph is None:
-        graph = get_graph_with_memory()
-    return graph

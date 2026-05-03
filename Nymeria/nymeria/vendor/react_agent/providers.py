@@ -13,13 +13,13 @@ from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
+from .cliproxy import looks_like_cliproxy_url
 from .config import LLMConfig
 
 logger = logging.getLogger(__name__)
 
 
 _LOCAL_LLM_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
-_CLIPROXY_STREAMING_PORTS = {8317, 8318}
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _OPENROUTER_RESPONSES_FALLBACK_EVENTS = {
@@ -540,23 +540,7 @@ def _reasoning_details_for_payload(details: Any) -> Any:
 
 def _looks_like_cliproxy_base_url(base_url: str) -> bool:
     """Return True for CLIProxy hostnames or the local ports used by CLIProxy."""
-    parse_target = base_url.strip()
-    if "://" not in parse_target:
-        parse_target = f"http://{parse_target}"
-
-    try:
-        parsed = urlparse(parse_target)
-    except ValueError:
-        return False
-
-    host = (parsed.hostname or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
-    if not host:
-        return False
-    return "cli-proxy" in host or "cliproxy" in host or port in _CLIPROXY_STREAMING_PORTS
+    return looks_like_cliproxy_url(base_url)
 
 
 def _normalize_openai_base_url(base_url: str) -> str:

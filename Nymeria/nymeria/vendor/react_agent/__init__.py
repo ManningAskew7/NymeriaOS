@@ -3,12 +3,6 @@ ReAct Agent Package
 
 A modular LangGraph ReAct agent designed for easy framework integration.
 
-Quick Start:
-    from react_agent import ReactAgent
-
-    agent = ReactAgent()
-    response = agent.chat("Hello!", thread_id="user-123")
-
 Framework Integration:
     from react_agent import (
         AgentConfig, LLMConfig, CheckpointerConfig,
@@ -40,9 +34,6 @@ from .config import (
 # Tool management
 from .tool_registry import (
     ToolRegistry,
-    default_registry,
-    get_default_registry,
-    register_tool,
 )
 
 # LLM providers
@@ -57,7 +48,7 @@ from .providers import (
 )
 
 # State
-from .state import AgentState, ExtendedAgentState, State
+from .state import AgentState, State
 
 # Node factories
 from .nodes import (
@@ -79,13 +70,7 @@ from .graph import (
     create_graph,
     get_graph_with_memory,
     create_checkpointer,
-    ReactAgent,
-    # Default graph for LangGraph Studio
-    graph,
 )
-
-# Built-in tools
-from .tools import TOOLS
 
 __all__ = [
     # Configuration
@@ -95,10 +80,6 @@ __all__ = [
     "default_config",
     # Tool management
     "ToolRegistry",
-    "default_registry",
-    "get_default_registry",
-    "register_tool",
-    "TOOLS",
     # Providers
     "create_llm",
     "create_llm_with_tools",
@@ -109,7 +90,6 @@ __all__ = [
     "check_model_compatibility",
     # State
     "AgentState",
-    "ExtendedAgentState",
     "State",
     # Nodes
     "NodeFactory",
@@ -126,6 +106,4 @@ __all__ = [
     "create_graph",
     "get_graph_with_memory",
     "create_checkpointer",
-    "ReactAgent",
-    "graph",
 ]
