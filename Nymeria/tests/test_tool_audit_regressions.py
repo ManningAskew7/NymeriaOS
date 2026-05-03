@@ -15,6 +15,7 @@ from nymeria.tools import (
 )
 from nymeria.tools import auth_cache_utils
 from nymeria.tools import calendar
+from nymeria.tools import google_docs
 from nymeria.tools import google_sheets
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
@@ -60,6 +61,72 @@ def test_calendar_operation_tools_pass_user_id_to_request(monkeypatch):
 
     assert [c[0] for c in calls] == ["audit-user"] * 5
 
+
+def test_google_docs_write_segments_pass_user_id_to_docs_request(monkeypatch):
+    calls = []
+
+    def fake_request(user_id, operation, account_id=None):
+        calls.append((user_id, account_id, operation))
+        return True, {"ok": True}
+
+    monkeypatch.setattr(google_docs, "_docs_request", fake_request)
+
+    success, message = google_docs._execute_write_segments(
+        "audit-user",
+        "doc-1",
+        [google_docs.Block(kind="paragraph", text="Hello")],
+        1,
+        account_id="docs-account",
+    )
+
+    assert success is True
+    assert message == "ok"
+    assert [(c[0], c[1]) for c in calls] == [("audit-user", "docs-account")]
+
+
+def test_google_docs_write_passes_user_id_to_segment_executor(monkeypatch):
+    seen = {}
+
+    def fake_request(user_id, operation, account_id=None):
+        seen["read"] = {"user_id": user_id, "account_id": account_id}
+        return True, {"body": {"content": [{"endIndex": 8}]}}
+
+    def fake_execute(
+        user_id,
+        document_id,
+        blocks,
+        start_index,
+        account_id=None,
+        prefix_requests=None,
+    ):
+        seen["write"] = {
+            "user_id": user_id,
+            "document_id": document_id,
+            "blocks": blocks,
+            "start_index": start_index,
+            "account_id": account_id,
+            "prefix_requests": prefix_requests,
+        }
+        return True, "ok"
+
+    monkeypatch.setattr(google_docs, "_docs_request", fake_request)
+    monkeypatch.setattr(google_docs, "_execute_write_segments", fake_execute)
+
+    result = google_docs.google_docs_write.func(
+        "doc-1",
+        "Hello",
+        account_id="docs-account",
+        config=_config("audit-user"),
+    )
+
+    assert result.startswith("[Success]: Wrote")
+    assert seen["read"] == {"user_id": "audit-user", "account_id": "docs-account"}
+    assert seen["write"]["user_id"] == "audit-user"
+    assert seen["write"]["document_id"] == "doc-1"
+    assert seen["write"]["start_index"] == 7
+    assert seen["write"]["account_id"] == "docs-account"
+    assert seen["write"]["prefix_requests"] is None
+    assert [b.text for b in seen["write"]["blocks"]] == ["Hello"]
 
 def test_outlook_attachments_pass_user_and_account(monkeypatch):
     seen = {}

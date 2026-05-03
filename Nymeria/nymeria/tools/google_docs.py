@@ -832,6 +832,7 @@ def _text_blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[lis
 
 
 def _execute_write_segments(
+    user_id: str,
     document_id: str,
     blocks: list[Block],
     start_index: int,
@@ -1290,7 +1291,7 @@ def google_docs_write(
             start_index = 1
 
     success, msg = _execute_write_segments(
-        document_id, blocks, start_index,
+        user_id, document_id, blocks, start_index,
         account_id=account_id,
         prefix_requests=prefix_requests if prefix_requests else None,
     )
