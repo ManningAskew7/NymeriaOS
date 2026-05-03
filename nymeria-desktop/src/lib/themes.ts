@@ -47,6 +47,29 @@ export interface ThemeMetadata {
   colors: ThemeColors;
 }
 
+const themeColorCssVariables = {
+  bgBase: '--bg-base',
+  bgElevated: '--bg-elevated',
+  bgElevated2: '--bg-elevated-2',
+  bgHover: '--bg-hover',
+  bgActive: '--bg-active',
+  textPrimary: '--text-primary',
+  textSecondary: '--text-secondary',
+  textMuted: '--text-muted',
+  accentPrimary: '--accent-primary',
+  accentSecondary: '--accent-secondary',
+  accentHover: '--accent-hover',
+  success: '--success',
+  warning: '--warning',
+  error: '--error',
+  info: '--info',
+  bubbleUser: '--bubble-user',
+  bubbleAi: '--bubble-ai',
+  bubbleTool: '--bubble-tool',
+  borderSubtle: '--border-subtle',
+  borderDefault: '--border-default',
+} as const satisfies Record<keyof ThemeColors, `--${string}`>;
+
 export const themes: Record<ThemeName, ThemeMetadata> = {
   midnight: {
     name: 'Midnight',
@@ -241,6 +264,14 @@ function isLightTheme(bgBase: string): boolean {
   return luminance > 0.5;
 }
 
+function applyThemeColorVariables(root: HTMLElement, colors: ThemeColors): void {
+  for (const [token, cssVariable] of Object.entries(themeColorCssVariables) as Array<
+    [keyof ThemeColors, (typeof themeColorCssVariables)[keyof ThemeColors]]
+  >) {
+    root.style.setProperty(cssVariable, colors[token]);
+  }
+}
+
 /**
  * Apply a theme by updating CSS custom properties on the document root.
  * Changes take effect immediately without requiring a page reload.
@@ -259,37 +290,7 @@ export function applyTheme(themeName: ThemeName): void {
 
   root.setAttribute('data-theme', themeName);
 
-  // Backgrounds
-  root.style.setProperty('--bg-base', colors.bgBase);
-  root.style.setProperty('--bg-elevated', colors.bgElevated);
-  root.style.setProperty('--bg-elevated-2', colors.bgElevated2);
-  root.style.setProperty('--bg-hover', colors.bgHover);
-  root.style.setProperty('--bg-active', colors.bgActive);
-
-  // Text
-  root.style.setProperty('--text-primary', colors.textPrimary);
-  root.style.setProperty('--text-secondary', colors.textSecondary);
-  root.style.setProperty('--text-muted', colors.textMuted);
-
-  // Accents
-  root.style.setProperty('--accent-primary', colors.accentPrimary);
-  root.style.setProperty('--accent-secondary', colors.accentSecondary);
-  root.style.setProperty('--accent-hover', colors.accentHover);
-
-  // Semantic
-  root.style.setProperty('--success', colors.success);
-  root.style.setProperty('--warning', colors.warning);
-  root.style.setProperty('--error', colors.error);
-  root.style.setProperty('--info', colors.info);
-
-  // Message bubbles
-  root.style.setProperty('--bubble-user', colors.bubbleUser);
-  root.style.setProperty('--bubble-ai', colors.bubbleAi);
-  root.style.setProperty('--bubble-tool', colors.bubbleTool);
-
-  // Borders
-  root.style.setProperty('--border-subtle', colors.borderSubtle);
-  root.style.setProperty('--border-default', colors.borderDefault);
+  applyThemeColorVariables(root, colors);
   root.style.setProperty('--border-focus', colors.accentPrimary);
 
   // Glassmorphism — computed dynamically per theme

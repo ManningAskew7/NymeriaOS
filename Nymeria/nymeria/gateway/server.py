@@ -6,7 +6,6 @@ from typing import List, Optional
 
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
-from ..tools import get_all_tools_with_agents
 from .transports.base import BaseTransport
 from .transports.rest import RESTTransport
 
@@ -15,21 +14,15 @@ logger = logging.getLogger(__name__)
 
 class GatewayServer:
     """
-    Gateway server that manages the NymeriaAgent and its transports.
+    Gateway server that manages transports and coordinates shutdown.
 
-    The GatewayServer is responsible for:
-    - Creating and configuring the NymeriaAgent with all tools
-    - Starting configured transports (REST API, etc.)
-    - Coordinating graceful shutdown of all components
+    Agent creation, Redis event bus, FCM, ticker-disable logic, and tool
+    sync are all owned by ``create_api_app()`` — the same factory used by
+    the direct ``run.py api`` path. The gateway only orchestrates startup
+    and graceful shutdown around that shared factory.
     """
 
     def __init__(self, settings: Optional[Settings] = None):
-        """
-        Initialize the gateway server.
-
-        Args:
-            settings: Application settings (uses default if not provided)
-        """
         self.settings = settings or get_settings()
         self._agent: Optional[NymeriaAgent] = None
         self._transports: List[BaseTransport] = []
@@ -40,8 +33,8 @@ class GatewayServer:
         """
         Start the gateway server.
 
-        Creates the agent and starts all configured transports.
-        This method is non-blocking - call wait_for_stop() to block until shutdown.
+        Delegates agent/app creation to ``create_api_app()`` so all
+        startup logic (Redis, FCM, ticker) is shared with ``run.py api``.
         """
         if self._running:
             logger.warning("Gateway server is already running")
@@ -49,12 +42,12 @@ class GatewayServer:
 
         logger.info("Starting Nymeria Gateway Server...")
 
-        # Create the agent with all tools
-        logger.info("Initializing NymeriaAgent...")
-        self._agent = NymeriaAgent(settings=self.settings, tools=get_all_tools_with_agents())
+        from ..triggers.api import create_api_app, get_agent
 
-        # Create and start transports
-        self._start_transports()
+        app = create_api_app()
+        self._agent = get_agent()
+
+        self._start_transports(app)
 
         self._running = True
         self._stop_event.clear()
@@ -63,11 +56,10 @@ class GatewayServer:
         logger.info(f"  REST API: http://{self.settings.api_host}:{self.settings.api_port}")
         logger.info(f"  API Docs: http://{self.settings.api_host}:{self.settings.api_port}/docs")
 
-    def _start_transports(self) -> None:
+    def _start_transports(self, app) -> None:
         """Start all configured transports."""
-        # REST transport (always enabled)
         rest_transport = RESTTransport(
-            agent=self._agent,
+            app=app,
             host=self.settings.api_host,
             port=self.settings.api_port,
         )
@@ -102,16 +94,12 @@ class GatewayServer:
         if self._agent is not None:
             logger.info("Stopping agent background threads...")
 
-            # Stop the ticker
             if hasattr(self._agent, '_ticker') and self._agent._ticker is not None:
                 try:
                     self._agent._ticker.stop()
                     logger.info("Ticker stopped")
                 except Exception as e:
                     logger.error(f"Error stopping ticker: {e}", exc_info=True)
-
-            # Watchdog now runs as an external thin-client service (run.py watchdog),
-            # so there's nothing for the gateway to stop here.
 
         self._running = False
         self._stop_event.set()
@@ -120,20 +108,10 @@ class GatewayServer:
         logger.info("Nymeria Gateway Server stopped")
 
     def wait_for_stop(self) -> None:
-        """
-        Block until the server is stopped.
-
-        Call this after start() to keep the main thread alive until shutdown.
-        """
+        """Block until the server is stopped."""
         self._stop_event.wait()
 
     def is_running(self) -> bool:
-        """
-        Check if the gateway server is running.
-
-        Returns:
-            True if the server is running, False otherwise
-        """
         return self._running
 
     @property
