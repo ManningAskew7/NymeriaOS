@@ -258,7 +258,7 @@ def self_file_delete(file_path: str) -> str:
 @tool
 def self_reload() -> str:
     """
-    Reload all tools and agents after making changes.
+    Reload all tools, skills, and trigger sources after making changes.
 
     Call this after using self_file_write to create or modify tool/agent files
     and updating __init__.py. This makes newly created tools live in Nymeria's
@@ -267,15 +267,15 @@ def self_reload() -> str:
     Returns:
         Updated tool list or error message
     """
-    from .agent import get_current_agent
+    from ..tools.runtime_admin import _do_full_reload
 
     try:
-        agent = get_current_agent()
-        if agent is None:
-            return "[Error]: No active agent found. Tools cannot be reloaded."
-
-        tool_names = agent.reload_tools()
-        return f"[Success]: Reloaded. {len(tool_names)} tools available: {', '.join(tool_names)}"
+        tool_count, skill_count, source_count = _do_full_reload()
+        return (
+            f"[Success]: Reloaded {tool_count} tools, {skill_count} skill(s), "
+            f"{source_count} trigger source(s).\n"
+            f"New tools will be available on the next message."
+        )
     except Exception as e:
         logger.error(f"self_reload failed: {e}", exc_info=True)
         return f"[Error]: Reload failed: {str(e)}"

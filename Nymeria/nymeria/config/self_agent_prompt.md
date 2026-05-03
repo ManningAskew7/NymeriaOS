@@ -42,7 +42,7 @@ nymeria/
 │   ├── filesystem.py   # File operations tools
 │   ├── web.py          # Web search tool
 │   ├── memory.py       # Memory tools
-│   └── subagent.py     # reload_all + self_modify_rollback (DO NOT MODIFY)
+│   └── runtime_admin.py # reload_all + self_modify_rollback (DO NOT MODIFY)
 ├── agents/
 │   └── tool_factory.py # Callable thread tool factory (DO NOT MODIFY)
 ├── triggers/sources/   # Trigger source plugins — CREATE sources here

@@ -18,7 +18,7 @@ class ToolCategory(str, Enum):
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
     TODO = "todo"           # nym_todo, nym_todo_delete, nym_todo_list
     AUTONOMY = "autonomy"   # activity feed and watchdog dispatch helpers
-    SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
+    THREAD_SPAWN = "thread_spawn"  # spawn_thread (optional)
     TRIGGER = "trigger"     # trigger_config, trigger_info
     EMAIL = "email"         # Outlook auth + email tools (optional)
     BROWSER = "browser"     # Playwright browser automation tools (optional)
@@ -253,7 +253,7 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
     # Thread spawning — create new sidebar threads with scoped config (optional)
     "spawn_thread": ToolMetadata(
         name="spawn_thread",
-        category=ToolCategory.SUBAGENT,
+        category=ToolCategory.THREAD_SPAWN,
         security_level=SecurityLevel.MODERATE,
         description=(
             "Create a new conversation thread with custom instructions, tool "
