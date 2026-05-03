@@ -7,12 +7,12 @@ Modular node creation that accepts configuration for easy framework integration.
 import asyncio
 import concurrent.futures
 import hashlib
+import inspect
 import json
 import logging
 import time
 from dataclasses import dataclass, replace
 from typing import Any, List, Callable, Optional
-from urllib.parse import urlparse
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableLambda
@@ -21,6 +21,7 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
+from .cliproxy import CLIPROXY_BILLING_SYSTEM_BLOCK, looks_like_cliproxy_url
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
@@ -30,12 +31,6 @@ logger = logging.getLogger(__name__)
 
 TURN_SAFETY_REASON_MAX_ITERATIONS = "max_iterations"
 TURN_SAFETY_REASON_REPEATED_TOOL_RESULT = "repeated_tool_result"
-
-_CLIPROXY_PORTS = {8317, 8318}
-_CLIPROXY_BILLING_SYSTEM_BLOCK = {
-    "type": "text",
-    "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
-}
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
 _RETRYABLE_EXCEPTION_NAMES = {
     "APIConnectionError",
@@ -473,23 +468,7 @@ def _uses_cliproxy_anthropic(llm_config: Optional[LLMConfig]) -> bool:
     """Return True for Anthropic requests routed through CLIProxy."""
     if not llm_config or llm_config.provider != "anthropic" or not llm_config.base_url:
         return False
-
-    parse_target = llm_config.base_url.strip()
-    if "://" not in parse_target:
-        parse_target = f"http://{parse_target}"
-
-    try:
-        parsed = urlparse(parse_target)
-    except ValueError:
-        return False
-
-    host = (parsed.hostname or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
-
-    return "cli-proxy" in host or "cliproxy" in host or port in _CLIPROXY_PORTS
+    return looks_like_cliproxy_url(llm_config.base_url)
 
 
 def _format_system_prompt(
@@ -513,7 +492,7 @@ def _format_system_prompt(
     if has_billing_block:
         return blocks
 
-    return [dict(_CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
+    return [dict(CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
 
 
 def _strip_malformed_anthropic_thinking_blocks(content: Any) -> tuple[Any, int]:
@@ -796,7 +775,8 @@ def create_tools_node(
         handle_errors: If True, catch tool exceptions and return error messages
                       instead of letting them bubble up
         tool_timeout: Seconds before a tool invocation is terminated (default 300)
-        on_timeout: Optional callback invoked with the input dict when a timeout occurs
+        on_timeout: Optional callback invoked with the input dict and runnable
+            config when a timeout occurs
         tool_output_max_chars: Maximum stored characters per ToolMessage result
 
     Returns:
@@ -834,8 +814,44 @@ class SafeToolNode(ToolNode):
         super().__init__(tools, handle_tool_errors=handle_tool_errors)
         self._handle_errors = handle_tool_errors
         self._tool_timeout = tool_timeout if tool_timeout is not None else self.DEFAULT_TOOL_TIMEOUT
-        self._on_timeout = on_timeout  # Optional callback: fn(input_dict) -> None
+        self._on_timeout = on_timeout  # Optional callback: fn(input_dict, config=None) -> None
         self._tool_output_max_chars = tool_output_max_chars
+
+    def _notify_timeout(self, input, config=None) -> None:
+        """Invoke the timeout hook while preserving legacy one-argument hooks."""
+        if not self._on_timeout:
+            return
+
+        try:
+            signature = inspect.signature(self._on_timeout)
+        except (TypeError, ValueError):
+            self._on_timeout(input, config)
+            return
+
+        params = signature.parameters
+        values = list(params.values())
+        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in values):
+            self._on_timeout(input, config)
+            return
+        if "config" in params:
+            self._on_timeout(input, config=config)
+            return
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in values):
+            self._on_timeout(input, config=config)
+            return
+
+        positional = [
+            p
+            for p in values
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if len(positional) >= 2:
+            self._on_timeout(input, config)
+        else:
+            self._on_timeout(input)
 
     def invoke(self, input, config=None, **kwargs):
         """Execute tools with a timeout to prevent indefinite hangs.
@@ -859,11 +875,10 @@ class SafeToolNode(ToolNode):
             # shutdown(wait=False) returns immediately — the daemon worker
             # thread will finish on its own (or when the process exits).
             executor.shutdown(wait=False)
-            if self._on_timeout:
-                try:
-                    self._on_timeout(input)
-                except Exception as e:
-                    logger.warning(f"on_timeout callback failed: {e}")
+            try:
+                self._notify_timeout(input, config)
+            except Exception as e:
+                logger.warning(f"on_timeout callback failed: {e}")
             return _truncate_tool_messages_in_result(
                 self._build_timeout_response(input),
                 self._tool_output_max_chars,
@@ -878,11 +893,10 @@ class SafeToolNode(ToolNode):
             )
             return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
         except asyncio.TimeoutError:
-            if self._on_timeout:
-                try:
-                    self._on_timeout(input)
-                except Exception as e:
-                    logger.warning(f"on_timeout callback failed: {e}")
+            try:
+                self._notify_timeout(input, config)
+            except Exception as e:
+                logger.warning(f"on_timeout callback failed: {e}")
             return _truncate_tool_messages_in_result(
                 self._build_timeout_response(input),
                 self._tool_output_max_chars,
@@ -984,13 +998,6 @@ def create_should_continue(
     return should_continue
 
 
-def create_should_continue_old(max_iterations: int = 10) -> Callable[[AgentState], str]:
-    """
-    Deprecated compatibility shim for old imports.
-    """
-    return create_should_continue(max_iterations=max_iterations)
-
-
 def simple_should_continue(state: AgentState) -> str:
     """
     Simple routing function without iteration tracking.
@@ -1078,22 +1085,11 @@ class NodeFactory:
 # Lazy-initialized to avoid crashing on import when env vars aren't set for the
 # vendored defaults (Nymeria creates its own config via agent.py).
 
-from .tools import TOOLS
 from dotenv import load_dotenv
 
 load_dotenv()
 
 should_continue = simple_should_continue  # Use simple version for backward compat
 
-_default_factory = None
 agent_node = None
 tools_node = None
-
-
-def _init_defaults():
-    """Lazily initialize default nodes on first use."""
-    global _default_factory, agent_node, tools_node
-    if _default_factory is None:
-        _default_factory = NodeFactory(default_config, TOOLS)
-        agent_node = _default_factory.create_agent_node()
-        tools_node = _default_factory.create_tools_node()

@@ -103,7 +103,7 @@ Guidelines:
     repeated_tool_result_limit: int = 5  # Stop repeated same tool+args+result loops
     tool_timeout: int = 300  # Per-tool-node timeout in seconds (5 minutes)
     tool_output_max_chars: int = 100000  # Max stored characters per tool result
-    on_timeout: Optional[object] = field(default=None, repr=False)  # Callback for tool timeout: fn(input_dict) -> None
+    on_timeout: Optional[object] = field(default=None, repr=False)  # Callback for tool timeout: fn(input_dict, config=None) -> None
 
     # Debug settings
     verbose: bool = field(default_factory=lambda: os.getenv("AGENT_VERBOSE", "false").lower() == "true")

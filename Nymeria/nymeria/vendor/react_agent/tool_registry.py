@@ -136,30 +136,3 @@ class ToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools
-
-
-# Global default registry
-default_registry = ToolRegistry()
-
-
-def get_default_registry() -> ToolRegistry:
-    """Get the default global tool registry."""
-    return default_registry
-
-
-def register_tool(tool: BaseTool) -> BaseTool:
-    """
-    Decorator/function to register a tool with the default registry.
-
-    Usage:
-        @tool
-        @register_tool
-        def my_tool(query: str) -> str:
-            '''Tool description.'''
-            return result
-
-        # Or after creation:
-        register_tool(my_existing_tool)
-    """
-    default_registry.register(tool)
-    return tool
