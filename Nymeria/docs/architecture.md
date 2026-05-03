@@ -326,6 +326,7 @@ Desktop fetch stream parses frames and updates the active chat thread
 - Per-subscriber `Queue` (maxsize=100)
 - Non-blocking publish (drops if queue full)
 - Subscribers identified by UUID
+- Docker Compose Redis requires `REDIS_PASSWORD`; application containers connect through an authenticated `REDIS_URL`, and startup logs redact URL credentials
 - Events logged when no subscribers are connected, when Redis receives a message, when the API enqueues/receives/yields a message, and when queues drop events
 - High-volume events (`response`, `thinking`, `tool_call_delta`) log the first few chunks and then sample, so long runs remain debuggable without flooding logs
 

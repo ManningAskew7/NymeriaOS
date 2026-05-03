@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, TYPE_CHECKING
 from queue import Queue, Empty, Full
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -23,6 +24,31 @@ def should_log_stream_event_sample(event_type: str, count: int) -> bool:
     if event_type in HIGH_VOLUME_EVENT_TYPES:
         return count % 100 == 0
     return count % 10 == 0
+
+
+def redact_url_credentials(url: str) -> str:
+    """Return a URL with any username/password credentials redacted for logs."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+
+    if parsed.username is None and parsed.password is None:
+        return url
+
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    try:
+        port = f":{parsed.port}" if parsed.port is not None else ""
+    except ValueError:
+        return urlunsplit((parsed.scheme, "***@", parsed.path, parsed.query, parsed.fragment))
+
+    username = parsed.username or ""
+    userinfo = f"{username}:***@" if username else ":***@"
+    netloc = f"{userinfo}{host}{port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 @dataclass
@@ -180,7 +206,10 @@ def create_event_bus(settings: "Settings") -> EventBus:
     """
     if settings.redis_enabled and settings.redis_url:
         from .event_bus_redis import RedisEventBus
-        logger.info(f"Creating Redis event bus with URL: {settings.redis_url}")
+        logger.info(
+            "Creating Redis event bus with URL: %s",
+            redact_url_credentials(settings.redis_url),
+        )
         return RedisEventBus(settings.redis_url)
     else:
         logger.info("Creating in-memory event bus")

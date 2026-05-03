@@ -36,11 +36,18 @@ services:
     image: redis:7-alpine
     container_name: nymeria-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -107,7 +114,7 @@ services:
       POSTGRES_URI: postgresql://${POSTGRES_USER:-nymeria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nymeria}
       # Redis
       REDIS_ENABLED: "true"
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       # Data directory
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace

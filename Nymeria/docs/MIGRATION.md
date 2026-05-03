@@ -30,6 +30,9 @@ The Docker deployment provides:
    ```bash
    # Generate PostgreSQL password
    python -c "import secrets; print(secrets.token_urlsafe(24))"
+
+   # Generate Redis password (URL-safe for REDIS_URL)
+   openssl rand -hex 32
    ```
 
    The legacy shared `NYMERIA_API_KEY` was retired. The first API boot
@@ -42,6 +45,7 @@ The Docker deployment provides:
 3. Edit `.env.docker` with your values:
    ```env
    POSTGRES_PASSWORD=<your-generated-password>
+   REDIS_PASSWORD=<your-generated-redis-password>
    ANTHROPIC_API_KEY=<your-api-key>
    NYMERIA_SERVICE_TOKEN=<bot-service-token>
    ```
@@ -237,7 +241,7 @@ docker compose logs worker
 
 Verify Redis connection:
 ```bash
-docker compose exec redis redis-cli ping
+docker compose exec redis sh -lc 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping'
 ```
 
 Remember that only one worker instance should run, while API containers can scale horizontally.

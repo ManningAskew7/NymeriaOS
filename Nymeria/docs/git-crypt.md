@@ -113,6 +113,21 @@ CLIProxy OAuth tokens live in `CLIProxyAPI-main/temp/latest/auths/` (gitignored,
 3. Restart all backend containers: `docker compose --env-file .env.docker restart`
 4. Verify: `docker exec nymeria-postgres psql -U nymeria -d nymeria -c "SELECT 1;"`
 
+### Redis password (`REDIS_PASSWORD`)
+
+1. Generate a URL-safe value, for example: `openssl rand -hex 32`.
+2. Update `REDIS_PASSWORD` in `Nymeria/.env.docker`.
+3. Recreate Redis and restart backend containers so the authenticated `REDIS_URL` is regenerated:
+   ```bash
+   docker compose --env-file .env.docker up -d --force-recreate redis api worker mcp watchdog
+   ```
+4. Restart any active bot containers (telegram, discord, twitch).
+5. Verify unauthenticated access fails and authenticated access succeeds:
+   ```bash
+   docker compose exec redis redis-cli ping
+   docker compose exec redis sh -lc 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping'
+   ```
+
 ### `NYMERIA_SERVICE_TOKEN`
 
 1. Create a new admin token: `docker exec nymeria-api python run.py users add bot-service-new@localhost --role admin`
