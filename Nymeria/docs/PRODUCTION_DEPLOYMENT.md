@@ -15,6 +15,9 @@ This document outlines deployment options for Nymeria, from local development to
 cd Nymeria
 pip install -r requirements.txt
 
+# Optional: only needed when local development uses DATABASE_BACKEND=postgres
+pip install -r requirements-postgres.txt
+
 # Optional: Install BrowserAgent dependencies
 pip install playwright
 playwright install chromium

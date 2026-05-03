@@ -308,7 +308,8 @@ def create_checkpointer(config: CheckpointerConfig) -> Optional[BaseCheckpointSa
         except ImportError as e:
             raise ImportError(
                 f"Postgres checkpointer requires additional packages. "
-                f"Install with: pip install langgraph-checkpoint-postgres psycopg[binary]. "
+                f"From the Nymeria directory, install with: "
+                f"pip install -r requirements-postgres.txt. "
                 f"Error: {e}"
             )
 

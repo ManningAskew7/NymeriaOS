@@ -58,10 +58,9 @@ python-telegram-bot[rate-limiter]>=22.0
 # so the secrets layer never silently breaks if upstream drops it.
 cryptography>=42.0.0
 
-# Optional: PostgreSQL support (for multi-user deployments)
-# Uncomment if you want to use PostgreSQL instead of SQLite:
-# langgraph-checkpoint-postgres>=0.2.0
-# psycopg[binary]>=3.2.0
+# Optional: PostgreSQL support for local development.
+# Install in addition to this file:
+# pip install -r requirements-postgres.txt
 
 # Google Calendar (native Python — optional tools)
 google-api-python-client>=2.100.0
