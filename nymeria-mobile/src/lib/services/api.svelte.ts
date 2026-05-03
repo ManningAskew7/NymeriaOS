@@ -4,7 +4,11 @@ import { errorsStore } from '$lib/stores/errors.svelte';
 import type {
   AccountIdentity,
   AdminUser,
+  AvailableModel,
+  ChatAppBinding,
+  ChatAppBindCodeResponse,
   IssuedTokenResponse,
+  MyTelegramBot,
   PlatformIdentity,
   RotatedTokensResponse,
   TokenInfo,
@@ -521,6 +525,157 @@ export class NymeriaAPI {
     );
     if (!response.ok) {
       throw new Error(await this._toastAndExtractError(response, 'Failed to unlink platform'));
+    }
+    return response.json();
+  }
+
+  // Self-service platform identities & per-thread chat-app bindings
+
+  async listMyPlatforms(): Promise<PlatformIdentity[]> {
+    const response = await fetch(`${this.getBaseUrl()}/me/platforms`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to list platforms')
+      );
+    }
+    return response.json();
+  }
+
+  async requestSelfPlatformLinkCode(
+    provider: 'telegram'
+  ): Promise<ChatAppBindCodeResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/platform-link-codes`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({ provider })
+      }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to issue platform-link code'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  async issueChatAppBindCode(
+    threadId: string,
+    provider: 'telegram'
+  ): Promise<ChatAppBindCodeResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bind-code`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({ provider })
+      }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to issue bind code'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  async listThreadBindings(threadId: string): Promise<ChatAppBinding[]> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bindings`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to list bindings')
+      );
+    }
+    return response.json();
+  }
+
+  async unbindThreadChatApp(
+    threadId: string,
+    bindingId: number
+  ): Promise<{ unbound: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bindings/${bindingId}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to unbind chat')
+      );
+    }
+    return response.json();
+  }
+
+  // BYO Telegram bots (user-owned, paste-token flow)
+
+  async listMyTelegramBots(): Promise<MyTelegramBot[]> {
+    const response = await fetch(`${this.getBaseUrl()}/me/telegram-bots`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to list Telegram bots'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  async getMyTelegramBot(botId: number): Promise<MyTelegramBot> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/telegram-bots/${botId}`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(response, 'Failed to load bot status')
+      );
+    }
+    return response.json();
+  }
+
+  async registerMyTelegramBot(botToken: string): Promise<MyTelegramBot> {
+    const response = await fetch(`${this.getBaseUrl()}/me/telegram-bots`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ bot_token: botToken })
+    });
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to register Telegram bot'
+        )
+      );
+    }
+    return response.json();
+  }
+
+  async removeMyTelegramBot(botId: number): Promise<{ deleted: boolean }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/me/telegram-bots/${botId}`,
+      { method: 'DELETE', headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await this._toastAndExtractError(
+          response,
+          'Failed to remove Telegram bot'
+        )
+      );
     }
     return response.json();
   }
@@ -1210,6 +1365,20 @@ export class NymeriaAPI {
   async getOpenRouterModels(): Promise<ModelMetadata[]> {
     try {
       const response = await fetch(`${this.getBaseUrl()}/models`, {
+        headers: this.getHeaders()
+      });
+
+      if (!response.ok) return [];
+      return response.json();
+    } catch {
+      return [];
+    }
+  }
+
+  async getAvailableModels(provider?: string): Promise<AvailableModel[]> {
+    try {
+      const params = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+      const response = await fetch(`${this.getBaseUrl()}/models/available${params}`, {
         headers: this.getHeaders()
       });
 
