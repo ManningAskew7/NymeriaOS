@@ -33,6 +33,7 @@ EXACT_MATCH: set[str] = {
     "lib/components/common/ThinkingIndicator.svelte",
     "lib/components/notifications/index.ts",
     "lib/components/triggers/TriggerHistoryPanel.svelte",
+    "lib/stores/chatAppBindings.svelte.ts",
     "lib/stores/health.svelte.ts",
     "lib/stores/models.svelte.ts",
     "lib/stores/serverSettings.svelte.ts",
@@ -79,6 +80,8 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/threads/ThreadList.svelte",
     "lib/components/threads/ThreadItem.svelte",
     "lib/components/threads/ThreadSettingsPanel.svelte",
+    "lib/components/threads/ConnectTelegramWizard.svelte",
+    "lib/components/threads/ConnectMyTelegramBotWizard.svelte",
     "lib/components/threads/index.ts",
     # Account: mobile touch adaptations, single-connection
     "lib/components/account/AccountBadge.svelte",
