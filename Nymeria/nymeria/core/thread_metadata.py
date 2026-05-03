@@ -18,11 +18,12 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .keyed_locks import KeyedRLockMap
+
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks (keyed by user_id)
-_metadata_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_metadata_locks = KeyedRLockMap()
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +114,7 @@ class ThreadMetadataManager:
     # -- locking --
 
     def _get_lock(self, user_id: str) -> threading.RLock:
-        with _locks_lock:
-            if user_id not in _metadata_locks:
-                _metadata_locks[user_id] = threading.RLock()
-            return _metadata_locks[user_id]
+        return _metadata_locks.get(user_id)
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):

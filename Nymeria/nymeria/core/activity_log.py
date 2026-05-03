@@ -14,11 +14,12 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .keyed_locks import KeyedRLockMap
+
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks for activity operations (keyed by user_id)
-_activity_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_activity_locks = KeyedRLockMap()
 
 
 class ActivityType(str, Enum):
@@ -72,11 +73,7 @@ class ActivityLog:
 
     def _get_lock(self, user_id: str) -> threading.RLock:
         """Get or create a lock for a specific user."""
-        global _activity_locks
-        with _locks_lock:
-            if user_id not in _activity_locks:
-                _activity_locks[user_id] = threading.RLock()
-            return _activity_locks[user_id]
+        return _activity_locks.get(user_id)
 
     def _get_activity_path(self, user_id: str) -> Path:
         """Get the path to a user's activity file."""

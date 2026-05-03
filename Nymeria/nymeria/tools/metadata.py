@@ -16,7 +16,7 @@ class ToolCategory(str, Enum):
     PROFILE = "profile"     # memory_add, memory_edit, memory_read, memory_clear_all, personality_set, rag_search, rag_settings
     NOTEPAD = "notepad"     # legacy alias; per-thread notepad now reached via memory_* with scope="thread"
     SELF_MODIFY = "self_modify"  # self_modify, self_modify_rollback
-    TODO = "todo"           # todo, todo_delete, todo_list
+    TODO = "todo"           # nym_todo, nym_todo_delete, nym_todo_list
     AUTONOMY = "autonomy"   # activity feed and watchdog dispatch helpers
     SUBAGENT = "subagent"   # reload_all, self_modify_rollback (optional)
     TRIGGER = "trigger"     # trigger_config, trigger_info

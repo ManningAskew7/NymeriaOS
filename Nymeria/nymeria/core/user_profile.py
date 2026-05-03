@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .keyed_locks import KeyedRLockMap
+
 logger = logging.getLogger(__name__)
 
 # Legacy tool renames. Historical profiles may contain the old names; values
@@ -52,8 +54,7 @@ def migrate_tool_names(names: List[str]) -> List[str]:
     return out
 
 # Thread-safe locks for profile operations (keyed by user_id)
-_profile_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_profile_locks = KeyedRLockMap()
 
 
 class Memory(BaseModel):
@@ -338,11 +339,7 @@ class UserProfileManager:
 
     def _get_lock(self, user_id: str) -> threading.RLock:
         """Get or create a lock for a specific user."""
-        global _profile_locks
-        with _locks_lock:
-            if user_id not in _profile_locks:
-                _profile_locks[user_id] = threading.RLock()
-            return _profile_locks[user_id]
+        return _profile_locks.get(user_id)
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):

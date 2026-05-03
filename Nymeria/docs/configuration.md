@@ -133,7 +133,7 @@ Set the API key for your chosen provider:
 | `SERVICE_LOG_MAX_BYTES` | `10485760` | Rotate log after this many bytes |
 | `SERVICE_LOG_BACKUP_COUNT` | `5` | Number of rotated log backups to keep |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `AUDIT_LOG_ENABLED` | `true` | Log all tool executions to audit log |
+| `AUDIT_LOG_ENABLED` | `true` | Log redacted HTTP/API primitive tool events to audit log |
 
 ### HTTP Tool Egress Policy
 
@@ -240,7 +240,7 @@ Nymeria uses the following directories under the project root:
 | `data/todo_schedule.db` | SQLite scheduled TODO index for polling |
 | `data/tasks.db` | Legacy scheduled tasks database (deprecated) |
 | `data/todos/` | TODO list storage (`{user_id}.json`) |
-| `data/logs/` | Audit logs (`audit_YYYYMMDD.jsonl`) |
+| `data/logs/` | HTTP/API primitive tool audit logs (`audit_YYYYMMDD.jsonl`) |
 | `data/users/` | User profiles, memories, thread configs, activity logs, triggers |
 | `data/backups/` | Self-modification backups |
 | `data/custom_tools/` | Custom tool definitions (`{tool_id}.json`) |

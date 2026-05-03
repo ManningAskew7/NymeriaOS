@@ -22,14 +22,15 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from .keyed_locks import KeyedRLockMap
+
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
 
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks keyed by user_id
-_trigger_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_trigger_locks = KeyedRLockMap()
 
 MAX_EXECUTION_LOG = 200
 
@@ -139,10 +140,7 @@ class TriggerManager:
     # -- locking ----------------------------------------------------------
 
     def _get_lock(self, user_id: str) -> threading.RLock:
-        with _locks_lock:
-            if user_id not in _trigger_locks:
-                _trigger_locks[user_id] = threading.RLock()
-            return _trigger_locks[user_id]
+        return _trigger_locks.get(user_id)
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):

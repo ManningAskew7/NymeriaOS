@@ -117,7 +117,7 @@ def nym_todo(
         if not scheduled_for:
             return "[Error]: 'scheduled_for' is required when creating a new TODO. Every TODO needs a wake time."
 
-        logger.info(f"todo create: task={task[:50]}")
+        logger.info(f"nym_todo create: task={task[:50]}")
 
         # Parse scheduled_for
         todo_scheduled = _parse_scheduled_for(scheduled_for)
@@ -175,7 +175,7 @@ def nym_todo(
                 return f"[Error]: TODO limit reached ({todo_list.MAX_TODOS} active items). Complete or delete some tasks first."
 
     # --- UPDATE mode (todo_id provided) ---
-    logger.info(f"todo update: id={todo_id}")
+    logger.info(f"nym_todo update: id={todo_id}")
 
     # Parse status
     todo_status = None
@@ -286,7 +286,7 @@ def nym_todo(
                 result += " (recurrence cleared)"
             return result
         else:
-            return f"[Error]: TODO '{todo_id}' not found. Use todo_list to see available TODOs."
+            return f"[Error]: TODO '{todo_id}' not found. Use nym_todo_list to see available TODOs."
 
 
 def _todo_complete_internal(
@@ -295,7 +295,7 @@ def _todo_complete_internal(
 ) -> str:
     """
     Internal function to mark a TODO as completed.
-    Used by MCP server. For tool usage, use todo(todo_id=..., status="done").
+    Used by MCP server. For tool usage, use nym_todo(todo_id=..., status="done").
 
     Args:
         todo_id: 8-char TODO ID
@@ -311,7 +311,7 @@ def _todo_complete_internal(
     with manager.atomic_update(user_id) as todo_list:
         item = todo_list.get_item(todo_id)
         if not item:
-            return f"[Error]: TODO '{todo_id}' not found. Use todo_list to see available TODOs."
+            return f"[Error]: TODO '{todo_id}' not found. Use nym_todo_list to see available TODOs."
 
         task_name = item.task
         has_recurrence = item.recurrence
@@ -374,7 +374,7 @@ def nym_todo_delete(
     Args:
         todo_id: 8-char TODO ID
     """
-    logger.info(f"todo_delete called: id={todo_id}")
+    logger.info(f"nym_todo_delete called: id={todo_id}")
 
     user_id = get_user_id(config)
     manager = _get_todo_manager()
@@ -399,7 +399,7 @@ def nym_todo_delete(
             )
             return f"[Deleted]: {deleted.task[:100]}"
         else:
-            return f"[Error]: TODO '{todo_id}' not found. Use todo_list to see available TODOs."
+            return f"[Error]: TODO '{todo_id}' not found. Use nym_todo_list to see available TODOs."
 
 
 @tool
@@ -414,7 +414,7 @@ def nym_todo_list(
     Args:
         filter_status: "pending", "in_progress", "done", or "all"
     """
-    logger.info(f"todo_list called: filter={filter_status}")
+    logger.info(f"nym_todo_list called: filter={filter_status}")
 
     user_id = get_user_id(config)
     manager = _get_todo_manager()
@@ -436,7 +436,7 @@ def nym_todo_list(
     if not items:
         if filter_status:
             return f"[Info]: No TODOs with status '{filter_status}'."
-        return "[Info]: No active TODOs. Use todo to create tasks."
+        return "[Info]: No active TODOs. Use nym_todo to create tasks."
 
     # Sort: in_progress first, then pending, then done; then by scheduled_for, then created_at
     sorted_items = sorted(
@@ -464,8 +464,3 @@ TODO_TOOLS = [
     nym_todo_delete,
     nym_todo_list,
 ]
-
-# Backward-compatible aliases
-todo = nym_todo
-todo_delete = nym_todo_delete
-todo_list = nym_todo_list

@@ -12,11 +12,12 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from .keyed_locks import KeyedRLockMap
+
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks for todo operations (keyed by user_id)
-_todo_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_todo_locks = KeyedRLockMap()
 
 
 class TodoStatus(str, Enum):
@@ -317,11 +318,7 @@ class TodoManager:
 
     def _get_lock(self, user_id: str) -> threading.RLock:
         """Get or create a lock for a specific user."""
-        global _todo_locks
-        with _locks_lock:
-            if user_id not in _todo_locks:
-                _todo_locks[user_id] = threading.RLock()
-            return _todo_locks[user_id]
+        return _todo_locks.get(user_id)
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):

@@ -17,13 +17,13 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .keyed_locks import KeyedRLockMap
 from .user_profile import migrate_tool_names
 
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks for config operations (keyed by thread_id)
-_config_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_config_locks = KeyedRLockMap()
 
 
 class ThreadLLMConfig(BaseModel):
@@ -198,11 +198,7 @@ class ThreadConfigManager:
 
     def _get_lock(self, thread_id: str) -> threading.RLock:
         """Get or create a lock for a specific thread."""
-        global _config_locks
-        with _locks_lock:
-            if thread_id not in _config_locks:
-                _config_locks[thread_id] = threading.RLock()
-            return _config_locks[thread_id]
+        return _config_locks.get(thread_id)
 
     def _get_config_path(self, thread_id: str) -> Path:
         """Get the path to a thread's config file."""

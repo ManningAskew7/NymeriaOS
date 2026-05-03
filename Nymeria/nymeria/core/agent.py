@@ -41,7 +41,6 @@ from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager, TodoStatus
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
 from .todo_schedule_db import TodoScheduleDB
-from .audit import AuditLogger
 from .prompts import INTERACTIVE_MODE_RULES, AUTONOMOUS_MODE_RULES, get_time_context
 from .migration import migrate_old_scheduled_tasks
 from .memory_index import MemoryIndex
@@ -721,10 +720,6 @@ class NymeriaAgent:
                 (Docker deployments with Redis).
         """
         self.settings = settings or get_settings()
-        self.audit_logger = AuditLogger(
-            self.settings.logs_dir,
-            enabled=self.settings.audit_log_enabled,
-        )
 
         # Account/token/ownership store. Created early so the bootstrap admin
         # is minted on very first boot before anything else touches the DB.
@@ -1282,7 +1277,7 @@ class NymeriaAgent:
             lines.append(line)
 
         if remaining > 0:
-            lines.append(f"\n_...and {remaining} more. Use todo_list to see all._")
+            lines.append(f"\n_...and {remaining} more. Use nym_todo_list to see all._")
 
         lines.append("")
 

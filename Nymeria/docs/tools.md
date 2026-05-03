@@ -444,9 +444,9 @@ To opt out, use the RAG settings API or the frontend settings UI. The migration 
 
 TODOs are the **primary driver for autonomous operation**. Active TODOs are automatically injected into the system prompt. Every TODO must have a `scheduled_for` time — TODOs are for the agent's autonomous work queue, not a general task list.
 
-> **Implementation note:** `todo`, `todo_delete`, and `todo_list` all accept an injected `config` parameter for user/thread identification. The LLM never passes this.
+> **Implementation note:** `nym_todo`, `nym_todo_delete`, and `nym_todo_list` all accept an injected `config` parameter for user/thread identification. The LLM never passes this.
 >
-> **Migration note:** `todo_add` and `todo_update` were merged into the single `todo` tool. Priority, deadline, blocked status, and the permanent flag have been removed.
+> **Migration note:** legacy `todo`, `todo_delete`, and `todo_list` config names are migrated to `nym_todo`, `nym_todo_delete`, and `nym_todo_list`. Older `todo_add` and `todo_update` flows were merged into the single `nym_todo` tool. Priority, deadline, blocked status, and the permanent flag have been removed.
 
 ### nym_todo
 
@@ -475,7 +475,7 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Limits:** 50 active TODOs per user (`MAX_TODOS` in `TodoList`).
 
-**Statuses:** `pending` (default), `in_progress`, `done`. Use `todo(todo_id=..., status="done")` to complete a TODO.
+**Statuses:** `pending` (default), `in_progress`, `done`. Use `nym_todo(todo_id=..., status="done")` to complete a TODO.
 
 **Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
 
@@ -1335,7 +1335,8 @@ For stdio servers, Nymeria launches the command from the backend process. In Doc
 **MCP Server Lifecycle:**
 - Servers start on-demand when the tool is first called
 - Servers stay alive for the configured idle timeout
-- Multiple tools can share the same MCP server
+- Multiple tools can share the same MCP server through the process-wide `MCPServerManager`
+- Managed MCP server tools and legacy custom MCP tools use the same shared manager and connection pool
 - Servers are gracefully shutdown when Nymeria stops
 
 ### Managing Custom Tools
@@ -1376,10 +1377,10 @@ Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a 
 
 ### How It Works
 
-1. `todo(task=..., scheduled_for=...)` creates a TODO and registers it in `TodoScheduleDB` (SQLite at `data/todo_schedule.db`).
+1. `nym_todo(task=..., scheduled_for=...)` creates a TODO and registers it in `TodoScheduleDB` (SQLite at `data/todo_schedule.db`).
 2. The **Ticker** daemon polls every 5 seconds for due TODOs.
 3. When a TODO is due, the ticker sends its `task` text as a prompt to the agent on the TODO's `thread_id`.
-4. For recurring TODOs, **any completion** (ticker execution, agent marking done, API, or MCP) auto-reschedules to the next `scheduled_for` based on the recurrence pattern. Use `clear_recurrence` or `todo_delete` to stop.
+4. For recurring TODOs, **any completion** (ticker execution, agent marking done, API, or MCP) auto-reschedules to the next `scheduled_for` based on the recurrence pattern. Use `clear_recurrence` or `nym_todo_delete` to stop.
 5. Non-recurring completed TODOs are auto-archived after 7 days (hourly cleanup in the ticker).
 
 **Durable scheduling:** Scheduled TODOs survive application restarts. Missed TODOs are recovered and executed on startup.
@@ -1404,7 +1405,7 @@ Tool metadata is defined in `tools/metadata.py`. Each tool has a category, secur
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `todo`, `todo_delete`, `todo_list`
+**SAFE:** `file_read`, `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 

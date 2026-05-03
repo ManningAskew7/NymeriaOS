@@ -674,3 +674,26 @@ class MCPServerManager:
                     entry["command"] = conn.config.server_command
                 out.append(entry)
             return out
+
+
+_shared_mcp_manager: Optional[MCPServerManager] = None
+_shared_mcp_manager_lock = threading.Lock()
+
+
+def get_mcp_manager() -> MCPServerManager:
+    """Return the process-wide MCP server manager."""
+    global _shared_mcp_manager
+    with _shared_mcp_manager_lock:
+        if _shared_mcp_manager is None:
+            _shared_mcp_manager = MCPServerManager()
+        return _shared_mcp_manager
+
+
+def shutdown_mcp_manager() -> None:
+    """Shutdown and clear the process-wide MCP server manager, if it exists."""
+    global _shared_mcp_manager
+    with _shared_mcp_manager_lock:
+        manager = _shared_mcp_manager
+        _shared_mcp_manager = None
+    if manager is not None:
+        manager.shutdown_all()
