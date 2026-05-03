@@ -1215,7 +1215,7 @@ export class NymeriaAPI {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update settings'));
     }
 
     return response.json();
@@ -1428,7 +1428,7 @@ export class NymeriaAPI {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update settings'));
     }
 
     return response.json();

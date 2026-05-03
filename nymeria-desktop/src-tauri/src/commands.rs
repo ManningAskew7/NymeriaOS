@@ -137,62 +137,6 @@ pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Re
     Ok(())
 }
 
-/// Apply CLIProxy as the LLM base URL in the backend settings.
-#[tauri::command]
-pub fn apply_cliproxy_base_url(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    if state.process_manager.is_none() {
-        return Err("Not available in client-only mode".to_string());
-    }
-
-    let client = reqwest::blocking::Client::new();
-
-    let api_key = &state.api_key;
-    let body = serde_json::json!({
-        "llm_base_url": "http://127.0.0.1:8317/v1"
-    });
-
-    let resp = client
-        .patch("http://127.0.0.1:8000/settings")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Failed to update settings: {}", e))?;
-
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("Settings update failed: {}", resp.status()))
-    }
-}
-
-/// Remove the CLIProxy base URL override from backend settings.
-#[tauri::command]
-pub fn remove_cliproxy_base_url(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    if state.process_manager.is_none() {
-        return Err("Not available in client-only mode".to_string());
-    }
-
-    let client = reqwest::blocking::Client::new();
-
-    let api_key = &state.api_key;
-    let body = serde_json::json!({
-        "llm_base_url": null
-    });
-
-    let resp = client
-        .patch("http://127.0.0.1:8000/settings")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Failed to update settings: {}", e))?;
-
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("Settings update failed: {}", resp.status()))
-    }
-}
-
 /// Query CLIProxy management API for active OAuth sessions.
 fn query_cliproxy_sessions() -> Result<Vec<CLIProxySession>, String> {
     let client = reqwest::blocking::Client::builder()
