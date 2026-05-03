@@ -301,6 +301,8 @@ Sync workers such as ticker, triggers, callable thread execution, spawned
 threads, and CLI use `core/stream_bridge.py` to consume `astream()` live, so
 they share the same in-turn reload loop as regular chat streaming.
 
+Both `_pending_tool_reload` and `_turn_reload_count` are intentionally process-local and ephemeral. A process restart loses any in-flight reload, but the underlying tool enablement is already persisted in the thread config before the reload flag is set. The next turn's graph build picks up the enabled tools normally.
+
 ### Dangling Tool Calls
 
 The `finally` block at `:4280` patches dangling tool calls for **both** invocations, since `graph` was reassigned to `reload_graph` (`:4192`).

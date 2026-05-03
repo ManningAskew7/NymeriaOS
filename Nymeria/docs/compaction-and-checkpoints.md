@@ -35,9 +35,13 @@ Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when tok
 5.   _prune_checkpoints_before()  — raw SQL DELETEs all pre-compact rows
 6.   Manual/sync/pre-flight compact: _pending_summaries[thread_id] = summary
      Post-turn async auto-compact: stream compacted, then stream the resume turn immediately
+7.   Restart recovery: if _pending_summaries is lost (process restart between
+     steps 6 and the next user message), get_pending_summary() reads the
+     compaction_marker from the checkpoint and recovers the summary from
+     additional_kwargs["summary"]. Notepad is re-read from disk.
 ```
 
-The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is also projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary.
+The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is also projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary. It also serves as the durable recovery source for pending summaries lost to process restart (see step 7).
 
 The pre-compact RAG flush (step 3) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
 

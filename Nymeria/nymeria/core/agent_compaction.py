@@ -161,13 +161,71 @@ class CompactionManager:
     # ------------------------------------------------------------------
 
     def get_pending_summary(self, thread_id: str) -> Optional[str]:
-        return self._pending_summaries.pop(thread_id, None)
+        summary = self._pending_summaries.pop(thread_id, None)
+        if summary is not None:
+            return summary
+        return self._recover_pending_summary_from_checkpoint(thread_id)
 
     def has_pending_summary(self, thread_id: str) -> bool:
         return thread_id in self._pending_summaries
 
     def pop_pending_notepad(self, thread_id: str) -> Optional[str]:
         return self._pending_notepads.pop(thread_id, None)
+
+    def _recover_pending_summary_from_checkpoint(
+        self, thread_id: str
+    ) -> Optional[str]:
+        """Recover a lost pending summary from the compaction marker in the checkpoint.
+
+        After compaction, the checkpoint contains a single compaction_marker
+        HumanMessage with the summary stored in additional_kwargs["summary"].
+        If the process restarts before the next user message consumes the
+        in-memory _pending_summaries entry, this method recovers it by reading
+        the checkpoint directly.
+
+        Only recovers when auto_resumed=False (manual /compact or sync
+        pre-flight), since the async post-turn path (auto_resumed=True)
+        embeds the summary inline and never uses _pending_summaries.
+        """
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            state = self._agent._default_graph.get_state(config)
+            messages = state.values.get("messages", [])
+
+            if len(messages) != 1:
+                return None
+
+            marker = messages[0]
+            if not isinstance(marker, HumanMessage):
+                return None
+            kwargs = getattr(marker, "additional_kwargs", {}) or {}
+            if kwargs.get("internal_type") != "compaction_marker":
+                return None
+            if kwargs.get("auto_resumed", False):
+                return None
+
+            summary = kwargs.get("summary")
+            if not summary:
+                return None
+
+            logger.info(
+                "Thread %s: Recovered pending summary from compaction marker "
+                "(likely lost to process restart)",
+                thread_id,
+            )
+
+            notepad = self._read_thread_notepad(thread_id)
+            if notepad:
+                self._pending_notepads[thread_id] = notepad
+
+            return summary
+        except Exception:
+            logger.debug(
+                "Thread %s: Could not recover pending summary from checkpoint",
+                thread_id,
+                exc_info=True,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Threshold / policy
