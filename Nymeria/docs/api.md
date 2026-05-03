@@ -2241,7 +2241,11 @@ All errors follow this format:
 
 ## CORS
 
-CORS is controlled by `CORS_ORIGINS` in environment settings.
+CORS is controlled by `CORS_ORIGINS` in environment settings. The default
+allows local desktop development origins only:
+`http://localhost:1420,tauri://localhost`. Add exact LAN or production frontend
+origins as needed; reserve `*` for temporary troubleshooting on trusted
+networks.
 
 ---
 

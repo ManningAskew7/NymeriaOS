@@ -117,7 +117,7 @@ To access from other devices:
 # Allow specific origins
 CORS_ORIGINS=http://192.168.1.100:1420,http://myphone.local:1420
 
-# Or allow all (less secure)
+# Temporary trusted-network troubleshooting only
 CORS_ORIGINS=*
 ```
 

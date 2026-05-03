@@ -73,7 +73,7 @@ Set the API key for your chosen provider:
 | `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
-| `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins, or `*` for all |
+| `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost` | Comma-separated allowed CORS origins. Use `*` only for temporary troubleshooting on trusted networks |
 | `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
 
@@ -355,7 +355,8 @@ AUDIT_LOG_ENABLED=true
 # SLACK_WEBHOOK_URL=
 
 # CORS (optional - for remote frontends)
-# CORS_ORIGINS=*                   # Comma-separated origins, or * for all
+# CORS_ORIGINS=http://localhost:1420,tauri://localhost
+# Add exact LAN/production frontend origins as needed. Avoid * except temporarily.
 ```
 
 ---
