@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 import warnings
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
+    _convert_responses_chunk_to_generation_chunk_compat,
     _convert_openrouter_responses_chunk_to_generation_chunk,
     _normalize_openai_base_url,
     _normalize_openrouter_responses_payload,
@@ -431,6 +433,75 @@ def test_openrouter_responses_reasoning_text_delta_becomes_content_block():
                 {"index": 0, "type": "summary_text", "text": "Claude thought"}
             ],
             "index": 0,
+        }
+    ]
+
+
+def test_responses_converter_missing_private_symbol_streams_text(monkeypatch):
+    from langchain_openai.chat_models import base as lc_openai_base
+
+    monkeypatch.delattr(
+        lc_openai_base,
+        "_convert_responses_chunk_to_generation_chunk",
+        raising=False,
+    )
+
+    _, _, _, generation_chunk = _convert_responses_chunk_to_generation_chunk_compat(
+        SimpleNamespace(
+            type="response.output_text.delta",
+            delta="Hello",
+            output_index=0,
+            content_index=0,
+        ),
+        -1,
+        -1,
+        -1,
+        metadata={"headers": {"x-request-id": "req_123"}},
+        output_version="responses/v1",
+    )
+
+    assert generation_chunk is not None
+    assert generation_chunk.message.content == [
+        {"type": "text", "text": "Hello", "index": 0}
+    ]
+    assert generation_chunk.message.response_metadata["model_provider"] == "openai"
+    assert generation_chunk.message.response_metadata["headers"] == {
+        "x-request-id": "req_123"
+    }
+
+
+def test_responses_converter_missing_private_symbol_streams_reasoning(monkeypatch):
+    from langchain_openai.chat_models import base as lc_openai_base
+
+    monkeypatch.delattr(
+        lc_openai_base,
+        "_convert_responses_chunk_to_generation_chunk",
+        raising=False,
+    )
+
+    _, _, _, generation_chunk = _convert_responses_chunk_to_generation_chunk_compat(
+        SimpleNamespace(
+            type="response.reasoning_summary_text.delta",
+            delta="Need context",
+            output_index=0,
+            summary_index=0,
+            item_id="rs_123",
+        ),
+        -1,
+        -1,
+        -1,
+        output_version="responses/v1",
+    )
+
+    assert generation_chunk is not None
+    assert generation_chunk.message.content == [
+        {
+            "type": "reasoning",
+            "summary": [
+                {"index": 0, "type": "summary_text", "text": "Need context"}
+            ],
+            "index": 0,
+            "id": "rs_123",
         }
     ]
 
