@@ -291,9 +291,9 @@ class WatchdogWorker:
         self, thread_id: str, stale_todos: List[Dict[str, Any]]
     ) -> None:
         try:
-            from ..tools.notify import _send_telegram, _send_discord, _send_slack
+            from ..core.notification_dispatch import send_external_notifications
         except Exception as e:
-            logger.debug("Notify helpers unavailable: %s", e)
+            logger.debug("Notification dispatch unavailable: %s", e)
             return
 
         msg = (
@@ -302,10 +302,6 @@ class WatchdogWorker:
             + "\n".join(f"- {(t.get('task') or '')[:80]}" for t in stale_todos)
         )
 
-        for sender in (_send_telegram, _send_discord, _send_slack):
-            try:
-                result = sender(msg, self.settings)
-                if result and result.startswith("Sent"):
-                    logger.info("Watchdog notification sent via %s", sender.__name__)
-            except Exception as e:
-                logger.debug("Notify via %s failed: %s", sender.__name__, e)
+        results = send_external_notifications(msg, self.settings, thread_id=thread_id)
+        for result in results:
+            logger.info("Watchdog notification sent: %s", result)
