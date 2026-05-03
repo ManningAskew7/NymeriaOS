@@ -1,0 +1,476 @@
+import { configStore } from '$lib/stores/config.svelte';
+import type {
+  AttachmentValidationResult,
+  ChatResponse,
+  FileAttachment,
+  SSEEvent,
+  SSEEventType
+} from '$lib/types';
+import { AccountsApi } from './accounts';
+
+// Module-level abort controller for current stream
+let currentAbortController: AbortController | null = null;
+// Track which thread the active interactive stream belongs to
+let currentStreamThreadId: string | null = null;
+
+/**
+ * Abort the current streaming request.
+ * Safe to call even if no stream is active.
+ */
+export function abortCurrentStream(): void {
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
+  currentStreamThreadId = null;
+}
+
+/** Check if there's an active interactive chat stream for the given thread. */
+export function hasActiveStreamForThread(threadId: string): boolean {
+  return currentAbortController !== null && currentStreamThreadId === threadId;
+}
+
+export class ChatApi extends AccountsApi {
+  async *chatStream(
+    message: string,
+    threadId?: string,
+    attachments?: FileAttachment[],
+    forceUnsupportedAttachments: boolean = false
+  ): AsyncGenerator<SSEEvent> {
+    const url = `${this.getBaseUrl()}/chat`;
+
+    // Create abort controller for this stream
+    currentAbortController = new AbortController();
+    currentStreamThreadId = threadId || null;
+
+    // Build request body with optional attachments
+    const requestBody: Record<string, unknown> = {
+      message,
+      thread_id: threadId,
+      stream: true
+    };
+
+    // Add attachments if provided (convert to backend format)
+    if (attachments && attachments.length > 0) {
+      requestBody.attachments = attachments.map((att) => ({
+        file_type: att.type,
+        data_url: att.dataUrl,
+        mime_type: att.mimeType,
+        file_name: att.name
+      }));
+    }
+
+    if (forceUnsupportedAttachments) {
+      requestBody.force_unsupported_attachments = true;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        ...this.getHeaders(),
+        Accept: 'text/event-stream'
+      },
+      body: JSON.stringify(requestBody),
+      signal: currentAbortController.signal
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      yield {
+        type: 'error',
+        data: {
+          message: `API error: ${response.status} - ${errorText}`,
+          code: response.status.toString()
+        },
+        timestamp: new Date()
+      };
+      return;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      yield {
+        type: 'error',
+        data: { message: 'No response body', code: 'NO_BODY' },
+        timestamp: new Date()
+      };
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6).trim();
+            if (jsonStr === '[DONE]') {
+              return;
+            }
+
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const event = this.parseSSEEvent(parsed);
+              if (event) {
+                yield event;
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE event:', e, jsonStr);
+            }
+          }
+        }
+      }
+
+      // Process any remaining buffer
+      if (buffer.startsWith('data: ')) {
+        const jsonStr = buffer.slice(6).trim();
+        if (jsonStr && jsonStr !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const event = this.parseSSEEvent(parsed);
+            if (event) {
+              yield event;
+            }
+          } catch (e) {
+            console.error('Failed to parse final SSE event:', e);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+      currentAbortController = null;
+      currentStreamThreadId = null;
+    }
+  }
+
+  async validateThreadAttachments(
+    threadId: string,
+    attachments: FileAttachment[]
+  ): Promise<AttachmentValidationResult> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/attachments/validate`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({
+          attachments: attachments.map((att) => ({
+            file_type: att.type,
+            data_url: att.dataUrl,
+            mime_type: att.mimeType,
+            file_name: att.name
+          }))
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to validate attachments: ${response.status} ${text}`);
+    }
+
+    return await response.json() as AttachmentValidationResult;
+  }
+
+  async downloadWorkspaceFile(path: string): Promise<{
+    blob: Blob;
+    filename: string;
+    contentType: string;
+  }> {
+    const url = new URL(`${this.getBaseUrl()}/workspace/download`);
+    url.searchParams.set('path', path);
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${configStore.apiKey}`
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to download workspace file: ${response.status} ${text}`);
+    }
+
+    const blob = await response.blob();
+    const contentType = response.headers.get('content-type') || blob.type || 'application/octet-stream';
+    const disposition = response.headers.get('content-disposition') || '';
+    const filenameMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = filenameMatch?.[1] || path.split('/').pop() || 'download';
+
+    return { blob, filename, contentType };
+  }
+
+  private parseSSEEvent(data: Record<string, unknown>): SSEEvent | null {
+    const eventType = data.type as SSEEventType;
+    // Extract thread_id from every event - backend sends it with all events
+    const threadId = data.thread_id as string | undefined;
+
+    // Handle events with explicit type field (Nymeria API format)
+    if (eventType) {
+      switch (eventType) {
+        case 'thinking':
+          return {
+            type: 'thinking',
+            data: { message: (data.content as string) || '' },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'response':
+          return {
+            type: 'response',
+            data: {
+              content: (data.content as string) || '',
+              isComplete: false
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'tool_call_delta':
+          return {
+            type: 'tool_call_delta',
+            data: {},
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'tool_call':
+          // Nymeria sends: { type, id, name, args }
+          return {
+            type: 'tool_call',
+            data: {
+              id: (data.id as string) || `${data.name}-${Date.now()}`,
+              name: data.name as string,
+              arguments: (data.args as Record<string, unknown>) || {}
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'tool_result':
+          // Nymeria sends: { type, id, name, result }
+          return {
+            type: 'tool_result',
+            data: {
+              id: data.id as string | undefined,
+              name: data.name as string,
+              result: (data.result as string) || '',
+              status: 'success' as const
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'workspace_artifact': {
+          const artifact = this.normalizeWorkspaceArtifact(data);
+          if (!artifact) return null;
+          return {
+            type: 'workspace_artifact',
+            data: {
+              toolCallId: data.tool_call_id as string | undefined,
+              toolName: (data.tool_name as string) || '',
+              artifact
+            },
+            timestamp: new Date(),
+            threadId
+          };
+        }
+
+        case 'error':
+          return {
+            type: 'error',
+            data: {
+              message: (data.content as string) || (data.error as string) || 'Unknown error',
+              code: data.code as string | undefined,
+              details: data.details as Record<string, unknown> | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'done': {
+          // Map snake_case context_stats to camelCase ContextStats
+          const rawStats = data.context_stats as Record<string, unknown> | undefined;
+          const contextStats = rawStats ? {
+            threadId: rawStats.thread_id as string,
+            model: (rawStats.model as string) || '',
+            totalTokens: rawStats.total_tokens as number,
+            inputTokens: rawStats.input_tokens as number,
+            outputTokens: rawStats.output_tokens as number,
+            contextLimit: rawStats.context_limit as number,
+            usagePercentage: rawStats.usage_percentage as number,
+            compactionCount: rawStats.compaction_count as number,
+            lastCompaction: rawStats.last_compaction as string | null,
+            contextManagement: rawStats.context_management as string,
+            processing: rawStats.processing as boolean | undefined,
+          } : undefined;
+          return {
+            type: 'done',
+            data: {
+              threadId: threadId || '',
+              contextStats,
+              model: data.model as string | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+        }
+
+        case 'queued':
+          return {
+            type: 'queued',
+            data: {
+              message: (data.content as string) || 'Waiting for autonomous task to finish...',
+              holder: (data.holder as string) || undefined,
+              heldSeconds: (data.held_seconds as number) || undefined
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'compacting':
+          return {
+            type: 'compacting',
+            data: { message: (data.message as string) || 'Compacting conversation...' },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'compact_result':
+          return {
+            type: 'compact_result',
+            data: {
+              success: (data.result as { success?: boolean })?.success ?? false,
+              messagesRemoved: (data.result as { messages_removed?: number })?.messages_removed ?? 0,
+              reason: (data.result as { reason?: string })?.reason
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'compacted':
+          return {
+            type: 'compacted',
+            data: {
+              messagesRemoved: (data.messages_removed as number) || 0,
+              autoResumed: (data.auto_resumed as boolean) || false,
+              summary: (data.summary as string) || undefined
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'context_attached':
+          return {
+            type: 'context_attached',
+            data: { summary: (data.summary as string) || '' },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'iteration_limit':
+          return {
+            type: 'iteration_limit',
+            data: {
+              message: (data.content as string) || 'Agent reached the maximum number of steps.',
+              maxIterations: (data.max_iterations as number) || 500,
+              reason: data.reason as 'max_iterations' | 'repeated_tool_result' | undefined,
+              scope: (data.scope as 'main_agent' | 'sub_agent' | undefined),
+              agentName: data.agent_name as string | undefined,
+              toolCallCount: data.tool_call_count as number | undefined,
+              repeatedToolName: data.repeated_tool_name as string | undefined,
+              repeatedCount: data.repeated_count as number | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'tool_reload':
+          return {
+            type: 'tool_reload',
+            data: {
+              tools: (data.tools as string[]) || [],
+              ttl: (data.ttl as string) || '',
+              ttlSeconds: (data.ttl_seconds as number | null) ?? null,
+              source: data.source as string | undefined,
+              skillName: data.skill_name as string | null | undefined,
+              reason: data.reason as string | null | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+      }
+    }
+
+    // Fallback: try to infer type from data structure
+    if (data.thinking) {
+      return {
+        type: 'thinking',
+        data: { message: data.thinking as string },
+        timestamp: new Date(),
+        threadId
+      };
+    }
+    if (data.content !== undefined && !eventType) {
+      return {
+        type: 'response',
+        data: {
+          content: data.content as string,
+          isComplete: data.is_complete === true
+        },
+        timestamp: new Date(),
+        threadId
+      };
+    }
+    if (data.error) {
+      return {
+        type: 'error',
+        data: {
+          message: data.error as string,
+          code: data.code as string | undefined
+        },
+        timestamp: new Date(),
+        threadId
+      };
+    }
+    if (data.done || (data.thread_id && !eventType)) {
+      return {
+        type: 'done',
+        data: {
+          threadId: threadId || '',
+        },
+        timestamp: new Date(),
+        threadId
+      };
+    }
+
+    return null;
+  }
+
+  async chatSync(message: string, threadId?: string): Promise<ChatResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/chat`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        message,
+        thread_id: threadId,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return response.json();
+  }
+}
