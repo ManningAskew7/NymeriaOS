@@ -46,6 +46,10 @@ from ..core.event_bus import (
     publish_sync_event,
     should_log_stream_event_sample,
 )
+from ..core.notification_dispatch import (
+    create_autonomous_notification as _dispatch_autonomous_notification,
+    should_notify_autonomous as _should_notify_autonomous,
+)
 from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
 from ..core.rate_limit import SlidingWindowRateLimiter
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
@@ -2770,29 +2774,17 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 fields["trigger_name"] = request.trigger_name
             return fields
 
-        def _in_app_notification_level() -> str:
-            try:
-                tc = agent.thread_config_manager.get_config(thread_id)
-                if tc is None:
-                    return "notify_only"
-                return getattr(tc, "in_app_notification_level", "notify_only") or "notify_only"
-            except Exception as e:
-                logger.debug("Failed to read notification level for %s: %s", thread_id, e)
-                return "notify_only"
-
         def _maybe_create_autonomous_notification(content: str, task_id: str) -> None:
-            if not request.is_self_invoke or _in_app_notification_level() != "all_autonomous":
+            if not request.is_self_invoke:
                 return
-            summary = (content or "Autonomous task completed")[:200]
-            try:
-                create_notification(
-                    user_id=user_id,
-                    summary=summary,
-                    thread_id=thread_id,
-                    task_id=task_id or None,
-                )
-            except Exception as e:
-                logger.warning("Failed to create autonomous notification for %s: %s", thread_id, e)
+            _dispatch_autonomous_notification(
+                user_id=user_id,
+                thread_id=thread_id,
+                task_id=task_id or None,
+                summary=(content or "Autonomous task completed")[:200],
+                settings=settings,
+                thread_config_manager=agent.thread_config_manager,
+            )
 
         async def event_generator():
             """Generate SSE events from agent stream."""
@@ -2933,7 +2925,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         data={
                             "error": True,
                             "content": error_text,
-                            "notify": _in_app_notification_level() == "all_autonomous",
+                            "notify": _should_notify_autonomous(thread_id, agent.thread_config_manager),
                             "source": request.trigger_override or "autonomous",
                             **_trigger_fields(),
                         },
@@ -2950,7 +2942,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         task_id=autonomous_task_id,
                         data={
                             "content": final_content,
-                            "notify": _in_app_notification_level() == "all_autonomous",
+                            "notify": _should_notify_autonomous(thread_id, agent.thread_config_manager),
                             "source": request.trigger_override or "autonomous",
                             **_trigger_fields(),
                         },

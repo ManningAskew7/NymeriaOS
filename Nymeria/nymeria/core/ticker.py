@@ -21,7 +21,7 @@ from rich.panel import Panel
 from .activity_log import ActivityType, log_activity
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
-from .notifications import create_notification
+from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
 from .stream_bridge import iter_agent_astream
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
@@ -444,19 +444,8 @@ class Ticker:
             return from_time + delta
         return None
 
-    def _in_app_notification_level(self, thread_id: str) -> str:
-        """Return per-thread notification-center behavior."""
-        try:
-            tc = self.agent.thread_config_manager.get_config(thread_id)
-            if tc is None:
-                return "notify_only"
-            return getattr(tc, "in_app_notification_level", "notify_only") or "notify_only"
-        except Exception as e:
-            logger.debug("Failed to read notification level for %s: %s", thread_id, e)
-            return "notify_only"
-
     def _should_create_autonomous_notification(self, thread_id: str) -> bool:
-        return self._in_app_notification_level(thread_id) == "all_autonomous"
+        return should_notify_autonomous(thread_id, self.agent.thread_config_manager)
 
     def _execute_scheduled_todo(self, entry: ScheduledTodoEntry) -> None:
         """
@@ -819,22 +808,6 @@ class Ticker:
                 },
             )
 
-            # Send FCM push to registered devices
-            if response_text and self.agent.settings.fcm_enabled:
-                try:
-                    from .fcm import send_to_all_devices
-                    data_dir = str(self.agent.settings.data_dir)
-                    send_to_all_devices(
-                        data_dir=data_dir,
-                        text=response_text,
-                        thread_id=thread_id,
-                        task_id=todo.id,
-                        summary="",
-                        user_id=entry.user_id,
-                    )
-                except Exception as e:
-                    logger.warning(f"[TICKER] FCM push failed: {e}")
-
             # Index TODO completion in RAG (if enabled)
             self._index_todo_completion(
                 user_id=entry.user_id,
@@ -866,18 +839,20 @@ class Ticker:
             except Exception as console_err:
                 logger.warning(f"Console print failed (non-fatal): {console_err}")
 
-            # Create notification if requested or the thread wants all autonomous completions.
+            # Create in-app notification + FCM push via unified dispatch.
             if should_notify and notification_summary:
+                create_autonomous_notification(
+                    user_id=entry.user_id,
+                    thread_id=thread_id,
+                    task_id=todo.id,
+                    summary=notification_summary,
+                    settings=self.agent.settings,
+                    thread_config_manager=self.agent.thread_config_manager,
+                )
                 try:
-                    create_notification(
-                        user_id=entry.user_id,
-                        summary=notification_summary,
-                        thread_id=thread_id,
-                        task_id=todo.id,
-                    )
                     _console.print(f"[yellow]Notification sent: {notification_summary}[/yellow]")
-                except Exception as notify_err:
-                    logger.error(f"Failed to create notification for TODO {todo.id}: {notify_err}")
+                except Exception:
+                    pass
 
             try:
                 _console.print()
@@ -927,16 +902,14 @@ class Ticker:
                 },
             )
 
-            if self._should_create_autonomous_notification(thread_id):
-                try:
-                    create_notification(
-                        user_id=entry.user_id,
-                        summary=f"Task failed: {str(e)[:180]}",
-                        thread_id=thread_id,
-                        task_id=todo.id,
-                    )
-                except Exception as notify_err:
-                    logger.error(f"Failed to create failure notification for TODO {todo.id}: {notify_err}")
+            create_autonomous_notification(
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                task_id=todo.id,
+                summary=f"Task failed: {str(e)[:180]}",
+                settings=self.agent.settings,
+                thread_config_manager=self.agent.thread_config_manager,
+            )
 
             # Check retry count
             retry_count = self._retry_counts.get(todo.id, 0) + 1
