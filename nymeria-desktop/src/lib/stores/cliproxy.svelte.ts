@@ -1,7 +1,10 @@
 /**
  * CLIProxy state management.
- * Wraps Tauri invoke() calls for starting/stopping cliproxy and managing OAuth sessions.
+ * Wraps Tauri invoke() calls for the local sidecar process and uses the
+ * frontend API client for backend settings changes.
  */
+
+import { api } from '$lib/services/api.svelte';
 
 interface CLIProxySession {
   provider: string;
@@ -77,7 +80,9 @@ function createCLIProxyStore() {
   async function applyBaseUrl() {
     error = null;
     try {
-      await invoke('apply_cliproxy_base_url');
+      await api.updateServerSettings({
+        llm_base_url: 'http://127.0.0.1:8317/v1'
+      });
     } catch (e) {
       error = String(e);
     }
@@ -86,7 +91,9 @@ function createCLIProxyStore() {
   async function removeBaseUrl() {
     error = null;
     try {
-      await invoke('remove_cliproxy_base_url');
+      await api.updateServerSettings({
+        llm_base_url: null
+      });
     } catch (e) {
       error = String(e);
     }
