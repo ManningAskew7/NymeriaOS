@@ -92,3 +92,10 @@ backups/
 # === Migration rollback snapshots — contain live OAuth tokens ===
 # Keep these on disk for emergency rollback, never check them in.
 CLIProxyAPI-main/migration-rollback-*/
+
+# === Verification/testing artifacts ===
+verify-output/
+verify-*.png
+verify-*.log
+notification-popover-fix.png
+initial-load.png
