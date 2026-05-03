@@ -91,6 +91,7 @@ See `.env.docker.example` for all available options. Key settings:
 ```bash
 # Required
 POSTGRES_PASSWORD=<secure-password>
+REDIS_PASSWORD=<secure-url-safe-password>
 NYMERIA_SERVICE_TOKEN=<admin-service-token>   # see docs/accounts.md
 
 # LLM (at least one required)
@@ -222,7 +223,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 
 - **Fresh clone:** `git-crypt unlock /path/to/nymeria-gitcrypt.key`, or copy `.env.docker.example` and fill in your own keys.
 - **Per-machine drift:** Each machine may have different values in `.env.docker` (different API keys, proxy URLs, etc.). A modified `.env.docker` in `git status` is expected — only commit when updating the shared baseline.
-- **Rotation:** See `docs/git-crypt.md` for per-secret rotation checklists covering LLM API keys, CLIProxy OAuth, Postgres, service tokens, Fernet keys, and Firebase/Google credentials.
+- **Rotation:** See `docs/git-crypt.md` for per-secret rotation checklists covering LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
 - **Docker images:** `.env.docker` is excluded from the Docker build context; Compose injects it with `--env-file` and bind-mounts it at runtime instead of copying secrets into image layers.
 - **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/` — they are not managed by git-crypt. Never copy them between machines.
 
@@ -233,7 +234,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 3. **CORS**: Restrict origins in production
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: Use HTTPS in production (reverse proxy)
-6. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments.
+6. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments. Redis requires `REDIS_PASSWORD`; unauthenticated containers on the Compose network cannot read or write the event bus.
 7. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive. `.env.docker` must stay out of image layers and is ignored by the Docker build context.
 8. **Kali Tools**: Use responsibly and only on authorized targets
 

@@ -61,6 +61,13 @@ _SERVICE_TOKEN_REQUIRED_COMMANDS = {
 }
 
 
+def _redis_url_for_display(redis_url: str) -> str:
+    """Redact Redis credentials before writing startup output."""
+    from nymeria.core.event_bus import redact_url_credentials
+
+    return redact_url_credentials(redis_url)
+
+
 def validate_config(skip_api_key: bool = False, suppress_service_token_warning: bool = False) -> None:
     """
     Validate configuration before starting any command.
@@ -221,7 +228,7 @@ def run_api(args: argparse.Namespace) -> None:
     print(f"  - Docs: http://{host}:{port}/docs")
     print(f"  - ReDoc: http://{host}:{port}/redoc")
     if settings.redis_enabled and settings.redis_url:
-        print(f"  - Redis event bus: {settings.redis_url}")
+        print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
 
     # Agent creation, Redis event bus, FCM, ticker-disable logic, and tool
     # sync are all handled by create_api_app() inside start_api().
@@ -260,7 +267,7 @@ def run_worker(args: argparse.Namespace) -> None:
     if settings.redis_enabled and settings.redis_url:
         event_bus = create_event_bus(settings)
         set_event_bus(event_bus)
-        print(f"  - Redis event bus: {settings.redis_url}")
+        print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
 
     # Initialize FCM if enabled
     if settings.fcm_enabled and settings.fcm_credentials_json:
@@ -499,7 +506,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         from nymeria.core.event_bus import create_event_bus, set_event_bus
         event_bus = create_event_bus(settings)
         set_event_bus(event_bus)
-        print(f"  - Redis event bus: {settings.redis_url}")
+        print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
 
     # Create agent without ticker (ticker runs in worker/api, not bot)
     agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=False)

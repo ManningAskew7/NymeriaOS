@@ -9,7 +9,12 @@ from datetime import datetime
 from queue import Full, Queue, Empty
 from typing import Any, Dict, Optional
 
-from .event_bus import AutonomousEvent, EventBus, should_log_stream_event_sample
+from .event_bus import (
+    AutonomousEvent,
+    EventBus,
+    redact_url_credentials,
+    should_log_stream_event_sample,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +67,10 @@ class RedisEventBus(EventBus):
             # Test connection
             self._redis_client.ping()
             self._connected = True
-            logger.info(f"[REDIS EVENT BUS] Connected to Redis at {self.redis_url}")
+            logger.info(
+                "[REDIS EVENT BUS] Connected to Redis at %s",
+                redact_url_credentials(self.redis_url),
+            )
 
             # Start subscriber thread
             self._start_subscriber()

@@ -90,7 +90,8 @@ package from the checkout or runtime config directory.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `REDIS_ENABLED` | `false` | Enable Redis event bus for cross-container communication |
-| `REDIS_URL` | - | Redis connection URL (e.g., `redis://localhost:6379`) |
+| `REDIS_PASSWORD` | required in Docker | Redis password used by the Compose Redis service and the generated `REDIS_URL`. Use a URL-safe value such as `openssl rand -hex 32`. |
+| `REDIS_URL` | - | Redis connection URL. Docker Compose generates `redis://:<REDIS_PASSWORD>@redis:6379/0`; local non-Docker development can use `redis://localhost:6379` if Redis auth is disabled. Startup logs redact credentials from this URL. |
 
 ### Messaging Platforms
 
