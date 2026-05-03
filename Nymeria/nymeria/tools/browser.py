@@ -11,18 +11,15 @@ Features:
 """
 
 import base64
+from contextlib import contextmanager
 import logging
 import os
 import queue
 import threading
 import time
+import warnings
 from typing import Any, Optional, Tuple
-
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
-    pass
+from urllib.parse import urlparse
 
 from langchain_core.tools import tool
 
@@ -33,6 +30,83 @@ BROWSER_LAUNCH_TIMEOUT = 120  # Initial browser launch can be slow
 NAVIGATION_TIMEOUT = 60  # Page navigation timeout
 DEFAULT_OPERATION_TIMEOUT = 30  # Default for other operations
 QUEUE_TIMEOUT = 90  # How long to wait for result from browser thread
+ALLOWED_BROWSER_URL_SCHEMES = {"http", "https"}
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _validate_browser_url(url: str) -> Tuple[bool, str]:
+    """Return a stripped HTTP(S) URL or a user-facing error string."""
+    if not isinstance(url, str) or not url.strip():
+        return (
+            False,
+            "[Error]: Invalid URL. browser_navigate requires an absolute "
+            "http:// or https:// URL.",
+        )
+
+    candidate = url.strip()
+    parsed = urlparse(candidate)
+    scheme = parsed.scheme.lower()
+
+    if scheme not in ALLOWED_BROWSER_URL_SCHEMES:
+        display_scheme = scheme or "(none)"
+        return (
+            False,
+            f"[Error]: Unsupported URL scheme '{display_scheme}'. "
+            "browser_navigate only supports http:// and https:// URLs.",
+        )
+
+    if not parsed.netloc:
+        return (
+            False,
+            "[Error]: Invalid URL. browser_navigate requires an absolute "
+            "http:// or https:// URL with a host.",
+        )
+
+    return True, candidate
+
+
+def _browser_verify_ssl() -> bool:
+    """Return whether browser fallback requests should verify TLS certificates."""
+    raw_value = os.environ.get("BROWSER_VERIFY_SSL")
+    if raw_value is None:
+        return True
+
+    normalized = raw_value.strip().lower()
+    if normalized in _TRUE_ENV_VALUES:
+        return True
+    if normalized in _FALSE_ENV_VALUES:
+        return False
+
+    logger.warning("Invalid BROWSER_VERIFY_SSL=%r; defaulting to true", raw_value)
+    return True
+
+
+@contextmanager
+def _maybe_suppress_insecure_request_warning(verify_ssl: bool):
+    """Suppress urllib3's warning only when fallback TLS verification is disabled."""
+    if verify_ssl:
+        yield
+        return
+
+    try:
+        from urllib3.exceptions import InsecureRequestWarning
+    except Exception:
+        yield
+        return
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InsecureRequestWarning)
+        yield
+
+
+def _requests_get(url: str, headers: dict[str, str]):
+    """Issue a fallback GET request with configured TLS verification."""
+    import requests
+
+    verify_ssl = _browser_verify_ssl()
+    with _maybe_suppress_insecure_request_warning(verify_ssl):
+        return requests.get(url, headers=headers, timeout=30, verify=verify_ssl)
 
 
 def _find_playwright_browsers_path() -> Optional[str]:
@@ -399,9 +473,13 @@ def _reset_browser():
 # ============================================================================
 
 def _fallback_navigate(url: str) -> str:
-    """Fallback navigation using requests (SSL verification disabled for corporate proxies)."""
+    """Fallback navigation using requests + BeautifulSoup."""
+    valid, validated_url_or_error = _validate_browser_url(url)
+    if not valid:
+        return validated_url_or_error
+    url = validated_url_or_error
+
     try:
-        import requests
         from bs4 import BeautifulSoup
     except ImportError:
         return "[Error]: Fallback requires 'requests' and 'beautifulsoup4'. Install with: pip install requests beautifulsoup4"
@@ -410,7 +488,7 @@ def _fallback_navigate(url: str) -> str:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = requests.get(url, headers=headers, timeout=30, verify=False)
+        response = _requests_get(url, headers=headers)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -443,9 +521,13 @@ def _fallback_navigate(url: str) -> str:
 
 
 def _fallback_get_content(url: str) -> str:
-    """Fallback content extraction using requests + BeautifulSoup (SSL verification disabled for corporate proxies)."""
+    """Fallback content extraction using requests + BeautifulSoup."""
+    valid, validated_url_or_error = _validate_browser_url(url)
+    if not valid:
+        return validated_url_or_error
+    url = validated_url_or_error
+
     try:
-        import requests
         from bs4 import BeautifulSoup
     except ImportError:
         return "[Error]: Fallback requires 'requests' and 'beautifulsoup4'"
@@ -454,7 +536,7 @@ def _fallback_get_content(url: str) -> str:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = requests.get(url, headers=headers, timeout=30, verify=False)
+        response = _requests_get(url, headers=headers)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -501,6 +583,11 @@ def browser_navigate(url: str) -> str:
         url: URL to navigate to (e.g., "https://google.com")
     """
     logger.info(f"browser_navigate: {url}")
+
+    valid, validated_url_or_error = _validate_browser_url(url)
+    if not valid:
+        return validated_url_or_error
+    url = validated_url_or_error
 
     if _use_fallback_mode():
         logger.info("BROWSER_FORCE_FALLBACK=true; skipping Playwright, using requests fallback")
