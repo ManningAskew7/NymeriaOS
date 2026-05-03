@@ -1896,420 +1896,29 @@ class NymeriaAgent:
         """Prepare auto-compaction (astream() streams the resume afterward)."""
         return await self._compaction._do_auto_compact(thread_id, user_id)
 
-    # ------------------------------------------------------------------
-    # Sync compaction (for stream() / chat() / triggers / ticker / CLI)
-    # ------------------------------------------------------------------
-
     def _check_and_compact_sync(
         self,
         thread_id: str,
         user_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Pre-flight auto-compact for the sync stream()/chat() path.
-
-        Mirrors _check_and_compact() but uses sync graph calls.
-        If compaction triggers, summary is stored as pending and will be
-        picked up by the existing get_pending_summary() check.
-        """
-        if self.settings.context_management != "auto_compact":
-            return None
-
-        # Rehydrate tracker if empty (e.g. after server restart)
-        usage = self._token_tracker.get_usage(thread_id)
-        if usage.context_tokens == 0 and usage.total_tokens == 0:
-            self._rehydrate_token_usage(thread_id)
-
-        llm_config = self._get_llm_config_for_thread(thread_id)
-        model_limit = get_context_limit(llm_config.model)
-        threshold = self.settings.compact_threshold
-        trigger_tokens = self._compact_trigger_tokens(model_limit, threshold)
-        usage = self._token_tracker.get_usage(thread_id)
-
-        if usage.context_tokens < trigger_tokens:
-            return None
-
-        return self._do_compact_sync(thread_id, user_id)
-
-    def _do_compact_sync(
-        self,
-        thread_id: str,
-        user_id: str,
-    ) -> Dict[str, Any]:
-        """Sync auto-compact: summarize -> clear -> store pending summary."""
-        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-
-        state = self._default_graph.get_state(config)
-        messages = state.values.get("messages", [])
-        msg_count = len(messages)
-
-        if msg_count < self.settings.compact_keep_messages:
-            return {"success": False, "reason": f"Not enough messages ({msg_count})"}
-
-        logger.info(f"Thread {thread_id}: Sync auto-compact starting ({msg_count} messages)")
-
-        summary = self._generate_summary_sync(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
-        # Flush messages to RAG before clearing — defensive backup of the
-        # per-turn indexer. Failures here must not block compaction.
-        try:
-            self._flush_memories_before_trim(user_id, thread_id, messages)
-        except Exception as e:
-            logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
-
-        cleared = self._clear_and_reset_sync(
-            thread_id,
-            msg_count,
-            summary=summary,
-            auto_resumed=False,
-        )
-        if not cleared:
-            return {"success": False, "reason": "Failed to clear messages"}
-
-        # Store as pending — picked up by get_pending_summary() in stream()/chat()
-        self._pending_summaries[thread_id] = summary
-
-        # Store notepad content to re-inject alongside summary
-        notepad = self._read_thread_notepad(thread_id)
-        if notepad:
-            self._pending_notepads[thread_id] = notepad
-
-        logger.info(f"Thread {thread_id}: Sync auto-compact complete, summary pending")
-        return {
-            "success": True,
-            "messages_before": msg_count,
-            "messages_removed": msg_count,
-            "summary": summary,
-        }
-
-    def _generate_summary_sync(
-        self,
-        thread_id: str,
-        user_id: str,
-    ) -> Optional[str]:
-        """Generate context summary via sync graph.invoke()."""
-        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-        graph = self._get_graph_for_user(user_id, thread_id=thread_id)
-
-        compact_prompt = self._compactor.get_compact_prompt()
-        input_state = {"messages": [_create_human_message(
-            compact_prompt,
-            internal=True,
-            internal_type="compact_prompt",
-        )]}
-
-        try:
-            result = graph.invoke(input_state, config=config)
-            messages = result.get("messages", [])
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage) and msg.content:
-                    return self._compactor.extract_summary(msg)
-        except Exception as e:
-            logger.error(
-                f"Thread {thread_id}: Sync summary generation failed: {e}",
-                exc_info=True,
-            )
-
-        return None
-
-    def _clear_and_reset_sync(
-        self,
-        thread_id: str,
-        msg_count_before: int,
-        summary: str = "",
-        auto_resumed: bool = False,
-    ) -> bool:
-        """Clear all messages and reset tokens — sync version of _clear_and_reset()."""
-        import uuid as _uuid
-
-        config = {"configurable": {"thread_id": thread_id}}
-
-        try:
-            graph = self._default_graph
-            state = graph.get_state(config)
-            messages = state.values.get("messages", [])
-
-            if not messages:
-                return True
-
-            remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-            compaction_marker = _create_compaction_marker(
-                summary=summary,
-                messages_removed=msg_count_before,
-                auto_resumed=auto_resumed,
-            )
-            compaction_marker.id = str(_uuid.uuid4())
-
-            graph.update_state(config, {"messages": remove_commands + [compaction_marker]})
-
-            # Verify: should have exactly 1 message (the marker)
-            verify_state = graph.get_state(config)
-            remaining = verify_state.values.get("messages", [])
-            if len(remaining) != 1:
-                logger.error(
-                    f"Thread {thread_id}: Sync clear verification failed — "
-                    f"{len(remaining)} messages remain (expected 1 marker)"
-                )
-                return False
-
-            logger.info(
-                f"Thread {thread_id}: Cleared {len(messages)} messages via "
-                f"RemoveMessage sync (1 compaction marker remains)"
-            )
-
-            # Prune pre-compact history (see async path for rationale).
-            try:
-                post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
-                floor_versions: Dict[str, Any] = {}
-                if post_cp_id:
-                    cp_tuple = graph.checkpointer.get_tuple({
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_id": post_cp_id,
-                        }
-                    })
-                    if cp_tuple is not None and cp_tuple.checkpoint:
-                        floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
-                    counts = self._prune_checkpoints_before(
-                        thread_id, post_cp_id, floor_versions
-                    )
-                    logger.info(
-                        f"Thread {thread_id}: Pruned pre-compact history — "
-                        f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
-                    )
-            except Exception as e:
-                logger.warning(f"Thread {thread_id}: Pruning call failed (sync): {e}")
-
-        except Exception as e:
-            logger.error(f"Thread {thread_id}: Sync clear failed: {e}", exc_info=True)
-            return False
-
-        self._token_tracker.reset_after_compact(thread_id, 0)
-        return True
-
-    def _prune_checkpoints_before(
-        self,
-        thread_id: str,
-        boundary_checkpoint_id: str,
-        floor_channel_versions: Dict[str, Any],
-    ) -> Tuple[int, int, int]:
-        """Delete pre-compact checkpoint/write/blob rows for a thread.
-
-        Safe to call only while holding the thread lock AND only after the
-        compact write has been verified — we delete anything strictly older
-        than ``boundary_checkpoint_id``, plus any blob whose version is below
-        the floor referenced by the surviving (post-compact) checkpoint.
-
-        Each DELETE is wrapped individually: a prune failure must never fail
-        the compaction that already succeeded.
-
-        Returns ``(checkpoints_deleted, writes_deleted, blobs_deleted)``.
-        """
-        settings = get_settings()
-        checkpoints_deleted = 0
-        writes_deleted = 0
-        blobs_deleted = 0
-
-        if settings.database_backend == "postgres":
-            import psycopg  # type: ignore[import-untyped]
-            try:
-                with psycopg.connect(settings.postgres_uri) as conn:
-                    with conn.cursor() as cur:
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_writes "
-                                "WHERE thread_id = %s AND checkpoint_ns = '' "
-                                "AND checkpoint_id < %s",
-                                (thread_id, boundary_checkpoint_id),
-                            )
-                            writes_deleted = cur.rowcount or 0
-                        except Exception as e:
-                            logger.warning(
-                                f"Thread {thread_id}: prune checkpoint_writes failed: {e}"
-                            )
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoints "
-                                "WHERE thread_id = %s AND checkpoint_ns = '' "
-                                "AND checkpoint_id < %s",
-                                (thread_id, boundary_checkpoint_id),
-                            )
-                            checkpoints_deleted = cur.rowcount or 0
-                        except Exception as e:
-                            logger.warning(
-                                f"Thread {thread_id}: prune checkpoints failed: {e}"
-                            )
-                        for channel, floor_v in floor_channel_versions.items():
-                            try:
-                                floor_int = int(floor_v)
-                            except (TypeError, ValueError):
-                                continue
-                            try:
-                                cur.execute(
-                                    "DELETE FROM checkpoint_blobs "
-                                    "WHERE thread_id = %s AND channel = %s "
-                                    "AND CAST(version AS INTEGER) < %s",
-                                    (thread_id, channel, floor_int),
-                                )
-                                blobs_deleted += cur.rowcount or 0
-                            except Exception as e:
-                                logger.warning(
-                                    f"Thread {thread_id}: prune blob channel={channel} failed: {e}"
-                                )
-                    conn.commit()
-            except Exception as e:
-                logger.warning(f"Thread {thread_id}: Checkpoint prune (postgres) failed: {e}")
-        elif settings.database_backend == "sqlite":
-            import sqlite3 as _sqlite3
-            try:
-                conn = _sqlite3.connect(str(settings.db_path))
-                try:
-                    cur = conn.cursor()
-                    try:
-                        cur.execute(
-                            "DELETE FROM checkpoint_writes "
-                            "WHERE thread_id = ? AND checkpoint_ns = '' "
-                            "AND checkpoint_id < ?",
-                            (thread_id, boundary_checkpoint_id),
-                        )
-                        writes_deleted = cur.rowcount or 0
-                    except Exception as e:
-                        logger.warning(
-                            f"Thread {thread_id}: prune checkpoint_writes failed: {e}"
-                        )
-                    try:
-                        cur.execute(
-                            "DELETE FROM checkpoints "
-                            "WHERE thread_id = ? AND checkpoint_ns = '' "
-                            "AND checkpoint_id < ?",
-                            (thread_id, boundary_checkpoint_id),
-                        )
-                        checkpoints_deleted = cur.rowcount or 0
-                    except Exception as e:
-                        logger.warning(
-                            f"Thread {thread_id}: prune checkpoints failed: {e}"
-                        )
-                    for channel, floor_v in floor_channel_versions.items():
-                        try:
-                            floor_int = int(floor_v)
-                        except (TypeError, ValueError):
-                            continue
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_blobs "
-                                "WHERE thread_id = ? AND channel = ? "
-                                "AND CAST(version AS INTEGER) < ?",
-                                (thread_id, channel, floor_int),
-                            )
-                            blobs_deleted += cur.rowcount or 0
-                        except Exception as e:
-                            logger.warning(
-                                f"Thread {thread_id}: prune blob channel={channel} failed: {e}"
-                            )
-                    conn.commit()
-                finally:
-                    conn.close()
-            except Exception as e:
-                logger.warning(f"Thread {thread_id}: Checkpoint prune (sqlite) failed: {e}")
-
-        return (checkpoints_deleted, writes_deleted, blobs_deleted)
+        """Pre-flight auto-compact for the sync stream()/chat() path."""
+        return self._compaction.check_and_compact_sync(thread_id, user_id)
 
     async def compact_now(
         self,
         thread_id: str,
         user_id: str = "default",
     ) -> Dict[str, Any]:
-        """
-        Manually trigger compaction (/compact command).
-
-        Generates summary and stores it to be attached to the user's next
-        message. The UI should show "(context summary attached)" instead
-        of the full summary.
-
-        Args:
-            thread_id: Thread identifier
-            user_id: User identifier
-
-        Returns:
-            Dict with:
-            - success: bool
-            - reason: str (if not successful)
-            - messages_removed: int
-            - summary_pending: bool (if True, summary attached to next message)
-        """
-        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-
-        # Get current message count
-        state = await self._default_async_graph.aget_state(config)
-        messages = state.values.get("messages", [])
-        msg_count_before = len(messages)
-
-        min_messages = self.settings.compact_keep_messages
-        if msg_count_before < min_messages:
-            return {
-                "success": False,
-                "reason": f"Not enough messages ({msg_count_before}, need {min_messages})",
-            }
-
-        logger.info(f"Thread {thread_id}: Manual compact starting ({msg_count_before} messages)")
-
-        # Generate summary (agent sees full context)
-        summary = await self._generate_summary(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
-        # Flush messages to RAG before clearing — defensive backup of the
-        # per-turn indexer. Failures here must not block compaction.
-        try:
-            self._flush_memories_before_trim(user_id, thread_id, messages)
-        except Exception as e:
-            logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
-
-        # Clear all messages, leaving a visible compaction marker for history.
-        cleared = await self._clear_and_reset(
-            thread_id,
-            msg_count_before,
-            summary=summary,
-            auto_resumed=False,
-        )
-        if not cleared:
-            return {"success": False, "reason": "Failed to clear messages"}
-
-        # Store summary to attach to next user message
-        self._pending_summaries[thread_id] = summary
-
-        # Store notepad content to re-inject alongside summary
-        notepad = self._read_thread_notepad(thread_id)
-        if notepad:
-            self._pending_notepads[thread_id] = notepad
-
-        logger.info(f"Thread {thread_id}: Manual compact complete, summary pending")
-
-        return {
-            "success": True,
-            "messages_before": msg_count_before,
-            "messages_after": 1,
-            "messages_removed": msg_count_before,
-            "summary_pending": True,
-            "summary": summary,
-        }
+        """Manually trigger compaction (/compact command)."""
+        return await self._compaction.compact_now(thread_id, user_id)
 
     def get_pending_summary(self, thread_id: str) -> Optional[str]:
-        """
-        Get and clear pending summary for a thread.
-
-        Args:
-            thread_id: Thread identifier
-
-        Returns:
-            Pending summary text, or None if no pending summary
-        """
-        return self._pending_summaries.pop(thread_id, None)
+        """Get and clear pending summary for a thread."""
+        return self._compaction.get_pending_summary(thread_id)
 
     def has_pending_summary(self, thread_id: str) -> bool:
         """Check if thread has a pending summary."""
-        return thread_id in self._pending_summaries
+        return self._compaction.has_pending_summary(thread_id)
 
     def _rehydrate_token_usage(self, thread_id: str) -> None:
         """
@@ -3626,13 +3235,13 @@ class NymeriaAgent:
             # Check for pending summary (from pre-flight compact or manual /compact)
             pending_summary = self.get_pending_summary(thread_id)
             if pending_summary:
-                message_with_context = self._compactor.format_user_resume(
+                message_with_context = self._compaction.format_user_resume(
                     message_with_context, pending_summary
                 )
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message (chat)")
 
             # Attach pending notepad content (from compaction)
-            pending_notepad = self._pending_notepads.pop(thread_id, None)
+            pending_notepad = self._compaction.pop_pending_notepad(thread_id)
             if pending_notepad:
                 message_with_context += self._format_notepad_section(pending_notepad)
                 logger.info(f"Thread {thread_id}: Attached pending notepad to user message (chat)")
@@ -3889,14 +3498,14 @@ class NymeriaAgent:
             context_summary_for_ui: Optional[str] = None
             pending_summary = self.get_pending_summary(thread_id)
             if pending_summary:
-                message_with_context = self._compactor.format_user_resume(
+                message_with_context = self._compaction.format_user_resume(
                     message_with_context, pending_summary
                 )
                 context_summary_for_ui = pending_summary
                 logger.info(f"Thread {thread_id}: Attached pending summary to user message")
 
             # Attach pending notepad content (from compaction)
-            pending_notepad = self._pending_notepads.pop(thread_id, None)
+            pending_notepad = self._compaction.pop_pending_notepad(thread_id)
             if pending_notepad:
                 message_with_context += self._format_notepad_section(pending_notepad)
                 logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")

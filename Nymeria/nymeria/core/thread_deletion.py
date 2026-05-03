@@ -34,11 +34,30 @@ class ThreadDeletionResult:
     deleted: Dict[str, int] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
-    def inc(self, key: str, amount: int | bool | None = 1) -> None:
-        self.deleted[key] = self.deleted.get(key, 0) + int(amount or 0)
+    def inc(self, key: str, amount: int | None = 1) -> None:
+        self.deleted[key] = self.deleted.get(key, 0) + self._count(key, amount)
 
-    def set(self, key: str, amount: int | bool | None) -> None:
-        self.deleted[key] = int(amount or 0)
+    def set(self, key: str, amount: int | None) -> None:
+        self.deleted[key] = self._count(key, amount)
+
+    @staticmethod
+    def _count(key: str, amount: int | None) -> int:
+        if amount is None:
+            return 0
+        if isinstance(amount, bool):
+            raise TypeError(
+                f"Thread deletion result '{key}' must be an explicit count, got bool"
+            )
+        if not isinstance(amount, int):
+            amount_type = type(amount).__name__
+            raise TypeError(
+                f"Thread deletion result '{key}' must be an integer count, got {amount_type}"
+            )
+        if amount < 0:
+            raise ValueError(
+                f"Thread deletion result '{key}' cannot be negative: {amount}"
+            )
+        return amount
 
     def warn(self, message: str) -> None:
         self.warnings.append(message)
@@ -117,7 +136,7 @@ def _delete_thread_config(agent: "NymeriaAgent", thread_id: str, result: ThreadD
     deleted = agent.thread_config_manager.delete_config(thread_id)
     if tc is not None and not deleted:
         raise RuntimeError(f"Thread config for {thread_id} could not be deleted")
-    result.set("thread_configs_deleted", deleted)
+    result.set("thread_configs_deleted", 1 if deleted else 0)
     agent.invalidate_thread_config_cache(thread_id)
     if was_callable:
         agent.sync_agent_tools()
@@ -202,7 +221,8 @@ def _delete_chat_resources(agent: "NymeriaAgent", thread_id: str, result: Thread
     repo = agent.accounts_repo
     result.set("chat_bindings_deleted", repo.delete_thread_bindings_for_thread(thread_id))
     result.set("bind_codes_deleted", repo.delete_bind_codes_for_thread(thread_id))
-    result.set("thread_owners_deleted", repo.delete_thread_owner(thread_id))
+    owner_deleted = repo.delete_thread_owner(thread_id)
+    result.set("thread_owners_deleted", 1 if owner_deleted else 0)
 
 
 def _delete_activity_and_notifications(
@@ -240,7 +260,11 @@ def _delete_activity_and_notifications(
 
 def _delete_in_memory_state(agent: "NymeriaAgent", thread_id: str, result: ThreadDeletionResult) -> None:
     popped = 0
-    for attr in ("_pending_summaries", "_pending_notepads", "_pending_tool_reload", "_turn_reload_count"):
+    # Compaction pending state lives on the CompactionManager
+    compaction = getattr(agent, "_compaction", None)
+    if compaction is not None:
+        popped += compaction.clear_thread_state(thread_id)
+    for attr in ("_pending_tool_reload", "_turn_reload_count"):
         state = getattr(agent, attr, None)
         if isinstance(state, dict) and thread_id in state:
             state.pop(thread_id, None)

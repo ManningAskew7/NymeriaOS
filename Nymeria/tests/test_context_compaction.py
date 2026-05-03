@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from nymeria.core.agent import NymeriaAgent
+from nymeria.core.agent_compaction import CompactionManager
 from nymeria.core.token_tracker import TokenTracker
 
 
@@ -16,6 +17,7 @@ def _agent_with_compaction() -> NymeriaAgent:
     )
     agent._token_tracker = TokenTracker()
     agent._get_llm_config_for_thread = lambda thread_id: SimpleNamespace(model="gpt-5.5")
+    agent._compaction = CompactionManager(agent)
     return agent
 
 
