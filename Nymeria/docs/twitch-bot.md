@@ -17,6 +17,21 @@ The bot communicates exclusively through the `twitch_send` tool — the agent's 
 
 Twitch tools resolve the active bot through `nymeria/core/twitch_runtime.py`, a small runtime facade that lives outside `nymeria.tools`. This keeps the bot registration intact across `reload_all` / tool hot-reload and prevents tool objects from holding stale TwitchIO bot references.
 
+The Twitch bot is intentionally not a Discord/Telegram-style thin client. The
+agent's ReAct tool calls must execute in the same process as the TwitchIO bot
+because `twitch_send`, `twitch_read_chat`, moderation tools, and broadcaster
+actions need the live chat buffer, bot event loop, TwitchIO's auto-refreshed
+token store, and resolved bot/broadcaster IDs. Routing Twitch prompts through
+the API without first adding a bot-side tool proxy would run those tools in the
+API container, where no Twitch runtime is registered.
+
+The current risk controls are: `run.py twitch-bot` creates `NymeriaAgent` with
+`enable_ticker=False`, the old watchdog side effect is gone, and
+`core/twitch_runtime.py` keeps tool hot-reload from losing the active bot
+registration. Revisit a full thin-client migration only if deployment needs
+horizontal API scaling or multiple Twitch bot instances, and design the
+tool-proxy/RPC layer before moving chat execution to `/chat`.
+
 ## Setup
 
 ### 1. Create a Twitch Application
