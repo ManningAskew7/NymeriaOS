@@ -136,6 +136,8 @@ use the trigger system: `POST /triggers/fire/{trigger_id}`. See `docs/triggers.m
 Nymeria can expose an MCP server for other AI agents to use her capabilities.
 The MCP process is a thin client: it talks to the running REST/SSE API with
 `NYMERIA_SERVICE_TOKEN` and uses `X-Nymeria-Act-As` for user-scoped tools.
+`python run.py mcp` exits during startup if that token is missing, matching the
+worker, bot, watchdog, and foreground service launch checks.
 
 ### Local MCP
 
