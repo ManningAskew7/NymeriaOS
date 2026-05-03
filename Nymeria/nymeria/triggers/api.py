@@ -1278,6 +1278,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     def _thread_list_platform(thread_id: str, meta=None) -> str:
         """Resolve the platform value the frontend should render for a thread."""
         platform = meta.platform if meta else _classify_thread_platform_from_id(thread_id)
+        bound_platform = _bound_chatapp_platform(thread_id)
+        if bound_platform:
+            return bound_platform
+
+        native_platform = _classify_thread_platform_from_id(thread_id)
+        if native_platform in {"discord", "telegram", "slack", "trigger"}:
+            return native_platform
+        if platform in {"discord", "telegram", "slack", "trigger"}:
+            return platform
+
         thread_config_manager = getattr(get_agent(), "thread_config_manager", None)
         tc = (
             thread_config_manager.get_config(thread_id)
@@ -1289,7 +1299,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         elif platform == "callable":
             platform = "desktop"
 
-        return _bound_chatapp_platform(thread_id) or platform
+        return platform
 
     def _publish_chatapp_platform_sync(thread_id: str, user_id: str, origin_client_id: str = "") -> None:
         """Notify clients when a chat-app binding changes a thread's platform icon."""

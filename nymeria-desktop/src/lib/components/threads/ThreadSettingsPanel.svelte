@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, AvailableModel } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool, AvailableModel } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -32,6 +32,27 @@
   }
 
   let { thread, threadConfig, initialTab = 'instructions', onClose, onSaved }: Props = $props();
+
+  function platformFromThreadId(threadId: string): ThreadPlatform {
+    if (threadId.startsWith('discord_')) return 'discord';
+    if (threadId.startsWith('telegram_')) return 'telegram';
+    if (threadId.startsWith('slack_')) return 'slack';
+    if (threadId.startsWith('trigger-')) return 'trigger';
+    if (threadId.startsWith('agent-') || threadId.startsWith('spawned-')) return 'callable';
+    return 'desktop';
+  }
+
+  function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is 'discord' | 'telegram' | 'slack' | 'trigger' {
+    return platform === 'discord' || platform === 'telegram' || platform === 'slack' || platform === 'trigger';
+  }
+
+  function platformAfterCallableChange(target: Thread, callable: boolean): ThreadPlatform {
+    const detected = platformFromThreadId(target.id);
+    if (isNativeDisplayPlatform(target.platform)) return target.platform;
+    if (isNativeDisplayPlatform(detected)) return detected;
+    if (callable) return 'callable';
+    return target.platform === 'callable' ? 'desktop' : (target.platform ?? detected);
+  }
 
   // Active tab
   let activeTab = $state<ThreadSettingsTab>('instructions');
@@ -691,11 +712,7 @@
       }
       threadsStore.updateThread(thread.id, {
         callable: result.callable,
-        platform: result.callable
-          ? 'callable'
-          : thread.platform === 'callable'
-            ? 'desktop'
-            : thread.platform,
+        platform: platformAfterCallableChange(thread, result.callable),
       });
 
       onSaved(result);
@@ -744,7 +761,7 @@
       inAppNotificationLevel = 'notify_only';
       threadsStore.updateThread(thread.id, {
         callable: false,
-        platform: thread.platform === 'callable' ? 'desktop' : thread.platform,
+        platform: platformAfterCallableChange(thread, false),
       });
       onSaved({
         threadId: thread.id,

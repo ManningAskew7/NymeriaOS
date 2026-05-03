@@ -827,10 +827,12 @@ Authorization: Bearer <token>
 
 Returns all threads with server-authoritative metadata (titles, pins, platform).
 When a thread's saved config has `callable=true`, the list response reports
-`callable=true`, `platform="callable"`, and uses `callable_name` as the title
-even if older thread metadata still says `desktop`. If callable is disabled,
-the list response reports `callable=false` and does not keep stale
-`platform="callable"` metadata in the payload.
+`callable=true` and uses `callable_name` as the title. `platform` remains the
+thread's visible origin surface for native or explicitly bound chat-app
+threads such as Telegram; otherwise callable threads report
+`platform="callable"` even if older thread metadata still says `desktop`. If
+callable is disabled, the list response reports `callable=false` and does not
+keep stale `platform="callable"` metadata in the payload.
 The list also includes recoverable thread IDs referenced by thread-bound
 resources such as TODOs, scheduled TODO rows, triggers, chat bindings, bind
 codes, and safe orphan checkpoints. Those rows are marked with

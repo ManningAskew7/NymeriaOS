@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool } from '$lib/types';
+  import type { ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -25,6 +25,27 @@
   }
 
   let { threadId, open, onClose }: Props = $props();
+
+  function platformFromThreadId(id: string): ThreadPlatform {
+    if (id.startsWith('discord_')) return 'discord';
+    if (id.startsWith('telegram_')) return 'telegram';
+    if (id.startsWith('slack_')) return 'slack';
+    if (id.startsWith('trigger-')) return 'trigger';
+    if (id.startsWith('agent-')) return 'callable';
+    return 'desktop';
+  }
+
+  function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is 'discord' | 'telegram' | 'slack' | 'trigger' {
+    return platform === 'discord' || platform === 'telegram' || platform === 'slack' || platform === 'trigger';
+  }
+
+  function platformAfterCallableChange(id: string, currentPlatform: ThreadPlatform | undefined, callable: boolean): ThreadPlatform {
+    const detected = platformFromThreadId(id);
+    if (isNativeDisplayPlatform(currentPlatform)) return currentPlatform;
+    if (isNativeDisplayPlatform(detected)) return detected;
+    if (callable) return 'callable';
+    return currentPlatform === 'callable' ? 'desktop' : (currentPlatform ?? detected);
+  }
 
   type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'triggers';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
@@ -463,11 +484,7 @@
       const thread = threadsStore.threads.find((item) => item.id === threadId);
       threadsStore.updateThread(threadId, {
         callable: result.callable,
-        platform: result.callable
-          ? 'callable'
-          : thread?.platform === 'callable'
-            ? 'desktop'
-            : thread?.platform,
+        platform: platformAfterCallableChange(threadId, thread?.platform, result.callable),
       });
 
       // Refresh context stats
@@ -495,7 +512,7 @@
       const thread = threadsStore.threads.find((item) => item.id === threadId);
       threadsStore.updateThread(threadId, {
         callable: false,
-        platform: thread?.platform === 'callable' ? 'desktop' : thread?.platform,
+        platform: platformAfterCallableChange(threadId, thread?.platform, false),
       });
 
       api.getThreadContextStats(threadId).then((stats) => {
