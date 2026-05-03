@@ -26,8 +26,9 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.docker.example .env.docker
-# Generate API key: python -c "import secrets; print(secrets.token_urlsafe(32))"
-# Edit your environment file with NYMERIA_API_KEY and an LLM provider API key
+# Fill in an LLM provider API key. User auth now uses per-user account tokens:
+# on first boot, the bootstrap admin token is written to data/BOOTSTRAP_TOKEN.txt.
+# See docs/accounts.md.
 
 # Run API server
 python run.py api
@@ -50,7 +51,7 @@ python run.py cli
 ## Project Structure
 
 ```
-C:\Nymeria\
+Nymeria/
 ├── nymeria/
 │   ├── core/               # Agent implementation
 │   │   ├── agent.py        # Main NymeriaAgent class
