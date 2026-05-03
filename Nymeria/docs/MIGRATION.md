@@ -129,10 +129,7 @@ For remote access, ensure:
    TELEGRAM_BOT_TOKEN=your-bot-token
    TELEGRAM_DEFAULT_CHAT_ID=your-chat-id
    ```
-4. Set up webhook (replace with your domain):
-   ```bash
-   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://your-domain/webhook/telegram"
-   ```
+4. The Telegram bot uses long-polling — no webhook setup needed. See `docs/telegram-bot.md` for full setup.
 
 #### Discord
 
@@ -257,19 +254,17 @@ Verify connection:
 docker compose exec postgres psql -U nymeria -c "SELECT 1"
 ```
 
-### Webhooks not working
+### Bot integrations not working
 
-1. Check webhook health:
+1. Check bot container logs:
    ```bash
-   curl http://localhost:8000/webhook/health
+   docker logs nymeria-telegram-bot --tail 50
+   docker logs nymeria-discord-bot --tail 50
    ```
 
-2. Verify webhook secret matches platform configuration
+2. Verify bot tokens are set in `.env.docker`
 
-3. Check logs for incoming webhook requests:
-   ```bash
-   docker compose logs -f api | grep webhook
-   ```
+3. For event-driven triggers, use the trigger system (`POST /triggers/fire/{id}`). See `docs/triggers.md`.
 
 ## Rollback
 
