@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: Nymeria
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            Nymeria/requirements.txt
+            Nymeria/requirements-docker.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r Nymeria/requirements.txt -r Nymeria/requirements-docker.txt
+
+      - name: Run pytest
+        run: python -m pytest Nymeria/tests
+
+  desktop-check:
+    name: Desktop type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-desktop-${{ hashFiles('nymeria-desktop/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-desktop-
+
+      - name: Install desktop dependencies
+        working-directory: nymeria-desktop
+        run: npm install
+
+      - name: Run desktop check
+        working-directory: nymeria-desktop
+        run: npm run check
+
+  mobile-check:
+    name: Mobile type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: nymeria-mobile/package-lock.json
+
+      - name: Install mobile dependencies
+        working-directory: nymeria-mobile
+        run: npm ci
+
+      - name: Run mobile check
+        working-directory: nymeria-mobile
+        run: npm run check
