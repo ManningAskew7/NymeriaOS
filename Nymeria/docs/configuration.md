@@ -194,7 +194,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | `WATCHDOG_ENABLED` | `true` | Enable watchdog to monitor TODO staleness |
 | `WATCHDOG_INTERVAL_MINUTES` | `5` | Minutes between watchdog checks (1-60) |
 | `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
-| `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before auto-archive (1-30) |
+| `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before the ticker removes completed TODOs from the active TODO JSON list (1-30) |
 | `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
 | `FCM_ENABLED` | `false` | Enable Firebase Cloud Messaging push notifications |
 | `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |

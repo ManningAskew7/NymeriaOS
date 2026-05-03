@@ -479,7 +479,7 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
 
-**Auto-purge:** Non-recurring completed TODOs are automatically archived after 7 days by the ticker daemon.
+**Auto-purge:** Completed TODOs remain visible to `nym_todo_list(filter_status="done")` and `GET /todos?filter_status=done` until the ticker cleanup removes them from `data/todos/{user_id}.json`. The retention is controlled by `TODO_AUTO_ARCHIVE_DAYS` (default 7 days, range 1-30). There is no separate completed-TODO archive file; use activity/RAG history for historical outcome lookup after cleanup.
 
 ---
 
@@ -1381,7 +1381,7 @@ Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a 
 2. The **Ticker** daemon polls every 5 seconds for due TODOs.
 3. When a TODO is due, the ticker sends its `task` text as a prompt to the agent on the TODO's `thread_id`.
 4. For recurring TODOs, **any completion** (ticker execution, agent marking done, API, or MCP) auto-reschedules to the next `scheduled_for` based on the recurrence pattern. Use `clear_recurrence` or `nym_todo_delete` to stop.
-5. Non-recurring completed TODOs are auto-archived after 7 days (hourly cleanup in the ticker).
+5. Completed TODOs are removed from the active TODO JSON list after `TODO_AUTO_ARCHIVE_DAYS` (default 7) by hourly cleanup in the ticker. They are not moved to a separate archive file.
 
 **Durable scheduling:** Scheduled TODOs survive application restarts. Missed TODOs are recovered and executed on startup.
 

@@ -199,7 +199,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Absolute scheduling**: ISO 8601 datetime
 - **Recurrence patterns**: 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
 - **Status tracking**: pending → in_progress → done
-- **Auto-purge**: Completed non-recurring TODOs archived after 7 days
+- **Auto-purge**: Completed TODOs are removed from the active TODO list after `TODO_AUTO_ARCHIVE_DAYS` (default 7)
 
 ### Ticker (Background Scheduler)
 - **Daemon thread polling** — 5-second intervals (configurable 1–60s)
