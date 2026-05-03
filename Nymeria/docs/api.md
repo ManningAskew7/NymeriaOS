@@ -763,6 +763,8 @@ Authorization: Bearer <token>
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user.
 
+The admin environment endpoints (`GET /settings/env` and `GET /settings/env/{key}`) omit the retired `NYMERIA_API_KEY` shared-token setting. The field can still exist in old `.env` files for validation compatibility, but account tokens are authoritative and the legacy value is not part of the configuration API.
+
 ### LLM Runtime Diagnostics
 
 ```http

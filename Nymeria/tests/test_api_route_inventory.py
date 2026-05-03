@@ -16,6 +16,7 @@ from nymeria.triggers import api as api_module
 @dataclass
 class FakeSettings:
     data_dir: Path
+    nymeria_api_key: str | None = "legacy-secret"
     database_backend: str = "sqlite"
     postgres_uri: str | None = None
     redis_enabled: bool = False
@@ -343,6 +344,25 @@ def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, monke
     assert forbidden.status_code == 403
     assert allowed.status_code == 200
     assert {row["id"] for row in allowed.json()} == {"alice", "admin"}
+
+
+def test_deprecated_nymeria_api_key_is_hidden_from_config_api(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
+    admin_token = agent.accounts_repo.issue_token("admin")
+
+    listed = client.get("/settings/env", headers=_auth(admin_token))
+
+    assert listed.status_code == 200
+    entries = listed.json()["entries"]
+    assert "nymeria_api_key" not in {entry["name"] for entry in entries}
+    assert "NYMERIA_API_KEY" not in {entry["env_var"] for entry in entries}
+
+    lower = client.get("/settings/env/nymeria_api_key", headers=_auth(admin_token))
+    upper = client.get("/settings/env/NYMERIA_API_KEY", headers=_auth(admin_token))
+
+    assert lower.status_code == 404
+    assert upper.status_code == 404
 
 
 def test_admin_bot_endpoint_rate_limit_is_per_admin_and_endpoint(

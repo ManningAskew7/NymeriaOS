@@ -303,6 +303,13 @@ class ServerSettingsUpdate(BaseModel):
     voice_default_thread_id: Optional[str] = None
 
 
+HIDDEN_CONFIG_SETTINGS = {
+    # Retained on Settings for legacy .env compatibility, but no longer part of
+    # the public/admin configuration API now that account tokens are authoritative.
+    "nymeria_api_key",
+}
+
+
 class OpenRouterKeyDiagnostics(BaseModel):
     """Runtime details for the currently active OpenRouter API key."""
 
@@ -5269,7 +5276,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         # Keys that should be masked in /env show
         secret_keys = {
-            "nymeria_api_key",
             "openai_api_key", "anthropic_api_key", "anthropic_direct_api_key",
             "openrouter_api_key", "perplexity_api_key", "gemini_api_key",
             "discord_bot_token", "discord_webhook_url",
@@ -5294,7 +5300,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "llm_stream_retry_initial_delay", "llm_stream_retry_max_delay",
             ],
             "API Keys": [
-                "nymeria_api_key", "openai_api_key", "anthropic_api_key",
+                "openai_api_key", "anthropic_api_key",
                 "anthropic_direct_api_key", "openrouter_api_key",
                 "perplexity_api_key", "perplexity_search_model",
                 "gemini_api_key", "gemini_extraction_model",
@@ -5348,6 +5354,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         entries = []
         for category, keys in categories.items():
             for key in keys:
+                if key in HIDDEN_CONFIG_SETTINGS:
+                    continue
                 val = getattr(settings, key, None)
                 env_var = key.upper()
                 is_secret = key in secret_keys
@@ -5373,10 +5381,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     ):
         """Get a single environment variable's unmasked value. Admin-only —
         returns raw secrets including API keys and bot tokens."""
+        key_lower = key.lower()
+        if key_lower in HIDDEN_CONFIG_SETTINGS:
+            raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+
         val = getattr(settings, key, None)
         if val is None:
             # Also try looking up by env var name (uppercase)
-            key_lower = key.lower()
             val = getattr(settings, key_lower, None)
             if val is None:
                 raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
