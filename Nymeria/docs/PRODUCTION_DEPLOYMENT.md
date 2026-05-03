@@ -216,15 +216,25 @@ docker run --rm \
 docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 ```
 
+## Secrets Management
+
+`Nymeria/.env.docker` and other secret files are encrypted at rest in the repo via [git-crypt](https://github.com/AGWA/git-crypt). After `git-crypt unlock`, they are transparent in the working tree and bind-mounted directly into containers.
+
+- **Fresh clone:** `git-crypt unlock /path/to/nymeria-gitcrypt.key`, or copy `.env.docker.example` and fill in your own keys.
+- **Per-machine drift:** Each machine may have different values in `.env.docker` (different API keys, proxy URLs, etc.). A modified `.env.docker` in `git status` is expected — only commit when updating the shared baseline.
+- **Rotation:** See `docs/git-crypt.md` for per-secret rotation checklists covering LLM API keys, CLIProxy OAuth, Postgres, service tokens, Fernet keys, and Firebase/Google credentials.
+- **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/` — they are not managed by git-crypt. Never copy them between machines.
+
 ## Security Considerations
 
 1. **Account tokens**: Per-user bearer tokens (`nym_…`) are minted via `python run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`. Bots/ticker/watchdog authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
-2. **CORS**: Restrict origins in production
-3. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
-4. **Network**: Use HTTPS in production (reverse proxy)
-5. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments.
-6. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive.
-7. **Kali Tools**: Use responsibly and only on authorized targets
+2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` are git-crypt encrypted. See `docs/git-crypt.md` for policy, rotation, and history-rewriting decisions.
+3. **CORS**: Restrict origins in production
+4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
+5. **Network**: Use HTTPS in production (reverse proxy)
+6. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments.
+7. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive.
+8. **Kali Tools**: Use responsibly and only on authorized targets
 
 ## Troubleshooting
 
