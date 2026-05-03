@@ -174,10 +174,12 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | `/start link_<code>` | Auto-handled when you tap a `t.me/<bot>?start=link_<code>` deep link from the desktop wizard's first step. Self-service alternative to `python run.py users link-platform`. |
 | `/start bind_<code>` | Auto-handled when you tap a `t.me/<bot>?start=bind_<code>` deep link. Equivalent to `/bind <code>` in the chat the deep link opens. |
 
-The desktop **Chat App tab** (Thread Settings → Chat App) is the canonical entry
-point for non-admin users. The flow is fully self-service: the wizard issues a
-self-link code if the user hasn't linked their Telegram identity yet, then
-issues a per-thread bind code, then polls until the bot has consumed both. The
+The desktop and mobile **Chat App** tabs (Thread Settings → Chat App) are the
+canonical entry point for non-admin users. The flow is fully self-service: the
+wizard issues a self-link code if the user hasn't linked their Telegram
+identity yet, then issues a per-thread bind code, then polls until the bot has
+consumed both; if the user is already linked, it skips directly to the
+bind-code polling path. The
 bot caches the chat↔thread map in process and refreshes it from the API every
 60 seconds, so bindings created from the wizard take effect within that window.
 The bot-facing admin binding endpoints are rate-limited per admin/service user

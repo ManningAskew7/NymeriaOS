@@ -39,8 +39,7 @@
       const platforms = await api.listMyPlatforms();
       const linked = platforms.some((p) => p.provider === provider);
       if (linked) {
-        await issueBindCode();
-        currentStep = 'bind';
+        await advanceToBindStep();
       } else {
         await issueLinkCode();
         currentStep = 'link';
@@ -79,6 +78,12 @@
     }
   }
 
+  async function advanceToBindStep() {
+    await issueBindCode();
+    currentStep = 'bind';
+    startBindPoll();
+  }
+
   function startLinkPoll() {
     stopPolling();
     pollHandle = setInterval(async () => {
@@ -86,9 +91,7 @@
         const platforms = await api.listMyPlatforms();
         if (platforms.some((p) => p.provider === provider)) {
           stopPolling();
-          await issueBindCode();
-          currentStep = 'bind';
-          startBindPoll();
+          await advanceToBindStep();
         }
       } catch {
         // Transient errors — retry on next tick.
