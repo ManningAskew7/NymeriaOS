@@ -37,13 +37,14 @@
     if (threadId.startsWith('discord_')) return 'discord';
     if (threadId.startsWith('telegram_')) return 'telegram';
     if (threadId.startsWith('slack_')) return 'slack';
+    if (threadId.startsWith('twitch_')) return 'twitch';
     if (threadId.startsWith('trigger-')) return 'trigger';
     if (threadId.startsWith('agent-') || threadId.startsWith('spawned-')) return 'callable';
     return 'desktop';
   }
 
-  function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is 'discord' | 'telegram' | 'slack' | 'trigger' {
-    return platform === 'discord' || platform === 'telegram' || platform === 'slack' || platform === 'trigger';
+  function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is 'discord' | 'telegram' | 'slack' | 'twitch' | 'trigger' {
+    return platform === 'discord' || platform === 'telegram' || platform === 'slack' || platform === 'twitch' || platform === 'trigger';
   }
 
   function platformAfterCallableChange(target: Thread, callable: boolean): ThreadPlatform {

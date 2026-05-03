@@ -46,18 +46,7 @@ def _get_checkpoint_thread_ids(state: "CLIState") -> List[str]:
     return thread_ids
 
 
-def _classify_platform(thread_id: str) -> str:
-    if thread_id.startswith("trigger-"):
-        return "trigger"
-    if thread_id.startswith("discord_"):
-        return "discord"
-    if thread_id.startswith("telegram_"):
-        return "telegram"
-    if thread_id.startswith("slack_"):
-        return "slack"
-    if thread_id.startswith("agent-"):
-        return "callable"
-    return "desktop"
+from nymeria.core.thread_classification import classify_platform as _classify_platform
 
 
 def _build_thread_list(state: "CLIState") -> List[Dict[str, Any]]:

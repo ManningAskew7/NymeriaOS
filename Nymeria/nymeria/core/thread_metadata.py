@@ -50,24 +50,10 @@ def generate_title(message: str, max_length: int = 40) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Platform classification
+# Platform classification — delegates to the shared module
 # ---------------------------------------------------------------------------
 
-def classify_platform(thread_id: str) -> str:
-    """Classify thread platform from its ID prefix."""
-    if thread_id.startswith("discord_"):
-        return "discord"
-    if thread_id.startswith("telegram_"):
-        return "telegram"
-    if thread_id.startswith("slack_"):
-        return "slack"
-    if thread_id.startswith("trigger-"):
-        return "trigger"
-    if thread_id.startswith("agent-"):
-        return "callable"
-    if thread_id.startswith("spawned-"):
-        return "callable"
-    return "desktop"
+from .thread_classification import classify_platform  # noqa: E402  re-export
 
 
 # ---------------------------------------------------------------------------
