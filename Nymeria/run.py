@@ -55,12 +55,24 @@ def _load_environment() -> None:
 _load_environment()
 
 
-def validate_config(skip_api_key: bool = False) -> None:
+_SERVICE_TOKEN_REQUIRED_COMMANDS = {
+    "worker": "the worker (ticker)",
+    "discord-bot": "the Discord bot",
+    "telegram-bot": "the Telegram bot",
+    "watchdog": "the watchdog worker",
+    "twitch-bot": "the Twitch bot",
+    "mcp": "the MCP thin client",
+}
+
+
+def validate_config(skip_api_key: bool = False, suppress_service_token_warning: bool = False) -> None:
     """
     Validate configuration before starting any command.
 
     Args:
         skip_api_key: If True, skip NYMERIA_API_KEY check (for service status checks)
+        suppress_service_token_warning: If True, omit the generic service-token
+            warning because launch-mode validation will enforce it as fatal.
 
     Exits with code 1 if critical errors are found.
     """
@@ -72,6 +84,8 @@ def validate_config(skip_api_key: bool = False) -> None:
     # Filter out API key error if skip_api_key is True
     if skip_api_key:
         errors = [e for e in errors if "NYMERIA_API_KEY" not in e]
+    if suppress_service_token_warning:
+        warnings = [w for w in warnings if "NYMERIA_SERVICE_TOKEN not set" not in w]
 
     # Print warnings (non-fatal)
     if warnings:
@@ -98,18 +112,38 @@ def validate_config(skip_api_key: bool = False) -> None:
         sys.exit(1)
 
 
-def _require_service_token(settings, role: str) -> str:
+def _service_token_requirement(args: argparse.Namespace) -> str | None:
+    """Return the human-readable role requiring NYMERIA_SERVICE_TOKEN, if any."""
+    command = getattr(args, "command", None)
+    if command == "service" and getattr(args, "action", None) == "run":
+        return "the foreground gateway service"
+    return _SERVICE_TOKEN_REQUIRED_COMMANDS.get(command)
+
+
+def _require_service_token(settings, role: str, *, stream=None) -> str:
     """Return the admin service token or fail with provisioning guidance."""
     token = settings.nymeria_service_token
+    if isinstance(token, str):
+        token = token.strip()
     if token:
         return token
 
-    print(f"\n[Error] NYMERIA_SERVICE_TOKEN is required for {role}.")
-    print("  Provision the bot-service admin once:")
-    print("    docker exec nymeria-api python run.py users add bot-service@localhost \\")
-    print("        --role admin --id bot-service")
-    print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.")
+    stream = stream or sys.stdout
+    print(f"\n[Error] NYMERIA_SERVICE_TOKEN is required for {role}.", file=stream)
+    print("  Provision the bot-service admin once:", file=stream)
+    print("    docker exec nymeria-api python run.py users add bot-service@localhost \\", file=stream)
+    print("        --role admin --id bot-service", file=stream)
+    print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.", file=stream)
     sys.exit(1)
+
+
+def _require_launch_mode_service_token(args: argparse.Namespace, settings) -> None:
+    """Fail early for launch modes that make trusted internal API calls."""
+    role = _service_token_requirement(args)
+    if not role:
+        return
+    stream = sys.stderr if getattr(args, "command", None) == "mcp" else sys.stdout
+    _require_service_token(settings, role, stream=stream)
 
 
 def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
@@ -799,6 +833,7 @@ Actions:
     users_cli.build_parser(subparsers)
 
     args = parser.parse_args()
+    service_token_required = _service_token_requirement(args) is not None
 
     # Setup logging (except for service commands and STDIO MCP, which must keep
     # stdout reserved for JSON-RPC messages. The MCP server configures stderr
@@ -806,12 +841,16 @@ Actions:
     if args.command not in ("service", "mcp"):
         setup_logging(args.log_level)
 
+    if service_token_required:
+        from nymeria.config import get_settings
+        _require_launch_mode_service_token(args, get_settings())
+
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
     if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "telegram-bot", "twitch-bot", "watchdog"):
-        validate_config()
+        validate_config(suppress_service_token_warning=service_token_required)
     elif args.command == "service" and args.action in ("install", "run"):
-        validate_config()
+        validate_config(suppress_service_token_warning=service_token_required)
     elif args.command == "service" and args.action == "status":
         # Status check doesn't need full validation
         validate_config(skip_api_key=True)
