@@ -1,27 +1,29 @@
-# API Service Modularization
+# API Service Modules
 
-This directory contains the modular structure for the Nymeria API service.
+`api.svelte.ts` is now only the compatibility entrypoint for existing imports.
+The concrete `NymeriaAPI` facade lives in `index.ts` and extends the domain
+classes in this directory.
 
-## Planned Structure
+## Modules
 
-The `api.svelte.ts` file (1090 lines) should be split into:
+- `base.ts` - shared transport helpers, auth/error handling, response normalizers,
+  and `probeConnection`.
+- `system.ts` - health, auth verification, restart, settings, and model metadata.
+- `accounts.ts` - profile, tokens, admin users, platform identities, Chat App
+  bindings, and BYO Telegram bots.
+- `chat.ts` - chat streaming, stream abort state, attachment validation, workspace
+  download, and sync chat.
+- `threads.ts` - thread listing, metadata, ownership claim, history, stop, and
+  context stats.
+- `todos.ts` - TODOs, activity, notification, and dashboard task-count endpoints.
+- `tools.ts` - builtin, custom, unified, optional, and default tool endpoints.
+- `mcp.ts` - MCP server CRUD, install, discovery, and testing.
+- `thread-config.ts` - thread config, callable agent thread templates, teams, and
+  import/export.
+- `skills.ts` - installed skills, marketplace search/install, thread skills, and
+  global skills.
+- `triggers.ts` - trigger CRUD, sources, tests, and execution history.
+- `reporting.ts` - problem reports.
 
-- `base.ts` - Core NymeriaAPI class, utilities, health check
-- `chat.ts` - Chat/streaming methods
-- `todos.ts` - TODO operations
-- `tools.ts` - Custom tools API
-- `agents.ts` - Sub-agents API
-- `index.ts` - Re-export combined API
-
-## Migration Path
-
-1. Create each module with the extracted methods
-2. Update `api.svelte.ts` to import and re-export from modules
-3. Existing imports (`$lib/services/api.svelte`) continue to work
-4. Eventually remove the monolithic file
-
-## Current Status
-
-The API service currently remains in `api.svelte.ts` for backwards compatibility.
-The old experimental store utility pattern was removed after it never gained
-callers; future API splitting should be based on active service domains.
+Existing callers should keep importing from `$lib/services/api.svelte` unless a
+new internal module has a specific reason to depend on one domain class.
