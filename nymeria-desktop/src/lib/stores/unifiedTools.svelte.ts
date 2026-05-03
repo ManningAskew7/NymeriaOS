@@ -8,392 +8,317 @@
 import { api } from '$lib/services/api.svelte';
 import { registerIdentityReloadHook } from './config.svelte';
 import { defaultToolsStore } from './defaultTools.svelte';
-import type { UnifiedTool, ToolCategory, ToolType } from '$lib/types';
+import type { UnifiedTool } from '$lib/types';
 
-// State
-let tools = $state<UnifiedTool[]>([]);
-let loading = $state(false);
-let loaded = $state(false);
-let error = $state<string | null>(null);
-let builtinCount = $state(0);
-let customCount = $state(0);
-let identityGeneration = 0;
+function createUnifiedToolsStore() {
+  // State
+  let tools = $state<UnifiedTool[]>([]);
+  let loading = $state(false);
+  let loaded = $state(false);
+  let error = $state<string | null>(null);
+  let builtinCount = $state(0);
+  let customCount = $state(0);
+  let identityGeneration = 0;
 
-// Reset everything when the connected user changes — the previous account's
-// tools no longer apply, and consuming panels gate on `loaded` so flipping it
-// back to false makes their `$effect` blocks re-fetch under the new identity.
-registerIdentityReloadHook(() => {
-  identityGeneration += 1;
-  tools = [];
-  builtinCount = 0;
-  customCount = 0;
-  loaded = false;
-  loading = false;
-  error = null;
-});
+  // Reset everything when the connected user changes — the previous account's
+  // tools no longer apply, and consuming panels gate on `loaded` so flipping it
+  // back to false makes their `$effect` blocks re-fetch under the new identity.
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    tools = [];
+    builtinCount = 0;
+    customCount = 0;
+    loaded = false;
+    loading = false;
+    error = null;
+  });
 
-// Category display names and icons
-const CATEGORY_INFO: Record<string, { name: string; icon: string; description: string }> = {
-  core: {
-    name: 'Core',
-    icon: 'terminal',
-    description: 'Essential system tools like bash, file operations, and web search'
-  },
-  profile: {
-    name: 'Profile',
-    icon: 'brain',
-    description: 'Tools for saving and retrieving user memories and preferences'
-  },
-  notepad: {
-    name: 'Notepad',
-    icon: 'sticky-note',
-    description: 'Per-thread persistent notes that survive context compaction'
-  },
-  self_modify: {
-    name: 'Self-Modify',
-    icon: 'code',
-    description: 'Tools that allow Nymeria to modify her own code (sensitive)'
-  },
-  todo: {
-    name: 'TODOs',
-    icon: 'list',
-    description: 'Task management and scheduling tools'
-  },
-  trigger: {
-    name: 'Triggers',
-    icon: 'zap',
-    description: 'Event-driven trigger management tools'
-  },
-  email: {
-    name: 'Email',
-    icon: 'mail',
-    description: 'Outlook email tools for reading, sending, and managing mail'
-  },
-  browser: {
-    name: 'Browser',
-    icon: 'globe',
-    description: 'Playwright browser automation tools for web interaction'
-  },
-  calendar: {
-    name: 'Calendar',
-    icon: 'calendar',
-    description: 'Google Calendar tools for managing events and schedules'
-  },
-  google_docs: {
-    name: 'Google Docs',
-    icon: 'file-text',
-    description: 'Google Docs tools for reading, writing, and formatting documents'
-  },
-  custom: {
-    name: 'Custom',
-    icon: 'puzzle',
-    description: 'User-created custom tools (HTTP, MCP, etc.)'
-  },
-  mcp_server: {
-    name: 'MCP Servers',
-    icon: 'server',
-    description: 'Tools auto-discovered from MCP servers'
-  }
-};
-
-// Getters
-function getTools(): UnifiedTool[] {
-  return tools;
-}
-
-function getBuiltinTools(): UnifiedTool[] {
-  return tools.filter((t) => t.toolType === 'builtin');
-}
-
-function getCustomTools(): UnifiedTool[] {
-  return tools.filter((t) => t.toolType === 'custom');
-}
-
-function getEnabledTools(): UnifiedTool[] {
-  return tools.filter((t) => t.enabled);
-}
-
-function getDisabledTools(): UnifiedTool[] {
-  return tools.filter((t) => !t.enabled);
-}
-
-function getToolsByCategory(): Record<string, UnifiedTool[]> {
-  const result: Record<string, UnifiedTool[]> = {};
-  for (const tool of tools) {
-    const cat = tool.category;
-    if (!result[cat]) {
-      result[cat] = [];
+  // Category display names and icons
+  const CATEGORY_INFO: Record<string, { name: string; icon: string; description: string }> = {
+    core: {
+      name: 'Core',
+      icon: 'terminal',
+      description: 'Essential system tools like bash, file operations, and web search'
+    },
+    profile: {
+      name: 'Profile',
+      icon: 'brain',
+      description: 'Tools for saving and retrieving user memories and preferences'
+    },
+    notepad: {
+      name: 'Notepad',
+      icon: 'sticky-note',
+      description: 'Per-thread persistent notes that survive context compaction'
+    },
+    self_modify: {
+      name: 'Self-Modify',
+      icon: 'code',
+      description: 'Tools that allow Nymeria to modify her own code (sensitive)'
+    },
+    todo: {
+      name: 'TODOs',
+      icon: 'list',
+      description: 'Task management and scheduling tools'
+    },
+    trigger: {
+      name: 'Triggers',
+      icon: 'zap',
+      description: 'Event-driven trigger management tools'
+    },
+    email: {
+      name: 'Email',
+      icon: 'mail',
+      description: 'Outlook email tools for reading, sending, and managing mail'
+    },
+    browser: {
+      name: 'Browser',
+      icon: 'globe',
+      description: 'Playwright browser automation tools for web interaction'
+    },
+    calendar: {
+      name: 'Calendar',
+      icon: 'calendar',
+      description: 'Google Calendar tools for managing events and schedules'
+    },
+    google_docs: {
+      name: 'Google Docs',
+      icon: 'file-text',
+      description: 'Google Docs tools for reading, writing, and formatting documents'
+    },
+    custom: {
+      name: 'Custom',
+      icon: 'puzzle',
+      description: 'User-created custom tools (HTTP, MCP, etc.)'
+    },
+    mcp_server: {
+      name: 'MCP Servers',
+      icon: 'server',
+      description: 'Tools auto-discovered from MCP servers'
     }
-    result[cat].push(tool);
+  };
+
+  // Getters
+  function getTools(): UnifiedTool[] {
+    return tools;
   }
-  return result;
-}
 
-function getCategories(): string[] {
-  const cats = new Set(tools.map((t) => t.category));
-  return Array.from(cats);
-}
+  function getBuiltinTools(): UnifiedTool[] {
+    return tools.filter((t) => t.toolType === 'builtin');
+  }
 
-function isLoading(): boolean {
-  return loading;
-}
+  function getCustomTools(): UnifiedTool[] {
+    return tools.filter((t) => t.toolType === 'custom');
+  }
 
-function isLoaded(): boolean {
-  return loaded;
-}
+  function getEnabledTools(): UnifiedTool[] {
+    return tools.filter((t) => t.enabled);
+  }
 
-function getError(): string | null {
-  return error;
-}
+  function getDisabledTools(): UnifiedTool[] {
+    return tools.filter((t) => !t.enabled);
+  }
 
-function getCategoryInfo(category: string) {
-  return (
-    CATEGORY_INFO[category] || {
-      name: category,
-      icon: 'tool',
-      description: ''
+  function getToolsByCategory(): Record<string, UnifiedTool[]> {
+    const result: Record<string, UnifiedTool[]> = {};
+    for (const tool of tools) {
+      const cat = tool.category;
+      if (!result[cat]) {
+        result[cat] = [];
+      }
+      result[cat].push(tool);
     }
-  );
-}
+    return result;
+  }
 
-function getToolById(id: string): UnifiedTool | undefined {
-  return tools.find((t) => t.id === id);
-}
+  function getCategories(): string[] {
+    const cats = new Set(tools.map((t) => t.category));
+    return Array.from(cats);
+  }
 
-// Actions
-async function loadTools(userId?: string): Promise<void> {
-  if (loading) return;
+  function isLoading(): boolean {
+    return loading;
+  }
 
-  const requestGeneration = identityGeneration;
-  loading = true;
-  error = null;
+  function isLoaded(): boolean {
+    return loaded;
+  }
 
-  try {
-    const response = await api.getUnifiedTools(userId);
-    if (requestGeneration !== identityGeneration) return;
-    tools = response.tools;
-    builtinCount = response.builtinCount;
-    customCount = response.customCount;
-    loaded = true;
-  } catch (e) {
-    if (requestGeneration !== identityGeneration) return;
-    error = e instanceof Error ? e.message : 'Failed to load tools';
-    console.error('Failed to load unified tools:', e);
-    // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
-    // resetLoaded() (called on tool changes) or the identity-reload hook
-    // will reset this, allowing a fresh attempt.
-    loaded = true;
-  } finally {
-    if (requestGeneration === identityGeneration) {
+  function getError(): string | null {
+    return error;
+  }
+
+  function getCategoryInfo(category: string) {
+    return (
+      CATEGORY_INFO[category] || {
+        name: category,
+        icon: 'tool',
+        description: ''
+      }
+    );
+  }
+
+  function getToolById(id: string): UnifiedTool | undefined {
+    return tools.find((t) => t.id === id);
+  }
+
+  // Actions
+  async function loadTools(userId?: string): Promise<void> {
+    if (loading) return;
+
+    const requestGeneration = identityGeneration;
+    loading = true;
+    error = null;
+
+    try {
+      const response = await api.getUnifiedTools(userId);
+      if (requestGeneration !== identityGeneration) return;
+      tools = response.tools;
+      builtinCount = response.builtinCount;
+      customCount = response.customCount;
+      loaded = true;
+    } catch (e) {
+      if (requestGeneration !== identityGeneration) return;
+      error = e instanceof Error ? e.message : 'Failed to load tools';
+      console.error('Failed to load unified tools:', e);
+      // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
+      // resetLoaded() (called on tool changes) or the identity-reload hook
+      // will reset this, allowing a fresh attempt.
+      loaded = true;
+    } finally {
+      if (requestGeneration === identityGeneration) {
+        loading = false;
+      }
+    }
+  }
+
+  function resetLoaded(): void {
+    loaded = false;
+  }
+
+  async function setToolEnabled(
+    toolId: string,
+    enabled: boolean,
+    userId?: string
+  ): Promise<boolean> {
+    loading = true;
+    error = null;
+
+    try {
+      await api.setUnifiedToolEnabled(toolId, enabled, userId);
+      // Reload to get updated state
+      await loadTools(userId);
+      // Sync defaultToolsStore so both stores reflect the change
+      defaultToolsStore.resetLoaded();
+      return true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to update tool';
+      console.error('Failed to set tool enabled:', e);
+      return false;
+    } finally {
       loading = false;
     }
   }
-}
 
-function resetLoaded(): void {
-  loaded = false;
-}
+  async function setToolDescription(
+    toolId: string,
+    description: string | null,
+    userId?: string
+  ): Promise<boolean> {
+    loading = true;
+    error = null;
 
-async function setToolEnabled(
-  toolId: string,
-  enabled: boolean,
-  userId?: string
-): Promise<boolean> {
-  loading = true;
-  error = null;
-
-  try {
-    await api.setUnifiedToolEnabled(toolId, enabled, userId);
-    // Reload to get updated state
-    await loadTools(userId);
-    // Sync defaultToolsStore so both stores reflect the change
-    defaultToolsStore.resetLoaded();
-    return true;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to update tool';
-    console.error('Failed to set tool enabled:', e);
-    return false;
-  } finally {
-    loading = false;
+    try {
+      await api.setUnifiedToolDescription(toolId, description, userId);
+      // Reload to get updated state
+      await loadTools(userId);
+      return true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to update tool description';
+      console.error('Failed to set tool description:', e);
+      return false;
+    } finally {
+      loading = false;
+    }
   }
-}
 
-async function createCustomTool(
-  request: {
-    id: string;
-    name: string;
-    description: string;
-    parameters?: Record<string, unknown>[];
-    http?: Record<string, unknown>;
-    mcp?: Record<string, unknown>;
-    tags?: string[];
-  },
-  userId?: string
-): Promise<UnifiedTool | null> {
-  loading = true;
-  error = null;
+  async function setToolConfig(
+    toolId: string,
+    config: Record<string, unknown>,
+    userId?: string
+  ): Promise<boolean> {
+    loading = true;
+    error = null;
 
-  try {
-    const tool = await api.createUnifiedTool(request);
-    await loadTools(userId);
-    return tool;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to create tool';
-    console.error('Failed to create custom tool:', e);
-    return null;
-  } finally {
-    loading = false;
+    try {
+      await api.setUnifiedToolConfig(toolId, config, userId);
+      // Reload to get updated state
+      await loadTools(userId);
+      return true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to update tool config';
+      console.error('Failed to set tool config:', e);
+      return false;
+    } finally {
+      loading = false;
+    }
   }
-}
 
-async function updateCustomTool(
-  toolId: string,
-  request: {
-    name?: string;
-    description?: string;
-    parameters?: Record<string, unknown>[];
-    http?: Record<string, unknown>;
-    mcp?: Record<string, unknown>;
-    tags?: string[];
-  },
-  userId?: string
-): Promise<UnifiedTool | null> {
-  loading = true;
-  error = null;
-
-  try {
-    const tool = await api.updateUnifiedTool(toolId, request);
-    await loadTools(userId);
-    return tool;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to update tool';
-    console.error('Failed to update custom tool:', e);
-    return null;
-  } finally {
-    loading = false;
+  function clearError(): void {
+    error = null;
   }
+
+  // Export store
+  return {
+    // Getters
+    get tools() {
+      return getTools();
+    },
+    get builtinTools() {
+      return getBuiltinTools();
+    },
+    get customTools() {
+      return getCustomTools();
+    },
+    get enabledTools() {
+      return getEnabledTools();
+    },
+    get disabledTools() {
+      return getDisabledTools();
+    },
+    get toolsByCategory() {
+      return getToolsByCategory();
+    },
+    get categories() {
+      return getCategories();
+    },
+    get loading() {
+      return isLoading();
+    },
+    get loaded() {
+      return isLoaded();
+    },
+    get error() {
+      return getError();
+    },
+    get builtinCount() {
+      return builtinCount;
+    },
+    get customCount() {
+      return customCount;
+    },
+
+    // Helper getters
+    getCategoryInfo,
+    getToolById,
+
+    // Actions
+    loadTools,
+    resetLoaded,
+    setToolEnabled,
+    setToolDescription,
+    setToolConfig,
+    clearError
+  };
 }
 
-async function deleteCustomTool(
-  toolId: string,
-  userId?: string
-): Promise<boolean> {
-  loading = true;
-  error = null;
-
-  try {
-    await api.deleteUnifiedTool(toolId);
-    await loadTools(userId);
-    return true;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to delete tool';
-    console.error('Failed to delete custom tool:', e);
-    return false;
-  } finally {
-    loading = false;
-  }
-}
-
-async function setToolDescription(
-  toolId: string,
-  description: string | null,
-  userId?: string
-): Promise<boolean> {
-  loading = true;
-  error = null;
-
-  try {
-    await api.setUnifiedToolDescription(toolId, description, userId);
-    // Reload to get updated state
-    await loadTools(userId);
-    return true;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to update tool description';
-    console.error('Failed to set tool description:', e);
-    return false;
-  } finally {
-    loading = false;
-  }
-}
-
-async function setToolConfig(
-  toolId: string,
-  config: Record<string, unknown>,
-  userId?: string
-): Promise<boolean> {
-  loading = true;
-  error = null;
-
-  try {
-    await api.setUnifiedToolConfig(toolId, config, userId);
-    // Reload to get updated state
-    await loadTools(userId);
-    return true;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to update tool config';
-    console.error('Failed to set tool config:', e);
-    return false;
-  } finally {
-    loading = false;
-  }
-}
-
-function clearError(): void {
-  error = null;
-}
-
-// Export store
-export const unifiedToolsStore = {
-  // Getters
-  get tools() {
-    return getTools();
-  },
-  get builtinTools() {
-    return getBuiltinTools();
-  },
-  get customTools() {
-    return getCustomTools();
-  },
-  get enabledTools() {
-    return getEnabledTools();
-  },
-  get disabledTools() {
-    return getDisabledTools();
-  },
-  get toolsByCategory() {
-    return getToolsByCategory();
-  },
-  get categories() {
-    return getCategories();
-  },
-  get loading() {
-    return isLoading();
-  },
-  get loaded() {
-    return isLoaded();
-  },
-  get error() {
-    return getError();
-  },
-  get builtinCount() {
-    return builtinCount;
-  },
-  get customCount() {
-    return customCount;
-  },
-
-  // Helper getters
-  getCategoryInfo,
-  getToolById,
-
-  // Actions
-  loadTools,
-  resetLoaded,
-  setToolEnabled,
-  setToolDescription,
-  setToolConfig,
-  createCustomTool,
-  updateCustomTool,
-  deleteCustomTool,
-  clearError
-};
+export const unifiedToolsStore = createUnifiedToolsStore();
