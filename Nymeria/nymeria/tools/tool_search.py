@@ -119,6 +119,27 @@ def _build_catalog() -> Dict[str, dict]:
     return catalog
 
 
+def _get_user_role(user_id: str) -> str:
+    """Best-effort role lookup for discovery and enable gates."""
+    from ..core.agent import get_current_agent
+
+    try:
+        agent = get_current_agent()
+        user = agent.accounts_repo.get_user_by_id(user_id) if agent and user_id else None
+        return user.role if user else "user"
+    except Exception:
+        return "user"
+
+
+def _build_discovery_catalog(user_role: str) -> Dict[str, dict]:
+    """Build the catalog shown to a caller in search/category views."""
+    from . import filter_discoverable_optional_tool_names
+
+    catalog = _build_catalog()
+    visible = filter_discoverable_optional_tool_names(catalog.keys(), user_role)
+    return {name: entry for name, entry in catalog.items() if name in visible}
+
+
 def _resolve_tool_object(name: str, agent) -> Optional[Any]:
     """Return the actual tool object that would be bound at graph-build time.
 
@@ -184,8 +205,8 @@ def _get_thread_status(thread_id: str) -> Tuple[set, dict, set]:
     return set(tc.enabled_tools), dict(tc.temporary_tools), set(tc.disabled_tools)
 
 
-def _search(query: str, category: str, thread_id: str) -> str:
-    catalog = _build_catalog()
+def _search(query: str, category: str, thread_id: str, user_role: str = "user") -> str:
+    catalog = _build_discovery_catalog(user_role)
     enabled_perm, temp_map, disabled = _get_thread_status(thread_id)
 
     candidates = list(catalog.values())
@@ -290,6 +311,12 @@ def bind_tools_for_thread(
             reason=reason,
         )
 
+    try:
+        user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+        user_role = user.role if user else "user"
+    except Exception:
+        user_role = "user"
+
     ttl_key = (ttl or DEFAULT_TTL).strip().lower()
     if ttl_key not in TTL_PRESETS:
         options = ", ".join(f'"{k}"' for k in TTL_PRESETS)
@@ -319,7 +346,7 @@ def bind_tools_for_thread(
                 reason=reason,
             )
 
-        catalog = _build_catalog()
+        catalog = _build_discovery_catalog(user_role)
         tool_names = [c["name"] for c in catalog.values() if c["category"] == cat_key]
         if not tool_names:
             return ToolBindingResult(
@@ -415,9 +442,7 @@ def bind_tools_for_thread(
     # without this, an agent could call tool_search(action="enable",
     # tools=["reload_all"]) to escalate to admin-only tools that are
     # equivalent to authenticated RCE on the shared backend.
-    from . import filter_admin_only_tools
-    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-    user_role = user.role if user else "user"
+    from . import filter_admin_only_tools, filter_developer_only_tools
     allowed, blocked = filter_admin_only_tools(valid, user_role)
     if blocked:
         return ToolBindingResult(
@@ -426,6 +451,24 @@ def bind_tools_for_thread(
                 f"[Error]: Admin-only tools cannot be enabled by this user: "
                 f"{sorted(blocked)}. Ask an administrator to enable them on this "
                 f"thread, or pick a non-admin alternative."
+            ),
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
+    valid = [n for n in valid if n in allowed]
+
+    # Developer-only diagnostics are kept in OPTIONAL_TOOLS for admin/test
+    # validation, but regular users should neither discover nor bind them.
+    allowed, blocked = filter_developer_only_tools(valid, user_role)
+    if blocked:
+        return ToolBindingResult(
+            ok=False,
+            text=(
+                f"[Error]: Developer-only diagnostic tools cannot be enabled "
+                f"by this user: {sorted(blocked)}."
             ),
             ttl_key=ttl_key,
             ttl_seconds=ttl_seconds,
@@ -807,8 +850,8 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _list_categories() -> str:
-    catalog = _build_catalog()
+def _list_categories(user_role: str = "user") -> str:
+    catalog = _build_discovery_catalog(user_role)
     cat_counts: Dict[str, List[str]] = {}
     for c in catalog.values():
         cat_counts.setdefault(c["category"], []).append(c["name"])
@@ -912,19 +955,20 @@ def tool_search(
     action = action.strip().lower()
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
+    user_role = _get_user_role(user_id)
     logger.info(
         f"tool_search: action={action}, query={query!r}, category={category!r}, "
         f"tools={tools}, ttl={ttl!r}"
     )
 
     if action == "search":
-        return _search(query, category, thread_id)
+        return _search(query, category, thread_id, user_role=user_role)
     elif action == "enable":
         return _enable(tools or [], category, thread_id, user_id, ttl=ttl, tool_call_id=tool_call_id)
     elif action == "disable":
         return _disable(tools or [], thread_id, force=force)
     elif action == "list_categories":
-        return _list_categories()
+        return _list_categories(user_role=user_role)
     elif action == "status":
         return _status(thread_id)
     else:

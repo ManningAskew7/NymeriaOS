@@ -130,6 +130,32 @@ ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
     [t.name for t in (SELF_AGENT_TOOLS + SUBAGENT_TOOLS)] + [claude_code.name]
 )
 
+# Optional tools that exist for development/regression validation rather than
+# production use. Admins can still discover and bind them when deliberately
+# testing dynamic tool loading; regular users should not see or enable them.
+DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES = frozenset([hello_test.name])
+
+
+def filter_developer_only_tools(
+    tool_names,
+    user_role: str,
+) -> tuple[set, set]:
+    """Filter developer-only diagnostic tool names out for non-admin users."""
+    names = set(tool_names)
+    if user_role == "admin":
+        return names, set()
+    blocked = names & DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+    return names - blocked, blocked
+
+
+def filter_discoverable_optional_tool_names(
+    tool_names,
+    user_role: str,
+) -> set:
+    """Return optional tool names that should be shown in discovery surfaces."""
+    allowed, _ = filter_developer_only_tools(tool_names, user_role)
+    return allowed
+
 
 def filter_admin_only_tools(
     tool_names,
@@ -222,7 +248,10 @@ __all__ = [
     "SELF_AGENT_TOOLS",
     "OPTIONAL_TOOLS",
     "ADMIN_ONLY_OPTIONAL_TOOL_NAMES",
+    "DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES",
     "filter_admin_only_tools",
+    "filter_developer_only_tools",
+    "filter_discoverable_optional_tool_names",
     "ALL_TOOLS",
     "get_all_tools_with_agents",
     "hello_test",

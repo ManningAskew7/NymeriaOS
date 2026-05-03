@@ -7,7 +7,12 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import nymeria.tools as tools_package
-from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import (
+    ALL_TOOLS,
+    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+    OPTIONAL_TOOLS,
+    filter_developer_only_tools,
+)
 from nymeria.tools import auth_cache_utils
 from nymeria.tools import calendar
 from nymeria.tools import google_sheets
@@ -16,7 +21,7 @@ from nymeria.tools import outlook_email
 from nymeria.tools import _prv_a_products
 from nymeria.tools.metadata import get_all_tool_metadata
 from nymeria.tools import triggers as trigger_tools
-from nymeria.tools.tool_search import tool_search
+from nymeria.tools.tool_search import _search, tool_search
 from nymeria.core.thread_config import ThreadConfig
 from nymeria.core.user_profile import ToolPreferences, migrate_tool_names
 
@@ -337,3 +342,24 @@ def test_builtin_tools_have_metadata():
     missing = sorted({tool.name for tool in tools if get_all_tool_metadata(tool.name) is None})
 
     assert missing == []
+
+
+def test_hello_test_is_developer_only_in_tool_discovery():
+    assert "hello_test" in DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+
+    user_results = _search("hello", "", "thread-a", user_role="user")
+    admin_results = _search("hello", "", "thread-a", user_role="admin")
+    user_core_results = _search("", "core", "thread-a", user_role="user")
+    admin_core_results = _search("", "core", "thread-a", user_role="admin")
+
+    assert "hello_test" not in user_results
+    assert "hello_test" in admin_results
+    assert "hello_test" not in user_core_results
+    assert "hello_test" in admin_core_results
+
+    allowed, blocked = filter_developer_only_tools(
+        ["hello_test", "sticky_note"],
+        "user",
+    )
+    assert allowed == {"sticky_note"}
+    assert blocked == {"hello_test"}

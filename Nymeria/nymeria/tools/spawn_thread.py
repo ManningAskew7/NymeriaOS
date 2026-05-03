@@ -412,7 +412,7 @@ def spawn_thread(
     # the tool_search gate — without this, a non-admin could spawn a child
     # thread seeded with reload_all/claude_code/self_modify and escalate via
     # the child. Block category-expansion AND named optional_tools.
-    from . import filter_admin_only_tools
+    from . import filter_admin_only_tools, filter_developer_only_tools
     user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
     user_role = user.role if user else "user"
     _, blocked = filter_admin_only_tools(enabled_set, user_role)
@@ -421,6 +421,14 @@ def spawn_thread(
             f"[Error]: Admin-only tools cannot be enabled on a spawned thread "
             f"by this user: {sorted(blocked)}. Drop them from optional_tools / "
             f"tool_categories or ask an administrator to spawn the thread."
+        )
+    _, blocked = filter_developer_only_tools(enabled_set, user_role)
+    if blocked:
+        return (
+            f"[Error]: Developer-only diagnostic tools cannot be enabled on a "
+            f"spawned thread by this user: {sorted(blocked)}. Drop them from "
+            f"optional_tools / tool_categories or ask an administrator to "
+            f"spawn the thread."
         )
 
     disabled_list: List[str] = []

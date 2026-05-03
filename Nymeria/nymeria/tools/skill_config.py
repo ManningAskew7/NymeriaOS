@@ -185,7 +185,7 @@ def _validate_required_tools(required_tools: list[str], user_id: str) -> None:
         return
 
     from ..core.agent import get_current_agent
-    from . import filter_admin_only_tools
+    from . import filter_admin_only_tools, filter_developer_only_tools
 
     agent = get_current_agent()
     if agent is None:
@@ -224,6 +224,12 @@ def _validate_required_tools(required_tools: list[str], user_id: str) -> None:
     if blocked:
         errors.append(
             "Admin-only tools cannot be declared as required_tools by this user: "
+            + ", ".join(sorted(blocked))
+        )
+    _, blocked = filter_developer_only_tools(valid, role)
+    if blocked:
+        errors.append(
+            "Developer-only diagnostic tools cannot be declared as required_tools by this user: "
             + ", ".join(sorted(blocked))
         )
 
