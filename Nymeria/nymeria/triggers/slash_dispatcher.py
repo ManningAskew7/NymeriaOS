@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 import httpx
 
-from .discord_api_client import NymeriaAPIClient
+from .api_client import NymeriaAPIClient
 
 logger = logging.getLogger(__name__)
 

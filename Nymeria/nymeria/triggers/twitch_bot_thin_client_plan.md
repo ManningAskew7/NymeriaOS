@@ -16,7 +16,7 @@ Other concrete consequences of Twitch staying fat:
 
 Mirror the Discord/Telegram pattern:
 
-1. Replace the in-process `NymeriaAgent` with a `NymeriaAPIClient` (`triggers/discord_api_client.py`) pointed at `http://nymeria-api:8000`.
+1. Replace the in-process `NymeriaAgent` with a `NymeriaAPIClient` (`triggers/api_client.py`) pointed at `http://nymeria-api:8000`.
 2. Route chat through `POST /chat` (streaming SSE), not in-process agent streaming.
 3. Pull settings, model lists, and per-thread config through API endpoints — not direct Postgres reads.
 4. Remove `NymeriaAgent(...)` from `run_twitch_bot` in `run.py`. Twitch becomes pure I/O glue.

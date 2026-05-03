@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from ..config.settings import Settings
-from .discord_api_client import NymeriaAPIClient
+from .api_client import NymeriaAPIClient
 
 logger = logging.getLogger(__name__)
 

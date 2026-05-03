@@ -24,7 +24,8 @@ import httpx
 from discord import app_commands
 
 from . import attachment_helpers
-from .discord_api_client import NymeriaAPIClient
+from .api_client import NymeriaAPIClient
+from .message_splitter import split_discord_message as split_message
 
 logger = logging.getLogger(__name__)
 _ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
@@ -48,66 +49,6 @@ def context_bar(usage_pct: float, width: int = 20) -> str:
     """Render a text progress bar: `████░░░░░░░░░░░░░░░░` 5%."""
     filled = int(width * usage_pct / 100) if usage_pct else 0
     return "`" + "\u2588" * filled + "\u2591" * (width - filled) + f"` {usage_pct}%"
-
-
-# =============================================================================
-# Message Splitting
-# =============================================================================
-
-
-def split_message(content: str, max_length: int = 2000) -> List[str]:
-    """
-    Split a message into chunks that fit Discord's character limit.
-
-    Preserves code blocks, paragraph boundaries, and sentence boundaries.
-    Never splits mid-code-block.
-    """
-    if len(content) <= max_length:
-        return [content]
-
-    chunks: List[str] = []
-    remaining = content
-
-    while remaining:
-        if len(remaining) <= max_length:
-            chunks.append(remaining)
-            break
-
-        split_at = _find_split_point(remaining, max_length)
-        chunks.append(remaining[:split_at].rstrip())
-        remaining = remaining[split_at:].lstrip("\n")
-
-    return [c for c in chunks if c.strip()]
-
-
-def _find_split_point(text: str, max_length: int) -> int:
-    """Find the best split point within max_length characters."""
-    code_block_start = text.rfind("```", 0, max_length)
-    if code_block_start > 0:
-        count_before = text[:code_block_start].count("```")
-        if count_before % 2 == 1:
-            closing = text.find("```", code_block_start + 3)
-            if closing != -1 and closing + 3 <= len(text):
-                end_of_block = closing + 3
-                if end_of_block <= max_length:
-                    return end_of_block
-            block_open = text.rfind("```", 0, code_block_start)
-            if block_open > max_length * 0.3:
-                return block_open
-
-    para = text.rfind("\n\n", 0, max_length)
-    if para > max_length * 0.5:
-        return para + 2
-
-    line = text.rfind("\n", 0, max_length)
-    if line > max_length * 0.5:
-        return line + 1
-
-    sentence = text.rfind(". ", 0, max_length)
-    if sentence > max_length * 0.5:
-        return sentence + 2
-
-    return max_length
 
 
 # =============================================================================

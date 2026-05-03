@@ -194,7 +194,7 @@ This means TODOs created via `/todos add` in a Discord channel will have their r
 
 ## API Client
 
-`NymeriaAPIClient` (`nymeria/triggers/discord_api_client.py`) is a standalone async HTTP client wrapping the Nymeria REST API. It uses `httpx.AsyncClient` with:
+`NymeriaAPIClient` (`nymeria/triggers/api_client.py`) is a standalone async HTTP client wrapping the Nymeria REST API. It uses `httpx.AsyncClient` with:
 
 - **Chat timeout**: 300s read (accommodates long LLM calls)
 - **Default timeout**: 30s read
@@ -206,7 +206,7 @@ The client covers all API endpoints: chat, thread management, settings, tools, m
 
 ### Response Splitting
 
-Discord has a 2000-character message limit. The bot's `split_message()` function splits long responses intelligently:
+Discord has a 2000-character message limit. The bot uses the shared trigger message splitter (`nymeria/triggers/message_splitter.py`) to split long responses intelligently:
 
 1. Preserves code block boundaries (never splits inside ` ``` `)
 2. Prefers paragraph breaks (`\n\n`)
@@ -261,7 +261,7 @@ This helps Nymeria understand the ongoing conversation even when invoked via `/a
 | What | Where |
 |------|-------|
 | Bot implementation | `nymeria/triggers/discord_bot.py` |
-| API client | `nymeria/triggers/discord_api_client.py` |
+| API client | `nymeria/triggers/api_client.py` |
 | Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_discord_bot()` |
 | Docker config | `docker-compose.yml` (profile: `discord`) |
