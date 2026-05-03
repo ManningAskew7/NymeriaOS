@@ -4,17 +4,15 @@ Most runtime logging is centralized in `nymeria/config/logging_config.py`. For n
 
 **Log file:** `Nymeria/data/logs/service.log` (rotating; size and backup count come from settings). In normal `run.py` flows, logs go to both console and this file.
 
-**Important exception:** the Windows service path in `service_runner.py` uses its own simpler logging setup instead of `configure_logging()`.
-
 ```bash
 # Read logs from a different terminal while API runs:
-tail -f /mnt/c/NymeriaOS/Nymeria/data/logs/service.log
-tail -100 /mnt/c/NymeriaOS/Nymeria/data/logs/service.log
+tail -f Nymeria/data/logs/service.log
+tail -100 Nymeria/data/logs/service.log
 
 # Filter by tag or thread:
-grep '\[CALLABLE\]' /mnt/c/NymeriaOS/Nymeria/data/logs/service.log
-grep '\[LLM\]' /mnt/c/NymeriaOS/Nymeria/data/logs/service.log
-grep 'thread=abc-123' /mnt/c/NymeriaOS/Nymeria/data/logs/service.log
+grep '\[CALLABLE\]' Nymeria/data/logs/service.log
+grep '\[LLM\]' Nymeria/data/logs/service.log
+grep 'thread=abc-123' Nymeria/data/logs/service.log
 ```
 
 ## Environment Variables
@@ -42,15 +40,6 @@ LOG_MODULES=nymeria.core.agent:DEBUG    # Per-module overrides (highest priority
 | `all` | Everything at DEBUG | Full firehose (very verbose) |
 
 ## Special Cases
-
-### Windows service mode
-
-`service_runner.py` does **not** use the centralized formatter/profile system. It configures a plain rotating file handler directly, writes only to file, and suppresses `httpx`/`httpcore` noise separately.
-
-That means:
-- `LOG_PROFILES` and `LOG_MODULES` are documented for the main `run.py` startup paths, not this service runner path
-- service log formatting differs from the compact `NymeriaFormatter`
-- if you are debugging the Windows service specifically, check `service_runner.py` first
 
 ### MCP server mode
 

@@ -418,7 +418,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Other Modes
 - **Local dev** — `python run.py api|cli|worker|mcp`
-- **Windows service** — `python run.py service install|start|stop`
+- **Foreground gateway** — `python run.py service` (GatewayServer with graceful shutdown)
 - **Interactive CLI** — `python run.py cli`
 
 ### Configuration
