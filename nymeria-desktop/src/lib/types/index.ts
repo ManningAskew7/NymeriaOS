@@ -392,23 +392,6 @@ export interface TodoListResponse {
 }
 
 
-// Scheduled Task types
-export type ScheduledTaskStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
-
-export interface ScheduledTask {
-  id: string;
-  prompt: string;
-  executeAt: Date;
-  status: ScheduledTaskStatus;
-  createdAt: Date;
-  threadId: string;
-}
-
-export interface ScheduledTasksResponse {
-  tasks: ScheduledTask[];
-  total: number;
-}
-
 // Activity Log types
 export type ActivityType =
   | 'self_invoke'
@@ -749,7 +732,6 @@ export interface ServerSettings {
   compact_model: string | null;
   sliding_window_cycles: number;
   tool_output_max_chars: number;
-  max_self_invokes_per_hour: number;
   log_level: LogLevel;
   watchdog_enabled: boolean;
   watchdog_interval_minutes: number;
@@ -792,7 +774,6 @@ export interface ServerSettingsUpdate {
   compact_model?: string | null;
   sliding_window_cycles?: number;
   tool_output_max_chars?: number;
-  max_self_invokes_per_hour?: number;
   log_level?: LogLevel;
   watchdog_enabled?: boolean;
   watchdog_interval_minutes?: number;

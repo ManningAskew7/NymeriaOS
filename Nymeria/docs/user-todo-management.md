@@ -344,7 +344,6 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 No new TODO-specific configuration options were introduced.
 Scheduling behavior uses existing runtime settings such as:
 - `TICKER_POLL_INTERVAL`
-- `MAX_SELF_INVOKES_PER_HOUR`
 - `MAX_CONCURRENT_AUTONOMOUS`
 
 ---

@@ -59,8 +59,7 @@ Primary stores:
 - `data/thread_metadata/*.json`: server-authoritative thread titles, pins, platform per user
 - `data/custom_tools/*.json`: custom tool definitions
 
-Legacy migration artifacts:
-- `data/tasks.db` / `_deprecated/task_db.py` are retained for migration compatibility.
+Legacy `data/tasks.db` files from older installs are ignored by the current runtime.
 
 ## Tooling Model
 

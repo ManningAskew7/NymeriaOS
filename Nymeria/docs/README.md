@@ -65,13 +65,8 @@ C:\Nymeria\
 │   │   ├── backup.py       # File backup system
 │   │   ├── validator.py    # Python code validation
 │   │   ├── prompts.py      # System prompt templates (extracted)
-│   │   ├── rate_limiter.py # Rate limiting (extracted)
 │   │   ├── time_utils.py   # Time parsing utilities (extracted)
 │   │   ├── todo_constants.py    # TODO display constants (extracted)
-│   │   ├── migration.py    # Legacy task migration (extracted)
-│   │   ├── scheduler.py    # Deprecated scheduler (rate limiter extracted)
-│   │   └── _deprecated/    # Legacy modules (pending removal)
-│   │       └── task_db.py  # Old task database (migrated to TODOs)
 │   ├── tools/              # Tool definitions (core + optional + custom integration)
 │   │   ├── bash.py         # Shell command execution
 │   │   ├── filesystem.py   # File read/write/list
@@ -117,7 +112,6 @@ C:\Nymeria\
 ├── data/
 │   ├── nymeria.db          # SQLite conversation storage
 │   ├── todo_schedule.db    # SQLite scheduled TODO index
-│   ├── tasks.db            # Legacy scheduled tasks (deprecated)
 │   ├── logs/               # Audit logs (tool executions)
 │   ├── users/              # User profiles and memories
 │   ├── backups/            # Self-modification backups

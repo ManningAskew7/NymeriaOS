@@ -353,12 +353,6 @@ class Settings(BaseSettings):
         ge=0,
         description="Max concurrent autonomous tasks (0 = unlimited)"
     )
-    max_self_invokes_per_hour: int = Field(
-        default=50,
-        ge=1,
-        le=1000,
-        description="Maximum self_invoke calls per user per hour"
-    )
     # Context Management Settings
     context_management: Literal["auto_compact", "sliding_window", "none"] = Field(
         default="auto_compact",
@@ -437,11 +431,6 @@ class Settings(BaseSettings):
         le=168,
         description="Hours to retain activity log entries (1-168)"
     )
-
-    @property
-    def tasks_db_path(self) -> Path:
-        """Get the tasks database path (separate from conversations)."""
-        return self.data_dir / "tasks.db"
 
     # Server Configuration
     api_host: str = Field(default="0.0.0.0")

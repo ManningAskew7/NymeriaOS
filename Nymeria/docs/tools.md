@@ -1385,7 +1385,7 @@ Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a 
 
 **Durable scheduling:** Scheduled TODOs survive application restarts. Missed TODOs are recovered and executed on startup.
 
-**Rate limiting:** Default 50 autonomous executions per hour per user (`MAX_SELF_INVOKES_PER_HOUR`). Uses a sliding window algorithm in `rate_limiter.py`.
+**Concurrency:** Scheduled TODOs run through the ticker's autonomous worker pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5).
 
 ---
 

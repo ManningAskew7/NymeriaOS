@@ -102,7 +102,6 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
 | `activity_log.py` | Per-thread activity feed with time-based retention |
 | `prompts.py` | System prompt templates, mode-specific rules, time context generation |
-| `rate_limiter.py` | Sliding window rate limiting for autonomous operations |
 | `time_utils.py` | Shared time parsing utilities (durations, schedules, deadlines) |
 | `todo_constants.py` | Single source of truth for TODO display (status icons, priority markers) |
 | `keyed_locks.py` | Shared keyed `RLock` factory used by JSON-backed stores to serialize per-user or per-thread file writes |
@@ -193,13 +192,11 @@ Manages autonomous operation for 24/7 functionality through the **TODO system** 
 - TODOs can have a `scheduled_for` datetime for future execution
 - **Durable**: Scheduled TODOs persist across restarts (SQLite via `todo_schedule_db.py`)
 - Global polling ticker instead of threading.Timer
-- Rate limiting via `RateLimiter` class (default: 50/hour)
 - Parallel execution via thread pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5)
 
 **Components:**
 - `TodoManager`: Manages user TODO lists with atomic updates (JSON files in `data/todos/`)
 - `TodoScheduleDB`: SQLite index for efficient polling and cross-process active-execution markers (not source of truth - mirrors JSON)
-- `RateLimiter`: Sliding window rate limiting (extracted to `rate_limiter.py`)
 - `Ticker`: Global daemon thread that executes due scheduled TODOs
 - `EventBus`: Pub/sub system for streaming autonomous events to frontend (see Section 4.1)
 
@@ -245,9 +242,6 @@ autonomous rules.
 When Nymeria starts, the Ticker:
 1. Rebuilds schedule index from TODO JSON files (`rebuild_from_todos()`)
 2. Recovers any missed scheduled TODOs that were due during downtime
-
-**Legacy Support (Deprecated):**
-The old `self_invoke` and `DurableScheduler` system is deprecated but retained in `_deprecated/` for migration. The `scheduler.py` file contains a deprecation warning. Migration from old scheduled tasks to TODOs is handled by `migration.py`.
 
 ---
 
@@ -638,10 +632,7 @@ SQLite stores scheduled TODOs for autonomous execution:
 - `scheduled_todos` schema: todo_id, user_id, thread_id, scheduled_for, task_preview, created_at
 - `active_todo_executions` tracks TODOs currently owned by a ticker worker so API edit/complete/delete requests can return `409 Conflict` while a run is in progress. Markers older than 24 hours are treated as stale crash leftovers and removed automatically.
 
-**Legacy Task Storage (Deprecated):**
-- Located at `data/tasks.db` (via `_deprecated/task_db.py`)
-- Old `self_invoke` tasks are migrated to TODO system on startup
-- Will be removed after migration period
+Legacy `data/tasks.db` files from older installs are ignored by the current runtime.
 
 ### Thread Metadata
 
@@ -725,15 +716,12 @@ The codebase underwent significant modularization:
 
 1. **Extracted Modules from `agent.py`:**
    - `prompts.py`: System prompt templates and time context
-   - `rate_limiter.py`: RateLimiter class (from scheduler.py)
-   - `time_utils.py`: Shared time parsing (from todo.py, scheduler.py)
+   - `time_utils.py`: Shared time parsing (from TODO tools and scheduler parsing)
    - `todo_constants.py`: TODO display constants
-   - `migration.py`: One-time migration function
 
-2. **Deprecated Modules:**
-   - `scheduler_deprecated.py`: Deleted (was already deprecated)
-   - `task_db.py`: Moved to `_deprecated/task_db.py`
-   - `DurableScheduler` in `scheduler.py`: Deprecated warning added
+2. **Removed Legacy Scheduler:**
+   - `scheduler.py`, `rate_limiter.py`, `migration.py`, and `_deprecated/task_db.py` were removed after scheduled TODOs became the only runtime scheduling path.
+   - The REST `GET /tasks` compatibility endpoint was removed; use `GET /todos` and filter scheduled TODOs instead.
 
 3. **Frontend Cleanup:**
    - `tasks.svelte.ts`: Deleted (replaced by `todosStore.scheduledTodos`)
@@ -747,8 +735,7 @@ These changes may cause issues in certain scenarios:
 
 | Change | Potential Issue | Mitigation |
 |--------|----------------|------------|
-| `task_db.py` moved to `_deprecated/` | External code importing `from nymeria.core.task_db` will fail | Update import to `from nymeria.core._deprecated.task_db` |
-| `DurableScheduler` deprecated | Deprecation warnings in logs for code using scheduler directly | Migrate to TODO-based scheduling |
+| Legacy scheduler removed | External code importing `DurableScheduler`, `TaskDatabase`, or calling `GET /tasks` will fail | Use TODO scheduling through `nym_todo` or REST `/todos` |
 | `tasksStore` removed (frontend) | Any external frontend code using `tasksStore` will break | Use `todosStore.scheduledTodos` instead |
 | `message.images` removed | Code accessing `message.images` property will fail | Use `message.attachments` instead |
 | `ImageAttachment` type removed | TypeScript errors for code using this type | Use `Attachment` type instead |
@@ -757,11 +744,9 @@ These changes may cause issues in certain scenarios:
 
 For users upgrading from older versions:
 
-1. **Check import paths**: If you have custom code importing from `nymeria.core`, verify paths are correct
-2. **Review logs**: Look for deprecation warnings about `DurableScheduler` or `self_invoke`
-3. **Frontend stores**: Replace any `tasksStore` usage with `todosStore`
-4. **Run migration**: The `_migrate_old_scheduled_tasks()` function runs automatically on startup to convert old scheduled tasks to TODOs
-5. **Verify data**: Check that scheduled tasks appear in the TODO list with `scheduled_for` times
+1. **Check import paths**: If you have custom code importing legacy scheduler classes from `nymeria.core`, remove those imports.
+2. **Frontend stores**: Replace any `tasksStore` usage with `todosStore`.
+3. **Verify data**: Check that scheduled tasks appear in the TODO list with `scheduled_for` times.
 
 ### Cleanup Timeline
 

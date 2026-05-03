@@ -159,7 +159,6 @@ resolution unless the target is a non-metadata host explicitly listed in
 |----------|---------|-------------|
 | `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
 | `MAX_CONCURRENT_AUTONOMOUS` | `5` | Max concurrent autonomous tasks (`0` = unlimited) |
-| `MAX_SELF_INVOKES_PER_HOUR` | `50` | Rate limit per user to prevent runaway loops |
 | `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool/sub-agent invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
@@ -238,7 +237,6 @@ Nymeria uses the following directories under the project root:
 |-----------|---------|
 | `data/nymeria.db` | SQLite conversation database |
 | `data/todo_schedule.db` | SQLite scheduled TODO index for polling |
-| `data/tasks.db` | Legacy scheduled tasks database (deprecated) |
 | `data/todos/` | TODO list storage (`{user_id}.json`) |
 | `data/logs/` | HTTP/API primitive tool audit logs (`audit_YYYYMMDD.jsonl`) |
 | `data/users/` | User profiles, memories, thread configs, activity logs, triggers |
@@ -316,7 +314,6 @@ AUDIT_LOG_ENABLED=true
 # Autonomous Operation (optional - defaults shown)
 # TICKER_POLL_INTERVAL=5
 # MAX_CONCURRENT_AUTONOMOUS=5
-# MAX_SELF_INVOKES_PER_HOUR=50
 
 # Context Management (optional - defaults shown)
 # CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none

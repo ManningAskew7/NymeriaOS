@@ -119,6 +119,16 @@ def test_schedule_db_clears_stale_active_execution_markers(tmp_path: Path):
     assert db.mark_execution_started("todo-1", "owner", "thread-1")
 
 
+def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path, monkeypatch):
+    client, _agent, token = _client(tmp_path, monkeypatch)
+
+    response = client.get("/tasks", headers=_headers(token))
+
+    assert response.status_code == 404
+    assert "max_self_invokes_per_hour" not in api_module.ServerSettingsResponse.model_fields
+    assert "max_self_invokes_per_hour" not in api_module.ServerSettingsUpdate.model_fields
+
+
 @pytest.mark.parametrize(
     ("method", "path_suffix", "json_body"),
     [

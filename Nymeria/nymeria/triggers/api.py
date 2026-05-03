@@ -46,7 +46,6 @@ from ..core.event_bus import (
     should_log_stream_event_sample,
 )
 from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
-from ..core._deprecated.task_db import TaskDatabase, TaskStatus
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
@@ -224,7 +223,6 @@ class ServerSettingsResponse(BaseModel):
     compact_model: Optional[str] = None
     sliding_window_cycles: int
     tool_output_max_chars: int
-    max_self_invokes_per_hour: int
     log_level: str
     watchdog_enabled: bool
     watchdog_interval_minutes: int
@@ -270,7 +268,6 @@ class ServerSettingsUpdate(BaseModel):
     compact_model: Optional[str] = None
     sliding_window_cycles: Optional[int] = None
     tool_output_max_chars: Optional[int] = None
-    max_self_invokes_per_hour: Optional[int] = None
     log_level: Optional[str] = None
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None
@@ -362,24 +359,6 @@ class TodoListResponse(BaseModel):
 
     user_id: str
     items: List[TodoItemResponse]
-    total: int
-
-
-class ScheduledTaskResponse(BaseModel):
-    """Response model for a scheduled task."""
-
-    id: str
-    prompt: str
-    execute_at: datetime
-    status: str
-    created_at: datetime
-    thread_id: str
-
-
-class ScheduledTasksResponse(BaseModel):
-    """Response model for scheduled tasks list."""
-
-    tasks: List[ScheduledTaskResponse]
     total: int
 
 
@@ -4906,7 +4885,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             compact_model=settings.compact_model,
             sliding_window_cycles=settings.sliding_window_cycles,
             tool_output_max_chars=settings.tool_output_max_chars,
-            max_self_invokes_per_hour=settings.max_self_invokes_per_hour,
             log_level=settings.log_level,
             watchdog_enabled=settings.watchdog_enabled,
             watchdog_interval_minutes=settings.watchdog_interval_minutes,
@@ -5053,7 +5031,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             "compact_keep_messages": "COMPACT_KEEP_MESSAGES",
             "compact_model": "COMPACT_MODEL",
             "sliding_window_cycles": "SLIDING_WINDOW_CYCLES",
-            "max_self_invokes_per_hour": "MAX_SELF_INVOKES_PER_HOUR",
             "tool_output_max_chars": "TOOL_OUTPUT_MAX_CHARS",
             "log_level": "LOG_LEVEL",
             "watchdog_enabled": "WATCHDOG_ENABLED",
@@ -5259,8 +5236,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             ],
             "Tasks": [
                 "ticker_poll_interval", "max_concurrent_autonomous",
-                "max_self_invokes_per_hour", "todo_staleness_minutes",
-                "todo_auto_archive_days", "activity_retention_hours",
+                "todo_staleness_minutes", "todo_auto_archive_days",
+                "activity_retention_hours",
             ],
             "Voice": [
                 "tts_provider", "tts_base_url", "tts_api_key", "tts_model",
@@ -5885,46 +5862,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 schedule_db.remove_scheduled(todo_id)
 
             return _todo_to_response(item)
-
-    @app.get("/tasks", response_model=ScheduledTasksResponse, tags=["Dashboard"])
-    async def get_scheduled_tasks(
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """
-        Get scheduled tasks for a user.
-
-        Returns pending and processing tasks.
-        """
-        task_db = TaskDatabase(settings.data_dir / "tasks.db")
-
-        tasks = []
-
-        # Get pending task
-        pending = task_db.get_pending_for_user(user_id)
-        if pending:
-            tasks.append(pending)
-
-        # Get processing task
-        processing = task_db.get_processing_for_user(user_id)
-        if processing:
-            tasks.append(processing)
-
-        return ScheduledTasksResponse(
-            tasks=[
-                ScheduledTaskResponse(
-                    id=task.id,
-                    prompt=task.prompt,
-                    execute_at=datetime.fromtimestamp(task.execute_at, tz=timezone.utc),
-                    status=task.status.value,
-                    created_at=datetime.fromtimestamp(task.created_at, tz=timezone.utc),
-                    thread_id=task.thread_id,
-                )
-                for task in tasks
-            ],
-            total=len(tasks),
-        )
 
     @app.get("/activity", response_model=ActivityLogResponse, tags=["Dashboard"])
     async def get_activity(
