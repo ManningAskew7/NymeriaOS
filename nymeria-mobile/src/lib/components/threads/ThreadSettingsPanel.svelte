@@ -15,7 +15,10 @@
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
+  import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import MCPServerForm from '$lib/components/tools/MCPServerForm.svelte';
+  import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
+  import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
   import type { MCPServerCreateRequest } from '$lib/types';
   import { untrack } from 'svelte';
 
@@ -49,7 +52,7 @@
     return currentPlatform === 'callable' ? 'desktop' : (currentPlatform ?? detected);
   }
 
-  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers';
+  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
   let activeTab = $state<Tab>('instructions');
@@ -93,6 +96,23 @@
   // Form state — Skills
   let threadEnabledSkills = $state<Set<string>>(new Set());
   let threadDisabledSkills = $state<Set<string>>(new Set());
+
+  // Chat App state
+  let showChatAppWizard = $state(false);
+  let showMyBotWizard = $state(false);
+  let chatAppLoaded = $state(false);
+  let chatAppLoadError = $state('');
+
+  let chatAppBindings = $derived(chatAppBindingsStore.getBindings(threadId));
+
+  async function handleUnbindChatApp(bindingId: number) {
+    try {
+      await chatAppBindingsStore.unbind(threadId, bindingId);
+      threadsStore.syncFromBackend();
+    } catch (e) {
+      chatAppLoadError = e instanceof Error ? e.message : String(e);
+    }
+  }
 
   function isMcpToolName(name: string): boolean {
     return name.startsWith('mcp__');
@@ -325,6 +345,17 @@
         if (!skillsStore.installedLoaded && !skillsStore.installedLoading) skillsStore.loadInstalled();
         if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) skillsStore.loadGlobal();
         if (Object.keys(triggersStore.sources).length === 0) triggersStore.loadSources();
+      });
+    }
+  });
+
+  $effect(() => {
+    if (open && activeTab === 'chatapp' && !chatAppLoaded) {
+      untrack(() => {
+        chatAppLoadError = '';
+        chatAppBindingsStore.loadBindings(threadId)
+          .then(() => { chatAppLoaded = true; })
+          .catch((e) => { chatAppLoadError = e instanceof Error ? e.message : String(e); });
       });
     }
   });
@@ -653,6 +684,10 @@
         Triggers
         {#if activeTriggerCount > 0}<span class="tab-badge">{activeTriggerCount}</span>{/if}
       </button>
+      <button class="tab-btn" class:active={activeTab === 'chatapp'} onclick={() => (activeTab = 'chatapp')}>
+        Chat App
+        {#if chatAppBindings.length > 0}<span class="tab-badge">{chatAppBindings.length}</span>{/if}
+      </button>
     </div>
 
     <div class="settings-body">
@@ -696,34 +731,6 @@
             <span>Show prompt metadata</span>
           </label>
           <p class="hint">Show time context and trigger type prepended to each message.</p>
-        </div>
-        <div class="setting-group">
-          <label class="setting-label" for="telegram-autonomous-delivery">
-            Telegram autonomous output
-          </label>
-          <select
-            id="telegram-autonomous-delivery"
-            class="setting-input"
-            bind:value={telegramAutonomousDelivery}
-          >
-            <option value="full">Full output</option>
-            <option value="notify_only">Notify only</option>
-            <option value="off">Off</option>
-          </select>
-        </div>
-        <div class="setting-group">
-          <label class="setting-label" for="in-app-notification-level">
-            Notification center
-          </label>
-          <select
-            id="in-app-notification-level"
-            class="setting-input"
-            bind:value={inAppNotificationLevel}
-          >
-            <option value="notify_only">Notify only</option>
-            <option value="all_autonomous">All autonomous completions</option>
-            <option value="off">Off</option>
-          </select>
         </div>
 
       {:else if activeTab === 'system'}
@@ -1119,6 +1126,89 @@
 
       {:else if activeTab === 'triggers'}
         <TriggerConfigTab {threadId} />
+
+      {:else if activeTab === 'chatapp'}
+        <p class="hint" style="margin-bottom: var(--spacing-sm);">
+          Connect a Telegram chat to this thread so messages flow both ways.
+        </p>
+
+        <div class="setting-group">
+          <label class="setting-label" for="telegram-autonomous-delivery">
+            Telegram autonomous output
+          </label>
+          <select
+            id="telegram-autonomous-delivery"
+            class="setting-input"
+            bind:value={telegramAutonomousDelivery}
+          >
+            <option value="full">Full output</option>
+            <option value="notify_only">Notify only</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label" for="in-app-notification-level">
+            Notification center
+          </label>
+          <select
+            id="in-app-notification-level"
+            class="setting-input"
+            bind:value={inAppNotificationLevel}
+          >
+            <option value="notify_only">Notify only</option>
+            <option value="all_autonomous">All autonomous completions</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+
+        {#if chatAppLoadError}
+          <div class="error-bar">{chatAppLoadError}</div>
+        {/if}
+
+        {#if chatAppBindings.length === 0}
+          <div class="chatapp-cta">
+            <p class="hint">No chat app is connected to this thread yet.</p>
+            <div class="chatapp-cta-buttons">
+              <button
+                class="action-btn"
+                type="button"
+                onclick={() => { showChatAppWizard = true; }}
+              >Connect via shared bot</button>
+              <button
+                class="action-btn"
+                type="button"
+                onclick={() => { showMyBotWizard = true; }}
+              >Use my own bot</button>
+            </div>
+            <p class="hint" style="font-size: var(--font-size-xs);">
+              The shared bot uses Nymeria's global Telegram bot. "Use my own bot"
+              lets you register a BotFather token for a private bot.
+            </p>
+          </div>
+        {:else}
+          <ul class="binding-list">
+            {#each chatAppBindings as binding (binding.id)}
+              <li class="binding-row">
+                <div class="binding-info">
+                  <span class="binding-provider">{binding.provider}</span>
+                  <code class="binding-chat">{binding.platform_chat_id}</code>
+                  <span class="binding-type">
+                    {binding.user_telegram_bot_id ? 'Your bot' : 'Shared bot'}
+                  </span>
+                  <span class="binding-when">
+                    {new Date(binding.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                <button
+                  class="action-btn danger"
+                  type="button"
+                  onclick={() => handleUnbindChatApp(binding.id)}
+                >Unbind</button>
+              </li>
+            {/each}
+          </ul>
+          <p class="hint">Only one chat per thread at a time.</p>
+        {/if}
       {/if}
     </div>
 
@@ -1152,6 +1242,22 @@
       callableCount={defaultToolsStore.callableThreadCount}
       onContinue={() => { showToolWarning = false; handleSave(); }}
       onGoBack={() => { showToolWarning = false; }}
+    />
+  {/if}
+
+  {#if showChatAppWizard}
+    <ConnectTelegramWizard
+      {threadId}
+      onClose={() => { showChatAppWizard = false; }}
+      onBound={() => { chatAppBindingsStore.loadBindings(threadId); threadsStore.syncFromBackend(); }}
+    />
+  {/if}
+
+  {#if showMyBotWizard}
+    <ConnectMyTelegramBotWizard
+      {threadId}
+      onClose={() => { showMyBotWizard = false; }}
+      onBound={() => { chatAppBindingsStore.loadBindings(threadId); threadsStore.syncFromBackend(); }}
     />
   {/if}
 {/if}
@@ -1724,5 +1830,89 @@
     font-size: 0.85rem;
     width: 100%;
     min-height: 44px;
+  }
+
+  /* Chat App tab */
+  .chatapp-cta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+  }
+
+  .chatapp-cta-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+
+  .action-btn {
+    padding: 12px 16px;
+    min-height: 44px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    text-align: center;
+  }
+
+  .action-btn:active {
+    background: var(--bg-hover);
+  }
+
+  .action-btn.danger {
+    color: var(--color-error, #d33);
+    border-color: var(--color-error, #d33);
+  }
+
+  .binding-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .binding-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .binding-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .binding-provider {
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    text-transform: capitalize;
+  }
+
+  .binding-chat {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .binding-type,
+  .binding-when {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 </style>

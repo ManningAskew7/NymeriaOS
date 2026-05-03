@@ -163,14 +163,16 @@ Per-thread attention settings are shared conceptually across both apps:
 output, explicit notifications only, or no autonomous delivery; and
 `in_app_notification_level` controls whether the notification center shows only
 explicit `notify` calls, all autonomous completions, or nothing for that thread.
-Desktop places these controls in the Chat App tab. Mobile places them in the
-Advanced section of Thread Settings.
+Both desktop and mobile place these controls in the Chat App tab of Thread
+Settings.
 
-The mobile API service intentionally keeps typed access to the shared
-self-service Chat App endpoints (`/me/platforms`, `/me/platform-link-codes`,
-`/threads/{id}/chatapp/*`, and `/me/telegram-bots`) even though the mobile UI
-does not yet expose the bind/list/unbind wizard. That UI work is tracked
-separately from API/type parity.
+Both apps have the full Chat App binding management UI: the
+`chatAppBindingsStore` (byte-identical, EXACT_MATCH in the drift checker),
+`ConnectTelegramWizard` (shared-bot 3-step flow), and
+`ConnectMyTelegramBotWizard` (BYO-bot 4-step flow). The wizard components
+are in KNOWN_DRIFT because mobile uses full-screen overlays with touch-sized
+targets while desktop uses modal cards. The underlying logic and API calls
+are identical.
 
 #### `routes/+page.svelte` — Main Entry Point
 
