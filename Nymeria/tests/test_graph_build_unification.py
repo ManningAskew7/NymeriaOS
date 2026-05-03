@@ -1,0 +1,137 @@
+"""Tests for AGENT-002: sync and async graph-build path unification.
+
+Validates that _select_tools_for_graph is the single source of truth for
+tool selection and that sync/async paths differ only in checkpointer config.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+from nymeria.vendor.react_agent.config import AgentConfig, CheckpointerConfig
+
+
+def _make_agent():
+    """Create a minimal NymeriaAgent mock with the real graph-build methods."""
+    from nymeria.core.agent import NymeriaAgent
+
+    with patch.object(NymeriaAgent, "__init__", lambda self: None):
+        agent = NymeriaAgent()
+
+    agent.settings = MagicMock()
+    agent.settings.tool_timeout = 300
+    agent.settings.tool_output_max_chars = 100000
+    agent.settings.log_level = "INFO"
+    agent.thread_config_manager = MagicMock()
+    agent.thread_config_manager.get_config.return_value = None
+    agent.profile_manager = MagicMock()
+    agent.profile_manager.get_profile.return_value = MagicMock(
+        tool_preferences=MagicMock(default_thread_tools=None),
+    )
+    agent.accounts_repo = MagicMock()
+    agent.tool_registry = MagicMock()
+    agent._callable_tool_thread_map = {}
+    agent._on_tool_timeout = None
+    agent.MAIN_AGENT_MAX_ITERATIONS = 500
+    agent.CALLABLE_DEFAULT_MAX_ITERATIONS = 10
+    agent.TURN_SAME_TOOL_RESULT_LIMIT = 5
+
+    agent._checkpointer_config = CheckpointerConfig(backend="memory")
+    agent._async_checkpointer_config = CheckpointerConfig(backend="sqlite_async", sqlite_path="/tmp/test.db")
+    agent.skill_manager = None
+    agent._get_llm_config_for_thread = MagicMock(return_value=MagicMock())
+
+    return agent
+
+
+def test_select_tools_shared_by_both_build_paths():
+    """Both _build_graph_with_prompt and _build_async_graph_with_prompt
+    call _select_tools_for_graph — the tool list is identical."""
+    agent = _make_agent()
+
+    calls = []
+    original_select = agent._select_tools_for_graph.__func__
+
+    def tracking_select(self, user_id, thread_id):
+        result = original_select(self, user_id, thread_id)
+        calls.append(("select", user_id, thread_id, [t.name for t in result[0]]))
+        return result
+
+    with patch.object(type(agent), "_select_tools_for_graph", tracking_select):
+        with patch("nymeria.core.agent.create_graph", return_value=MagicMock()) as mock_cg:
+            agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
+            agent._build_async_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
+
+    assert len(calls) == 2
+    assert calls[0][1:] == calls[1][1:]
+
+
+def test_sync_async_differ_only_in_checkpointer():
+    """Sync and async graph builds produce AgentConfigs that differ only
+    in the checkpointer field."""
+    agent = _make_agent()
+
+    configs_seen = []
+
+    def capture_create_graph(config=None, tools=None):
+        configs_seen.append(config)
+        return MagicMock()
+
+    with patch("nymeria.core.agent.create_graph", side_effect=capture_create_graph):
+        agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
+        agent._build_async_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
+
+    assert len(configs_seen) == 2
+    sync_cfg, async_cfg = configs_seen
+
+    assert sync_cfg.checkpointer.backend == "memory"
+    assert async_cfg.checkpointer.backend == "sqlite_async"
+
+    assert sync_cfg.system_prompt == async_cfg.system_prompt
+    assert sync_cfg.max_iterations == async_cfg.max_iterations
+    assert sync_cfg.tool_timeout == async_cfg.tool_timeout
+    assert sync_cfg.tool_output_max_chars == async_cfg.tool_output_max_chars
+    assert sync_cfg.verbose == async_cfg.verbose
+
+
+def test_build_agent_config_uses_callable_iteration_limit():
+    """Callable threads get a lower iteration limit."""
+    agent = _make_agent()
+    from nymeria.core.thread_config import ThreadConfig
+
+    tc = ThreadConfig(thread_id="t1")
+    tc.callable = True
+    tc.callable_name = "helper"
+    tc.callable_max_iterations = 7
+
+    config = agent._build_agent_config(
+        "prompt", agent._checkpointer_config, "t1", tc
+    )
+    assert config.max_iterations == 7
+
+    config_main = agent._build_agent_config(
+        "prompt", agent._checkpointer_config, "t1", None
+    )
+    assert config_main.max_iterations == 500
+
+
+def test_get_graph_for_user_delegates_to_impl():
+    """Both _get_graph_for_user and _get_async_graph_for_user go through
+    _get_graph_for_user_impl."""
+    agent = _make_agent()
+    agent._user_graphs = {}
+    agent._async_user_graphs = {}
+    agent._graph_cache_lock = __import__("threading").Lock()
+    agent._GRAPH_CACHE_MAX = 100
+
+    calls = []
+    def mock_impl(self, user_id, is_autonomous, thread_id, cache, build_fn):
+        calls.append((cache is self._user_graphs, cache is self._async_user_graphs))
+        return MagicMock()
+
+    with patch.object(type(agent), "_get_graph_for_user_impl", mock_impl):
+        agent._get_graph_for_user("u1", thread_id="t1")
+        agent._get_async_graph_for_user("u1", thread_id="t1")
+
+    assert calls[0] == (True, False)
+    assert calls[1] == (False, True)
