@@ -17,6 +17,14 @@ cd Nymeria
 pip install -r requirements.txt
 ```
 
+SQLite is the default backend and needs no extra packages. If you want local
+development to use PostgreSQL instead, install the Postgres checkpoint extras
+after the base dependencies:
+
+```bash
+pip install -r requirements-postgres.txt
+```
+
 ## Step 2: Configure Environment
 
 For a full local config template:

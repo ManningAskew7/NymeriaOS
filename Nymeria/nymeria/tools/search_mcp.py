@@ -20,6 +20,8 @@ from typing import Annotated, Dict, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .utils import get_user_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,7 +123,7 @@ def mcp_install(
     # Admin-only: installing an MCP server can launch arbitrary stdio commands
     # in the agent process. Resolve the caller via the injected RunnableConfig
     # and reject non-admin users (e.g. a second user) even if they enabled this tool.
-    user_id = (config or {}).get("configurable", {}).get("user_id", "default") if config else "default"
+    user_id = get_user_id(config)
     try:
         from ..core.agent import get_current_agent
         _agent_ref = get_current_agent()

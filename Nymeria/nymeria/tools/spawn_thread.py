@@ -25,6 +25,8 @@ from typing import Annotated, Dict, List, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .utils import get_thread_id_or_none, get_user_id
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_SPAWN_DEPTH = 3
@@ -334,12 +336,8 @@ def spawn_thread(
     if agent is None:
         return "[Error]: No active agent; cannot spawn thread."
 
-    user_id = "default"
-    parent_thread_id: Optional[str] = None
-    if config and config.get("configurable"):
-        cfg = config["configurable"]
-        user_id = cfg.get("user_id", "default") or "default"
-        parent_thread_id = cfg.get("thread_id")
+    user_id = get_user_id(config)
+    parent_thread_id = get_thread_id_or_none(config)
 
     action_norm = (action or "create").strip().lower()
 

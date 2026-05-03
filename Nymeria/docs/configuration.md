@@ -467,6 +467,15 @@ DATABASE_BACKEND=postgres
 POSTGRES_URI=postgresql://user:password@localhost:5432/nymeria
 ```
 
+Docker installs the PostgreSQL checkpoint dependencies through
+`requirements-docker.txt`. For local development, install them explicitly after
+the base requirements:
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-postgres.txt
+```
+
 ### Memory (Testing)
 
 State is lost on restart. Use for testing only:
