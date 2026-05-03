@@ -22,7 +22,6 @@ from .activity_log import ActivityType, log_activity
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notifications import create_notification
-from .response_handler import create_response
 from .stream_bridge import iter_agent_astream
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
@@ -195,10 +194,13 @@ class Ticker:
         self._retry_counts: dict = {}  # Track retries per TODO
         self._executor: Optional[ThreadPoolExecutor] = None
 
-        # Trigger system: poll-based sources checked at a slower interval
+        # Trigger system: poll-based sources checked at a slower interval.
+        # Runs off the main loop via the executor so network I/O in source
+        # checks cannot delay scheduled TODO execution.
         self.trigger_poll_interval = max(poll_interval * 6, 30)  # Default 30s
         self._last_trigger_check: float = 0.0
         self._trigger_manager: Optional[TriggerManager] = None
+        self._trigger_poll_running = False
 
         # Auto-purge: archive completed TODOs periodically (~1 hour)
         self._archive_interval = 3600  # 1 hour
@@ -256,29 +258,37 @@ class Ticker:
         return self._trigger_manager
 
     def _poll_loop(self) -> None:
-        """Main polling loop."""
+        """Main polling loop.
+
+        Scheduled TODO checks run inline every tick.  Trigger polling
+        and TODO archival are offloaded to the ThreadPoolExecutor so
+        slow network I/O or file operations cannot delay the next TODO
+        check cycle.
+        """
         while self._running:
             try:
                 self._check_and_execute()
             except Exception as e:
                 logger.error(f"Ticker poll error: {e}", exc_info=True)
 
-            # Auto-purge completed TODOs (~every hour)
             now = time.time()
-            if now - self._last_archive_check >= self._archive_interval:
-                try:
-                    self._archive_completed_todos()
-                except Exception as e:
-                    logger.error(f"Archive completed TODOs error: {e}", exc_info=True)
-                self._last_archive_check = now
 
-            # Check poll-based trigger sources at a slower interval
+            # Auto-purge completed TODOs (~every hour), off main loop
+            if now - self._last_archive_check >= self._archive_interval:
+                self._last_archive_check = now
+                if self._executor:
+                    self._executor.submit(self._run_archive)
+
+            # Check poll-based trigger sources at a slower interval,
+            # off main loop.  Skip if a previous poll is still running.
             if now - self._last_trigger_check >= self.trigger_poll_interval:
-                try:
-                    self._check_triggers()
-                except Exception as e:
-                    logger.error(f"Trigger poll error: {e}", exc_info=True)
-                self._last_trigger_check = now
+                if not self._trigger_poll_running:
+                    self._trigger_poll_running = True
+                    self._last_trigger_check = now
+                    if self._executor:
+                        self._executor.submit(self._run_trigger_poll)
+                    else:
+                        self._run_trigger_poll()
 
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
@@ -286,6 +296,22 @@ class Ticker:
                 if not self._running:
                     break
                 time.sleep(0.1)
+
+    def _run_trigger_poll(self) -> None:
+        """Execute trigger polling with exception isolation."""
+        try:
+            self._check_triggers()
+        except Exception as e:
+            logger.error(f"Trigger poll error: {e}", exc_info=True)
+        finally:
+            self._trigger_poll_running = False
+
+    def _run_archive(self) -> None:
+        """Execute TODO archival with exception isolation."""
+        try:
+            self._archive_completed_todos()
+        except Exception as e:
+            logger.error(f"Archive completed TODOs error: {e}", exc_info=True)
 
     def _archive_completed_todos(self) -> None:
         """Archive completed TODOs older than the configured retention for all users."""
@@ -704,13 +730,7 @@ class Ticker:
                 response_text = ""
             logger.info(f"[TICKER] === STREAM DONE === chunks={chunk_count}, response_parts={len(response_parts)}, thinking_parts={len(thinking_parts)}, response_len={len(response_text)}")
 
-            # Create response object
             logger.info(f"Raw autonomous response (first 500 chars): {response_text[:500] if response_text else 'empty'}")
-            response = create_response(
-                content=response_text,
-                notify=False,
-            )
-            logger.info(f"Response: notify={response.notify}")
 
             # Handle recurring TODOs: reschedule instead of clearing
             # Re-fetch the TODO to get the recurrence field
@@ -746,11 +766,8 @@ class Ticker:
             if todo.id in self._retry_counts:
                 del self._retry_counts[todo.id]
 
-            should_notify = response.notify or self._should_create_autonomous_notification(thread_id)
-            notification_summary = (
-                response.summary
-                or (response.content[:200] if response.content else "Scheduled TODO executed")
-            )
+            should_notify = self._should_create_autonomous_notification(thread_id)
+            notification_summary = response_text[:200] if response_text else "Scheduled TODO executed"
 
             # Publish task completed event
             publish_autonomous_event(
@@ -760,23 +777,22 @@ class Ticker:
                 task_id=todo.id,
                 data={
                     "notify": should_notify,
-                    "content": response.content,
-                    "summary": response.summary,
+                    "content": response_text,
                     "todo_id": todo.id,
                 },
             )
 
             # Send FCM push to registered devices
-            if response.content and self.agent.settings.fcm_enabled:
+            if response_text and self.agent.settings.fcm_enabled:
                 try:
                     from .fcm import send_to_all_devices
                     data_dir = str(self.agent.settings.data_dir)
                     send_to_all_devices(
                         data_dir=data_dir,
-                        text=response.content,
+                        text=response_text,
                         thread_id=thread_id,
                         task_id=todo.id,
-                        summary=response.summary or "",
+                        summary="",
                         user_id=entry.user_id,
                     )
                 except Exception as e:
@@ -788,13 +804,13 @@ class Ticker:
                 thread_id=thread_id,
                 todo_id=todo.id,
                 todo_task=todo.task,
-                response_summary=response.summary or response.content[:200] if response.content else "",
+                response_summary=response_text[:200] if response_text else "",
             )
 
             # Log activity
             log_activity(
                 ActivityType.TASK_COMPLETED,
-                response.summary or response.content[:200] if response.content else "Scheduled TODO executed",
+                response_text[:200] if response_text else "Scheduled TODO executed",
                 user_id=entry.user_id,
                 thread_id=thread_id,
                 metadata={"todo_id": todo.id, "notify": should_notify},

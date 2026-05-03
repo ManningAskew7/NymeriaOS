@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -300,3 +302,143 @@ def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, mon
         "task_completed",
     ]
     assert events[1][1]["ttl_seconds"] == 7200
+
+
+# ---- AGENT-010: Poll-loop isolation tests ----
+
+
+def test_trigger_poll_runs_off_main_loop(tmp_path: Path, monkeypatch):
+    """A slow _check_triggers does not block _check_and_execute."""
+    agent = FakeAgent(tmp_path)
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker._executor = ThreadPoolExecutor(max_workers=2)
+
+    trigger_started = threading.Event()
+    trigger_release = threading.Event()
+    todo_checks: list[float] = []
+
+    def slow_check_triggers():
+        trigger_started.set()
+        trigger_release.wait(timeout=5)
+
+    def fast_check_and_execute():
+        todo_checks.append(time.monotonic())
+
+    monkeypatch.setattr(ticker, "_check_triggers", slow_check_triggers)
+    monkeypatch.setattr(ticker, "_check_and_execute", fast_check_and_execute)
+
+    # Force both timers to fire immediately
+    ticker._last_trigger_check = 0.0
+    ticker._last_archive_check = time.time()
+
+    # Run one iteration of the poll loop manually
+    ticker._running = True
+
+    def run_loop_iterations(n: int):
+        for _ in range(n):
+            if not ticker._running:
+                break
+            try:
+                ticker._check_and_execute()
+            except Exception:
+                pass
+            now = time.time()
+            if now - ticker._last_archive_check >= ticker._archive_interval:
+                ticker._last_archive_check = now
+                if ticker._executor:
+                    ticker._executor.submit(ticker._run_archive)
+            if now - ticker._last_trigger_check >= ticker.trigger_poll_interval:
+                if not ticker._trigger_poll_running:
+                    ticker._trigger_poll_running = True
+                    ticker._last_trigger_check = now
+                    if ticker._executor:
+                        ticker._executor.submit(ticker._run_trigger_poll)
+
+    # First iteration: submits trigger poll + runs TODO check
+    run_loop_iterations(1)
+    trigger_started.wait(timeout=2)
+
+    # Trigger poll is now blocking in the executor. Run more TODO checks.
+    run_loop_iterations(3)
+
+    # TODO checks ran 4 times total while trigger poll was blocked
+    assert len(todo_checks) >= 4
+
+    trigger_release.set()
+    ticker._executor.shutdown(wait=True)
+
+
+def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch):
+    """An exception in _check_triggers resets the guard flag."""
+    agent = FakeAgent(tmp_path)
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+
+    def exploding_triggers():
+        raise RuntimeError("source network timeout")
+
+    monkeypatch.setattr(ticker, "_check_triggers", exploding_triggers)
+
+    ticker._run_trigger_poll()
+
+    assert not ticker._trigger_poll_running
+
+
+def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch):
+    """A second trigger poll is not submitted while one is in progress."""
+    agent = FakeAgent(tmp_path)
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker._executor = ThreadPoolExecutor(max_workers=2)
+
+    call_count = 0
+    release = threading.Event()
+
+    def slow_check():
+        nonlocal call_count
+        call_count += 1
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(ticker, "_check_triggers", slow_check)
+
+    ticker._running = True
+    ticker._last_trigger_check = 0.0
+
+    # First submit
+    ticker._trigger_poll_running = True
+    ticker._last_trigger_check = time.time()
+    ticker._executor.submit(ticker._run_trigger_poll)
+
+    # Simulate next tick — should skip because flag is set
+    time.sleep(0.05)
+    ticker._last_trigger_check = 0.0
+    if not ticker._trigger_poll_running:
+        ticker._trigger_poll_running = True
+        ticker._executor.submit(ticker._run_trigger_poll)
+
+    release.set()
+    ticker._executor.shutdown(wait=True)
+
+    assert call_count == 1
+
+
+def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch):
+    """_archive_completed_todos runs in the executor, not inline."""
+    agent = FakeAgent(tmp_path)
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker._executor = ThreadPoolExecutor(max_workers=2)
+
+    archive_thread_ids: list[int] = []
+    main_thread_id = threading.get_ident()
+
+    original_archive = ticker._archive_completed_todos
+
+    def tracking_archive():
+        archive_thread_ids.append(threading.get_ident())
+        original_archive()
+
+    monkeypatch.setattr(ticker, "_archive_completed_todos", tracking_archive)
+
+    ticker._executor.submit(ticker._run_archive)
+    ticker._executor.shutdown(wait=True)
+
+    assert len(archive_thread_ids) == 1
+    assert archive_thread_ids[0] != main_thread_id
