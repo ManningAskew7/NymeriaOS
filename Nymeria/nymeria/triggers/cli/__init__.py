@@ -7,19 +7,16 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ...core.agent import NymeriaAgent
 
-from ..base import BaseTrigger
 
-
-class CLITrigger(BaseTrigger):
+class CLITrigger:
     """
     Command-line interface trigger.
 
     Thin wrapper that delegates to CLIApp for the actual REPL.
-    Kept for backward compatibility with ``from nymeria.triggers.cli import CLITrigger``.
     """
 
     def __init__(self, agent: "NymeriaAgent", thread_id: Optional[str] = None):
-        super().__init__(agent)
+        self.agent = agent
         self._thread_id = thread_id
 
     def start(self) -> None:
@@ -27,9 +24,6 @@ class CLITrigger(BaseTrigger):
 
         app = CLIApp(self.agent, thread_id=self._thread_id)
         app.run()
-
-    def stop(self) -> None:
-        pass  # Handled by CLIApp internally
 
 
 def run_cli(
