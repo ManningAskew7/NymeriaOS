@@ -111,10 +111,10 @@ polling, but bounds the impact of a misbehaving bot loop.
 |---|---|---|---|
 | `GET` | `/admin/chatapp/bindings` | `?provider=` | Bulk list bindings (filtered by provider). Bot startup uses this to populate its `chat_id <-> thread_id` cache. |
 | `GET` | `/admin/chatapp/bindings/lookup` | `?provider=&platform_chat_id=` or `?provider=&thread_id=` | Resolve a single binding for inbound or outbound routing. |
-| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Atomic claim used by the **shared** bot: consume the bind code, verify the platform user matches the issuing Nymeria account, create the binding row. |
-| `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | Atomic claim used by **user-owned** bots: skips the platform identity check (the bot is the credential), verifies the bind code's issuer matches the bot's `owner_user_id`, creates the binding with `user_telegram_bot_id` set. |
+| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Two-phase claim used by the **shared** bot: inspect the bind code (read-only), verify the platform user matches the issuing Nymeria account, then consume the code and create the binding row. Failed authorization does not burn the code. |
+| `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | Two-phase claim used by **user-owned** bots: inspect the bind code, verify the issuer matches the bot's `owner_user_id`, then consume the code and create the binding with `user_telegram_bot_id` set. Failed authorization does not burn the code. |
 | `DELETE` | `/admin/chatapp/bindings/by-chat` | `?provider=&platform_chat_id=` | Bot's `/unbind` handler. |
-| `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Bot's `/start link_<code>` handler. Atomically consumes a `platform_link` code and creates the `platform_identities` row. |
+| `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Bot's `/start link_<code>` handler. Two-phase claim: inspect the `platform_link` code, check for existing platform identity conflicts, then consume the code and create the `platform_identities` row. Failed authorization does not burn the code. |
 | `GET` | `/admin/telegram-bots` | — | Used by the supervisor in `nymeria-telegram-bot`. Lists all enabled BYO bots **with decrypted tokens**. Returns `[]` when `NYMERIA_SECRETS_KEY` isn't configured. |
 | `POST` | `/admin/telegram-bots/{id}/seen` | — | Heartbeat from the supervisor after a successful refresh of this bot's polling loop; updates `last_seen_at`. |
 

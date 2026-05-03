@@ -1902,16 +1902,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         repo = get_agent().accounts_repo
         bindings = get_agent().chat_bindings_repo
+        # Phase 1: inspect (read-only) to get claim info for authorization.
         try:
-            claim = bindings.claim_bind_code(
+            claim = bindings.inspect_bind_code(
                 body.code, kind="thread_bind", provider=body.provider
             )
         except BindCodeInvalid as e:
             raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
-        # Sanity: thread_id should always be set for thread_bind kind.
         if claim.thread_id is None:
             raise HTTPException(status_code=500, detail="Code has no thread_id")
-        # Verify the platform-user matches the issuing Nymeria user.
+        # Phase 2: authorize before consuming the code.
         resolved_user = repo.resolve_platform(
             body.provider, body.expected_provider_user_id
         )
@@ -1920,6 +1920,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 status_code=403,
                 detail="Code was issued by a different Nymeria account",
             )
+        # Phase 3: create the binding before consuming the code, so a
+        # failure (e.g. BindingAlreadyExists) leaves the code reusable.
         try:
             binding = bindings.create_thread_binding(
                 thread_id=claim.thread_id,
@@ -1929,6 +1931,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             )
         except BindingAlreadyExists as e:
             raise HTTPException(status_code=409, detail=str(e))
+        # Phase 4: consume the code now that everything succeeded.
+        try:
+            bindings.claim_bind_code(
+                body.code, kind="thread_bind", provider=body.provider
+            )
+        except BindCodeInvalid:
+            pass
         _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
@@ -2055,12 +2064,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 body.via_user_telegram_bot_id,
             )
             raise HTTPException(status_code=404, detail="Bot not found")
+        # Phase 1: inspect (read-only) to get claim info for authorization.
         try:
-            claim = repo.claim_bind_code(
+            claim = repo.inspect_bind_code(
                 body.code, kind="thread_bind", provider=body.provider
             )
         except BindCodeInvalid as e:
-            # Log enough to diagnose without leaking the full code value.
             redacted = (
                 (body.code[:2] + "*" * max(0, len(body.code) - 4) + body.code[-2:])
                 if body.code else "(empty)"
@@ -2077,6 +2086,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
         if claim.thread_id is None:
             raise HTTPException(status_code=500, detail="Code has no thread_id")
+        # Phase 2: authorize before consuming the code.
         if bot.owner_user_id != claim.user_id:
             raise HTTPException(
                 status_code=403,
@@ -2085,6 +2095,8 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     "than this bot's owner."
                 ),
             )
+        # Phase 3: create the binding before consuming the code, so a
+        # failure (e.g. BindingAlreadyExists) leaves the code reusable.
         try:
             binding = repo.create_thread_binding(
                 thread_id=claim.thread_id,
@@ -2095,6 +2107,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             )
         except BindingAlreadyExists as e:
             raise HTTPException(status_code=409, detail=str(e))
+        # Phase 4: consume the code now that everything succeeded.
+        try:
+            repo.claim_bind_code(
+                body.code, kind="thread_bind", provider=body.provider
+            )
+        except BindCodeInvalid:
+            pass
         _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
@@ -2180,25 +2199,33 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         repo = get_agent().accounts_repo
         bindings = get_agent().chat_bindings_repo
+        # Phase 1: inspect (read-only) to get claim info for authorization.
         try:
-            claim = bindings.claim_bind_code(
+            claim = bindings.inspect_bind_code(
                 body.code, kind="platform_link", provider=body.provider
             )
         except BindCodeInvalid as e:
             raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
-        # Block hijacking an existing link: if this platform user_id is
-        # already linked to a *different* Nymeria account, refuse rather
-        # than silently overwriting.
+        # Phase 2: authorize before consuming the code.
         existing = repo.resolve_platform(body.provider, body.platform_user_id)
         if existing is not None and existing != claim.user_id:
             raise HTTPException(
                 status_code=409,
                 detail=f"Platform identity already linked to user '{existing}'",
             )
+        # Phase 3: link the platform before consuming the code, so a
+        # failure (e.g. UserNotFound) leaves the code reusable.
         try:
             repo.link_platform(body.provider, body.platform_user_id, claim.user_id)
         except UserNotFound:
             raise HTTPException(status_code=404, detail="User not found")
+        # Phase 4: consume the code now that everything succeeded.
+        try:
+            bindings.claim_bind_code(
+                body.code, kind="platform_link", provider=body.provider
+            )
+        except BindCodeInvalid:
+            pass
         for p in repo.list_platforms_for_user(claim.user_id):
             if p.provider == body.provider and p.provider_user_id == body.platform_user_id:
                 return AdminPlatformLinkClaimResponse(
