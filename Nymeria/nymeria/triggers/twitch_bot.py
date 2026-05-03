@@ -926,10 +926,15 @@ class NymeriaTwitchBot(commands.Bot):
 
     async def close(self) -> None:
         """Clean shutdown."""
-        if self._pulse_task and not self._pulse_task.done():
-            self._pulse_task.cancel()
-            try:
-                await self._pulse_task
-            except asyncio.CancelledError:
-                pass
-        await super().close()
+        from ..core.twitch_runtime import unregister_twitch_bot
+
+        try:
+            if self._pulse_task and not self._pulse_task.done():
+                self._pulse_task.cancel()
+                try:
+                    await self._pulse_task
+                except asyncio.CancelledError:
+                    pass
+            await super().close()
+        finally:
+            unregister_twitch_bot(self)

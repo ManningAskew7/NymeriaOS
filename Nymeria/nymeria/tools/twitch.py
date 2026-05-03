@@ -2,93 +2,47 @@
 
 These are OPTIONAL_TOOLS, enabled per-thread via thread config.
 They require a running Twitch bot instance with Helix API access.
-The bot sets the module-level _bot_ref on startup.
+The bot registers a stable runtime adapter on startup; tools resolve it at
+call time so hot-reloaded tool modules do not capture stale bot objects.
 """
 
-import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Optional
 
 import httpx
 from langchain_core.tools import tool
 
+from ..core.twitch_runtime import TwitchToolRuntime, get_twitch_runtime
+
 logger = logging.getLogger(__name__)
 
-# Module-level bot reference, set by twitch_bot.py on startup
-_bot_ref = None
+
+def _get_runtime() -> TwitchToolRuntime:
+    """Get the current Twitch runtime facade."""
+    return get_twitch_runtime()
 
 
-def set_bot_ref(bot):
-    """Set the TwitchIO bot reference for API calls."""
-    global _bot_ref
-    _bot_ref = bot
-
-
-def _get_bot():
-    """Get the bot reference or raise."""
-    if _bot_ref is None:
-        raise RuntimeError("Twitch bot is not running. These tools require the twitch-bot service.")
-    return _bot_ref
-
-
-def _run_async(coro):
+def _run_async(coro_factory: Callable[[], Awaitable[str]]) -> str:
     """Run an async coroutine from sync tool context."""
-    bot = _get_bot()
-    if getattr(bot, "_stopped", False):
-        raise RuntimeError("Bot is stopped. All tools disabled until !start is used.")
-    future = asyncio.run_coroutine_threadsafe(coro, bot.loop)
-    return future.result(timeout=15)
-
-
-def _get_live_token(use_broadcaster: bool = False) -> str:
-    """Get the current valid token from TwitchIO's auto-refreshed token storage.
-
-    TwitchIO auto-refreshes tokens internally, but bot._access_token holds
-    the original env var value which goes stale. This reads from TwitchIO's
-    managed token map instead.
-    """
-    bot = _get_bot()
-    tokens = bot.tokens  # MappingProxyType[user_id -> {token, refresh, ...}]
-
-    if use_broadcaster:
-        # Broadcaster token — look up by broadcaster ID
-        if bot._broadcaster_id and bot._broadcaster_id in tokens:
-            return tokens[bot._broadcaster_id]["token"]
-        # Fallback to env var (may be stale but better than nothing)
-        if bot._broadcaster_token:
-            return bot._broadcaster_token
-        raise RuntimeError(
-            "Broadcaster token not configured. Set TWITCH_BROADCASTER_TOKEN in .env.docker."
-        )
-    else:
-        # Bot token — look up by bot user ID
-        if bot._bot_user_id and bot._bot_user_id in tokens:
-            return tokens[bot._bot_user_id]["token"]
-        # Fallback to env var
-        return bot._access_token
+    return _get_runtime().run(coro_factory)
 
 
 async def _helix_request(
     method: str, endpoint: str, *, use_broadcaster_token: bool = False, **kwargs
 ) -> httpx.Response:
     """Make an authenticated Twitch Helix API request."""
-    bot = _get_bot()
-    token = _get_live_token(use_broadcaster=use_broadcaster_token)
-    headers = {
-        "Client-ID": bot._client_id,
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    url = f"https://api.twitch.tv/helix/{endpoint}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.request(method, url, headers=headers, **kwargs)
-        return resp
+    return await _get_runtime().helix_request(
+        method,
+        endpoint,
+        use_broadcaster_token=use_broadcaster_token,
+        **kwargs,
+    )
 
 
 async def _resolve_user_id(username: str) -> Optional[str]:
     """Resolve a Twitch username to numeric user ID."""
-    bot = _get_bot()
-    return await bot.resolve_user_id(username)
+    return await _get_runtime().resolve_user_id(username)
 
 
 # =============================================================================
@@ -104,16 +58,7 @@ def twitch_read_chat(count: int = 50) -> str:
         count: Number of recent messages to read (1-500, default 50).
     """
     count = max(1, min(500, count))
-    bot = _get_bot()
-    messages = bot._buffer.get_recent(count)
-    if not messages:
-        return "Chat buffer is empty. No messages received yet."
-
-    from ..triggers.twitch_bot import format_chat_context
-
-    formatted = format_chat_context(messages)
-    total = len(bot._buffer)
-    return f"[{len(messages)} of {total} buffered messages]\n{formatted}"
+    return _get_runtime().read_chat(count)
 
 
 @tool
@@ -127,11 +72,11 @@ def twitch_send(message: str) -> str:
         message = message[:497] + "..."
 
     async def _send():
-        bot = _get_bot()
-        await bot._send_to_channel(message)
-        return f"Sent message to #{bot._channel_name}: {message[:100]}..."
+        runtime = _get_runtime()
+        await runtime.send_to_channel(message)
+        return f"Sent message to #{runtime.channel_name}: {message[:100]}..."
 
-    return _run_async(_send())
+    return _run_async(_send)
 
 
 @tool
@@ -147,13 +92,13 @@ def twitch_announce(message: str, color: str = "primary") -> str:
         color = "primary"
 
     async def _announce():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
             "POST",
             "chat/announcements",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
             },
             json={"message": message, "color": color},
         )
@@ -161,7 +106,7 @@ def twitch_announce(message: str, color: str = "primary") -> str:
             return f"Announcement sent ({color}): {message[:100]}..."
         return f"Error sending announcement: {resp.status_code} {resp.text}"
 
-    return _run_async(_announce())
+    return _run_async(_announce)
 
 
 @tool
@@ -173,10 +118,10 @@ def twitch_delete_message(message_id: str = "") -> str:
     """
 
     async def _delete():
-        bot = _get_bot()
+        runtime = _get_runtime()
         params = {
-            "broadcaster_id": bot._broadcaster_id,
-            "moderator_id": bot._bot_user_id,
+            "broadcaster_id": runtime.broadcaster_id,
+            "moderator_id": runtime.bot_user_id,
         }
         if message_id:
             params["message_id"] = message_id
@@ -185,7 +130,7 @@ def twitch_delete_message(message_id: str = "") -> str:
             return "Chat cleared." if not message_id else f"Deleted message {message_id}."
         return f"Error: {resp.status_code} {resp.text}"
 
-    return _run_async(_delete())
+    return _run_async(_delete)
 
 
 # =============================================================================
@@ -205,7 +150,7 @@ def twitch_timeout(username: str, duration: int = 300, reason: str = "") -> str:
     duration = max(1, min(1800, duration))
 
     async def _timeout():
-        bot = _get_bot()
+        runtime = _get_runtime()
         user_id = await _resolve_user_id(username)
         if not user_id:
             return f"Error: Could not find user '{username}'."
@@ -214,8 +159,8 @@ def twitch_timeout(username: str, duration: int = 300, reason: str = "") -> str:
             "POST",
             "moderation/bans",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
             },
             json={"data": {"user_id": user_id, "duration": duration, "reason": reason}},
         )
@@ -223,7 +168,7 @@ def twitch_timeout(username: str, duration: int = 300, reason: str = "") -> str:
             return f"Timed out {username} for {duration}s. Reason: {reason or 'No reason given'}"
         return f"Error timing out {username}: {resp.status_code} {resp.text}"
 
-    return _run_async(_timeout())
+    return _run_async(_timeout)
 
 
 @tool
@@ -236,7 +181,7 @@ def twitch_ban(username: str, reason: str = "") -> str:
     """
 
     async def _ban():
-        bot = _get_bot()
+        runtime = _get_runtime()
         user_id = await _resolve_user_id(username)
         if not user_id:
             return f"Error: Could not find user '{username}'."
@@ -245,8 +190,8 @@ def twitch_ban(username: str, reason: str = "") -> str:
             "POST",
             "moderation/bans",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
             },
             json={"data": {"user_id": user_id, "reason": reason}},
         )
@@ -254,7 +199,7 @@ def twitch_ban(username: str, reason: str = "") -> str:
             return f"Banned {username}. Reason: {reason or 'No reason given'}"
         return f"Error banning {username}: {resp.status_code} {resp.text}"
 
-    return _run_async(_ban())
+    return _run_async(_ban)
 
 
 @tool
@@ -266,7 +211,7 @@ def twitch_unban(username: str) -> str:
     """
 
     async def _unban():
-        bot = _get_bot()
+        runtime = _get_runtime()
         user_id = await _resolve_user_id(username)
         if not user_id:
             return f"Error: Could not find user '{username}'."
@@ -275,8 +220,8 @@ def twitch_unban(username: str) -> str:
             "DELETE",
             "moderation/bans",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
                 "user_id": user_id,
             },
         )
@@ -284,7 +229,7 @@ def twitch_unban(username: str) -> str:
             return f"Unbanned {username}."
         return f"Error unbanning {username}: {resp.status_code} {resp.text}"
 
-    return _run_async(_unban())
+    return _run_async(_unban)
 
 
 @tool
@@ -297,7 +242,7 @@ def twitch_warn(username: str, reason: str) -> str:
     """
 
     async def _warn():
-        bot = _get_bot()
+        runtime = _get_runtime()
         user_id = await _resolve_user_id(username)
         if not user_id:
             return f"Error: Could not find user '{username}'."
@@ -306,8 +251,8 @@ def twitch_warn(username: str, reason: str) -> str:
             "POST",
             "moderation/warnings",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
             },
             json={"data": {"user_id": user_id, "reason": reason}},
         )
@@ -315,7 +260,7 @@ def twitch_warn(username: str, reason: str) -> str:
             return f"Warning issued to {username}: {reason}"
         return f"Error warning {username}: {resp.status_code} {resp.text}"
 
-    return _run_async(_warn())
+    return _run_async(_warn)
 
 
 @tool
@@ -331,12 +276,12 @@ def twitch_automod_review(msg_id: str, action: str = "ALLOW") -> str:
         return "Error: action must be ALLOW or DENY."
 
     async def _review():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
             "POST",
             "moderation/automod/message",
             json={
-                "user_id": bot._bot_user_id,
+                "user_id": runtime.bot_user_id,
                 "msg_id": msg_id,
                 "action": action,
             },
@@ -345,7 +290,7 @@ def twitch_automod_review(msg_id: str, action: str = "ALLOW") -> str:
             return f"AutoMod message {msg_id}: {action}ED."
         return f"Error: {resp.status_code} {resp.text}"
 
-    return _run_async(_review())
+    return _run_async(_review)
 
 
 @tool
@@ -357,7 +302,7 @@ def twitch_shoutout(username: str) -> str:
     """
 
     async def _shoutout():
-        bot = _get_bot()
+        runtime = _get_runtime()
         user_id = await _resolve_user_id(username)
         if not user_id:
             return f"Error: Could not find user '{username}'."
@@ -366,9 +311,9 @@ def twitch_shoutout(username: str) -> str:
             "POST",
             "chat/shoutouts",
             params={
-                "from_broadcaster_id": bot._broadcaster_id,
+                "from_broadcaster_id": runtime.broadcaster_id,
                 "to_broadcaster_id": user_id,
-                "moderator_id": bot._bot_user_id,
+                "moderator_id": runtime.bot_user_id,
             },
         )
         if resp.status_code == 204:
@@ -377,7 +322,7 @@ def twitch_shoutout(username: str) -> str:
             return f"Shoutout on cooldown for {username}. Try again in ~2 minutes."
         return f"Error: {resp.status_code} {resp.text}"
 
-    return _run_async(_shoutout())
+    return _run_async(_shoutout)
 
 
 # =============================================================================
@@ -390,9 +335,9 @@ def twitch_get_stream() -> str:
     """Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live."""
 
     async def _get():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
-            "GET", "streams", params={"user_id": bot._broadcaster_id}
+            "GET", "streams", params={"user_id": runtime.broadcaster_id}
         )
         if resp.status_code != 200:
             return f"Error: {resp.status_code} {resp.text}"
@@ -405,7 +350,7 @@ def twitch_get_stream() -> str:
             f"Viewers: {s['viewer_count']} | Started: {s.get('started_at', 'unknown')}"
         )
 
-    return _run_async(_get())
+    return _run_async(_get)
 
 
 @tool
@@ -413,9 +358,9 @@ def twitch_get_channel() -> str:
     """Get channel info: title, game, tags, language."""
 
     async def _get():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
-            "GET", "channels", params={"broadcaster_id": bot._broadcaster_id}
+            "GET", "channels", params={"broadcaster_id": runtime.broadcaster_id}
         )
         if resp.status_code != 200:
             return f"Error: {resp.status_code} {resp.text}"
@@ -429,7 +374,7 @@ def twitch_get_channel() -> str:
             f"Language: {c.get('broadcaster_language', '?')} | Tags: {tags}"
         )
 
-    return _run_async(_get())
+    return _run_async(_get)
 
 
 @tool
@@ -437,13 +382,13 @@ def twitch_get_chatters() -> str:
     """Get list of users currently in chat with total count."""
 
     async def _get():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
             "GET",
             "chat/chatters",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
             },
         )
         if resp.status_code != 200:
@@ -455,7 +400,7 @@ def twitch_get_chatters() -> str:
         truncated = f" (showing 50/{total})" if total > 50 else ""
         return f"Chatters ({total}{truncated}): {', '.join(names)}"
 
-    return _run_async(_get())
+    return _run_async(_get)
 
 
 @tool
@@ -463,13 +408,13 @@ def twitch_get_banned() -> str:
     """Get list of banned users in the channel with reasons."""
 
     async def _get():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
             "GET",
             "moderation/banned",
             params={
-                "broadcaster_id": bot._broadcaster_id,
-                "moderator_id": bot._bot_user_id,
+                "broadcaster_id": runtime.broadcaster_id,
+                "moderator_id": runtime.bot_user_id,
             },
         )
         if resp.status_code != 200:
@@ -485,7 +430,7 @@ def twitch_get_banned() -> str:
         suffix = f"\n  ... and {len(data) - 30} more" if len(data) > 30 else ""
         return f"Banned users ({len(data)}):\n" + "\n".join(lines) + suffix
 
-    return _run_async(_get())
+    return _run_async(_get)
 
 
 @tool
@@ -493,9 +438,9 @@ def twitch_get_schedule() -> str:
     """Get the channel's upcoming stream schedule."""
 
     async def _get():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
-            "GET", "schedule", params={"broadcaster_id": bot._broadcaster_id}
+            "GET", "schedule", params={"broadcaster_id": runtime.broadcaster_id}
         )
         if resp.status_code == 404:
             return "No schedule set for this channel."
@@ -515,7 +460,7 @@ def twitch_get_schedule() -> str:
             lines.append(f"  {start}: {title} ({category})")
         return f"Upcoming schedule ({len(segments)} segments):\n" + "\n".join(lines)
 
-    return _run_async(_get())
+    return _run_async(_get)
 
 
 @tool
@@ -523,9 +468,9 @@ def twitch_clip() -> str:
     """Create a clip of the last ~30 seconds of the live stream."""
 
     async def _clip():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
-            "POST", "clips", params={"broadcaster_id": bot._broadcaster_id}
+            "POST", "clips", params={"broadcaster_id": runtime.broadcaster_id}
         )
         if resp.status_code != 202:
             return f"Error creating clip: {resp.status_code} {resp.text}"
@@ -536,7 +481,7 @@ def twitch_clip() -> str:
             return f"Clip created! ID: {clip_id} | Edit: {edit_url}"
         return "Clip request accepted but no ID returned."
 
-    return _run_async(_clip())
+    return _run_async(_clip)
 
 
 # =============================================================================
@@ -559,13 +504,13 @@ def twitch_create_poll(title: str, choices: str, duration: int = 60) -> str:
     duration = max(15, min(1800, duration))
 
     async def _create():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
             "POST",
             "polls",
             use_broadcaster_token=True,
             json={
-                "broadcaster_id": bot._broadcaster_id,
+                "broadcaster_id": runtime.broadcaster_id,
                 "title": title[:60],
                 "choices": [{"title": c[:25]} for c in choice_list],
                 "duration": duration,
@@ -576,7 +521,7 @@ def twitch_create_poll(title: str, choices: str, duration: int = 60) -> str:
             return f"Poll created: '{data.get('title')}' (ID: {data.get('id')}, {duration}s)"
         return f"Error creating poll: {resp.status_code} {resp.text}"
 
-    return _run_async(_create())
+    return _run_async(_create)
 
 
 @tool
@@ -589,14 +534,14 @@ def twitch_end_poll(poll_id: str, show_results: bool = True) -> str:
     """
 
     async def _end():
-        bot = _get_bot()
+        runtime = _get_runtime()
         status = "TERMINATED" if show_results else "ARCHIVED"
         resp = await _helix_request(
             "PATCH",
             "polls",
             use_broadcaster_token=True,
             json={
-                "broadcaster_id": bot._broadcaster_id,
+                "broadcaster_id": runtime.broadcaster_id,
                 "id": poll_id,
                 "status": status,
             },
@@ -610,7 +555,7 @@ def twitch_end_poll(poll_id: str, show_results: bool = True) -> str:
             return f"Poll ended ({status}). Results: {results}"
         return f"Error ending poll: {resp.status_code} {resp.text}"
 
-    return _run_async(_end())
+    return _run_async(_end)
 
 
 @tool
@@ -628,13 +573,13 @@ def twitch_create_prediction(title: str, outcomes: str, duration: int = 120) -> 
     duration = max(30, min(1800, duration))
 
     async def _create():
-        bot = _get_bot()
+        runtime = _get_runtime()
         resp = await _helix_request(
             "POST",
             "predictions",
             use_broadcaster_token=True,
             json={
-                "broadcaster_id": bot._broadcaster_id,
+                "broadcaster_id": runtime.broadcaster_id,
                 "title": title[:45],
                 "outcomes": [{"title": o[:25]} for o in outcome_list],
                 "prediction_window": duration,
@@ -651,7 +596,7 @@ def twitch_create_prediction(title: str, outcomes: str, duration: int = 120) -> 
             )
         return f"Error creating prediction: {resp.status_code} {resp.text}"
 
-    return _run_async(_create())
+    return _run_async(_create)
 
 
 @tool
@@ -672,9 +617,9 @@ def twitch_resolve_prediction(
         return "Error: winning_outcome_id is required when resolving."
 
     async def _resolve():
-        bot = _get_bot()
+        runtime = _get_runtime()
         body = {
-            "broadcaster_id": bot._broadcaster_id,
+            "broadcaster_id": runtime.broadcaster_id,
             "id": prediction_id,
             "status": action,
         }
@@ -687,7 +632,7 @@ def twitch_resolve_prediction(
             return f"Prediction {action.lower()}: {prediction_id}"
         return f"Error: {resp.status_code} {resp.text}"
 
-    return _run_async(_resolve())
+    return _run_async(_resolve)
 
 
 @tool
@@ -703,7 +648,7 @@ def twitch_set_channel_info(title: str = "", game: str = "", tags: str = "") -> 
         return "Error: provide at least one of title, game, or tags."
 
     async def _set():
-        bot = _get_bot()
+        runtime = _get_runtime()
         body = {}
         if title:
             body["title"] = title[:140]
@@ -725,7 +670,7 @@ def twitch_set_channel_info(title: str = "", game: str = "", tags: str = "") -> 
             "PATCH",
             "channels",
             use_broadcaster_token=True,
-            params={"broadcaster_id": bot._broadcaster_id},
+            params={"broadcaster_id": runtime.broadcaster_id},
             json=body,
         )
         if resp.status_code == 204:
@@ -739,7 +684,7 @@ def twitch_set_channel_info(title: str = "", game: str = "", tags: str = "") -> 
             return f"Channel updated: {', '.join(changes)}"
         return f"Error: {resp.status_code} {resp.text}"
 
-    return _run_async(_set())
+    return _run_async(_set)
 
 
 @tool
@@ -751,7 +696,7 @@ def twitch_get_subs(username: str = "") -> str:
     """
 
     async def _subs():
-        bot = _get_bot()
+        runtime = _get_runtime()
         if username:
             user_id = await _resolve_user_id(username)
             if not user_id:
@@ -761,7 +706,7 @@ def twitch_get_subs(username: str = "") -> str:
                 "subscriptions",
                 use_broadcaster_token=True,
                 params={
-                    "broadcaster_id": bot._broadcaster_id,
+                    "broadcaster_id": runtime.broadcaster_id,
                     "user_id": user_id,
                 },
             )
@@ -781,7 +726,7 @@ def twitch_get_subs(username: str = "") -> str:
                 "subscriptions",
                 use_broadcaster_token=True,
                 params={
-                    "broadcaster_id": bot._broadcaster_id,
+                    "broadcaster_id": runtime.broadcaster_id,
                     "first": 1,
                 },
             )
@@ -792,7 +737,7 @@ def twitch_get_subs(username: str = "") -> str:
                 return f"Total subscribers: {total} | Sub points: {points}"
             return f"Error: {resp.status_code} {resp.text}"
 
-    return _run_async(_subs())
+    return _run_async(_subs)
 
 
 # =============================================================================

@@ -470,7 +470,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
     from nymeria.tools import get_all_tools_with_agents
     from nymeria.config import get_settings
     from nymeria.triggers.twitch_bot import NymeriaTwitchBot
-    from nymeria.tools.twitch import set_bot_ref
+    from nymeria.core.twitch_runtime import register_twitch_bot
 
     settings = get_settings()
 
@@ -523,8 +523,9 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         command_context_count=settings.twitch_command_context_count,
     )
 
-    # Set bot reference for moderation tools
-    set_bot_ref(bot)
+    # Register the bot runtime for Twitch tools. The runtime module is outside
+    # nymeria.tools so tool hot-reload does not drop this registration.
+    register_twitch_bot(bot)
 
     # Handle shutdown signals
     def signal_handler(signum, frame):
