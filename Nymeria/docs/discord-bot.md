@@ -97,7 +97,7 @@ docker logs nymeria-discord-bot --tail 15
 | `/context` | Detailed context breakdown: effective model, token usage with progress bar, tools by category, per-thread overrides (instructions, enabled/disabled tools, callable status). |
 | `/tasks [status]` | Quick view of scheduled and autonomous tasks. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. Shows schedule time, recurrence, and bound thread. |
 | `/export [format]` | Export conversation history as a file attachment. Format: `markdown` (default), `json`, `txt`. |
-| `/restart [target]` | Restart the Discord bot (default) or API server (`/restart target:api`). Bot restarts use Docker's restart policy; API restart uses the existing `POST /restart` endpoint. |
+| `/restart [target]` | Restart the Discord bot (default) or API server (`/restart target:api`). Bot restarts close the Discord gateway and API client, then use Docker's restart policy; API restart uses the existing `POST /restart` endpoint. |
 | `/help` | List all available commands. |
 
 `/ask` also fetches the last ~10 channel messages as context (configurable, see `/channel-context`).
