@@ -180,6 +180,8 @@ export interface ThreadConfigUpdateRequest {
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
+  clear_enabled_skills?: boolean;
+  clear_disabled_skills?: boolean;
   clear_llm_config?: boolean;
   clear_system_prompt?: boolean;
 }

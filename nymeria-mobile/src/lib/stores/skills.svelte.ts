@@ -1,7 +1,13 @@
 import { api } from '$lib/services/api.svelte';
 import { registerIdentityReloadHook } from './config.svelte';
+import type { SkillMetadata } from '$lib/types';
 
 function createSkillsStore() {
+  let installed = $state<SkillMetadata[]>([]);
+  let installedLoaded = $state(false);
+  let installedLoading = $state(false);
+  let installedError = $state<string | null>(null);
+
   let enabledGlobal = $state<string[]>([]);
   let enabledGlobalLoaded = $state(false);
   let enabledGlobalLoading = $state(false);
@@ -9,12 +15,43 @@ function createSkillsStore() {
 
   registerIdentityReloadHook(() => {
     identityGeneration += 1;
+    installed = [];
+    installedLoaded = false;
+    installedLoading = false;
+    installedError = null;
     enabledGlobal = [];
     enabledGlobalLoaded = false;
     enabledGlobalLoading = false;
   });
 
+  async function loadInstalled(force = false): Promise<void> {
+    if (installedLoading) return;
+    if (installedLoaded && !force) return;
+    const requestGeneration = identityGeneration;
+    installedLoading = true;
+    installedError = null;
+    try {
+      const nextInstalled = await api.listSkills();
+      if (requestGeneration !== identityGeneration) return;
+      installed = nextInstalled;
+      installedLoaded = true;
+    } catch (e) {
+      if (requestGeneration !== identityGeneration) return;
+      installedError = e instanceof Error ? e.message : 'Failed to load skills';
+      console.error('skills: loadInstalled failed', e);
+      installedLoaded = true;
+    } finally {
+      if (requestGeneration === identityGeneration) {
+        installedLoading = false;
+      }
+    }
+  }
+
   return {
+    get installed() { return installed; },
+    get installedLoaded() { return installedLoaded; },
+    get installedLoading() { return installedLoading; },
+    get installedError() { return installedError; },
     get enabledGlobal() { return enabledGlobal; },
     get enabledGlobalLoaded() { return enabledGlobalLoaded; },
     get enabledGlobalLoading() { return enabledGlobalLoading; },
@@ -41,8 +78,11 @@ function createSkillsStore() {
     },
 
     reset(): void {
+      installedLoaded = false;
       enabledGlobalLoaded = false;
     },
+
+    loadInstalled,
   };
 }
 
