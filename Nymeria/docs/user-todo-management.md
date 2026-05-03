@@ -162,6 +162,21 @@ def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Opt
     return None
 ```
 
+### Completed TODO Retention
+
+Completed TODOs stay in the user's JSON list until ticker cleanup removes old
+completed items. The cleanup runs about once per hour and uses
+`TODO_AUTO_ARCHIVE_DAYS` from settings (default 7, valid range 1-30). The age is
+measured from the TODO's `updated_at`, so marking an item done resets the
+retention window.
+
+"Archive" here means removal from `data/todos/{user_id}.json`; Nymeria does not
+write completed TODOs to a separate archive file. Before cleanup, completed
+items can be inspected with `GET /todos?filter_status=done`, `filter_status=all`,
+or `nym_todo_list(filter_status="done")`. After cleanup, only secondary history
+surfaces such as activity entries and indexed completed-TODO outcomes may retain
+context, depending on their own retention/indexing settings.
+
 ---
 
 ## Frontend Implementation

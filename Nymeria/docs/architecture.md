@@ -197,7 +197,7 @@ Manages autonomous operation for 24/7 functionality through the **TODO system** 
 **Components:**
 - `TodoManager`: Manages user TODO lists with atomic updates (JSON files in `data/todos/`)
 - `TodoScheduleDB`: SQLite index for efficient polling and cross-process active-execution markers (not source of truth - mirrors JSON)
-- `Ticker`: Global daemon thread that executes due scheduled TODOs
+- `Ticker`: Global daemon thread that executes due scheduled TODOs and removes completed TODOs older than `TODO_AUTO_ARCHIVE_DAYS`
 - `EventBus`: Pub/sub system for streaming autonomous events to frontend (see Section 4.1)
 
 **Scheduled TODO Flow:**
@@ -631,6 +631,8 @@ SQLite stores scheduled TODOs for autonomous execution:
 - Missed scheduled TODOs are recovered on startup
 - `scheduled_todos` schema: todo_id, user_id, thread_id, scheduled_for, task_preview, created_at
 - `active_todo_executions` tracks TODOs currently owned by a ticker worker so API edit/complete/delete requests can return `409 Conflict` while a run is in progress. Markers older than 24 hours are treated as stale crash leftovers and removed automatically.
+
+Completed TODO retention is handled by the ticker against `data/todos/{user_id}.json`. Items whose status is `done` and whose `updated_at` is older than `TODO_AUTO_ARCHIVE_DAYS` (default 7) are removed from the active TODO list during hourly cleanup; there is no separate TODO archive table or file.
 
 Legacy `data/tasks.db` files from older installs are ignored by the current runtime.
 

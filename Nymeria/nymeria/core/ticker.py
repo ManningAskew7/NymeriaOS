@@ -288,13 +288,17 @@ class Ticker:
                 time.sleep(0.1)
 
     def _archive_completed_todos(self) -> None:
-        """Archive completed TODOs older than 7 days for all users."""
+        """Archive completed TODOs older than the configured retention for all users."""
+        days_old = getattr(getattr(self.agent, "settings", None), "todo_auto_archive_days", 7)
         users = self.todo_manager.get_all_users_with_todos()
         for user_id in users:
             with self.todo_manager.atomic_update(user_id) as todo_list:
-                archived = todo_list.archive_completed(days_old=7)
+                archived = todo_list.archive_completed(days_old=days_old)
                 if archived > 0:
-                    logger.info(f"Archived {archived} completed TODO(s) for user {user_id}")
+                    logger.info(
+                        f"Archived {archived} completed TODO(s) older than "
+                        f"{days_old} day(s) for user {user_id}"
+                    )
 
     def _check_triggers(self) -> None:
         """Check all poll-based trigger sources for events and fire actions.

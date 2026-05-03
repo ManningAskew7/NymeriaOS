@@ -952,6 +952,11 @@ See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the f
 
 Manage TODO items with optional scheduling for autonomous execution.
 
+Completed TODOs are retained in the active TODO JSON list until ticker cleanup
+removes completed items older than `TODO_AUTO_ARCHIVE_DAYS` (default 7 days).
+Cleanup removes them from `data/todos/{user_id}.json`; it does not write a
+separate completed-TODO archive file.
+
 ### List Users with TODOs
 
 ```http
@@ -1083,7 +1088,7 @@ POST /todos/{todo_id}/complete?user_id=default
 Authorization: Bearer <token>
 ```
 
-Marks the TODO as done. Recurring TODOs are rescheduled by the backend rather than simply being unscheduled.
+Marks the TODO as done. Recurring TODOs are rescheduled by the backend rather than simply being unscheduled. Non-recurring completed TODOs remain listable with `filter_status=done` until the configured ticker cleanup window expires.
 
 **Response:** Updated TODO object
 

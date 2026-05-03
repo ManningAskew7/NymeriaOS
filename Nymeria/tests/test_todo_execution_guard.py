@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.core.ticker import Ticker
-from nymeria.core.todo_manager import TodoManager
+from nymeria.core.todo_manager import TodoManager, TodoStatus
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from nymeria.core.trigger_manager import TriggerManager
 from nymeria.core import ticker as ticker_module
@@ -32,6 +32,7 @@ class FakeSettings:
     fcm_credentials_json: str | None = None
     context_management: str = "none"
     sliding_window_cycles: int = 20
+    todo_auto_archive_days: int = 7
     cors_origins_list: list[str] | None = None
 
     def __post_init__(self):
@@ -203,6 +204,32 @@ def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path):
     ticker._execute_scheduled_todo(entry)
 
     assert not agent._schedule_db.is_execution_active(todo.id, "owner")
+
+
+def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Path):
+    agent = FakeAgent(tmp_path)
+    agent.settings.todo_auto_archive_days = 3
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        old_done = todo_list.add_item("Old completed", thread_id="thread-1")
+        recent_done = todo_list.add_item("Recent completed", thread_id="thread-1")
+        active = todo_list.add_item("Still active", thread_id="thread-1")
+        assert old_done is not None
+        assert recent_done is not None
+        assert active is not None
+        old_done.status = TodoStatus.DONE
+        old_done.updated_at = datetime.utcnow() - timedelta(days=4)
+        recent_done.status = TodoStatus.DONE
+        recent_done.updated_at = datetime.utcnow() - timedelta(days=2)
+
+    ticker._archive_completed_todos()
+
+    remaining = agent.todo_manager.get_todos("owner").items
+    remaining_ids = {todo.id for todo in remaining}
+    assert old_done.id not in remaining_ids
+    assert recent_done.id in remaining_ids
+    assert active.id in remaining_ids
 
 
 def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, monkeypatch):
