@@ -95,6 +95,8 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | Module | Purpose |
 |--------|---------|
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
+| `agent_history.py` | Conversation-history projection for API/frontend clients, including checkpoint timestamp recovery, internal-message filtering, reasoning/tool-step rendering, and attachment metadata |
+| `agent_streaming.py` | Pure helpers for classifying streamed model chunks and deduplicating reasoning deltas in `NymeriaAgent.astream()` |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
@@ -739,6 +741,8 @@ The codebase underwent significant modularization:
    - `prompts.py`: System prompt templates and time context
    - `time_utils.py`: Shared time parsing (from TODO tools and scheduler parsing)
    - `todo_constants.py`: TODO display constants
+   - `agent_history.py`: Conversation-history projection, checkpoint timestamp recovery, and provider reasoning/tool-step rendering
+   - `agent_streaming.py`: Stream chunk classification and reasoning-delta deduplication helpers
 
 2. **Removed Legacy Scheduler:**
    - `scheduler.py`, `rate_limiter.py`, `migration.py`, and `_deprecated/task_db.py` were removed after scheduled TODOs became the only runtime scheduling path.
