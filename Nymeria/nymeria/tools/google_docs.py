@@ -1358,7 +1358,7 @@ def google_docs_append_text(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -1415,7 +1415,7 @@ def google_docs_insert_text(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -1468,7 +1468,7 @@ def google_docs_delete_range(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -1564,7 +1564,7 @@ def google_docs_apply_text_style(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -1647,7 +1647,7 @@ def google_docs_update_paragraph_style(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -1707,7 +1707,7 @@ def google_docs_insert_table(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 
@@ -1902,7 +1902,7 @@ def google_docs_insert_page_break(
             body={"requests": requests},
         ).execute()
 
-    success, result = _docs_request(_op, account_id=account_id)
+    success, result = _docs_request(user_id, _op, account_id=account_id)
     if not success:
         return f"[Error]: {result}"
 

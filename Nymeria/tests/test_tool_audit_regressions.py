@@ -62,6 +62,74 @@ def test_calendar_operation_tools_pass_user_id_to_request(monkeypatch):
     assert [c[0] for c in calls] == ["audit-user"] * 5
 
 
+def test_google_docs_operation_tools_pass_user_id_to_request(monkeypatch):
+    calls = []
+
+    def fake_request(user_id, operation, account_id=None):
+        calls.append((user_id, account_id, operation))
+        return True, {"body": {"content": [{"endIndex": 100}]}}
+
+    monkeypatch.setattr(google_docs, "_docs_request", fake_request)
+
+    cfg = _config("docs-user")
+    results = [
+        google_docs.google_docs_append_text.func(
+            "doc-1",
+            "hello",
+            account_id="docs-account",
+            config=cfg,
+        ),
+        google_docs.google_docs_insert_text.func(
+            "doc-1",
+            "hello",
+            2,
+            account_id="docs-account",
+            config=cfg,
+        ),
+        google_docs.google_docs_delete_range.func(
+            "doc-1",
+            2,
+            4,
+            account_id="docs-account",
+            config=cfg,
+        ),
+        google_docs.google_docs_apply_text_style.func(
+            "doc-1",
+            2,
+            4,
+            bold=True,
+            account_id="docs-account",
+            config=cfg,
+        ),
+        google_docs.google_docs_update_paragraph_style.func(
+            "doc-1",
+            2,
+            4,
+            heading_level=1,
+            account_id="docs-account",
+            config=cfg,
+        ),
+        google_docs.google_docs_insert_table.func(
+            "doc-1",
+            2,
+            3,
+            5,
+            account_id="docs-account",
+            config=cfg,
+        ),
+        google_docs.google_docs_insert_page_break.func(
+            "doc-1",
+            6,
+            account_id="docs-account",
+            config=cfg,
+        ),
+    ]
+
+    assert all(result.startswith("[Success]:") for result in results)
+    assert [(c[0], c[1]) for c in calls] == [("docs-user", "docs-account")] * 8
+    assert all(callable(c[2]) for c in calls)
+
+
 def test_google_docs_write_segments_pass_user_id_to_docs_request(monkeypatch):
     calls = []
 
