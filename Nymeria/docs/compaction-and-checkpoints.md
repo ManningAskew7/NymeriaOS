@@ -151,6 +151,26 @@ A healthy compacted thread sits in the low tens. If you see hundreds or thousand
 - The thread was never compacted — trigger `/compact` and let pruning run automatically.
 - A prior compaction ran before the pruning change was deployed — run the one-shot cleanup below.
 
+### Inspect persisted messages
+
+`tools/inspect_thread.py` reads the same checkpoint backend as the runtime. It
+honors `DATABASE_BACKEND`, `SQLITE_PATH`/`NYMERIA_DATA_DIR`, and `POSTGRES_URI`,
+then uses LangGraph's checkpointer serializer to print the latest persisted
+messages:
+
+```bash
+cd Nymeria
+python tools/inspect_thread.py --list
+python tools/inspect_thread.py YOUR_THREAD_ID --last 20
+python tools/inspect_thread.py YOUR_THREAD_ID --full
+```
+
+Use `--backend`, `--sqlite-path`, or `--postgres-uri` when inspecting a database
+other than the one selected by the current environment. Local PostgreSQL
+inspection requires the Postgres checkpoint extras from
+`requirements-postgres.txt`; Docker installs them through
+`requirements-docker.txt`.
+
 ### One-shot cleanup for a single bloated thread
 
 Run inside the API container:
