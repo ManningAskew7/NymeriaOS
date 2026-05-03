@@ -538,15 +538,10 @@ def _reasoning_details_for_payload(details: Any) -> Any:
     return cleaned
 
 
-def _looks_like_cliproxy_base_url(base_url: str) -> bool:
-    """Return True for CLIProxy hostnames or the local ports used by CLIProxy."""
-    return looks_like_cliproxy_url(base_url)
-
-
 def _normalize_openai_base_url(base_url: str) -> str:
     """Normalize OpenAI-compatible CLIProxy URLs to include the required /v1 path."""
     clean = base_url.strip().rstrip("/")
-    if not clean or not _looks_like_cliproxy_base_url(clean):
+    if not clean or not looks_like_cliproxy_url(clean):
         return clean
 
     parse_target = clean
@@ -580,7 +575,7 @@ def _should_disable_streaming_for_local_base_url(base_url: str) -> bool:
 
     # CLIProxy sidecars are OpenAI-compatible proxy servers, not local inference
     # engines, and we rely on streaming to surface reasoning deltas.
-    if _looks_like_cliproxy_base_url(base_url):
+    if looks_like_cliproxy_url(base_url):
         return False
 
     return host in _LOCAL_LLM_HOSTS

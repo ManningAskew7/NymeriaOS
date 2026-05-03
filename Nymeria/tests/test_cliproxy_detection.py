@@ -1,8 +1,7 @@
 """Tests for the shared CLIProxy URL detection helpers.
 
-Covers the centralised `cliproxy.py` module and verifies that both
-`providers._looks_like_cliproxy_base_url` and
-`nodes._uses_cliproxy_anthropic` delegate correctly.
+Covers the centralised `cliproxy.py` module and verifies that
+`nodes._uses_cliproxy_anthropic` delegates correctly.
 """
 
 from __future__ import annotations
@@ -62,18 +61,6 @@ class TestLooksLikeCliproxyUrl:
 
     def test_malformed_url_returns_false(self):
         assert looks_like_cliproxy_url("://") is False
-
-
-# ---------------------------------------------------------------------------
-# providers.py thin wrapper
-# ---------------------------------------------------------------------------
-
-class TestProvidersWrapper:
-    def test_delegates_to_shared_helper(self):
-        from nymeria.vendor.react_agent.providers import _looks_like_cliproxy_base_url
-
-        assert _looks_like_cliproxy_base_url("http://cli-proxy:8317") is True
-        assert _looks_like_cliproxy_base_url("http://localhost:8000") is False
 
 
 # ---------------------------------------------------------------------------
