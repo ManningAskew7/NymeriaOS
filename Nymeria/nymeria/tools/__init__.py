@@ -50,11 +50,13 @@ from .hello_test import hello_test
 from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
 from .google_docs import GOOGLE_DOCS_TOOLS
 from .google_sheets import GOOGLE_SHEETS_TOOLS
-from ._prv_a_supplier import _PRV_TOOLS_A1
-from ._prv_a_vendor import _PRV_TOOLS_A2
-from ._prv_a_products import _PRV_TOOLS_A3
-from ._prv_a_acme import _PRV_TOOLS_A4
-from ._prv_a_acme import _PRV_TOOLS_A5
+from ..plugins._prv_a import (
+    _PRV_TOOLS_A1,
+    _PRV_TOOLS_A2,
+    _PRV_TOOLS_A3,
+    _PRV_TOOLS_A4,
+    _PRV_TOOLS_A5,
+)
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS

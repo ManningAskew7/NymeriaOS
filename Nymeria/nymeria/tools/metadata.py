@@ -815,7 +815,7 @@ TOOL_METADATA: Dict[str, ToolMetadata] = {
         default_enabled=False,
     ),
 
-    # _PRV_A tools
+    # _PRV_A tools (implementation in plugins/_prv_a/)
     "_prv_a_supplier_lookup": ToolMetadata(
         name="_prv_a_supplier_lookup",
         category=ToolCategory._PRV_A,

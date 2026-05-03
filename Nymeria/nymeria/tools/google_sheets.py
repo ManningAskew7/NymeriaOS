@@ -218,6 +218,60 @@ def fetch__prv_a_reference_sheet(
     )
 
 
+def fetch__prv_a_raw_values(
+    spreadsheet_id: str,
+    gid: int,
+    cache_suffix: str = "",
+    range_spec_override: str = "",
+) -> List[List[str]]:
+    """Fetch raw row values from a _PRV_A reference sheet with caching.
+
+    Unlike ``fetch__prv_a_reference_sheet``, this returns all rows without
+    header detection, for sheets that need custom header-merging logic
+    (e.g. the supplier matrix with a two-row header structure).
+    """
+    cache_key = f"___prv_a_service_account__::{spreadsheet_id}::__raw_{cache_suffix}__::{gid}"
+    now = time.time()
+
+    if cache_key in _sheet_cache:
+        ts, _, cached_rows = _sheet_cache[cache_key]
+        if now - ts < _CACHE_TTL:
+            return cached_rows
+
+    service = _get__prv_a_sheets_service()
+    if not service:
+        raise RuntimeError(
+            "[Error]: _PRV_A Google Sheets service account not configured. "
+            "Set _PRV_A_SERVICE_ACCOUNT_FILE and share the reference "
+            "spreadsheets with that service account."
+        )
+
+    # Resolve sheet name from gid
+    sheet_name = ""
+    try:
+        meta = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id, fields="sheets.properties"
+        ).execute()
+        for s in meta.get("sheets", []):
+            if s.get("properties", {}).get("sheetId") == gid:
+                sheet_name = s["properties"]["title"]
+                break
+    except Exception as e:
+        logger.warning(f"Could not resolve gid {gid}: {e}")
+
+    range_spec = range_spec_override or (f"'{sheet_name}'!A:BZ" if sheet_name else "A:BZ")
+    result = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=range_spec,
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute()
+
+    values = result.get("values", [])
+    raw_rows = [[str(c) for c in row] for row in values]
+    _sheet_cache[cache_key] = (now, [], raw_rows)
+    return raw_rows
+
+
 def search_sheet_data(
     user_id: Optional[str],
     spreadsheet_id: str,
