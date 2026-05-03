@@ -44,7 +44,7 @@ from telegram.ext import (
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .message_splitter import split_telegram_message as split_message
-from .sse_consumer import parse_attach_paths as _parse_attach_paths
+from .sse_consumer import consume_sse_stream, parse_attach_paths as _parse_attach_paths
 
 logger = logging.getLogger(__name__)
 
