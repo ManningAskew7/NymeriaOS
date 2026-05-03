@@ -28,12 +28,6 @@ from .mcp_sources import (
 
 logger = logging.getLogger(__name__)
 
-_new_id = new_mcp_server_id
-
-
-def _classify(source: str) -> str:
-    return classify_mcp_source(source).kind
-
 
 def parse_mcp_source(
     source: str,
