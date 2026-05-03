@@ -614,12 +614,22 @@ SQLite stores conversation state per `thread_id` using LangGraph's checkpointer 
 - Located at `data/nymeria.db`
 - Auto-compact summarizes at the configured threshold, defaulting to 80% context (or legacy sliding window keeps last N cycles)
 
-**Dual-Saver Architecture:**
-- **SqliteSaver**: Handles sync operations such as `chat()`
-- **LazyAsyncSqliteSaver**: Handles async operations (`astream()` for API, CLI, scheduled TODOs, triggers, callable threads, and spawned threads)
-- Both share the same database file with WAL mode for concurrent access
+**Shared SQLite saver architecture:**
+- `vendor/react_agent/graph.py` keeps one process-wide `SqliteSaver` and
+  SQLite connection per database path.
+- `AsyncSqliteSaverWrapper` wraps that same sync saver and exposes both sync
+  methods (`get_tuple`, `put`, `put_writes`) and async methods (`aget_tuple`,
+  `aput`, `aput_writes`) by running sync operations in a thread executor.
+- `create_checkpointer()` returns the wrapper for both `sqlite` and
+  `sqlite_async`, so `chat()` and `astream()` use the same saver instance and
+  serialization path. WAL mode still provides concurrent SQLite access.
 
-The async saver uses lazy initialization to avoid event loop issues in Windows services. Connection is established on first async call, not at startup.
+Nymeria intentionally does not mix LangGraph's upstream `SqliteSaver` and
+`AsyncSqliteSaver` for the same SQLite checkpoint database. Earlier mixed-saver
+experiments could write checkpoints or pending writes that the other execution
+path did not reliably rehydrate, which surfaced as missing history or stale
+thread state when a conversation moved between sync chat, API streaming,
+scheduled TODOs, triggers, callable threads, and spawned threads.
 
 See [LangGraph PERSISTENCE.md](../../LangGraph/docs/PERSISTENCE.md) for full technical details.
 
