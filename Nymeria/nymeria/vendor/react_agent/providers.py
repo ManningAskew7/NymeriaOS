@@ -27,6 +27,16 @@ _OPENROUTER_RESPONSES_FALLBACK_EVENTS = {
     "response.reasoning.delta",
     "response.content_part.delta",
 }
+_RESPONSES_TEXT_FALLBACK_EVENTS = {
+    "response.output_text.delta",
+    "response.content_part.delta",
+}
+_RESPONSES_REASONING_FALLBACK_EVENTS = {
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_text.delta",
+    "response.reasoning.delta",
+}
+_RESPONSES_CONVERTER_FALLBACK_WARNED: set[str] = set()
 
 
 def _looks_like_openrouter_base_url(base_url: Any) -> bool:
@@ -261,6 +271,193 @@ def _convert_openrouter_responses_chunk_to_generation_chunk(
             )
         ),
     )
+
+
+def _warn_responses_converter_fallback(reason: str) -> None:
+    """Log Responses converter fallback once per reason."""
+    if reason in _RESPONSES_CONVERTER_FALLBACK_WARNED:
+        return
+    _RESPONSES_CONVERTER_FALLBACK_WARNED.add(reason)
+    logger.warning(
+        "[LLM] langchain-openai Responses stream converter unavailable or "
+        "incompatible; using Nymeria's limited local fallback (%s). "
+        "Text and plaintext reasoning deltas will stream, but final usage "
+        "metadata may be reduced until the LangChain adapter is updated.",
+        reason,
+    )
+
+
+def _convert_responses_chunk_to_generation_chunk_fallback(
+    chunk: Any,
+    current_index: int,
+    current_output_index: int,
+    current_sub_index: int,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[int, int, int, Any | None]:
+    """Convert common Responses stream deltas without LangChain private helpers."""
+    event_type = _openrouter_event_value(chunk, "type")
+    if not event_type:
+        return current_index, current_output_index, current_sub_index, None
+
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk
+
+    content: list[dict[str, Any]] = []
+    response_metadata = metadata or {}
+    response_metadata["model_provider"] = "openai"
+    additional_kwargs: dict[str, Any] = {}
+
+    if event_type in _RESPONSES_TEXT_FALLBACK_EVENTS:
+        delta = _openrouter_event_value(chunk, "delta", "")
+        if not delta:
+            return current_index, current_output_index, current_sub_index, None
+        output_index = _openrouter_event_value(chunk, "output_index", 0) or 0
+        content_index = _openrouter_event_value(chunk, "content_index", 0) or 0
+        (
+            current_index,
+            current_output_index,
+            current_sub_index,
+        ) = _advance_responses_content_index(
+            current_index,
+            current_output_index,
+            current_sub_index,
+            output_index,
+            content_index,
+        )
+        content.append({"type": "text", "text": delta, "index": current_index})
+    elif event_type == "response.output_text.done":
+        output_index = _openrouter_event_value(chunk, "output_index", 0) or 0
+        content_index = _openrouter_event_value(chunk, "content_index", 0) or 0
+        (
+            current_index,
+            current_output_index,
+            current_sub_index,
+        ) = _advance_responses_content_index(
+            current_index,
+            current_output_index,
+            current_sub_index,
+            output_index,
+            content_index,
+        )
+        text_block: dict[str, Any] = {
+            "type": "text",
+            "text": "",
+            "index": current_index,
+        }
+        item_id = _openrouter_event_value(chunk, "item_id")
+        if item_id:
+            text_block["id"] = item_id
+        content.append(text_block)
+    elif event_type in _RESPONSES_REASONING_FALLBACK_EVENTS:
+        delta = _openrouter_event_value(chunk, "delta", "")
+        if not delta:
+            return current_index, current_output_index, current_sub_index, None
+        output_index = _openrouter_event_value(chunk, "output_index", 0) or 0
+        (
+            current_index,
+            current_output_index,
+            current_sub_index,
+        ) = _advance_responses_content_index(
+            current_index,
+            current_output_index,
+            current_sub_index,
+            output_index,
+        )
+        reasoning_block: dict[str, Any] = {
+            "type": "reasoning",
+            "summary": [
+                {
+                    "index": _openrouter_event_value(chunk, "summary_index", 0) or 0,
+                    "type": "summary_text",
+                    "text": delta,
+                }
+            ],
+            "index": current_index,
+        }
+        item_id = (
+            _openrouter_event_value(chunk, "item_id")
+            or _openrouter_event_value(chunk, "response_id")
+            or _openrouter_event_value(chunk, "id")
+        )
+        if item_id:
+            reasoning_block["id"] = item_id
+        content.append(reasoning_block)
+    elif event_type == "response.created":
+        response = _openrouter_event_value(chunk, "response")
+        response_id = _openrouter_event_value(response, "id")
+        if not response_id:
+            return current_index, current_output_index, current_sub_index, None
+        response_metadata["id"] = response_id
+    else:
+        return current_index, current_output_index, current_sub_index, None
+
+    return (
+        current_index,
+        current_output_index,
+        current_sub_index,
+        ChatGenerationChunk(
+            message=AIMessageChunk(
+                content=content,
+                response_metadata=response_metadata,
+                additional_kwargs=additional_kwargs,
+            )
+        ),
+    )
+
+
+def _convert_responses_chunk_to_generation_chunk_compat(
+    chunk: Any,
+    current_index: int,
+    current_output_index: int,
+    current_sub_index: int,
+    schema: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+    has_reasoning: bool = False,
+    output_version: str | None = None,
+) -> tuple[int, int, int, Any | None]:
+    """Call LangChain's private Responses converter with a local fallback."""
+    try:
+        from langchain_openai.chat_models import base as lc_openai_base
+
+        convert_chunk = getattr(
+            lc_openai_base,
+            "_convert_responses_chunk_to_generation_chunk",
+        )
+    except Exception as exc:
+        _warn_responses_converter_fallback(f"missing private converter: {exc}")
+        return _convert_responses_chunk_to_generation_chunk_fallback(
+            chunk,
+            current_index,
+            current_output_index,
+            current_sub_index,
+            metadata=metadata,
+        )
+
+    try:
+        return convert_chunk(
+            chunk,
+            current_index,
+            current_output_index,
+            current_sub_index,
+            schema=schema,
+            metadata=metadata,
+            has_reasoning=has_reasoning,
+            output_version=output_version,
+        )
+    except (AttributeError, KeyError, TypeError) as exc:
+        fallback = _convert_responses_chunk_to_generation_chunk_fallback(
+            chunk,
+            current_index,
+            current_output_index,
+            current_sub_index,
+            metadata=metadata,
+        )
+        if fallback[3] is not None:
+            _warn_responses_converter_fallback(
+                f"private converter rejected {type(exc).__name__}: {exc}"
+            )
+            return fallback
+        raise
 
 
 def _extract_reasoning_text_from_reasoning_details(details: Any) -> str:
@@ -556,10 +753,6 @@ def _get_chat_openai_with_reasoning():
             try:
                 import openai
                 from langchain_openai.chat_models import base as lc_openai_base
-
-                convert_chunk = (
-                    lc_openai_base._convert_responses_chunk_to_generation_chunk
-                )
                 handle_bad_request = getattr(
                     lc_openai_base, "_handle_openai_bad_request", None
                 )
@@ -627,7 +820,7 @@ def _get_chat_openai_with_reasoning():
                                     current_output_index,
                                     current_sub_index,
                                     generation_chunk,
-                                ) = convert_chunk(
+                                ) = _convert_responses_chunk_to_generation_chunk_compat(
                                     chunk,
                                     current_index,
                                     current_output_index,
@@ -685,10 +878,6 @@ def _get_chat_openai_with_reasoning():
             try:
                 import openai
                 from langchain_openai.chat_models import base as lc_openai_base
-
-                convert_chunk = (
-                    lc_openai_base._convert_responses_chunk_to_generation_chunk
-                )
                 handle_bad_request = getattr(
                     lc_openai_base, "_handle_openai_bad_request", None
                 )
@@ -760,7 +949,7 @@ def _get_chat_openai_with_reasoning():
                                     current_output_index,
                                     current_sub_index,
                                     generation_chunk,
-                                ) = convert_chunk(
+                                ) = _convert_responses_chunk_to_generation_chunk_compat(
                                     chunk,
                                     current_index,
                                     current_output_index,
