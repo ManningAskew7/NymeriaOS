@@ -394,3 +394,113 @@ def test_user_cascade_deletes_bindings(repos):
     accounts.delete_user_cascade("alice")
     assert bindings.lookup_thread_binding_by_thread("telegram", "t1") is None
     assert bindings.list_thread_bindings_for_user("alice") == []
+
+
+# -- inspect_bind_code (CHATAPP-001 regression) ----------------------------
+
+
+def test_inspect_does_not_consume_code(repos):
+    """inspect_bind_code returns claim info without consuming the code."""
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.user_id == "alice"
+    assert claim.thread_id == "t1"
+    # Code is still usable — claim should succeed.
+    claim2 = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim2.user_id == "alice"
+
+
+def test_inspect_rejects_expired(repos):
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind",
+        provider="telegram",
+        user_id="alice",
+        thread_id="t1",
+        ttl_seconds=-1,
+    )
+    with pytest.raises(BindCodeInvalid, match="expired"):
+        bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+
+
+def test_inspect_rejects_already_consumed(repos):
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    with pytest.raises(BindCodeInvalid, match="already used"):
+        bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+
+
+def test_inspect_rejects_wrong_kind(repos):
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    with pytest.raises(BindCodeInvalid):
+        bindings.inspect_bind_code(raw, kind="platform_link", provider="telegram")
+
+
+def test_inspect_rejects_unknown(repos):
+    _, bindings = repos
+    with pytest.raises(BindCodeInvalid, match="unknown"):
+        bindings.inspect_bind_code("ZZZZZZZZ", kind="thread_bind", provider="telegram")
+
+
+def test_inspect_rejects_empty(repos):
+    _, bindings = repos
+    with pytest.raises(BindCodeInvalid, match="empty"):
+        bindings.inspect_bind_code("", kind="thread_bind", provider="telegram")
+
+
+def test_inspect_then_failed_auth_leaves_code_usable(repos):
+    """Core regression: failed authorization after inspect must not burn the code."""
+    accounts, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    # Simulate the endpoint pattern: inspect → auth fails → code survives.
+    claim = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.user_id == "alice"
+    # Auth check fails (wrong user) — endpoint would raise 403 here.
+    # The code must NOT be consumed.
+
+    # Alice retries with correct credentials — should still work.
+    claim2 = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim2.user_id == "alice"
+    assert claim2.thread_id == "t1"
+
+
+def test_inspect_platform_link_code(repos):
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="platform_link", provider="telegram", user_id="bob"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="platform_link", provider="telegram")
+    assert claim.kind == "platform_link"
+    assert claim.user_id == "bob"
+    assert claim.thread_id is None
+    # Still claimable.
+    claim2 = bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
+    assert claim2.user_id == "bob"
+
+
+def test_concurrent_inspect_then_claim_race(repos):
+    """If two callers inspect the same code, only one claim succeeds."""
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    # Both inspect succeed (read-only).
+    c1 = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    c2 = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert c1.user_id == c2.user_id == "alice"
+    # First claim wins.
+    bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    # Second claim fails.
+    with pytest.raises(BindCodeInvalid, match="already used"):
+        bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")

@@ -542,13 +542,10 @@ class ChatBindingsRepo:
             conn.commit()
         return raw
 
-    def claim_bind_code(
+    def _validate_bind_code_row(
         self, raw_code: str, *, kind: BindCodeKind, provider: Provider
-    ) -> BindCodeClaim:
-        """Atomically consume a bind code. Raises ``BindCodeInvalid`` if the
-        code is unknown, expired, already consumed, or has the wrong kind /
-        provider for this caller.
-        """
+    ) -> Tuple[str, sqlite3.Row]:
+        """Shared validation: hash, SELECT, check state. Returns (code_hash, row)."""
         if not raw_code:
             raise BindCodeInvalid("empty code")
         code_hash = _hash_code(raw_code.strip().upper())
@@ -566,6 +563,35 @@ class ChatBindingsRepo:
                 raise BindCodeInvalid("expired")
             if row["kind"] != kind or row["provider"] != provider:
                 raise BindCodeInvalid("unknown code")
+        return code_hash, row
+
+    def inspect_bind_code(
+        self, raw_code: str, *, kind: BindCodeKind, provider: Provider
+    ) -> BindCodeClaim:
+        """Read-only validation of a bind code. Returns the claim info
+        without consuming the code, so callers can run authorization checks
+        before committing to consumption via :meth:`claim_bind_code`.
+        """
+        _, row = self._validate_bind_code_row(raw_code, kind=kind, provider=provider)
+        return BindCodeClaim(
+            kind=row["kind"],
+            provider=row["provider"],
+            user_id=row["user_id"],
+            thread_id=row["thread_id"],
+        )
+
+    def claim_bind_code(
+        self, raw_code: str, *, kind: BindCodeKind, provider: Provider
+    ) -> BindCodeClaim:
+        """Atomically consume a bind code. Raises ``BindCodeInvalid`` if the
+        code is unknown, expired, already consumed, or has the wrong kind /
+        provider for this caller.
+        """
+        code_hash, row = self._validate_bind_code_row(
+            raw_code, kind=kind, provider=provider
+        )
+        now = _now()
+        with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "UPDATE bind_codes SET consumed_at = ? "
                 "WHERE code_hash = ? AND consumed_at IS NULL",
