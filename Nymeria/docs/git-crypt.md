@@ -11,6 +11,22 @@ Defined in `.gitattributes`:
 - `Nymeria/firebase-service-account.json` — FCM push credentials
 - `Nymeria/google_credentials.json` — Google OAuth credentials
 
+## Intentionally tracked client config
+
+`nymeria-watch/app/google-services.json` is not encrypted with git-crypt on
+purpose. It is Firebase's Android client configuration for the Wear OS
+companion app, not the FCM server credential. The file may contain Firebase
+project identifiers, the Android app ID, storage bucket name, and the
+Firebase-provisioned Android API key in `current_key`; those values are shipped
+inside the Android client build and are not treated as server secrets when the
+key is restricted to Firebase services.
+
+Keep the server-side FCM service account in
+`Nymeria/firebase-service-account.json`, and keep that file under git-crypt.
+If the watch app ever needs a non-Firebase Google API, create a separate
+restricted API key for that API instead of reusing or expanding the Firebase
+client key.
+
 ## Fresh-clone setup
 
 1. Install git-crypt:

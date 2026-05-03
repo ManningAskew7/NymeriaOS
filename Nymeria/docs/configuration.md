@@ -200,6 +200,22 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |
 | `NYMERIA_WATCHDOG_DISABLED` | - | Set to `1` / `true` / `yes` at runtime to mute the watchdog without restarting. See also the file flag below. |
 
+**Wear OS Firebase client config:**
+
+The Wear OS companion app intentionally tracks
+`nymeria-watch/app/google-services.json`. That file is the Android client
+configuration consumed by the Google Services Gradle plugin for Firebase Cloud
+Messaging, and it contains Firebase project/app identifiers plus the
+Firebase-provisioned Android API key. Firebase documents these app config
+values as safe to include in client code or checked-in configuration when the
+key is restricted to Firebase services. Do not add server credentials or
+non-Firebase Google API keys to this file; use a separate restricted key for
+non-Firebase APIs.
+
+The private server-side FCM credential remains
+`Nymeria/firebase-service-account.json`, which is managed separately with
+git-crypt and wired into Docker via `FCM_CREDENTIALS_JSON`.
+
 **Watchdog runtime kill switches** (disable without restart):
 
 - **Env var**: `NYMERIA_WATCHDOG_DISABLED=1` (re-read on every poll cycle)
