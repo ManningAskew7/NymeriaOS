@@ -193,10 +193,13 @@ Settings.
 Both apps have the full Chat App binding management UI: the
 `chatAppBindingsStore` (byte-identical, EXACT_MATCH in the drift checker),
 `ConnectTelegramWizard` (shared-bot 3-step flow), and
-`ConnectMyTelegramBotWizard` (BYO-bot 4-step flow). The wizard components
-are in KNOWN_DRIFT because mobile uses full-screen overlays with touch-sized
-targets while desktop uses modal cards. The underlying logic and API calls
-are identical.
+`ConnectMyTelegramBotWizard` (BYO-bot 4-step flow). Both wizards use a
+shared `WizardShell` component (`components/common/WizardShell.svelte`) that
+owns the header, close/back button, escape key handling, and scrollable body.
+The WizardShell and wizard components are in KNOWN_DRIFT because mobile uses
+full-screen overlays with a back chevron and touch-sized targets while desktop
+uses centered modal cards with an X close button. The underlying logic and API
+calls are identical.
 
 #### `routes/+page.svelte` — Main Entry Point
 
