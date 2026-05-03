@@ -78,6 +78,7 @@ desktop.ini
 
 # === Claude Code ===
 .claude/
+.claude-backup/
 .playwright-mcp/
 
 # === Project-specific exclusions ===
@@ -92,6 +93,7 @@ backups/
 # === Migration rollback snapshots — contain live OAuth tokens ===
 # Keep these on disk for emergency rollback, never check them in.
 CLIProxyAPI-main/migration-rollback-*/
+CLIProxyAPI-main/auths-backup-20260418T054556Z/
 
 # === Verification/testing artifacts ===
 verify-output/
