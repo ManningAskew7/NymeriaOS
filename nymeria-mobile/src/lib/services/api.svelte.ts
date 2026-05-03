@@ -1215,13 +1215,17 @@ export class NymeriaAPI {
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    await fetch(
+    const response = await fetch(
       `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}`,
       {
         method: 'DELETE',
         headers: this.getHeaders(),
       }
     );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
   }
 
   async getThreadHistory(threadId: string): Promise<ThreadHistory> {
