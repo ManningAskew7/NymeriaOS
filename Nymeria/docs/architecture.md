@@ -492,7 +492,7 @@ The `get_conversation_history()` method (used for page refresh/checkpoint rebuil
 
 **Callable Thread Streaming**
 
-Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Parent→child invocations are tracked for cascading abort support.
+Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support. This dict is intentionally process-local — a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
 
 ---
 
