@@ -34,7 +34,7 @@ from ..config.model_capabilities import get_context_limit
 from .user_profile import UserProfileManager
 from .token_tracker import TokenTracker
 from .token_usage import extract_from_message, extract_last_from_messages
-from .compactor import ConversationCompactor, estimate_tokens
+from .agent_compaction import CompactionManager, create_compaction_marker as _create_compaction_marker
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager, TodoStatus
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
@@ -655,27 +655,6 @@ def _create_human_message(
     return HumanMessage(content=content, additional_kwargs=kwargs)
 
 
-def _create_compaction_marker(
-    *,
-    summary: str,
-    messages_removed: int,
-    auto_resumed: bool,
-) -> HumanMessage:
-    """Create the durable marker shown in user-facing history after compaction."""
-    marker = _create_human_message(
-        "Context compacted",
-        internal=True,
-        internal_type="compaction_marker",
-    )
-    marker.additional_kwargs.update({
-        "summary": summary,
-        "messages_removed": messages_removed,
-        "auto_resumed": auto_resumed,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    })
-    return marker
-
-
 class NymeriaAgent:
     """
     Nymeria Agent - wraps the vendored LangGraph runtime with additional features.
@@ -872,11 +851,7 @@ class NymeriaAgent:
 
         # Context management: token tracking and auto-compaction
         self._token_tracker = TokenTracker()
-        self._compactor = ConversationCompactor(self.settings)
-        # Pending summaries from manual /compact - attached to next user message
-        self._pending_summaries: Dict[str, str] = {}
-        # Pending notepads from manual /compact - attached alongside summary
-        self._pending_notepads: Dict[str, str] = {}
+        self._compaction = CompactionManager(self)
 
         # Initialize schedule database for TODO scheduling
         self._schedule_db = TodoScheduleDB(
@@ -1872,6 +1847,10 @@ class NymeriaAgent:
         """Extract token usage from the latest AIMessage's metadata."""
         return extract_last_from_messages(messages)
 
+    # ------------------------------------------------------------------
+    # Compaction delegates (implementation in agent_compaction.py)
+    # ------------------------------------------------------------------
+
     def _should_auto_compact_now(
         self,
         thread_id: str,
@@ -1880,40 +1859,21 @@ class NymeriaAgent:
         rehydrate_if_empty: bool = False,
     ) -> bool:
         """Return True when token tracking says this thread should auto-compact."""
-        if self.settings.context_management != "auto_compact":
-            return False
-
-        usage = self._token_tracker.get_usage(thread_id)
-        if rehydrate_if_empty and usage.context_tokens == 0 and usage.total_tokens == 0:
-            self._rehydrate_token_usage(thread_id)
-
-        llm_config = self._get_llm_config_for_thread(thread_id)
-        model_limit = get_context_limit(llm_config.model)
-        threshold = self.settings.compact_threshold
-        trigger_tokens = self._compact_trigger_tokens(model_limit, threshold)
-
-        usage = self._token_tracker.get_usage(thread_id)
-        return usage.context_tokens >= trigger_tokens
+        return self._compaction.should_auto_compact_now(
+            thread_id, user_id, rehydrate_if_empty=rehydrate_if_empty
+        )
 
     def _compact_trigger_tokens(self, model_limit: int, threshold: float) -> int:
         """Return the input-token count that should trigger auto-compaction."""
-        return max(1, int(model_limit * threshold))
+        return CompactionManager.compact_trigger_tokens(model_limit, threshold)
 
     async def _check_and_compact(
         self,
         thread_id: str,
         user_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Check if compaction is needed and prepare it (auto-compact).
-
-        Returns a compaction result containing the internal resume state.
-        The caller is responsible for streaming the resume graph invocation.
-        """
-        if not self._should_auto_compact_now(thread_id, user_id):
-            return None
-
-        return await self._do_auto_compact(thread_id, user_id)
+        """Check if compaction is needed and prepare it (auto-compact)."""
+        return await self._compaction.check_and_compact(thread_id, user_id)
 
     async def _check_and_compact_for_next_turn(
         self,
@@ -1921,259 +1881,20 @@ class NymeriaAgent:
         user_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Pre-flight async compaction; stores summary for the user message."""
-        if not self._should_auto_compact_now(
-            thread_id,
-            user_id,
-            rehydrate_if_empty=True,
-        ):
-            return None
-
-        result = await self.compact_now(thread_id, user_id)
-        if result.get("success"):
-            result["auto_preflight"] = True
-        return result
-
-    async def _generate_summary(
-        self,
-        thread_id: str,
-        user_id: str,
-    ) -> Optional[str]:
-        """
-        Generate a summary of the conversation.
-
-        Injects a summarization prompt and runs the agent (which sees full
-        context and can call memory_add for persistent facts).
-
-        Args:
-            thread_id: Thread identifier
-            user_id: User identifier
-
-        Returns:
-            Summary text, or None if generation failed
-        """
-        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-        graph = self._get_async_graph_for_user(user_id, thread_id=thread_id)
-
-        # Inject the compact prompt (marked as internal so it's filtered from user history)
-        compact_prompt = self._compactor.get_compact_prompt()
-        input_state = {"messages": [_create_human_message(
-            compact_prompt,
-            internal=True,
-            internal_type="compact_prompt",
-        )]}
-
-        # Run the agent - it will see full context and generate summary
-        summary_response = None
-        async for event in graph.astream_events(input_state, config=config, version="v2"):
-            if event.get("event") == "on_chat_model_end":
-                output = event.get("data", {}).get("output")
-                if output and hasattr(output, "content"):
-                    summary_response = output
-
-        if not summary_response:
-            return None
-
-        return self._compactor.extract_summary(summary_response)
-
-    async def _clear_and_reset(
-        self,
-        thread_id: str,
-        msg_count_before: int,
-        summary: str = "",
-        auto_resumed: bool = False,
-    ) -> bool:
-        """
-        Clear all messages from a thread and reset token tracking.
-
-        Uses LangGraph's RemoveMessage + aupdate_state() to properly clear
-        messages through the state reducer. A compaction marker HumanMessage
-        is included to prevent the state from becoming empty and to provide a
-        visible history notice.
-
-        Args:
-            thread_id: Thread identifier
-            msg_count_before: Number of messages before clearing
-
-        Returns:
-            True if successful, False if clear failed
-        """
-        import uuid as _uuid
-
-        config = {"configurable": {"thread_id": thread_id}}
-
-        try:
-            graph = self._default_async_graph
-            state = await graph.aget_state(config)
-            messages = state.values.get("messages", [])
-
-            if not messages:
-                logger.info(f"Thread {thread_id}: No messages to clear")
-                return True
-
-            # Remove all existing messages and replace with a compaction marker.
-            # We must keep at least one message because LangGraph's
-            # should_continue node accesses messages[-1] after aupdate_state,
-            # causing IndexError on empty state.
-            remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-            compaction_marker = _create_compaction_marker(
-                summary=summary,
-                messages_removed=msg_count_before,
-                auto_resumed=auto_resumed,
-            )
-            # Assign a stable ID so the marker can be identified later
-            compaction_marker.id = str(_uuid.uuid4())
-
-            await graph.aupdate_state(
-                config,
-                {"messages": remove_commands + [compaction_marker]},
-            )
-
-            # Verify: should have exactly 1 message (the marker)
-            verify_state = await graph.aget_state(config)
-            remaining = verify_state.values.get("messages", [])
-            if len(remaining) > 1:
-                logger.error(
-                    f"Thread {thread_id}: Clear verification failed - "
-                    f"{len(remaining)} messages remain (expected 1 marker)"
-                )
-                return False
-
-            logger.info(
-                f"Thread {thread_id}: Cleared {len(messages)} messages via "
-                f"RemoveMessage (1 compaction marker remains)"
-            )
-
-            # Prune pre-compact history so get_state_history walks (and the
-            # /history endpoint) don't keep paying for hydrating 100s of MB
-            # of msgpack that no surviving checkpoint references.
-            try:
-                post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
-                floor_versions: Dict[str, Any] = {}
-                if post_cp_id:
-                    cp_tuple = await graph.checkpointer.aget_tuple({
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_id": post_cp_id,
-                        }
-                    })
-                    if cp_tuple is not None and cp_tuple.checkpoint:
-                        floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
-                    counts = self._prune_checkpoints_before(
-                        thread_id, post_cp_id, floor_versions
-                    )
-                    logger.info(
-                        f"Thread {thread_id}: Pruned pre-compact history — "
-                        f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
-                    )
-            except Exception as e:
-                logger.warning(f"Thread {thread_id}: Pruning call failed: {e}")
-
-        except Exception as e:
-            logger.error(f"Thread {thread_id}: Failed to clear messages: {e}", exc_info=True)
-            return False
-
-        # Reset token tracker (only after verified successful clear)
-        self._token_tracker.reset_after_compact(thread_id, 0)
-
-        logger.info(f"Thread {thread_id}: Clear and reset complete")
-        return True
-
-    def _read_thread_notepad(self, thread_id: str) -> Optional[str]:
-        """Read per-thread notepad content (if any) for re-injection after compaction."""
-        try:
-            from ..tools.thread_notes import read_notepad
-            return read_notepad(thread_id)
-        except Exception as e:
-            logger.warning(f"Failed to read notepad for thread {thread_id}: {e}")
-            return None
+        return await self._compaction.check_and_compact_for_next_turn(thread_id, user_id)
 
     @staticmethod
     def _format_notepad_section(notepad: str) -> str:
         """Format notepad content for injection into a message."""
-        return f"\n\n---\n*Thread Notepad (persistent notes):*\n\n{notepad}\n\n---"
+        return CompactionManager.format_notepad_section(notepad)
 
     async def _do_auto_compact(
         self,
         thread_id: str,
         user_id: str,
     ) -> Dict[str, Any]:
-        """
-        Prepare auto-compaction (astream() streams the resume afterward).
-
-        1. Generate summary
-        2. Clear all messages
-        3. Build an internal resume prompt with summary
-
-        Args:
-            thread_id: Thread identifier
-            user_id: User identifier
-
-        Returns:
-            Dict with compaction result
-        """
-        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-
-        # Get current message count
-        state = await self._default_async_graph.aget_state(config)
-        messages = state.values.get("messages", [])
-        msg_count_before = len(messages)
-
-        min_messages = self.settings.compact_keep_messages
-        if msg_count_before < min_messages:
-            return {
-                "success": False,
-                "reason": f"Not enough messages ({msg_count_before}, need {min_messages})",
-            }
-
-        logger.info(f"Thread {thread_id}: Auto-compact starting ({msg_count_before} messages)")
-
-        # Generate summary (agent sees full context)
-        summary = await self._generate_summary(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
-        # Flush messages to RAG before clearing — defensive backup of the
-        # per-turn indexer. Failures here must not block compaction.
-        try:
-            self._flush_memories_before_trim(user_id, thread_id, messages)
-        except Exception as e:
-            logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
-
-        # Clear all messages, leaving a visible compaction marker for history.
-        cleared = await self._clear_and_reset(
-            thread_id,
-            msg_count_before,
-            summary=summary,
-            auto_resumed=True,
-        )
-        if not cleared:
-            return {"success": False, "reason": "Failed to clear messages"}
-
-        # Build resume prompt for astream() to stream after the compacted event.
-        resume_prompt = self._compactor.format_auto_resume(summary)
-
-        # Append notepad content so thread context survives compaction
-        notepad = self._read_thread_notepad(thread_id)
-        if notepad:
-            resume_prompt += self._format_notepad_section(notepad)
-
-        input_state = {"messages": [_create_human_message(
-            resume_prompt,
-            internal=True,
-            internal_type="auto_resume",
-        )]}
-
-        logger.info(f"Thread {thread_id}: Auto-compact prepared, resume pending")
-
-        return {
-            "success": True,
-            "messages_before": msg_count_before,
-            "messages_after": 1,
-            "messages_removed": msg_count_before,
-            "auto_resumed": True,
-            "summary": summary,
-            "resume_state": input_state,
-        }
+        """Prepare auto-compaction (astream() streams the resume afterward)."""
+        return await self._compaction._do_auto_compact(thread_id, user_id)
 
     # ------------------------------------------------------------------
     # Sync compaction (for stream() / chat() / triggers / ticker / CLI)
@@ -2948,40 +2669,22 @@ class NymeriaAgent:
         ]
         return f"sk:{hash('|'.join(parts))}"
 
-    def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
-        """Build a LangGraph execution graph with a specific system prompt.
+    def _select_tools_for_graph(self, user_id: str, thread_id: str):
+        """Select and filter the tool list for a graph build.
 
-        Args:
-            system_prompt: The system prompt to use
-            user_id: User ID for per-user tool filtering
-            thread_id: Thread ID for per-thread config (tool filtering, LLM overrides)
+        Handles core tool selection, per-user callable threads, per-thread
+        filtering (enabled/disabled/temporary), admin-only gating, MCP tools,
+        and Skill meta-tool injection. Shared by both sync and async graph
+        build paths.
+
+        Returns:
+            (tools, tc) where tc is the thread config (or None).
         """
-        llm_config = self._get_llm_config_for_thread(thread_id)
         tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
 
-        # Use a lower iteration limit for callable threads
-        if tc and tc.callable and tc.callable_name:
-            max_iters = tc.callable_max_iterations or self.CALLABLE_DEFAULT_MAX_ITERATIONS
-        else:
-            max_iters = self.MAIN_AGENT_MAX_ITERATIONS
-
-        config = AgentConfig(
-            llm=llm_config,
-            checkpointer=self._checkpointer_config,
-            system_prompt=system_prompt,
-            max_iterations=max_iters,
-            repeated_tool_result_limit=self.TURN_SAME_TOOL_RESULT_LIMIT,
-            tool_timeout=self.settings.tool_timeout,
-            tool_output_max_chars=self.settings.tool_output_max_chars,
-            verbose=self.settings.log_level == "DEBUG",
-            on_timeout=self._on_tool_timeout,
-        )
-
-        # Callable threads with a template: load tools from template + allowed global tools
         if tc and tc.callable and tc.callable_name:
             tools = self._get_callable_thread_tools(tc)
         else:
-            # Build tool list from default_thread_tools (single source of truth)
             profile = self.profile_manager.get_profile(user_id)
             default_tools = profile.tool_preferences.default_thread_tools
 
@@ -3035,7 +2738,6 @@ class NymeriaAgent:
                         f"Failed to build callable tool for {callable_tc.thread_id}: {e}"
                     )
 
-            # Include MCP server tools that are in default_thread_tools
             if default_tools is not None:
                 existing_names = {t.name for t in tools}
                 for name in core_names:
@@ -3057,17 +2759,8 @@ class NymeriaAgent:
             disabled = set(tc.disabled_tools) if tc.disabled_tools else set()
             if disabled:
                 tools = [t for t in tools if t.name not in disabled]
-            # Merge permanent enablements (tc.enabled_tools) and TTL'd
-            # enablements (tc.temporary_tools) into the tool list. Expired
-            # TTL'd entries are evicted here (lazy cleanup). Filter extras
-            # by disabled_tools so the disabled list wins on any overlap.
             live_temp = self._resolve_temporary_tools(tc)
             extra_names = (set(tc.enabled_tools) | live_temp) - disabled
-            # Defense-in-depth admin-only filter. Even with the gates at
-            # tool_search/spawn_thread/REST, stale tc.enabled_tools entries
-            # from before the gates were added — or any path the audit
-            # missed — can carry admin-only names. Drop them here for
-            # non-admin thread owners so the graph never binds them.
             if extra_names:
                 from ..tools import filter_admin_only_tools, filter_developer_only_tools
                 owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
@@ -3090,11 +2783,6 @@ class NymeriaAgent:
                 from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
                 all_tools_dict = {t.name: t for t in ALL_TOOLS}
                 all_tools_dict.update(OPTIONAL_TOOLS)
-                # Callable-thread names from the global registry — these are
-                # the leak surface: a user who guesses another user's
-                # callable_name and adds it to their enabled_tools would bind
-                # the description into the system prompt. Filter them out;
-                # the per-user callable list was already added above.
                 callable_names = set((self._callable_tool_thread_map or {}).keys())
                 existing = {t.name for t in tools}
                 for name in extra_names:
@@ -3104,45 +2792,29 @@ class NymeriaAgent:
                         tools.append(all_tools_dict[name])
                         continue
                     if name in callable_names:
-                        # Callable threads only resolve through the per-user
-                        # owned-set above — never via enabled_tools registry
-                        # fallback. Skip silently.
                         continue
-                    # Fall back to tool_registry (MCP server tools, custom tools)
                     reg_tool = self.tool_registry.get_tool(name)
                     if reg_tool:
                         tools.append(reg_tool)
 
-        # Inject the Skill meta-tool if any skills are active on this thread.
         skill_tool = self._build_skill_meta_tool(user_id, tc, tools)
         if skill_tool is not None:
             tools.append(skill_tool)
 
-        return create_graph(
-            config=config,
-            tools=tools,
-        )
+        return tools, tc
 
-    def _build_async_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
-        """Build an async-compatible LangGraph execution graph.
-
-        Args:
-            system_prompt: The system prompt to use
-            user_id: User ID for per-user tool filtering
-            thread_id: Thread ID for per-thread config (tool filtering, LLM overrides)
-        """
+    def _build_agent_config(self, system_prompt: str, checkpointer_config, thread_id: str, tc):
+        """Build an AgentConfig with the given checkpointer config."""
         llm_config = self._get_llm_config_for_thread(thread_id)
-        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
 
-        # Use a lower iteration limit for callable threads
         if tc and tc.callable and tc.callable_name:
             max_iters = tc.callable_max_iterations or self.CALLABLE_DEFAULT_MAX_ITERATIONS
         else:
             max_iters = self.MAIN_AGENT_MAX_ITERATIONS
 
-        config = AgentConfig(
+        return AgentConfig(
             llm=llm_config,
-            checkpointer=self._async_checkpointer_config,
+            checkpointer=checkpointer_config,
             system_prompt=system_prompt,
             max_iterations=max_iters,
             repeated_tool_result_limit=self.TURN_SAME_TOOL_RESULT_LIMIT,
@@ -3152,256 +2824,47 @@ class NymeriaAgent:
             on_timeout=self._on_tool_timeout,
         )
 
-        # Callable threads with a template: load tools from template + allowed global tools
-        if tc and tc.callable and tc.callable_name:
-            tools = self._get_callable_thread_tools(tc)
-        else:
-            # Build tool list from default_thread_tools (single source of truth)
-            profile = self.profile_manager.get_profile(user_id)
-            default_tools = profile.tool_preferences.default_thread_tools
+    def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
+        """Build a sync LangGraph execution graph with a specific system prompt."""
+        tools, tc = self._select_tools_for_graph(user_id, thread_id)
+        config = self._build_agent_config(system_prompt, self._checkpointer_config, thread_id, tc)
+        return create_graph(config=config, tools=tools)
 
-            from ..tools import (
-                ALL_TOOLS,
-                OPTIONAL_TOOLS,
-                filter_admin_only_tools,
-                filter_developer_only_tools,
-            )
-            all_tools_dict = {t.name: t for t in ALL_TOOLS}
-            all_tools_dict.update(OPTIONAL_TOOLS)
+    def _build_async_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
+        """Build an async LangGraph execution graph with a specific system prompt."""
+        tools, tc = self._select_tools_for_graph(user_id, thread_id)
+        config = self._build_agent_config(system_prompt, self._async_checkpointer_config, thread_id, tc)
+        return create_graph(config=config, tools=tools)
 
-            core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
-            if default_tools is not None:
-                owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
-                owner_role = owner.role if owner else "user"
-                allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
-                allowed_core, blocked_dev_core = filter_developer_only_tools(allowed_core, owner_role)
-                if blocked_admin_core or blocked_dev_core:
-                    logger.warning(
-                        "Async graph build for thread=%s user=%s: stripped "
-                        "role-gated default tools %s",
-                        thread_id, user_id, sorted(blocked_admin_core | blocked_dev_core),
-                    )
-                core_names = [name for name in core_names if name in allowed_core]
-            tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
-
-            # Per-user callable thread tools — see _build_graph_with_prompt()
-            # for the rationale. Builds fresh closures from the caller's
-            # owned callable threads so cross-user descriptions don't leak.
-            existing_names = {t.name for t in tools}
-            owned_callables = self._get_team_scoped_callable_threads(
-                user_id=user_id,
-                caller_thread_id=thread_id,
-            )
-            from ..agents.tool_factory import create_callable_thread_tool
-            for callable_tc in owned_callables:
-                if not callable_tc.callable_name or callable_tc.callable_name in existing_names:
-                    continue
-                try:
-                    tools.append(create_callable_thread_tool(callable_tc))
-                    existing_names.add(callable_tc.callable_name)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to build callable tool for {callable_tc.thread_id}: {e}"
-                    )
-
-            # Include MCP server tools that are in default_thread_tools
-            if default_tools is not None:
-                existing_names = {t.name for t in tools}
-                for name in core_names:
-                    if name.startswith("mcp__") and name not in existing_names:
-                        reg_tool = self.tool_registry.get_tool(name)
-                        if reg_tool:
-                            tools.append(reg_tool)
-
-        # Apply per-thread tool filtering. disabled_tools is AUTHORITATIVE
-        # — mirrors the sync graph-build above. See that comment for why.
-        if tc:
-            disabled = set(tc.disabled_tools) if tc.disabled_tools else set()
-            if disabled:
-                tools = [t for t in tools if t.name not in disabled]
-            live_temp = self._resolve_temporary_tools(tc)
-            extra_names = (set(tc.enabled_tools) | live_temp) - disabled
-            # Defense-in-depth admin-only filter. Even with the gates at
-            # tool_search/spawn_thread/REST, stale tc.enabled_tools entries
-            # from before the gates were added — or any path the audit
-            # missed — can carry admin-only names. Drop them here for
-            # non-admin thread owners so the graph never binds them.
-            if extra_names:
-                from ..tools import filter_admin_only_tools, filter_developer_only_tools
-                owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
-                owner_role = owner.role if owner else "user"
-                allowed_extras, blocked_admin_extras = filter_admin_only_tools(
-                    extra_names, owner_role
-                )
-                allowed_extras, blocked_dev_extras = filter_developer_only_tools(
-                    allowed_extras, owner_role
-                )
-                blocked_extras = blocked_admin_extras | blocked_dev_extras
-                if blocked_extras:
-                    logger.warning(
-                        "Graph build for thread=%s user=%s: stripped role-gated "
-                        "tools %s from enabled_tools (non-admin owner)",
-                        thread_id, user_id, sorted(blocked_extras),
-                    )
-                extra_names = allowed_extras
-            if extra_names:
-                from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
-                all_tools_dict = {t.name: t for t in ALL_TOOLS}
-                all_tools_dict.update(OPTIONAL_TOOLS)
-                # Callable-thread names from the global registry — these are
-                # the leak surface: a user who guesses another user's
-                # callable_name and adds it to their enabled_tools would bind
-                # the description into the system prompt. Filter them out;
-                # the per-user callable list was already added above.
-                callable_names = set((self._callable_tool_thread_map or {}).keys())
-                existing = {t.name for t in tools}
-                for name in extra_names:
-                    if name in existing:
-                        continue
-                    if name in all_tools_dict:
-                        tools.append(all_tools_dict[name])
-                        continue
-                    if name in callable_names:
-                        # Callable threads only resolve through the per-user
-                        # owned-set above — never via enabled_tools registry
-                        # fallback. Skip silently.
-                        continue
-                    # Fall back to tool_registry (MCP server tools, custom tools)
-                    reg_tool = self.tool_registry.get_tool(name)
-                    if reg_tool:
-                        tools.append(reg_tool)
-
-        # Inject the Skill meta-tool if any skills are active on this thread.
-        skill_tool = self._build_skill_meta_tool(user_id, tc, tools)
-        if skill_tool is not None:
-            tools.append(skill_tool)
-
-        return create_graph(
-            config=config,
-            tools=tools,
-        )
-
-    def _get_graph_for_user(
-        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+    def _get_graph_for_user_impl(
+        self,
+        user_id: str,
+        is_autonomous: bool,
+        thread_id: str,
+        cache: Dict[tuple, tuple],
+        build_fn,
     ):
+        """Shared implementation for sync/async graph-for-user lookup.
+
+        Handles caching, autonomous bypass, and LRU eviction. ``build_fn``
+        is either ``_build_graph_with_prompt`` or ``_build_async_graph_with_prompt``.
         """
-        Get the appropriate graph for a user+thread, rebuilding if memories or TODOs changed.
-
-        Args:
-            user_id: User identifier
-            is_autonomous: If True, include autonomous execution instructions
-            thread_id: Thread for scoping TODOs in the system prompt
-
-        Returns:
-            LangGraph compiled graph
-        """
-        memory_hash = self._get_memory_hash(user_id, thread_id)
-
-        # For autonomous mode, we always build fresh to include the autonomous prompt
-        # We don't cache autonomous graphs since they're only used during self_invoke
         if is_autonomous:
             logger.debug(f"Building autonomous graph for user {user_id}, thread {thread_id}")
             full_prompt = self._build_full_system_prompt(
                 user_id, is_autonomous=True, thread_id=thread_id
             )
-            return self._build_graph_with_prompt(full_prompt, user_id=user_id, thread_id=thread_id)
-
-        cache_key = (user_id, thread_id)
-
-        # Check if we have a cached graph with current memories/tool preferences
-        with self._graph_cache_lock:
-            if cache_key in self._user_graphs:
-                cached_hash, cached_graph = self._user_graphs[cache_key]
-                if cached_hash == memory_hash:
-                    return cached_graph
-
-        # Check if user has any memories, active TODOs, or custom tool preferences
-        profile = self.profile_manager.get_profile(user_id)
-        todo_list = self.todo_manager.get_todos(user_id)
-        has_memories = profile.memories or profile.personality_overrides
-        has_todos = bool(
-            todo_list.get_active_todos_for_thread(thread_id) if thread_id
-            else todo_list.get_active_todos()
-        )
-        has_tool_prefs = profile.tool_preferences.default_thread_tools is not None
-        has_thread_config = bool(
-            thread_id and self.thread_config_manager.get_config(thread_id)
-        )
-
-        if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
-            # No-customization path: cannot reuse self._default_graph because
-            # it was built without a user_id at startup, so its callable tool
-            # list contains every user's callables (a leak — GF would see
-            # Owner's callable descriptions in her bound tool spec). Build a
-            # per-user graph with the base prompt and cache it under the
-            # sentinel thread_id "" so all of this user's no-customization
-            # threads share one graph.
-            no_cust_key = (user_id, "")
-            with self._graph_cache_lock:
-                if no_cust_key in self._user_graphs:
-                    cached_hash, cached_graph = self._user_graphs[no_cust_key]
-                    if cached_hash == memory_hash:
-                        return cached_graph
-            graph = self._build_graph_with_prompt(
-                self._base_system_prompt, user_id=user_id
-            )
-            with self._graph_cache_lock:
-                if len(self._user_graphs) >= self._GRAPH_CACHE_MAX:
-                    oldest_key = next(iter(self._user_graphs))
-                    del self._user_graphs[oldest_key]
-                self._user_graphs[no_cust_key] = (memory_hash, graph)
-            return graph
-
-        # Build new graph with user's context and tool preferences
-        logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
-        full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
-        graph = self._build_graph_with_prompt(full_prompt, user_id=user_id, thread_id=thread_id)
-
-        # Cache it with LRU eviction
-        with self._graph_cache_lock:
-            if len(self._user_graphs) >= self._GRAPH_CACHE_MAX:
-                # Evict oldest entry
-                oldest_key = next(iter(self._user_graphs))
-                del self._user_graphs[oldest_key]
-            self._user_graphs[cache_key] = (memory_hash, graph)
-        return graph
-
-    def _get_async_graph_for_user(
-        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
-    ):
-        """
-        Get the appropriate async graph for a user+thread, rebuilding if memories or TODOs changed.
-
-        Args:
-            user_id: User identifier
-            is_autonomous: If True, include autonomous execution instructions (never cached)
-            thread_id: Thread for scoping TODOs in the system prompt
-
-        Returns:
-            LangGraph compiled graph for async operations
-        """
-        # Autonomous graphs are never cached — always rebuild so the autonomous
-        # prompt is freshly composed (mirrors the sync _get_graph_for_user path)
-        if is_autonomous:
-            logger.debug(f"Building autonomous async graph for user {user_id}, thread {thread_id}")
-            full_prompt = self._build_full_system_prompt(
-                user_id, is_autonomous=True, thread_id=thread_id
-            )
-            return self._build_async_graph_with_prompt(
-                full_prompt, user_id=user_id, thread_id=thread_id
-            )
+            return build_fn(full_prompt, user_id=user_id, thread_id=thread_id)
 
         memory_hash = self._get_memory_hash(user_id, thread_id)
         cache_key = (user_id, thread_id)
 
-        # Check if we have a cached async graph with current memories/tool preferences
         with self._graph_cache_lock:
-            if cache_key in self._async_user_graphs:
-                cached_hash, cached_graph = self._async_user_graphs[cache_key]
+            if cache_key in cache:
+                cached_hash, cached_graph = cache[cache_key]
                 if cached_hash == memory_hash:
                     return cached_graph
 
-        # Check if user has any memories, active TODOs, or custom tool preferences
         profile = self.profile_manager.get_profile(user_id)
         todo_list = self.todo_manager.get_todos(user_id)
         has_memories = profile.memories or profile.personality_overrides
@@ -3415,37 +2878,52 @@ class NymeriaAgent:
         )
 
         if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
-            # See _get_graph_for_user for rationale: self._default_async_graph
-            # was built without user_id so it leaks every user's callables.
-            # Build per-user, cache under (user_id, "") sentinel.
+            # No-customization path: cannot reuse the default graph because
+            # it was built without a user_id at startup, so its callable tool
+            # list contains every user's callables (cross-user leak). Build a
+            # per-user graph and cache under the sentinel thread_id "".
             no_cust_key = (user_id, "")
             with self._graph_cache_lock:
-                if no_cust_key in self._async_user_graphs:
-                    cached_hash, cached_graph = self._async_user_graphs[no_cust_key]
+                if no_cust_key in cache:
+                    cached_hash, cached_graph = cache[no_cust_key]
                     if cached_hash == memory_hash:
                         return cached_graph
-            graph = self._build_async_graph_with_prompt(
-                self._base_system_prompt, user_id=user_id
-            )
+            graph = build_fn(self._base_system_prompt, user_id=user_id)
             with self._graph_cache_lock:
-                if len(self._async_user_graphs) >= self._GRAPH_CACHE_MAX:
-                    oldest_key = next(iter(self._async_user_graphs))
-                    del self._async_user_graphs[oldest_key]
-                self._async_user_graphs[no_cust_key] = (memory_hash, graph)
+                if len(cache) >= self._GRAPH_CACHE_MAX:
+                    oldest_key = next(iter(cache))
+                    del cache[oldest_key]
+                cache[no_cust_key] = (memory_hash, graph)
             return graph
 
-        # Build new async graph with user's context and tool preferences
-        logger.debug(f"Building new async graph for user {user_id}, thread {thread_id} (context or tools changed)")
+        logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
         full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
-        graph = self._build_async_graph_with_prompt(full_prompt, user_id=user_id, thread_id=thread_id)
+        graph = build_fn(full_prompt, user_id=user_id, thread_id=thread_id)
 
-        # Cache it with LRU eviction
         with self._graph_cache_lock:
-            if len(self._async_user_graphs) >= self._GRAPH_CACHE_MAX:
-                oldest_key = next(iter(self._async_user_graphs))
-                del self._async_user_graphs[oldest_key]
-            self._async_user_graphs[cache_key] = (memory_hash, graph)
+            if len(cache) >= self._GRAPH_CACHE_MAX:
+                oldest_key = next(iter(cache))
+                del cache[oldest_key]
+            cache[cache_key] = (memory_hash, graph)
         return graph
+
+    def _get_graph_for_user(
+        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+    ):
+        """Get the appropriate sync graph for a user+thread."""
+        return self._get_graph_for_user_impl(
+            user_id, is_autonomous, thread_id,
+            self._user_graphs, self._build_graph_with_prompt,
+        )
+
+    def _get_async_graph_for_user(
+        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+    ):
+        """Get the appropriate async graph for a user+thread."""
+        return self._get_graph_for_user_impl(
+            user_id, is_autonomous, thread_id,
+            self._async_user_graphs, self._build_async_graph_with_prompt,
+        )
 
     def register_tool(self, tool: BaseTool) -> "NymeriaAgent":
         """Register a tool with the agent."""
