@@ -560,6 +560,41 @@ export interface PlatformIdentity {
   created_at: string;
 }
 
+// Per-thread chat-app binding (e.g. mobile thread <-> Telegram chat).
+// Returned by GET /threads/{id}/chatapp/bindings. ``user_telegram_bot_id``
+// is null for bindings served by the shared Nymeria bot, and an integer
+// row id for bindings served by the user's own (BYO) Telegram bot.
+export interface ChatAppBinding {
+  id: number;
+  thread_id: string;
+  provider: 'discord' | 'telegram' | 'twitch';
+  platform_chat_id: string;
+  created_at: string;
+  user_telegram_bot_id?: number | null;
+}
+
+// User-owned Telegram bot registered via BotFather token paste. The token
+// itself is never exposed by the API after registration -- only the
+// public-facing metadata. ``last_seen_at`` is set the first time the
+// supervisor process successfully starts a polling loop for this bot.
+export interface MyTelegramBot {
+  id: number;
+  bot_username: string;
+  enabled: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+// Response for the bind-code and platform-link-code endpoints. The UI shows
+// `code` to the user; if `bot_username` is configured server-side, `deep_link`
+// is a one-tap Telegram URL that pre-fills the right command.
+export interface ChatAppBindCodeResponse {
+  code: string;
+  expires_at: string;
+  bot_username?: string | null;
+  deep_link?: string | null;
+}
+
 // Config types
 export interface AppConfig {
   apiUrl: string;
@@ -574,6 +609,14 @@ export interface AppConfig {
 export type LLMProvider = 'openrouter' | 'openai' | 'anthropic';
 export type OpenAIApiMode = 'chat_completions' | 'responses';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+
+// Available model from provider (from GET /models/available)
+export interface AvailableModel {
+  id: string;
+  name: string;
+  owned_by: string;
+  created: number | null;
+}
 
 // OpenRouter model metadata (from GET /models)
 export interface ModelMetadata {

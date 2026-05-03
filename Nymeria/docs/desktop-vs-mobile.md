@@ -166,6 +166,12 @@ explicit `notify` calls, all autonomous completions, or nothing for that thread.
 Desktop places these controls in the Chat App tab. Mobile places them in the
 Advanced section of Thread Settings.
 
+The mobile API service intentionally keeps typed access to the shared
+self-service Chat App endpoints (`/me/platforms`, `/me/platform-link-codes`,
+`/threads/{id}/chatapp/*`, and `/me/telegram-bots`) even though the mobile UI
+does not yet expose the bind/list/unbind wizard. That UI work is tracked
+separately from API/type parity.
+
 #### `routes/+page.svelte` — Main Entry Point
 
 **Same core**: Setup wizard check, thread sync from backend, chat history loading, autonomous stream connection.
