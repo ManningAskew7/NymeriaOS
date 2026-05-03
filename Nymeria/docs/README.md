@@ -21,6 +21,8 @@ See [QUICKSTART.md](./QUICKSTART.md) for detailed setup instructions.
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+# Optional local PostgreSQL backend:
+# pip install -r requirements-postgres.txt
 
 # Configure environment
 cp .env.docker.example .env.docker
