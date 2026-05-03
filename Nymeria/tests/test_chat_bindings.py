@@ -504,3 +504,130 @@ def test_concurrent_inspect_then_claim_race(repos):
     # Second claim fails.
     with pytest.raises(BindCodeInvalid, match="already used"):
         bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+
+
+# -- CHATAPP-001 endpoint-pattern regression: binding failure preserves code --
+
+
+def test_binding_already_exists_leaves_code_usable(repos):
+    """If create_thread_binding raises BindingAlreadyExists, the code must
+    survive so the user can retry after resolving the conflict."""
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    bindings.create_thread_binding(
+        thread_id="t1", provider="telegram", platform_chat_id="111", user_id="alice"
+    )
+    # Simulate the fixed endpoint pattern:
+    # inspect → authz passes → create binding → BindingAlreadyExists → skip claim.
+    claim = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.thread_id == "t1"
+    with pytest.raises(BindingAlreadyExists):
+        bindings.create_thread_binding(
+            thread_id="t1",
+            provider="telegram",
+            platform_chat_id="222",
+            user_id="alice",
+        )
+    # Code was NOT consumed — it's still valid.
+    claim2 = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim2.user_id == "alice"
+
+
+def test_wrong_platform_user_leaves_code_usable(repos):
+    """Authorization failure (wrong platform user) must not burn the code.
+    Simulates: alice issues code, bob (different Nymeria user) tries to claim."""
+    accounts, bindings = repos
+    accounts.link_platform("telegram", "alice_tg_id", "alice")
+    accounts.link_platform("telegram", "bob_tg_id", "bob")
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.user_id == "alice"
+    # Bob's platform id resolves to "bob", not "alice" — authz fails.
+    resolved = accounts.resolve_platform("telegram", "bob_tg_id")
+    assert resolved != claim.user_id
+    # Endpoint would return 403 here without consuming the code.
+    # Code is still valid for alice's correct attempt.
+    claim2 = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim2.user_id == "alice"
+
+
+def test_wrong_bot_owner_leaves_code_usable(repos):
+    """BYO bot path: bot owned by bob cannot claim alice's code."""
+    _, bindings = repos
+    bob_bot = bindings.register_user_telegram_bot(
+        owner_user_id="bob",
+        bot_username="bobs_bot",
+        bot_token_ciphertext="encrypted_token",
+    )
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.user_id == "alice"
+    # Bob's bot doesn't match alice's code — authz fails.
+    assert bob_bot.owner_user_id != claim.user_id
+    # Code is still valid.
+    claim2 = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim2.user_id == "alice"
+
+
+def test_platform_link_hijack_leaves_code_usable(repos):
+    """If a platform user is already linked to a different account, the
+    409 must not burn the link code."""
+    accounts, bindings = repos
+    accounts.link_platform("telegram", "tg_user_1", "bob")
+    raw = bindings.issue_bind_code(
+        kind="platform_link", provider="telegram", user_id="alice"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="platform_link", provider="telegram")
+    assert claim.user_id == "alice"
+    # tg_user_1 is already linked to bob, not alice — hijack check fails.
+    existing = accounts.resolve_platform("telegram", "tg_user_1")
+    assert existing is not None and existing != claim.user_id
+    # Code is still valid for a legitimate claim.
+    claim2 = bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
+    assert claim2.user_id == "alice"
+
+
+def test_full_successful_bind_flow(repos):
+    """Happy path: inspect → authz → bind → claim all succeed."""
+    accounts, bindings = repos
+    accounts.link_platform("telegram", "alice_tg", "alice")
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+    resolved = accounts.resolve_platform("telegram", "alice_tg")
+    assert resolved == claim.user_id
+    binding = bindings.create_thread_binding(
+        thread_id="t1",
+        provider="telegram",
+        platform_chat_id="999",
+        user_id=claim.user_id,
+    )
+    assert binding.thread_id == "t1"
+    bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    # Code is now consumed.
+    with pytest.raises(BindCodeInvalid, match="already used"):
+        bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+
+
+def test_full_successful_link_flow(repos):
+    """Happy path: inspect → authz → link → claim all succeed."""
+    accounts, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="platform_link", provider="telegram", user_id="alice"
+    )
+    claim = bindings.inspect_bind_code(raw, kind="platform_link", provider="telegram")
+    existing = accounts.resolve_platform("telegram", "new_tg_user")
+    assert existing is None
+    accounts.link_platform("telegram", "new_tg_user", claim.user_id)
+    bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
+    # Code is consumed, link exists.
+    with pytest.raises(BindCodeInvalid, match="already used"):
+        bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
+    assert accounts.resolve_platform("telegram", "new_tg_user") == "alice"
