@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from nymeria.core.accounts import AccountsRepo
+from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.activity_log import ActivityLog, ActivityType
 from nymeria.core.fcm import load_tokens, save_tokens
 from nymeria.core.notifications import NotificationStore
@@ -79,7 +80,9 @@ class FakeAgent:
         self.thread_config_manager = ThreadConfigManager(data_dir)
         self.todo_manager = TodoManager(data_dir)
         self.trigger_manager = TriggerManager(data_dir)
-        self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
+        accounts_db = data_dir / "accounts.db"
+        self.accounts_repo = AccountsRepo(accounts_db)
+        self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
         self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
         self._thread_locks = FakeThreadLocks()
         self._token_tracker = TokenTracker()
@@ -155,19 +158,19 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
     agent.accounts_repo.claim_thread(target, "default")
     agent.accounts_repo.claim_thread(survivor, "default")
     agent.accounts_repo.link_platform("telegram", "5551234567", "default")
-    bot = agent.accounts_repo.register_user_telegram_bot(
+    bot = agent.chat_bindings_repo.register_user_telegram_bot(
         owner_user_id="default",
         bot_username="NymeriaV1Bot",
         bot_token_ciphertext="ciphertext",
     )
-    agent.accounts_repo.create_thread_binding(
+    agent.chat_bindings_repo.create_thread_binding(
         thread_id=target,
         provider="telegram",
         platform_chat_id="5551234567",
         user_id="default",
         user_telegram_bot_id=bot.id,
     )
-    agent.accounts_repo.issue_bind_code(
+    agent.chat_bindings_repo.issue_bind_code(
         kind="thread_bind",
         provider="telegram",
         user_id="default",
@@ -286,9 +289,9 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
 
     assert agent.accounts_repo.get_thread_owner(target) is None
     assert agent.accounts_repo.get_thread_owner(survivor) == "default"
-    assert agent.accounts_repo.lookup_thread_binding_by_thread("telegram", target) is None
+    assert agent.chat_bindings_repo.lookup_thread_binding_by_thread("telegram", target) is None
     assert agent.accounts_repo.resolve_platform("telegram", "5551234567") == "default"
-    assert agent.accounts_repo.get_user_telegram_bot(bot.id) is not None
+    assert agent.chat_bindings_repo.get_user_telegram_bot(bot.id) is not None
 
     assert ActivityLog(tmp_path).get_entries("default", thread_id=target) == []
     assert len(ActivityLog(tmp_path).get_entries("default", thread_id=survivor)) == 1

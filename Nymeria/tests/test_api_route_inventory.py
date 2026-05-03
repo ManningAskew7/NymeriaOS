@@ -34,7 +34,10 @@ class FakeSettings:
 
 class FakeAgent:
     def __init__(self, data_dir: Path):
-        self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
+        from nymeria.core.chat_bindings import ChatBindingsRepo
+        accounts_db = data_dir / "accounts.db"
+        self.accounts_repo = AccountsRepo(accounts_db)
+        self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
         self.synced_tools = 0
 
     def sync_agent_tools(self):

@@ -4,7 +4,10 @@ Nymeria is transitioning from implicit-single-user to a real multi-user model. T
 
 ## Model
 
-Six tables in a dedicated SQLite database at `<data_dir>/accounts.db`:
+Seven tables in a dedicated SQLite database at `<data_dir>/accounts.db`, split across two repository classes that share the same DB file:
+
+- **`AccountsRepo`** (`core/accounts.py`): users, tokens, thread ownership, platform identities
+- **`ChatBindingsRepo`** (`core/chat_bindings.py`): thread-platform bindings, bind codes, user-owned Telegram bots
 
 | Table | Purpose |
 |---|---|
