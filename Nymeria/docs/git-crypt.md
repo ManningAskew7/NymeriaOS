@@ -15,6 +15,14 @@ git-crypt is the accepted secrets strategy for this project. Rationale:
 
 Each machine (VPS, work PC, personal PC) may have different values in `.env.docker` — different CLIProxy URLs, different API keys, different Postgres passwords. This means `git status` will often show `.env.docker` as modified. That is normal and intentional. Only commit `.env.docker` changes when you want the committed baseline to change for all machines (e.g., adding a new variable with a sensible default). When pulling on another machine after such a commit, resolve the merge with that machine's values.
 
+### Docker build context
+
+`Nymeria/.env.docker` is intentionally excluded from the Docker build context
+by `Nymeria/.dockerignore`. Docker Compose still passes it with
+`--env-file .env.docker` and bind-mounts it into containers at runtime, but
+image layers must not contain plaintext working-tree secrets after
+`git-crypt unlock`.
+
 ### When NOT to use git-crypt
 
 Move a secret to a per-machine gitignored file when any of these apply:

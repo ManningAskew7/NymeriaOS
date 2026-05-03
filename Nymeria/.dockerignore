@@ -70,5 +70,7 @@ docs/
 
 # Development files
 .env.example
+.env.docker
+.env.docker.*
 .env.docker.example
 tests/
