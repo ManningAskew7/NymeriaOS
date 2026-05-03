@@ -5,6 +5,7 @@ Modular graph construction that accepts configuration for framework integration.
 Supports multiple checkpointer backends and custom tools.
 """
 
+import asyncio
 import atexit
 import logging
 import sqlite3
@@ -40,7 +41,6 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
 
     # Async methods - run sync methods via thread executor
     async def aget_tuple(self, config):
-        import asyncio
         logger.info(f"[CHECKPOINT] AsyncWrapper.aget_tuple config={config}")
         try:
             result = await asyncio.to_thread(self._saver.get_tuple, config)
@@ -51,14 +51,12 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
             raise
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
-        import asyncio
         logger.info(f"[CHECKPOINT] AsyncWrapper.alist called")
         return await asyncio.to_thread(
             self._saver.list, config, filter=filter, before=before, limit=limit
         )
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        import asyncio
         logger.info(f"[CHECKPOINT] AsyncWrapper.aput new_versions={new_versions}")
         try:
             result = await asyncio.to_thread(
@@ -71,7 +69,6 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
             raise
 
     async def aput_writes(self, config, writes, task_id):
-        import asyncio
         logger.info(f"[CHECKPOINT] AsyncWrapper.aput_writes task_id={task_id}")
         return await asyncio.to_thread(
             self._saver.put_writes, config, writes, task_id
@@ -118,7 +115,6 @@ class AsyncPostgresSaverWrapper(BaseCheckpointSaver):
 
     # Async methods - run sync methods via thread executor
     async def aget_tuple(self, config):
-        import asyncio
         logger.info(f"[CHECKPOINT] PostgresWrapper.aget_tuple config={config}")
         try:
             result = await asyncio.to_thread(self._saver.get_tuple, config)
@@ -129,13 +125,11 @@ class AsyncPostgresSaverWrapper(BaseCheckpointSaver):
             raise
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
-        import asyncio
         return await asyncio.to_thread(
             self._saver.list, config, filter=filter, before=before, limit=limit
         )
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        import asyncio
         logger.info(f"[CHECKPOINT] PostgresWrapper.aput new_versions={new_versions}")
         try:
             result = await asyncio.to_thread(
@@ -148,7 +142,6 @@ class AsyncPostgresSaverWrapper(BaseCheckpointSaver):
             raise
 
     async def aput_writes(self, config, writes, task_id):
-        import asyncio
         return await asyncio.to_thread(
             self._saver.put_writes, config, writes, task_id
         )

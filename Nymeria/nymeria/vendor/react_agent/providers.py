@@ -8,6 +8,7 @@ Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 import logging
 import hashlib
 import json
+import os
 from typing import Any, AsyncIterator, Iterator, List, Optional
 from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
@@ -1182,7 +1183,6 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
 def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     """Create direct OpenAI LLM."""
     ChatOpenAI = _get_chat_openai_with_reasoning()
-    import os
 
     api_key = config.api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -1301,8 +1301,6 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
             "langchain-anthropic is required for Anthropic provider. "
             "Install with: pip install langchain-anthropic"
         )
-
-    import os
 
     api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:

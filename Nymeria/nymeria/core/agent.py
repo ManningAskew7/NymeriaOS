@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -88,7 +89,6 @@ class ThreadLockManager:
 
     def set_lock_info(self, thread_id: str, holder: str, task_id: Optional[str] = None):
         """Record who holds the lock and when it was acquired."""
-        import time
         with self._meta_lock:
             self._lock_info[thread_id] = {
                 "holder": holder,
@@ -123,7 +123,6 @@ class ThreadLockManager:
 
     def get_lock_info(self, thread_id: str) -> Optional[Dict[str, Any]]:
         """Get current lock holder info including held_seconds."""
-        import time
         with self._meta_lock:
             info = self._lock_info.get(thread_id)
             if info:
@@ -2926,8 +2925,7 @@ class NymeriaAgent:
             abort_event = self._thread_locks.get_abort_event(thread_id)
             abort_event.clear()
 
-            import time as _time
-            _stream_start = _time.monotonic()
+            _stream_start = time.monotonic()
             logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
