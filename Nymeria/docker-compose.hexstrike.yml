@@ -6,8 +6,15 @@
 # Host bindings are localhost-only. Nymeria containers use service DNS
 # (http://hexstrike-mcp:8889/mcp) over the shared Docker network.
 
+x-security-hardening: &security-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   hexstrike-api:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: docker/hexstrike/Dockerfile
@@ -30,6 +37,7 @@ services:
       - nymeria-network
 
   hexstrike-mcp:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: docker/hexstrike/Dockerfile
