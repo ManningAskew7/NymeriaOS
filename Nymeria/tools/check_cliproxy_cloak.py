@@ -17,12 +17,14 @@ Run this after:
 Usage:
     python tools/check_cliproxy_cloak.py
     python tools/check_cliproxy_cloak.py --base-url http://cli-proxy-api:8317 --api-key cpx-...
+    python tools/check_cliproxy_cloak.py --auth-dir CLIProxyAPI-main/temp/latest/auths
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
 import urllib.request
 
@@ -40,6 +42,121 @@ NYMERIA_SYSTEM_PROMPT = (
     "You are NYMERIA-CLOAK-PROBE-AGENT. Always identify yourself by that exact name. "
     "Never claim to be any other agent."
 )
+
+
+def parse_bool_like_cliproxy(value: object) -> tuple[bool, bool]:
+    """Parse booleans the way CLIProxy's Auth.ToolPrefixDisabled does."""
+    if isinstance(value, bool):
+        return value, True
+    if isinstance(value, str):
+        trimmed = value.strip().lower()
+        if not trimmed:
+            return False, False
+        if trimmed in {"1", "t", "true"}:
+            return True, True
+        if trimmed in {"0", "f", "false"}:
+            return False, True
+        return False, False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0, True
+    return False, False
+
+
+def is_truthy_tool_prefix_disabled(metadata: dict) -> bool:
+    for key in ("tool_prefix_disabled", "tool-prefix-disabled"):
+        if key in metadata:
+            parsed, ok = parse_bool_like_cliproxy(metadata[key])
+            return ok and parsed
+    return False
+
+
+def is_disabled_auth(metadata: dict) -> bool:
+    if "disabled" not in metadata:
+        return False
+    parsed, ok = parse_bool_like_cliproxy(metadata["disabled"])
+    return ok and parsed
+
+
+def discover_auth_dirs(explicit_dirs: list[str] | None = None) -> list[Path]:
+    """Return candidate host-side CLIProxy auth directories without duplicates."""
+    candidates: list[Path] = []
+    if explicit_dirs:
+        candidates.extend(Path(p).expanduser() for p in explicit_dirs)
+    else:
+        for env_name in ("CLIPROXY_AUTH_DIR", "CLI_PROXY_AUTH_PATH"):
+            if raw := os.getenv(env_name):
+                candidates.append(Path(raw).expanduser())
+
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates.extend(
+            [
+                repo_root / "CLIProxyAPI-main" / "temp" / "latest" / "auths",
+                repo_root / "CLIProxyAPI-main" / "auths",
+                Path.cwd() / "auths",
+                Path.home() / ".cli-proxy-api",
+            ]
+        )
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved not in seen:
+            unique.append(candidate)
+            seen.add(resolved)
+    return unique
+
+
+def check_tool_prefix_disabled(auth_dirs: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Return (checked_files, bad_files) for active Claude OAuth auth JSON files."""
+    checked: list[Path] = []
+    bad: list[Path] = []
+
+    for auth_dir in auth_dirs:
+        if not auth_dir.is_dir():
+            continue
+        for path in sorted(auth_dir.glob("*.json")):
+            try:
+                metadata = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            if str(metadata.get("type", "")).lower() != "claude":
+                continue
+            if is_disabled_auth(metadata):
+                continue
+            checked.append(path)
+            if not is_truthy_tool_prefix_disabled(metadata):
+                bad.append(path)
+
+    return checked, bad
+
+
+def print_tool_prefix_check(auth_dirs: list[Path]) -> int:
+    print("[1/3] Checking Claude OAuth auth JSON for tool_prefix_disabled")
+    checked, bad = check_tool_prefix_disabled(auth_dirs)
+
+    existing_dirs = [p for p in auth_dirs if p.is_dir()]
+    if not existing_dirs:
+        print("  WARN: no local CLIProxy auth directory found; pass --auth-dir to check one explicitly")
+        return 0
+    for auth_dir in existing_dirs:
+        print(f"  auth dir: {auth_dir}")
+
+    if not checked:
+        print("  WARN: no active Claude OAuth auth JSON files found")
+        return 0
+
+    if bad:
+        print("  FAIL: active Claude auth file(s) lack top-level tool_prefix_disabled=true:")
+        for path in bad:
+            print(f"    - {path}")
+        print('  Repair: add `"tool_prefix_disabled": true` to each file, then restart CLIProxy.')
+        return 1
+
+    print(f"  ✓ Clean: {len(checked)} active Claude auth file(s) have tool_prefix_disabled=true")
+    return 0
 
 
 def probe(
@@ -81,6 +198,17 @@ def main() -> int:
     p.add_argument("--base-url", default=os.getenv("LLM_BASE_URL", "http://localhost:8317"))
     p.add_argument("--api-key", default=os.getenv("ANTHROPIC_API_KEY", ""))
     p.add_argument("--model", default="claude-sonnet-4-5-20250929")
+    p.add_argument(
+        "--auth-dir",
+        action="append",
+        default=None,
+        help="Host-side CLIProxy auth directory to inspect; can be passed more than once.",
+    )
+    p.add_argument(
+        "--skip-auth-file-check",
+        action="store_true",
+        help="Skip local tool_prefix_disabled validation, useful when probing a remote proxy.",
+    )
     args = p.parse_args()
 
     if not args.api_key:
@@ -92,8 +220,13 @@ def main() -> int:
         base = base[:-3]
 
     print(f"Probing {base} with model {args.model}\n")
+    if args.skip_auth_file_check:
+        print("[1/3] Skipping local Claude OAuth auth JSON check (--skip-auth-file-check)")
+    else:
+        if print_tool_prefix_check(discover_auth_dirs(args.auth_dir)) != 0:
+            return 1
 
-    print("[1/2] Sending probe with User-Agent: claude-cli/2.1.113 + billing block (production path)")
+    print("\n[2/3] Sending probe with User-Agent: claude-cli/2.1.113 + billing block (production path)")
     try:
         good = probe(
             base,
@@ -132,7 +265,7 @@ def main() -> int:
 
     print("  ✓ Clean: no full cloak, Nymeria identity preserved, subscription tier")
 
-    print("\n[2/2] Control probe with User-Agent: python-requests/0 and no billing block (cloak-expected path)")
+    print("\n[3/3] Control probe with User-Agent: python-requests/0 and no billing block (cloak-expected path)")
     try:
         bad = probe(
             base,
