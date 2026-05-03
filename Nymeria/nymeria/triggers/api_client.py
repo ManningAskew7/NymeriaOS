@@ -35,6 +35,21 @@ class NymeriaAPIClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+
+    async def close(self) -> None:
+        """Close the underlying HTTP connection pool."""
+        await self._client.aclose()
+
+    async def aclose(self) -> None:
+        """Alias for callers that use httpx-style async close naming."""
+        await self.close()
+
+    async def __aenter__(self) -> "NymeriaAPIClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
@@ -44,45 +59,50 @@ class NymeriaAPIClient:
             return self._headers
         return {**self._headers, "X-Nymeria-Act-As": act_as}
 
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Optional[dict] = None,
+        params: Optional[dict] = None,
+        act_as: Optional[str] = None,
+        timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
+    ) -> dict:
+        resp = await self._client.request(
+            method,
+            self._url(path),
+            headers=self._headers_for(act_as),
+            json=json_body,
+            params=params,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def _get(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-            resp = await client.get(
-                self._url(path), headers=self._headers_for(act_as), params=params
-            )
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request("GET", path, params=params, act_as=act_as)
 
     async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
-        async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
-            resp = await client.post(
-                self._url(path), headers=self._headers_for(act_as), json=json, params=params
-            )
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request(
+            "POST",
+            path,
+            json_body=json,
+            params=params,
+            act_as=act_as,
+            timeout=_CHAT_TIMEOUT,
+        )
 
     async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-            resp = await client.put(
-                self._url(path), headers=self._headers_for(act_as), json=json, params=params
-            )
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request(
+            "PUT", path, json_body=json, params=params, act_as=act_as
+        )
 
     async def _patch(self, path: str, json: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-            resp = await client.patch(
-                self._url(path), headers=self._headers_for(act_as), json=json
-            )
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request("PATCH", path, json_body=json, act_as=act_as)
 
     async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-            resp = await client.delete(
-                self._url(path), headers=self._headers_for(act_as), params=params
-            )
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request("DELETE", path, params=params, act_as=act_as)
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
@@ -154,24 +174,24 @@ class NymeriaAPIClient:
             body["attachments"] = attachments
         if force_unsupported_attachments:
             body["force_unsupported_attachments"] = True
-        async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
-            async with client.stream(
-                "POST",
-                self._url("/chat"),
-                headers=self._headers_for(user_id),
-                json=body,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    raw = line[6:]
-                    if raw.startswith(":"):
-                        continue
-                    try:
-                        yield _json.loads(raw)
-                    except _json.JSONDecodeError:
-                        continue
+        async with self._client.stream(
+            "POST",
+            self._url("/chat"),
+            headers=self._headers_for(user_id),
+            json=body,
+            timeout=_CHAT_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                raw = line[6:]
+                if raw.startswith(":"):
+                    continue
+                try:
+                    yield _json.loads(raw)
+                except _json.JSONDecodeError:
+                    continue
 
     # ── Thread Management ─────────────────────────────────────────────────
 
@@ -414,22 +434,21 @@ class NymeriaAPIClient:
         """
         _MAX_SIZE = 50 * 1024 * 1024  # Telegram bot limit
         try:
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-                resp = await client.get(
-                    self._url("/workspace/download"),
-                    headers=self._headers,
-                    params={"path": file_path},
-                )
-                resp.raise_for_status()
-                if len(resp.content) > _MAX_SIZE:
-                    logger.warning("Workspace file too large to attach: %s (%d bytes)", file_path, len(resp.content))
-                    return None
-                content_type = resp.headers.get("content-type", "application/octet-stream")
-                cd = resp.headers.get("content-disposition", "")
-                filename = file_path.rsplit("/", 1)[-1]
-                if "filename=" in cd:
-                    filename = cd.split("filename=")[-1].strip('" ')
-                return (resp.content, filename, content_type)
+            resp = await self._client.get(
+                self._url("/workspace/download"),
+                headers=self._headers,
+                params={"path": file_path},
+            )
+            resp.raise_for_status()
+            if len(resp.content) > _MAX_SIZE:
+                logger.warning("Workspace file too large to attach: %s (%d bytes)", file_path, len(resp.content))
+                return None
+            content_type = resp.headers.get("content-type", "application/octet-stream")
+            cd = resp.headers.get("content-disposition", "")
+            filename = file_path.rsplit("/", 1)[-1]
+            if "filename=" in cd:
+                filename = cd.split("filename=")[-1].strip('" ')
+            return (resp.content, filename, content_type)
         except Exception as e:
             logger.warning("Failed to download workspace file %s: %s", file_path, e)
             return None

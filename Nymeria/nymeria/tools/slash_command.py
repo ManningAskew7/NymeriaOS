@@ -118,7 +118,10 @@ async def _dispatch_command(command: str, config: RunnableConfig) -> str:
         cmd, sub, args, thread_id,
     )
 
-    return await dispatcher.dispatch(cmd, sub, args, rest)
+    try:
+        return await dispatcher.dispatch(cmd, sub, args, rest)
+    finally:
+        await client.close()
 
 
 def _run_async_from_sync(coro_factory: Callable[[], Awaitable[str]]) -> str:
