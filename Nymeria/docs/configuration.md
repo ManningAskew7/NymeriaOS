@@ -75,7 +75,15 @@ Set the API key for your chosen provider:
 | `API_PORT` | `8000` | Server port |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins, or `*` for all |
 | `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
-| `NYMERIA_PROJECT_ROOT` | auto-detected | Override project root resolution, mainly for Tauri or frozen builds |
+| `NYMERIA_PROJECT_ROOT` | auto-detected | Override project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
+
+Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`, then uses the
+frozen executable directory for PyInstaller builds, then walks upward looking
+for Nymeria backend markers such as `run.py`, `docker-compose.yml`, and
+`nymeria/config/soul.md`. The older fixed-depth path from
+`nymeria/config/settings.py` remains only as a compatibility fallback. Set
+`NYMERIA_PROJECT_ROOT` explicitly if a packaged deployment separates the Python
+package from the checkout or runtime config directory.
 
 ### Redis (Docker Only)
 
@@ -119,7 +127,6 @@ Set the API key for your chosen provider:
 | `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Messages to include in pulse context |
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
 | `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
-| `WEBHOOK_SECRET` | - | Secret for validating incoming webhooks |
 
 ### Service and Logging
 
