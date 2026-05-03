@@ -368,8 +368,8 @@ When token usage reaches the threshold (default: 80% of model's context limit):
 
 **Key Components:**
 - `TokenTracker` (`token_tracker.py`): Tracks cumulative tokens per thread
-- `ConversationCompactor` (`compactor.py`): Generates summary prompts, formats resume context
-- `NymeriaAgent._prune_checkpoints_before()` (`core/agent.py`): raw-SQL pruner invoked by `_clear_and_reset`
+- `CompactionManager` (`agent_compaction.py`): Owns compaction policy, summary generation, message clearing, checkpoint pruning, and pending-summary state. `NymeriaAgent` delegates via `self._compaction`.
+- `prune_checkpoints_before()` (`agent_compaction.py`): raw-SQL pruner invoked by `_clear_and_reset`
 - Model limits are resolved from live model metadata when available, including bare OpenAI IDs routed through CLIProxy (`gpt-5.5` -> `openai/gpt-5.5`), with static fallbacks for known long-context models
 
 See [compaction-and-checkpoints.md](./compaction-and-checkpoints.md) for the end-to-end flow, the display filter's `internal_type` branches (including the `compaction_marker` edge case), and a troubleshooting playbook.
@@ -696,14 +696,20 @@ self._user_graphs: Dict[tuple, tuple] = {}
 
 ---
 
-## Vendored Dependencies
+## Owned Runtime Fork
 
-The `react_agent` module from LangGraph is bundled at `nymeria/vendor/react_agent/`. This provides:
-- Zero external path dependencies (no need to configure `LANGGRAPH_PATH`)
+Nymeria's LangGraph ReAct runtime lives at `nymeria/vendor/react_agent/`. The
+path is kept for import stability, but this package is an owned fork, not a
+drop-in upstream mirror. It provides:
+- Zero external source-path dependencies (no need to configure `LANGGRAPH_PATH`)
 - Consistent behavior across all installations
 - Easier deployment for beta testers
+- Nymeria-specific provider, checkpoint, timeout, tool-reload, and reasoning
+  streaming behavior
 
-The vendored package includes: config, state management, tool registry, LLM providers, nodes, and graph construction.
+The package includes config, state management, tool registry, LLM providers,
+nodes, and graph construction. See
+`nymeria/vendor/react_agent/README.md` for the fork ownership and sync policy.
 
 ---
 

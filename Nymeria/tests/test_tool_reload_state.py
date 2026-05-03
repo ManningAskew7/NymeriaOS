@@ -18,6 +18,7 @@ from nymeria.core.tool_reload import (
     tool_reload_command,
 )
 from nymeria.core.agent import NymeriaAgent
+from nymeria.core.agent_compaction import CompactionManager
 from nymeria.core.event_bus import agent_stream_chunk_to_autonomous_event_data
 from nymeria.vendor.react_agent.nodes import create_tools_node, route_after_tools
 
@@ -229,7 +230,7 @@ class _FakeAsyncGraph:
 def test_astream_reload_resume_streams_post_reload_tool_events():
     agent = _bare_agent()
     agent._thread_locks = _FakeLockManager()
-    agent._pending_notepads = {}
+    agent._compaction = CompactionManager(agent)
     agent.scheduler = SimpleNamespace(cancel=lambda *args, **kwargs: None)
     agent.settings = SimpleNamespace(lock_timeout=1, context_management="none")
     agent._token_tracker = SimpleNamespace(record_usage=lambda *args, **kwargs: None)

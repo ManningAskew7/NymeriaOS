@@ -43,7 +43,7 @@ The pre-compact RAG flush (step 3) means the conversation remains queryable via 
 
 ### Checkpoint pruning (added 2026-04-21)
 
-LangGraph has no public checkpoint-delete API, so `_prune_checkpoints_before()` uses raw SQL (mirrors the thread-delete pattern in `triggers/api.py`). It runs *inside* `_clear_and_reset`, *after* `verify_state` confirms exactly 1 message remains, so a prune failure never blocks the compaction itself.
+LangGraph has no public checkpoint-delete API, so `prune_checkpoints_before()` in `core/agent_compaction.py` uses raw SQL (mirrors the thread-delete pattern in `triggers/api.py`). It runs *inside* `_clear_and_reset`, *after* `verify_state` confirms exactly 1 message remains, so a prune failure never blocks the compaction itself.
 
 Three deletes, each try/except-wrapped:
 
@@ -252,11 +252,12 @@ Only `core/` files should show constructor calls. If you see them in `triggers/a
 
 | Path | Purpose |
 |------|---------|
-| `core/agent.py:174` | `_build_message_timestamp_map` — the walker, unchanged; now naturally fast |
-| `core/agent.py:1334` | `_clear_and_reset` (async) — calls prune after verify |
-| `core/agent.py:1604` | `_clear_and_reset_sync` — sync variant, same logic |
-| `core/agent.py` (near `_clear_and_reset_sync`) | `_prune_checkpoints_before` — raw SQL, per-backend |
-| `core/agent.py:3925` | display filter in `get_conversation_history` — internal_type branches |
-| `triggers/api.py:1079` | `/threads/{id}/history` endpoint |
-| `triggers/api.py:1189` | `_get_checkpoint_thread_ids` — reference pattern for raw SQL dispatch |
-| `triggers/api.py:1370` | thread-delete — reference pattern for DELETE across all three tables |
+| `core/agent_compaction.py` | `CompactionManager` — owns compaction policy, execution, pruning, and pending state |
+| `core/agent_compaction.py` | `prune_checkpoints_before` — raw SQL DELETEs, per-backend (SQLite + Postgres) |
+| `core/agent_compaction.py` | `create_compaction_marker` — durable history marker |
+| `core/agent.py` | `NymeriaAgent` delegates to `self._compaction` (CompactionManager) |
+| `core/agent.py` | `_build_message_timestamp_map` — checkpoint walker for timestamps |
+| `core/agent.py` | display filter in `get_conversation_history` — internal_type branches |
+| `triggers/api.py` | `/threads/{id}/history` endpoint |
+| `triggers/api.py` | `_get_checkpoint_thread_ids` — reference pattern for raw SQL dispatch |
+| `triggers/api.py` | thread-delete — reference pattern for DELETE across all three tables |

@@ -8,15 +8,18 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.activity_log import ActivityLog, ActivityType
 from nymeria.core.fcm import load_tokens, save_tokens
 from nymeria.core.notifications import NotificationStore
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
-from nymeria.core.thread_deletion import cascade_delete_thread
+from nymeria.core.thread_deletion import ThreadDeletionResult, cascade_delete_thread
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import TodoScheduleDB
+from nymeria.core.agent_compaction import CompactionManager
 from nymeria.core.token_tracker import TokenTracker
 from nymeria.core.trigger_manager import (
     TriggerAction,
@@ -80,8 +83,7 @@ class FakeAgent:
         self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
         self._thread_locks = FakeThreadLocks()
         self._token_tracker = TokenTracker()
-        self._pending_summaries = {}
-        self._pending_notepads = {}
+        self._compaction = CompactionManager(self)
         self._pending_tool_reload = {}
         self._turn_reload_count = {}
         self._user_graphs = {}
@@ -129,6 +131,16 @@ def _count_rows(db_path: Path, table: str, thread_id: str) -> int:
                 (thread_id,),
             ).fetchone()[0]
         )
+
+
+def test_thread_deletion_result_requires_explicit_counts():
+    result = ThreadDeletionResult(thread_id="thread-1", user_id="default")
+
+    with pytest.raises(TypeError):
+        result.set("thread_owners_deleted", True)
+
+    with pytest.raises(TypeError):
+        result.inc("thread_owners_deleted", False)
 
 
 def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
@@ -225,8 +237,8 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
         ],
     )
 
-    agent._pending_summaries[target] = "summary"
-    agent._pending_notepads[target] = "notepad"
+    agent._compaction._pending_summaries[target] = "summary"
+    agent._compaction._pending_notepads[target] = "notepad"
     agent._pending_tool_reload[target] = {"new_tools": ["x"]}
     agent._turn_reload_count[target] = 1
     agent._user_graphs[("default", target)] = object()
@@ -287,7 +299,19 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
     assert target in agent.invalidated
     assert agent.synced_tools == 1
     assert agent.memory_index.calls == [("default", target)]
-    assert target not in agent._pending_summaries
+    assert target not in agent._compaction._pending_summaries
     assert ("default", target) not in agent._user_graphs
     assert ("default", survivor) in agent._user_graphs
     assert agent._token_tracker.get_usage(target).total_tokens == 0
+
+
+def test_cascade_delete_thread_reports_missing_thread_owner_as_zero(tmp_path: Path):
+    target = "orphan-thread"
+    settings = FakeSettings(tmp_path)
+    agent = FakeAgent(tmp_path)
+
+    result = cascade_delete_thread(agent, settings, "default", target)
+
+    assert result.warnings == []
+    assert result.deleted["thread_owners_deleted"] == 0
+    assert agent.accounts_repo.get_thread_owner(target) is None
