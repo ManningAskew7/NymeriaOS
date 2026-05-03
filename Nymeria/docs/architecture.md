@@ -741,7 +741,7 @@ The codebase underwent significant modularization:
    - `tasks.svelte.ts`: Deleted (replaced by `todosStore.scheduledTodos`)
    - `ScheduledTaskItem.svelte`: Deleted (no longer used)
    - Legacy type aliases removed from `types/index.ts`
-   - Store utilities added: `polling.ts`, `crud-store.ts`
+   - Unused experimental store utilities were later removed after never being adopted
 
 ### Potential Failure Points
 
