@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import logging
 import uuid as _uuid
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 from ..config import get_settings
 from ..config.model_capabilities import get_context_limit
+from .time_utils import utc_now
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
@@ -112,7 +112,7 @@ def create_compaction_marker(
         "summary": summary,
         "messages_removed": messages_removed,
         "auto_resumed": auto_resumed,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": utc_now().isoformat(),
     })
     return marker
 

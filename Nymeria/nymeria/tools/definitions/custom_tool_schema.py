@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from ...core.time_utils import utc_now
 from .mcp_schema import MCPToolConfig
 
 
@@ -143,11 +144,11 @@ class CustomToolDefinition(BaseModel):
         description="Tags for categorization",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=utc_now,
         description="Creation timestamp",
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=utc_now,
         description="Last update timestamp",
     )
 

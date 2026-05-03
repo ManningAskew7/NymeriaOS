@@ -31,6 +31,7 @@ from ..tools.metadata import (
     register_custom_tool_metadata,
     unregister_custom_tool_metadata,
 )
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class CustomToolLoader:
             Path to the saved file.
         """
         # Update timestamp
-        definition.updated_at = definition.updated_at.__class__.utcnow()
+        definition.updated_at = utc_now()
 
         file_path = self.tools_dir / f"{definition.id}.json"
         file_path.write_text(

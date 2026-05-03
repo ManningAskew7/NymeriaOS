@@ -12,6 +12,22 @@ def get_user_tz() -> ZoneInfo:
     return ZoneInfo(get_settings().user_timezone)
 
 
+def utc_now() -> datetime:
+    """Return the current time as a timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def ensure_aware_utc(value: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC.
+
+    Legacy JSON data may contain naive UTC timestamps. Treat those as UTC so
+    comparisons keep working after new timestamps become timezone-aware.
+    """
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def parse_duration(duration_str: str) -> Optional[int]:
     """
     Parse a duration string to seconds.

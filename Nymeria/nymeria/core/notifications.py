@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class Notification(BaseModel):
     summary: str = Field(..., max_length=200)
     thread_id: Optional[str] = None
     task_id: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     read: bool = False
 
 

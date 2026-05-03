@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .time_utils import ensure_aware_utc, utc_now
+
 logger = logging.getLogger(__name__)
 
 # Chunking configuration (same as Clawdbot)
@@ -553,9 +555,13 @@ class MemoryIndex:
                         created_at = row['created_at']
                         if isinstance(created_at, str):
                             try:
-                                created_at = datetime.fromisoformat(created_at)
+                                created_at = ensure_aware_utc(
+                                    datetime.fromisoformat(created_at)
+                                )
                             except ValueError:
-                                created_at = datetime.utcnow()
+                                created_at = utc_now()
+                        elif isinstance(created_at, datetime):
+                            created_at = ensure_aware_utc(created_at)
 
                         results.append(ChunkResult(
                             id=row['id'],

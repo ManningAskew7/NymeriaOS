@@ -12,6 +12,7 @@ from typing import Annotated, List, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.time_utils import utc_now
 from ..core.trigger_manager import (
     TriggerAction,
     TriggerCondition,
@@ -407,7 +408,7 @@ def _inspect_test(manager: TriggerManager, user_id: str, trigger_id: str) -> str
         **sample_event,
         "trigger_id": trigger.id,
         "trigger_name": trigger.name,
-        "fired_at": datetime.utcnow().isoformat(),
+        "fired_at": utc_now().isoformat(),
     }
 
     action_cfg = trigger.action

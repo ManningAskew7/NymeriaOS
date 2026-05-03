@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -94,7 +94,7 @@ def test_thread_export_omits_history_notepad_temporary_tools_and_api_key(tmp_pat
             enabled_tools=["custom_weather"],
             temporary_tools={
                 "hello_test": TemporaryToolEntry(
-                    expires_at=datetime.utcnow()
+                    expires_at=datetime.now(timezone.utc)
                 )
             },
             llm_config=ThreadLLMConfig(

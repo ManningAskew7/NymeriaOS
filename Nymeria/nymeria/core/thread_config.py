@@ -18,6 +18,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import ensure_aware_utc, utc_now
 from .user_profile import migrate_tool_names
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,13 @@ class TemporaryToolEntry(BaseModel):
     back. No background scheduler is required.
     """
 
-    enabled_at: datetime = Field(default_factory=datetime.utcnow)
+    enabled_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
+
+    @field_validator("enabled_at", "expires_at")
+    @classmethod
+    def _datetimes_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
 
 
 class ThreadConfig(BaseModel):
@@ -126,8 +132,13 @@ class ThreadConfig(BaseModel):
     telegram_autonomous_delivery: Literal["full", "notify_only", "off"] = "full"
     # In-app notification center behavior for this thread.
     in_app_notification_level: Literal["notify_only", "all_autonomous", "off"] = "notify_only"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def _datetimes_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -230,7 +241,7 @@ class ThreadConfigManager:
 
         with lock:
             try:
-                config.updated_at = datetime.utcnow()
+                config.updated_at = utc_now()
                 temp_path = config_path.with_suffix(".tmp")
                 with open(temp_path, "w", encoding="utf-8") as f:
                     json.dump(config.model_dump(mode="json"), f, indent=2, default=str)

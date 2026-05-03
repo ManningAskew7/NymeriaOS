@@ -20,6 +20,7 @@ from ..tools.definitions.mcp_schema import (
     MCPToolConfig,
 )
 from .mcp_manager import get_mcp_manager
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class MCPServerRegistry:
 
     def save_server(self, defn: MCPServerDefinition) -> Path:
         """Save a server definition to disk."""
-        defn.updated_at = datetime.utcnow()
+        defn.updated_at = utc_now()
         file_path = self.servers_dir / f"{defn.id}.json"
         file_path.write_text(defn.model_dump_json(indent=2), encoding="utf-8")
         self._definitions[defn.id] = defn
@@ -140,7 +141,7 @@ class MCPServerRegistry:
 
         # Update definition and save
         defn.discovered_tools = discovered
-        defn.updated_at = datetime.utcnow()
+        defn.updated_at = utc_now()
         self.save_server(defn)
 
         logger.info(f"Discovered {len(discovered)} tools from MCP server '{server_id}'")

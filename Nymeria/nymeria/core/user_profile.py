@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,8 @@ class Memory(BaseModel):
 
     key: str = Field(..., description="Memory identifier (e.g., 'favorite_language')")
     value: str = Field(..., max_length=1000, description="Memory content")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    accessed_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    accessed_at: datetime = Field(default_factory=utc_now)
     access_count: int = Field(default=0, ge=0)
 
 
@@ -169,8 +170,8 @@ class UserProfile(BaseModel):
 
     user_id: str = Field(default="default")
     name: Optional[str] = Field(default=None, description="User's preferred name")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
     preferences: Dict[str, Any] = Field(
         default_factory=dict,
@@ -234,9 +235,9 @@ class UserProfile(BaseModel):
         existing = self.get_memory(key)
         if existing:
             existing.value = value
-            existing.accessed_at = datetime.utcnow()
+            existing.accessed_at = utc_now()
             existing.access_count += 1
-            self.updated_at = datetime.utcnow()
+            self.updated_at = utc_now()
             return True
 
         # Check limit
@@ -245,7 +246,7 @@ class UserProfile(BaseModel):
 
         # Add new memory
         self.memories.append(Memory(key=key, value=value))
-        self.updated_at = datetime.utcnow()
+        self.updated_at = utc_now()
         return True
 
     def remove_memory(self, key: str) -> bool:
@@ -253,7 +254,7 @@ class UserProfile(BaseModel):
         for i, mem in enumerate(self.memories):
             if mem.key == key:
                 self.memories.pop(i)
-                self.updated_at = datetime.utcnow()
+                self.updated_at = utc_now()
                 return True
         return False
 
@@ -261,7 +262,7 @@ class UserProfile(BaseModel):
         """Access a memory and update access stats."""
         mem = self.get_memory(key)
         if mem:
-            mem.accessed_at = datetime.utcnow()
+            mem.accessed_at = utc_now()
             mem.access_count += 1
             return mem.value
         return None
@@ -298,13 +299,13 @@ class UserProfile(BaseModel):
     def set_personality(self, trait: str, value: str) -> None:
         """Set a personality override."""
         self.personality_overrides[trait] = value
-        self.updated_at = datetime.utcnow()
+        self.updated_at = utc_now()
 
     def clear_personality(self, trait: str) -> bool:
         """Clear a personality override."""
         if trait in self.personality_overrides:
             del self.personality_overrides[trait]
-            self.updated_at = datetime.utcnow()
+            self.updated_at = utc_now()
             return True
         return False
 
@@ -318,7 +319,7 @@ class UserProfile(BaseModel):
         if "rag" not in self.preferences:
             self.preferences["rag"] = {}
         self.preferences["rag"][key] = value
-        self.updated_at = datetime.utcnow()
+        self.updated_at = utc_now()
 
 
 class UserProfileManager:
@@ -445,7 +446,7 @@ class UserProfileManager:
                     changed = True
             profile.global_skill_defaults_migrated = True
             if changed:
-                profile.updated_at = datetime.utcnow()
+                profile.updated_at = utc_now()
             try:
                 self.save_profile(profile)
                 logger.info(
@@ -478,7 +479,7 @@ class UserProfileManager:
             profile_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Update timestamp
-            profile.updated_at = datetime.utcnow()
+            profile.updated_at = utc_now()
 
             # Write atomically (write to temp file, then rename)
             temp_path = profile_path.with_suffix(".tmp")

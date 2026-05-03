@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ...core.time_utils import utc_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +72,7 @@ class BaseTriggerSource(ABC):
         """
         return {
             "trigger_name": "test",
-            "fired_at": datetime.utcnow().isoformat(),
+            "fired_at": utc_now().isoformat(),
         }
 
     def validate_config(self, config: dict) -> Tuple[bool, str]:

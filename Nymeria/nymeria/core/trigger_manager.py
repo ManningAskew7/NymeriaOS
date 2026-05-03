@@ -20,9 +20,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import ensure_aware_utc, utc_now
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
@@ -82,7 +83,7 @@ class TriggerDefinition(BaseModel):
     fire_count: int = Field(default=0, description="Total number of times this trigger has fired")
     state: dict = Field(default_factory=dict, description="Mutable state passed to source.check()")
     thread_id: str = Field(default="", description="Persistent thread for this trigger")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     created_by: str = Field(default="agent", description="'agent' or 'user'")
     # Health tracking
     consecutive_errors: int = Field(default=0)
@@ -92,6 +93,13 @@ class TriggerDefinition(BaseModel):
     # Pending events deferred because the thread was busy
     pending_events: List[dict] = Field(default_factory=list)
 
+    @field_validator("last_fired", "created_at", "last_error_at")
+    @classmethod
+    def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        return ensure_aware_utc(value)
+
 
 class TriggerExecution(BaseModel):
     """A single trigger execution record for audit logging."""
@@ -99,7 +107,7 @@ class TriggerExecution(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
     trigger_id: str = ""
     trigger_name: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utc_now)
     status: Literal["success", "error", "partial", "deferred"] = "success"
     event_count: int = 1
     events_summary: str = ""
@@ -108,15 +116,25 @@ class TriggerExecution(BaseModel):
     duration_seconds: float = 0.0
     action_type: str = ""
 
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
+
 
 class TriggerStore(BaseModel):
     """Per-user collection of triggers (serialized to JSON)."""
 
     user_id: str = Field(default="default")
     triggers: List[TriggerDefinition] = Field(default_factory=list)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=utc_now)
 
     MAX_TRIGGERS: int = 50
+
+    @field_validator("updated_at")
+    @classmethod
+    def _updated_at_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
 
     def get_trigger(self, trigger_id: str) -> Optional[TriggerDefinition]:
         for t in self.triggers:
@@ -183,7 +201,7 @@ class TriggerManager:
         path = self._path_for(store.user_id)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            store.updated_at = datetime.utcnow()
+            store.updated_at = utc_now()
             temp = path.with_suffix(".tmp")
             temp.write_text(
                 json.dumps(store.model_dump(mode="json"), indent=2, default=str),
@@ -444,14 +462,16 @@ class TriggerManager:
         results: List[Tuple[TriggerDefinition, List[dict]]] = []
 
         with self.atomic_update(user_id) as store:
-            now = datetime.utcnow()
+            now = utc_now()
             for trigger in store.triggers:
                 if not trigger.enabled:
                     continue
 
                 # Cooldown check
                 if trigger.cooldown_seconds and trigger.last_fired:
-                    elapsed = (now - trigger.last_fired).total_seconds()
+                    elapsed = (
+                        now - ensure_aware_utc(trigger.last_fired)
+                    ).total_seconds()
                     if elapsed < trigger.cooldown_seconds:
                         continue
 
@@ -545,7 +565,7 @@ class TriggerManager:
             **event,
             "trigger_id": trigger.id,
             "trigger_name": trigger.name,
-            "fired_at": datetime.utcnow().isoformat(),
+            "fired_at": utc_now().isoformat(),
         }
 
         start = _time.monotonic()
@@ -615,7 +635,7 @@ class TriggerManager:
                 **event,
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
-                "fired_at": datetime.utcnow().isoformat(),
+                "fired_at": utc_now().isoformat(),
             }
             rendered_items.append(f"--- Item {i} ---\n{_safe_format(template, template_vars)}")
 

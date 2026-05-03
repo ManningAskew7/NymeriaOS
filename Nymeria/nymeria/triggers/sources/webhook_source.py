@@ -14,8 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .base import BaseTriggerSource
 from . import register_source
+from .base import BaseTriggerSource
+from ...core.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ class WebhookSource(BaseTriggerSource):
 
     def get_sample_event(self, config: dict) -> dict:
         return {
-            "fired_at": datetime.utcnow().isoformat(),
+            "fired_at": utc_now().isoformat(),
             "source_ip": "192.168.1.1",
             "message": "Hello from webhook!",
             "status": "ok",

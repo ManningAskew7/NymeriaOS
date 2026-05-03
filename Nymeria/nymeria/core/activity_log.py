@@ -12,9 +12,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +43,17 @@ class ActivityEntry(BaseModel):
     """A single activity log entry."""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utc_now)
     type: ActivityType
     message: str = Field(..., max_length=500, description="Human-readable description")
     user_id: str = Field(default="default")
     thread_id: Optional[str] = Field(default=None)
     metadata: Optional[dict] = Field(default=None, description="Additional context")
+
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
 
 
 class ActivityLog:
@@ -119,7 +125,7 @@ class ActivityLog:
             # Time-based retention: prune entries older than retention_hours
             from ..config import get_settings
             retention_hours = get_settings().activity_retention_hours
-            cutoff = datetime.utcnow() - timedelta(hours=retention_hours)
+            cutoff = utc_now() - timedelta(hours=retention_hours)
             entries = [e for e in entries if e.timestamp >= cutoff]
 
             # Hard safety cap to prevent unbounded growth
@@ -157,6 +163,7 @@ class ActivityLog:
             entries = self._load_entries(user_id)
 
         if since:
+            since = ensure_aware_utc(since)
             entries = [e for e in entries if e.timestamp >= since]
 
         # Filter by type if specified
