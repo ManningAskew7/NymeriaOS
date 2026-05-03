@@ -31,7 +31,11 @@ DEFAULT_MAX_SPAWN_DEPTH = 3
 DEFAULT_MAX_SPAWNS_PER_HOUR = 10
 RATE_WINDOW_SECONDS = 3600
 
-# In-memory rate limiter: parent_thread_id -> list of spawn timestamps
+# Process-local rate limiter: parent_thread_id -> list of spawn timestamps.
+# Intentionally not persisted — process restart breaks any active spawn loop,
+# and the depth limit (DEFAULT_MAX_SPAWN_DEPTH) is the hard guard against
+# recursive chains. For single-process deployments this is sufficient; if
+# horizontal scaling is ever added, move counters to Redis or the accounts DB.
 _spawn_rate_lock = threading.Lock()
 _spawn_counts: Dict[str, List[float]] = {}
 
