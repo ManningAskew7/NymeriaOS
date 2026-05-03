@@ -30,11 +30,12 @@ from .todo import (
     nym_todo_list,
     TODO_TOOLS,
 )
-from .subagent import (
+from .runtime_admin import (
     reload_all,
     self_modify_rollback,
-    SUBAGENT_TOOLS,
+    RUNTIME_ADMIN_TOOLS,
 )
+SUBAGENT_TOOLS = RUNTIME_ADMIN_TOOLS
 from .outlook_auth import AUTH_TOOLS
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
@@ -97,7 +98,7 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
 OPTIONAL_TOOLS = {t.name: t for t in (
-    [claude_code, sticky_note, hello_test]
+    [claude_code, sticky_note, hello_test, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
@@ -234,6 +235,7 @@ __all__ = [
     "TODO_TOOLS",
     "reload_all",
     "self_modify_rollback",
+    "RUNTIME_ADMIN_TOOLS",
     "SUBAGENT_TOOLS",
     "notify",
     "NOTIFY_TOOLS",
