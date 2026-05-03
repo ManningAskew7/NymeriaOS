@@ -336,7 +336,7 @@ Authorization: Bearer {key}
 - Sends heartbeat every 1 second when idle
 - Filters events to the authenticated user unless an admin caller uses `X-Nymeria-Act-As`; `client_id` suppresses same-client sync echoes
 - Unsubscribes on client disconnect
-- Desktop reconnects accidental drops, stream ends, HTTP errors, and idle timeouts; on reconnect it refreshes the current thread history/context and syncs the thread list to catch missed events
+- Desktop and mobile reconnect accidental drops, stream ends, HTTP errors, and idle timeouts; on reconnect they refresh the current thread history/context and sync the thread list to catch missed events. Mobile also uses the Capacitor Network plugin to pause stream reconnects while offline and resume when connectivity returns.
 
 ---
 

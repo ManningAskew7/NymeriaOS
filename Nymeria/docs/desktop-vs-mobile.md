@@ -181,7 +181,7 @@ Advanced section of Thread Settings.
 | **Notification polling** | Not started here | `notificationStore.startPolling()` on mount |
 | **Thread restore** | Complex: validates platform, falls back | Simple: direct load |
 | **SSE delay** | 500ms delay before connecting | Immediate |
-| **Autonomous SSE transport** | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, idle timeout reconnect, reconnect catch-up | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, legacy query-token compatibility, mobile lifecycle reconnect |
+| **Autonomous SSE transport** | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, idle timeout reconnect, reconnect catch-up | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, idle timeout reconnect, reconnect catch-up, legacy query-token compatibility, Capacitor Network offline/online reconnect, mobile lifecycle reconnect |
 | **Debug logging** | Extensive `console.log` | Minimal |
 
 **When changing**: Changes to startup logic (thread sync, history loading, setup wizard flow) should be replicated, respecting each platform's lifecycle.

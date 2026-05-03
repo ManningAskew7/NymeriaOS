@@ -396,6 +396,7 @@ Which file does what, for quick navigation:
 | `nymeria/core/event_bus.py` | `EventBus`, `AutonomousEvent`, `publish_autonomous_event`, `publish_sync_event`, factory `create_event_bus()` |
 | `nymeria/core/event_bus_redis.py` | `RedisEventBus` — pub/sub across containers |
 | `nymeria-desktop/src/lib/stores/autonomous.svelte.ts` | Desktop autonomous SSE subscriber. Uses fetch streaming with Bearer auth, reconnect/idle guards, reconnect catch-up, sampled diagnostics, and `handleEvent()` dispatch by type. `classifyAutonomousSource()` labels triggers via `event.trigger_id \|\| event.trigger_name` |
+| `nymeria-mobile/src/lib/stores/autonomous.svelte.ts` | Mobile autonomous SSE subscriber. Uses fetch streaming with Bearer auth, reconnect/idle guards, reconnect catch-up, Capacitor Network offline/online handling, and mobile lifecycle pause/resume. Keeps the legacy `api_key` query fallback for WebView compatibility. |
 | `nymeria-desktop/src/lib/components/triggers/` | UI: `TriggerFeed`, `TriggerSetupWizard`, `TriggerItem`, `TriggerHistoryPanel` |
 
 ## Webhook Integration with External Services
