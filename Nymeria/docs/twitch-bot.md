@@ -15,6 +15,8 @@ Docker: nymeria-twitch-bot (profile: twitch)
 
 The bot communicates exclusively through the `twitch_send` tool — the agent's final text output is never sent to chat. This gives the agent full control over when and how many messages it sends.
 
+Twitch tools resolve the active bot through `nymeria/core/twitch_runtime.py`, a small runtime facade that lives outside `nymeria.tools`. This keeps the bot registration intact across `reload_all` / tool hot-reload and prevents tool objects from holding stale TwitchIO bot references.
+
 ## Setup
 
 ### 1. Create a Twitch Application
@@ -233,6 +235,7 @@ curl -X PUT "http://localhost:8000/threads/twitch_silk/config" \
 | File | Purpose |
 |------|---------|
 | `nymeria/triggers/twitch_bot.py` | Main bot class, commands, pulse loop |
+| `nymeria/core/twitch_runtime.py` | Stable runtime facade used by Twitch tools across tool hot-reload |
 | `nymeria/tools/twitch.py` | All 23 Twitch tools (OPTIONAL_TOOLS) |
 | `nymeria/config/settings.py` | Twitch settings fields |
 | `run.py` | `twitch-bot` subcommand entry point |
