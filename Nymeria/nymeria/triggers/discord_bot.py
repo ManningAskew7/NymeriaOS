@@ -13,7 +13,6 @@ import asyncio
 import io
 import json as _json
 import logging
-import os
 import re
 import time
 from datetime import datetime, timezone
@@ -172,6 +171,13 @@ class NymeriaDiscordBot(discord.Client):
 
         # Register slash commands
         self._register_commands()
+
+    async def _request_self_restart(self) -> None:
+        """Gracefully stop this bot process so the supervisor restarts it."""
+        try:
+            await self.api.close()
+        finally:
+            await self.close()
 
     def _register_commands(self) -> None:
         """Register all slash commands with the command tree."""
@@ -1542,8 +1548,7 @@ class NymeriaDiscordBot(discord.Client):
                     "Restarting bot... (back in a few seconds)", ephemeral=True
                 )
                 logger.info("Bot restart requested via /restart command")
-                await self.close()
-                os._exit(0)
+                await self._request_self_restart()
 
         # --- /tools group ---
         tools_group = app_commands.Group(

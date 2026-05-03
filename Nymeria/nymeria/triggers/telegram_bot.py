@@ -14,7 +14,6 @@ import html as _html
 import io
 import json as _json
 import logging
-import os
 import re
 import time
 import uuid
@@ -356,10 +355,12 @@ class NymeriaTelegramBot:
         *,
         user_telegram_bot_id: Optional[int] = None,
         bot_owner_user_id: Optional[str] = None,
+        owns_api_client: bool = True,
     ):
         self.api = api
         self.bot_token = bot_token
         self.default_chat_id = default_chat_id
+        self._owns_api_client = owns_api_client
         # Multi-bot identity. ``user_telegram_bot_id is None`` is the shared
         # bot; non-None means this instance serves a user-owned BYO bot
         # whose token came from the wizard. The shared bot also acts as the
@@ -392,6 +393,7 @@ class NymeriaTelegramBot:
         # Shared-bot only: subordinate user-owned bots, keyed by row id.
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def _get_telegram_autonomous_delivery(self, thread_id: str) -> str:
         """Read and cache this thread's Telegram autonomous delivery mode."""
@@ -562,6 +564,7 @@ class NymeriaTelegramBot:
                 bot_token=entry["bot_token"],
                 user_telegram_bot_id=bot_id,
                 bot_owner_user_id=entry.get("owner_user_id"),
+                owns_api_client=False,
             )
             try:
                 await sub.start_async()
@@ -602,6 +605,7 @@ class NymeriaTelegramBot:
             ApplicationBuilder()
             .token(self.bot_token)
             .rate_limiter(AIORateLimiter())
+            .post_shutdown(self._post_shutdown)
             .build()
         )
         self._application = app
@@ -623,7 +627,57 @@ class NymeriaTelegramBot:
                 await app.stop()
             await app.shutdown()
         finally:
-            self._application = None
+            await self._cleanup_after_shutdown(close_api=self._owns_api_client)
+
+    def _spawn_background_task(self, coro) -> asyncio.Task:
+        """Start a background task and keep a handle for graceful shutdown."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    async def _cancel_background_tasks(self) -> None:
+        current = asyncio.current_task()
+        tasks = [
+            task
+            for task in self._background_tasks
+            if task is not current and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.difference_update(tasks)
+
+    async def _cleanup_after_shutdown(self, *, close_api: bool) -> None:
+        await self._cancel_background_tasks()
+        for bot_id, bot in list(self._user_bots.items()):
+            try:
+                await bot.stop_async()
+            except Exception:  # noqa: BLE001
+                logger.exception("Error stopping user-owned bot id=%s", bot_id)
+        self._user_bots.clear()
+
+        if close_api:
+            close = getattr(self.api, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("Failed to close Telegram API client", exc_info=True)
+        self._application = None
+
+    async def _post_shutdown(self, application) -> None:
+        """Close Nymeria-side resources after python-telegram-bot stops."""
+        await self._cleanup_after_shutdown(close_api=self._owns_api_client)
+
+    async def _request_self_restart(self) -> None:
+        """Gracefully stop polling so the process can exit and be restarted."""
+        app = self._application
+        if app is None:
+            await self._cleanup_after_shutdown(close_api=self._owns_api_client)
+            raise SystemExit(0)
+        app.stop_running()
 
     async def _resolve_or_reject_update(
         self,
@@ -680,6 +734,7 @@ class NymeriaTelegramBot:
             .token(self.bot_token)
             .rate_limiter(AIORateLimiter())
             .post_init(self._post_init)
+            .post_shutdown(self._post_shutdown)
             .build()
         )
         self._application = app
@@ -749,14 +804,14 @@ class NymeriaTelegramBot:
         )
 
         # Start the per-bot binding refresh.
-        asyncio.create_task(self._bindings_refresh_loop())
+        self._spawn_background_task(self._bindings_refresh_loop())
 
         # The SSE listener and the user-bot supervisor live ONLY on the
         # shared bot. User-owned bots receive autonomous events via the
         # shared bot dispatching to their `_handle_sse_event`.
         if self.is_shared_bot:
-            asyncio.create_task(self._api_sse_listener())
-            asyncio.create_task(self._user_bots_supervisor_loop())
+            self._spawn_background_task(self._api_sse_listener())
+            self._spawn_background_task(self._user_bots_supervisor_loop())
 
     def _register_handlers(self, app) -> None:
         """Register all command and message handlers."""
@@ -2206,7 +2261,7 @@ class NymeriaTelegramBot:
         else:
             await update.message.reply_text("Restarting bot... (back in a few seconds)")
             logger.info("Bot restart requested via /restart command")
-            os._exit(0)
+            await self._request_self_restart()
 
     async def _cmd_showtools(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /showtools — toggle tool call display."""

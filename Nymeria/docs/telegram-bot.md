@@ -96,7 +96,7 @@ Or use the `/thread` command — it shows the full thread ID including the chat 
 | `/context` | Detailed context breakdown: model, tokens, tools, thread overrides |
 | `/tasks [status]` | Quick view of scheduled tasks. Filter: active (default), pending, in_progress, done, all |
 | `/export [format]` | Export conversation history as a file. Format: markdown (default), json, txt |
-| `/restart [bot\|api]` | Restart the Telegram bot (default) or API server |
+| `/restart [bot\|api]` | Restart the Telegram bot (default) or API server. Bot restarts stop polling and close Nymeria-side resources before the container exits. |
 | `/showtools` | Toggle whether tool calls are shown as separate messages |
 | `/help` | List all available commands |
 | `/start` | Telegram's default entry point — shows welcome message |
