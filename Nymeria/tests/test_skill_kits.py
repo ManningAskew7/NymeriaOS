@@ -64,7 +64,7 @@ class _FakeRegistry:
 class _FakeAgent:
     MAX_TOOL_RELOADS_PER_TURN = 1
 
-    def __init__(self, data_dir: Path, role: str = "user"):
+    def __init__(self, data_dir: Path, role: str = "admin"):
         self.thread_config_manager = ThreadConfigManager(data_dir)
         self.tool_registry = _FakeRegistry()
         self._pending_tool_reload = {}
@@ -187,6 +187,28 @@ def test_skill_kit_binding_admin_blocked_is_strict(tmp_path: Path):
 
     assert result.ok is False
     assert "Admin-only tools" in result.text
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+
+
+def test_skill_kit_binding_developer_only_blocked_for_non_admin(tmp_path: Path):
+    agent = _FakeAgent(tmp_path, role="user")
+    set_current_agent(agent)
+    try:
+        result = bind_tools_for_thread(
+            ["hello_test"],
+            "",
+            "thread-a",
+            "user-a",
+            strict=True,
+            source="skill_kit",
+            skill_name="hello-kit",
+        )
+    finally:
+        set_current_agent(None)
+
+    assert result.ok is False
+    assert "Developer-only diagnostic tools" in result.text
     assert agent.thread_config_manager.get_config("thread-a") is None
     assert agent._pending_tool_reload == {}
 

@@ -45,7 +45,7 @@ class _FakeRegistry:
 class _FakeAgent:
     MAX_TOOL_RELOADS_PER_TURN = 1
 
-    def __init__(self, root: Path, role: str = "user"):
+    def __init__(self, root: Path, role: str = "admin"):
         bundled = root / "bundled"
         bundled.mkdir(parents=True, exist_ok=True)
         self.skill_manager = SkillManager(

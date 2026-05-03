@@ -1048,7 +1048,7 @@ spawn_thread(
 
 **Safety limits (create only):**
 - **Spawn depth**: capped at 3 by default (`NYMERIA_MAX_SPAWN_DEPTH` env). Depth stored in `platform_meta.spawn_depth`.
-- **Rate limit**: 10 spawns per parent per hour (`NYMERIA_MAX_SPAWNS_PER_HOUR` env).
+- **Rate limit**: 10 spawns per parent per hour (`NYMERIA_MAX_SPAWNS_PER_HOUR` env). Process-local (resets on API restart); this is intentional for single-process deployments since restart breaks any active spawn loop and the depth limit is the hard guard against recursion.
 - **Abort cascade**: parent→child invocation is registered so stopping the parent stops its children.
 
 **Frontend behavior:** When the `thread_created` sync event arrives with a `spawned-` thread_id, the desktop client lazily creates a "Spawned by Nymeria" folder and files the thread there. `thread_deleted` events trigger removal from the sidebar (and the folder).
@@ -1232,7 +1232,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
-- Utility tools: `claude_code`, `sticky_note`, `hello_test`, `http_request`, `api_discover`, `tool_create` = 6
+- Utility tools: `claude_code`, `sticky_note`, `http_request`, `api_discover`, `tool_create` = 5 public utilities, plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
@@ -1241,9 +1241,9 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
 5. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
 
-The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread.
+The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread. Tool discovery is role-filtered; `hello_test` remains in `OPTIONAL_TOOLS` for admin/test validation but is hidden from non-admin search/listing surfaces and rejected by non-admin enable paths.
 
-**Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains tools like `claude_code`, `sticky_note`, `hello_test`, `reload_all`, and `self_modify_rollback`.
+**Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains tools like `claude_code`, `sticky_note`, `reload_all`, and `self_modify_rollback`.
 
 ---
 

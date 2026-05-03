@@ -476,7 +476,8 @@ GET /tools/optional
 Authorization: Bearer <token>
 ```
 
-Returns optional tools that can be enabled per thread.
+Returns optional tools that can be enabled per thread. The list is role-filtered:
+developer-only diagnostics such as `hello_test` are visible to admins only.
 
 ### Default Tool Policy
 
