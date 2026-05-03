@@ -270,7 +270,7 @@ watchdog container (run.py watchdog)
           /autonomous/stream subscribers
           ↓
           Watchdog also fires a Telegram/Discord/Slack notification
-          via the stateless senders in `nymeria.tools.notify`.
+          via `core.notification_dispatch.send_external_notifications()`.
 ```
 
 **State:** The worker keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next poll whenever `updated_at > last_seen` — no cross-process callbacks required. State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle.
@@ -513,9 +513,12 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - CRUD for threads, TODOs, custom tools, callable threads, and triggers
 - Hot-reload settings via `PATCH /settings` (clears `@lru_cache`, rebuilds agent graphs)
 
-**Webhook** (`webhook.py`):
-- Incoming webhook endpoints for Telegram, Discord, and Slack
-- Message routing to agent with platform-specific formatting
+**Shared SSE Consumer** (`sse_consumer.py`):
+- `SSEEventHandler` protocol: platform handlers implement rendering callbacks
+- `dispatch_event()` routes one event dict and returns the updated tool-call count
+- `consume_sse_stream()` drives a full async event stream through the dispatcher
+- `parse_attach_paths()` extracts `[attach:/path]` tags from tool output
+- Centralises flush-before-status discipline, tool counting, and field extraction
 
 **Discord Bot** (`discord_bot.py`):
 - Gateway (WebSocket) or webhook mode
