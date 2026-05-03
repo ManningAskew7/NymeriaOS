@@ -996,52 +996,11 @@ def _make_thread_team_id(name: str) -> str:
     return f"team-{slug[:48]}-{uuid.uuid4().hex[:8]}"
 
 
-def _is_shared_channel_thread(thread_id: str) -> bool:
-    """Return True if ``thread_id`` is a multi-user shared channel — i.e.
-    Discord guild/server channel, Telegram group/supergroup, or Twitch
-    stream chat. These threads are inherently shared by every linked user
-    in the channel; ownership enforcement would just claim-jack to whoever
-    spoke first.
-
-    Convention (set by the bot ``make_thread_id`` helpers):
-      - ``discord_dm_<channel_id>``       → 1:1 DM, per-user
-      - ``discord_<guild_id>_<channel_id>`` → shared channel
-      - ``telegram_<positive_chat_id>``   → 1:1 DM
-      - ``telegram_-<digits>``            → group/supergroup/channel (Telegram
-                                            uses negative chat IDs for these)
-      - ``twitch_<channel_name>``         → shared stream chat
-    """
-    if thread_id.startswith("discord_dm_"):
-        return False
-    if thread_id.startswith("discord_"):
-        return True
-    if thread_id.startswith("telegram_-"):
-        return True
-    if thread_id.startswith("twitch_"):
-        return True
-    return False
-
-
-def _classify_thread_platform_from_id(thread_id: str) -> str:
-    """Classify a thread ID into its platform origin."""
-    if thread_id.startswith("trigger-"):
-        return "trigger"
-    if thread_id.startswith("discord_"):
-        return "discord"
-    if thread_id.startswith("telegram_"):
-        return "telegram"
-    if thread_id.startswith("slack_"):
-        return "slack"
-    if thread_id.startswith("agent-") or thread_id.startswith("spawned-"):
-        return "callable"
-    return "desktop"
-
-
-def _is_native_platform_thread(thread_id: str) -> bool:
-    """Return True for platform-native IDs that should keep native routing."""
-    return thread_id.startswith(
-        ("discord_", "telegram_", "slack_", "trigger-", "twitch_")
-    )
+from nymeria.core.thread_classification import (
+    classify_platform as _classify_thread_platform_from_id,
+    is_native_platform_thread as _is_native_platform_thread,
+    is_shared_channel as _is_shared_channel_thread,
+)
 
 
 def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
@@ -1262,9 +1221,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             return bound_platform
 
         native_platform = _classify_thread_platform_from_id(thread_id)
-        if native_platform in {"discord", "telegram", "slack", "trigger"}:
+        if native_platform in {"discord", "telegram", "slack", "trigger", "twitch"}:
             return native_platform
-        if platform in {"discord", "telegram", "slack", "trigger"}:
+        if platform in {"discord", "telegram", "slack", "trigger", "twitch"}:
             return platform
 
         thread_config_manager = getattr(get_agent(), "thread_config_manager", None)
@@ -3749,12 +3708,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             # equivalent to authenticated RCE on the shared backend — a
             # non-admin must not be able to enable them via thread config.
             if user.role != "admin":
-                from ..tools import ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+                from ..tools import (
+                    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+                    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+                )
                 blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(request.enabled_tools)
                 if blocked:
                     raise HTTPException(
                         status_code=403,
                         detail=f"Admin-only tools cannot be enabled by this user: {sorted(blocked)}",
+                    )
+                blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(request.enabled_tools)
+                if blocked:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Developer-only diagnostic tools cannot be enabled by this user: {sorted(blocked)}",
                     )
             tc.enabled_tools = request.enabled_tools
         if request.enabled_skills is not None and not request.clear_enabled_skills:
@@ -4064,9 +4032,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         _invalidate_user_team_graphs(agent, user.id)
         return {"status": "ok", "team_id": team_id}
 
-    def _thread_share_available_tool_names(agent) -> tuple[set[str], set[str], set[str]]:
-        """Return (available tools, admin-only tools, callable tool names)."""
-        from ..tools import ADMIN_ONLY_OPTIONAL_TOOL_NAMES, ALL_TOOLS, OPTIONAL_TOOLS
+    def _thread_share_available_tool_names(agent, user_role: str) -> tuple[set[str], set[str], set[str]]:
+        """Return (available tools, role-gated tools, callable tool names)."""
+        from ..tools import (
+            ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+            ALL_TOOLS,
+            DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+            OPTIONAL_TOOLS,
+        )
 
         names = {t.name for t in ALL_TOOLS}
         names.update(OPTIONAL_TOOLS.keys())
@@ -4087,7 +4060,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         # Callable tools are resolved from ownership, not enabled_tools. Do
         # not preserve guessed callable names as portable tool enablements.
-        return names - callable_names, set(ADMIN_ONLY_OPTIONAL_TOOL_NAMES), callable_names
+        role_gated = set(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)
+        if user_role != "admin":
+            role_gated.update(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)
+        return names - callable_names, role_gated, callable_names
 
     def _thread_share_available_skill_names(agent, user_id: str) -> set[str]:
         if getattr(agent, "skill_manager", None) is None:
@@ -4133,7 +4109,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         from ..core.thread_share import ThreadShareError, sanitize_import_config
 
         agent = get_agent()
-        available_tools, admin_only_tools, _callable_tool_names = _thread_share_available_tool_names(agent)
+        available_tools, admin_only_tools, _callable_tool_names = _thread_share_available_tool_names(agent, user.role)
         available_skills = _thread_share_available_skill_names(agent, user_id)
         owned = set(agent.accounts_repo.list_threads_for_user(user_id))
         owned_callable_names: set[str] = set()
@@ -4372,13 +4348,21 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         thread context is needed since the result depends only on the user's
         default tool preferences, not which thread they're enabling tools on.
         """
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            filter_discoverable_optional_tool_names,
+        )
 
         agent = get_agent()
         profile = agent.profile_manager.get_profile(user_id)
         default_tools = profile.tool_preferences.default_thread_tools
 
         core_set = set(default_tools) if default_tools is not None else {t.name for t in ALL_TOOLS}
+        visible_optional = filter_discoverable_optional_tool_names(
+            OPTIONAL_TOOLS.keys(),
+            user.role,
+        )
         result = []
         seen = set()
         for t in ALL_TOOLS:
@@ -4386,7 +4370,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 result.append({"name": t.name, "description": t.description})
                 seen.add(t.name)
         for name, tool in OPTIONAL_TOOLS.items():
-            if name not in core_set and name not in seen:
+            if name in visible_optional and name not in core_set and name not in seen:
                 result.append({"name": name, "description": tool.description})
                 seen.add(name)
         return {"tools": result}
@@ -4469,7 +4453,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Returns all available tools (core + optional) with is_default flags
         and callable thread count. Always uses default_thread_tools as source of truth.
         """
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            filter_discoverable_optional_tool_names,
+        )
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
@@ -4486,6 +4474,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Build unified tool list
         tools_out = []
         seen = set()
+        visible_optional = filter_discoverable_optional_tool_names(
+            OPTIONAL_TOOLS.keys(),
+            user.role,
+        )
         for t in ALL_TOOLS:
             meta = get_tool_metadata(t.name)
             tools_out.append({
@@ -4498,7 +4490,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             })
             seen.add(t.name)
         for name, t in OPTIONAL_TOOLS.items():
-            if name not in seen:
+            if name in visible_optional and name not in seen:
                 meta = get_tool_metadata(name)
                 tools_out.append({
                     "name": name,
@@ -4544,7 +4536,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Set which tools new threads inherit by default."""
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS, ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+            DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+        )
         from ..tools.metadata import MCP_SERVER_TOOL_METADATA
         from ..core.user_profile import migrate_tool_names
 
@@ -4565,6 +4562,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 raise HTTPException(
                     status_code=403,
                     detail=f"Admin-only tools cannot be set as defaults by this user: {sorted(blocked)}",
+                )
+            blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(tool_names)
+            if blocked:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Developer-only diagnostic tools cannot be set as defaults by this user: {sorted(blocked)}",
                 )
 
         agent = get_agent()
@@ -7506,7 +7509,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         Enabled state is derived from default_thread_tools membership.
         """
         _require_same_user_or_admin(user, user_id)
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            filter_discoverable_optional_tool_names,
+        )
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
@@ -7530,7 +7537,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "globally_disabled": False,
             })
 
+        visible_optional = filter_discoverable_optional_tool_names(
+            OPTIONAL_TOOLS.keys(),
+            user.role,
+        )
         for name, t in OPTIONAL_TOOLS.items():
+            if name not in visible_optional:
+                continue
             meta = get_tool_metadata(name)
             tools_list.append({
                 "name": name,
@@ -7772,10 +7785,19 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List all tool categories with their tools."""
+        from ..tools import filter_discoverable_optional_tool_names
         from ..tools.metadata import get_category_tools_summary
 
+        categories = get_category_tools_summary()
+        visible_names = filter_discoverable_optional_tool_names(
+            {name for names in categories.values() for name in names},
+            user.role,
+        )
         return {
-            "categories": get_category_tools_summary(),
+            "categories": {
+                category: [name for name in names if name in visible_names]
+                for category, names in categories.items()
+            },
         }
 
     # ========================================================================
@@ -7911,7 +7933,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         including enable status per user derived from default_thread_tools.
         """
         _require_same_user_or_admin(user, user_id)
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            filter_discoverable_optional_tool_names,
+        )
         from ..tools.metadata import get_tool_metadata
 
         agent = get_agent()
@@ -7932,6 +7958,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         # Built-in tools: derive enabled from default_thread_tools membership
         seen = set()
+        visible_optional = filter_discoverable_optional_tool_names(
+            OPTIONAL_TOOLS.keys(),
+            user.role,
+        )
         for t in ALL_TOOLS:
             meta = get_tool_metadata(t.name)
             enabled = t.name in dtt_set
@@ -7951,7 +7981,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             seen.add(t.name)
 
         for name, t in OPTIONAL_TOOLS.items():
-            if name in seen:
+            if name in seen or name not in visible_optional:
                 continue
             meta = get_tool_metadata(name)
             enabled = name in dtt_set
@@ -8037,7 +8067,12 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         always available and managed per-thread via enabled_tools).
         """
         _require_same_user_or_admin(user, user_id)
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS, ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+            DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+        )
         from ..tools.metadata import get_tool_metadata, get_all_tool_metadata
 
         agent = get_agent()
@@ -8060,6 +8095,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(
                 status_code=403,
                 detail=f"Tool '{tool_id}' is admin-only",
+            )
+        if (
+            request.enabled
+            and tool_id in DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+            and user.role != "admin"
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Tool '{tool_id}' is developer-only",
             )
 
         with agent.profile_manager.atomic_update(user_id) as profile:

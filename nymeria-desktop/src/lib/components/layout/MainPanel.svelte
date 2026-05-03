@@ -184,7 +184,9 @@
       id.startsWith('discord_') ||
       id.startsWith('telegram_') ||
       id.startsWith('slack_') ||
-      id.startsWith('agent-')
+      id.startsWith('twitch_') ||
+      id.startsWith('agent-') ||
+      id.startsWith('spawned-')
     );
   }
 

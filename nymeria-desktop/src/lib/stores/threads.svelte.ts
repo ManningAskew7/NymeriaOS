@@ -162,6 +162,7 @@ function detectPlatform(threadId: string): ThreadPlatform {
   if (threadId.startsWith('discord_')) return 'discord';
   if (threadId.startsWith('telegram_')) return 'telegram';
   if (threadId.startsWith('slack_')) return 'slack';
+  if (threadId.startsWith('twitch_')) return 'twitch';
   if (threadId.startsWith('trigger-')) return 'trigger';
   if (threadId.startsWith('agent-')) return 'callable';
   if (threadId.startsWith('spawned-')) return 'callable';
@@ -276,6 +277,7 @@ function createThreadsStore() {
           id.startsWith('discord_') ||
           id.startsWith('telegram_') ||
           id.startsWith('slack_') ||
+          id.startsWith('twitch_') ||
           id.startsWith('trigger-');
         // Only skip native platform threads. A desktop-created UUID can still
         // render as Telegram after a chat-app binding and should restore.

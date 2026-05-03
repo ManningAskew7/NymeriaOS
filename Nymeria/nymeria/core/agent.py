@@ -1,4 +1,4 @@
-"""NymeriaAgent - Main agent wrapper around LangGraph ReactAgent."""
+"""NymeriaAgent - main agent wrapper around the vendored LangGraph runtime."""
 
 import asyncio
 import json
@@ -19,7 +19,6 @@ from ..vendor.react_agent import (
     AgentConfig,
     CheckpointerConfig,
     LLMConfig,
-    ReactAgent,
     ToolRegistry,
     create_graph,
 )
@@ -678,7 +677,7 @@ def _create_compaction_marker(
 
 class NymeriaAgent:
     """
-    Nymeria Agent - wraps LangGraph ReactAgent with additional features.
+    Nymeria Agent - wraps the vendored LangGraph runtime with additional features.
 
     Features:
     - Full autonomy (no permission prompts - user accepts risk)
@@ -851,20 +850,9 @@ class NymeriaAgent:
         try:
             checkpoint_tids = self._enumerate_checkpoint_thread_ids()
             if checkpoint_tids:
-                # Inline shared-channel pattern check (avoids importing
-                # from triggers.api which would be circular).
-                def _is_shared(tid: str) -> bool:
-                    if tid.startswith("discord_dm_"):
-                        return False
-                    if tid.startswith("discord_"):
-                        return True
-                    if tid.startswith("telegram_-"):
-                        return True
-                    if tid.startswith("twitch_"):
-                        return True
-                    return False
+                from .thread_classification import is_shared_channel
 
-                personal_tids = [t for t in checkpoint_tids if not _is_shared(t)]
+                personal_tids = [t for t in checkpoint_tids if not is_shared_channel(t)]
                 if personal_tids:
                     inserted = self.accounts_repo.backfill_threads(
                         personal_tids, "default"
@@ -2899,7 +2887,12 @@ class NymeriaAgent:
         so the second user's "Helper" doesn't appear in Owner's callable thread, even when
         the callable thread itself runs as a sub-agent.
         """
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            filter_admin_only_tools,
+            filter_developer_only_tools,
+        )
 
         own_callable_name = tc.callable_name
         owner_id = self.accounts_repo.get_thread_owner(tc.thread_id) or "default"
@@ -2911,6 +2904,18 @@ class NymeriaAgent:
         all_tools_dict.update(OPTIONAL_TOOLS)
 
         core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+        if default_tools is not None:
+            owner = self.accounts_repo.get_user_by_id(owner_id) if owner_id else None
+            owner_role = owner.role if owner else "user"
+            allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
+            allowed_core, blocked_dev_core = filter_developer_only_tools(allowed_core, owner_role)
+            if blocked_admin_core or blocked_dev_core:
+                logger.warning(
+                    "Callable graph build for thread=%s owner=%s: stripped "
+                    "role-gated default tools %s",
+                    tc.thread_id, owner_id, sorted(blocked_admin_core | blocked_dev_core),
+                )
+            core_names = [name for name in core_names if name in allowed_core]
         tools = [
             all_tools_dict[name] for name in core_names
             if name in all_tools_dict
@@ -3042,11 +3047,28 @@ class NymeriaAgent:
             profile = self.profile_manager.get_profile(user_id)
             default_tools = profile.tool_preferences.default_thread_tools
 
-            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+            from ..tools import (
+                ALL_TOOLS,
+                OPTIONAL_TOOLS,
+                filter_admin_only_tools,
+                filter_developer_only_tools,
+            )
             all_tools_dict = {t.name: t for t in ALL_TOOLS}
             all_tools_dict.update(OPTIONAL_TOOLS)
 
             core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+            if default_tools is not None:
+                owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
+                owner_role = owner.role if owner else "user"
+                allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
+                allowed_core, blocked_dev_core = filter_developer_only_tools(allowed_core, owner_role)
+                if blocked_admin_core or blocked_dev_core:
+                    logger.warning(
+                        "Graph build for thread=%s user=%s: stripped "
+                        "role-gated default tools %s",
+                        thread_id, user_id, sorted(blocked_admin_core | blocked_dev_core),
+                    )
+                core_names = [name for name in core_names if name in allowed_core]
             tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
             # Per-user callable thread tools. Built fresh from the caller's
@@ -3109,15 +3131,19 @@ class NymeriaAgent:
             # missed — can carry admin-only names. Drop them here for
             # non-admin thread owners so the graph never binds them.
             if extra_names:
-                from ..tools import filter_admin_only_tools
+                from ..tools import filter_admin_only_tools, filter_developer_only_tools
                 owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
                 owner_role = owner.role if owner else "user"
-                allowed_extras, blocked_extras = filter_admin_only_tools(
+                allowed_extras, blocked_admin_extras = filter_admin_only_tools(
                     extra_names, owner_role
                 )
+                allowed_extras, blocked_dev_extras = filter_developer_only_tools(
+                    allowed_extras, owner_role
+                )
+                blocked_extras = blocked_admin_extras | blocked_dev_extras
                 if blocked_extras:
                     logger.warning(
-                        "Graph build for thread=%s user=%s: stripped admin-only "
+                        "Graph build for thread=%s user=%s: stripped role-gated "
                         "tools %s from enabled_tools (non-admin owner)",
                         thread_id, user_id, sorted(blocked_extras),
                     )
@@ -3196,11 +3222,28 @@ class NymeriaAgent:
             profile = self.profile_manager.get_profile(user_id)
             default_tools = profile.tool_preferences.default_thread_tools
 
-            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+            from ..tools import (
+                ALL_TOOLS,
+                OPTIONAL_TOOLS,
+                filter_admin_only_tools,
+                filter_developer_only_tools,
+            )
             all_tools_dict = {t.name: t for t in ALL_TOOLS}
             all_tools_dict.update(OPTIONAL_TOOLS)
 
             core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+            if default_tools is not None:
+                owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
+                owner_role = owner.role if owner else "user"
+                allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
+                allowed_core, blocked_dev_core = filter_developer_only_tools(allowed_core, owner_role)
+                if blocked_admin_core or blocked_dev_core:
+                    logger.warning(
+                        "Async graph build for thread=%s user=%s: stripped "
+                        "role-gated default tools %s",
+                        thread_id, user_id, sorted(blocked_admin_core | blocked_dev_core),
+                    )
+                core_names = [name for name in core_names if name in allowed_core]
             tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
             # Per-user callable thread tools — see _build_graph_with_prompt()
@@ -3246,15 +3289,19 @@ class NymeriaAgent:
             # missed — can carry admin-only names. Drop them here for
             # non-admin thread owners so the graph never binds them.
             if extra_names:
-                from ..tools import filter_admin_only_tools
+                from ..tools import filter_admin_only_tools, filter_developer_only_tools
                 owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
                 owner_role = owner.role if owner else "user"
-                allowed_extras, blocked_extras = filter_admin_only_tools(
+                allowed_extras, blocked_admin_extras = filter_admin_only_tools(
                     extra_names, owner_role
                 )
+                allowed_extras, blocked_dev_extras = filter_developer_only_tools(
+                    allowed_extras, owner_role
+                )
+                blocked_extras = blocked_admin_extras | blocked_dev_extras
                 if blocked_extras:
                     logger.warning(
-                        "Graph build for thread=%s user=%s: stripped admin-only "
+                        "Graph build for thread=%s user=%s: stripped role-gated "
                         "tools %s from enabled_tools (non-admin owner)",
                         thread_id, user_id, sorted(blocked_extras),
                     )
@@ -3636,19 +3683,96 @@ class NymeriaAgent:
             logger.warning(f"Failed to patch dangling tool calls: {e}")
             return 0
 
-    def _on_tool_timeout(self, input_dict: dict):
+    def _callable_timeout_scope_user_id(
+        self,
+        user_id: Optional[str],
+        caller_thread_id: Optional[str],
+    ) -> Optional[str]:
+        """Resolve the user whose callable list was bound into the active graph."""
+        scope_user_id = user_id
+        if not caller_thread_id:
+            return scope_user_id
+
+        try:
+            caller_tc = self.thread_config_manager.get_config(caller_thread_id)
+            if caller_tc and caller_tc.callable and caller_tc.callable_name:
+                return self.accounts_repo.get_thread_owner(caller_thread_id) or "default"
+
+            if not scope_user_id or scope_user_id == "default":
+                return self.accounts_repo.get_thread_owner(caller_thread_id) or scope_user_id
+        except Exception as e:
+            logger.debug(
+                f"Could not resolve callable timeout owner for thread {caller_thread_id}: {e}"
+            )
+
+        return scope_user_id
+
+    def _resolve_callable_timeout_thread_id(
+        self,
+        tool_name: Optional[str],
+        user_id: Optional[str],
+        caller_thread_id: Optional[str],
+    ) -> Optional[str]:
+        if not tool_name:
+            return None
+
+        global_thread_id = self._callable_tool_thread_map.get(tool_name)
+        scope_user_id = self._callable_timeout_scope_user_id(user_id, caller_thread_id)
+        if not scope_user_id:
+            return global_thread_id
+
+        try:
+            scoped_callables = self._get_team_scoped_callable_threads(
+                user_id=scope_user_id,
+                caller_thread_id=caller_thread_id or "",
+            )
+        except Exception as e:
+            if global_thread_id:
+                logger.warning(
+                    "Skipping auto-abort for timed-out callable tool '%s': "
+                    "could not resolve scoped callable list for user=%s thread=%s: %s",
+                    tool_name,
+                    scope_user_id,
+                    caller_thread_id,
+                    e,
+                )
+            return None
+
+        for callable_tc in scoped_callables:
+            if callable_tc.callable_name == tool_name:
+                return callable_tc.thread_id
+
+        if global_thread_id:
+            logger.warning(
+                "Skipping auto-abort for timed-out callable tool '%s': "
+                "not visible to user=%s thread=%s",
+                tool_name,
+                scope_user_id,
+                caller_thread_id,
+            )
+        return None
+
+    def _on_tool_timeout(self, input_dict: dict, config: Optional[dict] = None):
         """Called when SafeToolNode times out. Auto-aborts callable threads (with cascade)."""
         messages = input_dict.get("messages", []) if isinstance(input_dict, dict) else []
         last_message = messages[-1] if messages else None
         if not (isinstance(last_message, AIMessage) and last_message.tool_calls):
             return
+        configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
+        user_id = configurable.get("user_id")
+        caller_thread_id = configurable.get("thread_id")
         for tc in last_message.tool_calls:
             tool_name = tc.get("name")
-            thread_id = self._callable_tool_thread_map.get(tool_name)
+            thread_id = self._resolve_callable_timeout_thread_id(
+                tool_name,
+                user_id,
+                caller_thread_id,
+            )
             if thread_id:
                 logger.warning(
                     f"Auto-aborting callable thread '{tool_name}' "
-                    f"(thread={thread_id}) after tool timeout"
+                    f"(thread={thread_id}, caller_thread={caller_thread_id}, "
+                    f"user={user_id}) after tool timeout"
                 )
                 self.abort_with_cascade(thread_id)
 
@@ -3661,12 +3785,9 @@ class NymeriaAgent:
 
         Note: per-user graph builds source callable thread tools directly from
         the per-user-filtered ``thread_config_manager`` (see
-        ``_build_graph_with_prompt``), so the global registry's role for
-        callable threads is just to keep ``_callable_tool_thread_map``
-        warm for ``_on_tool_timeout``. Cross-user callable_name collisions
-        in the registry/map use last-write-wins — a residual edge case where
-        the wrong thread might be auto-aborted on tool timeout. Acceptable
-        until per-user maps are wired through the timeout callback.
+        ``_build_graph_with_prompt``). ``_callable_tool_thread_map`` remains a
+        legacy fallback for timeout hooks that run without runnable config;
+        normal timeout handling resolves against the current user/thread scope.
 
         Returns:
             List of callable thread tool names now in the registry

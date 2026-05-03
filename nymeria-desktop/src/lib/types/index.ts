@@ -92,7 +92,7 @@ export interface ToolCall {
 }
 
 // Thread types
-export type ThreadPlatform = 'desktop' | 'callable' | 'discord' | 'telegram' | 'slack' | 'trigger';
+export type ThreadPlatform = 'desktop' | 'callable' | 'discord' | 'telegram' | 'slack' | 'twitch' | 'trigger';
 
 export interface Thread {
   id: string;
