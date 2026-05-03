@@ -541,6 +541,8 @@ notify(message: str, platform: Literal["auto", "desktop", "telegram", "discord",
 
 **Behavior in auto mode:** Creates a notification-center row unless the thread disables in-app notifications, then tries all configured external platforms. If the current thread is a Telegram thread or is bound to a Telegram chat, Telegram delivery is routed through that chat; otherwise Telegram falls back to the configured default chat. If any destination succeeds, returns the success messages (failures are not reported in mixed outcomes). If all fail, returns all errors.
 
+**Architecture:** Platform senders, notification-level helpers, and composite dispatch functions live in `core/notification_dispatch.py`. The `notify` tool, the ticker (scheduled TODO completions), the API chat endpoint (autonomous completions), and the watchdog (stale TODO alerts) all delegate to this shared module rather than owning independent notification logic. `create_autonomous_notification()` combines in-app notification creation with FCM push in a single call gated by the per-thread `in_app_notification_level` setting.
+
 ### tool_search
 
 Search, enable, and disable tools for the current thread. Allows the agent to discover tools it doesn't currently have loaded and activate them.
