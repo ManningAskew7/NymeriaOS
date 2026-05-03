@@ -336,7 +336,7 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 
 Autonomous stream transport is intentionally not byte-identical today. Desktop's `stores/autonomous.svelte.ts` is the proven runtime path for live autonomous TODO/trigger streaming: Bearer-auth fetch stream, per-session `client_id`, heartbeat/idle guard, reconnect catch-up, and sampled console diagnostics. Mobile also uses fetch streaming with Bearer auth and a per-session `client_id` because WebView EventSource behavior is unreliable, but it still includes the legacy `api_key` query parameter for compatibility.
 
-Current example: `workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`, but only desktop renders it today via `ToolCallCard.svelte` + `WorkspaceArtifactModal.svelte`.
+`workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`. Both apps render artifact chips from `ToolCallCard.svelte` and open them in a platform-specific `WorkspaceArtifactModal.svelte`: desktop uses a windowed modal, while mobile uses the full-screen mobile modal with touch-sized open/download actions.
 
 Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and `services/api.svelte.ts` aligned for this flow.
 

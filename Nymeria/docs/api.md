@@ -1247,7 +1247,7 @@ Authorization: Bearer <token>
 
 ### Download Workspace File
 
-Download a file from the workspace directory. Used by bot clients and the desktop artifact viewer to deliver `file_write(..., attach=True)` outputs to users.
+Download a file from the workspace directory. Used by bot clients and the desktop/mobile artifact viewers to deliver `file_write(..., attach=True)` outputs to users.
 
 ```http
 GET /workspace/download?path=/workspace/report.csv
