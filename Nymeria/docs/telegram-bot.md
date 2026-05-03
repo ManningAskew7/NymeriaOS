@@ -180,6 +180,10 @@ self-link code if the user hasn't linked their Telegram identity yet, then
 issues a per-thread bind code, then polls until the bot has consumed both. The
 bot caches the chat↔thread map in process and refreshes it from the API every
 60 seconds, so bindings created from the wizard take effect within that window.
+The bot-facing admin binding endpoints are rate-limited per admin/service user
+and endpoint; a bad loop gets `429` plus `Retry-After`, while the normal
+60-second binding refresh and ~15-second BYO supervisor poll cadence remain
+well below the default guard.
 The API also reports bound desktop-created threads as `platform: "telegram"` in
 `GET /threads` and emits `thread_updated` on bind/unbind, so frontend sidebars
 show or clear the Telegram icon without requiring a `telegram_<chat_id>` thread

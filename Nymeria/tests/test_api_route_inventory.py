@@ -272,6 +272,51 @@ def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, monke
     assert {row["id"] for row in allowed.json()} == {"alice", "admin"}
 
 
+def test_admin_bot_endpoint_rate_limit_is_per_admin_and_endpoint(
+    tmp_path: Path, monkeypatch, request
+):
+    api_module._reset_admin_bot_endpoint_rate_limiter_for_tests()
+    request.addfinalizer(api_module._reset_admin_bot_endpoint_rate_limiter_for_tests)
+    monkeypatch.setattr(api_module, "_BOT_ADMIN_ENDPOINT_RATE_LIMIT", 2)
+    monkeypatch.setattr(api_module, "_BOT_ADMIN_ENDPOINT_RATE_WINDOW_SECONDS", 60.0)
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("service", "service@example.com", "Service", role="admin")
+    agent.accounts_repo.create_user("other", "other@example.com", "Other", role="admin")
+    service_token = agent.accounts_repo.issue_token("service")
+    other_token = agent.accounts_repo.issue_token("other")
+
+    for _ in range(2):
+        response = client.get(
+            "/admin/chatapp/bindings",
+            headers=_auth(service_token),
+            params={"provider": "telegram"},
+        )
+        assert response.status_code == 200
+
+    limited = client.get(
+        "/admin/chatapp/bindings",
+        headers=_auth(service_token),
+        params={"provider": "telegram"},
+    )
+    same_admin_other_endpoint = client.get(
+        "/admin/chatapp/bindings/lookup",
+        headers=_auth(service_token),
+        params={"provider": "telegram", "platform_chat_id": "123"},
+    )
+    other_admin_same_endpoint = client.get(
+        "/admin/chatapp/bindings",
+        headers=_auth(other_token),
+        params={"provider": "telegram"},
+    )
+
+    assert limited.status_code == 429
+    assert limited.json()["detail"] == "Rate limit exceeded for admin bot endpoint"
+    assert int(limited.headers["retry-after"]) >= 1
+    assert same_admin_other_endpoint.status_code == 404
+    assert other_admin_same_endpoint.status_code == 200
+    api_module._reset_admin_bot_endpoint_rate_limiter_for_tests()
+
+
 def test_admin_service_token_style_act_as_resolves_target_user(
     tmp_path: Path, monkeypatch
 ):

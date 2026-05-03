@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -46,6 +47,7 @@ from ..core.event_bus import (
     should_log_stream_event_sample,
 )
 from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
+from ..core.rate_limit import SlidingWindowRateLimiter
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
@@ -67,6 +69,10 @@ logger = logging.getLogger(__name__)
 
 # Global agent instance (initialized on startup)
 _agent: Optional[NymeriaAgent] = None
+
+_BOT_ADMIN_ENDPOINT_RATE_LIMIT = 120
+_BOT_ADMIN_ENDPOINT_RATE_WINDOW_SECONDS = 60.0
+_bot_admin_endpoint_rate_limiter = SlidingWindowRateLimiter()
 
 
 def get_agent() -> NymeriaAgent:
@@ -868,6 +874,44 @@ async def require_admin_user(
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return user
+
+
+def _admin_bot_rate_limit_key(request: Request, admin: AuthenticatedUser) -> str:
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", request.url.path)
+    return f"{admin.id}:{request.method}:{route_path}"
+
+
+async def require_rate_limited_admin_bot_user(
+    request: Request,
+    admin: AuthenticatedUser = Depends(require_admin_user),
+) -> AuthenticatedUser:
+    """Admin-token gate for bot-facing endpoints with a bounded request rate."""
+    result = _bot_admin_endpoint_rate_limiter.check(
+        _admin_bot_rate_limit_key(request, admin),
+        limit=_BOT_ADMIN_ENDPOINT_RATE_LIMIT,
+        window_seconds=_BOT_ADMIN_ENDPOINT_RATE_WINDOW_SECONDS,
+    )
+    if result.allowed:
+        return admin
+
+    retry_after = max(1, math.ceil(result.retry_after))
+    logger.warning(
+        "Rate limited admin bot endpoint %s %s for admin user %s; retry_after=%ss",
+        request.method,
+        getattr(request.scope.get("route"), "path", request.url.path),
+        admin.id,
+        retry_after,
+    )
+    raise HTTPException(
+        status_code=429,
+        detail="Rate limit exceeded for admin bot endpoint",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _reset_admin_bot_endpoint_rate_limiter_for_tests() -> None:
+    _bot_admin_endpoint_rate_limiter.clear()
 
 
 async def require_admin_caller(
@@ -1766,7 +1810,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     )
     async def admin_list_chatapp_bindings(
         provider: Optional[str] = None,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """List every chat-app binding (optionally filtered by provider).
 
@@ -1799,7 +1843,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         provider: str,
         platform_chat_id: Optional[str] = None,
         thread_id: Optional[str] = None,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Look up a thread<->chat binding by either chat_id or thread_id.
 
@@ -1840,7 +1884,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     )
     async def admin_claim_thread_bind_code(
         body: AdminChatAppBindClaimRequest,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Atomically consume a thread-bind code and create the binding.
 
@@ -1892,7 +1936,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     async def admin_unbind_chatapp_by_chat(
         provider: str,
         platform_chat_id: str,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Remove the binding for a given (provider, chat_id). Called by the
         bot's ``/unbind`` handler. Returns ``{unbound: bool}``.
@@ -1916,7 +1960,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     )
     async def admin_switch_chatapp_binding(
         body: AdminChatAppSwitchRequest,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Move a chat-app chat to another existing user-owned thread.
 
@@ -1983,7 +2027,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     )
     async def admin_claim_thread_bind_code_via_bot(
         body: AdminChatAppBindClaimViaBotRequest,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Variant of /claim used by user-owned bots.
 
@@ -2055,7 +2099,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         response_model=List[AdminTelegramBotResponse],
         tags=["Admin"],
     )
-    async def admin_list_telegram_bots(_admin=Depends(require_admin_user)):
+    async def admin_list_telegram_bots(
+        _admin=Depends(require_rate_limited_admin_bot_user),
+    ):
         """List every enabled user-owned bot **with decrypted tokens**.
 
         Consumed by the supervisor process inside the telegram-bot container
@@ -2100,7 +2146,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     @app.post("/admin/telegram-bots/{bot_id}/seen", tags=["Admin"])
     async def admin_telegram_bot_seen(
         bot_id: int,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Heartbeat ping from the supervisor after a successful poll cycle."""
         repo = get_agent().accounts_repo
@@ -2116,7 +2162,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     )
     async def admin_claim_platform_link_code(
         body: AdminPlatformLinkClaimRequest,
-        _admin=Depends(require_admin_user),
+        _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Atomically consume a platform-link code and link the platform user
         to the issuing Nymeria account. Called by the bot's
