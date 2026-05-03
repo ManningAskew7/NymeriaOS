@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from ..tools.definitions.schema import MCPServerDefinition
+from ..tools.definitions.mcp_schema import MCPServerDefinition
 
 
 class MCPInstallError(ValueError):

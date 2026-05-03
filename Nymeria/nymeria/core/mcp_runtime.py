@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from ..config import get_settings
-from ..tools.definitions.schema import MCPServerDefinition
+from ..tools.definitions.mcp_schema import MCPServerDefinition
 from . import secrets as nymeria_secrets
 from .mcp_installer import parse_mcp_source
 from .mcp_sources import (

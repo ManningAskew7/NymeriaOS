@@ -16,7 +16,7 @@ import shlex
 from typing import Callable, Dict, Optional
 from urllib.parse import urlparse
 
-from ..tools.definitions.schema import MCPServerDefinition
+from ..tools.definitions.mcp_schema import MCPServerDefinition
 from ..skills.marketplace import scan_for_suspicious_patterns
 from .mcp_sources import (
     MCPInstallError,

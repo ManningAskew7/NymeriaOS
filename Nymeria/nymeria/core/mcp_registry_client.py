@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
 
 from ..config import get_settings
-from ..tools.definitions.schema import MCPServerDefinition
+from ..tools.definitions.mcp_schema import MCPServerDefinition
 
 logger = logging.getLogger(__name__)
 
