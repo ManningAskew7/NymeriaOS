@@ -7,6 +7,12 @@
 #   Logs:     docker compose --env-file .env.docker logs -f
 #   Stop:     docker compose --env-file .env.docker down
 
+x-security-hardening: &security-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   # ============================================================================
   # Infrastructure
@@ -14,9 +20,15 @@ services:
 
   # PostgreSQL Database
   postgres:
+    <<: *security-hardening
     image: postgres:15-alpine
     container_name: nymeria-postgres
     restart: unless-stopped
+    user: postgres
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-nymeria}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -33,9 +45,14 @@ services:
 
   # Redis Event Bus
   redis:
+    <<: *security-hardening
     image: redis:7-alpine
     container_name: nymeria-redis
     restart: unless-stopped
+    user: redis
+    read_only: true
+    tmpfs:
+      - /tmp
     command:
       - redis-server
       - --appendonly
@@ -59,6 +76,7 @@ services:
   # ============================================================================
 
   api:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -197,6 +215,7 @@ services:
       - nymeria-network
 
   worker:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -245,6 +264,7 @@ services:
 
   # Watchdog thin-client worker (polls API for stale TODOs)
   watchdog:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -272,6 +292,7 @@ services:
 
   # Discord Bot for two-way communication
   discord-bot:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -307,6 +328,7 @@ services:
 
   # Telegram Bot for two-way communication
   telegram-bot:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -341,6 +363,7 @@ services:
 
   # Twitch Bot for chat integration
   twitch-bot:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -391,6 +414,7 @@ services:
 
   # MCP Server for agent-to-agent communication
   mcp:
+    <<: *security-hardening
     build:
       context: .
       dockerfile: Dockerfile.full
@@ -435,6 +459,7 @@ services:
 
   # Qwen3-TTS — Local text-to-speech with OpenAI-compatible API
   qwen3-tts:
+    <<: *security-hardening
     image: ghcr.io/groxaxo/qwen3-tts-openai-fastapi:latest
     container_name: nymeria-qwen3-tts
     restart: unless-stopped
@@ -464,6 +489,7 @@ services:
 
   # Faster-Whisper — Local speech-to-text with OpenAI-compatible API
   faster-whisper:
+    <<: *security-hardening
     image: fedirz/faster-whisper-server:latest
     container_name: nymeria-faster-whisper
     restart: unless-stopped

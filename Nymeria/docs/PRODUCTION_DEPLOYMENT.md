@@ -234,7 +234,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 3. **CORS**: Restrict origins in production
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: Use HTTPS in production (reverse proxy)
-6. **Docker**: Current image runs as root by design (Kali tooling). Restrict host/container access and deploy only in trusted environments. Redis requires `REDIS_PASSWORD`; unauthenticated containers on the Compose network cannot read or write the event bus.
+6. **Docker**: Current Nymeria application image runs as root by design (Kali tooling), but Compose applies `no-new-privileges:true` and `cap_drop: ALL` to every service. Postgres and Redis run as their built-in non-root users and use read-only root filesystems while keeping their data on named volumes. Redis requires `REDIS_PASSWORD`; unauthenticated containers on the Compose network cannot read or write the event bus.
 7. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive. `.env.docker` must stay out of image layers and is ignored by the Docker build context.
 8. **Kali Tools**: Use responsibly and only on authorized targets
 
