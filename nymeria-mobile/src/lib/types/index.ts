@@ -799,37 +799,11 @@ export interface CustomToolTestResponse {
   executionTimeMs: number;
 }
 
-// Built-in Tool Types
+// Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
 export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'calendar' | 'google_docs' | 'custom' | 'mcp_server';
 export type ToolType = 'builtin' | 'custom' | 'mcp_server';
-
-export interface BuiltInTool {
-  name: string;
-  description: string;
-  category: ToolCategory;
-  securityLevel: ToolSecurityLevel;
-  defaultEnabled: boolean;
-  enabled: boolean;
-  enabledReason: 'default' | 'user_override' | 'category_disabled' | 'globally_disabled';
-  globallyDisabled: boolean;
-  configSchema?: Record<string, unknown>;
-  userConfig?: Record<string, unknown>;
-}
-
-export interface BuiltInToolsResponse {
-  userId: string;
-  tools: BuiltInTool[];
-  byCategory: Record<ToolCategory, BuiltInTool[]>;
-  total: number;
-}
-
-export interface ToolPreferences {
-  enabledOverrides: Record<string, boolean>;
-  disabledCategories: string[];
-  toolConfigs: Record<string, Record<string, unknown>>;
-}
 
 export interface ToolCategoriesResponse {
   categories: Record<ToolCategory, string[]>;

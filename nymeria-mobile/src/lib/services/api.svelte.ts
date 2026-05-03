@@ -1,4 +1,5 @@
 import { configStore } from '$lib/stores/config.svelte';
+import { clientId } from '$lib/stores/clientId.svelte';
 import { errorsStore } from '$lib/stores/errors.svelte';
 import type {
   AccountIdentity,
@@ -39,9 +40,6 @@ import type {
   CustomToolUpdateRequest,
   CustomToolTestRequest,
   CustomToolTestResponse,
-  BuiltInTool,
-  BuiltInToolsResponse,
-  ToolPreferences,
   ToolCategoriesResponse,
   UnifiedTool,
   UnifiedToolListResponse,
@@ -197,7 +195,8 @@ export class NymeriaAPI {
   private getHeaders(): HeadersInit {
     return {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${configStore.apiKey}`
+      Authorization: `Bearer ${configStore.apiKey}`,
+      'X-Nymeria-Client-Id': clientId
     };
   }
 
@@ -1856,201 +1855,6 @@ export class NymeriaAPI {
       toolNames: data.tool_names,
       error: data.error,
     };
-  }
-
-  // =========================================================================
-  // Built-in Tools API
-  // =========================================================================
-
-  private builtInToolFromResponse(item: Record<string, unknown>): BuiltInTool {
-    return {
-      name: item.name as string,
-      description: item.description as string,
-      category: item.category as BuiltInTool['category'],
-      securityLevel: item.security_level as BuiltInTool['securityLevel'],
-      defaultEnabled: item.default_enabled as boolean,
-      enabled: item.enabled as boolean,
-      enabledReason: item.enabled_reason as BuiltInTool['enabledReason'],
-      globallyDisabled: item.globally_disabled as boolean,
-      configSchema: item.config_schema as Record<string, unknown> | undefined,
-      userConfig: item.user_config as Record<string, unknown> | undefined
-    };
-  }
-
-  async getBuiltInTools(userId?: string): Promise<BuiltInToolsResponse> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools`, {
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    // Convert tools
-    const tools = (data.tools || []).map((item: Record<string, unknown>) =>
-      this.builtInToolFromResponse(item)
-    );
-
-    // Convert by_category
-    const byCategory: Record<string, BuiltInTool[]> = {};
-    if (data.by_category) {
-      for (const [category, categoryTools] of Object.entries(data.by_category)) {
-        byCategory[category] = (categoryTools as Record<string, unknown>[]).map((item) =>
-          this.builtInToolFromResponse(item)
-        );
-      }
-    }
-
-    return {
-      userId: data.user_id,
-      tools,
-      byCategory: byCategory as BuiltInToolsResponse['byCategory'],
-      total: data.total
-    };
-  }
-
-  async getToolPreferences(userId?: string): Promise<ToolPreferences> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools/preferences`, {
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return {
-      enabledOverrides: data.enabled_overrides || {},
-      disabledCategories: data.disabled_categories || [],
-      toolConfigs: data.tool_configs || {}
-    };
-  }
-
-  async setToolEnabled(
-    userId: string | undefined,
-    toolName: string,
-    enabled: boolean
-  ): Promise<{ status: string; toolName: string; enabled: boolean }> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(
-      `${this.getBaseUrl()}/users/${id}/tools/${toolName}/enable`,
-      {
-        method: 'PUT',
-        headers: this.getHeaders(),
-        body: JSON.stringify({ enabled })
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    return {
-      status: data.status,
-      toolName: data.tool_name,
-      enabled: data.enabled
-    };
-  }
-
-  async clearToolOverride(
-    userId: string | undefined,
-    toolName: string
-  ): Promise<{ status: string; toolName: string; cleared: boolean }> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(
-      `${this.getBaseUrl()}/users/${id}/tools/${toolName}/enable`,
-      {
-        method: 'DELETE',
-        headers: this.getHeaders()
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return {
-      status: data.status,
-      toolName: data.tool_name,
-      cleared: data.cleared
-    };
-  }
-
-  async setCategoryEnabled(
-    userId: string | undefined,
-    category: string,
-    enabled: boolean
-  ): Promise<{ status: string; category: string; enabled: boolean }> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(
-      `${this.getBaseUrl()}/users/${id}/tools/categories/${category}/enable`,
-      {
-        method: 'PUT',
-        headers: this.getHeaders(),
-        body: JSON.stringify({ enabled })
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    return {
-      status: data.status,
-      category: data.category,
-      enabled: data.enabled
-    };
-  }
-
-  async setToolConfig(
-    userId: string | undefined,
-    toolName: string,
-    config: Record<string, unknown>
-  ): Promise<{ status: string; toolName: string; config: Record<string, unknown> }> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(
-      `${this.getBaseUrl()}/users/${id}/tools/${toolName}/config`,
-      {
-        method: 'PUT',
-        headers: this.getHeaders(),
-        body: JSON.stringify({ config })
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    return {
-      status: data.status,
-      toolName: data.tool_name,
-      config: data.config
-    };
-  }
-
-  async resetToolPreferences(userId?: string): Promise<{ status: string; message: string }> {
-    const id = this.resolveUserId(userId);
-    const response = await fetch(`${this.getBaseUrl()}/users/${id}/tools/reset`, {
-      method: 'POST',
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    return response.json();
   }
 
   async getToolCategories(): Promise<ToolCategoriesResponse> {

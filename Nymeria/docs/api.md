@@ -549,7 +549,7 @@ GET /autonomous/stream?user_id=<user_id>&client_id=<client_id>
 Authorization: Bearer <token>
 ```
 
-**Auth:** Desktop uses `fetch()` streaming with `Authorization: Bearer <token>` and `Accept: text/event-stream`. The legacy `api_key` query parameter is still accepted for older EventSource clients, but new clients should not put tokens in the URL.
+**Auth:** Desktop and mobile use `fetch()` streaming with `Authorization: Bearer <token>` and `Accept: text/event-stream`. The legacy `api_key` query parameter is still accepted for older EventSource clients, but new clients should not put tokens in the URL.
 
 Connects to a Server-Sent Events stream for receiving real-time updates during autonomous task execution: scheduled TODOs, trigger actions, callable-thread runs, spawned-thread runs, and `/chat` calls with `is_self_invoke=true`.
 
@@ -559,7 +559,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `user_id` | No | `"default"` | Legacy/user hint. For normal Bearer auth, the authenticated account is authoritative; admin callers can use `X-Nymeria-Act-As` to stream another user or `*` for the firehose. |
-| `client_id` | No | - | Frontend client ID for filtering same-client sync events |
+| `client_id` | No | - | Frontend client ID for filtering same-client sync events. Desktop and mobile send a per-session UUID. |
 | `api_key` | No | - | Legacy fallback token for clients that cannot set headers |
 
 **Event Types:**

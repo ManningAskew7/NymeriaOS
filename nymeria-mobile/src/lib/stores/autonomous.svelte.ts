@@ -6,6 +6,7 @@
  */
 
 import { configStore } from './config.svelte';
+import { clientId } from './clientId.svelte';
 import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
@@ -65,7 +66,11 @@ function createAutonomousStore() {
     if (!userId) {
       throw new Error('Cannot build stream URL: no identity resolved yet');
     }
-    const params = new URLSearchParams({ user_id: userId, api_key: configStore.apiKey });
+    const params = new URLSearchParams({
+      user_id: userId,
+      client_id: clientId,
+      api_key: configStore.apiKey
+    });
     return `${baseUrl}/autonomous/stream?${params}`;
   }
 
