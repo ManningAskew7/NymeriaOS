@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.activity_log import ActivityType, log_activity
-from ..core.time_utils import parse_scheduled_time, get_user_tz
+from ..core.time_utils import get_user_tz, parse_scheduled_time, utc_now
 from ..core.todo_constants import STATUS_ICONS, STATUS_ORDER, VALID_RECURRENCES
 from ..core.todo_manager import TodoManager, TodoStatus
 from .utils import get_user_id, get_thread_id
@@ -222,7 +222,7 @@ def nym_todo(
                 from ..core.todo_constants import RECURRENCE_DELTAS
                 delta = RECURRENCE_DELTAS.get(item.recurrence)
                 if delta:
-                    rescheduled_time = datetime.utcnow() + delta
+                    rescheduled_time = utc_now() + delta
                     todo_list.update_item(
                         todo_id,
                         scheduled_for=rescheduled_time,
@@ -230,7 +230,7 @@ def nym_todo(
                     )
                     item = todo_list.get_item(todo_id)
                     if item:
-                        item.last_execution = datetime.utcnow()
+                        item.last_execution = utc_now()
                     logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
 
             # Sync to schedule database
@@ -324,7 +324,7 @@ def _todo_complete_internal(
                 from ..core.todo_constants import RECURRENCE_DELTAS
                 delta = RECURRENCE_DELTAS.get(has_recurrence)
                 if delta:
-                    rescheduled_time = datetime.utcnow() + delta
+                    rescheduled_time = utc_now() + delta
                     todo_list.update_item(
                         todo_id,
                         scheduled_for=rescheduled_time,
@@ -332,7 +332,7 @@ def _todo_complete_internal(
                     )
                     refreshed = todo_list.get_item(todo_id)
                     if refreshed:
-                        refreshed.last_execution = datetime.utcnow()
+                        refreshed.last_execution = utc_now()
                     logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
 
             # Sync schedule database

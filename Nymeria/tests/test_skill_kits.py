@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -297,7 +297,7 @@ def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):
             thread_id="thread-a",
             temporary_tools={
                 "hello_test": TemporaryToolEntry(
-                    expires_at=datetime.utcnow() - timedelta(seconds=1)
+                    expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
                 )
             },
         )

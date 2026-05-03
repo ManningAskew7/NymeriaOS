@@ -221,9 +221,9 @@ def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Pa
         assert recent_done is not None
         assert active is not None
         old_done.status = TodoStatus.DONE
-        old_done.updated_at = datetime.utcnow() - timedelta(days=4)
+        old_done.updated_at = datetime.now(timezone.utc) - timedelta(days=4)
         recent_done.status = TodoStatus.DONE
-        recent_done.updated_at = datetime.utcnow() - timedelta(days=2)
+        recent_done.updated_at = datetime.now(timezone.utc) - timedelta(days=2)
 
     ticker._archive_completed_todos()
 

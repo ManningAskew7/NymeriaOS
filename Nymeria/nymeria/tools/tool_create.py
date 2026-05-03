@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ..config import get_settings
 from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
+from ..core.time_utils import utc_now
 from ..core.tool_reload import tool_reload_command
 from .definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
 from .tool_search import DEFAULT_TTL, TTL_PRESETS, _enable
@@ -45,8 +46,8 @@ class HTTPToolDraft(BaseModel):
     parameters: dict[str, ToolParameter] = Field(default_factory=dict)
     http_config: HTTPToolConfig
     created_by_user_id: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     last_test_ok: Optional[bool] = None
     last_tested_at: Optional[datetime] = None
     last_test_params: dict[str, Any] = Field(default_factory=dict)
@@ -88,7 +89,7 @@ class ToolDraftStore:
         return self._user_dir(user_id) / f"{self._safe_segment(draft_id)}.json"
 
     def save(self, user_id: str, draft: HTTPToolDraft) -> Path:
-        draft.updated_at = datetime.utcnow()
+        draft.updated_at = utc_now()
         path = self._draft_path(user_id, draft.draft_id)
         path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
         return path
@@ -291,7 +292,7 @@ async def test_draft(store: ToolDraftStore, user_id: str, draft_id: str, sample_
     response = await execute_http_tool(draft.http_config, params)
     ok = not response.startswith("[Error]:")
     draft.last_test_ok = ok
-    draft.last_tested_at = datetime.utcnow()
+    draft.last_tested_at = utc_now()
     draft.last_test_params = params
     draft.last_test_response_preview = response[:4000]
     draft.last_test_error = None if ok else response[:1000]

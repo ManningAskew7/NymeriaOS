@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,8 @@ class ThreadMetadata(BaseModel):
     pinned: bool = False
     platform: str = "desktop"
     platform_meta: Optional[Dict[str, str]] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     # How the title was set: default | auto | user | callable | platform
     title_source: str = "default"
 
@@ -79,7 +80,7 @@ class ThreadMetadataStore(BaseModel):
 
     user_id: str = "default"
     threads: Dict[str, ThreadMetadata] = Field(default_factory=dict)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ class ThreadMetadataManager:
         path = self._get_path(store.user_id)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            store.updated_at = datetime.utcnow()
+            store.updated_at = utc_now()
             temp_path = path.with_suffix(".tmp")
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(store.model_dump(mode="json"), f, indent=2, default=str)
@@ -175,7 +176,7 @@ class ThreadMetadataManager:
                 for key, value in fields.items():
                     if value is not None:
                         update_data[key] = value
-                update_data["updated_at"] = datetime.utcnow()
+                update_data["updated_at"] = utc_now()
                 updated = existing.model_copy(update=update_data)
                 store.threads[thread_id] = updated
                 return updated
@@ -188,8 +189,8 @@ class ThreadMetadataManager:
                     pinned=fields.get("pinned", False),
                     platform_meta=fields.get("platform_meta"),
                     title_source=fields.get("title_source", "default"),
-                    created_at=fields.get("created_at", datetime.utcnow()),
-                    updated_at=datetime.utcnow(),
+                    created_at=fields.get("created_at", utc_now()),
+                    updated_at=utc_now(),
                 )
                 store.threads[thread_id] = meta
                 return meta
@@ -252,7 +253,7 @@ class ThreadMetadataManager:
                 title = generate_title(first_message)
                 meta.title = title
                 meta.title_source = "auto"
-                meta.updated_at = datetime.utcnow()
+                meta.updated_at = utc_now()
                 return title
 
         return None  # Title already set by user/callable/platform
@@ -277,7 +278,7 @@ class ThreadMetadataManager:
                 return True
             meta.title = title
             meta.title_source = source
-            meta.updated_at = datetime.utcnow()
+            meta.updated_at = utc_now()
             return True
 
     def set_pinned(
@@ -294,7 +295,7 @@ class ThreadMetadataManager:
                 )
                 return True
             meta.pinned = pinned
-            meta.updated_at = datetime.utcnow()
+            meta.updated_at = utc_now()
             return True
 
     # -- migration --
@@ -348,10 +349,12 @@ class ThreadMetadataManager:
 def _parse_dt(value) -> datetime:
     """Parse a datetime from various formats (ISO string, timestamp, etc.)."""
     if value is None:
-        return datetime.utcnow()
+        return utc_now()
     if isinstance(value, datetime):
-        return value
+        return ensure_aware_utc(value)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return ensure_aware_utc(
+            datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
     except (ValueError, TypeError):
-        return datetime.utcnow()
+        return utc_now()

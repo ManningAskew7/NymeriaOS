@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.activity_log import ActivityEntry, ActivityType, get_activity_log
+from ..core.time_utils import utc_now
 from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ def activity_feed(
         minutes_ago: Look-back window in minutes (default 10)
     """
     user_id = get_user_id(config)
-    since = datetime.utcnow() - timedelta(minutes=max(1, minutes_ago))
+    since = utc_now() - timedelta(minutes=max(1, minutes_ago))
 
     activity_log = get_activity_log()
     entries = activity_log.get_entries(
@@ -133,7 +134,7 @@ def activity_feed(
     )
 
     if not entries:
-        now = _format_time(datetime.utcnow())
+        now = _format_time(utc_now())
         return f"No activity in the last {minutes_ago} minutes (checked at {now})."
 
     # Group by thread
@@ -146,7 +147,7 @@ def activity_feed(
             no_thread.append(entry)
 
     # Build output
-    now_str = _format_time(datetime.utcnow())
+    now_str = _format_time(utc_now())
     start_str = _format_time(since)
     header = f"Activity Feed: {start_str} - {now_str} ({minutes_ago} min)\n"
 

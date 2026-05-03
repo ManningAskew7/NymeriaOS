@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
 from ..core.accounts import AuthenticatedUser
+from ..core.time_utils import ensure_aware_utc, utc_now
 from ..core.trigger_manager import (
     TriggerAction,
     TriggerCondition,
@@ -379,7 +380,7 @@ def create_trigger_router(
             **sample_event,
             "trigger_id": trigger.id,
             "trigger_name": trigger.name,
-            "fired_at": datetime.utcnow().isoformat(),
+            "fired_at": utc_now().isoformat(),
         }
 
         action = trigger.action
@@ -448,7 +449,7 @@ def create_trigger_router(
 
         event = {
             **body,
-            "fired_at": datetime.utcnow().isoformat(),
+            "fired_at": utc_now().isoformat(),
             "source_ip": request.client.host if request.client else "unknown",
         }
 
@@ -460,9 +461,11 @@ def create_trigger_router(
             live_trigger = store.get_trigger(trigger_id)
             if live_trigger is None:
                 raise HTTPException(status_code=404, detail="Trigger not found")
-            now = datetime.utcnow()
+            now = utc_now()
             if live_trigger.cooldown_seconds and live_trigger.last_fired:
-                elapsed = (now - live_trigger.last_fired).total_seconds()
+                elapsed = (
+                    now - ensure_aware_utc(live_trigger.last_fired)
+                ).total_seconds()
                 if elapsed < live_trigger.cooldown_seconds:
                     remaining = int(live_trigger.cooldown_seconds - elapsed)
                     raise HTTPException(

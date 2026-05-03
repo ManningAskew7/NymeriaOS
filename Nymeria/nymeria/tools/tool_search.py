@@ -20,6 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
+from ..core.time_utils import ensure_aware_utc, utc_now
 from ..core.tool_reload import tool_reload_command
 from .utils import get_thread_id, get_user_id
 
@@ -51,7 +52,7 @@ class ToolBindingResult:
 
 
 def _format_remaining(expires_at: datetime) -> str:
-    delta = expires_at - datetime.utcnow()
+    delta = ensure_aware_utc(expires_at) - utc_now()
     total = int(delta.total_seconds())
     if total <= 0:
         return "expired"
@@ -553,7 +554,7 @@ def bind_tools_for_thread(
                 if ttl_seconds is None:
                     new_enabled.add(name)
                 else:
-                    expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
+                    expires_at = utc_now() + timedelta(seconds=ttl_seconds)
                     new_temporary[name] = TemporaryToolEntry(expires_at=expires_at)
             continue
 
@@ -580,7 +581,7 @@ def bind_tools_for_thread(
                 new_enabled.add(name)
                 promoted.append(name)
             else:
-                expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
+                expires_at = utc_now() + timedelta(seconds=ttl_seconds)
                 new_temporary[name] = TemporaryToolEntry(
                     enabled_at=new_temporary[name].enabled_at,
                     expires_at=expires_at,
@@ -592,7 +593,7 @@ def bind_tools_for_thread(
         if ttl_seconds is None:
             new_enabled.add(name)
         else:
-            expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
+            expires_at = utc_now() + timedelta(seconds=ttl_seconds)
             new_temporary[name] = TemporaryToolEntry(expires_at=expires_at)
         newly_added.append(name)
 

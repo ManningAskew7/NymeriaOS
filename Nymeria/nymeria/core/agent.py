@@ -49,6 +49,7 @@ from .agent_streaming import (
     has_tool_call_delta,
 )
 from .agent_compaction import CompactionManager, create_compaction_marker as _create_compaction_marker
+from .time_utils import ensure_aware_utc, utc_now
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager, TodoStatus
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
@@ -2395,12 +2396,11 @@ class NymeriaAgent:
         """
         if tc is None or not getattr(tc, "temporary_tools", None):
             return set()
-        from datetime import datetime as _dt
-        now = _dt.utcnow()
+        now = utc_now()
         live = {
             name: entry
             for name, entry in tc.temporary_tools.items()
-            if entry.expires_at > now
+            if ensure_aware_utc(entry.expires_at) > now
         }
         if len(live) != len(tc.temporary_tools):
             evicted = set(tc.temporary_tools) - set(live)

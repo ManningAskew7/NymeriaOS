@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from ...core.time_utils import utc_now
+
 MCPTransport = Literal["stdio", "http"]
 MCPInstallStatus = Literal["ready", "draft", "failed"]
 
@@ -54,8 +56,8 @@ class MCPServerDefinition(BaseModel):
     missing_config: List[Dict[str, Any]] = []
     risk_level: str = "low"
     confirmation_required: bool = False
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
     def _validate_transport_fields(self) -> "MCPServerDefinition":

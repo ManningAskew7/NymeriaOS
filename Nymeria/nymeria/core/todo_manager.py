@@ -5,14 +5,15 @@ import logging
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
+from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,8 @@ class TodoItem(BaseModel):
     id: str = Field(..., description="8-character unique identifier")
     task: str = Field(..., max_length=500, description="Task description")
     status: TodoStatus = Field(default=TodoStatus.PENDING)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     notes: Optional[str] = Field(default=None, max_length=1000)
 
     # Scheduling fields - when set, Nymeria wakes up to work on this TODO
@@ -67,6 +68,13 @@ class TodoItem(BaseModel):
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
     recurrence: Optional[str] = Field(default=None, description="Recurrence pattern: 'hourly', 'daily', 'weekly', 'monthly'")
 
+    @field_validator("created_at", "updated_at", "scheduled_for", "last_execution")
+    @classmethod
+    def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        return ensure_aware_utc(value)
+
     def is_active(self) -> bool:
         """Check if this TODO is active (not done)."""
         return self.status != TodoStatus.DONE
@@ -79,12 +87,12 @@ class TodoItem(BaseModel):
         """Check if this TODO hasn't been updated in staleness_hours."""
         if not self.is_active():
             return False
-        threshold = datetime.utcnow() - timedelta(hours=staleness_hours)
-        return self.updated_at < threshold
+        threshold = utc_now() - timedelta(hours=staleness_hours)
+        return ensure_aware_utc(self.updated_at) < threshold
 
     def hours_since_update(self) -> float:
         """Get hours since last update."""
-        delta = datetime.utcnow() - self.updated_at
+        delta = utc_now() - ensure_aware_utc(self.updated_at)
         return delta.total_seconds() / 3600
 
 
@@ -93,8 +101,13 @@ class TodoList(BaseModel):
 
     user_id: str = Field(default="default")
     items: List[TodoItem] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def _datetimes_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
 
     # Limits
     MAX_TODOS: int = 50
@@ -150,7 +163,7 @@ class TodoList(BaseModel):
             notes=notes[:1000] if notes else None,
         )
         self.items.append(item)
-        self.updated_at = datetime.utcnow()
+        self.updated_at = utc_now()
         return item
 
     def update_item(
@@ -209,8 +222,8 @@ class TodoList(BaseModel):
         elif recurrence is not None:
             item.recurrence = recurrence
 
-        item.updated_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        item.updated_at = utc_now()
+        self.updated_at = utc_now()
         return True
 
     def complete_item(self, todo_id: str) -> bool:
@@ -225,8 +238,8 @@ class TodoList(BaseModel):
             return False
 
         item.status = TodoStatus.DONE
-        item.updated_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        item.updated_at = utc_now()
+        self.updated_at = utc_now()
         return True
 
     def delete_item(self, todo_id: str) -> Optional[TodoItem]:
@@ -239,7 +252,7 @@ class TodoList(BaseModel):
         for i, item in enumerate(self.items):
             if item.id == todo_id:
                 deleted = self.items.pop(i)
-                self.updated_at = datetime.utcnow()
+                self.updated_at = utc_now()
                 return deleted
         return None
 
@@ -253,7 +266,7 @@ class TodoList(BaseModel):
         deleted = [item for item in self.items if item.thread_id == thread_id]
         if deleted:
             self.items = [item for item in self.items if item.thread_id != thread_id]
-            self.updated_at = datetime.utcnow()
+            self.updated_at = utc_now()
         return deleted
 
     def get_active_todos(self) -> List[TodoItem]:
@@ -287,18 +300,18 @@ class TodoList(BaseModel):
         Returns:
             Number of items archived.
         """
-        threshold = datetime.utcnow() - timedelta(days=days_old)
+        threshold = utc_now() - timedelta(days=days_old)
         original_count = len(self.items)
 
         self.items = [
             item
             for item in self.items
-            if item.status != TodoStatus.DONE or item.updated_at > threshold
+            if item.status != TodoStatus.DONE or ensure_aware_utc(item.updated_at) > threshold
         ]
 
         archived = original_count - len(self.items)
         if archived > 0:
-            self.updated_at = datetime.utcnow()
+            self.updated_at = utc_now()
         return archived
 
 
@@ -392,7 +405,7 @@ class TodoManager:
             todos_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Update timestamp
-            todo_list.updated_at = datetime.utcnow()
+            todo_list.updated_at = utc_now()
 
             # Write atomically (write to temp file, then rename)
             temp_path = todos_path.with_suffix(".tmp")
@@ -517,7 +530,7 @@ class TodoManager:
         with self.atomic_update(user_id) as todo_list:
             todo = todo_list.get_item(todo_id)
             if todo:
-                todo.last_execution = datetime.now(timezone.utc)
+                todo.last_execution = utc_now()
                 todo.scheduled_for = None
                 schedule_db.remove_scheduled(todo_id)
                 return True

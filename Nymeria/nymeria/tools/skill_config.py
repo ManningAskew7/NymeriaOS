@@ -19,6 +19,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
+from ..core.time_utils import utc_now
 from ..core.tool_reload import tool_reload_command
 from ..core.thread_config import ThreadConfig
 from ..skills import (
@@ -55,8 +56,8 @@ class SkillDraft(BaseModel):
     required_tools: List[str] = Field(default_factory=list)
     tool_ttl: str = DEFAULT_SKILL_KIT_TOOL_TTL
     created_by_user_id: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     last_validated_at: Optional[datetime] = None
 
     def public_summary(self) -> dict[str, Any]:
@@ -93,7 +94,7 @@ class SkillDraftStore:
         return self._user_dir(user_id) / f"{self._safe_segment(draft_id)}.json"
 
     def save(self, user_id: str, draft: SkillDraft) -> Path:
-        draft.updated_at = datetime.utcnow()
+        draft.updated_at = utc_now()
         path = self._draft_path(user_id, draft.draft_id)
         path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
         return path
@@ -290,7 +291,7 @@ def create_skill_draft(
         required_tools=normalized_required,
         tool_ttl=normalized_ttl,
         created_by_user_id=user_id,
-        last_validated_at=datetime.utcnow(),
+        last_validated_at=utc_now(),
     )
 
 
@@ -402,7 +403,7 @@ def _load_draft_or_inline(
         if draft is None:
             raise ValueError(f"Draft not found: {draft_id}")
         _validate_required_tools(draft.required_tools, user_id)
-        draft.last_validated_at = datetime.utcnow()
+        draft.last_validated_at = utc_now()
         return draft
     return create_skill_draft(
         user_id=user_id,

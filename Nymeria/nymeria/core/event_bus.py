@@ -9,6 +9,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, TYPE_CHECKING
 from queue import Queue, Empty, Full
 from urllib.parse import urlsplit, urlunsplit
 
+from .time_utils import utc_now
+
 if TYPE_CHECKING:
     from ..config import Settings
 
@@ -61,7 +63,7 @@ class AutonomousEvent:
     user_id: str
     task_id: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
 
 
 class EventBus:

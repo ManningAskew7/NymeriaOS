@@ -54,6 +54,7 @@ from ..core.notification_dispatch import (
 )
 from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
 from ..core.rate_limit import SlidingWindowRateLimiter
+from ..core.time_utils import utc_now
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
@@ -7698,7 +7699,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         with agent.profile_manager.atomic_update(user_id) as profile:
             profile.tool_preferences.set_tool_config(tool_name, request.config)
-            profile.updated_at = datetime.utcnow()
+            profile.updated_at = utc_now()
 
         return {
             "status": "ok",
@@ -7721,7 +7722,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             profile.tool_preferences.default_thread_tools = [t.name for t in ALL_TOOLS]
             profile.tool_preferences.tool_configs.clear()
             profile.tool_preferences.custom_descriptions.clear()
-            profile.updated_at = datetime.utcnow()
+            profile.updated_at = utc_now()
 
         # Clear graph caches and rebuild defaults
         agent._user_graphs.clear()
@@ -8190,7 +8191,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     dtt.remove(tool_id)
 
             profile.tool_preferences.default_thread_tools = dtt
-            profile.updated_at = datetime.utcnow()
+            profile.updated_at = utc_now()
 
         # Clear graph caches and rebuild defaults so changes take effect
         agent._user_graphs.clear()

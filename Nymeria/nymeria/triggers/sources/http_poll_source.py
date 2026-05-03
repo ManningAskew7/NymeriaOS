@@ -13,8 +13,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
-from .base import BaseTriggerSource
 from . import register_source
+from .base import BaseTriggerSource
+from ...core.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class HTTPPollSource(BaseTriggerSource):
                 "url": url,
                 "status_code": status,
                 "response_body": body[:2000],
-                "changed_at": datetime.utcnow().isoformat(),
+                "changed_at": utc_now().isoformat(),
                 "previous_hash": previous_hash or "",
             }]
         return []
@@ -149,7 +150,7 @@ class HTTPPollSource(BaseTriggerSource):
             "url": config.get("url", "https://api.example.com/status"),
             "status_code": 200,
             "response_body": '{"status": "ok", "version": "2.1.0"}',
-            "changed_at": datetime.utcnow().isoformat(),
+            "changed_at": utc_now().isoformat(),
             "previous_hash": "a1b2c3d4e5f6g7h8",
         }
 
