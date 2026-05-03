@@ -58,6 +58,7 @@ def _get_project_root() -> Path:
 
 
 PROJECT_ROOT = _get_project_root()
+DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost"
 
 
 class _NonEmptyEnvSource(EnvSettingsSource):
@@ -148,7 +149,7 @@ class Settings(BaseSettings):
 
     # CORS Configuration (for remote frontends)
     cors_origins: str = Field(
-        default="*",
+        default=DEFAULT_CORS_ORIGINS,
         description="Comma-separated list of allowed CORS origins, or '*' for all"
     )
 
