@@ -54,8 +54,6 @@ If you want to preserve your conversation history and user memories:
    ```bash
    cp data/nymeria.db data/nymeria.db.backup
    cp data/todo_schedule.db data/todo_schedule.db.backup
-   # Legacy only (if present from older versions):
-   [ -f data/tasks.db ] && cp data/tasks.db data/tasks.db.backup
    ```
 
 2. **Backup user data:**

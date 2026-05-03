@@ -35,14 +35,11 @@ from ..config.model_capabilities import get_context_limit
 from .user_profile import UserProfileManager
 from .token_tracker import TokenTracker
 from .compactor import ConversationCompactor, estimate_tokens
-from ._deprecated.task_db import TaskDatabase
-from .scheduler import DurableScheduler
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager, TodoStatus
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
 from .todo_schedule_db import TodoScheduleDB
 from .prompts import INTERACTIVE_MODE_RULES, AUTONOMOUS_MODE_RULES, get_time_context
-from .migration import migrate_old_scheduled_tasks
 from .memory_index import MemoryIndex
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
@@ -897,17 +894,6 @@ class NymeriaAgent:
             self.settings.data_dir / "todo_schedule.db"
         )
 
-        # Initialize task database (kept for migration, will be deprecated)
-        self._task_db = TaskDatabase(self.settings.tasks_db_path)
-
-        # Initialize durable scheduler with configurable rate limit
-        # NOTE: This is deprecated - scheduling is now done via TODOs
-        self.scheduler = DurableScheduler(
-            self,
-            self._task_db,
-            max_per_hour=self.settings.max_self_invokes_per_hour,
-        )
-
         # Store base system prompt (from soul.md)
         self._base_system_prompt = self.settings.load_soul()
 
@@ -984,9 +970,6 @@ class NymeriaAgent:
             recovered = self._ticker.recover_missed_schedules()
             if recovered > 0:
                 logger.info(f"Found {recovered} missed scheduled TODO(s)")
-
-            # Migrate old scheduled tasks to TODOs (one-time migration)
-            self._migrate_old_scheduled_tasks()
 
             # Migrate unscoped TODOs to "legacy" thread_id (idempotent)
             self._migrate_unscoped_todos()
@@ -4074,10 +4057,7 @@ class NymeriaAgent:
             holder = "autonomous" if _is_self_invoke else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
 
-            # Cancel pending self_invoke if this is a USER message (not self_invoke)
-            # This ensures user activity takes priority over scheduled tasks
             if not _is_self_invoke:
-                self.scheduler.cancel(user_id)
                 try:
                     from .activity_log import ActivityType, log_activity
                     preview = message.strip()[:120].replace("\n", " ")
@@ -4289,10 +4269,6 @@ class NymeriaAgent:
             import time as _time
             _stream_start = _time.monotonic()
             logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
-
-            # Cancel pending self_invoke only on USER messages — don't cancel ourselves
-            if not _is_self_invoke:
-                self.scheduler.cancel(user_id)
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
             # For autonomous execution, include the autonomous mode instructions
@@ -5769,14 +5745,6 @@ class NymeriaAgent:
 
         except Exception as e:
             logger.warning(f"Pre-trim memory flush failed: {e}")
-
-    def _migrate_old_scheduled_tasks(self) -> int:
-        """Migrate old self_invoke tasks. Delegates to migration module."""
-        return migrate_old_scheduled_tasks(
-            self._task_db,
-            self.todo_manager,
-            self._schedule_db,
-        )
 
     def _migrate_unscoped_todos(self) -> None:
         """Migrate TODOs that lack a thread_id to 'legacy'. Idempotent."""

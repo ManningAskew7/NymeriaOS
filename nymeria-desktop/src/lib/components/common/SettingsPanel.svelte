@@ -111,7 +111,6 @@
   let contextManagement = $state<string>('auto_compact');
   let compactThreshold = $state(0.8);
   let slidingWindowCycles = $state(5);
-  let maxSelfInvokesPerHour = $state(50);
   let logLevel = $state<LogLevel>('INFO');
   let watchdogEnabled = $state(true);
   let watchdogIntervalMinutes = $state(5);
@@ -256,7 +255,6 @@
         modelsStore.loadModels();
       }
       slidingWindowCycles = serverSettings.sliding_window_cycles;
-      maxSelfInvokesPerHour = serverSettings.max_self_invokes_per_hour;
       logLevel = serverSettings.log_level;
       watchdogEnabled = serverSettings.watchdog_enabled;
       watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
@@ -424,7 +422,6 @@
         context_management: contextManagement,
         compact_threshold: compactThreshold,
         sliding_window_cycles: slidingWindowCycles,
-        max_self_invokes_per_hour: maxSelfInvokesPerHour,
         log_level: logLevel,
         watchdog_enabled: watchdogEnabled,
         watchdog_interval_minutes: watchdogIntervalMinutes,
@@ -1123,19 +1120,6 @@
             <p class="hint">Number of conversation cycles to keep in context</p>
           </div>
         {/if}
-
-        <div class="field">
-          <label for="max-invokes">Max Self-Invokes/Hour: {maxSelfInvokesPerHour}</label>
-          <input
-            id="max-invokes"
-            type="range"
-            min="1"
-            max="100"
-            step="1"
-            bind:value={maxSelfInvokesPerHour}
-          />
-          <p class="hint">Rate limit for autonomous operations</p>
-        </div>
 
         <div class="field">
           <label for="log-level">Log Level</label>

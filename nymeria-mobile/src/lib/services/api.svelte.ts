@@ -24,8 +24,6 @@ import type {
   TodoListResponse,
   TodoCreateRequest,
   TodoUpdateRequest,
-  ScheduledTask,
-  ScheduledTasksResponse,
   ActivityEntry,
   ActivityLogResponse,
   Notification,
@@ -1367,34 +1365,6 @@ export class NymeriaAPI {
 
     const data = await response.json();
     return this.todoFromResponse(data);
-  }
-
-  async getScheduledTasks(): Promise<ScheduledTasksResponse> {
-    const response = await fetch(`${this.getBaseUrl()}/tasks`, {
-      headers: this.getHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    // Convert API response to our format
-    return {
-      tasks: (data.tasks || []).map(
-        (task: Record<string, unknown>) =>
-          ({
-            id: task.id as string,
-            prompt: task.prompt as string,
-            executeAt: this.parseUtcTimestamp(task.execute_at as string),
-            status: task.status as string,
-            createdAt: this.parseUtcTimestamp(task.created_at as string),
-            threadId: task.thread_id as string
-          }) as ScheduledTask
-      ),
-      total: data.total
-    };
   }
 
   async getActivity(limit: number = 50, threadId?: string): Promise<ActivityLogResponse> {

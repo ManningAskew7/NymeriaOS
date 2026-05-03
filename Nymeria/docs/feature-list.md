@@ -152,7 +152,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ### Concurrency
 - **Per-thread locking** — Non-blocking acquisition with timeout and lock holder metadata
 - **Queued execution** — Busy threads return "queued" events with wait duration
-- **User-message preemption** — User messages cancel pending autonomous tasks
+- **Explicit cancellation** — `/stop` and `POST /threads/{id}/stop` cancel active work on a thread
 
 ---
 
@@ -204,7 +204,6 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ### Ticker (Background Scheduler)
 - **Daemon thread polling** — 5-second intervals (configurable 1–60s)
 - **Parallel execution** — ThreadPoolExecutor (default 5 concurrent tasks)
-- **Rate limiting** — 50 self-invocations per hour
 - **Retry logic** — 3 retries before permanent failure, 10-minute backoff on iteration limits
 - **Missed schedule recovery** — Detects and re-executes overdue TODOs on startup
 - **Event publishing** — Real-time SSE for watching autonomous work
