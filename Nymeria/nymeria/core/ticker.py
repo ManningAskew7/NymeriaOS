@@ -193,14 +193,17 @@ class Ticker:
         self._lock = threading.Lock()
         self._retry_counts: dict = {}  # Track retries per TODO
         self._executor: Optional[ThreadPoolExecutor] = None
+        self._housekeeping_executor: Optional[ThreadPoolExecutor] = None
 
         # Trigger system: poll-based sources checked at a slower interval.
-        # Runs off the main loop via the executor so network I/O in source
-        # checks cannot delay scheduled TODO execution.
+        # Runs off the main loop via a housekeeping executor so network I/O
+        # in source checks cannot delay scheduled TODO execution or occupy
+        # autonomous workers.
         self.trigger_poll_interval = max(poll_interval * 6, 30)  # Default 30s
         self._last_trigger_check: float = 0.0
         self._trigger_manager: Optional[TriggerManager] = None
         self._trigger_poll_running = False
+        self._trigger_poll_lock = threading.Lock()
 
         # Auto-purge: archive completed TODOs periodically (~1 hour)
         self._archive_interval = 3600  # 1 hour
@@ -218,6 +221,9 @@ class Ticker:
         max_workers = self.agent.settings.max_concurrent_autonomous or None  # 0 = None = unlimited
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="NymeriaTicker"
+        )
+        self._housekeeping_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="NymeriaTickerHousekeeping"
         )
 
         self._thread = threading.Thread(
@@ -242,11 +248,14 @@ class Ticker:
             return
 
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        if self._housekeeping_executor:
+            self._housekeeping_executor.shutdown(wait=False, cancel_futures=True)
+            self._housekeeping_executor = None
         if self._executor:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
         logger.info("Ticker stopped")
 
     def _get_trigger_manager(self) -> TriggerManager:
@@ -260,10 +269,10 @@ class Ticker:
     def _poll_loop(self) -> None:
         """Main polling loop.
 
-        Scheduled TODO checks run inline every tick.  Trigger polling
-        and TODO archival are offloaded to the ThreadPoolExecutor so
+        Scheduled TODO checks run inline every tick. Trigger polling
+        and TODO archival are offloaded to a housekeeping executor so
         slow network I/O or file operations cannot delay the next TODO
-        check cycle.
+        check cycle or consume autonomous worker capacity.
         """
         while self._running:
             try:
@@ -273,22 +282,8 @@ class Ticker:
 
             now = time.time()
 
-            # Auto-purge completed TODOs (~every hour), off main loop
-            if now - self._last_archive_check >= self._archive_interval:
-                self._last_archive_check = now
-                if self._executor:
-                    self._executor.submit(self._run_archive)
-
-            # Check poll-based trigger sources at a slower interval,
-            # off main loop.  Skip if a previous poll is still running.
-            if now - self._last_trigger_check >= self.trigger_poll_interval:
-                if not self._trigger_poll_running:
-                    self._trigger_poll_running = True
-                    self._last_trigger_check = now
-                    if self._executor:
-                        self._executor.submit(self._run_trigger_poll)
-                    else:
-                        self._run_trigger_poll()
+            self._maybe_submit_archive(now)
+            self._maybe_submit_trigger_poll(now)
 
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
@@ -297,6 +292,47 @@ class Ticker:
                     break
                 time.sleep(0.1)
 
+    def _maybe_submit_archive(self, now: float) -> bool:
+        """Submit hourly TODO archival without occupying autonomous workers."""
+        if now - self._last_archive_check < self._archive_interval:
+            return False
+
+        self._last_archive_check = now
+        if self._housekeeping_executor:
+            try:
+                self._housekeeping_executor.submit(self._run_archive)
+            except Exception as e:
+                logger.debug(f"Archive submit skipped: {e}")
+                return False
+            return True
+
+        self._run_archive()
+        return True
+
+    def _maybe_submit_trigger_poll(self, now: float) -> bool:
+        """Submit trigger source polling if due and no previous poll is active."""
+        if now - self._last_trigger_check < self.trigger_poll_interval:
+            return False
+
+        with self._trigger_poll_lock:
+            if self._trigger_poll_running:
+                return False
+            self._trigger_poll_running = True
+
+        try:
+            if self._housekeeping_executor:
+                self._housekeeping_executor.submit(self._run_trigger_poll)
+            else:
+                self._run_trigger_poll()
+        except Exception as e:
+            with self._trigger_poll_lock:
+                self._trigger_poll_running = False
+            logger.debug(f"Trigger poll submit skipped: {e}")
+            return False
+
+        self._last_trigger_check = now
+        return True
+
     def _run_trigger_poll(self) -> None:
         """Execute trigger polling with exception isolation."""
         try:
@@ -304,7 +340,8 @@ class Ticker:
         except Exception as e:
             logger.error(f"Trigger poll error: {e}", exc_info=True)
         finally:
-            self._trigger_poll_running = False
+            with self._trigger_poll_lock:
+                self._trigger_poll_running = False
 
     def _run_archive(self) -> None:
         """Execute TODO archival with exception isolation."""

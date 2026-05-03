@@ -307,65 +307,53 @@ def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, mon
 # ---- AGENT-010: Poll-loop isolation tests ----
 
 
-def test_trigger_poll_runs_off_main_loop(tmp_path: Path, monkeypatch):
-    """A slow _check_triggers does not block _check_and_execute."""
+def test_trigger_poll_does_not_occupy_autonomous_worker_pool(tmp_path: Path, monkeypatch):
+    """A slow trigger source poll cannot starve a due scheduled TODO."""
     agent = FakeAgent(tmp_path)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
-    ticker._executor = ThreadPoolExecutor(max_workers=2)
+    entry = ScheduledTodoEntry(
+        todo_id="todo-1",
+        user_id="owner",
+        thread_id="thread-1",
+        scheduled_for=time.time() - 1,
+        task_preview="Check the inbox",
+        created_at=time.time(),
+    )
+
+    class DueSchedule:
+        def get_due(self, before: float):
+            return [entry]
+
+    ticker = Ticker(agent, DueSchedule(), agent.todo_manager, poll_interval=1)
+    ticker._executor = ThreadPoolExecutor(max_workers=1)
+    ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
     trigger_started = threading.Event()
     trigger_release = threading.Event()
-    todo_checks: list[float] = []
+    todo_started = threading.Event()
 
     def slow_check_triggers():
         trigger_started.set()
         trigger_release.wait(timeout=5)
 
-    def fast_check_and_execute():
-        todo_checks.append(time.monotonic())
+    def fake_execute(entry_arg):
+        if entry_arg.todo_id == entry.todo_id:
+            todo_started.set()
 
     monkeypatch.setattr(ticker, "_check_triggers", slow_check_triggers)
-    monkeypatch.setattr(ticker, "_check_and_execute", fast_check_and_execute)
+    monkeypatch.setattr(ticker, "_execute_scheduled_todo", fake_execute)
 
-    # Force both timers to fire immediately
-    ticker._last_trigger_check = 0.0
-    ticker._last_archive_check = time.time()
+    try:
+        assert ticker._maybe_submit_trigger_poll(time.time()) is True
+        assert trigger_started.wait(timeout=2)
 
-    # Run one iteration of the poll loop manually
-    ticker._running = True
+        ticker._check_and_execute()
 
-    def run_loop_iterations(n: int):
-        for _ in range(n):
-            if not ticker._running:
-                break
-            try:
-                ticker._check_and_execute()
-            except Exception:
-                pass
-            now = time.time()
-            if now - ticker._last_archive_check >= ticker._archive_interval:
-                ticker._last_archive_check = now
-                if ticker._executor:
-                    ticker._executor.submit(ticker._run_archive)
-            if now - ticker._last_trigger_check >= ticker.trigger_poll_interval:
-                if not ticker._trigger_poll_running:
-                    ticker._trigger_poll_running = True
-                    ticker._last_trigger_check = now
-                    if ticker._executor:
-                        ticker._executor.submit(ticker._run_trigger_poll)
-
-    # First iteration: submits trigger poll + runs TODO check
-    run_loop_iterations(1)
-    trigger_started.wait(timeout=2)
-
-    # Trigger poll is now blocking in the executor. Run more TODO checks.
-    run_loop_iterations(3)
-
-    # TODO checks ran 4 times total while trigger poll was blocked
-    assert len(todo_checks) >= 4
-
-    trigger_release.set()
-    ticker._executor.shutdown(wait=True)
+        assert todo_started.wait(timeout=1)
+        assert not trigger_release.is_set()
+    finally:
+        trigger_release.set()
+        ticker._housekeeping_executor.shutdown(wait=True)
+        ticker._executor.shutdown(wait=True)
 
 
 def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch):
@@ -378,6 +366,7 @@ def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr(ticker, "_check_triggers", exploding_triggers)
 
+    ticker._trigger_poll_running = True
     ticker._run_trigger_poll()
 
     assert not ticker._trigger_poll_running
@@ -387,44 +376,47 @@ def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch):
     """A second trigger poll is not submitted while one is in progress."""
     agent = FakeAgent(tmp_path)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
-    ticker._executor = ThreadPoolExecutor(max_workers=2)
+    ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
     call_count = 0
+    started = threading.Event()
     release = threading.Event()
 
     def slow_check():
         nonlocal call_count
         call_count += 1
+        started.set()
         release.wait(timeout=5)
 
     monkeypatch.setattr(ticker, "_check_triggers", slow_check)
 
-    ticker._running = True
-    ticker._last_trigger_check = 0.0
-
-    # First submit
-    ticker._trigger_poll_running = True
-    ticker._last_trigger_check = time.time()
-    ticker._executor.submit(ticker._run_trigger_poll)
-
-    # Simulate next tick — should skip because flag is set
-    time.sleep(0.05)
-    ticker._last_trigger_check = 0.0
-    if not ticker._trigger_poll_running:
-        ticker._trigger_poll_running = True
-        ticker._executor.submit(ticker._run_trigger_poll)
-
-    release.set()
-    ticker._executor.shutdown(wait=True)
+    try:
+        assert ticker._maybe_submit_trigger_poll(time.time()) is True
+        assert started.wait(timeout=2)
+        assert ticker._maybe_submit_trigger_poll(time.time() + 60) is False
+    finally:
+        release.set()
+        ticker._housekeeping_executor.shutdown(wait=True)
 
     assert call_count == 1
 
 
-def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch):
-    """_archive_completed_todos runs in the executor, not inline."""
+def test_trigger_poll_failed_submit_clears_running_flag(tmp_path: Path):
+    """A shutdown-time submit failure does not leave polling permanently stuck."""
     agent = FakeAgent(tmp_path)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
-    ticker._executor = ThreadPoolExecutor(max_workers=2)
+    ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
+    ticker._housekeeping_executor.shutdown(wait=True)
+
+    assert ticker._maybe_submit_trigger_poll(time.time()) is False
+    assert not ticker._trigger_poll_running
+
+
+def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch):
+    """_archive_completed_todos runs in housekeeping, not inline."""
+    agent = FakeAgent(tmp_path)
+    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
     archive_thread_ids: list[int] = []
     main_thread_id = threading.get_ident()
@@ -437,8 +429,8 @@ def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(ticker, "_archive_completed_todos", tracking_archive)
 
-    ticker._executor.submit(ticker._run_archive)
-    ticker._executor.shutdown(wait=True)
+    assert ticker._maybe_submit_archive(time.time()) is True
+    ticker._housekeeping_executor.shutdown(wait=True)
 
     assert len(archive_thread_ids) == 1
     assert archive_thread_ids[0] != main_thread_id
