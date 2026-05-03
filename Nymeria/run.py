@@ -210,8 +210,6 @@ def run_cli(args: argparse.Namespace) -> None:
 
 def run_api(args: argparse.Namespace) -> None:
     """Run the REST API server."""
-    from nymeria import NymeriaAgent
-    from nymeria.tools import get_all_tools_with_agents
     from nymeria.triggers.api import run_api as start_api
     from nymeria.config import get_settings
 
@@ -222,22 +220,12 @@ def run_api(args: argparse.Namespace) -> None:
     print(f"Starting Nymeria API server on {host}:{port}...")
     print(f"  - Docs: http://{host}:{port}/docs")
     print(f"  - ReDoc: http://{host}:{port}/redoc")
-
-    # Initialize Redis event bus if configured (needed to receive worker events via SSE)
-    disable_ticker = settings.redis_enabled and bool(settings.redis_url)
-    if disable_ticker:
-        from nymeria.core.event_bus import create_event_bus, set_event_bus
-        event_bus = create_event_bus(settings)
-        set_event_bus(event_bus)
+    if settings.redis_enabled and settings.redis_url:
         print(f"  - Redis event bus: {settings.redis_url}")
 
-    # Create agent with all tools (core + sub-agent tools)
-    # When Redis is enabled (Docker), a separate worker container runs the ticker.
-    # Disable ticker in the API to prevent duplicate task execution.
-    agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=not disable_ticker)
-
-    # Start API server
-    start_api(host=host, port=port, agent=agent)
+    # Agent creation, Redis event bus, FCM, ticker-disable logic, and tool
+    # sync are all handled by create_api_app() inside start_api().
+    start_api(host=host, port=port)
 
 
 def run_service(args: argparse.Namespace) -> None:
