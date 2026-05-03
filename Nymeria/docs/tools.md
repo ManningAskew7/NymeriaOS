@@ -1099,7 +1099,7 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
-| `browser_navigate` | `(url: str)` | Navigate to a URL. Falls back to requests+BeautifulSoup if Playwright unavailable. |
+| `browser_navigate` | `(url: str)` | Navigate to an absolute `http://` or `https://` URL. Falls back to requests+BeautifulSoup if Playwright unavailable. |
 | `browser_click` | `(selector: str)` | Click element by CSS selector or `text=` selector. |
 | `browser_type` | `(selector: str, text: str)` | Type text into an input field. |
 | `browser_get_content` | `(include_links: bool = True)` | Get page text content and optionally links. |
@@ -1111,7 +1111,7 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 **Architecture:** All browser operations run on a dedicated `BrowserThread` to satisfy Playwright's single-thread requirement. Operations are queued and results retrieved via thread-safe queues. The browser persists between calls until explicitly closed.
 
-**Fallback mode:** Set `BROWSER_FORCE_FALLBACK=true` in `.env` to skip Playwright entirely and use requests+BeautifulSoup for navigation and content extraction. Useful when Playwright hangs.
+**Fallback mode:** Set `BROWSER_FORCE_FALLBACK=true` in `.env` to skip Playwright entirely and use requests+BeautifulSoup for navigation and content extraction. Fallback HTTP requests verify TLS certificates by default; set `BROWSER_VERIFY_SSL=false` only in trusted environments with known TLS interception.
 
 ---
 

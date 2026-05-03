@@ -87,6 +87,14 @@ for Nymeria backend markers such as `run.py`, `docker-compose.yml`, and
 `NYMERIA_PROJECT_ROOT` explicitly if a packaged deployment separates the Python
 package from the checkout or runtime config directory.
 
+### Browser Tools
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BROWSER_FORCE_FALLBACK` | `false` | Skip Playwright and use requests+BeautifulSoup fallback mode for browser navigation/content extraction |
+| `BROWSER_HEADLESS` | auto | Force Playwright headless mode with `true` or visible mode with `false`; unset auto-detects Docker/headless Linux |
+| `BROWSER_VERIFY_SSL` | `true` | Verify TLS certificates for fallback HTTP requests. Set to `false` only for trusted environments with known TLS interception |
+
 ### Redis (Docker Only)
 
 | Variable | Default | Description |
