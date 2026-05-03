@@ -4,6 +4,30 @@ This document maps the major desktop app areas (`/nymeria-desktop`) to their mob
 
 **Drift checker**: `python scripts/check_cross_app_drift.py` enforces that shared files stay in sync and new overlap files are classified. It runs in CI and flags exact-match files that have drifted and unclassified new overlaps. Add new shared files to `EXACT_MATCH` or `KNOWN_DRIFT` in the script.
 
+## Shared-Code Strategy
+
+Nymeria intentionally uses **drift-checked parallel implementations** for
+desktop/mobile UI instead of a local `@nymeria/ui` or `packages/ui` source
+package. The apps share business concepts, Svelte 5 patterns, type shapes, and
+some byte-identical helpers, but their shells, lifecycle behavior, interaction
+models, native integrations, and touch/keyboard constraints differ enough that
+forcing a shared component package would add coupling before it removes much
+maintenance work.
+
+Use this policy when adding or changing cross-platform frontend code:
+
+1. Put genuinely platform-neutral files in `EXACT_MATCH` in
+   `scripts/check_cross_app_drift.py`. The current low-risk set already
+   includes `themes.ts`, file/TODO utilities, simple common components such as
+   `Spinner` and `Collapsible`, and small shared stores such as
+   `chatAppBindings`, `models`, `serverSettings`, and `threadConfig`.
+2. Put files with real platform differences in `KNOWN_DRIFT` and document the
+   reason in this guide.
+3. If a known-drift file becomes byte-identical, promote it to `EXACT_MATCH`
+   after confirming the shared behavior is intentional.
+4. If a new file exists in both apps and is not classified, CI fails until the
+   ownership decision is explicit.
+
 ## Quick Reference
 
 | Category | Desktop | Mobile |
