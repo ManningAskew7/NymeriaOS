@@ -1,12 +1,15 @@
 <script lang="ts">
-  import type { ToolCall } from '$lib/types';
-  import { Collapsible } from '$lib/components/common';
+  import type { ToolCall, WorkspaceArtifact } from '$lib/types';
+  import { Collapsible, Icon } from '$lib/components/common';
+  import { formatFileSize } from '$lib/utils/fileProcessing';
+  import WorkspaceArtifactModal from './WorkspaceArtifactModal.svelte';
 
   interface Props {
     toolCall: ToolCall;
   }
 
   let { toolCall }: Props = $props();
+  let modalArtifact = $state<WorkspaceArtifact | null>(null);
 
   let duration = $derived.by(() => {
     if (!toolCall.startTime || !toolCall.endTime) return null;
@@ -32,6 +35,10 @@
     } catch {
       return result;
     }
+  }
+
+  function getArtifactIcon(mimeType: string): string {
+    return mimeType.startsWith('image/') ? 'image' : 'fileText';
   }
 </script>
 
@@ -63,6 +70,29 @@
         </div>
       {/if}
 
+      {#if toolCall.artifacts?.length}
+        <div class="detail-section">
+          <h4>Artifacts</h4>
+          <div class="artifact-list">
+            {#each toolCall.artifacts as artifact (artifact.path)}
+              <button
+                type="button"
+                class="artifact-chip"
+                onclick={() => { modalArtifact = artifact; }}
+                title={`View ${artifact.name}`}
+              >
+                <Icon name={getArtifactIcon(artifact.mimeType)} size={20} />
+                <span class="artifact-copy">
+                  <span class="artifact-name">{artifact.name}</span>
+                  <span class="artifact-meta">{formatFileSize(artifact.sizeBytes)} • {artifact.mimeType}</span>
+                </span>
+                <Icon name="chevronRight" size={18} />
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       {#if toolCall.startTime}
         <div class="timing">
           <span>Started: {toolCall.startTime.toLocaleTimeString()}</span>
@@ -76,6 +106,8 @@
     </div>
   </Collapsible>
 </div>
+
+<WorkspaceArtifactModal artifact={modalArtifact} onClose={() => { modalArtifact = null; }} />
 
 <style>
   .tool-call-card {
@@ -196,5 +228,55 @@
     gap: var(--spacing-md);
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+  }
+
+  .artifact-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .artifact-chip {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    width: 100%;
+    min-height: 48px;
+    text-align: left;
+    padding: 0.75rem 0.8rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated-2);
+    color: var(--text-primary);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .artifact-chip:active {
+    border-color: color-mix(in srgb, var(--accent-primary) 50%, var(--border-default));
+    transform: scale(0.99);
+  }
+
+  .artifact-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .artifact-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .artifact-meta {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

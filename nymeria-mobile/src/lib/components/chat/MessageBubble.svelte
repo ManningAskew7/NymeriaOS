@@ -295,6 +295,7 @@
                 name: step.name || '',
                 arguments: step.arguments || {},
                 result: step.result,
+                artifacts: step.artifacts,
                 status: step.status || 'pending',
                 startTime: step.startTime,
                 endTime: step.endTime

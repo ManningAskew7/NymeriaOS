@@ -64,6 +64,7 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/chat/MessageBubble.svelte",
     "lib/components/chat/ThinkingBlock.svelte",
     "lib/components/chat/ToolCallCard.svelte",
+    "lib/components/chat/WorkspaceArtifactModal.svelte",
     "lib/components/chat/ToolReloadIndicator.svelte",
     "lib/components/chat/ContextStatusBar.svelte",
     "lib/components/chat/ImageModal.svelte",
