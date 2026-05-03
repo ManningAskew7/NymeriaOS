@@ -23,5 +23,5 @@ The `api.svelte.ts` file (1090 lines) should be split into:
 ## Current Status
 
 The API service currently remains in `api.svelte.ts` for backwards compatibility.
-The store utilities (`utils/polling.ts`, `utils/crud-store.ts`) have been created
-as reusable patterns for future refactoring.
+The old experimental store utility pattern was removed after it never gained
+callers; future API splitting should be based on active service domains.

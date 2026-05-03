@@ -224,8 +224,6 @@ Advanced section of Thread Settings.
 | `stores/connections.svelte.ts` | Connection-switching helpers | Desktop-only |
 | `stores/outlook.svelte.ts` | Outlook mode state | Desktop-only |
 | `stores/syncPoll.svelte.ts` | Sync/message-count polling helpers | Desktop-only |
-| `stores/utils/crud-store.ts` | CRUD utility pattern | Not used in mobile |
-| `stores/utils/polling.ts` | Polling helper | Not used in mobile |
 | `lib/index.ts` | Barrel exports | Not needed |
 
 ### Mobile-Only Files / Features (no desktop equivalent)
