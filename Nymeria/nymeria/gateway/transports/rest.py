@@ -59,8 +59,8 @@ class RESTTransport(BaseTransport):
         # Create the FastAPI app with the agent
         app = create_api_app(self.agent)
 
-        # Check if we're running in service mode (no stdout)
-        # In service mode, disable Uvicorn's default logging to avoid isatty() errors
+        # When stdout is unavailable (e.g. systemd Type=notify), disable
+        # Uvicorn's default logging to avoid isatty() errors.
         is_service_mode = sys.stdout is None
 
         # Configure Uvicorn

@@ -47,7 +47,7 @@ def test_require_service_token_exits_with_provisioning_guidance(capsys):
         ("watchdog", None, "the watchdog worker"),
         ("twitch-bot", None, "the Twitch bot"),
         ("mcp", None, "the MCP thin client"),
-        ("service", "run", "the foreground gateway service"),
+        ("service", None, "the foreground gateway service"),
     ],
 )
 def test_service_token_requirement_covers_internal_launch_modes(command, action, role):
@@ -62,8 +62,6 @@ def test_service_token_requirement_covers_internal_launch_modes(command, action,
         ("api", None),
         ("cli", None),
         ("users", None),
-        ("service", "install"),
-        ("service", "status"),
     ],
 )
 def test_service_token_requirement_skips_modes_without_internal_api_calls(command, action):

@@ -137,7 +137,7 @@ Make sure you've set the API key for your chosen provider in your environment fi
 - Read the full documentation in `docs/`
 - Customize Nymeria's personality in `nymeria/config/soul.md`
 - Explore other entry points like `python run.py cli`, `python run.py worker`, or `python run.py mcp`
-- Install as a Windows service: `python run.py service install`
+- Run as foreground gateway: `python run.py service`
 
 ## Getting Help
 

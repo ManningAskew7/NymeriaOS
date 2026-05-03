@@ -13,10 +13,6 @@ Usage:
     python run.py mcp              # Start MCP server (stdio mode)
     python run.py mcp --http       # Start MCP server (HTTP mode)
     python run.py mcp --port 8001  # MCP HTTP mode on custom port
-    python run.py service install  # Install as Windows service
-    python run.py service start    # Start the Windows service
-    python run.py service stop     # Stop the Windows service
-    python run.py service status   # Check service status
     python run.py service run      # Run gateway in foreground (debug)
 """
 
@@ -115,7 +111,7 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
 def _service_token_requirement(args: argparse.Namespace) -> str | None:
     """Return the human-readable role requiring NYMERIA_SERVICE_TOKEN, if any."""
     command = getattr(args, "command", None)
-    if command == "service" and getattr(args, "action", None) == "run":
+    if command == "service":
         return "the foreground gateway service"
     return _SERVICE_TOKEN_REQUIRED_COMMANDS.get(command)
 
@@ -159,7 +155,7 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
 
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        file_mode: If True, ONLY log to file (for Windows service mode)
+        file_mode: If True, ONLY log to file (no console output)
     """
     from nymeria.config import get_settings
     from nymeria.config.logging_config import (
@@ -245,72 +241,8 @@ def run_api(args: argparse.Namespace) -> None:
 
 
 def run_service(args: argparse.Namespace) -> None:
-    """Handle service subcommand."""
-    from nymeria.config import get_settings
-    from nymeria.gateway.service import (
-        get_service_status,
-        install_service,
-        start_service,
-        stop_service,
-        uninstall_service,
-    )
-
-    settings = get_settings()
-    action = args.action
-
-    if action == "install":
-        print(f"Installing Nymeria as Windows service: {settings.service_name}")
-        auto_start = settings.service_auto_start
-        if install_service(auto_start=auto_start):
-            print(f"Service '{settings.service_name}' installed successfully")
-            if auto_start:
-                print("  Auto-start: Enabled (will start on system boot)")
-            print("  Use 'python run.py service start' to start the service")
-        else:
-            print("Failed to install service. Run as Administrator.")
-            sys.exit(1)
-
-    elif action == "uninstall":
-        print(f"Uninstalling Windows service: {settings.service_name}")
-        if uninstall_service():
-            print(f"Service '{settings.service_name}' uninstalled successfully")
-        else:
-            print("Failed to uninstall service. Run as Administrator.")
-            sys.exit(1)
-
-    elif action == "start":
-        print(f"Starting service: {settings.service_name}")
-        if start_service():
-            print(f"Service '{settings.service_name}' started")
-        else:
-            print("Failed to start service. Check if installed and run as Administrator.")
-            sys.exit(1)
-
-    elif action == "stop":
-        print(f"Stopping service: {settings.service_name}")
-        if stop_service():
-            print(f"Service '{settings.service_name}' stopped")
-        else:
-            print("Failed to stop service. Check if running and run as Administrator.")
-            sys.exit(1)
-
-    elif action == "status":
-        status = get_service_status()
-        if status is None:
-            print("Error checking service status")
-            sys.exit(1)
-        elif status == "not_installed":
-            print(f"Service '{settings.service_name}' is not installed")
-        else:
-            print(f"Service '{settings.service_name}' is {status}")
-
-    elif action == "run":
-        # Run gateway in foreground (debug mode)
-        run_gateway_foreground(args)
-
-    else:
-        print(f"Unknown action: {action}")
-        sys.exit(1)
+    """Handle service subcommand (foreground gateway mode)."""
+    run_gateway_foreground(args)
 
 
 def run_worker(args: argparse.Namespace) -> None:
@@ -691,11 +623,7 @@ Examples:
     python run.py mcp                # Start MCP server (STDIO mode)
     python run.py mcp --http         # Start MCP server (HTTP mode)
     python run.py mcp --http -p 8001 # MCP HTTP mode on custom port
-    python run.py service install    # Install as Windows service
-    python run.py service start      # Start the Windows service
-    python run.py service stop       # Stop the Windows service
-    python run.py service status     # Check service status
-    python run.py service run        # Run gateway in foreground (debug)
+    python run.py service            # Run gateway in foreground
         """,
     )
     parser.add_argument(
@@ -807,25 +735,11 @@ Examples:
         help="URL of the running Nymeria API (default: NYMERIA_API_URL, Docker nymeria-api, or localhost:8000)",
     )
 
-    # Service subcommand
-    service_parser = subparsers.add_parser(
+    # Service subcommand (foreground gateway)
+    subparsers.add_parser(
         "service",
-        help="Windows service management",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Actions:
-    install    Install Nymeria as a Windows service
-    uninstall  Remove the Windows service
-    start      Start the Windows service
-    stop       Stop the Windows service
-    status     Check service status
-    run        Run gateway in foreground (for debugging)
-        """,
-    )
-    service_parser.add_argument(
-        "action",
-        choices=["install", "uninstall", "start", "stop", "status", "run"],
-        help="Service action to perform",
+        help="Run gateway server in foreground",
+        description="Start the GatewayServer (REST transport) in the foreground with graceful Ctrl+C shutdown.",
     )
 
     # Users subcommand (account provisioning)
@@ -847,13 +761,8 @@ Actions:
 
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
-    if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "telegram-bot", "twitch-bot", "watchdog"):
+    if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "telegram-bot", "twitch-bot", "watchdog", "service"):
         validate_config(suppress_service_token_warning=service_token_required)
-    elif args.command == "service" and args.action in ("install", "run"):
-        validate_config(suppress_service_token_warning=service_token_required)
-    elif args.command == "service" and args.action == "status":
-        # Status check doesn't need full validation
-        validate_config(skip_api_key=True)
     elif args.command == "users":
         # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
         # check so the admin can provision users before the API is configured.

@@ -128,15 +128,11 @@ package from the checkout or runtime config directory.
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
 | `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
 
-### Service and Logging
+### Log File Rotation
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERVICE_NAME` | `NymeriaService` | Windows service name |
-| `SERVICE_DISPLAY_NAME` | `Nymeria AI Assistant` | Display name in Windows Services |
-| `SERVICE_DESCRIPTION` | `Personal AI Assistant service providing REST API access` | Windows service description |
-| `SERVICE_AUTO_START` | `true` | Auto-start the Windows service on boot |
-| `SERVICE_LOG_FILE` | `service.log` | Service log filename |
+| `SERVICE_LOG_FILE` | `service.log` | Rotating log filename (all modes) |
 | `SERVICE_LOG_MAX_BYTES` | `10485760` | Rotate log after this many bytes |
 | `SERVICE_LOG_BACKUP_COUNT` | `5` | Number of rotated log backups to keep |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |

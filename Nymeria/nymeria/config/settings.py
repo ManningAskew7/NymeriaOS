@@ -460,26 +460,10 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000)
 
-    # Windows Service Configuration
-    service_name: str = Field(
-        default="NymeriaService",
-        description="Windows service name"
-    )
-    service_display_name: str = Field(
-        default="Nymeria AI Assistant",
-        description="Display name in Windows Services manager"
-    )
-    service_description: str = Field(
-        default="Personal AI Assistant service providing REST API access",
-        description="Service description"
-    )
-    service_auto_start: bool = Field(
-        default=True,
-        description="Auto-start service on system boot"
-    )
+    # Log file rotation (used by all modes for the persistent file handler)
     service_log_file: str = Field(
         default="service.log",
-        description="Log filename for service mode"
+        description="Log filename for the rotating file handler"
     )
     service_log_max_bytes: int = Field(
         default=10 * 1024 * 1024,  # 10MB

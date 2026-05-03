@@ -1,4 +1,4 @@
-"""Gateway module for Nymeria Windows Service."""
+"""Gateway module for Nymeria (GatewayServer + transports)."""
 
 from .server import GatewayServer
 from .transports import BaseTransport, RESTTransport
