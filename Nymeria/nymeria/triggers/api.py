@@ -27,14 +27,16 @@ from ..core.agent import NymeriaAgent
 from ..core.accounts import (
     AmbiguousTokenPrefix,
     AuthenticatedUser,
-    BindCodeInvalid,
-    BindingAlreadyExists,
-    BotAlreadyRegistered,
     LastAdminError,
     TokenNotFound,
     UserAlreadyExists,
     UserHasResources,
     UserNotFound,
+)
+from ..core.chat_bindings import (
+    BindCodeInvalid,
+    BindingAlreadyExists,
+    BotAlreadyRegistered,
 )
 from ..core import secrets as nymeria_secrets
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
@@ -1246,7 +1248,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     def _bound_chatapp_platform(thread_id: str) -> Optional[str]:
         """Return the sidebar platform implied by an explicit chat-app binding."""
         try:
-            if get_agent().accounts_repo.lookup_thread_binding_by_thread(
+            if get_agent().chat_bindings_repo.lookup_thread_binding_by_thread(
                 "telegram", thread_id
             ):
                 return "telegram"
@@ -1824,7 +1826,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         if provider is not None and provider not in ("discord", "telegram", "twitch"):
             raise HTTPException(status_code=400, detail="Unknown provider")
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         return [
             AdminBindingLookupResponse(
                 id=b.id,
@@ -1863,7 +1865,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 status_code=400,
                 detail="Provide exactly one of 'platform_chat_id' or 'thread_id'",
             )
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         binding = (
             repo.lookup_thread_binding_by_chat(provider, platform_chat_id)
             if platform_chat_id is not None
@@ -1899,8 +1901,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         knowing the code.
         """
         repo = get_agent().accounts_repo
+        bindings = get_agent().chat_bindings_repo
         try:
-            claim = repo.claim_bind_code(
+            claim = bindings.claim_bind_code(
                 body.code, kind="thread_bind", provider=body.provider
             )
         except BindCodeInvalid as e:
@@ -1918,7 +1921,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 detail="Code was issued by a different Nymeria account",
             )
         try:
-            binding = repo.create_thread_binding(
+            binding = bindings.create_thread_binding(
                 thread_id=claim.thread_id,
                 provider=body.provider,
                 platform_chat_id=body.platform_chat_id,
@@ -1947,7 +1950,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         if provider not in ("discord", "telegram", "twitch"):
             raise HTTPException(status_code=400, detail="Unknown provider")
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         binding = repo.lookup_thread_binding_by_chat(provider, platform_chat_id)
         if binding is None:
             return {"unbound": False}
@@ -1974,6 +1977,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         the target thread is already owned by that user.
         """
         repo = get_agent().accounts_repo
+        bindings = get_agent().chat_bindings_repo
         target_thread_id = body.thread_id.strip()
         if not target_thread_id:
             raise HTTPException(status_code=400, detail="thread_id is required")
@@ -1992,7 +1996,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Target thread not found")
 
         if body.user_telegram_bot_id is not None:
-            bot = repo.get_user_telegram_bot(body.user_telegram_bot_id)
+            bot = bindings.get_user_telegram_bot(body.user_telegram_bot_id)
             if bot is None or not bot.enabled:
                 raise HTTPException(status_code=404, detail="Telegram bot not found")
             if bot.owner_user_id != body.user_id:
@@ -2002,7 +2006,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 )
 
         try:
-            binding, previous_thread_id = repo.switch_thread_binding_for_chat(
+            binding, previous_thread_id = bindings.switch_thread_binding_for_chat(
                 thread_id=target_thread_id,
                 provider=body.provider,
                 platform_chat_id=body.platform_chat_id,
@@ -2043,7 +2047,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         ``user_telegram_bot_id`` so outbound delivery routes through the
         right bot's token.
         """
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         bot = repo.get_user_telegram_bot(body.via_user_telegram_bot_id)
         if bot is None or not bot.enabled:
             logger.warning(
@@ -2116,7 +2120,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         """
         if not nymeria_secrets.has_secrets_key():
             return []
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         out: List[AdminTelegramBotResponse] = []
         for bot, ciphertext in repo.list_user_telegram_bots_with_ciphertext():
             try:
@@ -2153,7 +2157,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         _admin=Depends(require_rate_limited_admin_bot_user),
     ):
         """Heartbeat ping from the supervisor after a successful poll cycle."""
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         if repo.get_user_telegram_bot(bot_id) is None:
             raise HTTPException(status_code=404, detail="Bot not found")
         repo.update_user_telegram_bot_seen(bot_id)
@@ -2175,8 +2179,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         ``users link-platform``.
         """
         repo = get_agent().accounts_repo
+        bindings = get_agent().chat_bindings_repo
         try:
-            claim = repo.claim_bind_code(
+            claim = bindings.claim_bind_code(
                 body.code, kind="platform_link", provider=body.provider
             )
         except BindCodeInvalid as e:
@@ -2251,7 +2256,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         claims the code (atomic) and writes the ``platform_identities`` row.
         Replaces the previously admin-only ``users link-platform`` CLI step.
         """
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         raw = repo.issue_bind_code(
             kind="platform_link",
             provider=body.provider,
@@ -2297,7 +2302,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         # Don't pre-issue if a binding already exists — the user should
         # unbind first. Surfaces a clear 409 instead of a confusing
         # double-bind UX.
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         existing = repo.lookup_thread_binding_by_thread(body.provider, thread_id)
         if existing is not None:
             raise HTTPException(
@@ -2335,7 +2340,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     ):
         """List chat-app bindings on this thread. Caller must own the thread."""
         _require_thread_access(user, thread_id)
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         return [
             ChatAppBindingResponse(
                 id=b.id,
@@ -2363,10 +2368,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         ownership).
         """
         _require_thread_access(user, thread_id)
-        repo = get_agent().accounts_repo
-        bindings = repo.list_thread_bindings(thread_id)
+        repo = get_agent().chat_bindings_repo
+        thread_bindings = repo.list_thread_bindings(thread_id)
         binding = next(
-            (b for b in bindings if b.id == binding_id and b.user_id == user.id),
+            (b for b in thread_bindings if b.id == binding_id and b.user_id == user.id),
             None,
         )
         ok = repo.delete_thread_binding(binding_id, user_id=user.id)
@@ -2392,7 +2397,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List the current user's registered Telegram bots (no token material)."""
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         return [
             MyTelegramBotResponse(
                 id=b.id,
@@ -2418,7 +2423,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         non-null) before showing the bind-code step — that way users don't
         try to ``/bind`` a bot that isn't online yet.
         """
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         bot = repo.get_user_telegram_bot(bot_id, owner_user_id=user.id)
         if bot is None:
             raise HTTPException(status_code=404, detail="Bot not found")
@@ -2509,7 +2514,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         ) as e:
             raise HTTPException(status_code=503, detail=str(e))
 
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         try:
             bot = repo.register_user_telegram_bot(
                 owner_user_id=user.id,
@@ -2553,7 +2558,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         bot stops polling). The actual polling loop is torn down on the
         supervisor's next refresh.
         """
-        repo = get_agent().accounts_repo
+        repo = get_agent().chat_bindings_repo
         affected_bindings = [
             b
             for b in repo.list_thread_bindings_for_user(user.id)
@@ -3217,13 +3222,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             logger.warning("Failed to collect trigger thread references for %s: %s", user_id, e)
 
         try:
-            for binding in agent.accounts_repo.list_thread_bindings_for_user(user_id):
+            for binding in agent.chat_bindings_repo.list_thread_bindings_for_user(user_id):
                 _add_thread_source(sources, binding.thread_id, "chat_binding")
         except Exception as e:
             logger.warning("Failed to collect chat binding thread references for %s: %s", user_id, e)
 
         try:
-            for tid in agent.accounts_repo.list_bind_code_thread_ids_for_user(user_id):
+            for tid in agent.chat_bindings_repo.list_bind_code_thread_ids_for_user(user_id):
                 _add_thread_source(sources, tid, "bind_code")
         except Exception as e:
             logger.warning("Failed to collect bind-code thread references for %s: %s", user_id, e)

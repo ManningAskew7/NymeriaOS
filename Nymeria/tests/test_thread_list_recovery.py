@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
+from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.core.todo_manager import TodoManager
@@ -39,7 +40,9 @@ class FakeSettings:
 
 class FakeAgent:
     def __init__(self, data_dir: Path):
-        self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
+        accounts_db = data_dir / "accounts.db"
+        self.accounts_repo = AccountsRepo(accounts_db)
+        self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
         self.thread_config_manager = ThreadConfigManager(data_dir)
         self.thread_metadata_manager = ThreadMetadataManager(data_dir)
         self.todo_manager = TodoManager(data_dir)
@@ -102,7 +105,7 @@ def test_threads_use_telegram_platform_for_bound_desktop_threads(tmp_path: Path,
     thread_id = "desktop-thread"
     agent.accounts_repo.claim_thread(thread_id, "bob")
     agent.thread_metadata_manager.upsert_thread("bob", thread_id, title="Bound")
-    agent.accounts_repo.create_thread_binding(
+    agent.chat_bindings_repo.create_thread_binding(
         thread_id=thread_id,
         provider="telegram",
         platform_chat_id="5551234567",
@@ -127,7 +130,7 @@ def test_threads_keep_telegram_platform_for_bound_callable_threads(tmp_path: Pat
     agent.thread_config_manager.save_config(
         ThreadConfig(thread_id=thread_id, callable=True, callable_name="TelegramAgent")
     )
-    agent.accounts_repo.create_thread_binding(
+    agent.chat_bindings_repo.create_thread_binding(
         thread_id=thread_id,
         provider="telegram",
         platform_chat_id="5551234567",
@@ -175,13 +178,13 @@ def test_threads_revert_bound_desktop_platform_after_unbind(tmp_path: Path, monk
     thread_id = "desktop-thread"
     agent.accounts_repo.claim_thread(thread_id, "bob")
     agent.thread_metadata_manager.upsert_thread("bob", thread_id, title="Bound")
-    binding = agent.accounts_repo.create_thread_binding(
+    binding = agent.chat_bindings_repo.create_thread_binding(
         thread_id=thread_id,
         provider="telegram",
         platform_chat_id="5551234567",
         user_id="bob",
     )
-    agent.accounts_repo.delete_thread_binding(binding.id, user_id="bob")
+    agent.chat_bindings_repo.delete_thread_binding(binding.id, user_id="bob")
 
     response = client.get("/threads", headers={"Authorization": f"Bearer {token}"})
 
@@ -199,7 +202,7 @@ def test_admin_chatapp_switch_moves_binding_between_owned_threads(
     admin_token = agent.accounts_repo.issue_token("admin")
     agent.accounts_repo.claim_thread("old-thread", "bob")
     agent.accounts_repo.claim_thread("new-thread", "bob")
-    agent.accounts_repo.create_thread_binding(
+    agent.chat_bindings_repo.create_thread_binding(
         thread_id="old-thread",
         provider="telegram",
         platform_chat_id="5551234567",
@@ -221,12 +224,12 @@ def test_admin_chatapp_switch_moves_binding_between_owned_threads(
     assert response.json()["thread_id"] == "new-thread"
     assert response.json()["previous_thread_id"] == "old-thread"
     assert (
-        agent.accounts_repo.lookup_thread_binding_by_chat(
+        agent.chat_bindings_repo.lookup_thread_binding_by_chat(
             "telegram", "5551234567"
         ).thread_id
         == "new-thread"
     )
-    assert agent.accounts_repo.lookup_thread_binding_by_thread("telegram", "old-thread") is None
+    assert agent.chat_bindings_repo.lookup_thread_binding_by_thread("telegram", "old-thread") is None
 
 
 def test_admin_chatapp_switch_rejects_thread_already_bound_elsewhere(
@@ -238,13 +241,13 @@ def test_admin_chatapp_switch_rejects_thread_already_bound_elsewhere(
     admin_token = agent.accounts_repo.issue_token("admin")
     agent.accounts_repo.claim_thread("old-thread", "bob")
     agent.accounts_repo.claim_thread("new-thread", "bob")
-    agent.accounts_repo.create_thread_binding(
+    agent.chat_bindings_repo.create_thread_binding(
         thread_id="old-thread",
         provider="telegram",
         platform_chat_id="111",
         user_id="bob",
     )
-    agent.accounts_repo.create_thread_binding(
+    agent.chat_bindings_repo.create_thread_binding(
         thread_id="new-thread",
         provider="telegram",
         platform_chat_id="222",
@@ -264,11 +267,11 @@ def test_admin_chatapp_switch_rejects_thread_already_bound_elsewhere(
 
     assert response.status_code == 409
     assert (
-        agent.accounts_repo.lookup_thread_binding_by_chat("telegram", "111").thread_id
+        agent.chat_bindings_repo.lookup_thread_binding_by_chat("telegram", "111").thread_id
         == "old-thread"
     )
     assert (
-        agent.accounts_repo.lookup_thread_binding_by_chat("telegram", "222").thread_id
+        agent.chat_bindings_repo.lookup_thread_binding_by_chat("telegram", "222").thread_id
         == "new-thread"
     )
 

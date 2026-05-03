@@ -218,10 +218,10 @@ def _delete_triggers(
 
 
 def _delete_chat_resources(agent: "NymeriaAgent", thread_id: str, result: ThreadDeletionResult) -> None:
-    repo = agent.accounts_repo
-    result.set("chat_bindings_deleted", repo.delete_thread_bindings_for_thread(thread_id))
-    result.set("bind_codes_deleted", repo.delete_bind_codes_for_thread(thread_id))
-    owner_deleted = repo.delete_thread_owner(thread_id)
+    bindings = agent.chat_bindings_repo
+    result.set("chat_bindings_deleted", bindings.delete_thread_bindings_for_thread(thread_id))
+    result.set("bind_codes_deleted", bindings.delete_bind_codes_for_thread(thread_id))
+    owner_deleted = agent.accounts_repo.delete_thread_owner(thread_id)
     result.set("thread_owners_deleted", 1 if owner_deleted else 0)
 
 

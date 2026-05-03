@@ -97,7 +97,7 @@ def thread_has_telegram_route(thread_id: str) -> bool:
         agent = get_current_agent()
         if agent is None:
             return False
-        return agent.accounts_repo.lookup_thread_binding_by_thread("telegram", thread_id) is not None
+        return agent.chat_bindings_repo.lookup_thread_binding_by_thread("telegram", thread_id) is not None
     except Exception as e:
         logger.debug("Could not resolve Telegram route for %s: %s", thread_id, e)
         return False

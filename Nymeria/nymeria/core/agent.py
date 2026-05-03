@@ -702,8 +702,11 @@ class NymeriaAgent:
         # Using a dedicated SQLite file keeps this independent of the
         # checkpoints backend (SQLite or Postgres).
         from .accounts import AccountsRepo
-        self.accounts_repo = AccountsRepo(self.settings.data_dir / "accounts.db")
+        from .chat_bindings import ChatBindingsRepo
+        accounts_db = self.settings.data_dir / "accounts.db"
+        self.accounts_repo = AccountsRepo(accounts_db)
         self.accounts_repo.ensure_bootstrap_admin(self.settings.data_dir)
+        self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
 
         # One-shot: migrate legacy global OAuth token caches
         # (``data/auth_tokens/.X_token_cache.json``) into the new per-user
