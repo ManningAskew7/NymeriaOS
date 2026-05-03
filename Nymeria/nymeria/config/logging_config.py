@@ -98,7 +98,7 @@ LOG_PROFILES: Dict[str, List[tuple]] = {
         ("nymeria.triggers.api", logging.DEBUG),
     ],
     "compactor": [
-        ("nymeria.core.compactor", logging.DEBUG),
+        ("nymeria.core.agent_compaction", logging.DEBUG),
         ("nymeria.core.token_tracker", logging.DEBUG),
     ],
     "threads": [
