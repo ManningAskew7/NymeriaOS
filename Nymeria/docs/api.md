@@ -244,7 +244,12 @@ See [`accounts.md`](accounts.md) for the data model, bootstrap admin flow, and s
 POST /chat
 Content-Type: application/json
 Authorization: Bearer <token>
+X-Nymeria-Client-Id: <per-client-uuid>
 ```
+
+`X-Nymeria-Client-Id` is optional but should be sent by desktop/mobile clients.
+It is copied onto cross-client sync events so that `GET /autonomous/stream`
+subscribers using the same `client_id` can suppress their own echoes.
 
 **Request Body:**
 ```json
@@ -253,7 +258,8 @@ Authorization: Bearer <token>
   "thread_id": "optional-thread-id",
   "user_id": "default",
   "attachments": [],
-  "force_unsupported_attachments": false
+  "force_unsupported_attachments": false,
+  "is_self_invoke": false
 }
 ```
 
@@ -266,6 +272,22 @@ Authorization: Bearer <token>
 | `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
 | `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the watchdog worker; gated by the same Bearer-auth check as any `/chat` call. |
 | `trigger_override` | string | No | - | Label for autonomous invocations (e.g. `"watchdog"`, `"ticker"`). Becomes part of `task_id` and the `source` field on emitted autonomous events. |
+| `trigger_id` | string | No | - | Trigger row ID for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed` for frontend/bot classification. |
+| `trigger_name` | string | No | - | Human-readable trigger name for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed`. |
+
+**Autonomous caller contract:** Trusted workers and thin clients start internal
+work by calling `POST /chat` with `is_self_invoke=true`, a normal Bearer token,
+and usually `X-Nymeria-Act-As: <target_user_id>` when using an admin service
+token. The direct `/chat` response still streams SSE back to the caller, but the
+message is stored as internal autonomous work rather than as a user-authored chat
+message.
+
+For self-invoke calls, the API publishes `task_started` to
+`/autonomous/stream` only after the first non-`queued` agent chunk. This avoids
+moving subscribed clients into autonomous-streaming state while the run is still
+waiting on the per-thread lock behind an active user chat. Supported agent
+chunks are then mirrored live, and `task_completed` is published when the run
+finishes or errors.
 
 **Response:** Server-Sent Events (SSE)
 
@@ -555,12 +577,36 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 
 **Client behavior:** Treat this as a long-lived fetch stream, not a finite request. Heartbeats are SSE comments (`: heartbeat`) and do not carry JSON. Clients should reconnect when the response ends, errors, or stops receiving heartbeat/data bytes. The desktop client also refreshes current thread history/context and the thread list after reconnect so missed autonomous chunks are reconciled from persisted state.
 
+Every data frame is a JSON object with canonical `type`, `thread_id`, `task_id`,
+and `timestamp` fields plus the event-specific payload. Internal fields such as
+`_origin_client_id` are stripped before the event is sent to clients.
+
 **Query Parameters:**
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `user_id` | No | `"default"` | Legacy/user hint. For normal Bearer auth, the authenticated account is authoritative; admin callers can use `X-Nymeria-Act-As` to stream another user or `*` for the firehose. |
+| `user_id` | No | `"default"` | Legacy/user hint. For normal Bearer auth, the authenticated account is authoritative; the query value does not grant access to another user's events. |
 | `client_id` | No | - | Frontend client ID for filtering same-client sync events. Desktop and mobile send a per-session UUID. |
 | `api_key` | No | - | Legacy fallback token for clients that cannot set headers |
+
+**Auth and filtering:**
+- Normal users stream only their own events, regardless of the `user_id` query.
+- Admin callers can set `X-Nymeria-Act-As: <user_id>` to stream one target
+  user's events.
+- Admin callers can set `X-Nymeria-Act-As: *` for the firehose. This is used by
+  Discord and Telegram thin clients with the admin service token; they route
+  events to platform chats by inspecting `thread_id` prefixes. Non-admin callers
+  that send any `X-Nymeria-Act-As` value receive `403`.
+- `client_id` deduplicates cross-client sync events. Use the same value as
+  `X-Nymeria-Client-Id` on mutating requests; events with a matching hidden
+  origin are filtered from this stream.
+
+**Ordering rules:**
+1. `task_started` is the first autonomous event for a run, but it is deferred
+   until the first non-`queued` agent chunk after the thread lock is acquired.
+2. Supported agent chunks are forwarded in the order produced by the agent.
+3. `task_completed` closes the run and is emitted on both success and failure.
+   Consumers should render live `response` chunks as the primary output and use
+   `task_completed.content` only as a fallback when no response chunks arrived.
 
 **Event Types:**
 
@@ -580,6 +626,15 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 | `iteration_limit` | Agent hit a turn safety stop | `content`, `reason`, `max_iterations`, `tool_call_count`, optional repeated-tool fields |
 | `notification` | Explicit `notify` tool event or new in-app notification | `message`, `summary`, `in_app_only` |
 | `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id`, optional `handoff_id`, `caller_thread_id`, `caller_thread_name` |
+
+The same stream also carries cross-client sync events used by open frontends:
+
+| Event | Description | Fields |
+|-------|-------------|--------|
+| `message_added` | Another client posted an interactive user message | `role`, `content` |
+| `thread_created` | A thread/callable thread was created | `title`, `title_source`, `platform` |
+| `thread_updated` | Thread metadata changed | `title`, `title_source`, `pinned`, `platform` |
+| `thread_deleted` | A thread was deleted | none |
 
 **Example Stream:**
 ```
