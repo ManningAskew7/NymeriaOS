@@ -338,7 +338,7 @@ Desktop fetch stream parses frames and updates the active chat thread
 GET /autonomous/stream?user_id={user_id}&client_id={client_id}
 Authorization: Bearer {key}
 ```
-- Desktop opens the stream with `fetch()` + `ReadableStream`, `Accept: text/event-stream`, and Bearer auth headers. The legacy `api_key` query parameter remains available for older EventSource-style clients.
+- Desktop and mobile open the stream with `fetch()` + `ReadableStream`, `Accept: text/event-stream`, Bearer auth headers, and a per-session `client_id`. The legacy `api_key` query parameter remains available for older EventSource-style clients.
 - Sends heartbeat every 1 second when idle
 - Filters events to the authenticated user unless an admin caller uses `X-Nymeria-Act-As`; `client_id` suppresses same-client sync echoes
 - Unsubscribes on client disconnect

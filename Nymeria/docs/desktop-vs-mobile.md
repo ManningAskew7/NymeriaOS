@@ -104,7 +104,7 @@ These files share core logic but have platform-specific adaptations. When making
 
 #### `components/common/SettingsPanel.svelte`
 
-Desktop: 1129 lines. Mobile: 957 lines. Same settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP).
+Desktop: 2065 lines. Mobile: 1272 lines. Same settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP).
 
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
@@ -118,7 +118,7 @@ Desktop: 1129 lines. Mobile: 957 lines. Same settings categories (Connection, Ap
 | **Safe areas** | None | `env(safe-area-inset-*)` padding |
 | **On save connection** | No side effects | Calls `healthStore.check()` + sets `setupCompleted` |
 | **Active class** | `.selected` | `.active` |
-| **Lines** | ~1816 | ~1163 |
+| **Lines** | ~2065 | ~1272 |
 
 **When changing**: Settings fields, validation logic, and API call structure should be replicated. Layout, sizing, and mobile UX are platform-specific.
 
@@ -128,7 +128,7 @@ Both have 4-step onboarding (Welcome → URL → API Key → Complete). The mobi
 
 #### `components/threads/ThreadList.svelte`
 
-Desktop: 725 lines. Mobile: 145 lines. **Most divergent file.**
+Desktop: 1258 lines. Mobile: 145 lines. **Most divergent file.**
 
 | Feature | Desktop | Mobile |
 |---------|---------|--------|
@@ -142,7 +142,7 @@ Desktop: 725 lines. Mobile: 145 lines. **Most divergent file.**
 | **Task counts** | Shows active task count | Not implemented |
 | **Search** | Not present | Text search filter at top |
 | **Thread config** | Configure button/right-click → ThreadSettingsPanel modal; row Agent shortcut opens the Agent tab directly | Not present in list (settings open from chat header) |
-| **Lines** | ~766 | ~145 |
+| **Lines** | ~1258 | ~145 |
 
 **When changing**: Adding new thread list features requires independent implementation on each platform. The underlying `threadsStore` is shared, so data-layer changes sync automatically.
 
@@ -177,7 +177,7 @@ Advanced section of Thread Settings.
 | **Notification polling** | Not started here | `notificationStore.startPolling()` on mount |
 | **Thread restore** | Complex: validates platform, falls back | Simple: direct load |
 | **SSE delay** | 500ms delay before connecting | Immediate |
-| **Autonomous SSE transport** | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, idle timeout reconnect, reconnect catch-up | `fetch()` + `ReadableStream`, Bearer auth header plus legacy query-token compatibility, mobile lifecycle reconnect |
+| **Autonomous SSE transport** | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, idle timeout reconnect, reconnect catch-up | `fetch()` + `ReadableStream`, Bearer auth header, `client_id`, legacy query-token compatibility, mobile lifecycle reconnect |
 | **Debug logging** | Extensive `console.log` | Minimal |
 
 **When changing**: Changes to startup logic (thread sync, history loading, setup wizard flow) should be replicated, respecting each platform's lifecycle.
@@ -298,7 +298,7 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 3. Update rendering in `MessageBubble.svelte` or any platform-specific component affected
 4. Verify both implementations, because these files are no longer guaranteed identical
 
-Autonomous stream transport is intentionally not byte-identical today. Desktop's `stores/autonomous.svelte.ts` is the proven runtime path for live autonomous TODO/trigger streaming: Bearer-auth fetch stream, heartbeat/idle guard, reconnect catch-up, and sampled console diagnostics. Mobile also uses fetch streaming because WebView EventSource behavior is unreliable, but it still includes the legacy `api_key` query parameter for compatibility while sending the Bearer header.
+Autonomous stream transport is intentionally not byte-identical today. Desktop's `stores/autonomous.svelte.ts` is the proven runtime path for live autonomous TODO/trigger streaming: Bearer-auth fetch stream, per-session `client_id`, heartbeat/idle guard, reconnect catch-up, and sampled console diagnostics. Mobile also uses fetch streaming with Bearer auth and a per-session `client_id` because WebView EventSource behavior is unreliable, but it still includes the legacy `api_key` query parameter for compatibility.
 
 Current example: `workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`, but only desktop renders it today via `ToolCallCard.svelte` + `WorkspaceArtifactModal.svelte`.
 
@@ -359,7 +359,7 @@ not been replicated yet.
 ### Adding thread list features (folders, sorting, pins)
 
 The `threadsStore` already supports all features in both. Only the `ThreadList.svelte` UI differs:
-- Desktop: Full-featured (725 lines)
+- Desktop: Full-featured (1258 lines)
 - Mobile: Simplified (145 lines) — needs independent implementation with touch-friendly UX
 
 ---
