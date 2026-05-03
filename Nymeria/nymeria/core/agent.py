@@ -33,6 +33,7 @@ from ..config import Settings, get_settings
 from ..config.model_capabilities import get_context_limit
 from .user_profile import UserProfileManager
 from .token_tracker import TokenTracker
+from .token_usage import extract_from_message, extract_last_from_messages
 from .compactor import ConversationCompactor, estimate_tokens
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager, TodoStatus
@@ -1123,9 +1124,9 @@ class NymeriaAgent:
     def _build_async_checkpointer_config(self) -> CheckpointerConfig:
         """Build async checkpointer config for async streaming.
 
-        Uses AsyncSqliteSaver which shares the same database file as the sync
-        SqliteSaver, ensuring state consistency AND persistence across restarts.
-        WAL mode enables concurrent read/write from both sync and async paths.
+        Uses the AsyncSqliteSaverWrapper around Nymeria's shared SqliteSaver,
+        ensuring sync and async paths share one serialization path and durable
+        checkpoint store. WAL mode enables concurrent read/write access.
         """
         backend = self.settings.database_backend
 
@@ -1138,7 +1139,7 @@ class NymeriaAgent:
                 postgres_uri=self.settings.postgres_uri,
             )
         elif backend == "sqlite":
-            # Use sqlite_async to get AsyncSqliteSaver (same DB file as sync)
+            # sqlite_async still resolves to AsyncSqliteSaverWrapper.
             db_path = self.settings.db_path
             db_path.parent.mkdir(parents=True, exist_ok=True)
             return CheckpointerConfig(
@@ -1868,45 +1869,8 @@ class NymeriaAgent:
         return events
 
     def _extract_tokens_from_response(self, messages: List) -> tuple:
-        """
-        Extract token usage from the latest AIMessage's metadata.
-
-        Checks multiple locations since different providers use different keys:
-        - Anthropic: response_metadata.usage.input_tokens
-        - OpenRouter/OpenAI: response_metadata.token_usage.prompt_tokens
-        - LangChain: usage_metadata.input_tokens (standardized)
-
-        Args:
-            messages: List of messages to search
-
-        Returns:
-            Tuple of (input_tokens, output_tokens)
-        """
-        for msg in reversed(messages):
-            if not isinstance(msg, AIMessage):
-                continue
-
-            # Try LangChain's standardized usage_metadata first
-            if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                um = msg.usage_metadata
-                inp = getattr(um, "input_tokens", 0) or (um.get("input_tokens", 0) if isinstance(um, dict) else 0)
-                out = getattr(um, "output_tokens", 0) or (um.get("output_tokens", 0) if isinstance(um, dict) else 0)
-                if inp or out:
-                    return inp, out
-
-            # Fallback: check response_metadata
-            if hasattr(msg, "response_metadata") and msg.response_metadata:
-                meta = msg.response_metadata
-                # Anthropic format
-                usage = meta.get("usage", {})
-                if usage.get("input_tokens") or usage.get("output_tokens"):
-                    return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
-                # OpenRouter/OpenAI format
-                token_usage = meta.get("token_usage", {})
-                if token_usage.get("prompt_tokens") or token_usage.get("completion_tokens"):
-                    return token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0)
-
-        return 0, 0
+        """Extract token usage from the latest AIMessage's metadata."""
+        return extract_last_from_messages(messages)
 
     def _should_auto_compact_now(
         self,
@@ -2644,40 +2608,14 @@ class NymeriaAgent:
             last_input = 0
             last_output = 0
 
-            def _extract_tokens(msg):
-                """Extract (input_tokens, output_tokens) from an AIMessage."""
-                if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                    um = msg.usage_metadata
-                    inp = getattr(um, "input_tokens", 0) or (um.get("input_tokens", 0) if isinstance(um, dict) else 0)
-                    out = getattr(um, "output_tokens", 0) or (um.get("output_tokens", 0) if isinstance(um, dict) else 0)
-                    return inp, out
-                if hasattr(msg, "response_metadata") and msg.response_metadata:
-                    meta = msg.response_metadata
-                    usage = meta.get("usage", {})
-                    if usage.get("input_tokens") or usage.get("output_tokens"):
-                        return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
-                    token_usage = meta.get("token_usage", {})
-                    if token_usage.get("prompt_tokens") or token_usage.get("completion_tokens"):
-                        return token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0)
-                return 0, 0
-
-            # Accumulate cumulative totals from all AI messages
             for msg in messages:
                 if not isinstance(msg, AIMessage):
                     continue
-                inp, out = _extract_tokens(msg)
+                inp, out = extract_from_message(msg)
                 total_input += inp
                 total_output += out
 
-            # Find the last AI message's tokens for context fullness
-            for msg in reversed(messages):
-                if not isinstance(msg, AIMessage):
-                    continue
-                inp, out = _extract_tokens(msg)
-                if inp or out:
-                    last_input = inp
-                    last_output = out
-                    break
+            last_input, last_output = extract_last_from_messages(messages)
 
             if total_input or total_output:
                 # Record with last-call values (sets both last_* and adds to cumulative)
