@@ -9,7 +9,11 @@ import pytest
 
 from nymeria.core.custom_tools import CustomToolLoader
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
-from nymeria.tools.definitions.schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
+from nymeria.tools.definitions.custom_tool_schema import (
+    CustomToolDefinition,
+    HTTPToolConfig,
+    ToolParameter,
+)
 from nymeria.tools.metadata import SecurityLevel, ToolCategory, clear_custom_tool_metadata, get_all_tool_metadata
 from nymeria.tools.tool_create import (
     ToolDraftStore,

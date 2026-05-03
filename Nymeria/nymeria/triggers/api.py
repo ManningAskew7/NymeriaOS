@@ -49,11 +49,13 @@ from ..core.notifications import NotificationStore, Notification, create_notific
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS, get_all_tools_with_agents
-from ..tools.definitions.schema import (
+from ..tools.definitions.custom_tool_schema import (
     CustomToolDefinition,
     HTTPToolConfig,
-    MCPToolConfig,
     ToolParameter,
+)
+from ..tools.definitions.mcp_schema import (
+    MCPToolConfig,
 )
 from ..core.custom_tools import (
     get_custom_tool_loader,
@@ -6602,7 +6604,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         act-as for admin-as-admin).
         """
         from ..core.mcp_servers import get_mcp_server_registry
-        from ..tools.definitions.schema import MCPServerDefinition
+        from ..tools.definitions.mcp_schema import MCPServerDefinition
 
         registry = get_mcp_server_registry()
 

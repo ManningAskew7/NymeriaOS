@@ -7,7 +7,7 @@ import zipfile
 
 from nymeria.core.mcp_sources import classify_mcp_source, extract_install_source
 from nymeria.core.mcp_runtime import plan_bundle_file, plan_text_source
-from nymeria.tools.definitions.schema import MCPServerDefinition
+from nymeria.tools.definitions.mcp_schema import MCPServerDefinition
 
 
 def test_plan_npm_package_url_uses_npx_runtime():

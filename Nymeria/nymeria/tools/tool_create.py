@@ -23,7 +23,7 @@ from ..config import get_settings
 from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
 from ..core.tool_reload import tool_reload_command
-from ..tools.definitions.schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
+from .definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
 from .tool_search import DEFAULT_TTL, TTL_PRESETS, _enable
 from .utils import get_thread_id, get_user_id
 

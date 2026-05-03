@@ -25,7 +25,7 @@ import httpx
 from langchain_core.tools import BaseTool, StructuredTool
 
 from ..config import get_settings
-from ..tools.definitions.schema import CustomToolDefinition, HTTPToolConfig
+from ..tools.definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig
 from ..tools.metadata import (
     clear_custom_tool_metadata,
     register_custom_tool_metadata,

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..tools.definitions.schema import MCPToolConfig
+from ..tools.definitions.mcp_schema import MCPToolConfig
 
 logger = logging.getLogger(__name__)
 

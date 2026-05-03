@@ -11,7 +11,7 @@ from nymeria.core.custom_tools import execute_http_tool
 from nymeria.core.http_policy import HTTPPolicyConfig, evaluate_http_url
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools.http_api import TOOL_VERSION, _api_discover_impl, _http_request_impl
-from nymeria.tools.definitions.schema import HTTPToolConfig
+from nymeria.tools.definitions.custom_tool_schema import HTTPToolConfig
 from nymeria.tools.metadata import SecurityLevel, get_all_tool_metadata
 
 

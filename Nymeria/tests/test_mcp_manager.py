@@ -10,7 +10,7 @@ from nymeria.core import mcp_servers
 from nymeria.core.custom_tools import CustomToolLoader
 from nymeria.core.mcp_manager import MCPServerManager
 from nymeria.core.mcp_manager import get_mcp_manager, shutdown_mcp_manager
-from nymeria.tools.definitions.schema import MCPToolConfig
+from nymeria.tools.definitions.mcp_schema import MCPToolConfig
 
 
 def test_stdio_startup_failure_includes_recent_stderr(tmp_path):

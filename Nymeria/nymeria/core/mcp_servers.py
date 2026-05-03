@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import BaseTool, StructuredTool
 
 from ..config import get_settings
-from ..tools.definitions.schema import (
+from ..tools.definitions.mcp_schema import (
     MCPDiscoveredTool,
     MCPServerDefinition,
     MCPToolConfig,
