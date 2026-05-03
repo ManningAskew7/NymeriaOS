@@ -106,7 +106,7 @@ These files share core logic but have platform-specific adaptations. When making
 
 #### `components/common/SettingsPanel.svelte`
 
-Desktop: 2065 lines. Mobile: 1272 lines. Same settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP).
+Desktop: 2065 lines. Mobile: 1272 lines. Same core settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP). Desktop also owns global Skills management and marketplace install; mobile keeps Skills control inside per-thread settings.
 
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
@@ -154,7 +154,9 @@ Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for m
 
 #### `components/threads/ThreadSettingsPanel.svelte`
 
-Both exist and provide per-thread LLM config UI plus dedicated Agent and MCP tabs for callable-thread settings and MCP tool overrides. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
+Both exist and provide per-thread LLM config UI plus dedicated Agent, MCP, Skills, and Triggers tabs for callable-thread settings, MCP tool overrides, skill overrides, and trigger setup. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
+
+Skills parity is intentionally partial on mobile: mobile can list installed skills and set per-thread enable/disable overrides, while marketplace install, uninstall, and global skill defaults remain desktop-only because those are administrative/library-management workflows.
 
 Per-thread attention settings are shared conceptually across both apps:
 `telegram_autonomous_delivery` controls whether Telegram gets full autonomous

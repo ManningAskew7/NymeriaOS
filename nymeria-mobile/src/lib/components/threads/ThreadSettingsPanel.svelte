@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
+  import type { SkillMetadata, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -8,6 +8,7 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Button from '$lib/components/common/Button.svelte';
@@ -48,7 +49,7 @@
     return currentPlatform === 'callable' ? 'desktop' : (currentPlatform ?? detected);
   }
 
-  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'triggers';
+  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
   let activeTab = $state<Tab>('instructions');
@@ -88,6 +89,10 @@
   let enabledTools = $state<Set<string>>(new Set());
   let toolSearch = $state('');
   let showToolWarning = $state(false);
+
+  // Form state — Skills
+  let threadEnabledSkills = $state<Set<string>>(new Set());
+  let threadDisabledSkills = $state<Set<string>>(new Set());
 
   function isMcpToolName(name: string): boolean {
     return name.startsWith('mcp__');
@@ -242,6 +247,60 @@
     [...enabledTools].filter(isMcpToolName).length
   );
 
+  const resolvedActiveSkillNames = $derived.by(() => {
+    const seen = new Set<string>();
+    for (const skill of skillsStore.installed) {
+      if (skill.default_active && !threadDisabledSkills.has(skill.name)) {
+        seen.add(skill.name);
+      }
+    }
+    for (const name of skillsStore.enabledGlobal) {
+      if (!threadDisabledSkills.has(name)) seen.add(name);
+    }
+    for (const name of threadEnabledSkills) {
+      if (!threadDisabledSkills.has(name)) seen.add(name);
+    }
+    return seen;
+  });
+
+  function isSkillActiveHere(skill: SkillMetadata): boolean {
+    return (
+      skill.default_active ||
+      skillsStore.enabledGlobal.includes(skill.name) ||
+      threadEnabledSkills.has(skill.name)
+    ) && !threadDisabledSkills.has(skill.name);
+  }
+
+  function toggleThreadSkillEnabled(name: string) {
+    const next = new Set(threadEnabledSkills);
+    if (next.has(name)) {
+      next.delete(name);
+    } else {
+      next.add(name);
+      if (threadDisabledSkills.has(name)) {
+        const disabled = new Set(threadDisabledSkills);
+        disabled.delete(name);
+        threadDisabledSkills = disabled;
+      }
+    }
+    threadEnabledSkills = next;
+  }
+
+  function toggleThreadSkillDisabled(name: string) {
+    const next = new Set(threadDisabledSkills);
+    if (next.has(name)) {
+      next.delete(name);
+    } else {
+      next.add(name);
+      if (threadEnabledSkills.has(name)) {
+        const enabled = new Set(threadEnabledSkills);
+        enabled.delete(name);
+        threadEnabledSkills = enabled;
+      }
+    }
+    threadDisabledSkills = next;
+  }
+
   // Trigger count for badge
   const activeTriggerCount = $derived(
     triggersStore.triggers.filter(t => t.enabled && t.thread_id === threadId).length
@@ -263,6 +322,8 @@
         if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
         if (!mcpServersStore.loaded && !mcpServersStore.loading) mcpServersStore.load();
+        if (!skillsStore.installedLoaded && !skillsStore.installedLoading) skillsStore.loadInstalled();
+        if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) skillsStore.loadGlobal();
         if (Object.keys(triggersStore.sources).length === 0) triggersStore.loadSources();
       });
     }
@@ -316,6 +377,8 @@
       disabledTools = new Set();
       enabledTools = new Set();
     }
+    threadEnabledSkills = new Set(cfg?.enabledSkills ?? []);
+    threadDisabledSkills = new Set(cfg?.disabledSkills ?? []);
   }
 
   function toggleTool(toolName: string) {
@@ -381,6 +444,12 @@
     for (const t of disabledTools) { if (!origDisabled.has(t)) return true; }
     if (enabledTools.size !== origEnabled.size) return true;
     for (const t of enabledTools) { if (!origEnabled.has(t)) return true; }
+    const origEnabledSkills = new Set(orig?.enabledSkills ?? []);
+    const origDisabledSkills = new Set(orig?.disabledSkills ?? []);
+    if (threadEnabledSkills.size !== origEnabledSkills.size) return true;
+    for (const skill of threadEnabledSkills) { if (!origEnabledSkills.has(skill)) return true; }
+    if (threadDisabledSkills.size !== origDisabledSkills.size) return true;
+    for (const skill of threadDisabledSkills) { if (!origDisabledSkills.has(skill)) return true; }
     return false;
   }
 
@@ -422,6 +491,18 @@
         updates.enabled_tools = Array.from(enabledTools);
       } else {
         updates.clear_enabled_tools = true;
+      }
+
+      // Per-thread skill overrides
+      if (threadEnabledSkills.size > 0) {
+        updates.enabled_skills = Array.from(threadEnabledSkills);
+      } else {
+        updates.clear_enabled_skills = true;
+      }
+      if (threadDisabledSkills.size > 0) {
+        updates.disabled_skills = Array.from(threadDisabledSkills);
+      } else {
+        updates.clear_disabled_skills = true;
       }
 
       // LLM config
@@ -563,6 +644,10 @@
       <button class="tab-btn" class:active={activeTab === 'mcp'} onclick={() => (activeTab = 'mcp')}>
         MCP
         {#if mcpOverrideCount > 0}<span class="tab-badge">{mcpOverrideCount}</span>{/if}
+      </button>
+      <button class="tab-btn" class:active={activeTab === 'skills'} onclick={() => (activeTab = 'skills')}>
+        Skills
+        {#if resolvedActiveSkillNames.size > 0}<span class="tab-badge">{resolvedActiveSkillNames.size}</span>{/if}
       </button>
       <button class="tab-btn" class:active={activeTab === 'triggers'} onclick={() => (activeTab = 'triggers')}>
         Triggers
@@ -973,6 +1058,65 @@
           {/if}
         {/if}
 
+      {:else if activeTab === 'skills'}
+        {#if skillsStore.installedError}
+          <div class="loading-state">{skillsStore.installedError}</div>
+        {:else if skillsStore.installedLoading && !skillsStore.installedLoaded}
+          <div class="loading-state">Loading skills...</div>
+        {:else if skillsStore.installed.length === 0}
+          <div class="loading-state">No skills installed.</div>
+        {:else}
+          <div class="section-divider">
+            <span class="section-title">Thread Skills</span>
+            <p class="hint">Enable or disable installed skills for this thread. Globally enabled and default skills are active unless disabled here.</p>
+          </div>
+
+          <div class="skills-list">
+            {#each skillsStore.installed as skill (skill.name)}
+              {@const defaultOn = skill.default_active}
+              {@const globalOn = skillsStore.enabledGlobal.includes(skill.name)}
+              {@const threadOn = threadEnabledSkills.has(skill.name)}
+              {@const threadOff = threadDisabledSkills.has(skill.name)}
+              {@const activeHere = isSkillActiveHere(skill)}
+              <div class="skill-row" class:skill-active={activeHere} class:skill-disabled={threadOff}>
+                <div class="skill-info">
+                  <div class="skill-head">
+                    <span class="skill-name">{skill.name}</span>
+                    <span class="skill-scope">{skill.scope}</span>
+                    {#if defaultOn}<span class="skill-chip">default</span>{/if}
+                    {#if globalOn}<span class="skill-chip">global</span>{/if}
+                    {#if skill.is_skill_kit}<span class="skill-chip">Skill Kit</span>{/if}
+                  </div>
+                  <p class="skill-desc">{skill.description}</p>
+                  {#if skill.required_tools.length > 0}
+                    <p class="skill-tools">
+                      Requires {skill.required_tools.join(', ')}
+                    </p>
+                  {/if}
+                </div>
+                <div class="skill-actions">
+                  <button
+                    class="skill-btn"
+                    class:skill-btn-danger={threadOff}
+                    onclick={() => toggleThreadSkillDisabled(skill.name)}
+                    type="button"
+                  >
+                    {threadOff ? 'Disabled' : 'Disable'}
+                  </button>
+                  <button
+                    class="skill-btn"
+                    class:skill-btn-active={threadOn}
+                    onclick={() => toggleThreadSkillEnabled(skill.name)}
+                    type="button"
+                  >
+                    {threadOn ? 'Thread' : 'Enable'}
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
       {:else if activeTab === 'triggers'}
         <TriggerConfigTab {threadId} />
       {/if}
@@ -1284,6 +1428,112 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Skills tab */
+  .skills-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .skill-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) 0;
+    border-bottom: 1px solid var(--border-subtle);
+    min-height: 72px;
+  }
+
+  .skill-row:last-child {
+    border-bottom: none;
+  }
+
+  .skill-row.skill-disabled {
+    opacity: 0.62;
+  }
+
+  .skill-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .skill-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .skill-name {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .skill-scope,
+  .skill-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .skill-chip {
+    color: var(--accent-primary);
+  }
+
+  .skill-desc,
+  .skill-tools {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .skill-tools {
+    color: var(--text-secondary);
+  }
+
+  .skill-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .skill-btn {
+    min-width: 76px;
+    min-height: 34px;
+    padding: 0 var(--spacing-xs);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+  }
+
+  .skill-btn-active {
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    color: var(--accent-primary);
+  }
+
+  .skill-btn-danger {
+    border-color: var(--error);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
   }
 
   /* Toggle switch */

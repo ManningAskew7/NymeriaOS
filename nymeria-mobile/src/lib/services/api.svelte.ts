@@ -2088,6 +2088,20 @@ export class NymeriaAPI {
     return this._normalizeThreadConfig(data);
   }
 
+  async listSkills(
+    userId?: string,
+    scope?: import('$lib/types').SkillScope,
+  ): Promise<import('$lib/types').SkillMetadata[]> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
+    if (scope) params.set('scope', scope);
+    const response = await fetch(`${this.getBaseUrl()}/skills?${params.toString()}`, {
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    const data = await response.json();
+    return (data.skills ?? []) as import('$lib/types').SkillMetadata[];
+  }
+
   async getGlobalSkills(userId?: string): Promise<string[]> {
     const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
     const response = await fetch(
