@@ -445,7 +445,7 @@ For GPT-5.5 through Codex OAuth, run the sidecar documented in `docs/cliproxy.md
 
 The global LLM settings are intentionally not account-scoped. Two users on the same Nymeria server cannot have different "global" providers; the last admin save wins for the deployment. To give one user's thread a different provider, configure that thread's LLM override instead.
 
-**CLIProxyAPI tool name prefixing**: CLIProxyAPI can add a `proxy_` prefix to tool names with OAuth tokens. To disable this, add `"tool_prefix_disabled": true` to the Claude OAuth token file in the auth directory (e.g., `~/.cli-proxy-api/claude-<email>.json`).
+**CLIProxyAPI tool name prefixing**: CLIProxyAPI can add a `proxy_` prefix to tool names with OAuth tokens. To disable this, add top-level `"tool_prefix_disabled": true` to the Claude OAuth token file in the auth directory (e.g., `~/.cli-proxy-api/claude-<email>.json`) and restart CLIProxy. `Nymeria/tools/check_cliproxy_cloak.py --auth-dir <auth-dir>` fails loudly when an active Claude auth file is missing the flag.
 
 ---
 
