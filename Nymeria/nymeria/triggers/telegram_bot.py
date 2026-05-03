@@ -44,6 +44,7 @@ from telegram.ext import (
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .message_splitter import split_telegram_message as split_message
+from .sse_consumer import parse_attach_paths as _parse_attach_paths
 
 logger = logging.getLogger(__name__)
 
@@ -192,12 +193,7 @@ def format_compaction_notice_html(
     return "\n".join(parts)
 
 
-_ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
-
-
-def parse_attach_paths(result: str) -> List[str]:
-    """Extract file paths from ``[attach:/path]`` tags in a tool result."""
-    return _ATTACH_RE.findall(result)
+parse_attach_paths = _parse_attach_paths
 
 
 # =============================================================================
@@ -973,52 +969,63 @@ class NymeriaTelegramBot:
     # Streaming chat dispatcher
     # =========================================================================
 
-    async def _stream_to_chat(
-        self,
-        chat_id: int,
-        message: str,
-        thread_id: str,
-        user_id: str,
-        context: ContextTypes.DEFAULT_TYPE,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-    ) -> None:
-        """Stream SSE chat events to a Telegram chat with progressive editing.
+    class _ChatSSEHandler:
+        """SSE event handler for Telegram interactive chat.
 
-        Text segments are sent as separate messages at tool boundaries,
-        giving natural visual separation via Telegram's chat bubbles.
+        Implements :class:`~triggers.sse_consumer.SSEEventHandler` and
+        owns the per-stream buffer, progressive-edit, and typing state.
         """
-        EDIT_INTERVAL = 1.5
 
-        text_buffer = ""
-        current_msg: Optional[Message] = None
-        stop_button_msg: Optional[Message] = None
-        last_edit = 0.0
-        tool_call_count = 0
-        typing_task: Optional[asyncio.Task] = None
-        first_msg_sent = False
+        EDIT_INTERVAL = 1.5  # seconds between message edits
 
-        async def _keep_typing():
-            """Repeat typing action every 4s (Telegram indicator lasts ~5s)."""
+        def __init__(
+            self,
+            bot: "NymeriaTelegramBot",
+            chat_id: int,
+            thread_id: str,
+            context: ContextTypes.DEFAULT_TYPE,
+        ) -> None:
+            self._bot = bot
+            self._chat_id = chat_id
+            self._thread_id = thread_id
+            self._context = context
+
+            self._text_buffer = ""
+            self._current_msg: Optional[Message] = None
+            self._stop_button_msg: Optional[Message] = None
+            self._last_edit = 0.0
+            self._first_msg_sent = False
+
+            self._typing_task: Optional[asyncio.Task] = asyncio.create_task(
+                self._keep_typing()
+            )
+
+        def cleanup(self) -> None:
+            if self._typing_task:
+                self._typing_task.cancel()
+
+        # -- internal helpers -------------------------------------------------
+
+        async def _keep_typing(self) -> None:
             while True:
                 try:
-                    await context.bot.send_chat_action(
-                        chat_id=chat_id, action=ChatAction.TYPING
+                    await self._context.bot.send_chat_action(
+                        chat_id=self._chat_id, action=ChatAction.TYPING
                     )
                 except Exception:
                     pass
                 await asyncio.sleep(4)
 
-        async def _flush(final: bool = False):
-            nonlocal text_buffer, current_msg, last_edit, first_msg_sent, stop_button_msg
-            if not text_buffer:
+        async def flush_text(self, final: bool = False) -> None:
+            if not self._text_buffer:
                 if final:
-                    current_msg = None
+                    self._current_msg = None
                 return
 
             raw_chunks = (
-                split_message(text_buffer, TELEGRAM_SAFE_CHUNK_LENGTH)
+                split_message(self._text_buffer, TELEGRAM_SAFE_CHUNK_LENGTH)
                 if final
-                else [text_buffer]
+                else [self._text_buffer]
             )
 
             try:
@@ -1035,39 +1042,40 @@ class NymeriaTelegramBot:
 
                     for sub_idx, display_chunk in enumerate(display_chunks):
                         is_first_piece = idx == 0 and sub_idx == 0
-                        if current_msg is not None and is_first_piece:
-                            await self._edit_html(current_msg, display_chunk)
-                            last_edit = time.monotonic()
+                        if self._current_msg is not None and is_first_piece:
+                            await self._bot._edit_html(self._current_msg, display_chunk)
+                            self._last_edit = time.monotonic()
                             continue
 
-                        # Attach stop button only to the first generated message.
                         reply_markup = None
-                        if not first_msg_sent:
+                        if not self._first_msg_sent:
                             reply_markup = InlineKeyboardMarkup([[
                                 InlineKeyboardButton(
-                                    "\u23f9 Stop", callback_data=f"stop:{thread_id}"
+                                    "⏹ Stop",
+                                    callback_data=f"stop:{self._thread_id}",
                                 )
                             ]])
-                        current_msg = await self._send_html(
-                            chat_id, display_chunk, context, reply_markup=reply_markup
+                        self._current_msg = await self._bot._send_html(
+                            self._chat_id, display_chunk, self._context,
+                            reply_markup=reply_markup,
                         )
                         if reply_markup is not None:
-                            stop_button_msg = current_msg
-                        first_msg_sent = True
-                        last_edit = time.monotonic()
+                            self._stop_button_msg = self._current_msg
+                        self._first_msg_sent = True
+                        self._last_edit = time.monotonic()
             except Exception:
                 logger.warning(
                     "Telegram flush failed for %d chars; retrying as plain chunks",
-                    len(text_buffer),
+                    len(self._text_buffer),
                     exc_info=True,
                 )
-                for raw_chunk in split_message(text_buffer, TELEGRAM_SAFE_CHUNK_LENGTH):
+                for raw_chunk in split_message(self._text_buffer, TELEGRAM_SAFE_CHUNK_LENGTH):
                     try:
-                        current_msg = await context.bot.send_message(
-                            chat_id=chat_id, text=raw_chunk
+                        self._current_msg = await self._context.bot.send_message(
+                            chat_id=self._chat_id, text=raw_chunk
                         )
-                        first_msg_sent = True
-                        last_edit = time.monotonic()
+                        self._first_msg_sent = True
+                        self._last_edit = time.monotonic()
                     except Exception:
                         logger.warning(
                             "Telegram plain chunk send failed (%d chars)",
@@ -1076,170 +1084,169 @@ class NymeriaTelegramBot:
                         )
 
             if final:
-                # Remove stop button from finalized message
-                button_msg = stop_button_msg or current_msg
+                button_msg = self._stop_button_msg or self._current_msg
                 if button_msg:
                     try:
                         await button_msg.edit_reply_markup(reply_markup=None)
                     except Exception:
                         pass
-                stop_button_msg = None
-                text_buffer = ""
-                current_msg = None
+                self._stop_button_msg = None
+                self._text_buffer = ""
+                self._current_msg = None
 
-        # Start typing indicator
-        typing_task = asyncio.create_task(_keep_typing())
+        # -- SSEEventHandler callbacks ----------------------------------------
 
-        try:
-            async for event in self.api.chat_stream(
-                message,
-                thread_id,
-                user_id,
-                attachments=attachments,
-                # Chat clients can't surface the desktop's compatibility
-                # modal — auto-accept the risk when the user attached files.
-                force_unsupported_attachments=bool(attachments),
-            ):
-                etype = event.get("type", "")
+        async def on_thinking(self) -> None:
+            pass  # typing indicator already running via _keep_typing
 
-                if etype == "thinking":
-                    pass  # typing indicator already running
+        async def on_response_chunk(self, content: str) -> None:
+            self._text_buffer += content
+            if len(self._text_buffer) > TELEGRAM_SAFE_CHUNK_LENGTH:
+                await self.flush_text(final=True)
+            elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
+                await self.flush_text()
 
-                elif etype == "compacting":
-                    await _flush(final=True)
-                    try:
-                        status = event.get("message") or "Compacting context..."
-                        await self._send_html(chat_id, f"<i>{escape_html(status)}</i>", context)
-                    except Exception as e:
-                        logger.warning(f"Failed to send compacting status: {e}")
+        async def on_compacting(self, message: str) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id,
+                    f"<i>{escape_html(message)}</i>",
+                    self._context,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send compacting status: {e}")
 
-                elif etype == "compacted":
-                    await _flush(final=True)
-                    try:
-                        await self._send_html(
-                            chat_id,
-                            format_compaction_notice_html(
-                                event.get("summary", ""),
-                                int(event.get("messages_removed") or 0),
-                            ),
-                            context,
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send compaction notice: {e}")
+        async def on_compacted(
+            self,
+            summary: str,
+            messages_removed: int,
+            title: str = "Context compacted",
+        ) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id,
+                    format_compaction_notice_html(
+                        summary, messages_removed, title=title,
+                    ),
+                    self._context,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send compaction notice: {e}")
 
-                elif etype == "context_attached":
-                    await _flush(final=True)
-                    try:
-                        await self._send_html(
-                            chat_id,
-                            format_compaction_notice_html(
-                                event.get("summary", ""),
-                                title="Context summary attached",
-                            ),
-                            context,
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send attached context notice: {e}")
+        async def on_tool_call(
+            self,
+            name: str,
+            args: Dict[str, Any],
+            call_id: str,
+            count: int,
+        ) -> None:
+            await self.flush_text(final=True)
+            show_tools = self._bot._show_tool_calls.get(self._chat_id, False)
+            if show_tools:
+                tool_text = format_tool_call_html(name, args)
+                try:
+                    await self._bot._send_html(self._chat_id, tool_text, self._context)
+                except Exception as e:
+                    logger.warning(f"Failed to send tool call: {e}")
 
-                elif etype == "response":
-                    chunk = event.get("content", "")
-                    if chunk:
-                        text_buffer += chunk
-                        if len(text_buffer) > TELEGRAM_SAFE_CHUNK_LENGTH:
-                            await _flush(final=True)
-                        elif time.monotonic() - last_edit >= EDIT_INTERVAL:
-                            await _flush()
+        async def on_tool_result(
+            self,
+            call_id: str,
+            result: str,
+            attachments: List[str],
+        ) -> None:
+            show_tools = self._bot._show_tool_calls.get(self._chat_id, False)
+            if show_tools:
+                result_text = format_tool_result_html(result)
+                try:
+                    await self._bot._send_html(self._chat_id, result_text, self._context)
+                except Exception as e:
+                    logger.warning(f"Failed to send tool result: {e}")
+            for attach_path in attachments:
+                await self._bot._send_file_attachment(
+                    self._chat_id, attach_path, self._context,
+                )
 
-                elif etype == "tool_call":
-                    tool_call_count += 1
-                    # Finalize pre-tool text as its own message
-                    await _flush(final=True)
+        async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
+            names = ", ".join(tools) if tools else "tools"
+            try:
+                await self._bot._send_html(
+                    self._chat_id,
+                    f"<i>⚙️ Tool Binding: <b>{names}</b> ({ttl})</i>",
+                    self._context,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send tool reload message: {e}")
 
-                    show_tools = self._show_tool_calls.get(chat_id, False)
-                    if show_tools:
-                        tool_text = format_tool_call_html(
-                            event.get("name", "?"), event.get("args", {})
-                        )
-                        try:
-                            await self._send_html(chat_id, tool_text, context)
-                        except Exception as e:
-                            logger.warning(f"Failed to send tool call: {e}")
+        async def on_workspace_artifact(self, path: str) -> None:
+            await self._bot._send_file_attachment(
+                self._chat_id, path, self._context,
+            )
 
-                elif etype == "tool_result":
-                    show_tools = self._show_tool_calls.get(chat_id, False)
-                    if show_tools:
-                        result_text = format_tool_result_html(event.get("result", ""))
-                        try:
-                            await self._send_html(chat_id, result_text, context)
-                        except Exception as e:
-                            logger.warning(f"Failed to send tool result: {e}")
-                    for attach_path in parse_attach_paths(event.get("result", "")):
-                        await self._send_file_attachment(chat_id, attach_path, context)
+        async def on_error(self, content: str) -> None:
+            try:
+                await self._context.bot.send_message(
+                    chat_id=self._chat_id,
+                    text=f"Sorry, I encountered an error: {content}",
+                )
+            except Exception:
+                pass
 
-                elif etype == "tool_reload":
-                    await _flush(final=True)
-                    tools = event.get("tools", [])
-                    ttl = event.get("ttl", "")
-                    names = ", ".join(tools) if tools else "tools"
-                    try:
-                        await self._send_html(
-                            chat_id,
-                            f"<i>⚙️ Tool Binding: <b>{names}</b> ({ttl})</i>",
-                            context,
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send tool reload message: {e}")
+        async def on_iteration_limit(self, content: str) -> None:
+            try:
+                await self._context.bot.send_message(
+                    chat_id=self._chat_id, text=f"⚠️ {content}"
+                )
+            except Exception:
+                pass
 
-                elif etype == "workspace_artifact":
-                    attach_path = event.get("path")
-                    if isinstance(attach_path, str) and attach_path:
-                        await self._send_file_attachment(chat_id, attach_path, context)
+        async def on_done(self, tool_call_count: int) -> None:
+            if tool_call_count and self._text_buffer:
+                self._text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
+            elif tool_call_count and self._current_msg:
+                try:
+                    old_text = self._current_msg.text or ""
+                    await self._current_msg.edit_text(
+                        text=old_text + f"\n\nTool calls: {tool_call_count}"
+                    )
+                except Exception:
+                    pass
+            await self.flush_text(final=True)
 
-                elif etype == "error":
-                    await _flush(final=True)
-                    error_content = event.get("content", "Unknown error")
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"Sorry, I encountered an error: {error_content}",
-                        )
-                    except Exception:
-                        pass
-
-                elif etype == "iteration_limit":
-                    content = event.get("content", "")
-                    if content:
-                        try:
-                            await context.bot.send_message(
-                                chat_id=chat_id, text=f"\u26a0\ufe0f {content}"
-                            )
-                        except Exception:
-                            pass
-
-                elif etype == "done":
-                    if tool_call_count and text_buffer:
-                        text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
-                    elif tool_call_count and current_msg:
-                        try:
-                            old_text = current_msg.text or ""
-                            await current_msg.edit_text(
-                                text=old_text + f"\n\nTool calls: {tool_call_count}"
-                            )
-                        except Exception:
-                            pass
-                    await _flush(final=True)
-
-                # Silently ignore: queued
-
-            # Stream ended — flush any remaining buffer
-            if text_buffer:
+        async def on_stream_end(self, tool_call_count: int) -> None:
+            if self._text_buffer:
                 if tool_call_count:
-                    text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
-                await _flush(final=True)
+                    self._text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
+                await self.flush_text(final=True)
 
+    async def _stream_to_chat(
+        self,
+        chat_id: int,
+        message: str,
+        thread_id: str,
+        user_id: str,
+        context: ContextTypes.DEFAULT_TYPE,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Stream SSE chat events to a Telegram chat with progressive editing.
+
+        Text segments are sent as separate messages at tool boundaries,
+        giving natural visual separation via Telegram's chat bubbles.
+        """
+        handler = self._ChatSSEHandler(self, chat_id, thread_id, context)
+        try:
+            await consume_sse_stream(
+                self.api.chat_stream(
+                    message,
+                    thread_id,
+                    user_id,
+                    attachments=attachments,
+                    force_unsupported_attachments=bool(attachments),
+                ),
+                handler,
+            )
         except Exception as e:
             logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
-            # Sync fallback
             try:
                 data = await self.api.chat(
                     message,
@@ -1263,8 +1270,8 @@ class NymeriaTelegramBot:
                 except Exception:
                     pass
         finally:
-            if typing_task:
-                typing_task.cancel()
+            handler.cleanup()
+
 
     # =========================================================================
     # Chat Commands
