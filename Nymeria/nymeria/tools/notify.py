@@ -6,193 +6,31 @@ reminders, and alerts.
 """
 
 import logging
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal
 
-import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
+from ..core.notification_dispatch import (
+    create_in_app_notification,
+    get_in_app_notification_level,
+    send_discord,
+    send_slack,
+    send_teams,
+    send_telegram,
+)
 from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
-# Timeout for HTTP requests
-HTTP_TIMEOUT = 30.0
-
-
-def _send_telegram_default(message: str, settings) -> str:
-    """Send notification via the configured default Telegram chat."""
-    bot_token = settings.telegram_bot_token
-    if not bot_token:
-        return None  # Not configured
-
-    chat_id = settings.telegram_default_chat_id
-    if not chat_id:
-        return None  # Not configured
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message}
-
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(url, json=payload)
-
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("ok"):
-                message_id = result.get("result", {}).get("message_id")
-                logger.info(f"Telegram notification sent: message_id={message_id}")
-                return f"Sent to Telegram (message_id: {message_id})"
-            return f"Telegram API error: {result.get('description', 'Unknown')}"
-        return f"Telegram HTTP error: {response.status_code}"
-    except Exception as e:
-        logger.error(f"Telegram notification failed: {e}")
-        return f"Telegram error: {str(e)}"
-
-
-def _thread_has_telegram_route(thread_id: str) -> bool:
-    """Return True if the current thread can be delivered through the Telegram bot."""
-    if not thread_id:
-        return False
-    if thread_id.startswith("telegram_"):
-        return True
-    try:
-        from ..core.agent import get_current_agent
-
-        agent = get_current_agent()
-        if agent is None:
-            return False
-        return agent.accounts_repo.lookup_thread_binding_by_thread("telegram", thread_id) is not None
-    except Exception as e:
-        logger.debug("Could not resolve Telegram route for %s: %s", thread_id, e)
-        return False
-
-
-def _publish_telegram_thread_notification(message: str, user_id: str, thread_id: str) -> Optional[str]:
-    """Queue a notification event for a Telegram-bound thread."""
-    if not _thread_has_telegram_route(thread_id):
-        return None
-    try:
-        from ..core.event_bus import publish_autonomous_event
-
-        publish_autonomous_event(
-            event_type="notification",
-            thread_id=thread_id,
-            user_id=user_id,
-            task_id="",
-            data={"message": message, "summary": message[:200]},
-        )
-        logger.info("Telegram thread notification queued for thread=%s", thread_id)
-        return "Queued to Telegram thread"
-    except Exception as e:
-        logger.error("Telegram thread notification failed: %s", e)
-        return f"Telegram thread error: {str(e)}"
-
-
-def _send_telegram(message: str, settings, user_id: str = "default", thread_id: str = "") -> str:
-    """Send notification via the current Telegram thread if possible, else default chat."""
-    routed = _publish_telegram_thread_notification(message, user_id, thread_id)
-    if routed is not None:
-        return routed
-    return _send_telegram_default(message, settings)
-
-
-def _send_discord(message: str, settings) -> str:
-    """Send notification via Discord webhook."""
-    webhook_url = settings.discord_webhook_url
-    if not webhook_url:
-        return None  # Not configured
-
-    payload = {"content": message, "username": "Nymeria"}
-
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(webhook_url, json=payload)
-
-        if response.status_code in (200, 204):
-            logger.info("Discord notification sent")
-            return "Sent to Discord"
-        return f"Discord HTTP error: {response.status_code}"
-    except Exception as e:
-        logger.error(f"Discord notification failed: {e}")
-        return f"Discord error: {str(e)}"
-
-
-def _send_slack(message: str, settings) -> str:
-    """Send notification via Slack webhook."""
-    webhook_url = settings.slack_webhook_url
-    if not webhook_url:
-        return None  # Not configured
-
-    payload = {"text": message, "username": "Nymeria"}
-
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(webhook_url, json=payload)
-
-        if response.status_code == 200 and response.text == "ok":
-            logger.info("Slack notification sent")
-            return "Sent to Slack"
-        return f"Slack error: {response.text[:100]}"
-    except Exception as e:
-        logger.error(f"Slack notification failed: {e}")
-        return f"Slack error: {str(e)}"
-
-
-def _send_teams(message: str, settings) -> str:
-    """Send notification to Microsoft Teams channel via Graph API.
-
-    Uses the same Outlook OAuth token (requires ChannelMessage.Send scope).
-    """
-    team_id = settings.teams_team_id
-    channel_id = settings.teams_channel_id
-    if not team_id or not channel_id:
-        return None  # Not configured
-
-    # Get access token from Outlook auth — use the dedicated Teams account if configured
-    try:
-        from .outlook_email import get_access_token, GRAPH_BASE
-    except ImportError:
-        return None
-
-    teams_account = settings.teams_account_id
-    token = get_access_token(teams_account)
-    if not token:
-        return "Teams error: No authenticated Microsoft account"
-
-    url = f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "body": {
-            "contentType": "text",
-            "content": message,
-        }
-    }
-
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(url, headers=headers, json=payload)
-
-        if response.status_code == 201:
-            msg_id = response.json().get("id", "")[:20]
-            logger.info(f"Teams notification sent: {msg_id}")
-            return f"Sent to Teams"
-        try:
-            err = response.json().get("error", {}).get("message", response.text[:200])
-        except Exception:
-            err = response.text[:200]
-        return f"Teams HTTP error {response.status_code}: {err}"
-    except Exception as e:
-        logger.error(f"Teams notification failed: {e}")
-        return f"Teams error: {str(e)}"
-
 
 def _thread_in_app_notification_level(thread_id: str) -> str:
-    """Return this thread's in-app notification mode."""
+    """Return this thread's in-app notification mode.
+
+    Thin wrapper that resolves the ``ThreadConfigManager`` from the global
+    agent so the dispatch module's pure helper can be called.
+    """
     if not thread_id:
         return "notify_only"
     try:
@@ -201,44 +39,17 @@ def _thread_in_app_notification_level(thread_id: str) -> str:
         agent = get_current_agent()
         if agent is None:
             return "notify_only"
-        tc = agent.thread_config_manager.get_config(thread_id)
-        if tc is None:
-            return "notify_only"
-        return getattr(tc, "in_app_notification_level", "notify_only") or "notify_only"
+        return get_in_app_notification_level(thread_id, agent.thread_config_manager)
     except Exception as e:
         logger.debug("Could not read in-app notification level for %s: %s", thread_id, e)
         return "notify_only"
 
 
-def _create_in_app_notification(message: str, user_id: str, thread_id: str) -> str:
+def _create_in_app(message: str, user_id: str, thread_id: str) -> str:
     """Create an unread notification-center item for the caller."""
-    if _thread_in_app_notification_level(thread_id) == "off":
-        return "Skipped Desktop notification (disabled for thread)"
-    try:
-        from ..core.notifications import create_notification
-
-        notification = create_notification(
-            user_id=user_id,
-            summary=message[:200],
-            thread_id=thread_id if thread_id and thread_id != "default" else None,
-        )
-        try:
-            from ..core.event_bus import publish_autonomous_event
-
-            publish_autonomous_event(
-                event_type="notification",
-                thread_id=thread_id if thread_id else "default",
-                user_id=user_id,
-                task_id="",
-                data={"summary": message[:200], "in_app_only": True},
-            )
-        except Exception:
-            pass
-        logger.info("In-app notification created: id=%s user=%s", notification.id, user_id)
-        return f"Sent to Desktop (notification_id: {notification.id})"
-    except Exception as e:
-        logger.error("In-app notification failed: %s", e)
-        return f"Desktop error: {str(e)}"
+    level = _thread_in_app_notification_level(thread_id)
+    result = create_in_app_notification(message, user_id, thread_id, in_app_level=level)
+    return result or "Desktop error: unknown"
 
 
 @tool
@@ -262,22 +73,20 @@ def notify(
     Returns:
         Success message or error description.
     """
-    logger.info(f"notify called: platform={platform}, message={message[:50]}...")
+    logger.info("notify called: platform=%s, message=%s...", platform, message[:50])
     settings = get_settings()
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
 
-    # Platform-specific handlers
     handlers = {
-        "desktop": lambda msg, st: _create_in_app_notification(msg, user_id, thread_id),
-        "telegram": lambda msg, st: _send_telegram(msg, st, user_id, thread_id),
-        "discord": _send_discord,
-        "slack": _send_slack,
-        "teams": _send_teams,
+        "desktop": lambda msg, st: _create_in_app(msg, user_id, thread_id),
+        "telegram": lambda msg, st: send_telegram(msg, st, user_id, thread_id),
+        "discord": send_discord,
+        "slack": send_slack,
+        "teams": send_teams,
     }
 
     if platform != "auto":
-        # Specific platform requested
         handler = handlers.get(platform)
         if not handler:
             return f"[Error]: Unknown platform '{platform}'. Use: desktop, telegram, discord, slack, teams, or auto."
@@ -307,7 +116,7 @@ def notify(
     for name, handler in handlers.items():
         result = handler(message, settings)
         if result is None:
-            continue  # Not configured, skip
+            continue
         if result.startswith("Skipped"):
             continue
         if result.startswith("Sent") or result.startswith("Queued"):
