@@ -92,7 +92,7 @@ async def _dispatch_command(command: str, config: RunnableConfig) -> str:
     user_id = get_user_id(config)
 
     # Lazy imports — see module docstring.
-    from ..triggers.discord_api_client import NymeriaAPIClient
+    from ..triggers.api_client import NymeriaAPIClient
     from ..triggers.slash_dispatcher import SlashCommandDispatcher
     from ..config import get_settings
 

@@ -275,7 +275,7 @@ This is handled automatically by Telegram — no configuration needed. To respon
 
 ### Message Splitting
 
-Telegram has a 4096-character message limit. The bot splits long responses intelligently:
+Telegram has a 4096-character message limit. The bot uses the shared trigger message splitter (`nymeria/triggers/message_splitter.py`) to split long responses intelligently:
 
 1. Preserves code block boundaries (never splits inside ``` ``` ```)
 2. Prefers paragraph breaks (`\n\n`)
@@ -351,7 +351,7 @@ Per-thread delivery is controlled from Thread Settings:
 | What | Where |
 |------|-------|
 | Bot implementation | `nymeria/triggers/telegram_bot.py` |
-| API client (shared) | `nymeria/triggers/discord_api_client.py` |
+| API client (shared) | `nymeria/triggers/api_client.py` |
 | Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_telegram_bot()` |
 | Docker config | `docker-compose.yml` (profile: `telegram`) |
