@@ -2,6 +2,11 @@
 
 Base URL: `http://localhost:8000`
 
+Implementation note: `create_api_app()` remains the public FastAPI factory.
+The API is being split incrementally; system, device, and workspace routes now
+live under `Nymeria/nymeria/api/routers/`, while the rest of the surface still
+lives in `Nymeria/nymeria/triggers/api.py` during the migration.
+
 ## Authentication
 
 Most endpoints require Bearer token authentication:
@@ -125,7 +130,8 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
-**Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`):
+**Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`, with
+new extracted schemas under `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
 // IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,
@@ -1251,6 +1257,7 @@ Download a file from the workspace directory. Used by bot clients and the deskto
 
 ```http
 GET /workspace/download?path=/workspace/report.csv
+Authorization: Bearer <admin-token>
 ```
 
 **Query Parameters:**
@@ -1261,7 +1268,7 @@ GET /workspace/download?path=/workspace/report.csv
 - `403`: Path is outside the workspace directory.
 - `404`: File does not exist.
 
-**Security:** Only files within `NYMERIA_WORKSPACE_DIR` (default `/workspace`) can be served. Paths are resolved and checked against the workspace root to prevent traversal. This same workspace boundary is what controls whether `file_write(..., attach=True)` produces a deliverable artifact at all.
+**Security:** Admin-only. Only files within `NYMERIA_WORKSPACE_DIR` (default `/workspace`) can be served. Paths are resolved and checked against the workspace root to prevent traversal. This same workspace boundary is what controls whether `file_write(..., attach=True)` produces a deliverable artifact at all.
 
 ---
 
@@ -2026,6 +2033,8 @@ Authorization: Bearer <token>
 ```
 
 Register or unregister FCM device tokens for push notifications.
+Registration binds the token to the authenticated caller; any `user_id` value
+in the request body is ignored.
 
 ### Voice Endpoints
 

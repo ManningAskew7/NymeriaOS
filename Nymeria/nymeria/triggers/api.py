@@ -70,6 +70,14 @@ from ..core.custom_tools import (
     load_custom_tools,
     reload_custom_tools,
 )
+from ..api.routers.devices import create_devices_router
+from ..api.routers.memory import create_memory_router
+from ..api.routers.rag import create_rag_router
+from ..api.routers.system import router as system_router
+from ..api.routers.user_tools import create_user_tools_router
+from ..api.routers.voice import create_voice_router
+from ..api.routers.workspace import create_workspace_router
+from ..api.schemas.system import HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -184,13 +192,6 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="Agent response")
     thread_id: str = Field(..., description="Conversation thread ID")
     tool_call_count: int = Field(default=0, description="Number of tool calls made in this turn")
-
-
-class HealthResponse(BaseModel):
-    """Response model for health check."""
-
-    status: str = "ok"
-    version: str = "1.0.0"
 
 
 class ReportRequest(BaseModel):
@@ -1241,6 +1242,13 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         require_thread_access_fn=_require_thread_access,
     )
     app.include_router(trigger_router)
+    app.include_router(system_router)
+    app.include_router(create_devices_router(verify_api_key, get_settings))
+    app.include_router(create_workspace_router(require_admin_user))
+    app.include_router(create_rag_router(verify_api_key, get_agent, _require_same_user_or_admin))
+    app.include_router(create_memory_router(verify_api_key, get_agent, _require_same_user_or_admin))
+    app.include_router(create_user_tools_router(verify_api_key, get_agent, _require_same_user_or_admin))
+    app.include_router(create_voice_router(verify_api_key, get_agent, get_settings, _require_thread_access))
 
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
@@ -1329,11 +1337,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # ========================================================================
     # Endpoints
     # ========================================================================
-
-    @app.get("/health", response_model=HealthResponse, tags=["System"])
-    async def health_check():
-        """Health check endpoint."""
-        return HealthResponse()
 
     @app.get("/me", tags=["Auth"])
     async def get_me(user=Depends(resolve_authenticated_user)):
@@ -8500,80 +8503,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         }
 
     # ========================================================================
-    # Device Registration (FCM Push Notifications)
-    # ========================================================================
-
-    @app.post("/devices/register", tags=["Devices"])
-    async def register_device(
-        request: Request,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Register a device for FCM push notifications.
-
-        The device is bound to the authenticated caller — any client-supplied
-        ``user_id`` in the body is ignored. Without this, a linked user
-        could register their FCM token under another user's id and start
-        receiving that user's pushes (``send_to_all_devices`` filters
-        only on the stored ``user_id``).
-        """
-        from ..core.fcm import register_token
-
-        body = await request.json()
-        token = body.get("token", "").strip()
-        platform = body.get("platform", "unknown")
-        thread_ids = body.get("thread_ids")
-
-        if not token:
-            raise HTTPException(status_code=400, detail="Token is required")
-
-        if thread_ids is not None and not isinstance(thread_ids, list):
-            raise HTTPException(status_code=400, detail="thread_ids must be a list")
-
-        settings = get_settings()
-        data_dir = str(settings.data_dir)
-
-        is_new = register_token(data_dir, token, platform, user.id, thread_ids=thread_ids)
-        return {
-            "status": "registered" if is_new else "updated",
-            "platform": platform,
-        }
-
-    @app.delete("/devices/{token}", tags=["Devices"])
-    async def unregister_device(
-        token: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Unregister a device from FCM push notifications.
-
-        Non-admins can only unregister tokens registered under their own
-        ``user_id`` — otherwise any authenticated user could enumerate or
-        delete other users' device registrations. Admins (including bots
-        via service-token act-as) keep unrestricted unregister access for
-        cleanup of stale tokens.
-        """
-        from ..core.fcm import load_tokens, unregister_token
-
-        settings = get_settings()
-        data_dir = str(settings.data_dir)
-
-        if user.role != "admin":
-            tokens = load_tokens(data_dir)
-            owner_id = next(
-                (t.get("user_id") for t in tokens if t.get("token") == token),
-                None,
-            )
-            if owner_id is None:
-                # Don't leak existence — same 404 as admin path on unknown.
-                raise HTTPException(status_code=404, detail="Token not found")
-            if owner_id != user.id:
-                raise HTTPException(status_code=404, detail="Token not found")
-
-        removed = unregister_token(data_dir, token)
-        if not removed:
-            raise HTTPException(status_code=404, detail="Token not found")
-        return {"status": "unregistered"}
-
-    # ========================================================================
     # Voice Endpoints
     # ========================================================================
 
@@ -8736,39 +8665,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=f"STT failed: {e}")
 
         return {"text": text}
-
-    # ── Workspace file download ──────────────────────────────────────────
-    @app.get("/workspace/download", tags=["Workspace"])
-    async def download_workspace_file(
-        path: str = Query(..., description="Absolute file path within the workspace"),
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Download a file from the workspace directory (used by bot clients for file attachments).
-
-        Admin-only — the workspace contains files generated by autonomous
-        agent runs across all users; without auth, any caller could
-        enumerate paths and exfiltrate. Bot clients use the admin service
-        token, so they keep working.
-        """
-        from pathlib import Path as _Path
-        import mimetypes
-
-        workspace_dir = _Path(
-            os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")
-        ).resolve()
-        resolved = _Path(path).resolve()
-
-        if not resolved.is_relative_to(workspace_dir):
-            raise HTTPException(status_code=403, detail="Path outside workspace")
-        if not resolved.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-
-        media_type = mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
-        return FileResponse(
-            path=str(resolved),
-            media_type=media_type,
-            filename=resolved.name,
-        )
 
     return app
 
