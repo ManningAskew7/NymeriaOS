@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import twitchio
 from twitchio.ext import commands
 
+from .message_splitter import split_twitch_message as split_message
+
 if TYPE_CHECKING:
     from ..core.agent import NymeriaAgent
 
@@ -178,47 +180,6 @@ def format_chat_context(messages: List[ChatMessage]) -> str:
             mid = f" [msg:{msg.message_id}]" if msg.message_id else ""
             lines.append(f"{prefix} {msg.display_name}{mid}: {msg.message}")
     return "\n".join(lines)
-
-
-# =============================================================================
-# Message Splitting (Twitch 500 char limit)
-# =============================================================================
-
-
-def split_message(content: str, max_length: int = 490) -> List[str]:
-    """Split a message into chunks that fit Twitch's 500-char limit.
-
-    Uses simple sentence/word boundary splitting — no code block
-    handling needed for Twitch chat.
-    """
-    if len(content) <= max_length:
-        return [content]
-
-    chunks: List[str] = []
-    remaining = content
-
-    while remaining:
-        if len(remaining) <= max_length:
-            chunks.append(remaining)
-            break
-
-        # Try sentence boundary (". ")
-        split_at = remaining.rfind(". ", 0, max_length)
-        if split_at > max_length * 0.3:
-            split_at += 2  # Include the ". "
-        else:
-            # Try word boundary (space)
-            split_at = remaining.rfind(" ", 0, max_length)
-            if split_at > max_length * 0.3:
-                split_at += 1  # Include the space
-            else:
-                # Hard split
-                split_at = max_length
-
-        chunks.append(remaining[:split_at].rstrip())
-        remaining = remaining[split_at:].lstrip()
-
-    return [c for c in chunks if c.strip()]
 
 
 # =============================================================================
