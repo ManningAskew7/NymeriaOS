@@ -99,6 +99,10 @@ Every account operation is exposed as a REST endpoint, gated by `require_admin_u
 These admin endpoints exist so chat-app bots (Telegram, future Discord) can
 consume the codes the desktop wizard mints and look up the routing map
 without holding per-user tokens. They're not called by the frontend.
+They are rate-limited per admin/service user and endpoint; callers that exceed
+the guard receive `429` with a `Retry-After` header. The default limit is high
+enough for normal bot startup, binding-cache refreshes, and BYO-bot supervisor
+polling, but bounds the impact of a misbehaving bot loop.
 
 | Method | Path | Body / Query | Purpose |
 |---|---|---|---|
