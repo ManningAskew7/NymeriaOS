@@ -1385,7 +1385,7 @@ Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a 
 
 **Durable scheduling:** Scheduled TODOs survive application restarts. Missed TODOs are recovered and executed on startup.
 
-**Concurrency:** Scheduled TODOs run through the ticker's autonomous worker pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5).
+**Concurrency:** Scheduled TODOs and trigger actions run through the ticker's autonomous worker pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5). Poll-based trigger source checks and hourly TODO archival run in a separate housekeeping pool so slow source I/O does not consume autonomous workers.
 
 ---
 
