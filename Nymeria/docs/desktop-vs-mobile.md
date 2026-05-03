@@ -2,6 +2,8 @@
 
 This document maps the major desktop app areas (`/nymeria-desktop`) to their mobile counterparts (`/nymeria-mobile`) and documents the important differences. It is a maintenance guide, not a byte-for-byte file inventory, because the two codebases have already diverged in a number of platform-specific and feature-specific areas.
 
+**Drift checker**: `python scripts/check_cross_app_drift.py` enforces that shared files stay in sync and new overlap files are classified. It runs in CI and flags exact-match files that have drifted and unclassified new overlaps. Add new shared files to `EXACT_MATCH` or `KNOWN_DRIFT` in the script.
+
 ## Quick Reference
 
 | Category | Desktop | Mobile |
@@ -199,7 +201,7 @@ Advanced section of Thread Settings.
 | **Scrollbars** | 6px, expand to 8px on hover | 4px fixed, no hover |
 | **Animations** | `staggerFadeIn`, `glowPulse`, `checkBounce` | None |
 
-**When changing**: If adding CSS variables (new colors, spacing), add to both. Mobile-specific sizing and touch adaptations are independent.
+**When changing**: If adding CSS variables (new colors, spacing), add to both. Theme color variables must be added through the typed `themeColorCssVariables` map in both `themes.ts` files so `npm run check` fails if `ThemeColors` and the applied CSS variables drift. Mobile-specific sizing and touch adaptations are independent.
 
 ---
 
@@ -330,6 +332,13 @@ not been replicated yet.
 
 1. Add it to `themes.ts` in both apps
 2. Update `SettingsPanel.svelte` in both apps independently
+
+### Adding a new theme color token
+
+1. Add the token to `ThemeColors`
+2. Add the matching CSS custom property to `themeColorCssVariables`
+3. Add a value for every theme in desktop and mobile
+4. Run `npm run check` in both apps
 
 ### Adding a new settings field
 
