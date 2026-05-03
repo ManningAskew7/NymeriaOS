@@ -6,9 +6,47 @@ tool selection and that sync/async paths differ only in checkpointer config.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 from unittest.mock import MagicMock, patch
 
 from nymeria.vendor.react_agent.config import AgentConfig, CheckpointerConfig
+
+
+def _method_tree(method):
+    return ast.parse(textwrap.dedent(inspect.getsource(method)))
+
+
+def _called_method_names(method) -> set[str]:
+    names = set()
+    for node in ast.walk(_method_tree(method)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            names.add(node.func.attr)
+    return names
+
+
+def _direct_graph_rebuild_ops(method) -> list[str]:
+    ops = []
+    for node in ast.walk(_method_tree(method)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            func = node.func
+            if (
+                func.attr == "clear"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr in {"_user_graphs", "_async_user_graphs"}
+            ):
+                ops.append(f"{func.value.attr}.clear")
+            if func.attr in {"_build_graph_with_prompt", "_build_async_graph_with_prompt"}:
+                ops.append(func.attr)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr in {"_default_graph", "_default_async_graph"}
+                ):
+                    ops.append(f"assign {target.attr}")
+    return ops
 
 
 def _make_agent():
@@ -135,3 +173,22 @@ def test_get_graph_for_user_delegates_to_impl():
 
     assert calls[0] == (True, False)
     assert calls[1] == (False, True)
+
+
+def test_toolset_mutators_delegate_default_graph_rebuild():
+    """Tool-set mutation paths go through the shared cache rebuild helper."""
+    from nymeria.core.agent import NymeriaAgent
+
+    method_names = [
+        "register_tool",
+        "register_tools",
+        "sync_agent_tools",
+        "reload_mcp_server_tools",
+        "reload_custom_tools",
+        "reload_tools",
+    ]
+
+    for method_name in method_names:
+        method = getattr(NymeriaAgent, method_name)
+        assert "_rebuild_default_graphs" in _called_method_names(method)
+        assert _direct_graph_rebuild_ops(method) == []

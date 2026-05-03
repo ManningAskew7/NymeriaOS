@@ -2071,21 +2071,13 @@ class NymeriaAgent:
     def register_tool(self, tool: BaseTool) -> "NymeriaAgent":
         """Register a tool with the agent."""
         self.tool_registry.register(tool)
-        # Clear cached graphs and rebuild defaults
-        self._user_graphs.clear()
-        self._async_user_graphs.clear()
-        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+        self._rebuild_default_graphs()
         return self
 
     def register_tools(self, tools: List[BaseTool]) -> "NymeriaAgent":
         """Register multiple tools with the agent."""
         self.tool_registry.register_all(tools)
-        # Clear cached graphs and rebuild defaults
-        self._user_graphs.clear()
-        self._async_user_graphs.clear()
-        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+        self._rebuild_default_graphs()
         return self
 
     def register_callable_invocation(self, parent_thread_id: str, child_thread_id: str):
@@ -2377,11 +2369,7 @@ class NymeriaAgent:
         # Re-register MCP server tools
         self._load_mcp_server_tools()
 
-        # Clear all cached graphs so new graphs include updated tools
-        self._user_graphs.clear()
-        self._async_user_graphs.clear()
-        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+        self._rebuild_default_graphs()
 
         all_names = list(thread_tool_names)
         logger.info(f"Synced agent tools: {all_names} ({len(thread_tools)} callable threads, {len(combined)} total tools)")
@@ -2561,11 +2549,7 @@ class NymeriaAgent:
             if custom_tools:
                 self.tool_registry.register_all(custom_tools)
 
-            # Clear cached graphs and rebuild defaults
-            self._user_graphs.clear()
-            self._async_user_graphs.clear()
-            self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-            self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+            self._rebuild_default_graphs()
 
             tool_names = [t.name for t in custom_tools]
             logger.info(f"Custom tools reloaded: {tool_names}")
@@ -2652,11 +2636,7 @@ class NymeriaAgent:
         custom_count = self._load_custom_tools()
         logger.info(f"Reloaded {custom_count} custom tool(s)")
 
-        # Clear all cached graphs and rebuild defaults
-        self._user_graphs.clear()
-        self._async_user_graphs.clear()
-        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+        self._rebuild_default_graphs()
 
         tool_list = self.tool_registry.list_tools()
         tool_names = [t["name"] for t in tool_list]
