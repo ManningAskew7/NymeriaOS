@@ -1996,7 +1996,7 @@ Returns available tool categories.
   "categories": {
     "core": ["bash_execute", "file_read", "file_write", "file_list", "web_search", "think", "claude_code", "notify"],
     "profile": ["memory_add", "memory_edit", "memory_read", "personality_set", "rag_search"],
-    "todo": ["todo", "todo_delete", "todo_list"],
+    "todo": ["nym_todo", "nym_todo_delete", "nym_todo_list"],
     "self_modify": ["self_modify_rollback"],
     "subagent": ["clear_agent_context", "reload_all"]
   }

@@ -3,7 +3,7 @@ DEPRECATED: Durable scheduler for self_invoke autonomous behavior.
 
 This module is deprecated. Scheduling is now handled through the TODO system:
 - TodoScheduleDB provides efficient polling for scheduled TODOs
-- The todo tool accepts a scheduled_for parameter
+- The nym_todo tool accepts a scheduled_for parameter
 - Ticker polls TodoScheduleDB instead of TaskDatabase
 
 This module is kept for:
@@ -51,8 +51,8 @@ class DurableScheduler:
     DEPRECATED: Durable scheduler for self_invoke scheduled tasks.
 
     This class is deprecated. Use TODO scheduling instead:
-    - todo(task="task", scheduled_for="1h")
-    - todo(todo_id="id", scheduled_for="30m")
+    - nym_todo(task="task", scheduled_for="1h")
+    - nym_todo(todo_id="id", scheduled_for="30m")
 
     Features:
     - SQLite persistence (survives restarts)

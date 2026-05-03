@@ -65,11 +65,9 @@ C:\Nymeria\
 │   │   ├── backup.py       # File backup system
 │   │   ├── validator.py    # Python code validation
 │   │   ├── prompts.py      # System prompt templates (extracted)
-│   │   ├── audit.py        # Tool execution logging (extracted)
 │   │   ├── rate_limiter.py # Rate limiting (extracted)
 │   │   ├── time_utils.py   # Time parsing utilities (extracted)
 │   │   ├── todo_constants.py    # TODO display constants (extracted)
-│   │   ├── graph_cache.py  # Graph caching utilities (extracted)
 │   │   ├── migration.py    # Legacy task migration (extracted)
 │   │   ├── scheduler.py    # Deprecated scheduler (rate limiter extracted)
 │   │   └── _deprecated/    # Legacy modules (pending removal)

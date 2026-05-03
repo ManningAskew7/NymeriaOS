@@ -49,8 +49,7 @@ def _parse_conditions(conditions: list) -> List[TriggerCondition]:
     ]
 
 
-@tool
-def trigger_create(
+def _trigger_create(
     name: str,
     source_type: str,
     action_type: str,
@@ -70,7 +69,7 @@ def trigger_create(
     Args:
         name: Human-friendly trigger name (e.g. "Wake-up morning briefing").
         source_type: Event source type.  Use "webhook" for HTTP push triggers.
-            Call trigger_sources_info() to see all available sources.
+            Call trigger_info(action="sources") to see all available sources.
         action_type: What to do when the trigger fires.
             "agent_prompt" -- send a prompt to yourself (most powerful).
             "notify" -- send a notification to the user (no LLM call).
@@ -91,10 +90,12 @@ def trigger_create(
         Success message with trigger ID and webhook URL, or error.
 
     Examples:
-        trigger_create("Deploy alert", "webhook", "agent_prompt",
-            {"prompt_template": "Deploy event: {message}. Summarize and notify."})
-        trigger_create("RSS monitor", "rss", "notify",
-            {"message_template": "New post: {title} -- {link}"},
+        trigger_config(action="create", name="Deploy alert", source_type="webhook",
+            action_type="agent_prompt",
+            action_config={"prompt_template": "Deploy event: {message}. Summarize and notify."})
+        trigger_config(action="create", name="RSS monitor", source_type="rss",
+            action_type="notify",
+            action_config={"message_template": "New post: {title} -- {link}"},
             source_config={"url": "https://example.com/feed"},
             conditions=[{"field": "title", "operator": "contains", "value": "release"}])
     """
@@ -164,8 +165,7 @@ def trigger_create(
     return result
 
 
-@tool
-def trigger_list(
+def _trigger_list(
     enabled_only: bool = False,
     current_thread_only: bool = False,
     *,
@@ -219,8 +219,7 @@ def trigger_list(
     return "\n".join(lines)
 
 
-@tool
-def trigger_update(
+def _trigger_update(
     trigger_id: str,
     name: Optional[str] = None,
     enabled: Optional[bool] = None,
@@ -288,8 +287,7 @@ def trigger_update(
     return f"[Error]: Trigger '{trigger_id}' not found."
 
 
-@tool
-def trigger_delete(
+def _trigger_delete(
     trigger_id: str,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -311,8 +309,7 @@ def trigger_delete(
     return f"[Error]: Trigger '{trigger_id}' not found."
 
 
-@tool
-def trigger_inspect(
+def _trigger_inspect(
     trigger_id: str,
     action: str = "detail",
     limit: int = 10,
@@ -342,9 +339,9 @@ def trigger_inspect(
         Formatted trigger details, test results, or execution history.
 
     Examples:
-        trigger_inspect("a1b2c3d4")
-        trigger_inspect("a1b2c3d4", action="test")
-        trigger_inspect("a1b2c3d4", action="history", limit=5)
+        trigger_info(action="detail", trigger_id="a1b2c3d4")
+        trigger_info(action="test", trigger_id="a1b2c3d4")
+        trigger_info(action="history", trigger_id="a1b2c3d4", limit=5)
     """
     user_id = get_user_id(config)
     manager = _get_trigger_manager()
@@ -465,8 +462,7 @@ def _inspect_history(manager: TriggerManager, user_id: str, trigger_id: str, lim
     return "\n".join(lines)
 
 
-@tool
-def trigger_sources_info() -> str:
+def _trigger_sources_info() -> str:
     """Get detailed information about all available trigger sources.
 
     Returns a formatted description of each trigger source including
@@ -553,7 +549,7 @@ def trigger_config(
         ]
         if missing:
             return f"[Error]: create requires: {', '.join(missing)}."
-        return trigger_create.func(
+        return _trigger_create(
             name=name,
             source_type=source_type,
             action_type=action_type,
@@ -567,7 +563,7 @@ def trigger_config(
     if action_key == "update":
         if not trigger_id:
             return "[Error]: update requires trigger_id."
-        return trigger_update.func(
+        return _trigger_update(
             trigger_id=trigger_id,
             name=name,
             enabled=enabled,
@@ -582,7 +578,7 @@ def trigger_config(
     if action_key == "delete":
         if not trigger_id:
             return "[Error]: delete requires trigger_id."
-        return trigger_delete.func(trigger_id=trigger_id, config=config)
+        return _trigger_delete(trigger_id=trigger_id, config=config)
 
     return "[Error]: action must be one of: create, update, delete."
 
@@ -613,19 +609,19 @@ def trigger_info(
     action_key = (action or "list").strip().lower()
 
     if action_key == "list":
-        return trigger_list.func(
+        return _trigger_list(
             enabled_only=enabled_only,
             current_thread_only=current_thread_only,
             config=config,
         )
 
     if action_key == "sources":
-        return trigger_sources_info.func()
+        return _trigger_sources_info()
 
     if action_key in {"detail", "test", "history"}:
         if not trigger_id:
             return f"[Error]: {action_key} requires trigger_id."
-        return trigger_inspect.func(
+        return _trigger_inspect(
             trigger_id=trigger_id,
             action=action_key,
             limit=limit,

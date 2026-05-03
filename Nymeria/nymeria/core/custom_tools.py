@@ -65,16 +65,12 @@ class CustomToolLoader:
         # Cache of created LangChain tools
         self._tools: Dict[str, BaseTool] = {}
 
-        # MCP manager instance (lazy loaded)
-        self._mcp_manager: Optional["MCPServerManager"] = None
-
     @property
     def mcp_manager(self) -> "MCPServerManager":
-        """Get or create the MCP server manager."""
-        if self._mcp_manager is None:
-            from .mcp_manager import MCPServerManager
-            self._mcp_manager = MCPServerManager()
-        return self._mcp_manager
+        """Get the shared MCP server manager."""
+        from .mcp_manager import get_mcp_manager
+
+        return get_mcp_manager()
 
     def load_all(self) -> List[BaseTool]:
         """Load all custom tools from the tools directory.
@@ -261,8 +257,9 @@ class CustomToolLoader:
 
     def shutdown(self) -> None:
         """Shutdown the loader and cleanup resources."""
-        if self._mcp_manager:
-            self._mcp_manager.shutdown_all()
+        # The MCP connection manager is process-wide and may also be used by
+        # managed MCP server tools, so this loader does not own its lifecycle.
+        return None
 
 
 def interpolate_env_vars(value: str) -> str:

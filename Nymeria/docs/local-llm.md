@@ -85,11 +85,11 @@ Per-thread overrides also work: Thread Settings → Model tab → Provider: Loca
 
 ### Problem 1 — Streaming tool-call name mangling
 
-**Symptom**: tool call `todo_list` arrives at the agent graph as `todotodo_list`.
+**Symptom**: tool call `nym_todo_list` arrives at the agent graph as `nym_todonym_todo_list`.
 
-**Root cause**: llama.cpp's `peg-native` streaming parser generates a GBNF grammar for tool names. When two tools share a prefix (e.g. `todo` and `todo_list`), the grammar's ordered choice tries the shorter name first. In streaming mode, the parser commits to `todo` on partial input, then backtracks to `todo_list` — but emits **both** as separate streaming delta chunks with the same `tool_call` index. Standard OpenAI streaming clients (langchain-openai, openai-python) accumulate `name` deltas by concatenation → `"todo" + "todo_list" = "todotodo_list"`.
+**Root cause**: llama.cpp's `peg-native` streaming parser generates a GBNF grammar for tool names. When two tools share a prefix (e.g. `nym_todo` and `nym_todo_list`), the grammar's ordered choice tries the shorter name first. In streaming mode, the parser commits to `nym_todo` on partial input, then backtracks to `nym_todo_list` — but emits **both** as separate streaming delta chunks with the same `tool_call` index. Standard OpenAI streaming clients (langchain-openai, openai-python) accumulate `name` deltas by concatenation → `"nym_todo" + "nym_todo_list" = "nym_todonym_todo_list"`.
 
-**Fix** (`vendor/react_agent/providers.py`): sort tools by name length descending before `bind_tools()`, so the grammar tries `todo_list` before `todo`. This is a harmless client-side workaround — tool order doesn't affect model behavior, only the grammar ordering llama.cpp derives from the tool list.
+**Fix** (`vendor/react_agent/providers.py`): sort tools by name length descending before `bind_tools()`, so the grammar tries `nym_todo_list` before `nym_todo`. This is a harmless client-side workaround — tool order doesn't affect model behavior, only the grammar ordering llama.cpp derives from the tool list.
 
 ### Problem 2 — Streaming breaks local LLM tool calling generally
 
@@ -125,7 +125,7 @@ Per-thread overrides also work: Thread Settings → Model tab → Provider: Loca
 
 Qwen 3 14B handles interactive tool calling reliably (list todos, create todos, handle errors gracefully). However, in autonomous flows (ticker-triggered TODO execution) with accumulated context (~9+ messages), the model sometimes:
 
-- **Writes tool calls as plain text** instead of structured `tool_call` format (e.g. `todo(todo_id="abc", status="done")` appearing as prose)
+- **Writes tool calls as plain text** instead of structured `tool_call` format (e.g. `nym_todo(todo_id="abc", status="done")` appearing as prose)
 - **Skips follow-up actions** — executes the TODO task but doesn't mark it done
 
 This is a model capability ceiling, not a parser bug. Claude handles multi-step autonomous chaining naturally; 14B-class local models don't reliably maintain tool-call discipline across long contexts.

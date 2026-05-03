@@ -882,14 +882,14 @@ def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatM
                 logger.debug(f"Could not check tool support: {e}")
 
         # Sort tools by name length descending so prefix-overlapping names
-        # (e.g. `todo` vs `todo_list`) are presented longest-first in the
+        # (e.g. `nym_todo` vs `nym_todo_list`) are presented longest-first in the
         # generated tool-call grammar. This prevents a streaming-mode parser
         # bug in llama.cpp's peg-native where the parser commits to the
-        # shorter prefix (`todo`) on partial input, then backtracks to the
-        # longer name (`todo_list`) and emits a duplicate `name` field in
+        # shorter prefix (`nym_todo`) on partial input, then backtracks to the
+        # longer name (`nym_todo_list`) and emits a duplicate `name` field in
         # the streamed delta. Standard OpenAI streaming clients accumulate
         # tool_call name deltas by concatenation, producing mangled names
-        # like `todotodo_list` reaching the agent graph.
+        # like `nym_todonym_todo_list` reaching the agent graph.
         # Upstream bug filed against ggml-org/llama.cpp — this sort is a
         # harmless client-side workaround (tool order does not affect model
         # behavior, only the grammar ordering llama.cpp derives from it).

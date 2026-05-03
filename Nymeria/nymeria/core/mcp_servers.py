@@ -19,20 +19,9 @@ from ..tools.definitions.schema import (
     MCPServerDefinition,
     MCPToolConfig,
 )
+from .mcp_manager import get_mcp_manager
 
 logger = logging.getLogger(__name__)
-
-# Lazy-loaded MCP manager (shared with custom tools)
-_mcp_manager: Optional["MCPServerManager"] = None
-
-
-def _get_mcp_manager():
-    """Get or create the shared MCP server manager."""
-    global _mcp_manager
-    if _mcp_manager is None:
-        from .mcp_manager import MCPServerManager
-        _mcp_manager = MCPServerManager()
-    return _mcp_manager
 
 
 class MCPServerRegistry:
@@ -111,7 +100,7 @@ class MCPServerRegistry:
         if not defn:
             raise ValueError(f"MCP server not found: {server_id}")
 
-        manager = _get_mcp_manager()
+        manager = get_mcp_manager()
 
         # Build a temporary MCPToolConfig to trigger connection
         config = MCPToolConfig(
@@ -225,7 +214,7 @@ class MCPServerRegistry:
             startup_timeout_seconds=defn.startup_timeout_seconds,
         )
 
-        manager = _get_mcp_manager()
+        manager = get_mcp_manager()
 
         async def execute_mcp(**kwargs: Any) -> str:
             return await manager.call_tool(config, kwargs)

@@ -28,9 +28,6 @@ from .todo import (
     nym_todo,
     nym_todo_delete,
     nym_todo_list,
-    todo,
-    todo_delete,
-    todo_list,
     TODO_TOOLS,
 )
 from .subagent import (
@@ -208,9 +205,6 @@ __all__ = [
     "nym_todo",
     "nym_todo_delete",
     "nym_todo_list",
-    "todo",
-    "todo_delete",
-    "todo_list",
     "TODO_TOOLS",
     "reload_all",
     "self_modify_rollback",

@@ -6,6 +6,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
+import nymeria.tools as tools_package
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools import auth_cache_utils
 from nymeria.tools import calendar
@@ -184,9 +185,9 @@ def test_trigger_dispatch_tools_route_to_existing_implementations(monkeypatch):
         calls.append(("delete", kwargs))
         return "deleted"
 
-    monkeypatch.setattr(trigger_tools.trigger_create, "func", fake_create)
-    monkeypatch.setattr(trigger_tools.trigger_update, "func", fake_update)
-    monkeypatch.setattr(trigger_tools.trigger_delete, "func", fake_delete)
+    monkeypatch.setattr(trigger_tools, "_trigger_create", fake_create)
+    monkeypatch.setattr(trigger_tools, "_trigger_update", fake_update)
+    monkeypatch.setattr(trigger_tools, "_trigger_delete", fake_delete)
 
     cfg = _config()
     assert trigger_tools.trigger_config.func(
@@ -230,9 +231,9 @@ def test_trigger_info_tool_routes_read_actions(monkeypatch):
         calls.append(("inspect", kwargs))
         return kwargs["action"]
 
-    monkeypatch.setattr(trigger_tools.trigger_list, "func", fake_list)
-    monkeypatch.setattr(trigger_tools.trigger_sources_info, "func", fake_sources)
-    monkeypatch.setattr(trigger_tools.trigger_inspect, "func", fake_inspect)
+    monkeypatch.setattr(trigger_tools, "_trigger_list", fake_list)
+    monkeypatch.setattr(trigger_tools, "_trigger_sources_info", fake_sources)
+    monkeypatch.setattr(trigger_tools, "_trigger_inspect", fake_inspect)
 
     cfg = _config()
     assert trigger_tools.trigger_info.func(
@@ -255,15 +256,24 @@ def test_trigger_info_tool_routes_read_actions(monkeypatch):
     assert calls[2][1]["limit"] == 3
 
 
-def test_legacy_trigger_tool_names_migrate_to_consolidated_tools():
+def test_legacy_tool_names_migrate_to_consolidated_tools():
     assert migrate_tool_names([
+        "todo",
+        "todo_delete",
+        "todo_list",
         "trigger_create",
         "trigger_update",
         "trigger_delete",
         "trigger_list",
         "trigger_inspect",
         "trigger_sources_info",
-    ]) == ["trigger_config", "trigger_info"]
+    ]) == [
+        "nym_todo",
+        "nym_todo_delete",
+        "nym_todo_list",
+        "trigger_config",
+        "trigger_info",
+    ]
 
     prefs = ToolPreferences(default_thread_tools=[
         "trigger_create",
@@ -287,6 +297,27 @@ def test_legacy_trigger_tool_names_migrate_to_consolidated_tools():
     assert tc.enabled_tools == ["trigger_config", "trigger_info"]
     assert tc.disabled_tools == ["trigger_config"]
     assert list(tc.temporary_tools.keys()) == ["trigger_info"]
+
+
+def test_legacy_tool_symbols_are_not_public_exports():
+    legacy_trigger_symbols = [
+        "trigger_create",
+        "trigger_update",
+        "trigger_delete",
+        "trigger_list",
+        "trigger_inspect",
+        "trigger_sources_info",
+        "trigger_test",
+    ]
+    legacy_todo_symbols = ["todo", "todo_delete", "todo_list"]
+
+    for name in legacy_trigger_symbols:
+        assert not hasattr(trigger_tools, name)
+    for name in legacy_todo_symbols:
+        assert name not in tools_package.__all__
+
+    registered_names = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)
+    assert not (registered_names & set(legacy_trigger_symbols + legacy_todo_symbols))
 
 
 def test_trigger_consolidation_and_tool_search_schema_budget():

@@ -14,11 +14,12 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .keyed_locks import KeyedRLockMap
+
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks for notification operations (keyed by user_id)
-_notification_locks: Dict[str, threading.RLock] = {}
-_locks_lock = threading.Lock()
+_notification_locks = KeyedRLockMap()
 
 
 class Notification(BaseModel):
@@ -66,11 +67,7 @@ class NotificationStore:
 
     def _get_lock(self, user_id: str) -> threading.RLock:
         """Get or create a lock for a specific user."""
-        global _notification_locks
-        with _locks_lock:
-            if user_id not in _notification_locks:
-                _notification_locks[user_id] = threading.RLock()
-            return _notification_locks[user_id]
+        return _notification_locks.get(user_id)
 
     def _get_notifications_path(self, user_id: str) -> Path:
         """Get the path to a user's notifications file."""
