@@ -76,6 +76,7 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/common/ErrorToast.svelte",
     "lib/components/common/Icon.svelte",
     "lib/components/common/Modal.svelte",
+    "lib/components/common/WizardShell.svelte",
     "lib/components/common/index.ts",
     # Thread list: most divergent (desktop 1258 lines, mobile 145)
     "lib/components/threads/ThreadList.svelte",

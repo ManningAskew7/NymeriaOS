@@ -8,6 +8,7 @@
     MyTelegramBot
   } from '$lib/types';
   import Icon from '$lib/components/common/Icon.svelte';
+  import WizardShell from '$lib/components/common/WizardShell.svelte';
 
   type Step = 'token' | 'starting' | 'bind' | 'done';
 
@@ -159,189 +160,112 @@
   );
 </script>
 
-<div class="wizard-backdrop" role="presentation" onclick={onClose}>
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="wizard" onclick={(e) => e.stopPropagation()}>
-    <header class="wizard-header">
-      <button class="back-btn" type="button" onclick={onClose} aria-label="Close">
-        <Icon name="chevronLeft" size={22} />
-      </button>
-      <h3>{stepTitle}</h3>
-    </header>
-
-    <div class="wizard-body">
-      {#if errorMsg}
-        <div class="error">
-          <p>{errorMsg}</p>
-        </div>
-      {/if}
-
-      {#if currentStep === 'token'}
-        <p>
-          Open <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
-          in Telegram, send <code>/newbot</code>, follow the prompts, and copy the
-          token it gives you. Paste it below.
-        </p>
-
-        <label class="field">
-          <span class="field-label">Bot token</span>
-          <input
-            type="password"
-            class="token-input"
-            bind:value={botToken}
-            placeholder="123456789:ABCdef..."
-            autocomplete="off"
-            spellcheck="false"
-            disabled={busy}
-          />
-        </label>
-
-        <p class="muted small">
-          The token is encrypted before storage. The plaintext is never
-          returned in any API response. Revoke via BotFather's <code>/revoke</code>.
-        </p>
-
-        <div class="actions">
-          <button
-            class="action-btn primary"
-            type="button"
-            disabled={busy || !botToken.trim()}
-            onclick={handleSubmitToken}
-          >{busy ? 'Validating…' : 'Continue'}</button>
-        </div>
-      {:else if currentStep === 'starting'}
-        <p>
-          Your bot is registered as
-          <strong>@{registeredBot?.bot_username ?? '…'}</strong>. The server
-          is starting its polling loop now — usually under 15 seconds.
-        </p>
-        <div class="muted small">
-          Waiting for the bot to come online…
-        </div>
-      {:else if currentStep === 'bind'}
-        <p>
-          <strong>@{registeredBot?.bot_username}</strong> is alive. Open Telegram
-          and bind a chat to this thread:
-        </p>
-
-        {#if bindCode}
-          <div class="code-card">
-            <div class="code-row">
-              <code class="code-pill">{bindCode.code}</code>
-              <button
-                class="action-btn secondary"
-                type="button"
-                onclick={() => copyToClipboard(bindCode!.code)}
-              >Copy</button>
-            </div>
-
-            {#if bindDeepLink}
-              <a
-                class="deep-link"
-                href={bindDeepLink}
-                target="_blank"
-                rel="noopener noreferrer"
-              >Open @{registeredBot?.bot_username} and bind</a>
-              <p class="muted small">
-                The deep link binds your DM with the bot. To bind a
-                different chat, send <code>/bind {bindCode.code}</code>
-                from inside that chat instead.
-              </p>
-            {:else}
-              <p class="muted small">
-                In the chat you want to bind, send
-                <code>/bind {bindCode.code}</code> to @{registeredBot?.bot_username}.
-              </p>
-            {/if}
-          </div>
-
-          <p class="muted small">Code expires in 10 minutes. Waiting for confirmation…</p>
-        {:else}
-          <p class="muted">Issuing code…</p>
-        {/if}
-      {:else if currentStep === 'done' && resultBinding}
-        <div class="success">
-          <Icon name="check" size={28} />
-          <h4>Connected</h4>
-          <p>
-            Telegram chat <code>{resultBinding.platform_chat_id}</code> is now
-            bound to this thread via your bot
-            <strong>@{registeredBot?.bot_username}</strong>. Messages will
-            stream both ways.
-          </p>
-          <button class="action-btn primary" type="button" onclick={onClose}>Done</button>
-        </div>
-      {/if}
+<WizardShell title={stepTitle} {onClose}>
+  {#if errorMsg}
+    <div class="error">
+      <p>{errorMsg}</p>
     </div>
-  </div>
-</div>
+  {/if}
+
+  {#if currentStep === 'token'}
+    <p>
+      Open <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
+      in Telegram, send <code>/newbot</code>, follow the prompts, and copy the
+      token it gives you. Paste it below.
+    </p>
+
+    <label class="field">
+      <span class="field-label">Bot token</span>
+      <input
+        type="password"
+        class="token-input"
+        bind:value={botToken}
+        placeholder="123456789:ABCdef..."
+        autocomplete="off"
+        spellcheck="false"
+        disabled={busy}
+      />
+    </label>
+
+    <p class="muted small">
+      The token is encrypted before storage. The plaintext is never
+      returned in any API response. Revoke via BotFather's <code>/revoke</code>.
+    </p>
+
+    <div class="actions">
+      <button
+        class="action-btn primary"
+        type="button"
+        disabled={busy || !botToken.trim()}
+        onclick={handleSubmitToken}
+      >{busy ? 'Validating…' : 'Continue'}</button>
+    </div>
+  {:else if currentStep === 'starting'}
+    <p>
+      Your bot is registered as
+      <strong>@{registeredBot?.bot_username ?? '…'}</strong>. The server
+      is starting its polling loop now — usually under 15 seconds.
+    </p>
+    <div class="muted small">
+      Waiting for the bot to come online…
+    </div>
+  {:else if currentStep === 'bind'}
+    <p>
+      <strong>@{registeredBot?.bot_username}</strong> is alive. Open Telegram
+      and bind a chat to this thread:
+    </p>
+
+    {#if bindCode}
+      <div class="code-card">
+        <div class="code-row">
+          <code class="code-pill">{bindCode.code}</code>
+          <button
+            class="action-btn secondary"
+            type="button"
+            onclick={() => copyToClipboard(bindCode!.code)}
+          >Copy</button>
+        </div>
+
+        {#if bindDeepLink}
+          <a
+            class="deep-link"
+            href={bindDeepLink}
+            target="_blank"
+            rel="noopener noreferrer"
+          >Open @{registeredBot?.bot_username} and bind</a>
+          <p class="muted small">
+            The deep link binds your DM with the bot. To bind a
+            different chat, send <code>/bind {bindCode.code}</code>
+            from inside that chat instead.
+          </p>
+        {:else}
+          <p class="muted small">
+            In the chat you want to bind, send
+            <code>/bind {bindCode.code}</code> to @{registeredBot?.bot_username}.
+          </p>
+        {/if}
+      </div>
+
+      <p class="muted small">Code expires in 10 minutes. Waiting for confirmation…</p>
+    {:else}
+      <p class="muted">Issuing code…</p>
+    {/if}
+  {:else if currentStep === 'done' && resultBinding}
+    <div class="success">
+      <Icon name="check" size={28} />
+      <h4>Connected</h4>
+      <p>
+        Telegram chat <code>{resultBinding.platform_chat_id}</code> is now
+        bound to this thread via your bot
+        <strong>@{registeredBot?.bot_username}</strong>. Messages will
+        stream both ways.
+      </p>
+      <button class="action-btn primary" type="button" onclick={onClose}>Done</button>
+    </div>
+  {/if}
+</WizardShell>
 
 <style>
-  .wizard-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 400;
-    background: var(--bg-base);
-    display: flex;
-    flex-direction: column;
-  }
-
-  .wizard {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
-
-  .wizard-header {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: 0 var(--spacing-md);
-    height: var(--header-height, 56px);
-    border-bottom: 1px solid var(--border-subtle);
-    flex-shrink: 0;
-    padding-top: env(safe-area-inset-top);
-  }
-
-  .back-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-md);
-    color: var(--text-secondary);
-    background: transparent;
-    border: none;
-  }
-
-  .back-btn:active {
-    background: var(--bg-hover);
-  }
-
-  .wizard-header h3 {
-    margin: 0;
-    font-size: var(--font-size-md);
-    font-weight: 600;
-    flex: 1;
-  }
-
-  .wizard-body {
-    padding: var(--spacing-lg);
-    overflow-y: auto;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    padding-bottom: calc(var(--spacing-lg) + env(safe-area-inset-bottom));
-  }
-
-  .wizard-body p {
-    margin: 0;
-    line-height: 1.5;
-  }
-
   .muted {
     color: var(--text-muted);
   }
