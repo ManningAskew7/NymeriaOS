@@ -59,6 +59,7 @@ def _get_project_root() -> Path:
 
 PROJECT_ROOT = _get_project_root()
 DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost"
+ReasoningEffort = Literal["low", "medium", "high"]
 
 
 class _NonEmptyEnvSource(EnvSettingsSource):
@@ -271,7 +272,7 @@ class Settings(BaseSettings):
     llm_presence_penalty: Optional[float] = Field(
         default=None, ge=-2.0, le=2.0, description="Encourage new topics"
     )
-    llm_reasoning_effort: Optional[str] = Field(
+    llm_reasoning_effort: Optional[ReasoningEffort] = Field(
         default=None, description="Reasoning effort for compatible models: low, medium, high"
     )
     llm_extended_thinking: bool = Field(
