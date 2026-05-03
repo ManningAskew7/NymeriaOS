@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -238,6 +239,75 @@ def test_public_health_does_not_require_auth(tmp_path: Path, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, monkeypatch):
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    token = agent.accounts_repo.issue_token("alice")
+
+    response = client.post(
+        "/devices/register",
+        headers=_auth(token),
+        json={
+            "token": "device-token",
+            "platform": "android",
+            "user_id": "bob",
+            "thread_ids": ["thread-1"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "registered", "platform": "android"}
+    stored = json.loads((tmp_path / "fcm_tokens.json").read_text(encoding="utf-8"))
+    assert stored == [
+        {
+            "token": "device-token",
+            "platform": "android",
+            "user_id": "alice",
+            "thread_ids": ["thread-1"],
+        }
+    ]
+
+
+def test_workspace_download_requires_admin_and_workspace_path(
+    tmp_path: Path,
+    monkeypatch,
+):
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    artifact = workspace_dir / "artifact.txt"
+    artifact.write_text("workspace data", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(workspace_dir))
+
+    client, agent = _client(tmp_path, monkeypatch)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
+    user_token = agent.accounts_repo.issue_token("alice")
+    admin_token = agent.accounts_repo.issue_token("admin")
+
+    user_response = client.get(
+        "/workspace/download",
+        headers=_auth(user_token),
+        params={"path": str(artifact)},
+    )
+    outside_response = client.get(
+        "/workspace/download",
+        headers=_auth(admin_token),
+        params={"path": str(outside)},
+    )
+    admin_response = client.get(
+        "/workspace/download",
+        headers=_auth(admin_token),
+        params={"path": str(artifact)},
+    )
+
+    assert user_response.status_code == 403
+    assert outside_response.status_code == 403
+    assert admin_response.status_code == 200
+    assert admin_response.text == "workspace data"
 
 
 def test_user_auth_contract_for_me_endpoint(tmp_path: Path, monkeypatch):
