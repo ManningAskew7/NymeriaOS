@@ -1,6 +1,5 @@
 """FastAPI REST API trigger with SSE streaming for Nymeria."""
 
-import asyncio
 import json
 import logging
 import math
@@ -37,12 +36,9 @@ from ..core.chat_bindings import (
 from ..core import secrets as nymeria_secrets
 from ..core.checkpoint_cleanup import delete_thread_checkpoints
 from ..core.event_bus import (
-    AutonomousEvent,
-    get_event_bus,
     publish_agent_stream_chunk,
     publish_autonomous_event,
     publish_sync_event,
-    should_log_stream_event_sample,
 )
 from ..core.notification_dispatch import (
     create_autonomous_notification as _dispatch_autonomous_notification,
@@ -57,6 +53,7 @@ from ..core.thread_classification import (
 from ..core.todo_manager import TodoManager
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS
+from ..api.routers.autonomous_stream import create_autonomous_stream_router
 from ..api.routers.custom_tools import create_custom_tools_router
 from ..api.routers.activity import create_activity_router
 from ..api.routers.agent_threads import create_agent_threads_router
@@ -1001,6 +998,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
     app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
     app.include_router(create_todos_router(verify_api_key, _authed_user_id, get_settings))
+    app.include_router(create_autonomous_stream_router(get_agent, get_settings))
     app.include_router(create_custom_tools_router(require_admin_user, get_agent))
     app.include_router(
         create_unified_tools_router(
@@ -4530,225 +4528,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to fetch models from {base_url}: {e}")
             return []
-
-    @app.get("/autonomous/stream", tags=["Autonomous"])
-    async def stream_autonomous_events(
-        request: Request,
-        user_id: str = Query(default="default", description="User ID to filter events"),
-        api_key: Optional[str] = Query(default=None, description="Legacy API key fallback for clients that cannot send Authorization headers."),
-        client_id: Optional[str] = Query(default=None, description="Client ID for origin filtering (prevents seeing own sync events)"),
-        authorization: Optional[str] = Header(None),
-        x_nymeria_act_as: Optional[str] = Header(None),
-        settings: Settings = Depends(get_settings),
-    ):
-        # Auth: prefer Authorization header, fall back to ?api_key= for
-        # legacy EventSource-style clients that cannot set custom headers.
-        # Both paths accept any valid account token (``nym_...``).
-        presented: Optional[str] = None
-        if authorization:
-            parts = authorization.split()
-            if len(parts) == 2 and parts[0].lower() == "bearer":
-                presented = parts[1]
-        if presented is None:
-            presented = api_key
-
-        authorized = False
-        firehose = False  # admin + X-Nymeria-Act-As:* streams every user's events
-        if presented:
-            try:
-                repo_user = get_agent().accounts_repo.verify_token(presented)
-                if repo_user is not None:
-                    authorized = True
-                    # Admin-role callers may use X-Nymeria-Act-As to stream
-                    # another user's events — or "*" for the full firehose
-                    # (used by bot thin clients that route events to Discord /
-                    # Telegram channels by thread_id prefix, regardless of
-                    # which user's autonomous task produced them).
-                    if x_nymeria_act_as:
-                        if repo_user.role != "admin":
-                            raise HTTPException(status_code=403, detail="Act-As requires admin")
-                        if x_nymeria_act_as == "*":
-                            firehose = True
-                            user_id = "*"
-                        else:
-                            user_id = x_nymeria_act_as
-                    else:
-                        # Non-admin clients can only stream their own events;
-                        # admins without act-as default to their own stream.
-                        user_id = repo_user.id
-            except HTTPException:
-                raise
-            except Exception:
-                authorized = False
-
-        if not authorized:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-        """
-        Stream autonomous task events and cross-client sync events via Server-Sent Events.
-
-        Emits events when Nymeria executes scheduled tasks autonomously, when other
-        clients send interactive chat messages, or when thread metadata changes.
-
-        Events include: task_started, thinking, tool_call, tool_result, response, task_completed,
-        message_added, thread_updated, thread_created, thread_deleted
-
-        Connect to this endpoint to receive real-time updates about all activity.
-        """
-        from queue import Empty
-
-        subscriber_id = str(uuid.uuid4())
-        event_bus = get_event_bus()
-        queue = event_bus.subscribe(subscriber_id)
-        logger.info(
-            "[AUTONOMOUS SSE] subscriber_connect subscriber=%s user=%s firehose=%s "
-            "client_id=%s local_subscribers=%d",
-            subscriber_id[:8],
-            user_id,
-            firehose,
-            client_id[:8] if client_id else "none",
-            event_bus.get_subscriber_count(),
-        )
-
-        async def event_generator():
-            """Generate SSE events from the event bus."""
-            received_counts: Dict[str, int] = {}
-            yielded_counts: Dict[str, int] = {}
-            filtered_user_counts: Dict[str, int] = {}
-            filtered_origin_counts: Dict[str, int] = {}
-
-            def bump(counter: Dict[str, int], key: str) -> int:
-                counter[key] = counter.get(key, 0) + 1
-                return counter[key]
-
-            try:
-                while True:
-                    # Check if client disconnected
-                    if await request.is_disconnected():
-                        logger.info(
-                            "[AUTONOMOUS SSE] subscriber_disconnected subscriber=%s user=%s "
-                            "reason=request_disconnected received=%s yielded=%s",
-                            subscriber_id[:8],
-                            user_id,
-                            received_counts,
-                            yielded_counts,
-                        )
-                        break
-
-                    try:
-                        # Non-blocking check for events
-                        event: AutonomousEvent = queue.get_nowait()
-                        received_count = bump(received_counts, event.event_type)
-                        if should_log_stream_event_sample(event.event_type, received_count):
-                            logger.info(
-                                "[AUTONOMOUS SSE] queue_receive subscriber=%s type=%s "
-                                "count=%d queue_size=%d stream_user=%s event_user=%s "
-                                "thread=%s task=%s",
-                                subscriber_id[:8],
-                                event.event_type,
-                                received_count,
-                                queue.qsize(),
-                                user_id,
-                                event.user_id,
-                                event.thread_id,
-                                event.task_id,
-                            )
-
-                        # Filter by user_id unless the caller requested the
-                        # firehose (admin + X-Nymeria-Act-As: *). "default" as
-                        # a query value historically meant "all" — still
-                        # honored for backward compat with older browser
-                        # clients, but the authenticated path is authoritative.
-                        if not firehose and user_id != "default" and event.user_id != user_id:
-                            filtered_count = bump(filtered_user_counts, event.event_type)
-                            if should_log_stream_event_sample(event.event_type, filtered_count):
-                                logger.info(
-                                    "[AUTONOMOUS SSE] filter subscriber=%s reason=user_mismatch "
-                                    "type=%s count=%d stream_user=%s event_user=%s "
-                                    "thread=%s task=%s",
-                                    subscriber_id[:8],
-                                    event.event_type,
-                                    filtered_count,
-                                    user_id,
-                                    event.user_id,
-                                    event.thread_id,
-                                    event.task_id,
-                                )
-                            continue
-
-                        # Skip events that originated from this client (dedup)
-                        origin = event.data.get("_origin_client_id")
-                        if origin and client_id and origin == client_id:
-                            filtered_count = bump(filtered_origin_counts, event.event_type)
-                            if should_log_stream_event_sample(event.event_type, filtered_count):
-                                logger.info(
-                                    "[AUTONOMOUS SSE] filter subscriber=%s reason=origin_client "
-                                    "type=%s count=%d client_id=%s thread=%s task=%s",
-                                    subscriber_id[:8],
-                                    event.event_type,
-                                    filtered_count,
-                                    client_id[:8],
-                                    event.thread_id,
-                                    event.task_id,
-                                )
-                            continue
-
-                        # Build SSE payload, stripping internal fields and reserved keys
-                        # (event.data may contain a "type" key from the original chunk —
-                        #  we use event.event_type as the canonical type to preserve
-                        #  the interactive_ prefix for sync events)
-                        payload = {
-                            k: v for k, v in event.data.items()
-                            if not k.startswith("_") and k not in ("type", "thread_id", "task_id", "timestamp")
-                        }
-                        event_data = {
-                            "type": event.event_type,
-                            "thread_id": event.thread_id,
-                            "task_id": event.task_id,
-                            "timestamp": event.timestamp.isoformat(),
-                            **payload,
-                        }
-                        serialized = json.dumps(event_data)
-                        yielded_count = bump(yielded_counts, event.event_type)
-                        if should_log_stream_event_sample(event.event_type, yielded_count):
-                            logger.info(
-                                "[AUTONOMOUS SSE] yield subscriber=%s type=%s count=%d "
-                                "bytes=%d thread=%s task=%s",
-                                subscriber_id[:8],
-                                event.event_type,
-                                yielded_count,
-                                len(serialized),
-                                event.thread_id,
-                                event.task_id,
-                            )
-                        yield f"data: {serialized}\n\n"
-
-                    except Empty:
-                        # No events, send heartbeat to keep connection alive
-                        yield ": heartbeat\n\n"
-                        await asyncio.sleep(1)
-
-            finally:
-                event_bus.unsubscribe(subscriber_id)
-                logger.info(
-                    "[AUTONOMOUS SSE] subscriber_cleanup subscriber=%s user=%s "
-                    "received=%s yielded=%s filtered_user=%s filtered_origin=%s",
-                    subscriber_id[:8],
-                    user_id,
-                    received_counts,
-                    yielded_counts,
-                    filtered_user_counts,
-                    filtered_origin_counts,
-                )
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
 
     # ========================================================================
     # MCP Server Endpoints
