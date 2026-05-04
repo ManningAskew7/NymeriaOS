@@ -110,6 +110,3 @@ RUNTIME_ADMIN_TOOLS = [
     reload_all,
     self_modify_rollback,
 ]
-
-# Backward-compatible alias
-SUBAGENT_TOOLS = RUNTIME_ADMIN_TOOLS

@@ -204,11 +204,11 @@ def run_cli(args: argparse.Namespace) -> None:
     logging.getLogger("nymeria").setLevel(logging.CRITICAL)
 
     from nymeria import NymeriaAgent
-    from nymeria.tools import get_all_tools_with_agents
+    from nymeria.tools import ALL_TOOLS
     from nymeria.triggers.cli import run_cli as start_cli
 
     # Create agent with all tools
-    agent = NymeriaAgent(tools=get_all_tools_with_agents())
+    agent = NymeriaAgent(tools=list(ALL_TOOLS))
     agent.sync_agent_tools()
 
     # Start CLI
@@ -248,7 +248,7 @@ def run_worker(args: argparse.Namespace) -> None:
     run in separate containers, sharing state via PostgreSQL and Redis.
     """
     from nymeria import NymeriaAgent
-    from nymeria.tools import get_all_tools_with_agents
+    from nymeria.tools import ALL_TOOLS
     from nymeria.config import get_settings
     from nymeria.core.event_bus import create_event_bus, set_event_bus
 
@@ -276,7 +276,7 @@ def run_worker(args: argparse.Namespace) -> None:
             print(f"  - FCM push notifications: enabled")
 
     # Create agent with all tools (this starts the ticker)
-    agent = NymeriaAgent(tools=get_all_tools_with_agents())
+    agent = NymeriaAgent(tools=list(ALL_TOOLS))
 
     # Sync callable thread tools into the registry
     agent.sync_agent_tools()
@@ -474,7 +474,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
     ("pulse"). Moderation tools are available via the thread's tool config.
     """
     from nymeria import NymeriaAgent
-    from nymeria.tools import get_all_tools_with_agents
+    from nymeria.tools import ALL_TOOLS
     from nymeria.config import get_settings
     from nymeria.triggers.twitch_bot import NymeriaTwitchBot
     from nymeria.core.twitch_runtime import register_twitch_bot
@@ -510,7 +510,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
 
     # Create agent without ticker (ticker runs in worker/api, not bot)
-    agent = NymeriaAgent(tools=get_all_tools_with_agents(), enable_ticker=False)
+    agent = NymeriaAgent(tools=list(ALL_TOOLS), enable_ticker=False)
     agent.sync_agent_tools()
 
     # Create bot

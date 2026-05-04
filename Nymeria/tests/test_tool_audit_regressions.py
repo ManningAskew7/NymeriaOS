@@ -19,7 +19,7 @@ from nymeria.tools import google_docs
 from nymeria.tools import google_sheets
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
-from nymeria.tools import _prv_a_products
+from nymeria.plugins._prv_a import products as _prv_a_products
 from nymeria.tools.metadata import get_all_tool_metadata
 from nymeria.tools import triggers as trigger_tools
 from nymeria.tools.tool_search import _search, tool_search
