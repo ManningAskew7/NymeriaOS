@@ -83,7 +83,26 @@ The default `apiUrl` still differs by platform, but this is no longer the only d
 
 **When changing**: replicate configuration logic carefully, while preserving platform-specific defaults and any mobile setup behavior tied to first-run connection flow.
 
-User-scoped API helpers and stores must stay in sync across both apps. `services/api.svelte.ts` resolves optional `userId` arguments from `configStore.identity?.id`; per-user tool/skill/trigger stores register `registerIdentityReloadHook` and guard async loads with an identity generation so stale responses from the previous account cannot repopulate state after a switch.
+User-scoped API helpers and stores must stay in sync across both apps. The API service resolves optional `userId` arguments from `configStore.identity?.id`; per-user tool/skill/trigger stores register `registerIdentityReloadHook` and guard async loads with an identity generation so stale responses from the previous account cannot repopulate state after a switch.
+
+#### `services/api.svelte.ts` and `services/api/`
+
+Both apps now use the same modular API service layout:
+
+| File | Drift policy | Notes |
+|------|--------------|-------|
+| `services/api.svelte.ts` | EXACT_MATCH | Compatibility entrypoint; re-exports from `services/api/index.ts`. |
+| `services/api/index.ts` | EXACT_MATCH | Constructs the concrete `NymeriaAPI` facade from the domain class chain. |
+| `services/api/*.ts` domain modules | KNOWN_DRIFT | Same module names and inheritance order, but the desktop API surface is still a superset in a few administrative areas. |
+
+The shared module chain is:
+`base -> system -> accounts -> chat -> threads -> todos -> tools -> mcp -> thread-config -> skills -> triggers -> reporting`.
+
+When adding or changing an endpoint wrapper, edit the relevant domain module in
+both apps instead of adding code to `api.svelte.ts`. Compare the two module
+implementations before copying: mobile intentionally keeps some platform-specific
+behavior, such as its history mapper only materializing legacy
+`intermediateContent`/`toolCalls` fields when a message has no `steps`.
 
 #### `routes/+layout.ts`
 
@@ -306,7 +325,7 @@ All account/identity surfaces live under `components/account/` in both apps. Mos
 | `CopyOnceTokenDialog.svelte` | ✓ | ✓ | Shared copy-once token modal; desktop adds optional account-switcher save actions for admin-issued tokens. |
 
 **Supporting files (also mirror in both apps):**
-- `services/api.svelte.ts` — 16 new account/admin methods + `_toastAndExtractError` helper.
+- `services/api/accounts.ts` and `services/api/base.ts` — account/admin methods plus the shared `_toastAndExtractError` helper.
 - `stores/config.svelte.ts` — `signOut()`, `updateIdentityDisplayName()`.
 - `stores/connections.svelte.ts` — **desktop only**; extends `SavedConnection` with cached identity + `verifyEntry()`.
 - `stores/errors.svelte.ts` — toast queue + `pushAuthInvalid()`.
@@ -320,7 +339,7 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 
 ### Adding a new API endpoint
 
-1. Add the method to `services/api.svelte.ts` in both apps
+1. Add the method to the relevant `services/api/` domain module in both apps
 2. Add any new types to `types/index.ts` in both apps
 3. If it needs a new store, add it to both platforms unless the feature is explicitly platform-specific
 4. Compare existing desktop/mobile implementations before copying because these files have already diverged
@@ -341,9 +360,9 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 
 Autonomous stream transport is intentionally not byte-identical today. Desktop's `stores/autonomous.svelte.ts` is the proven runtime path for live autonomous TODO/trigger streaming: Bearer-auth fetch stream, per-session `client_id`, heartbeat/idle guard, reconnect catch-up, and sampled console diagnostics. Mobile also uses fetch streaming with Bearer auth and a per-session `client_id` because WebView EventSource behavior is unreliable, but it still includes the legacy `api_key` query parameter for compatibility.
 
-`workspace_artifact` is normalized in both apps' `types/index.ts` and `services/api.svelte.ts`. Both apps render artifact chips from `ToolCallCard.svelte` and open them in a platform-specific `WorkspaceArtifactModal.svelte`: desktop uses a windowed modal, while mobile uses the full-screen mobile modal with touch-sized open/download actions.
+`workspace_artifact` is normalized in both apps' `types/index.ts` and API service modules. Both apps render artifact chips from `ToolCallCard.svelte` and open them in a platform-specific `WorkspaceArtifactModal.svelte`: desktop uses a windowed modal, while mobile uses the full-screen mobile modal with touch-sized open/download actions.
 
-Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and `services/api.svelte.ts` aligned for this flow.
+Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and the API service history mapper aligned for this flow.
 
 TODO dashboard invalidation is also shared: live chat handlers and
 `stores/autonomous.svelte.ts` use `utils/todoTools.ts` to recognize TODO tool
@@ -391,14 +410,14 @@ not been replicated yet.
 ### Adding a new settings field
 
 1. Add the type to `types/index.ts` in both apps
-2. Add the API call to `services/api.svelte.ts` in both apps
+2. Add the API call to `services/api/system.ts` in both apps
 3. Add UI to `SettingsPanel.svelte` with platform-appropriate presentation
 
 ### Adding a new account-related endpoint or component
 
 1. Backend first — extend `Nymeria/nymeria/triggers/api.py` with the right `Depends(require_admin_user)` or `Depends(verify_api_key)`. Use the same `HTTPException(detail=...)` shape as the existing endpoints so the frontend's `_toastAndExtractError` parser picks up the message.
 2. Add the response type to `types/index.ts` in both apps (mirror Pydantic field names exactly).
-3. Add the API method to `services/api.svelte.ts` in both apps using the existing `_toastAndExtractError` pattern — every account/admin endpoint must route 401/403/409 through it so the global toast layer stays consistent.
+3. Add the API method to `services/api/accounts.ts` in both apps using the existing `_toastAndExtractError` pattern — every account/admin endpoint must route 401/403/409 through it so the global toast layer stays consistent.
 4. Build / extend the component under `components/account/` in both apps. Re-use `Avatar`, `RoleChip`, `Modal`, `Button` for visual consistency.
 5. Update both apps' `components/account/index.ts` barrel.
 6. Mobile-only divergences: skip `connectionsStore` (single-connection), prefer 40px touch targets, use bottom-sheet patterns over popovers.
@@ -408,7 +427,7 @@ not been replicated yet.
 ### Adding a new chat feature (e.g., reactions, editing)
 
 1. Types: `types/index.ts` on both platforms
-2. API: `services/api.svelte.ts` on both platforms
+2. API: the relevant `services/api/` module on both platforms
 3. Store logic: `stores/chat.svelte.ts` on both platforms
 4. Message rendering: `MessageBubble.svelte` on both platforms, checking existing divergence first
 5. Input UI: `InputBar.svelte` independently, because interaction models differ substantially
