@@ -481,12 +481,13 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
 
     settings = get_settings()
 
-    if not settings.twitch_client_id:
+    if not settings.twitch_client_id or not settings.twitch_channel:
         print("\n[Error] Twitch credentials not configured.")
         print("  Required environment variables:")
         print("    TWITCH_CLIENT_ID     — from Twitch Developer Console")
         print("    TWITCH_CLIENT_SECRET — from Twitch Developer Console")
         print("    TWITCH_BOT_USER_ID   — numeric ID of the bot's Twitch account")
+        print("    TWITCH_CHANNEL       — channel to join")
         print("\n  1. Create an app at https://dev.twitch.tv/console/apps")
         print("  2. Add credentials to .env or .env.docker")
         print("  3. Run again: python run.py twitch-bot")
@@ -528,6 +529,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         pulse_interval=settings.twitch_pulse_interval,
         pulse_min_messages=settings.twitch_pulse_min_messages,
         command_context_count=settings.twitch_command_context_count,
+        system_prompt=settings.twitch_system_prompt,
     )
 
     # Register the bot runtime for Twitch tools. The runtime module is outside
