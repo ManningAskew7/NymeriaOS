@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool, AvailableModel } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -16,8 +16,9 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
-  import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
-  import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
+  import ModelConfigTab from './ModelConfigTab.svelte';
+  import SkillsConfigTab from './SkillsConfigTab.svelte';
+  import ChatAppConfigTab from './ChatAppConfigTab.svelte';
 
   type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
@@ -62,36 +63,7 @@
     activeTab = initialTab;
   });
 
-  // Chat App tab state — binding count is reactive via chatAppBindingsStore
-  let showChatAppWizard = $state(false);
-  let showMyBotWizard = $state(false);
-  let chatAppLoaded = $state(false);
-  let chatAppLoadError = $state<string | null>(null);
-
-  $effect(() => {
-    // Load bindings the first time the user opens the Chat App tab. The
-    // wizard refreshes on its own when it completes a bind, so we only
-    // need to populate once for the initial render.
-    if (activeTab === 'chatapp' && !chatAppLoaded) {
-      chatAppLoaded = true;
-      chatAppBindingsStore
-        .loadBindings(thread.id)
-        .catch((err) => {
-          chatAppLoadError = err instanceof Error ? err.message : String(err);
-        });
-    }
-  });
-
   let chatAppBindings = $derived(chatAppBindingsStore.getBindings(thread.id));
-
-  async function handleUnbindChatApp(bindingId: number) {
-    try {
-      await chatAppBindingsStore.unbind(thread.id, bindingId);
-      await threadsStore.syncFromBackend();
-    } catch (err) {
-      chatAppLoadError = err instanceof Error ? err.message : String(err);
-    }
-  }
 
   // Per-thread skill overrides
   function getInitialThreadEnabledSkills(): Set<string> {
@@ -267,15 +239,6 @@
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(getInitialLlmUseModelDefaults());
   let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(getInitialLlmOpenAiApiMode());
 
-  // Model metadata (reactive lookup)
-  const threadModelMeta = $derived(modelsStore.getById(llmModel));
-
-  // Dynamic model list for providers that support /v1/models
-  let availableModels = $state<AvailableModel[]>([]);
-  let loadingAvailableModels = $state(false);
-  let availableModelsProvider = $state<string>('');
-
-  // Effective provider: thread override or global default
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
   }
@@ -283,48 +246,6 @@
   function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
     return provider === 'openai' || provider === 'openrouter';
   }
-
-  async function fetchAvailableModels(provider: string) {
-    if (provider !== 'anthropic' && provider !== 'openai') {
-      availableModels = [];
-      availableModelsProvider = '';
-      return;
-    }
-    if (availableModelsProvider === provider && availableModels.length > 0) return;
-    loadingAvailableModels = true;
-    try {
-      availableModels = await api.getAvailableModels(provider);
-      availableModelsProvider = provider;
-    } catch {
-      availableModels = [];
-    } finally {
-      loadingAvailableModels = false;
-    }
-  }
-
-  // Sync llmProvider from display provider and fetch models
-  // (skip the model fetch for openai_custom — we don't want to call the real
-  // OpenAI API through the global base URL, and the user types the model
-  // name the sidecar/local server reports as free text.)
-  $effect(() => {
-    const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
-    llmProvider = provider;
-    if (threadDisplayProvider === 'openai_custom') {
-      availableModels = [];
-      availableModelsProvider = '';
-      return;
-    }
-    const ep = getEffectiveProvider();
-    fetchAvailableModels(ep);
-  });
-
-  // Auto-populate the base URL field when the user picks "OpenAI (Custom base URL)"
-  // if empty. Don't stomp an existing value.
-  $effect(() => {
-    if (threadDisplayProvider === 'openai_custom' && !llmBaseUrl) {
-      llmBaseUrl = DEFAULT_CUSTOM_OPENAI_BASE_URL;
-    }
-  });
 
   // System prompt & agent fields
   function getInitialSystemPrompt(): string {
@@ -430,35 +351,6 @@
     }
     return seen;
   });
-
-  function toggleThreadSkillEnabled(name: string) {
-    const next = new Set(threadEnabledSkills);
-    if (next.has(name)) next.delete(name);
-    else {
-      next.add(name);
-      // When explicitly enabling, clear any disable override for this skill.
-      if (threadDisabledSkills.has(name)) {
-        const d = new Set(threadDisabledSkills);
-        d.delete(name);
-        threadDisabledSkills = d;
-      }
-    }
-    threadEnabledSkills = next;
-  }
-
-  function toggleThreadSkillDisabled(name: string) {
-    const next = new Set(threadDisabledSkills);
-    if (next.has(name)) next.delete(name);
-    else {
-      next.add(name);
-      if (threadEnabledSkills.has(name)) {
-        const e = new Set(threadEnabledSkills);
-        e.delete(name);
-        threadEnabledSkills = e;
-      }
-    }
-    threadDisabledSkills = next;
-  }
 
   const toolsLoadError = $derived(unifiedToolsStore.error || defaultToolsStore.error);
   const toolsReady = $derived(unifiedToolsStore.loaded && defaultToolsStore.loaded);
@@ -1038,183 +930,19 @@
         </div>
 
       {:else if activeTab === 'model'}
-        <div class="tab-panel">
-          <div class="field-group">
-            <label class="field-label" for="llm-provider">Provider</label>
-            <select id="llm-provider" class="field-select" bind:value={threadDisplayProvider}>
-              <option value="">Default (inherit global)</option>
-              <option value="anthropic_proxy">Anthropic (Subscription)</option>
-              <option value="anthropic_direct">Anthropic (Direct API)</option>
-              <option value="openai">OpenAI</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="openai_custom">OpenAI (Custom base URL)</option>
-            </select>
-          </div>
-
-          {#if threadDisplayProvider === 'openai_custom'}
-            <div class="field-group">
-              <label class="field-label" for="llm-base-url">API Base URL</label>
-              <input
-                id="llm-base-url"
-                class="field-input"
-                type="text"
-                bind:value={llmBaseUrl}
-                placeholder="http://cli-proxy-api-latest:8317/v1"
-              />
-              <span class="field-hint">
-                Any OpenAI-compatible endpoint reachable from inside the Nymeria api container, such as a CLIProxy sidecar (e.g. <code>cli-proxy-api-latest:8317/v1</code>) or a local inference server (<code>host.docker.internal:8080/v1</code>).
-              </span>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label" for="llm-api-key">API Key (Optional)</label>
-              <input
-                id="llm-api-key"
-                class="field-input"
-                type="password"
-                bind:value={llmApiKey}
-                placeholder="Leave empty to inherit global provider key"
-                autocomplete="off"
-              />
-              <span class="field-hint">
-                Required when pointing at a CLIProxy sidecar with its own <code>api-keys</code> list (e.g. <code>cpx-latest-local-test</code> for the GPT-5.5 sidecar). Stored per-thread in the Nymeria data directory.
-              </span>
-            </div>
-          {/if}
-
-          {#if supportsApiMode()}
-            <div class="field-group">
-              <label class="field-label" for="llm-openai-api-mode">API Mode</label>
-              <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>
-                <option value="default">Default (inherit global)</option>
-                <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
-                <option value="responses">Responses API</option>
-              </select>
-              <span class="field-hint">
-                Responses API is the default for OpenAI-compatible reasoning models and OpenRouter beta. Chat Completions remains available as a compatibility override.
-              </span>
-            </div>
-          {/if}
-
-          <div class="field-group">
-            <label class="field-label" for="llm-model">Model</label>
-            {#if threadDisplayProvider === 'openai_custom'}
-              <input
-                id="llm-model"
-                class="field-input"
-                type="text"
-                bind:value={llmModel}
-                placeholder="Model name (e.g. gpt-5.5, local-llm)"
-              />
-              <span class="field-hint">
-                The model name the endpoint reports (e.g. <code>gpt-5.5</code> for the CLIProxy sidecar, or the <code>--alias</code> flag value for a local server).
-              </span>
-            {:else if availableModels.length > 0}
-              <select id="llm-model" class="field-select" bind:value={llmModel}>
-                <option value="">Default (inherit global)</option>
-                {#each availableModels as model}
-                  <option value={model.id}>{model.name || model.id}</option>
-                {/each}
-              </select>
-            {:else}
-              <input
-                id="llm-model"
-                class="field-input"
-                type="text"
-                bind:value={llmModel}
-                placeholder={loadingAvailableModels
-                  ? 'Loading models… or type one (e.g. claude-opus-4-7)'
-                  : 'Leave empty for global default'}
-              />
-              {#if loadingAvailableModels}
-                <span class="field-hint">Fetching available models from {getEffectiveProvider()}…</span>
-              {/if}
-            {/if}
-            {#if threadModelMeta && llmModel}
-              <div class="model-meta-hint">
-                <span class="meta-name">{threadModelMeta.name}</span>
-                <span class="meta-details">
-                  {modelsStore.formatContext(threadModelMeta.context_length)} ctx
-                  {#if threadModelMeta.pricing_prompt != null}
-                    &middot; In: {modelsStore.formatPrice(threadModelMeta.pricing_prompt)}
-                  {/if}
-                  {#if threadModelMeta.pricing_completion != null}
-                    &middot; Out: {modelsStore.formatPrice(threadModelMeta.pricing_completion)}
-                  {/if}
-                  {#if threadModelMeta.input_modalities.includes('image')}
-                    &middot; Vision
-                  {/if}
-                  {#if threadModelMeta.supported_parameters.includes('reasoning')}
-                    &middot; Reasoning
-                  {/if}
-                </span>
-              </div>
-            {/if}
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="llm-use-defaults">Use Model Defaults</label>
-            <select id="llm-use-defaults" class="field-select" bind:value={llmUseModelDefaults}>
-              <option value="default">Default (inherit global)</option>
-              <option value="true">On</option>
-              <option value="false">Off</option>
-            </select>
-            <span class="field-hint">
-              Let the provider apply optimal defaults for temperature, top_p, frequency penalty
-              {#if llmUseModelDefaults === 'true' && threadModelMeta?.default_temperature != null}
-                (temp: {threadModelMeta.default_temperature})
-              {/if}
-            </span>
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="llm-temp">Temperature</label>
-            <input
-              id="llm-temp"
-              class="field-input"
-              type="number"
-              min="0"
-              max="2"
-              step="0.1"
-              bind:value={llmTemperature}
-              placeholder="Default"
-              disabled={llmUseModelDefaults === 'true'}
-            />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="llm-max-tokens">Max Output Tokens</label>
-            <input
-              id="llm-max-tokens"
-              class="field-input"
-              type="number"
-              min="1"
-              max="128000"
-              step="1"
-              bind:value={llmMaxTokens}
-              placeholder="Default"
-            />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="llm-ext-thinking">Extended Thinking</label>
-            <select id="llm-ext-thinking" class="field-select" bind:value={llmExtendedThinking}>
-              <option value="default">Default (inherit global)</option>
-              <option value="true">Enabled</option>
-              <option value="false">Disabled</option>
-            </select>
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="llm-reasoning">Reasoning Effort</label>
-            <select id="llm-reasoning" class="field-select" bind:value={llmReasoningEffort}>
-              <option value="">Default (inherit global)</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </div>
-        </div>
+        <ModelConfigTab
+          bind:threadDisplayProvider
+          bind:llmProvider
+          bind:llmModel
+          bind:llmBaseUrl
+          bind:llmApiKey
+          bind:llmTemperature
+          bind:llmMaxTokens
+          bind:llmExtendedThinking
+          bind:llmReasoningEffort
+          bind:llmUseModelDefaults
+          bind:llmOpenAiApiMode
+        />
 
       {:else if activeTab === 'tools'}
         <div class="tab-panel tools-panel">
@@ -1391,69 +1119,10 @@
         </div>
 
       {:else if activeTab === 'skills'}
-        <div class="tab-panel skills-thread-panel">
-          {#if skillsStore.installed.length === 0}
-            <div class="skills-empty">
-              <p style="margin: 0;">No skills installed yet.</p>
-              <p class="field-hint" style="margin-top: 0.5rem;">
-                Install skills from Settings → Skills → Browse Marketplace, then return here to enable them for this thread.
-              </p>
-            </div>
-          {:else}
-            <p class="field-hint">
-              Turn skills on or off for this thread. Skill Kits are skills that bind required tools when activated. Globally-enabled entries are on by default and can be disabled here; other installed entries can be enabled for this thread only.
-            </p>
-            <div class="skills-list">
-              {#each skillsStore.installed as skill (skill.name)}
-                {@const defaultOn = skill.default_active}
-                {@const globalOn = skillsStore.enabledGlobal.includes(skill.name)}
-                {@const threadOn = threadEnabledSkills.has(skill.name)}
-                {@const threadOff = threadDisabledSkills.has(skill.name)}
-                {@const activeHere = (defaultOn || globalOn || threadOn) && !threadOff}
-                <div class="skill-row" class:active={activeHere}>
-                  <div class="skill-info">
-                    <div class="skill-head">
-                      <span class="skill-name">{skill.name}</span>
-                      <span class="skill-scope">{skill.scope}</span>
-                      {#if defaultOn}<span class="skill-chip">default</span>{/if}
-                      {#if globalOn}<span class="skill-chip">global</span>{/if}
-                      {#if skill.is_skill_kit}<span class="skill-chip">Skill Kit</span>{/if}
-                      {#each skill.required_tools as toolName}
-                        <span class="skill-chip skill-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
-                          {toolName}
-                        </span>
-                      {/each}
-                    </div>
-                    <p class="skill-desc">{skill.description}</p>
-                  </div>
-                  <div class="skill-toggles">
-                    {#if defaultOn || globalOn}
-                      <button
-                        class="skill-btn"
-                        class:skill-btn-danger={threadOff}
-                        onclick={() => toggleThreadSkillDisabled(skill.name)}
-                        type="button"
-                        title="Disable for this thread only"
-                      >
-                        {threadOff ? 'Disabled here' : 'Disable for thread'}
-                      </button>
-                    {:else}
-                      <button
-                        class="skill-btn"
-                        class:skill-btn-active={threadOn}
-                        onclick={() => toggleThreadSkillEnabled(skill.name)}
-                        type="button"
-                        title="Enable for this thread"
-                      >
-                        {threadOn ? 'Enabled here' : 'Enable for thread'}
-                      </button>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
+        <SkillsConfigTab
+          bind:threadEnabledSkills
+          bind:threadDisabledSkills
+        />
 
       {:else if activeTab === 'triggers'}
         <div class="tab-panel">
@@ -1464,94 +1133,11 @@
         </div>
 
       {:else if activeTab === 'chatapp'}
-        <div class="tab-panel">
-          <p class="field-hint">
-            Bind this thread to a chat-app conversation so messages flow both ways.
-            You can keep using the desktop app for the same thread; nothing changes
-            here when you chat from the bound chat instead.
-          </p>
-
-          <div class="visibility-section">
-            <h3 class="section-title">Attention & Delivery</h3>
-
-            <label class="field-label" for="telegram-autonomous-delivery">
-              Telegram autonomous output
-            </label>
-            <select
-              id="telegram-autonomous-delivery"
-              class="field-input"
-              bind:value={telegramAutonomousDelivery}
-            >
-              <option value="full">Full output</option>
-              <option value="notify_only">Notify only</option>
-              <option value="off">Off</option>
-            </select>
-
-            <label class="field-label" for="in-app-notification-level">
-              Notification center
-            </label>
-            <select
-              id="in-app-notification-level"
-              class="field-input"
-              bind:value={inAppNotificationLevel}
-            >
-              <option value="notify_only">Notify only</option>
-              <option value="all_autonomous">All autonomous completions</option>
-              <option value="off">Off</option>
-            </select>
-          </div>
-
-          {#if chatAppLoadError}
-            <div class="error-bar">{chatAppLoadError}</div>
-          {/if}
-
-          {#if chatAppBindings.length === 0}
-            <div class="chatapp-cta">
-              <p style="margin: 0;">No chats bound to this thread yet. Pick how you want to connect:</p>
-              <div class="chatapp-cta-buttons">
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  onclick={() => (showChatAppWizard = true)}
-                >Connect via shared bot</button>
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  onclick={() => (showMyBotWizard = true)}
-                >Use my own bot</button>
-              </div>
-              <p class="field-hint" style="margin: 0.25rem 0 0;">
-                <strong>Shared:</strong> use the existing Nymeria bot for the
-                fastest setup, with no BotFather required.
-                <br />
-                <strong>My own bot:</strong> paste a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> for a branded bot you control. Requires <code>NYMERIA_SECRETS_KEY</code> on the server.
-              </p>
-            </div>
-          {:else}
-            <ul class="binding-list">
-              {#each chatAppBindings as binding (binding.id)}
-                <li class="binding-row">
-                  <div class="binding-meta">
-                    <span class="binding-provider">{binding.provider}</span>
-                    <code class="binding-chat">chat {binding.platform_chat_id}</code>
-                    <span class="binding-when">
-                      via {binding.user_telegram_bot_id ? 'your bot' : 'shared bot'}
-                      &middot; since {new Date(binding.created_at).toLocaleString()}
-                    </span>
-                  </div>
-                  <button
-                    class="btn btn-ghost"
-                    type="button"
-                    onclick={() => handleUnbindChatApp(binding.id)}
-                  >Unbind</button>
-                </li>
-              {/each}
-            </ul>
-            <p class="field-hint" style="margin-top: 0.5rem;">
-              Only one chat per thread at a time. Unbind first to switch.
-            </p>
-          {/if}
-        </div>
+        <ChatAppConfigTab
+          {thread}
+          bind:telegramAutonomousDelivery
+          bind:inAppNotificationLevel
+        />
 
       {/if}
     </div>
@@ -1588,37 +1174,6 @@
     onContinue={() => { showToolWarning = false; handleSave(); }}
     onGoBack={() => { showToolWarning = false; }}
   />
-{/if}
-
-{#if showChatAppWizard}
-  <div class="chatapp-wizard-backdrop" role="dialog" aria-modal="true">
-    <div class="chatapp-wizard-card">
-      <ConnectTelegramWizard
-        threadId={thread.id}
-        onClose={() => (showChatAppWizard = false)}
-        onBound={() => {
-          // Refresh the panel's binding list so the row appears immediately.
-          chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
-          threadsStore.syncFromBackend().catch(() => {});
-        }}
-      />
-    </div>
-  </div>
-{/if}
-
-{#if showMyBotWizard}
-  <div class="chatapp-wizard-backdrop" role="dialog" aria-modal="true">
-    <div class="chatapp-wizard-card">
-      <ConnectMyTelegramBotWizard
-        threadId={thread.id}
-        onClose={() => (showMyBotWizard = false)}
-        onBound={() => {
-          chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
-          threadsStore.syncFromBackend().catch(() => {});
-        }}
-      />
-    </div>
-  </div>
 {/if}
 
 <style>
@@ -1760,34 +1315,11 @@
     margin: 0 0 var(--spacing-sm) 0;
   }
 
-  .model-meta-hint {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--spacing-xs);
-    margin-top: var(--spacing-xs);
-    padding: 5px 8px;
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-  }
-
-  .meta-name {
-    color: var(--text-primary);
-    font-weight: 500;
-  }
-
-  .meta-details {
-    color: var(--text-muted);
-  }
-
   .field-group {
     margin-bottom: var(--spacing-md);
   }
 
-  .field-input,
-  .field-select {
+  .field-input {
     width: 100%;
     padding: var(--spacing-sm);
     font-size: var(--font-size-sm);
@@ -1799,18 +1331,13 @@
     transition: border-color var(--transition-fast);
   }
 
-  .field-input:focus,
-  .field-select:focus {
+  .field-input:focus {
     border-color: var(--accent-primary);
     box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
   }
 
   .field-input::placeholder {
     color: var(--text-muted);
-  }
-
-  .field-select {
-    cursor: pointer;
   }
 
   .instructions-input {
@@ -2152,184 +1679,4 @@
     cursor: not-allowed;
   }
 
-  .skills-thread-panel .skills-empty {
-    text-align: center;
-    padding: var(--spacing-lg);
-    color: var(--text-secondary);
-  }
-
-  .skills-thread-panel .skills-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    margin-top: var(--spacing-md);
-  }
-
-  .skills-thread-panel .skill-row {
-    display: flex;
-    gap: var(--spacing-md);
-    padding: var(--spacing-sm);
-    background: var(--bg-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-  }
-  .skills-thread-panel .skill-row.active {
-    border-color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-base));
-  }
-
-  .skills-thread-panel .skill-info {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .skills-thread-panel .skill-head {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    flex-wrap: wrap;
-    margin-bottom: 4px;
-  }
-
-  .skills-thread-panel .skill-name {
-    font-weight: 600;
-    color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-sm);
-  }
-
-  .skills-thread-panel .skill-scope,
-  .skills-thread-panel .skill-chip {
-    font-size: var(--font-size-xs);
-    padding: 1px 6px;
-    border-radius: var(--radius-full);
-    background: var(--bg-elevated);
-    color: var(--text-muted);
-    border: 1px solid var(--border-subtle);
-  }
-  .skills-thread-panel .skill-chip {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-  }
-  .skills-thread-panel .skill-required {
-    color: var(--text-secondary);
-    border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-subtle));
-  }
-
-  .skills-thread-panel .skill-desc {
-    margin: 0;
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
-    line-height: 1.4;
-  }
-
-  .skills-thread-panel .skill-toggles {
-    flex-shrink: 0;
-    display: flex;
-    align-items: flex-start;
-  }
-
-  .skills-thread-panel .skill-btn {
-    padding: 4px 10px;
-    font-size: var(--font-size-xs);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    border: 1px solid var(--border-default);
-    color: var(--text-secondary);
-    cursor: pointer;
-  }
-  .skills-thread-panel .skill-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-  .skills-thread-panel .skill-btn-active {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-  }
-  .skills-thread-panel .skill-btn-danger {
-    color: var(--danger, #ef4444);
-    border-color: color-mix(in srgb, var(--danger, #ef4444) 40%, transparent);
-    background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
-  }
-
-  /* Chat App tab + wizard overlay */
-  .binding-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .binding-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--spacing-md);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-  }
-
-  .binding-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .binding-provider {
-    font-weight: 600;
-    text-transform: capitalize;
-    font-size: var(--font-size-sm);
-  }
-
-  .binding-chat {
-    font-family: var(--font-family-mono);
-    font-size: var(--font-size-sm);
-  }
-
-  .binding-when {
-    color: var(--text-muted);
-    font-size: var(--font-size-xs);
-  }
-
-  .chatapp-wizard-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1100;
-  }
-
-  .chatapp-wizard-card {
-    background: var(--glass-bg-strong);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
-    overflow: hidden;
-  }
-
-  .chatapp-cta {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    padding: var(--spacing-lg);
-    border: 1px dashed var(--border-subtle);
-    border-radius: var(--radius-md);
-    color: var(--text-muted);
-    text-align: left;
-  }
-
-  .chatapp-cta-buttons {
-    display: flex;
-    gap: var(--spacing-sm);
-    flex-wrap: wrap;
-  }
 </style>
