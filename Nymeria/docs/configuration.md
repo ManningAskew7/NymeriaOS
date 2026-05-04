@@ -64,7 +64,7 @@ Set the API key for your chosen provider:
 | `DATABASE_BACKEND` | `sqlite` | Backend type: `sqlite`, `postgres`, or `memory` |
 | `SQLITE_PATH` | `data/nymeria.db` | SQLite database file location |
 | `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
-| `USER_TIMEZONE` | `UTC` | IANA timezone used for time context and absolute schedule parsing |
+| `USER_TIMEZONE` | `UTC` | IANA timezone used for time context and absolute schedule parsing. Docker also mirrors this into `TZ` so OS-level time output stays aligned. |
 
 ### API Server and Paths
 

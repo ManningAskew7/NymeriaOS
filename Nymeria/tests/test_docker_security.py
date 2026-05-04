@@ -54,3 +54,10 @@ def test_compose_timezone_defaults_are_consistent() -> None:
 
     assert api_env["TZ"] == "${USER_TIMEZONE:-UTC}"
     assert api_env["USER_TIMEZONE"] == "${USER_TIMEZONE:-UTC}"
+
+
+def test_compose_watchdog_default_matches_documented_default() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+    api_env = services["api"]["environment"]
+
+    assert api_env["WATCHDOG_INTERVAL_MINUTES"] == "${WATCHDOG_INTERVAL_MINUTES:-5}"
