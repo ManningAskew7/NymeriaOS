@@ -632,7 +632,7 @@ In all durable modes:
 **Shared SQLite saver architecture:**
 - `vendor/react_agent/graph.py` keeps one process-wide `SqliteSaver` and
   SQLite connection per database path.
-- `AsyncSqliteSaverWrapper` wraps that same sync saver and exposes both sync
+- `AsyncCheckpointSaverWrapper` wraps that same sync saver and exposes both sync
   methods (`get_tuple`, `put`, `put_writes`) and async methods (`aget_tuple`,
   `aput`, `aput_writes`) by running sync operations in a thread executor.
 - `create_checkpointer()` returns the wrapper for both `sqlite` and
@@ -651,8 +651,9 @@ scheduled TODOs, triggers, callable threads, and spawned threads.
 - All app services use `DATABASE_BACKEND=postgres` and a shared
   `POSTGRES_URI` pointing at that container.
 - `vendor/react_agent/graph.py` creates a LangGraph `PostgresSaver`, runs
-  `setup()`, and wraps it with `AsyncPostgresSaverWrapper` so sync and async
-  agent paths use the same checkpoint tables.
+  `setup()`, and wraps it with `AsyncCheckpointSaverWrapper` so sync and async
+  agent paths use the same checkpoint tables through the same adapter logic as
+  SQLite.
 
 See [LangGraph PERSISTENCE.md](../../LangGraph/docs/PERSISTENCE.md) for full technical details.
 

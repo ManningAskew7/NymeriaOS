@@ -28,20 +28,20 @@ _shared_db_path: Optional[str] = None
 logger = logging.getLogger(__name__)
 
 
-class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
-    """Wrapper that makes SqliteSaver async-compatible by running sync methods in executor.
+class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
+    """Expose sync checkpoint savers through both sync and async interfaces.
 
-    This ensures both sync and async paths use the SAME SqliteSaver instance,
-    avoiding serialization format incompatibilities between SqliteSaver and AsyncSqliteSaver.
+    This keeps sync and async agent paths on the same underlying saver instance,
+    avoiding serialization differences between separate sync/async savers.
     """
 
-    def __init__(self, sync_saver: SqliteSaver):
+    def __init__(self, sync_saver: Any, backend_label: str):
         super().__init__()
         self._saver = sync_saver
+        self._backend_label = backend_label
 
-    # Async methods - run sync methods via thread executor
     async def aget_tuple(self, config):
-        logger.info(f"[CHECKPOINT] AsyncWrapper.aget_tuple config={config}")
+        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.aget_tuple config={config}")
         try:
             result = await asyncio.to_thread(self._saver.get_tuple, config)
             logger.info(f"[CHECKPOINT] aget_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
@@ -51,13 +51,13 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
             raise
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
-        logger.info(f"[CHECKPOINT] AsyncWrapper.alist called")
+        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.alist called")
         return await asyncio.to_thread(
             self._saver.list, config, filter=filter, before=before, limit=limit
         )
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        logger.info(f"[CHECKPOINT] AsyncWrapper.aput new_versions={new_versions}")
+        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.aput new_versions={new_versions}")
         try:
             result = await asyncio.to_thread(
                 self._saver.put, config, checkpoint, metadata, new_versions
@@ -69,14 +69,13 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
             raise
 
     async def aput_writes(self, config, writes, task_id):
-        logger.info(f"[CHECKPOINT] AsyncWrapper.aput_writes task_id={task_id}")
+        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.aput_writes task_id={task_id}")
         return await asyncio.to_thread(
             self._saver.put_writes, config, writes, task_id
         )
 
-    # Sync methods - forward directly to underlying saver
     def get_tuple(self, config):
-        logger.info(f"[CHECKPOINT] SyncWrapper.get_tuple config={config}")
+        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.get_tuple config={config}")
         try:
             result = self._saver.get_tuple(config)
             logger.info(f"[CHECKPOINT] get_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
@@ -89,7 +88,7 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
         return self._saver.list(config, filter=filter, before=before, limit=limit)
 
     def put(self, config, checkpoint, metadata, new_versions):
-        logger.info(f"[CHECKPOINT] SyncWrapper.put new_versions={new_versions}")
+        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.put new_versions={new_versions}")
         try:
             result = self._saver.put(config, checkpoint, metadata, new_versions)
             logger.info(f"[CHECKPOINT] put SUCCESS")
@@ -102,66 +101,8 @@ class AsyncSqliteSaverWrapper(BaseCheckpointSaver):
         return self._saver.put_writes(config, writes, task_id)
 
 
-class AsyncPostgresSaverWrapper(BaseCheckpointSaver):
-    """Wrapper that makes PostgresSaver async-compatible by running sync methods in executor.
-
-    This avoids needing an event loop at initialization time while still supporting
-    async streaming operations.
-    """
-
-    def __init__(self, sync_saver):
-        super().__init__()
-        self._saver = sync_saver
-
-    # Async methods - run sync methods via thread executor
-    async def aget_tuple(self, config):
-        logger.info(f"[CHECKPOINT] PostgresWrapper.aget_tuple config={config}")
-        try:
-            result = await asyncio.to_thread(self._saver.get_tuple, config)
-            logger.info(f"[CHECKPOINT] aget_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
-            return result
-        except Exception as e:
-            logger.error(f"[CHECKPOINT] aget_tuple ERROR: {e}", exc_info=True)
-            raise
-
-    async def alist(self, config, *, filter=None, before=None, limit=None):
-        return await asyncio.to_thread(
-            self._saver.list, config, filter=filter, before=before, limit=limit
-        )
-
-    async def aput(self, config, checkpoint, metadata, new_versions):
-        logger.info(f"[CHECKPOINT] PostgresWrapper.aput new_versions={new_versions}")
-        try:
-            result = await asyncio.to_thread(
-                self._saver.put, config, checkpoint, metadata, new_versions
-            )
-            logger.info(f"[CHECKPOINT] aput SUCCESS")
-            return result
-        except Exception as e:
-            logger.error(f"[CHECKPOINT] aput ERROR: {e}", exc_info=True)
-            raise
-
-    async def aput_writes(self, config, writes, task_id):
-        return await asyncio.to_thread(
-            self._saver.put_writes, config, writes, task_id
-        )
-
-    # Sync methods - forward directly to underlying saver
-    def get_tuple(self, config):
-        return self._saver.get_tuple(config)
-
-    def list(self, config, *, filter=None, before=None, limit=None):
-        return self._saver.list(config, filter=filter, before=before, limit=limit)
-
-    def put(self, config, checkpoint, metadata, new_versions):
-        return self._saver.put(config, checkpoint, metadata, new_versions)
-
-    def put_writes(self, config, writes, task_id):
-        return self._saver.put_writes(config, writes, task_id)
-
-
 # Global async wrapper instance (wraps the shared SqliteSaver)
-_async_sqlite_wrapper: Optional[AsyncSqliteSaverWrapper] = None
+_async_sqlite_wrapper: Optional[AsyncCheckpointSaverWrapper] = None
 
 
 def _init_sqlite_db(db_path: str) -> None:
@@ -203,7 +144,7 @@ def _get_shared_sqlite_saver(db_path: str) -> SqliteSaver:
     return _shared_sqlite_saver
 
 
-def _get_async_sqlite_wrapper(db_path: str) -> AsyncSqliteSaverWrapper:
+def _get_async_sqlite_wrapper(db_path: str) -> AsyncCheckpointSaverWrapper:
     """Get or create async wrapper around the shared SqliteSaver.
 
     This ensures both sync and async paths use the SAME SqliteSaver,
@@ -215,7 +156,7 @@ def _get_async_sqlite_wrapper(db_path: str) -> AsyncSqliteSaverWrapper:
     sync_saver = _get_shared_sqlite_saver(db_path)
 
     if _async_sqlite_wrapper is None:
-        _async_sqlite_wrapper = AsyncSqliteSaverWrapper(sync_saver)
+        _async_sqlite_wrapper = AsyncCheckpointSaverWrapper(sync_saver, "SQLite")
         logger.info(f"[CHECKPOINT] Created AsyncWrapper id={id(_async_sqlite_wrapper)} wrapping SqliteSaver id={id(sync_saver)}")
     else:
         logger.info(f"[CHECKPOINT] Reusing AsyncWrapper id={id(_async_sqlite_wrapper)}")
@@ -265,7 +206,7 @@ def create_checkpointer(config: CheckpointerConfig) -> Optional[BaseCheckpointSa
         return MemorySaver()
 
     elif config.backend in ("sqlite", "sqlite_async"):
-        # Use AsyncSqliteSaverWrapper for BOTH sync and async paths
+        # Use AsyncCheckpointSaverWrapper for BOTH sync and async paths
         # This ensures consistent serialization/deserialization of checkpoint versions
         # The wrapper supports both sync methods (get_tuple, put) and async methods (aget_tuple, aput)
         if not config.sqlite_path:
@@ -294,8 +235,8 @@ def create_checkpointer(config: CheckpointerConfig) -> Optional[BaseCheckpointSa
             # (PostgresSaver doesn't handle transaction commits internally)
 
             # Wrap in async-compatible wrapper
-            wrapper = AsyncPostgresSaverWrapper(sync_saver)
-            logger.info(f"[CHECKPOINT] Created AsyncPostgresSaverWrapper for {config.postgres_uri.split('@')[-1] if '@' in config.postgres_uri else 'postgres'}")
+            wrapper = AsyncCheckpointSaverWrapper(sync_saver, "Postgres")
+            logger.info(f"[CHECKPOINT] Created AsyncCheckpointSaverWrapper for {config.postgres_uri.split('@')[-1] if '@' in config.postgres_uri else 'postgres'}")
             return wrapper
         except ImportError as e:
             raise ImportError(

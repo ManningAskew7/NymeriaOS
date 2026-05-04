@@ -642,9 +642,9 @@ class NymeriaAgent:
     def _build_async_checkpointer_config(self) -> CheckpointerConfig:
         """Build async checkpointer config for async streaming.
 
-        Uses the AsyncSqliteSaverWrapper around Nymeria's shared SqliteSaver,
-        ensuring sync and async paths share one serialization path and durable
-        checkpoint store. WAL mode enables concurrent read/write access.
+        Uses the shared async checkpoint wrapper around Nymeria's durable sync
+        saver, ensuring sync and async paths share one serialization path and
+        checkpoint store. WAL mode enables concurrent SQLite read/write access.
         """
         backend = self.settings.database_backend
 
@@ -657,7 +657,7 @@ class NymeriaAgent:
                 postgres_uri=self.settings.postgres_uri,
             )
         elif backend == "sqlite":
-            # sqlite_async still resolves to AsyncSqliteSaverWrapper.
+            # sqlite_async still resolves to the shared async checkpoint wrapper.
             db_path = self.settings.db_path
             db_path.parent.mkdir(parents=True, exist_ok=True)
             return CheckpointerConfig(
