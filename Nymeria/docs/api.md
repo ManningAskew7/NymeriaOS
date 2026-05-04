@@ -8,9 +8,9 @@ The API is being split incrementally; the System slice (`/health`,
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
 callable routes, unified tools, MCP server management, settings/model catalog,
-thread config/callable-team routes, and chat-app/BYO Telegram routes now live under
-`Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
-`Nymeria/nymeria/triggers/api.py` during the migration.
+thread config/callable-team routes, chat-app/BYO Telegram routes, and Chat SSE
+routes now live under `Nymeria/nymeria/api/routers/`, while the rest of the
+surface still lives in `Nymeria/nymeria/triggers/api.py` during the migration.
 
 ## Authentication
 

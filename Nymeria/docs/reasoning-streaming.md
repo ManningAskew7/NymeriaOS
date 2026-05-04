@@ -108,7 +108,7 @@ Reasoning arrives as typed blocks with `type: "reasoning"`. Nymeria streams and 
            │  SSE event bus
            ▼
 ┌─────────────────────────────┐
-│ triggers/api.py /chat       │  Serialises {type, content} to an SSE line
+│ api/routers/chat.py /chat   │  Serialises {type, content} to an SSE line
 │                             │  like `data: {"type":"thinking",...}`
 └──────────┬──────────────────┘
            │
@@ -143,7 +143,7 @@ All under `/opt/NymeriaOS/Nymeria/`:
 | `nymeria/vendor/react_agent/nodes.py`, `_sanitize_messages_for_anthropic()` | Replay-time guard for Anthropic history. Drops malformed signature-only `thinking` blocks before calling the provider while leaving stored checkpoints unchanged. |
 | `nymeria/core/agent_streaming.py`, `GraphStreamProcessor` | First checks `chunk.additional_kwargs.get("reasoning_content")` and yields a `thinking` SSE event. Then handles typed `thinking` and `reasoning` content blocks with a per-LLM-call dedupe guard. If reasoning was already streamed for the current LLM call, the final model-end Responses reasoning block is not replayed live, avoiding a rough token stream followed by a duplicate full-summary thought. Plain answer blocks of type `text` or `output_text`, plus provider-emitted bare string blocks, stream as `response` so pre-tool commentary stays visible. Text chunks are passed through a small inline `<think>` sanitizer so provider leaks are not rendered as answer text; `inline_thinking_*` diagnostics log when that sanitizer temporarily holds or releases text. |
 | `nymeria/core/agent.py`, `get_conversation_history()` | Rehydrates saved reasoning into history `steps`. Anthropic thinking is read from typed content blocks; OpenAI-compatible reasoning is read from `AIMessage.additional_kwargs["reasoning_content"]`, `["reasoning_details"]`, or legacy `"reasoning"`; Responses reasoning is read from `AIMessage.content` reasoning `summary` and `content` blocks. Multiple `summary_text` sections in one Responses reasoning block are joined into one `thinking` step. Text content is sanitized before display. |
-| `nymeria/triggers/api.py`, `/chat` SSE handler | Serialises `{"type": "thinking", "content": ...}` into the on-the-wire SSE line the frontend consumes. No special-casing per provider. |
+| `nymeria/api/routers/chat.py`, `/chat` SSE handler | Serialises `{"type": "thinking", "content": ...}` into the on-the-wire SSE line the frontend consumes. No special-casing per provider. |
 | `/opt/NymeriaOS/nymeria-desktop/src/lib/services/api.svelte.ts` | Parses SSE, dispatches `thinking` events to the chat store. |
 | `/opt/NymeriaOS/nymeria-desktop/src/lib/components/chat/ThinkingBlock.svelte` (or equivalent) | Renders the live-collapsing dropdown. Provider-agnostic. |
 | `/opt/NymeriaOS/CLIProxyAPI-main/internal/translator/codex/openai/chat-completions/codex_openai_response.go` (upstream, not our code) | The CLIProxy-side translation. Line 105 maps `response.reasoning_summary_text.delta` → `choices[0].delta.reasoning_content`. Line 112 emits `\n\n` as a section separator on `reasoning_summary_text.done`. |
