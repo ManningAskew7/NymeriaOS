@@ -43,6 +43,11 @@ cp .env.docker.example .env.docker
 docker compose --env-file .env.docker up -d
 ```
 
+The GitHub Actions CI workflow validates the Docker path on every push and
+pull request by rendering the default and optional-profile Compose configs from
+`.env.docker.example` and running BuildKit's Dockerfile check against
+`Dockerfile.full`.
+
 ## Architecture
 
 ### Docker Deployment Architecture
