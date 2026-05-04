@@ -1084,7 +1084,7 @@ GET /todos/users
 Authorization: Bearer <token>
 ```
 
-Returns all user IDs that have a TODO list on disk. Used by the watchdog worker to enumerate users before polling each one's TODOs; also useful for dashboards that need to list known users without hard-coding them.
+Returns all user IDs whose TODO file currently contains at least one TODO item. Empty legacy or stale TODO files are ignored so the watchdog worker does not poll no-op lists or try to impersonate deleted platform-only users.
 
 No query parameters.
 

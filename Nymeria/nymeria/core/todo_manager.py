@@ -424,12 +424,20 @@ class TodoManager:
             return False
 
     def get_all_users_with_todos(self) -> List[str]:
-        """Get all user IDs that have TODO lists."""
+        """Get all user IDs that have at least one TODO item."""
         users = []
         if self.todos_dir.exists():
             for path in self.todos_dir.iterdir():
                 if path.is_file() and path.suffix == ".json":
-                    users.append(path.stem)
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception as e:
+                        logger.warning("Skipping unreadable TODO list %s: %s", path, e)
+                        continue
+
+                    if data.get("items"):
+                        users.append(path.stem)
         return sorted(users)
 
     def delete_todos(self, user_id: str) -> bool:
