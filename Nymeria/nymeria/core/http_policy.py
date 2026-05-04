@@ -366,4 +366,4 @@ def audit_http_event(event: dict[str, Any]) -> None:
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
     except Exception:
-        logger.debug("Failed to write HTTP audit event", exc_info=True)
+        logger.error("Failed to write HTTP audit event", exc_info=True)
