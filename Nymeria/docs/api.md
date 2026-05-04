@@ -1461,6 +1461,8 @@ Authorization: Bearer <token>
 ### Export/Import Custom Tools
 
 **Admin-only.** Both endpoints require an admin bearer token because exports include full HTTP/MCP configs (URLs, headers, args).
+`GET /tools/custom/export` and `POST /tools/custom/import` are literal
+management routes and are matched before `{tool_id}` routes.
 
 ```http
 GET /tools/custom/export

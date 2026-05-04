@@ -1363,6 +1363,8 @@ For stdio servers, Nymeria launches the command from the backend process. In Doc
 ```bash
 GET /tools/custom              # List all custom tools
 POST /tools/custom             # Create a new tool
+GET /tools/custom/export       # Export custom tools
+POST /tools/custom/import      # Import custom tools
 PUT /tools/custom/{tool_id}    # Update a tool
 DELETE /tools/custom/{tool_id} # Delete a tool
 POST /tools/custom/{tool_id}/test  # Test a tool
