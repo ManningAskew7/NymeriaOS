@@ -29,23 +29,6 @@ function mergeArtifacts(
   return Array.from(merged.values());
 }
 
-/**
- * Result of parsing Nymeria's response format.
- * Now simplified - just returns content as-is since we no longer use structured output.
- */
-interface ParsedResponse {
-  content: string;
-  intermediateContent?: string;
-}
-
-/**
- * Parse Nymeria's response - now just returns content as-is.
- * Visibility is controlled by tools, not embedded in response format.
- */
-function parseNymeriaResponse(content: string): ParsedResponse {
-  return { content: content || '' };
-}
-
 const FLUSH_INTERVAL = 48; // ~20 updates/sec
 
 function createChatStore() {
