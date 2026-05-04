@@ -48,11 +48,11 @@ def coerce_value(value_str: str) -> Any:
     try:
         return int(value_str)
     except ValueError:
-        pass
+        pass  # not an integer, try float next
     try:
         return float(value_str)
     except ValueError:
-        pass
+        pass  # not a numeric value, return as string
     return value_str
 
 

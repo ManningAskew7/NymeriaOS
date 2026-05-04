@@ -472,7 +472,7 @@ class MCPServerManager:
             conn.process.stdin.write(notification_bytes)
             conn.process.stdin.flush()
         except (BrokenPipeError, OSError):
-            pass
+            pass  # pipe may already be closed
 
     # ---- http JSON-RPC (streamable HTTP transport) ----
 
@@ -639,7 +639,7 @@ class MCPServerManager:
                     if stream:
                         stream.close()
                 except Exception:
-                    pass
+                    logger.debug("Error closing MCP process pipe during shutdown")
 
             logger.debug(f"Shutdown MCP server {conn.server_id}")
         except Exception as e:

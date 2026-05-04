@@ -5,9 +5,35 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, Iterator, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StreamCollection:
+    """Collected state from a consumed agent stream."""
+
+    response_parts: list[str] = field(default_factory=list)
+    thinking_parts: list[str] = field(default_factory=list)
+    chunk_count: int = 0
+    tool_call_count: int = 0
+    iteration_limit_hit: bool = False
+    iteration_limit_event: Optional[Dict[str, Any]] = None
+
+    def response_text(self, *, fallback_to_thinking: bool = True) -> str:
+        """Return response text, optionally falling back to thinking chunks."""
+        if self.response_parts:
+            return "".join(self.response_parts)
+        if fallback_to_thinking and self.thinking_parts:
+            return "".join(self.thinking_parts)
+        return ""
+
+
+StreamChunkCallback = Callable[[Dict[str, Any], StreamCollection], None]
+StreamErrorMessageFactory = Callable[[Dict[str, Any]], str]
+StreamIterationLimitPredicate = Callable[[Dict[str, Any]], bool]
 
 
 def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
@@ -25,6 +51,62 @@ def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
         return
 
     raise RuntimeError("iter_agent_astream() is only supported from synchronous code")
+
+
+def stream_and_collect(
+    agent: Any,
+    *,
+    astream_kwargs: Mapping[str, Any],
+    on_chunk: Optional[StreamChunkCallback] = None,
+    error_message_factory: Optional[StreamErrorMessageFactory] = None,
+    should_mark_iteration_limit: Optional[StreamIterationLimitPredicate] = None,
+) -> StreamCollection:
+    """Consume ``agent.astream(...)`` and collect common stream state.
+
+    Synchronous autonomous workers still own their caller-specific behavior
+    (event-bus publishing, console output, logging, completion payloads), but
+    they should not each reimplement the same stream iteration, response
+    collection, error propagation, and iteration-limit bookkeeping.
+    """
+    collection = StreamCollection()
+
+    for chunk in iter_agent_astream(agent, **dict(astream_kwargs)):
+        chunk_type = chunk.get("type")
+        collection.chunk_count += 1
+
+        if chunk_type == "tool_call":
+            collection.tool_call_count += 1
+        elif chunk_type == "thinking":
+            content = chunk.get("content", "")
+            if content:
+                collection.thinking_parts.append(content)
+        elif chunk_type == "response":
+            content = chunk.get("content", "")
+            if content:
+                collection.response_parts.append(content)
+        elif chunk_type == "iteration_limit":
+            should_mark = (
+                True
+                if should_mark_iteration_limit is None
+                else should_mark_iteration_limit(chunk)
+            )
+            if should_mark:
+                collection.iteration_limit_hit = True
+                collection.iteration_limit_event = dict(chunk)
+
+        if on_chunk is not None:
+            on_chunk(chunk, collection)
+
+        if chunk_type == "error":
+            if error_message_factory is not None:
+                message = error_message_factory(chunk)
+            else:
+                error_content = chunk.get("content", "")
+                error_code = chunk.get("code", "unknown")
+                message = error_content or f"Agent stream error (code={error_code})"
+            raise RuntimeError(message)
+
+    return collection
 
 
 def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
@@ -70,7 +152,7 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
             try:
                 loop.run_until_complete(agen.aclose())
             except RuntimeError:
-                pass
+                pass  # event loop may already be closed
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
         if had_previous_loop:

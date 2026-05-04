@@ -143,7 +143,7 @@ def consult(
             if error_detail:
                 error_msg += f" - {error_detail}"
         except Exception:
-            pass
+            logger.debug("Failed to extract error detail from HTTP response")
         logger.error(error_msg)
         return f"[Error]: {error_msg}"
 

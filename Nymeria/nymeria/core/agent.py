@@ -2692,7 +2692,7 @@ class NymeriaAgent:
                         thread_id=thread_id,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Activity logging failed for user message")
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             # For autonomous execution, include the autonomous mode instructions
@@ -3624,7 +3624,7 @@ class NymeriaAgent:
                     if input_tok or output_tok:
                         self._token_tracker.record_usage(thread_id, input_tok, output_tok)
                 except Exception:
-                    pass
+                    logger.debug("Failed to extract token usage after stream error")
         finally:
             # Patch dangling tool_calls in finally so it runs even when the
             # async generator is force-closed (GeneratorExit from SSE disconnect).
@@ -3970,7 +3970,7 @@ class NymeriaAgent:
                                 default_names.append(tool_name)
                         logger.info(f"Migrated enabled_overrides for user {user_id} into default_thread_tools")
                 except Exception:
-                    pass  # Best-effort migration
+                    logger.warning("Best-effort migration of enabled_overrides failed", exc_info=True)
 
             profile.tool_preferences.default_thread_tools = default_names
             self.profile_manager.save_profile(profile)

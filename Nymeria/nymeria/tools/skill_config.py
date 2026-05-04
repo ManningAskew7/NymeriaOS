@@ -336,7 +336,7 @@ def _invalidate_graph_caches(agent) -> None:
     try:
         agent._async_user_graphs.clear()
     except Exception:
-        pass
+        logger.debug("Failed to clear async graph cache")
 
 
 def _activate_skill_on_thread(agent, thread_id: str, skill_name: str) -> bool:
@@ -490,7 +490,7 @@ def _publish_skill(
             try:
                 target_dir.rmdir()
             except OSError:
-                pass
+                pass  # directory may not be empty or already removed
         raise
 
     agent.skill_manager.reload()

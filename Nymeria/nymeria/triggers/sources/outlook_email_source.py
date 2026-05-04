@@ -200,7 +200,7 @@ class OutlookEmailSource(BaseTriggerSource):
                 last_check = reset_to
                 state["last_check_time"] = reset_to
         except (ValueError, TypeError):
-            pass
+            pass  # unparseable date, keep existing value
 
         filters.append(f"receivedDateTime gt {last_check}")
 

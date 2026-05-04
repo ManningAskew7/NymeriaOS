@@ -222,7 +222,7 @@ class TeamsSource(BaseTriggerSource):
             if resp.status_code == 200:
                 team_name = resp.json().get("displayName", team_id)
         except Exception:
-            pass
+            logger.debug("Failed to resolve Teams team name")
 
         try:
             resp = httpx.get(
@@ -232,7 +232,7 @@ class TeamsSource(BaseTriggerSource):
             if resp.status_code == 200:
                 channel_name = resp.json().get("displayName", channel_id)
         except Exception:
-            pass
+            logger.debug("Failed to resolve Teams channel name")
 
         return team_name, channel_name
 

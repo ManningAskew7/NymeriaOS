@@ -381,7 +381,7 @@ class NymeriaTwitchBot(commands.Bot):
                 platform_meta={"channel": self._channel_name},
             )
         except Exception:
-            pass  # Non-critical
+            logger.warning("Failed to create Twitch thread metadata", exc_info=True)
 
         # Auto-setup: configure thread if no system prompt set yet
         await self._auto_setup_thread()
@@ -951,7 +951,7 @@ class NymeriaTwitchBot(commands.Bot):
                 try:
                     await self._pulse_task
                 except asyncio.CancelledError:
-                    pass
+                    pass  # task cancellation during shutdown is expected
             await super().close()
         finally:
             unregister_twitch_bot(self)

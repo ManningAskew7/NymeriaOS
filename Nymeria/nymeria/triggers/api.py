@@ -1641,7 +1641,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         except HTTPException:
             raise
         except Exception:
-            pass  # Todo file may not exist; that's fine.
+            logger.debug("Todo file cleanup skipped, may not exist")
         try:
             repo.delete_user_cascade(user_id)
         except UserNotFound:
@@ -1948,7 +1948,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 body.code, kind="thread_bind", provider=body.provider
             )
         except BindCodeInvalid:
-            pass
+            pass  # bind code already consumed or expired, continue
         _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
@@ -2124,7 +2124,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 body.code, kind="thread_bind", provider=body.provider
             )
         except BindCodeInvalid:
-            pass
+            pass  # bind code already consumed or expired, continue
         _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
@@ -2236,7 +2236,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 body.code, kind="platform_link", provider=body.provider
             )
         except BindCodeInvalid:
-            pass
+            pass  # bind code already consumed or expired, continue
         for p in repo.list_platforms_for_user(claim.user_id):
             if p.provider == body.provider and p.provider_user_id == body.platform_user_id:
                 return AdminPlatformLinkClaimResponse(
@@ -4083,7 +4083,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         try:
             names.update(t.get("name") for t in agent.tool_registry.list_tools() if t.get("name"))
         except Exception:
-            pass
+            logger.warning("Failed to query tool registry for available tools", exc_info=True)
 
         callable_names = set(getattr(agent, "_callable_tool_thread_map", {}) or {})
         try:
@@ -4093,7 +4093,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 if tc.callable_name
             )
         except Exception:
-            pass
+            logger.warning("Failed to list callable threads for tool names", exc_info=True)
 
         # Callable tools are resolved from ownership, not enabled_tools. Do
         # not preserve guessed callable names as portable tool enablements.
@@ -4158,7 +4158,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 tc.callable_name for tc in owned_callables if tc.callable_name
             )
         except Exception:
-            pass
+            logger.warning("Failed to list user callable threads during import", exc_info=True)
 
         title = _thread_share_title(document)
         thread_id = f"imported-{uuid.uuid4().hex[:12]}"
@@ -4680,7 +4680,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         try:
             agent._async_user_graphs.clear()
         except Exception:
-            pass
+            logger.warning("Failed to clear async graph cache", exc_info=True)
 
     def _skill_to_metadata(skill) -> dict:
         return {
@@ -4836,7 +4836,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 ]
                 agent.profile_manager.save_profile(profile)
         except Exception:
-            pass
+            logger.warning("Failed to clean up stale skill refs in profile", exc_info=True)
 
         _invalidate_graph_caches()
         return {"status": "ok", "deleted": name, "scope": scope}

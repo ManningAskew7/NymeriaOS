@@ -189,7 +189,7 @@ class SlackSource(BaseTriggerSource):
             if data.get("ok"):
                 return data.get("channel", {}).get("name", channel_id)
         except Exception:
-            pass
+            logger.debug("Failed to resolve Slack channel name")
         return channel_id
 
     def get_sample_event(self, config: dict) -> dict:

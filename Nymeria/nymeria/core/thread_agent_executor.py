@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
-from .stream_bridge import iter_agent_astream
+from .stream_bridge import stream_and_collect
 
 logger = logging.getLogger(__name__)
 
@@ -105,22 +105,10 @@ def _run_callable_stream(
             f"task_id={task_id}, user={caller_user_id}, task={task[:80]}..."
         )
 
-        response_parts = []
-        thinking_parts = []
-        chunk_count = 0
-        tool_call_count = 0
-        iteration_limit_hit = False
-        iteration_limit_event = None
         started_published = False
 
-        for chunk in iter_agent_astream(
-            agent,
-            message=task,
-            thread_id=thread_id,
-            user_id=caller_user_id,
-            _is_self_invoke=is_self_invoke,
-            _trigger_override=trigger_override,
-        ):
+        def handle_chunk(chunk: Dict[str, Any], collection) -> None:
+            nonlocal started_published
             if not started_published and chunk.get("type") != "queued":
                 publish_autonomous_event(
                     event_type="task_started",
@@ -136,7 +124,6 @@ def _run_callable_stream(
                 started_published = True
 
             chunk_type = chunk.get("type")
-            chunk_count += 1
             publish_agent_stream_chunk(
                 chunk,
                 thread_id=thread_id,
@@ -145,10 +132,9 @@ def _run_callable_stream(
             )
 
             if chunk_type == "tool_call":
-                tool_call_count += 1
                 logger.debug(
                     f"[{log_label}] {callable_name}: tool_call "
-                    f"#{tool_call_count} name={chunk.get('name')}"
+                    f"#{collection.tool_call_count} name={chunk.get('name')}"
                 )
 
             elif chunk_type == "tool_result":
@@ -158,24 +144,11 @@ def _run_callable_stream(
                     f"name={chunk.get('name')}, result={result_preview}..."
                 )
 
-            elif chunk_type == "thinking":
-                content = chunk.get("content", "")
-                if content:
-                    thinking_parts.append(content)
-
-            elif chunk_type == "response":
-                content = chunk.get("content", "")
-                if content:
-                    response_parts.append(content)
-
             elif chunk_type == "error":
                 content = chunk.get("content", "")
                 logger.warning(f"[{log_label}] {callable_name}: stream error: {content}")
-                raise RuntimeError(content or f"{callable_name} encountered a stream error")
 
             elif chunk_type == "iteration_limit":
-                iteration_limit_hit = True
-                iteration_limit_event = dict(chunk)
                 logger.warning(
                     f"[{log_label}] {callable_name}: hit iteration limit "
                     f"(scope={chunk.get('scope')}, "
@@ -183,13 +156,27 @@ def _run_callable_stream(
                     f"max_iterations={chunk.get('max_iterations')})"
                 )
 
-        if response_parts:
-            response_text = "".join(response_parts)
-        elif thinking_parts:
-            response_text = "".join(thinking_parts)
-        else:
-            response_text = ""
+        def stream_error_message(chunk: Dict[str, Any]) -> str:
+            content = chunk.get("content", "")
+            return content or f"{callable_name} encountered a stream error"
+
+        result = stream_and_collect(
+            agent,
+            astream_kwargs={
+                "message": task,
+                "thread_id": thread_id,
+                "user_id": caller_user_id,
+                "_is_self_invoke": is_self_invoke,
+                "_trigger_override": trigger_override,
+            },
+            on_chunk=handle_chunk,
+            error_message_factory=stream_error_message,
+        )
+
+        response_text = result.response_text()
         return_response_text = response_text
+        iteration_limit_hit = result.iteration_limit_hit
+        iteration_limit_event = result.iteration_limit_event
 
         if iteration_limit_hit and response_text:
             limit_message = (
@@ -225,7 +212,7 @@ def _run_callable_stream(
                 "tool_call_count": (
                     iteration_limit_event.get("tool_call_count")
                     if isinstance(iteration_limit_event, dict)
-                    else tool_call_count
+                    else result.tool_call_count
                 ),
                 "reason": (
                     iteration_limit_event.get("reason")
@@ -259,7 +246,7 @@ def _run_callable_stream(
         _elapsed = _time.monotonic() - _start
         logger.info(
             f"[{log_label}] === END === name={callable_name}, thread={thread_id}, "
-            f"task_id={task_id}, chunks={chunk_count}, tools={tool_call_count}, "
+            f"task_id={task_id}, chunks={result.chunk_count}, tools={result.tool_call_count}, "
             f"response_len={len(response_text)}, partial={iteration_limit_hit}, "
             f"elapsed={_elapsed:.1f}s"
         )
@@ -506,7 +493,7 @@ def _schedule_handoff(
             },
         )
     except Exception:
-        pass
+        logger.debug("Activity logging failed for handoff")
 
     when = (
         todo_scheduled.isoformat(timespec="seconds")

@@ -879,12 +879,12 @@ class NymeriaTelegramBot:
                 try:
                     await msg.edit_text(text=plain or text, **kwargs)
                 except BadRequest:
-                    pass
+                    pass  # HTML fallback to plain text already handled above
             # Other BadRequest (message too old, etc.) — ignore
         except RetryAfter as e:
             await asyncio.sleep(e.retry_after)
         except TimedOut:
-            pass
+            pass  # timeout during retry-after wait is benign
 
     async def _send_file_attachment(
         self,
@@ -1014,7 +1014,7 @@ class NymeriaTelegramBot:
                         chat_id=self._chat_id, action=ChatAction.TYPING
                     )
                 except Exception:
-                    pass
+                    logger.debug("Failed to send typing indicator")
                 await asyncio.sleep(4)
 
         async def flush_text(self, final: bool = False) -> None:
@@ -1090,7 +1090,7 @@ class NymeriaTelegramBot:
                     try:
                         await button_msg.edit_reply_markup(reply_markup=None)
                     except Exception:
-                        pass
+                        logger.debug("Failed to remove stop button from message")
                 self._stop_button_msg = None
                 self._text_buffer = ""
                 self._current_msg = None
@@ -1191,7 +1191,7 @@ class NymeriaTelegramBot:
                     text=f"Sorry, I encountered an error: {content}",
                 )
             except Exception:
-                pass
+                logger.warning("Failed to send error notification to Telegram", exc_info=True)
 
         async def on_iteration_limit(self, content: str) -> None:
             try:
@@ -1199,7 +1199,7 @@ class NymeriaTelegramBot:
                     chat_id=self._chat_id, text=f"⚠️ {content}"
                 )
             except Exception:
-                pass
+                logger.warning("Failed to send iteration-limit warning to Telegram", exc_info=True)
 
         async def on_done(self, tool_call_count: int) -> None:
             if tool_call_count and self._text_buffer:
@@ -1211,7 +1211,7 @@ class NymeriaTelegramBot:
                         text=old_text + f"\n\nTool calls: {tool_call_count}"
                     )
                 except Exception:
-                    pass
+                    logger.debug("Failed to edit Telegram message with tool-call footer")
             await self.flush_text(final=True)
 
         async def on_stream_end(self, tool_call_count: int) -> None:
@@ -1269,7 +1269,7 @@ class NymeriaTelegramBot:
                         chat_id=chat_id, text=f"Error: {e2}"
                     )
                 except Exception:
-                    pass
+                    logger.warning("Failed to send last-resort error notification to Telegram", exc_info=True)
         finally:
             handler.cleanup()
 
@@ -2201,7 +2201,7 @@ class NymeriaTelegramBot:
             try:
                 await self.api.restart_api()
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError):
-                pass
+                pass  # transient connection errors during restart are expected
             except Exception as e:
                 await update.message.reply_text(f"Error: {e}")
         else:
@@ -3107,7 +3107,7 @@ class NymeriaTelegramBot:
                     f"`python run.py users link-platform <email> telegram {telegram_user_id}`"
                 )
             except Exception:
-                pass
+                logger.warning("Failed to send account-not-linked message to Telegram", exc_info=True)
             return
 
         text = (update.message.text or update.message.caption or "").strip()
@@ -3117,7 +3117,7 @@ class NymeriaTelegramBot:
             try:
                 await context.bot.send_message(chat_id=chat_id, text=err)
             except Exception:
-                pass
+                logger.warning("Failed to send attachment error to Telegram", exc_info=True)
 
         if not text and not attachments:
             return

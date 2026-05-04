@@ -646,7 +646,7 @@ class AccountsRepo:
             try:
                 token_path.chmod(0o600)
             except OSError:
-                pass
+                pass  # chmod may fail on some filesystems
         except OSError as e:
             logger.error("Failed to write bootstrap token file: %s", e)
         logger.warning(

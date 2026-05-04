@@ -77,7 +77,7 @@ class WatchdogWorker:
             await asyncio.wait_for(self._stop.wait(), timeout=5)
             return
         except asyncio.TimeoutError:
-            pass
+            pass  # poll timeout is expected idle behavior
 
         while not self._stop.is_set():
             try:
@@ -90,7 +90,7 @@ class WatchdogWorker:
                     self._stop.wait(), timeout=self.interval_minutes * 60
                 )
             except asyncio.TimeoutError:
-                pass
+                pass  # startup wait timeout is expected
 
         logger.info("Watchdog worker stopped")
 
@@ -108,7 +108,7 @@ class WatchdogWorker:
             if flag.exists():
                 return True
         except Exception:
-            pass
+            logger.error("Failed to check watchdog kill-switch flag", exc_info=True)
         return False
 
     # ── Staleness ─────────────────────────────────────────────────────────

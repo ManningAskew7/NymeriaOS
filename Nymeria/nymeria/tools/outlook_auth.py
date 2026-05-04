@@ -415,7 +415,7 @@ def get_user_info(access_token: str) -> dict:
         if response.status_code == 200:
             return response.json()
     except Exception:
-        pass
+        logger.debug("Failed to fetch MS Graph user profile")
     return {}
 
 

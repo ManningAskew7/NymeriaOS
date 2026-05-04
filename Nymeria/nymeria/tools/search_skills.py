@@ -299,7 +299,7 @@ def install_skill(
     try:
         agent._async_user_graphs.clear()
     except Exception:
-        pass
+        logger.debug("Failed to clear async graph cache")
 
     details: List[str] = [
         f"Installed skill {skill.name!r} from {source} into {scope} scope.",

@@ -129,7 +129,7 @@ def _protected_write_error(path: Path) -> Optional[str]:
                     f"Use self_modify() to modify tools or agents instead."
                 )
     except ValueError:
-        pass
+        pass  # not a valid integer, skip
     return None
 
 

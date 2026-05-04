@@ -169,7 +169,7 @@ target thread responds through its own autonomous output channels.
                 if parent_meta and parent_meta.title:
                     parent_name = parent_meta.title
             except Exception:
-                pass
+                logger.debug("Failed to resolve parent thread title")
             # Fall back to callable_name if parent is itself a callable thread
             if not parent_name:
                 try:
@@ -177,7 +177,7 @@ target thread responds through its own autonomous output channels.
                     if parent_tc and parent_tc.callable_name:
                         parent_name = parent_tc.callable_name
                 except Exception:
-                    pass
+                    logger.debug("Failed to resolve parent callable name")
             # Last resort: raw thread ID
             if not parent_name:
                 parent_name = parent_thread_id

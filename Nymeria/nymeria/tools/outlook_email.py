@@ -98,7 +98,7 @@ def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict
         if default_id and default_id in accounts:
             return accounts[default_id]
     except Exception:
-        pass
+        logger.debug("Failed to resolve default Outlook account from settings")
 
     # Fallback to first account
     return next(iter(accounts.values()), None)
@@ -218,7 +218,7 @@ def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional
             if default_id and default_id in accounts:
                 aid, account = default_id, accounts[default_id]
         except Exception:
-            pass
+            logger.debug("Failed to resolve default Outlook account from settings")
         if not account:
             aid, account = next(iter(accounts.items()), (None, None))
 

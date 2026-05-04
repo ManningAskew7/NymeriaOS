@@ -105,7 +105,7 @@ def notify(
                     metadata={"platforms": [platform]},
                 )
             except Exception:
-                pass
+                logger.debug("Activity logging failed for notification")
             return f"[Success]: {result}"
         return f"[Error]: {result}"
 
@@ -135,7 +135,7 @@ def notify(
                 metadata={"platforms": [r.split("to ")[-1] for r in results]},
             )
         except Exception:
-            pass
+            logger.debug("Activity logging failed for notification")
         return f"[Success]: {'; '.join(results)}"
     elif errors:
         return f"[Error]: All platforms failed - {'; '.join(errors)}"

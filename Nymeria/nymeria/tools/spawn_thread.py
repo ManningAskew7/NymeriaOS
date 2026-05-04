@@ -20,7 +20,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -100,7 +100,7 @@ def _get_parent_spawn_depth(
         if meta and meta.platform_meta:
             return int(meta.platform_meta.get("spawn_depth", "0"))
     except Exception:
-        pass
+        logger.warning("Failed to read parent spawn depth", exc_info=True)
     return 0
 
 
@@ -474,7 +474,7 @@ def spawn_thread(
         try:
             agent.thread_config_manager.delete_config(new_thread_id)
         except Exception:
-            pass
+            logger.warning("Failed to rollback thread config after error", exc_info=True)
         return f"[Error]: Failed to save thread metadata: {str(e)}"
 
     # Claim ownership for the spawning user. Without this, callable spawns
@@ -567,7 +567,7 @@ def _invoke_spawned(
     )
 
     from ..core.event_bus import publish_agent_stream_chunk, publish_autonomous_event
-    from ..core.stream_bridge import iter_agent_astream
+    from ..core.stream_bridge import stream_and_collect
 
     task_id = f"spawned-{uuid.uuid4().hex[:8]}"
 
@@ -579,9 +579,6 @@ def _invoke_spawned(
     collector_token = run_collector_var.set(None)
 
     try:
-        response_parts: List[str] = []
-        thinking_parts: List[str] = []
-        iteration_limit_hit = False
         started_published = False
 
         parent_name = parent_thread_id or "unknown"
@@ -593,17 +590,11 @@ def _invoke_spawned(
                 if parent_meta and parent_meta.title:
                     parent_name = parent_meta.title
             except Exception:
-                pass
+                logger.debug("Failed to resolve parent thread title")
         trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
 
-        for chunk in iter_agent_astream(
-            agent,
-            message=task,
-            thread_id=child_thread_id,
-            user_id=user_id,
-            _is_self_invoke=True,
-            _trigger_override=trigger_override,
-        ):
+        def handle_chunk(chunk: Dict[str, Any], _collection) -> None:
+            nonlocal started_published
             if not started_published and chunk.get("type") != "queued":
                 publish_autonomous_event(
                     event_type="task_started",
@@ -614,32 +605,33 @@ def _invoke_spawned(
                 )
                 started_published = True
 
-            ctype = chunk.get("type")
             publish_agent_stream_chunk(
                 chunk,
                 thread_id=child_thread_id,
                 user_id=user_id,
                 task_id=task_id,
             )
-            if ctype == "thinking":
-                content = chunk.get("content", "")
-                if content:
-                    thinking_parts.append(content)
-            elif ctype == "response":
-                content = chunk.get("content", "")
-                if content:
-                    response_parts.append(content)
-            elif ctype == "error":
-                raise RuntimeError(
-                    chunk.get("content") or "spawned thread stream error"
-                )
-            elif ctype == "iteration_limit":
-                iteration_limit_hit = True
 
-        response_text = (
-            "".join(response_parts) if response_parts else "".join(thinking_parts)
+        def stream_error_message(chunk: Dict[str, Any]) -> str:
+            content = chunk.get("content")
+            return str(content) if content else "spawned thread stream error"
+
+        result = stream_and_collect(
+            agent,
+            astream_kwargs={
+                "message": task,
+                "thread_id": child_thread_id,
+                "user_id": user_id,
+                "_is_self_invoke": True,
+                "_trigger_override": trigger_override,
+            },
+            on_chunk=handle_chunk,
+            error_message_factory=stream_error_message,
         )
 
+        response_text = result.response_text()
+
+        iteration_limit_hit = result.iteration_limit_hit
         if iteration_limit_hit and response_text:
             response_text += (
                 "\n\n[Note: Spawned thread was stopped at iteration limit; "
@@ -678,7 +670,7 @@ def _invoke_spawned(
                 },
             )
         except Exception:
-            pass
+            logger.warning("Failed to publish task-completed error event", exc_info=True)
         return f"[Error]: Initial message failed: {str(e)}"
 
     finally:
