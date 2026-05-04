@@ -6,7 +6,6 @@ import logging
 import math
 import os
 import re
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,7 +17,7 @@ if TYPE_CHECKING:
 import httpx
 from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -39,7 +38,7 @@ from ..core.chat_bindings import (
     BotAlreadyRegistered,
 )
 from ..core import secrets as nymeria_secrets
-from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
+from ..core.activity_log import ActivityType, get_activity_log
 from ..core.checkpoint_cleanup import delete_thread_checkpoints
 from ..core.event_bus import (
     AutonomousEvent,
@@ -53,9 +52,14 @@ from ..core.notification_dispatch import (
     create_autonomous_notification as _dispatch_autonomous_notification,
     should_notify_autonomous as _should_notify_autonomous,
 )
-from ..core.notifications import NotificationStore, Notification, create_notification, get_notification_store
+from ..core.notifications import get_notification_store
 from ..core.rate_limit import SlidingWindowRateLimiter
 from ..core.time_utils import utc_now
+from ..core.thread_classification import (
+    classify_platform as _classify_thread_platform_from_id,
+    is_native_platform_thread as _is_native_platform_thread,
+    is_shared_channel as _is_shared_channel_thread,
+)
 from ..core.todo_manager import TodoManager, TodoItem, TodoStatus
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS
@@ -69,13 +73,12 @@ from ..tools.definitions.mcp_schema import (
 )
 from ..core.custom_tools import (
     get_custom_tool_loader,
-    load_custom_tools,
     reload_custom_tools,
 )
 from ..api.routers.devices import create_devices_router
 from ..api.routers.memory import create_memory_router
 from ..api.routers.rag import create_rag_router
-from ..api.routers.system import router as system_router
+from ..api.routers.system import create_system_router
 from ..api.routers.user_tools import create_user_tools_router
 from ..api.routers.voice import create_voice_router
 from ..api.routers.workspace import create_workspace_router
@@ -193,17 +196,6 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="Agent response")
     thread_id: str = Field(..., description="Conversation thread ID")
     tool_call_count: int = Field(default=0, description="Number of tool calls made in this turn")
-
-
-class ReportRequest(BaseModel):
-    """Request model for error report endpoint."""
-
-    thread_id: Optional[str] = None
-    message_id: str = ""
-    description: str = ""
-    messages: List[dict] = Field(default_factory=list)
-    timestamp: str = ""
-    client_info: dict = Field(default_factory=dict)
 
 
 class ThreadHistoryResponse(BaseModel):
@@ -1057,13 +1049,6 @@ def _make_thread_team_id(name: str) -> str:
     return f"team-{slug[:48]}-{uuid.uuid4().hex[:8]}"
 
 
-from nymeria.core.thread_classification import (
-    classify_platform as _classify_thread_platform_from_id,
-    is_native_platform_thread as _is_native_platform_thread,
-    is_shared_channel as _is_shared_channel_thread,
-)
-
-
 def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
     """
     Enforce that ``user`` owns ``thread_id`` (or is admin).
@@ -1250,7 +1235,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         require_thread_access_fn=_require_thread_access,
     )
     app.include_router(trigger_router)
-    app.include_router(system_router)
+    app.include_router(
+        create_system_router(verify_api_key, require_admin_user, get_agent, get_settings)
+    )
     app.include_router(create_devices_router(verify_api_key, get_settings))
     app.include_router(create_workspace_router(require_admin_user))
     app.include_router(create_rag_router(verify_api_key, get_agent, _require_same_user_or_admin))
@@ -2608,118 +2595,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         for binding in affected_bindings:
             _publish_chatapp_platform_sync(binding.thread_id, binding.user_id)
         return {"deleted": True}
-
-    @app.post("/restart", tags=["System"])
-    async def restart_server(user: AuthenticatedUser = Depends(require_admin_user)):
-        """Restart the API server process. Admin-only — affects every user.
-
-        Spawns a new server process after a short delay, then exits the
-        current one.  The frontend should poll /health until the new
-        instance is ready.
-        """
-        import asyncio
-        import subprocess
-        import sys
-
-        async def _do_restart():
-            await asyncio.sleep(0.5)            # Give the HTTP response time to flush
-            # Stop the ticker cleanly if running
-            agent = get_agent()
-            if agent and agent._ticker:
-                agent._ticker.stop()
-
-            # Build child env from current process, then overlay .env files.
-            # This guarantees restart picks up latest file values even if the
-            # current process inherited stale variables from its parent shell/service.
-            from dotenv import dotenv_values
-            from pathlib import Path
-
-            child_env = os.environ.copy()
-            project_root = Path(__file__).resolve().parents[2]
-            for filename in (".env", ".env.docker"):
-                env_path = project_root / filename
-                if not env_path.exists():
-                    continue
-                for key, value in dotenv_values(env_path).items():
-                    if key and value is not None:
-                        child_env[key] = value
-
-            # Spawn a replacement process, then exit
-            subprocess.Popen(
-                [sys.executable] + sys.argv,
-                env=child_env,
-                creationflags=(
-                    subprocess.CREATE_NEW_PROCESS_GROUP
-                    if sys.platform == "win32" else 0
-                ),
-                start_new_session=(sys.platform != "win32"),
-            )
-            import os
-            os._exit(0)
-
-        asyncio.create_task(_do_restart())
-        return {"message": "Server restarting..."}
-
-    @app.post("/report", tags=["System"])
-    async def report_problem(
-        request: ReportRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Send an error report email to support with debug context."""
-        from html import escape as html_escape
-        from ..tools.outlook_email import outlook_send_email
-
-        sections = ['<h2>Nymeria Error Report</h2>']
-        sections.append(f'<p><strong>Timestamp:</strong> {html_escape(request.timestamp)}</p>')
-
-        if request.thread_id:
-            sections.append(f'<p><strong>Thread ID:</strong> {html_escape(request.thread_id)}</p>')
-        if request.message_id:
-            sections.append(f'<p><strong>Message ID:</strong> {html_escape(request.message_id)}</p>')
-
-        if request.description:
-            sections.append(f'<h3>Description</h3><p>{html_escape(request.description)}</p>')
-
-        if request.client_info:
-            items = ''.join(
-                f'<li><strong>{html_escape(str(k))}:</strong> {html_escape(str(v))}</li>'
-                for k, v in request.client_info.items()
-            )
-            sections.append(f'<h3>Client Info</h3><ul>{items}</ul>')
-
-        if request.messages:
-            rows = ''
-            for m in request.messages[-10:]:
-                role = html_escape(m.get('role', '?'))
-                content = html_escape((m.get('content', '') or '')[:500])
-                ts = html_escape(m.get('timestamp', ''))
-                rows += f'<tr><td style="white-space:nowrap">{ts}</td><td><strong>{role}</strong></td><td><pre style="margin:0;white-space:pre-wrap;max-width:400px">{content}</pre></td></tr>'
-            sections.append(
-                '<h3>Recent Messages</h3>'
-                '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:13px">'
-                '<tr><th>Time</th><th>Role</th><th>Content</th></tr>'
-                f'{rows}</table>'
-            )
-
-        body = '\n'.join(sections)
-        date_str = request.timestamp[:10] if request.timestamp else 'unknown'
-        subject = f'Nymeria Error Report - {date_str}'
-
-        try:
-            result = outlook_send_email.invoke({
-                'to': 'reports@example.com',
-                'subject': subject,
-                'body': body,
-                'is_html': True,
-            })
-            if '[Error]' in str(result):
-                raise HTTPException(status_code=502, detail=str(result))
-            return {'status': 'sent', 'detail': str(result)}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f'Failed to send error report: {e}')
-            raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/chat", tags=["Chat"])
     async def chat_streaming(
@@ -6083,7 +5958,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
         Connect to this endpoint to receive real-time updates about all activity.
         """
-        import asyncio
         from queue import Empty
 
         subscriber_id = str(uuid.uuid4())
@@ -6214,7 +6088,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
                     except Empty:
                         # No events, send heartbeat to keep connection alive
-                        yield f": heartbeat\n\n"
+                        yield ": heartbeat\n\n"
                         await asyncio.sleep(1)
 
             finally:
@@ -7548,11 +7422,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         _require_same_user_or_admin(user, user_id)
         from ..tools import (
             ALL_TOOLS,
-            OPTIONAL_TOOLS,
             ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
             DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
         )
-        from ..tools.metadata import get_tool_metadata, get_all_tool_metadata
+        from ..tools.metadata import get_all_tool_metadata
 
         agent = get_agent()
 

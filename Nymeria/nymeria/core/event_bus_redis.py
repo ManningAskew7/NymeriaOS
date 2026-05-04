@@ -1,12 +1,10 @@
 """Redis-backed event bus for cross-container communication."""
 
-import asyncio
 import json
 import logging
 import threading
-from dataclasses import asdict
 from datetime import datetime
-from queue import Full, Queue, Empty
+from queue import Full
 from typing import Any, Dict, Optional
 
 from .event_bus import (

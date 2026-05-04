@@ -4,7 +4,7 @@ Tracks cumulative token usage (input + output) for each thread to determine
 when auto-compaction should be triggered.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
 

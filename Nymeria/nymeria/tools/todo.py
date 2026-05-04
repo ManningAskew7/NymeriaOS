@@ -277,7 +277,7 @@ def nym_todo(
             if rescheduled_time:
                 result += f" (auto-rescheduled: recurring {item.recurrence})"
             elif item.scheduled_for:
-                result += f" (scheduled)"
+                result += " (scheduled)"
             elif clear_schedule:
                 result += " (schedule cleared)"
             if item.recurrence and not rescheduled_time:

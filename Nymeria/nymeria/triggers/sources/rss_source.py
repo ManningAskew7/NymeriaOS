@@ -5,9 +5,7 @@ Uses feedparser for robust feed parsing. Falls back to raw httpx if
 feedparser is not installed.
 """
 
-import hashlib
 import logging
-from datetime import datetime
 from typing import Any, Dict, List
 
 from .base import BaseTriggerSource

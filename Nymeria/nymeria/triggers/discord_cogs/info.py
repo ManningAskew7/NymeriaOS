@@ -9,7 +9,7 @@ import json as _json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Optional
 
 import discord
 from discord import app_commands

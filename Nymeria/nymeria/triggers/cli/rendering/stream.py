@@ -63,7 +63,6 @@ class StreamRenderer:
         spinner = None
         pending_calls: dict = {}  # call_id → {name, args}
         had_tool_calls = False
-        model_info = ""
 
         try:
             for chunk in events:
@@ -213,7 +212,7 @@ class StreamRenderer:
                     self.console.print(f"[yellow]{message}[/yellow]")
 
                 elif chunk_type == "done":
-                    model_info = chunk.get("model", "")
+                    pass
 
         except KeyboardInterrupt:
             if spinner:

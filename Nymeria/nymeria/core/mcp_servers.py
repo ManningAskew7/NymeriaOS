@@ -7,7 +7,6 @@ objects that route execution through the existing MCPServerManager.
 
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -240,7 +239,7 @@ class MCPServerRegistry:
         self, tool_name: str, input_schema: Dict[str, Any]
     ) -> type:
         """Create a Pydantic model from MCP JSON Schema input_schema."""
-        from pydantic import BaseModel, Field, create_model
+        from pydantic import Field, create_model
         from typing import Optional
 
         properties = input_schema.get("properties", {})

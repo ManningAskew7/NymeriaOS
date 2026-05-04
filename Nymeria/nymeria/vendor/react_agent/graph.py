@@ -9,7 +9,7 @@ import asyncio
 import atexit
 import logging
 import sqlite3
-from typing import List, Optional, Any, Tuple
+from typing import List, Optional, Any
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -62,7 +62,7 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
             result = await asyncio.to_thread(
                 self._saver.put, config, checkpoint, metadata, new_versions
             )
-            logger.info(f"[CHECKPOINT] aput SUCCESS")
+            logger.info("[CHECKPOINT] aput SUCCESS")
             return result
         except Exception as e:
             logger.error(f"[CHECKPOINT] aput ERROR: {e}", exc_info=True)
@@ -91,7 +91,7 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
         logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.put new_versions={new_versions}")
         try:
             result = self._saver.put(config, checkpoint, metadata, new_versions)
-            logger.info(f"[CHECKPOINT] put SUCCESS")
+            logger.info("[CHECKPOINT] put SUCCESS")
             return result
         except Exception as e:
             logger.error(f"[CHECKPOINT] put ERROR: {e}", exc_info=True)

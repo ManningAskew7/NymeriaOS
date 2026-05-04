@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -16,6 +16,9 @@ from .keyed_locks import KeyedRLockMap
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .todo_schedule_db import TodoScheduleDB
 
 # Thread-safe locks for todo operations (keyed by user_id)
 _todo_locks = KeyedRLockMap()
@@ -489,7 +492,6 @@ class TodoManager:
             todo_id: TODO ID to sync
             schedule_db: TodoScheduleDB instance
         """
-        from .todo_schedule_db import TodoScheduleDB
 
         todo_list = self.get_todos(user_id)
         todo = todo_list.get_item(todo_id)
@@ -525,7 +527,6 @@ class TodoManager:
         Returns:
             True if successful
         """
-        from .todo_schedule_db import TodoScheduleDB
 
         with self.atomic_update(user_id) as todo_list:
             todo = todo_list.get_item(todo_id)

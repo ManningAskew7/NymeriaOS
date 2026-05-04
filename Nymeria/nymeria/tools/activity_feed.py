@@ -7,7 +7,7 @@ single tool call, cutting noise and grouping by thread.
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Annotated, Dict, List
 
 from langchain_core.runnables import RunnableConfig

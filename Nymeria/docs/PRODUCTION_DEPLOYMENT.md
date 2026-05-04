@@ -56,12 +56,13 @@ Docker Compose builds two Nymeria application images:
   or test dependencies.
 
 Both images install runtime requirements only. Install `requirements-dev.txt`
-on the host when running the backend test suite.
+on the host when running backend tests, coverage, or Ruff lint checks.
 
-The GitHub Actions CI workflow validates the Docker path on every push and
-pull request by rendering the default and optional-profile Compose configs from
-`.env.docker.example` and running BuildKit's Dockerfile check against
-both `Dockerfile.full` and `Dockerfile.slim`.
+The GitHub Actions CI workflow validates backend Ruff linting, pytest coverage,
+and the Docker path on every push and pull request. The Docker job renders the
+default and optional-profile Compose configs from `.env.docker.example` and
+runs BuildKit's Dockerfile check against both `Dockerfile.full` and
+`Dockerfile.slim`.
 
 ### Docker Health Checks
 

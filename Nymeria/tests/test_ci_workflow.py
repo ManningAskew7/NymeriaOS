@@ -54,3 +54,16 @@ def test_ci_installs_dev_requirements_for_backend_tests() -> None:
     commands = _run_commands(backend_job)
 
     assert any("Nymeria/requirements-dev.txt" in command for command in commands)
+
+
+def test_ci_runs_backend_lint_and_coverage_gates() -> None:
+    jobs = _load_ci_workflow()["jobs"]
+
+    backend_job = jobs["backend-tests"]
+    commands = _run_commands(backend_job)
+
+    assert "python -m ruff check Nymeria/nymeria Nymeria/tests Nymeria/run.py" in commands
+    assert (
+        "python -m pytest Nymeria/tests --cov=nymeria --cov=run "
+        "--cov-report=term --cov-fail-under=38"
+    ) in commands

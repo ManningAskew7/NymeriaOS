@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Protocol, Tuple
 
 import yaml
 
-from . import Skill, SkillParseError, load_skill_directory
+from . import Skill, load_skill_directory
 
 logger = logging.getLogger(__name__)
 

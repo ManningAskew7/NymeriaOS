@@ -9,7 +9,6 @@ the same behavior as the original monolithic `_execute_scheduled_todo`.
 from __future__ import annotations
 
 import ast
-import textwrap
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,7 +21,7 @@ from nymeria.core.ticker import (
     _should_continue_after_limit,
     _stream_error_message,
 )
-from nymeria.core.todo_manager import TodoManager, TodoStatus
+from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from nymeria.core import ticker as ticker_module
 

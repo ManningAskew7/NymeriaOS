@@ -19,10 +19,11 @@ def _handle_model(state: "CLIState", args: List[str]) -> None:
     override = (tc.llm_config.model if tc and tc.llm_config and tc.llm_config.model else None)
 
     state.console.print(f"  [dim]Global:[/dim]   {global_model}")
+    state.console.print(f"  [dim]Effective:[/dim] {effective}")
     if override:
         state.console.print(f"  [dim]Override:[/dim] [cyan]{override}[/cyan]")
     else:
-        state.console.print(f"  [dim]Override:[/dim] [dim]None (using global)[/dim]")
+        state.console.print("  [dim]Override:[/dim] [dim]None (using global)[/dim]")
 
 
 def _handle_model_set(state: "CLIState", args: List[str]) -> None:

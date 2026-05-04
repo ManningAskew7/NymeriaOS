@@ -416,24 +416,24 @@ def apply_config_values(
     env_vars = dict(defn.env_vars or {})
     encrypted = dict(defn.encrypted_env_vars or {})
 
-    for field in plan.required_config:
-        name = str(field.get("name") or "")
-        env_name = str(field.get("env_name") or name)
+    for required_field in plan.required_config:
+        name = str(required_field.get("name") or "")
+        env_name = str(required_field.get("env_name") or name)
         value = values.get(name)
-        if (value is None or value == "") and field.get("default") is not None:
-            value = str(field["default"])
-        if (value is None or value == "") and field.get("required", True):
-            missing.append(field)
+        if (value is None or value == "") and required_field.get("default") is not None:
+            value = str(required_field["default"])
+        if (value is None or value == "") and required_field.get("required", True):
+            missing.append(required_field)
             continue
         if value is None:
             continue
-        if field.get("sensitive"):
+        if required_field.get("sensitive"):
             try:
                 encrypted[env_name] = nymeria_secrets.encrypt(value)
                 env_vars.pop(env_name, None)
             except Exception:
                 missing.append({
-                    **field,
+                    **required_field,
                     "error": "NYMERIA_SECRETS_KEY is required to store this secret",
                 })
         else:

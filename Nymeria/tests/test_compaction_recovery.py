@@ -9,10 +9,9 @@ should recover the summary from the checkpoint on the next turn.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from unittest.mock import patch
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from nymeria.core.agent import NymeriaAgent

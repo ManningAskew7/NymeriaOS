@@ -52,8 +52,14 @@ def test_requirement_includes_preserve_backend_ownership() -> None:
 
     assert "-r requirements-sqlite.txt" in base
     assert "pytest" in dev
+    assert "pytest-cov" in dev
+    assert "ruff" in dev
     assert "pytest" not in base
+    assert "pytest-cov" not in base
+    assert "ruff" not in base
     assert "pytest" not in docker
+    assert "pytest-cov" not in docker
+    assert "ruff" not in docker
     assert "-r requirements-postgres.txt" in docker
     assert "COPY requirements*.txt ./" in full_dockerfile
     assert "COPY requirements*.txt ./" in slim_dockerfile

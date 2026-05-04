@@ -7,7 +7,6 @@ configurable dicts.
 
 from __future__ import annotations
 
-import pytest
 
 from nymeria.tools.utils import get_thread_id, get_thread_id_or_none, get_user_id
 

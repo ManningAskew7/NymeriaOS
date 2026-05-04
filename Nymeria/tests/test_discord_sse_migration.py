@@ -8,10 +8,9 @@ duplicating dispatch logic.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import inspect
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
 from nymeria.triggers.sse_consumer import SSEEventHandler

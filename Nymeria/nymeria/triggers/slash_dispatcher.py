@@ -7,7 +7,6 @@ no per-chat UI state). Thin wrapper over `NymeriaAPIClient`.
 
 from __future__ import annotations
 
-import json as _json
 import logging
 from typing import Optional
 
@@ -367,7 +366,7 @@ class SlashCommandDispatcher:
             if recurrence:
                 detail_parts.append(f"repeat={recurrence}")
             lines.append(f"- {task}")
-            lines.append(f"  " + " | ".join(detail_parts))
+            lines.append("  " + " | ".join(detail_parts))
         if len(items) > 25:
             lines.append(f"(showing 25 of {len(items)})")
         return "[Info]: " + "\n".join(lines)

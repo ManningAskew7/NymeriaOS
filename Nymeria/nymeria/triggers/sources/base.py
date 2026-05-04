@@ -18,7 +18,6 @@ Config schema fields support these keys:
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.time_utils import utc_now

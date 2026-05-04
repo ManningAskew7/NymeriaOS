@@ -10,13 +10,12 @@ from __future__ import annotations
 import ast
 import inspect
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from typing import Any, List
 from unittest.mock import patch
 
-import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
-from nymeria.core.agent_compaction import CompactionManager, create_compaction_marker
+from nymeria.core.agent_compaction import CompactionManager
 from nymeria.core.token_tracker import TokenTracker
 
 

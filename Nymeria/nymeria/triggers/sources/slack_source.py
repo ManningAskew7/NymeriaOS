@@ -6,7 +6,6 @@ for private channels) scope.
 """
 
 import logging
-from datetime import datetime
 from typing import Any, Dict, List
 
 from .base import BaseTriggerSource

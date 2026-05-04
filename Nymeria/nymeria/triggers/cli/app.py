@@ -49,7 +49,7 @@ class CLIApp:
         """Main REPL loop."""
         # Try to use prompt_toolkit; fall back to basic input if unavailable
         try:
-            from .input import create_session, get_prompt
+            from .input import create_session
 
             data_dir = self.state.settings.data_dir
             session = create_session(data_dir, self.registry)

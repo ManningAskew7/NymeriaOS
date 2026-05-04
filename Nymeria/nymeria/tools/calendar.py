@@ -635,7 +635,6 @@ def calendar_get_current_time(config: Annotated[RunnableConfig, InjectedToolArg]
     Returns:
         Current time as ISO 8601 string with timezone offset.
     """
-    user_id = get_user_id(config)
     logger.info("calendar_get_current_time called")
     now = datetime.now(timezone.utc).astimezone()
     return f"[Success]: Current time: {now.isoformat()}"

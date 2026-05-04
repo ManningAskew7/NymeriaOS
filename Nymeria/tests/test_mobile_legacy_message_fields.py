@@ -25,7 +25,7 @@ def test_mobile_chat_store_does_not_materialize_legacy_message_fields() -> None:
 
 
 def test_mobile_history_keeps_legacy_fields_only_for_stepless_records() -> None:
-    source = read_mobile("services/api.svelte.ts")
+    source = read_mobile("services/api/threads.ts")
 
     assert "const hasSteps = !!steps?.length;" in source
     assert "...(!hasSteps ? {" in source

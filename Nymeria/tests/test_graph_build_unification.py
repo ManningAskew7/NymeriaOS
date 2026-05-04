@@ -11,7 +11,7 @@ import inspect
 import textwrap
 from unittest.mock import MagicMock, patch
 
-from nymeria.vendor.react_agent.config import AgentConfig, CheckpointerConfig
+from nymeria.vendor.react_agent.config import CheckpointerConfig
 
 
 def _method_tree(method):
@@ -96,7 +96,7 @@ def test_select_tools_shared_by_both_build_paths():
         return result
 
     with patch.object(type(agent), "_select_tools_for_graph", tracking_select):
-        with patch("nymeria.core.agent.create_graph", return_value=MagicMock()) as mock_cg:
+        with patch("nymeria.core.agent.create_graph", return_value=MagicMock()):
             agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
             agent._build_async_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 

@@ -16,7 +16,6 @@ import time as _time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 

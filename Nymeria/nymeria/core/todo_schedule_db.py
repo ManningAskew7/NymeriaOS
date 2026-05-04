@@ -10,9 +10,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .todo_manager import TodoManager
 
 ACTIVE_EXECUTION_STALE_SECONDS = 24 * 60 * 60
 
@@ -580,7 +583,6 @@ class TodoScheduleDB:
         Returns:
             Number of scheduled TODOs indexed
         """
-        from .todo_manager import TodoManager
 
         with self._lock:
             conn = self._get_connection()

@@ -79,7 +79,6 @@ def get_full_context_metadata(
     Returns:
         Full context metadata string to prepend to messages
     """
-    from typing import List
     parts = []
 
     # Existing time context

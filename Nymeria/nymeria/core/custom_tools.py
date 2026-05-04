@@ -17,9 +17,8 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import httpx
 from langchain_core.tools import BaseTool, StructuredTool
@@ -34,6 +33,9 @@ from ..tools.metadata import (
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .mcp_manager import MCPServerManager
 
 # Regex for environment variable interpolation: ${env:VAR_NAME}
 ENV_VAR_PATTERN = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)\}")
@@ -147,9 +149,6 @@ class CustomToolLoader:
         async def execute_http(**kwargs: Any) -> str:
             """Execute the HTTP tool with given parameters."""
             return await execute_http_tool(config, kwargs)
-
-        # Build the args schema from parameters
-        args_schema = definition.to_json_schema()
 
         return StructuredTool.from_function(
             func=lambda **kwargs: _sync_execute_http(config, kwargs),
@@ -481,7 +480,7 @@ def _create_pydantic_schema(tool_id: str, parameters: Dict[str, Any]) -> type:
     Returns:
         A Pydantic model class.
     """
-    from pydantic import BaseModel, Field, create_model
+    from pydantic import Field, create_model
 
     fields = {}
     for name, param in parameters.items():

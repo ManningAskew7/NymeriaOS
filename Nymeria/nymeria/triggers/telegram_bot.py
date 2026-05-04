@@ -40,6 +40,8 @@ from telegram.ext import (
     filters,
 )
 
+from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATIVE_SWITCH_THREAD_PREFIXES
+
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens, http_error_detail
@@ -211,7 +213,6 @@ TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_SAFE_CHUNK_LENGTH = 3500
 THREAD_PICKER_CACHE_TTL_SECONDS = 10 * 60
 THREAD_PICKER_LIMIT = 15
-from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATIVE_SWITCH_THREAD_PREFIXES
 
 
 def _thread_title(thread: dict) -> str:
@@ -1887,7 +1888,7 @@ class NymeriaTelegramBot:
                 return
 
             lines = [
-                f"<b>Available Models</b>",
+                "<b>Available Models</b>",
                 f"{len(models)} models from {escape_html(settings.get('llm_provider', '?'))}\n",
             ]
             for m in models[:25]:
@@ -1979,8 +1980,8 @@ class NymeriaTelegramBot:
                 provider = f"{provider} (via CLIProxy)"
 
             lines = [
-                f"<b>Context Breakdown</b>\n",
-                f"<b>Model</b>",
+                "<b>Context Breakdown</b>\n",
+                "<b>Model</b>",
                 f"<code>{escape_html(effective_model)}</code> | {escape_html(provider)}",
             ]
             if thread_cfg:
@@ -1996,7 +1997,7 @@ class NymeriaTelegramBot:
             compactions = ctx.get("compaction_count", 0)
             ctx_mode = ctx.get("context_management", settings.get("context_management", "?"))
 
-            lines.append(f"\n<b>Context Window</b>")
+            lines.append("\n<b>Context Window</b>")
             lines.append(context_bar(usage_pct))
             token_line = f"{fmt_tokens(total_tokens)} / {fmt_tokens(context_limit)} tokens"
             cumulative = ctx.get("cumulative_tokens", 0)
@@ -2022,7 +2023,7 @@ class NymeriaTelegramBot:
                 extra_enabled = set(thread_cfg.get("enabled_tools") or [])
             effective = (default_tools - disabled) | extra_enabled
 
-            lines.append(f"\n<b>Tools</b>")
+            lines.append("\n<b>Tools</b>")
             lines.append(f"{len(effective)} enabled (of {len(available_tools)} available)")
             cat_parts = []
             for cat_name in sorted(cats.keys()):
@@ -2041,7 +2042,7 @@ class NymeriaTelegramBot:
                     lines.append(" | ".join(chunk))
 
             # Thread overrides
-            lines.append(f"\n<b>Thread Overrides</b>")
+            lines.append("\n<b>Thread Overrides</b>")
             override_lines = []
             if thread_cfg:
                 instructions = thread_cfg.get("instructions")
@@ -2486,7 +2487,7 @@ class NymeriaTelegramBot:
             if base_url:
                 lines.append(f"base url: <code>{escape_html(base_url)}</code>")
 
-            lines.append(f"\n<b>Context</b>")
+            lines.append("\n<b>Context</b>")
             lines.append(f"mode: {settings.get('context_management', '?')}")
             threshold = settings.get("compact_threshold", 0) or 0
             lines.append(f"compact threshold: {int(threshold * 100)}%")
@@ -2495,7 +2496,7 @@ class NymeriaTelegramBot:
             if compact_model:
                 lines.append(f"compact model: <code>{escape_html(compact_model)}</code>")
 
-            lines.append(f"\n<b>System</b>")
+            lines.append("\n<b>System</b>")
             lines.append(f"log level: {settings.get('log_level', '?')}")
             lines.append(f"watchdog: {'on' if settings.get('watchdog_enabled') else 'off'}")
             if settings.get("watchdog_enabled"):
@@ -2595,7 +2596,7 @@ class NymeriaTelegramBot:
                 by_cat.setdefault(e["category"], []).append(e)
 
             lines = [
-                f"<b>Environment Variables</b>",
+                "<b>Environment Variables</b>",
                 f"{len(entries)} variables ({sum(1 for e in entries if e['is_set'])} set)\n",
             ]
 
@@ -3045,7 +3046,7 @@ class NymeriaTelegramBot:
             content = raw
 
         try:
-            from ..tools.thread_notes import read_notepad, _notepad_path, MAX_NOTEPAD_SIZE
+            from ..tools.thread_notes import _notepad_path, MAX_NOTEPAD_SIZE
             path = _notepad_path(thread_id)
 
             if write_mode == "append":

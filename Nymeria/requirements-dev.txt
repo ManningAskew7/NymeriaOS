@@ -3,3 +3,5 @@
 # Production Docker images intentionally do not install this file.
 
 pytest>=8.0.0
+pytest-cov>=7.0.0
+ruff>=0.15.0

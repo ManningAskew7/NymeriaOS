@@ -6,7 +6,6 @@ They provide cross-thread visibility that normal threads don't need or want.
 
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Annotated, List, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -15,7 +14,7 @@ from langchain_core.tools import InjectedToolArg, tool
 from ..core.activity_log import ActivityType, log_activity
 from ..core.time_utils import parse_scheduled_time, get_user_tz
 from ..core.todo_constants import STATUS_ICONS, STATUS_ORDER
-from ..core.todo_manager import TodoManager, TodoStatus
+from ..core.todo_manager import TodoManager
 from .utils import get_user_id, get_thread_id
 
 logger = logging.getLogger(__name__)
