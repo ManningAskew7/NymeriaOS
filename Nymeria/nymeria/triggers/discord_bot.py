@@ -27,6 +27,7 @@ from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens
 from .message_splitter import split_discord_message as split_message
 from .sse_consumer import parse_attach_paths
+from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ class NymeriaDiscordBot(discord.Client):
         self._show_tool_calls: Dict[int, bool] = {}  # channel_id -> show tool embeds
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._user_resolver = UserResolver(self.api, "discord", logger=logger)
+        self._health_task: Optional[asyncio.Task] = None
 
         # Register slash commands
         self._register_commands()
@@ -2551,6 +2553,8 @@ class NymeriaDiscordBot(discord.Client):
         for guild in self.guilds:
             print(f"  - {guild.name} (ID: {guild.id})")
 
+        self._start_health_heartbeat()
+
         # Sync per-guild only (instant updates, no duplicates).
         await self.http.bulk_upsert_global_commands(self.application_id, payload=[])
         logger.info("Global commands cleared from Discord")
@@ -2562,6 +2566,34 @@ class NymeriaDiscordBot(discord.Client):
         # Start SSE listener for autonomous task results
         print(f"  Event source: API SSE ({self.api.base_url}/autonomous/stream)")
         self.loop.create_task(self._api_sse_listener())
+
+    def _start_health_heartbeat(self) -> None:
+        if self._health_task is not None and not self._health_task.done():
+            return
+        self._health_task = self.loop.create_task(self._health_heartbeat_loop())
+
+    async def _health_heartbeat_loop(self) -> None:
+        """Publish health only while Discord and the Nymeria API are usable."""
+        while not self.is_closed():
+            try:
+                api_ok = await self.api.health()
+                client_connected = self.is_ready() and not self.is_closed()
+                latency = getattr(self, "latency", None)
+                write_service_heartbeat(
+                    "discord-bot",
+                    status="ok" if api_ok and client_connected else "unhealthy",
+                    details={
+                        "api_ok": api_ok,
+                        "client_connected": client_connected,
+                        "guild_count": len(self.guilds),
+                        "latency_ms": round(latency * 1000, 2)
+                        if isinstance(latency, (int, float))
+                        else None,
+                    },
+                )
+            except Exception:
+                logger.warning("Discord health heartbeat failed", exc_info=True)
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""

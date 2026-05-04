@@ -251,6 +251,7 @@ def run_worker(args: argparse.Namespace) -> None:
     from nymeria.tools import ALL_TOOLS
     from nymeria.config import get_settings
     from nymeria.core.event_bus import create_event_bus, set_event_bus
+    from nymeria.core.service_health import write_service_heartbeat
 
     settings = get_settings()
 
@@ -281,6 +282,29 @@ def run_worker(args: argparse.Namespace) -> None:
     # Sync callable thread tools into the registry
     agent.sync_agent_tools()
 
+    def write_worker_heartbeat() -> None:
+        ticker = agent._ticker
+        ticker_thread = getattr(ticker, "_thread", None) if ticker else None
+        ticker_running = bool(
+            ticker
+            and getattr(ticker, "_running", False)
+            and ticker_thread is not None
+            and ticker_thread.is_alive()
+        )
+        write_service_heartbeat(
+            "worker",
+            status="ok" if ticker_running else "unhealthy",
+            details={
+                "ticker_running": ticker_running,
+                "ticker_thread_alive": bool(
+                    ticker_thread is not None and ticker_thread.is_alive()
+                ),
+                "poll_interval_seconds": settings.ticker_poll_interval,
+            },
+        )
+
+    write_worker_heartbeat()
+
     # Handle shutdown signals
     def signal_handler(signum, frame):
         print("\nShutdown signal received, stopping ticker...")
@@ -300,7 +324,8 @@ def run_worker(args: argparse.Namespace) -> None:
     try:
         while True:
             import time
-            time.sleep(1)
+            write_worker_heartbeat()
+            time.sleep(10)
     except KeyboardInterrupt:
         if agent._ticker:
             agent._ticker.stop()

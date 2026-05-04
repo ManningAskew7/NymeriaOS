@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 from ..config.settings import Settings
 from .api_client import NymeriaAPIClient
 
@@ -72,27 +73,52 @@ class WatchdogWorker:
             self.interval_minutes,
             self.staleness_minutes,
         )
-        # Short initial delay to let the API finish booting
+        health_task = asyncio.create_task(self._health_heartbeat_loop())
         try:
-            await asyncio.wait_for(self._stop.wait(), timeout=5)
-            return
-        except asyncio.TimeoutError:
-            pass  # poll timeout is expected idle behavior
-
-        while not self._stop.is_set():
+            # Short initial delay to let the API finish booting
             try:
-                await self._check_cycle()
-            except Exception as e:
-                logger.error("Watchdog cycle failed: %s", e, exc_info=True)
-
-            try:
-                await asyncio.wait_for(
-                    self._stop.wait(), timeout=self.interval_minutes * 60
-                )
+                await asyncio.wait_for(self._stop.wait(), timeout=5)
             except asyncio.TimeoutError:
-                pass  # startup wait timeout is expected
+                pass  # poll timeout is expected idle behavior
+
+            while not self._stop.is_set():
+                try:
+                    await self._check_cycle()
+                except Exception as e:
+                    logger.error("Watchdog cycle failed: %s", e, exc_info=True)
+
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self.interval_minutes * 60
+                    )
+                except asyncio.TimeoutError:
+                    pass  # startup wait timeout is expected
+        finally:
+            health_task.cancel()
+            await asyncio.gather(health_task, return_exceptions=True)
 
         logger.info("Watchdog worker stopped")
+
+    async def _health_heartbeat_loop(self) -> None:
+        """Publish watchdog health while the API is reachable."""
+        while not self._stop.is_set():
+            api_ok = await self.client.health()
+            write_service_heartbeat(
+                "watchdog",
+                status="ok" if api_ok else "unhealthy",
+                details={
+                    "api_ok": api_ok,
+                    "interval_minutes": self.interval_minutes,
+                    "staleness_minutes": self.staleness_minutes,
+                    "in_flight": len(self._in_flight),
+                },
+            )
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS
+                )
+            except asyncio.TimeoutError:
+                pass
 
     def stop(self) -> None:
         self._stop.set()

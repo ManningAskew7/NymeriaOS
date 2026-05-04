@@ -254,7 +254,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "run.py worker"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "worker"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -282,7 +282,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "run.py watchdog"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "watchdog", "--api-url", "http://nymeria-api:8000"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -318,7 +318,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "run.py discord-bot"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "discord-bot", "--api-url", "http://nymeria-api:8000"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -353,7 +353,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "run.py telegram-bot"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "telegram-bot", "--api-url", "http://nymeria-api:8000"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -405,7 +405,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "run.py twitch-bot"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "twitch-bot"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -445,7 +445,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "run.py mcp"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "mcp", "--api-url", "http://nymeria-api:8000"]
       interval: 30s
       timeout: 10s
       start_period: 30s
