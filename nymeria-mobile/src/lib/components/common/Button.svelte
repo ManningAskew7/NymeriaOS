@@ -62,7 +62,7 @@
   .btn-sm {
     padding: var(--spacing-xs) var(--spacing-sm);
     font-size: var(--font-size-sm);
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .btn-md {
@@ -73,7 +73,7 @@
   .btn-lg {
     padding: var(--spacing-md) var(--spacing-lg);
     font-size: var(--font-size-lg);
-    min-height: 56px;
+    min-height: calc(var(--touch-target-min) + var(--spacing-sm));
   }
 
   /* Variants */

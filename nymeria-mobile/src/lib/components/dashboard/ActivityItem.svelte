@@ -83,7 +83,7 @@
     display: flex;
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
-    min-height: 40px;
+    min-height: var(--touch-target-min);
     align-items: flex-start;
   }
 

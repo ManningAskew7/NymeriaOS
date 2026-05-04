@@ -540,7 +540,7 @@
     display: flex;
     align-items: center;
     gap: 0.2rem;
-    min-height: 32px;
+    min-height: var(--touch-target-min);
   }
 
   .action-btn:disabled {

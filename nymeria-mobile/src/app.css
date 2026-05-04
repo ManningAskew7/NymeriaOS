@@ -99,6 +99,8 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  /* Applies only to scrollable elements in iOS WebViews. */
+  -webkit-overflow-scrolling: touch;
 }
 
 html {
@@ -237,7 +239,6 @@ pre {
   padding: var(--spacing-md);
   border-radius: var(--radius-md);
   overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
 }
 
 pre code {

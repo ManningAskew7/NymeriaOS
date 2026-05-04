@@ -75,7 +75,6 @@
   .chat-container {
     height: 100%;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
     padding: var(--spacing-md);
     overscroll-behavior-y: contain;
   }

@@ -123,7 +123,7 @@
     width: 100%;
     background: var(--bg-elevated);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    padding: 8px var(--spacing-md) calc(env(safe-area-inset-bottom, 0px) + var(--spacing-md));
+    padding: 8px var(--spacing-md) calc(var(--safe-area-bottom) + var(--spacing-md));
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);

@@ -124,7 +124,6 @@
     overflow-y: hidden;
     scroll-snap-type: x mandatory;
     scroll-behavior: smooth;
-    -webkit-overflow-scrolling: touch;
     /* Hide scrollbar */
     scrollbar-width: none;
     -ms-overflow-style: none;

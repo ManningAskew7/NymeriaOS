@@ -254,7 +254,7 @@
   }
 
   .action-btn {
-    min-height: 48px;
+    min-height: var(--touch-target-min);
     border: 1px solid var(--accent-primary);
     background: var(--accent-primary);
     color: white;

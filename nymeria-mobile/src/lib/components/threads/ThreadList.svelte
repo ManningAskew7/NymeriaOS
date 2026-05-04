@@ -96,7 +96,7 @@
     font-size: 16px;
     color: var(--text-primary);
     padding: var(--spacing-sm) 0;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .search-bar input:focus {
@@ -107,7 +107,6 @@
   .groups {
     flex: 1;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
   }
 
   .group-label {

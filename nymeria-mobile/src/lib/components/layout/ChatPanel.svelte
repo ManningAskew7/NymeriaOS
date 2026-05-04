@@ -447,8 +447,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
     transition: all var(--transition-fast);

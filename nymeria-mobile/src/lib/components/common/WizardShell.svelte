@@ -57,15 +57,15 @@
     height: var(--header-height, 56px);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
-    padding-top: env(safe-area-inset-top);
+    padding-top: var(--safe-area-top);
   }
 
   .back-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
     background: transparent;
@@ -91,7 +91,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
-    padding-bottom: calc(var(--spacing-lg) + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--spacing-lg) + var(--safe-area-bottom));
   }
 
   .wizard-body :global(p) {
@@ -101,7 +101,7 @@
 
   .wizard-footer {
     padding: var(--spacing-md) var(--spacing-lg);
-    padding-bottom: calc(var(--spacing-md) + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--spacing-md) + var(--safe-area-bottom));
     border-top: 1px solid var(--border-subtle);
     flex-shrink: 0;
   }

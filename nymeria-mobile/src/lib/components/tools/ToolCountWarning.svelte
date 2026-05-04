@@ -116,7 +116,7 @@
     font-size: var(--font-size-base);
     font-weight: 500;
     border-radius: var(--radius-md);
-    min-height: 48px;
+    min-height: var(--touch-target-min);
     min-width: 120px;
   }
 

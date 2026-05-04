@@ -276,7 +276,6 @@
     align-items: center;
     justify-content: center;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
   }
 
   .step {

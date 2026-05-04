@@ -206,7 +206,7 @@
     color: var(--accent-secondary, var(--accent-primary));
     font-size: var(--font-size-sm);
     text-align: left;
-    min-height: 40px;
+    min-height: var(--touch-target-min);
   }
 
   .trigger-group-header:active {

@@ -285,7 +285,7 @@
     display: block;
     text-align: center;
     padding: 12px 16px;
-    min-height: 44px;
+    min-height: var(--touch-target-min);
     background: var(--accent-bg, var(--bg-elevated));
     color: var(--accent-fg, var(--text-primary));
     border-radius: var(--radius-md);
@@ -311,7 +311,7 @@
 
   .action-btn {
     padding: 12px 20px;
-    min-height: 44px;
+    min-height: var(--touch-target-min);
     border-radius: var(--radius-md);
     border: 1px solid var(--border-subtle);
     background: var(--bg-elevated);

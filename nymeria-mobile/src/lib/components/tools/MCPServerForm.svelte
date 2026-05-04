@@ -264,7 +264,7 @@
     color: var(--text-primary);
     font-size: 16px;
     font-family: inherit;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .has-error input {
@@ -302,7 +302,7 @@
     color: var(--text-primary);
     font-size: 16px;
     font-family: monospace;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .arg-remove {
@@ -324,7 +324,7 @@
     color: var(--text-secondary);
     font-size: 0.8rem;
     align-self: flex-start;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .form-error {
@@ -347,7 +347,7 @@
     background: none;
     color: var(--text-secondary);
     font-size: 0.85rem;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .submit-btn {
@@ -357,7 +357,7 @@
     background: var(--accent);
     color: white;
     font-size: 0.85rem;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .submit-btn:disabled {

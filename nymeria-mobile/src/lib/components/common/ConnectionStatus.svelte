@@ -33,7 +33,7 @@
     gap: 6px;
     padding: var(--spacing-xs) var(--spacing-sm);
     border-radius: var(--radius-sm);
-    min-height: 32px;
+    min-height: var(--touch-target-min);
   }
 
   .connection-status:active {
