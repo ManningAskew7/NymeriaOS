@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from nymeria.core.accounts import AccountsRepo
-from nymeria.core.todo_manager import TodoManager
+from nymeria.core.todo_manager import TodoList, TodoManager
 
 
 class FakeAgent:
@@ -128,6 +128,8 @@ def test_todo_routes_are_effective_user_scoped_and_users_endpoint_remains(
     )
     assert owner_todo.status_code == 200
     assert other_todo.status_code == 200
+    manager = TodoManager(tmp_path)
+    manager.save_todos(TodoList(user_id="empty-legacy"))
 
     owner_list_with_ignored_query = client.get(
         "/todos",
@@ -143,5 +145,4 @@ def test_todo_routes_are_effective_user_scoped_and_users_endpoint_remains(
     assert users_with_todos.status_code == 200
     assert set(users_with_todos.json()) == {"owner", "other"}
 
-    manager = TodoManager(tmp_path)
     assert manager.get_todos("other").get_item(other_todo.json()["id"]) is not None
