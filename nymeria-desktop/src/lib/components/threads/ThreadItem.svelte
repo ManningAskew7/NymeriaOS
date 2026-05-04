@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Thread } from '$lib/types';
+  import { focusOnMount } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
 
   interface Props {
@@ -197,14 +198,13 @@
 
   <div class="thread-content">
     {#if isEditing}
-      <!-- svelte-ignore a11y_autofocus -->
       <input
         type="text"
         class="edit-input"
         bind:value={editTitle}
         onkeydown={handleEditKeydown}
         onblur={handleEditBlur}
-        autofocus
+        use:focusOnMount
       />
     {:else}
       <span class="thread-title">{thread.title}</span>

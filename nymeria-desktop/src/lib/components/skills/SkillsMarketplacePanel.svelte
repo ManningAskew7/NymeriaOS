@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { trapFocus } from '$lib/actions/focus';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import type { SkillMarketplaceSource } from '$lib/types';
 
@@ -44,12 +45,6 @@
     }
   }
 
-  function handleBackdropClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).classList.contains('marketplace-backdrop')) {
-      onClose();
-    }
-  }
-
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
   }
@@ -59,14 +54,15 @@
 
 <div
   class="marketplace-backdrop"
-  onclick={handleBackdropClick}
-  onkeydown={handleKeydown}
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="marketplace-title"
-  tabindex="-1"
 >
-  <div class="marketplace-panel">
+  <button
+    class="marketplace-backdrop-button"
+    type="button"
+    tabindex="-1"
+    aria-label="Close skills marketplace"
+    onclick={onClose}
+  ></button>
+  <div class="marketplace-panel" role="dialog" aria-modal="true" aria-labelledby="marketplace-title" tabindex="-1" use:trapFocus>
     <div class="marketplace-header">
       <h3 id="marketplace-title">Skills Marketplace</h3>
       <button class="btn-close" onclick={onClose} type="button" aria-label="Close">
@@ -169,7 +165,16 @@
     z-index: 1100;
   }
 
+  .marketplace-backdrop-button {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   .marketplace-panel {
+    position: relative;
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);

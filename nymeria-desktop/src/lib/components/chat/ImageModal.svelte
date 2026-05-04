@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FileAttachment } from '$lib/types';
+  import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
   import { formatFileSize } from '$lib/utils/fileProcessing';
 
@@ -16,27 +17,22 @@
     }
   }
 
-  function handleBackdropClick(event: MouseEvent) {
-    if (event.target === event.currentTarget) {
-      onClose();
-    }
-  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 {#if image}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="modal-backdrop"
-    role="dialog"
-    aria-modal="true"
-    aria-label="Image preview"
-    tabindex="-1"
-    onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
   >
-    <div class="modal-content">
+    <button
+      class="modal-backdrop-button"
+      type="button"
+      tabindex="-1"
+      aria-label="Close image preview"
+      onclick={onClose}
+    ></button>
+    <div class="modal-content" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" use:trapFocus>
       <div class="modal-header">
         <span class="image-info">
           {image.name} ({formatFileSize(image.size)})
@@ -46,6 +42,7 @@
           class="close-button"
           onclick={onClose}
           title="Close"
+          aria-label="Close"
         >
           <Icon name="x" size={20} />
         </button>
@@ -72,6 +69,14 @@
     animation: fadeIn var(--transition-fast);
   }
 
+  .modal-backdrop-button {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   @keyframes fadeIn {
     from {
       opacity: 0;
@@ -82,6 +87,7 @@
   }
 
   .modal-content {
+    position: relative;
     max-width: 90vw;
     max-height: 90vh;
     background: var(--bg-elevated-1);

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { trapFocus } from '$lib/actions/focus';
+
   interface Props {
     toolCount: number;
     callableCount: number;
@@ -10,12 +12,6 @@
 
   const total = $derived(toolCount + callableCount);
 
-  function handleBackdropClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).classList.contains('warning-backdrop')) {
-      onGoBack();
-    }
-  }
-
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onGoBack();
   }
@@ -23,10 +19,17 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="warning-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
-  <div class="warning-panel">
+<div class="warning-backdrop">
+  <button
+    class="warning-backdrop-button"
+    type="button"
+    tabindex="-1"
+    aria-label="Go back from high tool count warning"
+    onclick={onGoBack}
+  ></button>
+  <div class="warning-panel" role="dialog" aria-modal="true" aria-labelledby="tool-count-warning-title" tabindex="-1" use:trapFocus>
     <div class="warning-icon">!</div>
-    <h3>High Tool Count</h3>
+    <h3 id="tool-count-warning-title">High Tool Count</h3>
     <p class="warning-count">
       You have <strong>{total} tools</strong> enabled
       {#if callableCount > 0}
@@ -59,7 +62,16 @@
     z-index: 1100;
   }
 
+  .warning-backdrop-button {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   .warning-panel {
+    position: relative;
     background: var(--bg-elevated);
     border: 1px solid var(--warning, #f59e0b);
     border-radius: var(--radius-lg);

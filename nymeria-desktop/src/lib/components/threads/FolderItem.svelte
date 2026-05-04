@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Thread, ThreadFolder } from '$lib/types';
+  import { focusOnMount } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
   import ThreadItem from './ThreadItem.svelte';
 
@@ -142,7 +143,6 @@
       <Icon name={iconName} size={16} />
     </span>
     {#if isEditingName}
-      <!-- svelte-ignore a11y_autofocus -->
       <input
         type="text"
         class="folder-name-input"
@@ -150,7 +150,7 @@
         onkeydown={handleRenameKeydown}
         onblur={handleRenameBlur}
         onclick={(e) => e.stopPropagation()}
-        autofocus
+        use:focusOnMount
       />
     {:else}
       <span class="folder-name">{folder.name}</span>

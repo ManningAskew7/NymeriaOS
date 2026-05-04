@@ -19,8 +19,9 @@ Use this policy when adding or changing cross-platform frontend code:
 1. Put genuinely platform-neutral files in `EXACT_MATCH` in
    `scripts/check_cross_app_drift.py`. The current low-risk set already
    includes `themes.ts`, file/TODO utilities, simple common components such as
-   `Spinner` and `Collapsible`, and small shared stores such as
-   `chatAppBindings`, `models`, `serverSettings`, and `threadConfig`.
+   `Spinner` and `Collapsible`, the `actions/focus.ts` focus helpers, and
+   small shared stores such as `chatAppBindings`, `models`, `serverSettings`,
+   and `threadConfig`.
 2. Put files with real platform differences in `KNOWN_DRIFT` and document the
    reason in this guide.
 3. If a known-drift file becomes byte-identical, promote it to `EXACT_MATCH`

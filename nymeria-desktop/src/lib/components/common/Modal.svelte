@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { trapFocus } from '$lib/actions/focus';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -10,6 +11,7 @@
   }
 
   let { title, isOpen, onClose, children }: Props = $props();
+  const titleId = `modal-title-${Math.random().toString(36).slice(2)}`;
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -27,11 +29,17 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if isOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
-    <div class="modal">
+  <div class="modal-backdrop">
+    <button
+      class="modal-backdrop-button"
+      type="button"
+      tabindex="-1"
+      aria-label="Close {title}"
+      onclick={handleBackdropClick}
+    ></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" use:trapFocus>
       <div class="modal-header">
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
           <Icon name="x" size={20} />
         </button>
@@ -57,7 +65,16 @@
     animation: fadeIn 150ms ease;
   }
 
+  .modal-backdrop-button {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   .modal {
+    position: relative;
     background: var(--glass-bg-strong);
     backdrop-filter: var(--glass-blur-strong);
     -webkit-backdrop-filter: var(--glass-blur-strong);

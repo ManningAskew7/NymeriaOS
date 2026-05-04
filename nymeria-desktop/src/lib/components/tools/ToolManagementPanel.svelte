@@ -4,6 +4,7 @@
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { trapFocus } from '$lib/actions/focus';
   import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
@@ -324,6 +325,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydown={handleModalKeydown} />
 
 <div class="tool-management">
   <div class="panel-scroll">
@@ -709,12 +712,18 @@
 
   <!-- Create form modal -->
   {#if showCreateForm}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showCreateForm = false; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal">
+    <div class="modal-overlay">
+      <button
+        class="modal-backdrop-button"
+        type="button"
+        tabindex="-1"
+        aria-label="Close create custom tool dialog"
+        onclick={() => (showCreateForm = false)}
+      ></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-tool-title" tabindex="-1" use:trapFocus>
         <div class="modal-header">
-          <h3>Create Custom Tool</h3>
-          <button class="close-btn" onclick={() => (showCreateForm = false)}>
+          <h3 id="create-tool-title">Create Custom Tool</h3>
+          <button class="close-btn" onclick={() => (showCreateForm = false)} type="button" aria-label="Close">
             &times;
           </button>
         </div>
@@ -728,12 +737,18 @@
 
   <!-- Edit form modal -->
   {#if editingTool}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal">
+    <div class="modal-overlay">
+      <button
+        class="modal-backdrop-button"
+        type="button"
+        tabindex="-1"
+        aria-label="Close edit custom tool dialog"
+        onclick={() => (editingTool = null)}
+      ></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-tool-title" tabindex="-1" use:trapFocus>
         <div class="modal-header">
-          <h3>Edit Tool: {editingTool.name}</h3>
-          <button class="close-btn" onclick={() => (editingTool = null)}>
+          <h3 id="edit-tool-title">Edit Tool: {editingTool.name}</h3>
+          <button class="close-btn" onclick={() => (editingTool = null)} type="button" aria-label="Close">
             &times;
           </button>
         </div>
@@ -748,12 +763,18 @@
 
   <!-- Test panel modal -->
   {#if testingTool}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) testingTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal">
+    <div class="modal-overlay">
+      <button
+        class="modal-backdrop-button"
+        type="button"
+        tabindex="-1"
+        aria-label="Close test tool dialog"
+        onclick={() => (testingTool = null)}
+      ></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="test-tool-title" tabindex="-1" use:trapFocus>
         <div class="modal-header">
-          <h3>Test Tool: {testingTool.name}</h3>
-          <button class="close-btn" onclick={() => (testingTool = null)}>
+          <h3 id="test-tool-title">Test Tool: {testingTool.name}</h3>
+          <button class="close-btn" onclick={() => (testingTool = null)} type="button" aria-label="Close">
             &times;
           </button>
         </div>
@@ -769,12 +790,18 @@
   {#if editingBuiltinTool}
     {@const tool = editingBuiltinTool}
     {@const hasConfigSchema = tool.configSchema && Object.keys(tool.configSchema).length > 0}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) editingBuiltinTool = null; }} onkeydown={handleModalKeydown} role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal">
+    <div class="modal-overlay">
+      <button
+        class="modal-backdrop-button"
+        type="button"
+        tabindex="-1"
+        aria-label="Close built-in tool settings dialog"
+        onclick={() => (editingBuiltinTool = null)}
+      ></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-builtin-tool-title" tabindex="-1" use:trapFocus>
         <div class="modal-header">
-          <h3>Edit Tool: {tool.name}</h3>
-          <button class="close-btn" onclick={() => (editingBuiltinTool = null)}>
+          <h3 id="edit-builtin-tool-title">Edit Tool: {tool.name}</h3>
+          <button class="close-btn" onclick={() => (editingBuiltinTool = null)} type="button" aria-label="Close">
             &times;
           </button>
         </div>
@@ -1540,7 +1567,16 @@
     z-index: 1000;
   }
 
+  .modal-backdrop-button {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   .modal {
+    position: relative;
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);

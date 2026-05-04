@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { TriggerExecution, Trigger } from '$lib/types';
+  import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { onMount } from 'svelte';
@@ -49,21 +50,31 @@
   function toggleExpand(id: string) {
     expandedId = expandedId === id ? null : id;
   }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') onClose();
+  }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="history-overlay" onkeydown={(e) => e.key === 'Escape' && onClose()}>
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="history-backdrop" onclick={onClose}></div>
-  <div class="history-panel">
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="history-overlay">
+  <button
+    class="history-backdrop"
+    type="button"
+    tabindex="-1"
+    aria-label="Close execution history"
+    onclick={onClose}
+  ></button>
+  <div class="history-panel" role="dialog" aria-modal="true" aria-labelledby="trigger-history-title" tabindex="-1" use:trapFocus>
     <div class="panel-header">
       <div class="header-left">
         <Icon name="clock" size={16} />
-        <h3>Execution History</h3>
+        <h3 id="trigger-history-title">Execution History</h3>
       </div>
       <div class="header-right">
         <span class="trigger-name-badge">{trigger.name}</span>
-        <button class="close-btn" onclick={onClose} type="button">
+        <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
           <Icon name="x" size={14} />
         </button>
       </div>
@@ -90,9 +101,7 @@
               class="execution-item"
               style="animation-delay: {i * 20}ms"
             >
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="exec-summary" onclick={() => toggleExpand(exec.id)}>
+              <button class="exec-summary" onclick={() => toggleExpand(exec.id)} type="button" aria-expanded={expandedId === exec.id}>
                 <span class="status-dot" style="background: {statusColor(exec.status)}"></span>
                 <div class="exec-info">
                   <span class="exec-status" style="color: {statusColor(exec.status)}">{exec.status}</span>
@@ -106,7 +115,7 @@
                   <span class="action-type">{exec.action_type.replace('_', ' ')}</span>
                 </div>
                 <Icon name={expandedId === exec.id ? 'chevronDown' : 'chevronRight'} size={12} />
-              </div>
+              </button>
 
               {#if expandedId === exec.id}
                 <div class="exec-details">
@@ -156,6 +165,8 @@
   .history-backdrop {
     position: absolute;
     inset: 0;
+    padding: 0;
+    border: 0;
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(2px);
   }
@@ -289,10 +300,16 @@
   }
 
   .exec-summary {
+    width: 100%;
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-xs);
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
     border-radius: var(--radius-sm);
     transition: background var(--transition-fast);

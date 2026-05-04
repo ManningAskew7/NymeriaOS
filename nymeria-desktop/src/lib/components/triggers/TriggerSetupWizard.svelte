@@ -8,6 +8,7 @@
     TriggerUpdateRequest,
     Trigger,
   } from '$lib/types';
+  import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -254,17 +255,27 @@
     custom: 'bolt',
     general: 'cog',
   };
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') onClose();
+  }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="wizard-overlay" onkeydown={(e) => e.key === 'Escape' && onClose()}>
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="wizard-backdrop" onclick={onClose}></div>
-  <div class="wizard-modal">
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="wizard-overlay">
+  <button
+    class="wizard-backdrop"
+    type="button"
+    tabindex="-1"
+    aria-label={isEditing ? 'Close edit trigger dialog' : 'Close new trigger dialog'}
+    onclick={onClose}
+  ></button>
+  <div class="wizard-modal" role="dialog" aria-modal="true" aria-labelledby="trigger-wizard-title" tabindex="-1" use:trapFocus>
     <!-- Header -->
     <div class="wizard-header">
-      <h2>{isEditing ? 'Edit Trigger' : 'New Trigger'}</h2>
-      <button class="close-btn" onclick={onClose} type="button">
+      <h2 id="trigger-wizard-title">{isEditing ? 'Edit Trigger' : 'New Trigger'}</h2>
+      <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
         <Icon name="x" size={16} />
       </button>
     </div>
@@ -677,6 +688,8 @@
   .wizard-backdrop {
     position: absolute;
     inset: 0;
+    padding: 0;
+    border: 0;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
   }

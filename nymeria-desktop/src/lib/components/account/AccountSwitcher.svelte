@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SavedConnection } from '$lib/types';
+  import { focusOnMount } from '$lib/actions/focus';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
@@ -163,7 +164,6 @@
               />
               <div class="row-text">
                 {#if isEditing}
-                  <!-- svelte-ignore a11y_autofocus -->
                   <input
                     class="rename-input"
                     type="text"
@@ -175,7 +175,7 @@
                     }}
                     onblur={() => commitEditName(entry)}
                     onclick={(e) => e.stopPropagation()}
-                    autofocus
+                    use:focusOnMount
                   />
                 {:else}
                   <span class="row-line">
