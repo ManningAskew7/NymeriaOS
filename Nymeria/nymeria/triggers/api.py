@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +27,6 @@ from ..core.chat_bindings import (
     BotAlreadyRegistered,
 )
 from ..core import secrets as nymeria_secrets
-from ..core.checkpoint_cleanup import delete_thread_checkpoints
 from ..core.event_bus import (
     publish_agent_stream_chunk,
     publish_autonomous_event,
@@ -38,12 +37,7 @@ from ..core.notification_dispatch import (
     should_notify_autonomous as _should_notify_autonomous,
 )
 from ..core.rate_limit import SlidingWindowRateLimiter
-from ..core.thread_classification import (
-    classify_platform as _classify_thread_platform_from_id,
-    is_native_platform_thread as _is_native_platform_thread,
-    is_shared_channel as _is_shared_channel_thread,
-)
-from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
+from ..core import thread_classification as _thread_classification
 from ..tools import ALL_TOOLS
 from ..api.routers.accounts import create_accounts_router
 from ..api.routers.autonomous_stream import create_autonomous_stream_router
@@ -59,6 +53,7 @@ from ..api.routers.skills import create_skills_router
 from ..api.routers.system import create_system_router
 from ..api.routers.thread_config import create_thread_config_router
 from ..api.routers.thread_operations import create_thread_operations_router
+from ..api.routers.threads import create_threads_router, _thread_list_platform
 from ..api.routers.todos import create_todos_router
 from ..api.routers.tools import create_tools_router
 from ..api.routers.unified_tools import create_unified_tools_router
@@ -67,9 +62,12 @@ from ..api.routers.voice import create_voice_router
 from ..api.routers.workspace import create_workspace_router
 from ..api.schemas.accounts import PlatformIdentityResponse
 from ..api.schemas.thread_operations import FileData
-from ..api.thread_config_helpers import validate_callable_name
 
 logger = logging.getLogger(__name__)
+
+_classify_thread_platform_from_id = _thread_classification.classify_platform
+_is_native_platform_thread = _thread_classification.is_native_platform_thread
+_is_shared_channel_thread = _thread_classification.is_shared_channel
 
 # Global agent instance (initialized on startup)
 _agent: Optional[NymeriaAgent] = None
@@ -148,13 +146,6 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="Agent response")
     thread_id: str = Field(..., description="Conversation thread ID")
     tool_call_count: int = Field(default=0, description="Number of tool calls made in this turn")
-
-
-class ThreadHistoryResponse(BaseModel):
-    """Response model for conversation history."""
-
-    thread_id: str
-    messages: list
 
 
 # --- Chat-app bindings (per-thread Telegram/Discord/etc routing) ----------
@@ -761,6 +752,16 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         )
     )
     app.include_router(
+        create_threads_router(
+            verify_api_key,
+            _authed_user_id,
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
         create_unified_tools_router(
             verify_api_key,
             require_admin_user,
@@ -780,55 +781,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
 
-    def _bound_chatapp_platform(thread_id: str) -> Optional[str]:
-        """Return the sidebar platform implied by an explicit chat-app binding."""
-        try:
-            if get_agent().chat_bindings_repo.lookup_thread_binding_by_thread(
-                "telegram", thread_id
-            ):
-                return "telegram"
-        except Exception as e:
-            logger.warning(
-                "Failed to inspect chat-app binding platform for %s: %s",
-                thread_id,
-                e,
-            )
-        return None
-
-    def _thread_list_platform(thread_id: str, meta=None) -> str:
-        """Resolve the platform value the frontend should render for a thread."""
-        platform = meta.platform if meta else _classify_thread_platform_from_id(thread_id)
-        bound_platform = _bound_chatapp_platform(thread_id)
-        if bound_platform:
-            return bound_platform
-
-        native_platform = _classify_thread_platform_from_id(thread_id)
-        if native_platform in {"discord", "telegram", "slack", "trigger", "twitch"}:
-            return native_platform
-        if platform in {"discord", "telegram", "slack", "trigger", "twitch"}:
-            return platform
-
-        thread_config_manager = getattr(get_agent(), "thread_config_manager", None)
-        tc = (
-            thread_config_manager.get_config(thread_id)
-            if thread_config_manager is not None
-            else None
-        )
-        if tc and tc.callable:
-            platform = "callable"
-        elif platform == "callable":
-            platform = "desktop"
-
-        return platform
-
     def _publish_chatapp_platform_sync(thread_id: str, user_id: str, origin_client_id: str = "") -> None:
         """Notify clients when a chat-app binding changes a thread's platform icon."""
-        meta = get_agent().thread_metadata_manager.get_thread(user_id, thread_id)
+        agent = get_agent()
+        meta = agent.thread_metadata_manager.get_thread(user_id, thread_id)
         publish_sync_event(
             event_type="thread_updated",
             thread_id=thread_id,
             user_id=user_id,
-            data={"platform": _thread_list_platform(thread_id, meta)},
+            data={"platform": _thread_list_platform(agent, thread_id, meta)},
             origin_client_id=origin_client_id,
         )
 
@@ -1962,597 +1923,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             thread_id=thread_id,
             tool_call_count=tool_call_count,
         )
-
-    @app.get("/threads/{thread_id}/history", response_model=ThreadHistoryResponse, tags=["Threads"])
-    async def get_thread_history(
-        thread_id: str,
-        include_internal: bool = Query(
-            False,
-            description="Include internal system messages (autonomous wake-ups, compaction prompts)"
-        ),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        Get conversation history for a thread.
-
-        Returns all messages in the conversation including tool calls and results.
-        By default, internal system messages (autonomous wake-ups, compaction prompts)
-        are filtered out. Set include_internal=true for debugging to see all messages.
-        """
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-
-        # Check per-thread config for visibility flags
-        show_autonomous = False
-        show_prompt_metadata = False
-        if not include_internal:
-            tc = agent.thread_config_manager.get_config(thread_id)
-            if tc:
-                if tc.show_autonomous_prompts:
-                    show_autonomous = True
-                if tc.show_prompt_metadata:
-                    show_prompt_metadata = True
-
-        history = agent.get_conversation_history(
-            thread_id,
-            include_internal=include_internal,
-            show_autonomous_prompts=show_autonomous,
-            show_prompt_metadata=show_prompt_metadata,
-        )
-        return ThreadHistoryResponse(thread_id=thread_id, messages=history)
-
-    @app.get("/threads/{thread_id}/context", tags=["Threads"])
-    async def get_thread_context_stats(
-        thread_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        Get context window usage statistics for a thread.
-
-        Returns token usage, context limit, and compaction history.
-        """
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-        stats = agent.get_context_stats(thread_id)
-        # Include thread processing status so frontends can poll for completion
-        lock_info = agent._thread_locks.get_lock_info(thread_id)
-        if isinstance(stats, dict):
-            stats["processing"] = lock_info is not None
-        return stats
-
-    @app.get("/threads/{thread_id}/metadata", tags=["Threads"])
-    async def get_thread_metadata(
-        thread_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        Get platform metadata for a thread.
-
-        Parses the thread ID to detect platform origin (desktop, discord,
-        telegram, slack) and returns relevant metadata.
-        """
-        _require_thread_access(user, thread_id)
-        if thread_id.startswith("discord_dm_"):
-            return {
-                "platform": "discord",
-                "type": "dm",
-                "channel_id": thread_id[len("discord_dm_"):],
-            }
-        if thread_id.startswith("discord_"):
-            parts = thread_id.split("_")
-            return {
-                "platform": "discord",
-                "type": "guild",
-                "guild_id": parts[1] if len(parts) >= 2 else None,
-                "channel_id": parts[2] if len(parts) >= 3 else None,
-            }
-        if thread_id.startswith("telegram_"):
-            return {
-                "platform": "telegram",
-                "channel_id": thread_id[len("telegram_"):],
-            }
-        if thread_id.startswith("slack_"):
-            return {
-                "platform": "slack",
-                "channel_id": thread_id[len("slack_"):],
-            }
-        return {"platform": "desktop"}
-
-    # =========================================================================
-    # Thread Listing
-    # =========================================================================
-
-    def _get_checkpoint_thread_ids() -> list[str]:
-        """Query distinct thread IDs from the checkpoint database."""
-        settings = get_settings()
-        thread_ids: list[str] = []
-
-        if settings.database_backend == "sqlite":
-            import sqlite3 as _sqlite3
-
-            db_path = str(settings.db_path)
-            try:
-                conn = _sqlite3.connect(db_path)
-                cursor = conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
-                thread_ids = [row[0] for row in cursor.fetchall()]
-                conn.close()
-            except Exception as e:
-                logger.warning(f"Failed to query thread IDs from SQLite: {e}")
-
-        elif settings.database_backend == "postgres":
-            import psycopg  # type: ignore[import-untyped]
-
-            try:
-                with psycopg.connect(settings.postgres_uri) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
-                        thread_ids = [row[0] for row in cur.fetchall()]
-            except Exception as e:
-                logger.warning(f"Failed to query thread IDs from PostgreSQL: {e}")
-
-        return thread_ids
-
-    def _add_thread_source(
-        sources: dict[str, set[str]],
-        thread_id: Optional[str],
-        source: str,
-    ) -> None:
-        if not thread_id:
-            return
-        normalized = str(thread_id).strip()
-        if not normalized:
-            return
-        sources.setdefault(normalized, set()).add(source)
-
-    def _can_show_orphan_checkpoint_thread(
-        user: AuthenticatedUser,
-        user_id: str,
-        thread_id: str,
-    ) -> bool:
-        """Return True when a checkpoint-only thread can be safely listed."""
-        if user.role == "admin":
-            return True
-        if thread_id.startswith("telegram_") and not thread_id.startswith("telegram_-"):
-            provider_user_id = thread_id[len("telegram_"):]
-            return get_agent().accounts_repo.resolve_platform("telegram", provider_user_id) == user_id
-        return False
-
-    def _can_list_recovered_thread(
-        user: AuthenticatedUser,
-        user_id: str,
-        thread_id: str,
-    ) -> bool:
-        """Return True when a recovered /threads row can be opened by caller.
-
-        Recovery sources are advisory. Some old metadata rows can point at a
-        thread now owned by another user; listing those rows creates sidebar
-        zombies because detail routes correctly return 404. This mirrors
-        _require_thread_access without claiming ownerless personal threads from
-        a read-only list request.
-        """
-        owner = get_agent().accounts_repo.get_thread_owner(thread_id)
-        if owner == user_id:
-            return True
-        if owner is not None:
-            return user.role == "admin"
-        if _is_shared_channel_thread(thread_id):
-            return user.role == "admin" or user.via_act_as
-        return True
-
-    def _collect_recoverable_thread_sources(
-        *,
-        user: AuthenticatedUser,
-        user_id: str,
-        owned_ids: set[str],
-        checkpoint_ids: list[str],
-        metadata_thread_ids: set[str],
-    ) -> dict[str, set[str]]:
-        """
-        Find thread IDs referenced by thread-bound resources that can wake,
-        route, or explain a thread even if ordinary metadata/owner rows are
-        missing. These are shown by GET /threads so the desktop can surface and
-        delete old partially-deleted threads.
-        """
-        agent = get_agent()
-        settings = get_settings()
-        sources: dict[str, set[str]] = {}
-
-        for tid in metadata_thread_ids:
-            if tid not in owned_ids:
-                _add_thread_source(sources, tid, "metadata")
-
-        for tid in checkpoint_ids:
-            if tid not in owned_ids and _can_show_orphan_checkpoint_thread(user, user_id, tid):
-                _add_thread_source(sources, tid, "checkpoint")
-
-        try:
-            if user_id in agent.todo_manager.get_all_users_with_todos():
-                todo_list = agent.todo_manager.get_todos(user_id)
-                for item in todo_list.items:
-                    _add_thread_source(sources, item.thread_id, "todo")
-        except Exception as e:
-            logger.warning("Failed to collect TODO thread references for %s: %s", user_id, e)
-
-        try:
-            schedule_db = getattr(agent, "_schedule_db", None)
-            if schedule_db is not None:
-                for entry in schedule_db.get_for_user(user_id):
-                    _add_thread_source(sources, entry.thread_id, "scheduled_todo")
-        except Exception as e:
-            logger.warning("Failed to collect scheduled TODO thread references for %s: %s", user_id, e)
-
-        try:
-            from ..core.trigger_manager import TriggerManager
-
-            manager = getattr(agent, "trigger_manager", None) or TriggerManager(settings.data_dir)
-            for trigger in manager.get_triggers(user_id):
-                _add_thread_source(sources, trigger.thread_id, "trigger")
-        except Exception as e:
-            logger.warning("Failed to collect trigger thread references for %s: %s", user_id, e)
-
-        try:
-            for binding in agent.chat_bindings_repo.list_thread_bindings_for_user(user_id):
-                _add_thread_source(sources, binding.thread_id, "chat_binding")
-        except Exception as e:
-            logger.warning("Failed to collect chat binding thread references for %s: %s", user_id, e)
-
-        try:
-            for tid in agent.chat_bindings_repo.list_bind_code_thread_ids_for_user(user_id):
-                _add_thread_source(sources, tid, "bind_code")
-        except Exception as e:
-            logger.warning("Failed to collect bind-code thread references for %s: %s", user_id, e)
-
-        return sources
-
-    def _thread_list_payload(
-        thread_id: str,
-        meta,
-        *,
-        recovered: bool = False,
-        recovery_sources: Optional[set[str]] = None,
-    ) -> dict:
-        if meta:
-            payload = meta.model_dump(mode="json")
-        else:
-            payload = {
-                "thread_id": thread_id,
-                "title": "Recovered thread" if recovered else "New Chat",
-                "pinned": False,
-                "platform": _classify_thread_platform_from_id(thread_id),
-                "platform_meta": None,
-                "created_at": None,
-                "updated_at": None,
-                "title_source": "recovered" if recovered else "default",
-            }
-        payload["platform"] = _thread_list_platform(thread_id, meta)
-        thread_config_manager = getattr(get_agent(), "thread_config_manager", None)
-        tc = (
-            thread_config_manager.get_config(thread_id)
-            if thread_config_manager is not None
-            else None
-        )
-        is_callable = bool(tc and tc.callable)
-        payload["callable"] = is_callable
-        if is_callable:
-            if tc.callable_name:
-                payload["title"] = tc.callable_name
-                payload["title_source"] = "callable"
-        payload["recovered"] = recovered
-        payload["recovery_sources"] = sorted(recovery_sources or [])
-        return payload
-
-    @app.get("/threads", tags=["Threads"])
-    async def list_threads(
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        List all threads with metadata (titles, pins, platform info).
-
-        Merges thread IDs from the checkpoint database, stored metadata, and
-        thread-bound resources so all surfaces see the same thread list. The
-        resource pass intentionally surfaces old partially-deleted threads so
-        the desktop can show and delete them instead of hiding wake-up paths.
-        """
-        agent = get_agent()
-        # Restrict to threads owned by the authenticated user. Admins can see
-        # any user's threads by act-as'ing as that user (X-Nymeria-Act-As);
-        # no universal "all threads" view, which is intentional.
-        owned_ids = set(agent.accounts_repo.list_threads_for_user(user_id))
-        all_checkpoint_ids = _get_checkpoint_thread_ids()
-        checkpoint_ids = [t for t in all_checkpoint_ids if t in owned_ids]
-        checkpoint_set = set(checkpoint_ids)
-
-        # Get stored metadata
-        store = agent.thread_metadata_manager.get_store(user_id)
-        recovery_sources = _collect_recoverable_thread_sources(
-            user=user,
-            user_id=user_id,
-            owned_ids=owned_ids,
-            checkpoint_ids=all_checkpoint_ids,
-            metadata_thread_ids=set(store.threads),
-        )
-
-        threads = []
-        seen: set[str] = set()
-
-        # 1. Threads in checkpoints (with metadata if available)
-        for tid in checkpoint_ids:
-            meta = store.threads.get(tid)
-            threads.append(_thread_list_payload(tid, meta))
-            seen.add(tid)
-
-        # 2. Metadata-only threads owned by this user but without checkpoints yet
-        for tid, meta in store.threads.items():
-            if tid in owned_ids and tid not in checkpoint_set:
-                threads.append(_thread_list_payload(tid, meta))
-                seen.add(tid)
-
-        # 3. Recoverable resource-only/orphaned threads. These are the
-        # "zombie" cases: a thread-bound resource survived while the normal
-        # metadata/owner/checkpoint path is incomplete.
-        for tid in sorted(recovery_sources):
-            if tid in seen:
-                continue
-            if not _can_list_recovered_thread(user, user_id, tid):
-                continue
-            threads.append(
-                _thread_list_payload(
-                    tid,
-                    store.threads.get(tid),
-                    recovered=True,
-                    recovery_sources=recovery_sources[tid],
-                )
-            )
-            seen.add(tid)
-
-        return {"threads": threads, "total": len(threads)}
-
-    # -- Thread metadata endpoints --
-
-    class ThreadMetadataUpdateRequest(BaseModel):
-        title: Optional[str] = Field(default=None, max_length=200)
-        pinned: Optional[bool] = None
-
-    @app.patch("/threads/{thread_id}/metadata", tags=["Threads"])
-    async def update_thread_metadata(
-        http_request: Request,
-        thread_id: str,
-        request: ThreadMetadataUpdateRequest,
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Update thread metadata (title, pin status)."""
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-        fields: Dict[str, Any] = {}
-        title_source = None
-
-        if request.title is not None:
-            fields["title"] = request.title.strip()
-            title_source = "user"
-        if request.pinned is not None:
-            fields["pinned"] = request.pinned
-
-        if title_source:
-            fields["title_source"] = title_source
-
-        # If renaming a callable thread, sync title → callable_name. Reject
-        # titles that aren't valid LLM tool names (spaces/dots/punctuation)
-        # so the rename doesn't poison the registry — same constraint POST
-        # /agents/threads applies. The user can rename via the metadata
-        # endpoint OR keep the title display-friendly and the callable_name
-        # separate via PATCH /threads/{id}/config.
-        if request.title is not None:
-            tc = agent.thread_config_manager.get_config(thread_id)
-            if tc and tc.callable:
-                new_name = request.title.strip()
-                if not new_name:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot rename callable thread to empty title",
-                    )
-                validate_callable_name(new_name)
-                from ..tools import ALL_TOOLS
-                core_tool_names = {t.name for t in ALL_TOOLS}
-                if new_name in core_tool_names:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Callable name '{new_name}' conflicts with a core tool name",
-                    )
-                owned = set(agent.accounts_repo.list_threads_for_user(user_id))
-                existing = agent.thread_config_manager.get_callable_thread_by_name(
-                    new_name, owned_thread_ids=owned
-                )
-                if existing is not None and existing.thread_id != thread_id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Callable name '{new_name}' is already used by thread {existing.thread_id}",
-                    )
-                tc.callable_name = new_name
-                agent.thread_config_manager.save_config(tc)
-                agent.invalidate_thread_config_cache(thread_id)
-                agent.sync_agent_tools()
-                # Override title_source to "callable" for callable threads
-                fields["title_source"] = "callable"
-
-        meta = agent.thread_metadata_manager.upsert_thread(
-            user_id, thread_id, **fields
-        )
-
-        # Publish sync event so other clients see the metadata change
-        client_id = http_request.headers.get("x-nymeria-client-id", "")
-        sync_data: Dict[str, Any] = {}
-        if request.title is not None:
-            sync_data["title"] = fields.get("title", request.title.strip())
-            sync_data["title_source"] = fields.get("title_source", "user")
-        if request.pinned is not None:
-            sync_data["pinned"] = request.pinned
-        if sync_data:
-            publish_sync_event(
-                event_type="thread_updated",
-                thread_id=thread_id,
-                user_id=user_id,
-                data=sync_data,
-                origin_client_id=client_id,
-            )
-
-        return meta.model_dump(mode="json")
-
-    class ThreadMetadataMigrateRequest(BaseModel):
-        threads: List[dict] = Field(default_factory=list)
-
-    @app.post("/threads/metadata/migrate", tags=["Threads"])
-    async def migrate_thread_metadata(
-        request: ThreadMetadataMigrateRequest,
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        One-time migration: import thread metadata from frontend localStorage.
-
-        Accepts the frontend's Thread[] format and imports into the backend
-        metadata store. Only imports threads that don't already have metadata.
-        """
-        agent = get_agent()
-        count = agent.thread_metadata_manager.migrate_from_frontend(
-            user_id, request.threads
-        )
-        return {"migrated_threads": count}
-
-    @app.post("/threads/{thread_id}/claim", tags=["Threads"])
-    async def claim_thread_endpoint(
-        thread_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        Eagerly claim ownership of a thread for the calling user.
-
-        Used by the desktop frontend after locally generating a UUID for a
-        new thread, so the thread_owners row exists before any chat-app
-        binding (Telegram/Discord) routes a message into it. Without this,
-        the first non-admin caller to hit /chat for the UUID would TOFU-claim
-        and silently transfer ownership.
-
-        Idempotent. Honors ``X-Nymeria-Act-As`` like all thread routes.
-
-        - 400 if the thread id matches a shared-channel pattern
-          (``discord_<g>_<c>``, ``telegram_-<id>``, ``twitch_<c>``) — these
-          are inherently multi-user and not claimable per-user.
-        - 200 ``{thread_id, owner}`` if the caller is the owner (fresh claim
-          or already-owned-by-self), or if the caller is admin (admin always
-          sees the truth even when someone else owns it).
-        - 404 for non-admin callers when another user owns the thread.
-          Mirrors the leak surface of ``_require_thread_access`` so callers
-          can't probe for thread existence under other users.
-        """
-        if _is_shared_channel_thread(thread_id):
-            raise HTTPException(
-                status_code=400,
-                detail="Shared-channel threads cannot be claimed",
-            )
-        agent = get_agent()
-        owner = agent.accounts_repo.claim_thread(thread_id, user.id)
-        if owner != user.id and user.role != "admin":
-            raise HTTPException(status_code=404, detail="Not found")
-        return {"thread_id": thread_id, "owner": owner}
-
-    @app.delete("/threads/{thread_id}", tags=["Threads"])
-    async def delete_thread(
-        http_request: Request,
-        thread_id: str,
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        Fully delete a thread and all resources that can recreate it.
-
-        This is the proper way to remove a thread from all surfaces. It
-        cascades into checkpoints, metadata, config, notepad, RAG chunks,
-        TODOs/schedule rows, triggers, chat bindings, bind codes, owner rows,
-        activity entries, notifications, and device thread filters.
-        """
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-        settings = get_settings()
-        try:
-            deletion = cascade_delete_thread(agent, settings, user_id, thread_id)
-        except ThreadDeletionBusy as e:
-            raise HTTPException(status_code=409, detail=str(e))
-        except Exception as e:
-            logger.error(f"Thread {thread_id} deletion failed: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-
-        logger.info(
-            "Thread %s fully deleted: %s",
-            thread_id,
-            deletion.deleted,
-        )
-
-        # Publish sync event so other clients remove the thread
-        client_id = http_request.headers.get("x-nymeria-client-id", "")
-        publish_sync_event(
-            event_type="thread_deleted",
-            thread_id=thread_id,
-            user_id=user_id,
-            data={},
-            origin_client_id=client_id,
-        )
-
-        return deletion.model_dump()
-
-    @app.post("/threads/{thread_id}/clear", tags=["Threads"])
-    async def clear_thread(
-        http_request: Request,
-        thread_id: str,
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        Clear conversation history for a thread (checkpoints only).
-
-        Preserves thread config (tools, instructions, model overrides),
-        notepad content, and metadata. Use DELETE /threads/{id} to
-        remove everything.
-        """
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-        settings = get_settings()
-
-        # 0. Flush messages to RAG before destroying state — defensive backup
-        # of the per-turn indexer. Catches anything missed (tool-heavy turns,
-        # pre-fix history). Failures must not block the clear.
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = await agent._default_async_graph.aget_state(config)
-            messages = state.values.get("messages", [])
-            if messages:
-                agent._flush_memories_before_trim(user_id, thread_id, messages)
-        except Exception as e:
-            logger.warning(f"Pre-clear RAG flush failed for {thread_id}: {e}")
-
-        # 1. Delete metadata
-        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
-
-        # 2. Delete checkpoints (messages, tool calls, thinking blocks)
-        try:
-            delete_thread_checkpoints(settings, thread_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
-
-        logger.info(f"Thread {thread_id} conversation cleared (config + notepad preserved)")
-
-        # Publish sync event so other clients refresh
-        client_id = http_request.headers.get("x-nymeria-client-id", "")
-        publish_sync_event(
-            event_type="thread_cleared",
-            thread_id=thread_id,
-            user_id=user_id,
-            data={},
-            origin_client_id=client_id,
-        )
-
-        return {"status": "ok", "thread_id": thread_id}
 
     return app
 
