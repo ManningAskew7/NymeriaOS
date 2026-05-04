@@ -511,6 +511,8 @@ Input interfaces and event-driven adapters that route messages to the agent:
 **API** (`api.py`):
 - FastAPI server with SSE streaming
 - Bearer token authentication
+- Low-coupling route slices are being extracted under `nymeria/api/routers/`
+  while `triggers/api.py` remains the app factory and owns shared dependencies.
 - Key endpoints: `/chat` (SSE), `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents/threads`, `/triggers`
 - Thread metadata management: `PATCH /threads/{id}/metadata` syncs titles, pins, and platform across surfaces. Renaming a callable thread also updates its `callable_name` and rebuilds the tool registry.
 - CRUD for threads, TODOs, custom tools, callable threads, and triggers
