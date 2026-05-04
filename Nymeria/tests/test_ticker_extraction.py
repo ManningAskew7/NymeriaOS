@@ -1,0 +1,321 @@
+"""Regression tests for AGENT-015 ticker extraction.
+
+Validates that the extracted helpers (`_TodoConsoleRenderer`,
+`_stream_todo_execution`, `_run_continuation_pass`,
+`_finalize_successful_execution`, `_handle_execution_failure`) preserve
+the same behavior as the original monolithic `_execute_scheduled_todo`.
+"""
+
+from __future__ import annotations
+
+import ast
+import textwrap
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from nymeria.core.ticker import (
+    Ticker,
+    _TodoConsoleRenderer,
+    _should_continue_after_limit,
+    _stream_error_message,
+)
+from nymeria.core.todo_manager import TodoManager, TodoStatus
+from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
+from nymeria.core import ticker as ticker_module
+
+
+# ------------------------------------------------------------------
+# Module-level helpers
+# ------------------------------------------------------------------
+
+
+def test_stream_error_message_prefers_content():
+    assert _stream_error_message({"content": "oops", "code": "500"}) == "oops"
+
+
+def test_stream_error_message_falls_back_to_code():
+    assert "code=500" in _stream_error_message({"content": "", "code": "500"})
+
+
+def test_should_continue_after_limit_main_agent():
+    assert _should_continue_after_limit(
+        {"scope": "main_agent", "reason": "max_iterations"}
+    )
+
+
+def test_should_continue_rejects_sub_agent():
+    assert not _should_continue_after_limit(
+        {"scope": "sub_agent", "reason": "max_iterations"}
+    )
+
+
+def test_should_continue_rejects_repeated_tool_result():
+    assert not _should_continue_after_limit(
+        {"scope": "main_agent", "reason": "repeated_tool_result"}
+    )
+
+
+# ------------------------------------------------------------------
+# _TodoConsoleRenderer
+# ------------------------------------------------------------------
+
+
+class TestTodoConsoleRenderer:
+    def test_render_chunk_buffers_response(self):
+        r = _TodoConsoleRenderer()
+        r.render_chunk({"type": "response", "content": "hello "})
+        r.render_chunk({"type": "response", "content": "world"})
+        assert r.response_buffer == "hello world"
+
+    def test_render_chunk_tracks_tool_calls(self):
+        r = _TodoConsoleRenderer()
+        r.render_chunk({
+            "type": "tool_call",
+            "id": "c1",
+            "name": "search",
+            "args": {"q": "test"},
+        })
+        assert "c1" in r.pending_calls
+        assert r.pending_calls["c1"]["name"] == "search"
+
+    def test_render_chunk_marks_had_tool_calls_on_result(self):
+        r = _TodoConsoleRenderer()
+        r.render_chunk({"type": "tool_result", "id": "c1", "result": "ok"})
+        assert r.had_tool_calls is True
+
+    def test_flush_response_buffer_clears_buffer(self):
+        r = _TodoConsoleRenderer()
+        r.response_buffer = "some text"
+        r.flush_response_buffer()
+        assert r.response_buffer == ""
+
+    def test_flush_remaining_clears_buffer(self):
+        r = _TodoConsoleRenderer()
+        r.response_buffer = "leftover"
+        r.flush_remaining()
+        assert r.response_buffer == ""
+
+
+# ------------------------------------------------------------------
+# Structural: _execute_scheduled_todo delegates to extracted helpers
+# ------------------------------------------------------------------
+
+
+def test_execute_scheduled_todo_under_100_lines():
+    """Acceptance criterion: orchestrator body is <100 lines."""
+    src = Path(__file__).resolve().parent.parent / "nymeria" / "core" / "ticker.py"
+    tree = ast.parse(src.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_execute_scheduled_todo":
+            body_lines = node.end_lineno - node.lineno + 1
+            assert body_lines < 100, (
+                f"_execute_scheduled_todo is {body_lines} lines, should be <100"
+            )
+            return
+    pytest.fail("_execute_scheduled_todo not found in ticker.py")
+
+
+def test_execute_delegates_to_extracted_helpers():
+    """The orchestrator calls the expected helper methods."""
+    src = Path(__file__).resolve().parent.parent / "nymeria" / "core" / "ticker.py"
+    tree = ast.parse(src.read_text())
+
+    expected_calls = {
+        "_print_wakeup_banner",
+        "_stream_todo_execution",
+        "_finalize_successful_execution",
+        "_handle_execution_failure",
+    }
+    found_calls: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_execute_scheduled_todo":
+            for child in ast.walk(node):
+                if isinstance(child, ast.Attribute) and child.attr in expected_calls:
+                    found_calls.add(child.attr)
+
+    missing = expected_calls - found_calls
+    assert not missing, f"_execute_scheduled_todo does not call: {missing}"
+
+
+def test_stream_todo_returns_completed_early_flag():
+    """_stream_todo_execution returns 3-tuple with completed_early bool."""
+    src = Path(__file__).resolve().parent.parent / "nymeria" / "core" / "ticker.py"
+    tree = ast.parse(src.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_stream_todo_execution":
+            returns = [
+                n for n in ast.walk(node)
+                if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple)
+            ]
+            assert returns, "_stream_todo_execution should return tuples"
+            for ret in returns:
+                assert len(ret.value.elts) == 3, (
+                    "_stream_todo_execution should return 3-tuples "
+                    "(result, renderer, completed_early)"
+                )
+            return
+    pytest.fail("_stream_todo_execution not found")
+
+
+def test_no_nested_function_defs_in_orchestrator():
+    """Nested closures have been extracted; none should remain."""
+    src = Path(__file__).resolve().parent.parent / "nymeria" / "core" / "ticker.py"
+    tree = ast.parse(src.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_execute_scheduled_todo":
+            nested = [
+                n.name
+                for n in ast.walk(node)
+                if isinstance(n, ast.FunctionDef) and n.name != "_execute_scheduled_todo"
+            ]
+            assert not nested, (
+                f"Nested function defs found in _execute_scheduled_todo: {nested}"
+            )
+            return
+    pytest.fail("_execute_scheduled_todo not found")
+
+
+# ------------------------------------------------------------------
+# Integration: continuation + double-limit backoff
+# ------------------------------------------------------------------
+
+
+class FakeThreadConfigManager:
+    def get_config(self, thread_id: str):
+        return None
+
+
+class FakeSettings:
+    data_dir = Path("/tmp")
+    context_management = "none"
+    sliding_window_cycles = 5
+    max_results = 10
+    notification_level = "none"
+
+
+class FakeAgent:
+    def __init__(self, data_dir: Path):
+        self.todo_manager = TodoManager(data_dir)
+        self.thread_config_manager = FakeThreadConfigManager()
+        self.settings = FakeSettings()
+        self.settings.data_dir = data_dir
+        self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
+
+    def sync_agent_tools(self):
+        pass
+
+
+def _make_ticker(tmp_path: Path):
+    agent = FakeAgent(tmp_path)
+    return Ticker(agent, agent._schedule_db, agent.todo_manager), agent
+
+
+def _add_todo(agent: FakeAgent, user_id: str = "owner"):
+    with agent.todo_manager.atomic_update(user_id) as todo_list:
+        return todo_list.add_item(
+            "Do the thing",
+            scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=1),
+            thread_id="thread-1",
+            created_by="user",
+        )
+
+
+def test_continuation_pass_merges_results(tmp_path: Path, monkeypatch):
+    """After an initial iteration_limit, the continuation result is merged."""
+    ticker, agent = _make_ticker(tmp_path)
+    todo = _add_todo(agent)
+    entry = ScheduledTodoEntry(
+        todo_id=todo.id,
+        user_id="owner",
+        thread_id="thread-1",
+        scheduled_for=time.time() - 1,
+        task_preview=todo.task,
+        created_at=time.time(),
+    )
+
+    call_count = 0
+
+    async def fake_astream(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield {"type": "response", "content": "part1 "}
+            yield {
+                "type": "iteration_limit",
+                "scope": "main_agent",
+                "reason": "max_iterations",
+                "max_iterations": 25,
+                "tool_call_count": 25,
+            }
+        else:
+            yield {"type": "response", "content": "part2"}
+
+    agent.astream = fake_astream
+
+    events = []
+    monkeypatch.setattr(
+        ticker_module, "publish_autonomous_event",
+        lambda **kw: events.append(kw) if "event_type" in kw else events.append(kw),
+    )
+    monkeypatch.setattr(
+        ticker_module, "publish_autonomous_event",
+        lambda event_type, **kw: events.append({"event_type": event_type, **kw}),
+    )
+    monkeypatch.setattr(ticker_module, "publish_agent_stream_chunk", lambda *a, **kw: None)
+    monkeypatch.setattr(ticker_module, "log_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(ticker_module, "create_autonomous_notification", lambda **kw: None)
+
+    ticker._execute_scheduled_todo(entry)
+
+    assert call_count == 2
+    completed = [e for e in events if e.get("event_type") == "task_completed"]
+    assert len(completed) == 1
+    assert "part1 part2" in completed[0]["data"]["content"]
+
+
+def test_double_iteration_limit_triggers_backoff(tmp_path: Path, monkeypatch):
+    """Two consecutive iteration limits reschedule 10 min ahead."""
+    ticker, agent = _make_ticker(tmp_path)
+    todo = _add_todo(agent)
+    entry = ScheduledTodoEntry(
+        todo_id=todo.id,
+        user_id="owner",
+        thread_id="thread-1",
+        scheduled_for=time.time() - 1,
+        task_preview=todo.task,
+        created_at=time.time(),
+    )
+
+    async def fake_astream(**kwargs):
+        yield {"type": "response", "content": "partial"}
+        yield {
+            "type": "iteration_limit",
+            "scope": "main_agent",
+            "reason": "max_iterations",
+            "max_iterations": 25,
+            "tool_call_count": 25,
+        }
+
+    agent.astream = fake_astream
+
+    events = []
+    monkeypatch.setattr(
+        ticker_module, "publish_autonomous_event",
+        lambda event_type, **kw: events.append({"event_type": event_type, **kw}),
+    )
+    monkeypatch.setattr(ticker_module, "publish_agent_stream_chunk", lambda *a, **kw: None)
+    monkeypatch.setattr(ticker_module, "log_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(ticker_module, "create_autonomous_notification", lambda **kw: None)
+
+    ticker._execute_scheduled_todo(entry)
+
+    completed = [e for e in events if e.get("event_type") == "task_completed"]
+    assert len(completed) == 1
+    assert "Rescheduled" in completed[0]["data"]["content"]
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed.scheduled_for > datetime.now(timezone.utc) + timedelta(minutes=9)

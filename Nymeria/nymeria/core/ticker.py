@@ -22,7 +22,7 @@ from .activity_log import ActivityType, log_activity
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
-from .stream_bridge import stream_and_collect
+from .stream_bridge import StreamCollection, stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
@@ -131,6 +131,73 @@ def _render_tool_line(
         _console.print(" ".join(parts))
     except Exception:
         logger.debug("Console render failed for tool line")
+
+
+class _TodoConsoleRenderer:
+    """Console rendering state for a single TODO execution stream."""
+
+    def __init__(self) -> None:
+        self.pending_calls: dict = {}
+        self.response_buffer: str = ""
+        self.printed_header: bool = False
+        self.had_tool_calls: bool = False
+
+    def flush_response_buffer(self) -> None:
+        if self.response_buffer.strip():
+            try:
+                if not self.printed_header:
+                    _console.print()
+                    _console.print("[bold green]Nymeria:[/bold green]")
+                    self.printed_header = True
+                elif self.had_tool_calls:
+                    _console.print()
+                _console.print(Markdown(_sanitize_unicode(self.response_buffer.strip())))
+            except Exception:
+                logger.debug("Console render failed for preamble flush")
+            self.response_buffer = ""
+
+    def render_chunk(self, chunk: dict) -> None:
+        chunk_type = chunk.get("type")
+        if chunk_type == "tool_call":
+            self.flush_response_buffer()
+            self.pending_calls[chunk.get("id", "")] = {
+                "name": chunk.get("name", "unknown"),
+                "args": chunk.get("args", {}),
+            }
+        elif chunk_type == "tool_result":
+            _render_tool_line(self.pending_calls, chunk)
+            self.had_tool_calls = True
+        elif chunk_type == "response":
+            content = chunk.get("content", "")
+            if content:
+                self.response_buffer += content
+
+    def flush_remaining(self) -> None:
+        remaining = self.response_buffer.strip()
+        if remaining:
+            try:
+                if not self.printed_header:
+                    _console.print()
+                    _console.print("[bold green]Nymeria:[/bold green]")
+                elif self.had_tool_calls:
+                    _console.print()
+                _console.print(Markdown(_sanitize_unicode(remaining)))
+            except Exception as console_err:
+                logger.warning(f"Console print failed (non-fatal): {console_err}")
+            self.response_buffer = ""
+
+
+def _stream_error_message(chunk: dict) -> str:
+    error_content = chunk.get("content", "")
+    error_code = chunk.get("code", "unknown")
+    return error_content or f"Agent stream error (code={error_code})"
+
+
+def _should_continue_after_limit(chunk: dict) -> bool:
+    return (
+        chunk.get("scope", "unknown") == "main_agent"
+        and chunk.get("reason", "max_iterations") != "repeated_tool_result"
+    )
 
 
 # Global ticker instance
@@ -448,21 +515,16 @@ class Ticker:
         return should_notify_autonomous(thread_id, self.agent.thread_config_manager)
 
     def _execute_scheduled_todo(self, entry: ScheduledTodoEntry) -> None:
-        """
-        Execute a scheduled TODO.
+        """Execute a scheduled TODO via the agent stream.
 
-        Streams from the agent, buffering events until streaming completes,
-        then publishes task_started + buffered events + task_completed to
-        the event bus.
-
-        Args:
-            entry: The scheduled TODO entry to execute
+        Orchestrates pre-flight validation, streaming (with optional
+        continuation on iteration limit), and finalization.  Delegates
+        streaming, success, and error paths to focused helpers.
         """
         if not self.schedule_db.mark_execution_started(entry.todo_id, entry.user_id, entry.thread_id):
             logger.info(f"Scheduled TODO {entry.todo_id} is already executing, skipping duplicate run")
             return
 
-        # Get the full TODO from the manager
         todo = self.todo_manager.get_todo_by_id(entry.user_id, entry.todo_id)
         if not todo:
             logger.warning(f"Scheduled TODO {entry.todo_id} not found, removing from schedule")
@@ -476,12 +538,9 @@ class Ticker:
             self.schedule_db.clear_execution(entry.todo_id, entry.user_id)
             return
 
-        # Determine thread_id - use stored or generate from TODO
         thread_id = entry.thread_id or todo.thread_id or f"todo-{todo.id}"
-
         logger.info(f"Executing scheduled TODO {todo.id} for user {entry.user_id}: {todo.task[:50]}...")
 
-        # Mark TODO as in_progress
         try:
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                 todo_list.update_item(todo.id, status=TodoStatus.IN_PROGRESS)
@@ -489,7 +548,6 @@ class Ticker:
             self.schedule_db.clear_execution(todo.id, entry.user_id)
             raise
 
-        # Log activity for scheduled execution start
         log_activity(
             ActivityType.SELF_INVOKE,
             f"Scheduled TODO started: {todo.task[:100]}",
@@ -498,456 +556,451 @@ class Ticker:
             metadata={"todo_id": todo.id},
         )
 
-        # Build prompt from TODO
         prompt = f"Work on TODO {todo.id}: {todo.task}"
         if todo.notes:
             prompt += f"\n\nNotes: {todo.notes}"
 
         try:
-            # Print wake-up message (inside try so console errors don't prevent execution)
-            try:
-                sanitized_task = _sanitize_unicode(todo.task)
-                _console.print()
-                _console.print(
-                    Panel(
-                        f"[italic]{sanitized_task}[/italic]",
-                        title="[bold yellow]Wake up Nymeria, you have work to do[/bold yellow]",
-                        border_style="yellow",
-                    )
-                )
-            except Exception as console_err:
-                logger.warning(f"Console print failed (non-fatal): {console_err}")
+            self._print_wakeup_banner(todo.task)
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
             logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
 
-            pending_calls = {}  # call_id → {name, args} for console rendering
-            response_buffer = ""  # for inline console rendering
-            printed_header = False  # "Nymeria:" label
-            had_tool_calls = False
-            started_published = False
-
-            def flush_response_buffer() -> None:
-                nonlocal response_buffer, printed_header
-                if response_buffer.strip():
-                    try:
-                        if not printed_header:
-                            _console.print()
-                            _console.print("[bold green]Nymeria:[/bold green]")
-                            printed_header = True
-                        elif had_tool_calls:
-                            _console.print()
-                        _console.print(Markdown(_sanitize_unicode(response_buffer.strip())))
-                    except Exception:
-                        logger.debug("Console render failed for preamble flush")
-                    response_buffer = ""
-
-            def render_collected_chunk(chunk: dict) -> None:
-                nonlocal response_buffer, had_tool_calls
-                chunk_type = chunk.get("type")
-                if chunk_type == "tool_call":
-                    # Flush buffered preamble text before tool one-liners
-                    flush_response_buffer()
-                    pending_calls[chunk.get("id", "")] = {
-                        "name": chunk.get("name", "unknown"),
-                        "args": chunk.get("args", {}),
-                    }
-                elif chunk_type == "tool_result":
-                    _render_tool_line(pending_calls, chunk)
-                    had_tool_calls = True
-                elif chunk_type == "response":
-                    content = chunk.get("content", "")
-                    if content:
-                        response_buffer += content
-
-            def handle_initial_chunk(chunk: dict, collection) -> None:
-                nonlocal started_published
-                # Hold task_started until astream actually owns the thread
-                # lock — otherwise a `queued` chunk (user chat in progress)
-                # would flip the frontend into autonomous-streaming mode
-                # mid-conversation.
-                if not started_published and chunk.get("type") != "queued":
-                    publish_autonomous_event(
-                        event_type="task_started",
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                        data={"prompt": prompt, "todo_id": todo.id},
-                    )
-                    started_published = True
-
-                chunk_type = chunk.get("type", "unknown")
-                chunk_content_preview = (
-                    str(chunk.get("content", ""))[:100]
-                    if chunk.get("content")
-                    else ""
-                )
-                logger.info(
-                    f"[TICKER] Chunk #{collection.chunk_count}: "
-                    f"type={chunk_type}, content_preview={chunk_content_preview}"
-                )
-                publish_agent_stream_chunk(
-                    chunk,
-                    thread_id=thread_id,
-                    user_id=entry.user_id,
-                    task_id=todo.id,
-                )
-
-                render_collected_chunk(chunk)
-
-                chunk_type = chunk.get("type")
-                if chunk_type == "error":
-                    error_content = chunk.get("content", "")
-                    error_code = chunk.get("code", "unknown")
-                    logger.error(
-                        f"[TICKER] Stream error for TODO {todo.id}: "
-                        f"code={error_code}, content={error_content}"
-                    )
-
-                elif chunk_type == "iteration_limit":
-                    scope = chunk.get("scope", "unknown")
-                    reason = chunk.get("reason", "max_iterations")
-                    logger.warning(
-                        f"[TICKER] Iteration limit for TODO {todo.id}: "
-                        f"scope={scope}, "
-                        f"reason={reason}, "
-                        f"max_iterations={chunk.get('max_iterations')}, "
-                        f"tool_call_count={chunk.get('tool_call_count')}"
-                    )
-                    # Only trigger continuation for main_agent limits.
-                    # Sub-agent limits are informational — the main agent
-                    # can still continue working.
-                    # Repeated tool/result loops are likely runaways, not
-                    # useful continuation checkpoints.
-
-            def should_continue_after_limit(chunk: dict) -> bool:
-                return (
-                    chunk.get("scope", "unknown") == "main_agent"
-                    and chunk.get("reason", "max_iterations") != "repeated_tool_result"
-                )
-
-            def stream_error_message(chunk: dict) -> str:
-                error_content = chunk.get("content", "")
-                error_code = chunk.get("code", "unknown")
-                return error_content or f"Agent stream error (code={error_code})"
-
-            stream_result = stream_and_collect(
-                self.agent,
-                astream_kwargs={
-                    "message": prompt,
-                    "thread_id": thread_id,
-                    "user_id": entry.user_id,
-                    "_is_self_invoke": True,
-                },
-                on_chunk=handle_initial_chunk,
-                error_message_factory=stream_error_message,
-                should_mark_iteration_limit=should_continue_after_limit,
+            stream_result, renderer, completed_early = self._stream_todo_execution(
+                entry, todo, thread_id, prompt,
             )
 
-            # --- Continuation on iteration_limit (one attempt max) ---
-            if stream_result.iteration_limit_hit:
-                continuation_prompt = (
-                    f"Continue working on the scheduled task: {todo.task}. "
-                    f"If you have already completed everything, please confirm "
-                    f"the results."
+            if not completed_early:
+                self._finalize_successful_execution(
+                    entry, todo, thread_id, stream_result, renderer,
                 )
-                logger.info(
-                    f"[TICKER] Sending continuation prompt for TODO {todo.id} "
-                    f"after iteration_limit"
-                )
-                continuation_limit_hit = False
-
-                def handle_continuation_chunk(chunk: dict, _collection) -> None:
-                    chunk_type = chunk.get("type")
-                    publish_agent_stream_chunk(
-                        chunk,
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                    )
-
-                    render_collected_chunk(chunk)
-
-                    if chunk_type == "error":
-                        error_content = chunk.get("content", "")
-                        error_code = chunk.get("code", "unknown")
-                        logger.error(
-                            f"[TICKER] Continuation stream error for TODO "
-                            f"{todo.id}: code={error_code}, "
-                            f"content={error_content}"
-                        )
-                    elif chunk_type == "iteration_limit":
-                        logger.warning(
-                            f"[TICKER] Continuation also hit iteration_limit "
-                            f"for TODO {todo.id}. Task too complex — leaving "
-                            f"schedule for next tick cycle."
-                        )
-
-                def continuation_error_message(chunk: dict) -> str:
-                    error_content = chunk.get("content", "")
-                    error_code = chunk.get("code", "unknown")
-                    return (
-                        error_content
-                        or f"Agent continuation error (code={error_code})"
-                    )
-
-                continuation_result = stream_and_collect(
-                    self.agent,
-                    astream_kwargs={
-                        "message": continuation_prompt,
-                        "thread_id": thread_id,
-                        "user_id": entry.user_id,
-                        "_is_self_invoke": True,
-                    },
-                    on_chunk=handle_continuation_chunk,
-                    error_message_factory=continuation_error_message,
-                )
-                stream_result.response_parts.extend(continuation_result.response_parts)
-                stream_result.thinking_parts.extend(continuation_result.thinking_parts)
-                stream_result.chunk_count += continuation_result.chunk_count
-                continuation_limit_hit = continuation_result.iteration_limit_hit
-
-                if continuation_limit_hit:
-                    # Task too complex even with a second pass.
-                    # Reschedule 10 minutes ahead to avoid hot-looping
-                    # (the old scheduled_for is in the past, so leaving it
-                    # as-is would re-trigger on the next tick poll).
-                    backoff_time = datetime.now(timezone.utc) + timedelta(minutes=10)
-                    with self.todo_manager.atomic_update(entry.user_id) as todo_list:
-                        todo_list.update_item(
-                            todo.id,
-                            scheduled_for=backoff_time,
-                            notes=(
-                                f"Hit iteration limit twice — rescheduled "
-                                f"for {backoff_time.isoformat()}"
-                            ),
-                        )
-                    self.todo_manager.sync_schedule_to_db(
-                        entry.user_id, todo.id, self.schedule_db
-                    )
-                    logger.info(
-                        f"[TICKER] TODO {todo.id} rescheduled to "
-                        f"{backoff_time.isoformat()} after double iteration_limit"
-                    )
-
-                    publish_autonomous_event(
-                        event_type="task_completed",
-                        thread_id=thread_id,
-                        user_id=entry.user_id,
-                        task_id=todo.id,
-                        data={
-                            "notify": False,
-                            "content": (
-                                "Task requires more steps than the current "
-                                "iteration limit allows. Rescheduled for "
-                                "10 minutes from now."
-                            ),
-                            "todo_id": todo.id,
-                        },
-                    )
-                    self.schedule_db.clear_execution(todo.id, entry.user_id)
-                    return
-            # --- End continuation ---
-
-            # Compute final response text
-            if stream_result.response_parts:
-                response_text = "".join(stream_result.response_parts)
-            elif stream_result.thinking_parts:
-                response_text = "".join(stream_result.thinking_parts)
-                logger.info(f"[TICKER] No response chunks, using thinking content as response ({len(stream_result.thinking_parts)} parts)")
-            else:
-                response_text = ""
-            logger.info(f"[TICKER] === STREAM DONE === chunks={stream_result.chunk_count}, response_parts={len(stream_result.response_parts)}, thinking_parts={len(stream_result.thinking_parts)}, response_len={len(response_text)}")
-
-            logger.info(f"Raw autonomous response (first 500 chars): {response_text[:500] if response_text else 'empty'}")
-
-            # Handle recurring TODOs: reschedule instead of clearing
-            # Re-fetch the TODO to get the recurrence field
-            current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
-            if current_todo and current_todo.recurrence:
-                # Calculate next execution time
-                next_execution = self._calculate_next_execution(
-                    current_todo.recurrence,
-                    datetime.now(timezone.utc)
-                )
-                if next_execution:
-                    logger.info(f"Rescheduling recurring TODO {todo.id} ({current_todo.recurrence}) for {next_execution}")
-                    with self.todo_manager.atomic_update(entry.user_id) as todo_list:
-                        todo_list.update_item(
-                            todo.id,
-                            scheduled_for=next_execution,
-                            status=TodoStatus.PENDING,  # Reset to pending for next execution
-                        )
-                        # Update last_execution
-                        item = todo_list.get_item(todo.id)
-                        if item:
-                            item.last_execution = datetime.now(timezone.utc)
-                    # Sync the new schedule
-                    self.todo_manager.sync_schedule_to_db(entry.user_id, todo.id, self.schedule_db)
-                else:
-                    # Invalid recurrence, clear schedule
-                    self.todo_manager.clear_todo_schedule(entry.user_id, todo.id, self.schedule_db)
-            else:
-                # Non-recurring TODO: clear schedule after execution
-                self.todo_manager.clear_todo_schedule(entry.user_id, todo.id, self.schedule_db)
-
-            # Clear retry count on success
-            if todo.id in self._retry_counts:
-                del self._retry_counts[todo.id]
-
-            should_notify = self._should_create_autonomous_notification(thread_id)
-            notification_summary = response_text[:200] if response_text else "Scheduled TODO executed"
-
-            # Publish task completed event
-            publish_autonomous_event(
-                event_type="task_completed",
-                thread_id=thread_id,
-                user_id=entry.user_id,
-                task_id=todo.id,
-                data={
-                    "notify": should_notify,
-                    "content": response_text,
-                    "todo_id": todo.id,
-                },
-            )
-
-            # Index TODO completion in RAG (if enabled)
-            self._index_todo_completion(
-                user_id=entry.user_id,
-                thread_id=thread_id,
-                todo_id=todo.id,
-                todo_task=todo.task,
-                response_summary=response_text[:200] if response_text else "",
-            )
-
-            # Log activity
-            log_activity(
-                ActivityType.TASK_COMPLETED,
-                response_text[:200] if response_text else "Scheduled TODO executed",
-                user_id=entry.user_id,
-                thread_id=thread_id,
-                metadata={"todo_id": todo.id, "notify": should_notify},
-            )
-
-            # Show remaining response in console (non-fatal — task already succeeded)
-            try:
-                remaining = response_buffer.strip()
-                if remaining:
-                    if not printed_header:
-                        _console.print()
-                        _console.print("[bold green]Nymeria:[/bold green]")
-                    elif had_tool_calls:
-                        _console.print()  # separator after tool one-liners
-                    _console.print(Markdown(_sanitize_unicode(remaining)))
-            except Exception as console_err:
-                logger.warning(f"Console print failed (non-fatal): {console_err}")
-
-            # Create in-app notification + FCM push via unified dispatch.
-            if should_notify and notification_summary:
-                create_autonomous_notification(
-                    user_id=entry.user_id,
-                    thread_id=thread_id,
-                    task_id=todo.id,
-                    summary=notification_summary,
-                    settings=self.agent.settings,
-                    thread_config_manager=self.agent.thread_config_manager,
-                )
-                try:
-                    _console.print(f"[yellow]Notification sent: {notification_summary}[/yellow]")
-                except Exception:
-                    logger.debug("Console render failed for notification message")
-
-            try:
-                _console.print()
-            except Exception:
-                logger.debug("Console render failed for output spacing")
-            logger.info(f"TODO {todo.id} scheduled execution completed, notify={should_notify}")
-
-            # Trim context window if needed (only in sliding_window mode)
-            if self.agent.settings.context_management == "sliding_window":
-                cycle_count = self.agent.get_context_cycle_count(thread_id)
-                max_cycles = self.agent.settings.sliding_window_cycles
-                if cycle_count > max_cycles:
-                    messages_removed = self.agent.trim_context_window(thread_id, max_cycles, user_id=entry.user_id)
-                    if messages_removed > 0:
-                        logger.info(
-                            f"Thread {thread_id}: Sliding window trimmed {messages_removed} messages "
-                            f"(was {cycle_count} cycles, now {max_cycles})"
-                        )
-                        try:
-                            _console.print(
-                                f"[dim]Context window trimmed: kept last {max_cycles} cycles[/dim]"
-                            )
-                        except Exception:
-                            logger.debug("Console render failed for context trim message")
 
         except Exception as e:
-            import traceback
-            logger.error(f"[TICKER] === ERROR === TODO {todo.id} failed: {e}")
-            logger.error(f"[TICKER] Traceback:\n{traceback.format_exc()}")
-            try:
-                sanitized_error = _sanitize_unicode(str(e))
-                _console.print(f"[red]Scheduled TODO failed: {sanitized_error}[/red]")
-            except Exception:
-                logger.debug("Console render failed for error message")
+            self._handle_execution_failure(entry, todo, thread_id, e)
 
-            # Always publish task_completed so frontend can exit streaming state
-            publish_autonomous_event(
-                event_type="task_completed",
+        self.schedule_db.clear_execution(todo.id, entry.user_id)
+
+    # ------------------------------------------------------------------
+    # Helpers for _execute_scheduled_todo
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _print_wakeup_banner(task_text: str) -> None:
+        try:
+            sanitized_task = _sanitize_unicode(task_text)
+            _console.print()
+            _console.print(
+                Panel(
+                    f"[italic]{sanitized_task}[/italic]",
+                    title="[bold yellow]Wake up Nymeria, you have work to do[/bold yellow]",
+                    border_style="yellow",
+                )
+            )
+        except Exception as console_err:
+            logger.warning(f"Console print failed (non-fatal): {console_err}")
+
+    def _stream_todo_execution(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+        prompt: str,
+    ) -> tuple[StreamCollection, _TodoConsoleRenderer, bool]:
+        """Run the initial agent stream and optional continuation pass.
+
+        Returns ``(stream_result, renderer, completed_early)`` where
+        ``completed_early`` is ``True`` when a double iteration limit
+        triggered backoff and the caller should skip normal finalization.
+        """
+        renderer = _TodoConsoleRenderer()
+        started_published = False
+
+        def on_chunk(chunk: dict, collection: StreamCollection) -> None:
+            nonlocal started_published
+            # Hold task_started until astream actually owns the thread
+            # lock — otherwise a `queued` chunk would flip the frontend
+            # into autonomous-streaming mode mid-conversation.
+            if not started_published and chunk.get("type") != "queued":
+                publish_autonomous_event(
+                    event_type="task_started",
+                    thread_id=thread_id,
+                    user_id=entry.user_id,
+                    task_id=todo.id,
+                    data={"prompt": prompt, "todo_id": todo.id},
+                )
+                started_published = True
+
+            self._log_stream_chunk(todo.id, chunk, collection)
+            publish_agent_stream_chunk(
+                chunk,
                 thread_id=thread_id,
                 user_id=entry.user_id,
                 task_id=todo.id,
-                data={
-                    "error": True,
-                    "error_message": str(e)[:200],
-                    "content": f"Task failed: {str(e)[:200]}",
-                    "todo_id": todo.id,
-                },
             )
+            renderer.render_chunk(chunk)
 
+        stream_result = stream_and_collect(
+            self.agent,
+            astream_kwargs={
+                "message": prompt,
+                "thread_id": thread_id,
+                "user_id": entry.user_id,
+                "_is_self_invoke": True,
+            },
+            on_chunk=on_chunk,
+            error_message_factory=_stream_error_message,
+            should_mark_iteration_limit=_should_continue_after_limit,
+        )
+
+        if stream_result.iteration_limit_hit:
+            double_limit = self._run_continuation_pass(
+                entry, todo, thread_id, stream_result, renderer,
+            )
+            if double_limit:
+                return stream_result, renderer, True
+
+        return stream_result, renderer, False
+
+    def _run_continuation_pass(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+        stream_result: StreamCollection,
+        renderer: _TodoConsoleRenderer,
+    ) -> bool:
+        """Run one continuation pass after an iteration limit.
+
+        Merges the continuation result into ``stream_result``.  Returns
+        ``True`` if the continuation also hit the iteration limit (the
+        caller should return early after double-limit backoff).
+        """
+        continuation_prompt = (
+            f"Continue working on the scheduled task: {todo.task}. "
+            f"If you have already completed everything, please confirm "
+            f"the results."
+        )
+        logger.info(
+            f"[TICKER] Sending continuation prompt for TODO {todo.id} "
+            f"after iteration_limit"
+        )
+
+        def on_continuation_chunk(chunk: dict, _collection: StreamCollection) -> None:
+            publish_agent_stream_chunk(
+                chunk,
+                thread_id=thread_id,
+                user_id=entry.user_id,
+                task_id=todo.id,
+            )
+            renderer.render_chunk(chunk)
+            self._log_continuation_chunk(todo.id, chunk)
+
+        continuation_result = stream_and_collect(
+            self.agent,
+            astream_kwargs={
+                "message": continuation_prompt,
+                "thread_id": thread_id,
+                "user_id": entry.user_id,
+                "_is_self_invoke": True,
+            },
+            on_chunk=on_continuation_chunk,
+            error_message_factory=_stream_error_message,
+        )
+        stream_result.response_parts.extend(continuation_result.response_parts)
+        stream_result.thinking_parts.extend(continuation_result.thinking_parts)
+        stream_result.chunk_count += continuation_result.chunk_count
+
+        if not continuation_result.iteration_limit_hit:
+            return False
+
+        self._backoff_after_double_limit(entry, todo, thread_id)
+        return True
+
+    def _backoff_after_double_limit(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+    ) -> None:
+        backoff_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+        with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+            todo_list.update_item(
+                todo.id,
+                scheduled_for=backoff_time,
+                notes=(
+                    f"Hit iteration limit twice — rescheduled "
+                    f"for {backoff_time.isoformat()}"
+                ),
+            )
+        self.todo_manager.sync_schedule_to_db(
+            entry.user_id, todo.id, self.schedule_db
+        )
+        logger.info(
+            f"[TICKER] TODO {todo.id} rescheduled to "
+            f"{backoff_time.isoformat()} after double iteration_limit"
+        )
+
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=entry.user_id,
+            task_id=todo.id,
+            data={
+                "notify": False,
+                "content": (
+                    "Task requires more steps than the current "
+                    "iteration limit allows. Rescheduled for "
+                    "10 minutes from now."
+                ),
+                "todo_id": todo.id,
+            },
+        )
+        self.schedule_db.clear_execution(todo.id, entry.user_id)
+
+    def _finalize_successful_execution(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+        stream_result: StreamCollection,
+        renderer: _TodoConsoleRenderer,
+    ) -> None:
+        response_text = stream_result.response_text()
+        if not stream_result.response_parts and stream_result.thinking_parts:
+            logger.info(
+                f"[TICKER] No response chunks, using thinking content as "
+                f"response ({len(stream_result.thinking_parts)} parts)"
+            )
+        logger.info(
+            f"[TICKER] === STREAM DONE === chunks={stream_result.chunk_count}, "
+            f"response_parts={len(stream_result.response_parts)}, "
+            f"thinking_parts={len(stream_result.thinking_parts)}, "
+            f"response_len={len(response_text)}"
+        )
+        logger.info(
+            f"Raw autonomous response (first 500 chars): "
+            f"{response_text[:500] if response_text else 'empty'}"
+        )
+
+        self._handle_recurrence(entry, todo)
+
+        if todo.id in self._retry_counts:
+            del self._retry_counts[todo.id]
+
+        should_notify = self._should_create_autonomous_notification(thread_id)
+        notification_summary = response_text[:200] if response_text else "Scheduled TODO executed"
+
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=entry.user_id,
+            task_id=todo.id,
+            data={
+                "notify": should_notify,
+                "content": response_text,
+                "todo_id": todo.id,
+            },
+        )
+
+        self._index_todo_completion(
+            user_id=entry.user_id,
+            thread_id=thread_id,
+            todo_id=todo.id,
+            todo_task=todo.task,
+            response_summary=response_text[:200] if response_text else "",
+        )
+
+        log_activity(
+            ActivityType.TASK_COMPLETED,
+            response_text[:200] if response_text else "Scheduled TODO executed",
+            user_id=entry.user_id,
+            thread_id=thread_id,
+            metadata={"todo_id": todo.id, "notify": should_notify},
+        )
+
+        renderer.flush_remaining()
+
+        if should_notify and notification_summary:
             create_autonomous_notification(
                 user_id=entry.user_id,
                 thread_id=thread_id,
                 task_id=todo.id,
-                summary=f"Task failed: {str(e)[:180]}",
+                summary=notification_summary,
                 settings=self.agent.settings,
                 thread_config_manager=self.agent.thread_config_manager,
             )
+            try:
+                _console.print(f"[yellow]Notification sent: {notification_summary}[/yellow]")
+            except Exception:
+                logger.debug("Console render failed for notification message")
 
-            # Check retry count
-            retry_count = self._retry_counts.get(todo.id, 0) + 1
-            self._retry_counts[todo.id] = retry_count
+        try:
+            _console.print()
+        except Exception:
+            logger.debug("Console render failed for output spacing")
+        logger.info(f"TODO {todo.id} scheduled execution completed, notify={should_notify}")
 
-            if retry_count >= self.MAX_RETRIES:
-                # Remove from schedule after too many retries
-                self.schedule_db.remove_scheduled(todo.id)
+        self._trim_context_if_needed(entry, thread_id)
 
-                # Update TODO with failure info and clear schedule
+    def _handle_recurrence(self, entry: ScheduledTodoEntry, todo) -> None:
+        current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
+        if current_todo and current_todo.recurrence:
+            next_execution = self._calculate_next_execution(
+                current_todo.recurrence, datetime.now(timezone.utc),
+            )
+            if next_execution:
+                logger.info(
+                    f"Rescheduling recurring TODO {todo.id} "
+                    f"({current_todo.recurrence}) for {next_execution}"
+                )
                 with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                     todo_list.update_item(
                         todo.id,
+                        scheduled_for=next_execution,
                         status=TodoStatus.PENDING,
-                        notes=f"Scheduled execution failed after {retry_count} retries: {str(e)[:100]}",
-                        clear_schedule=True,
                     )
-
-                logger.error(f"TODO {todo.id} failed permanently after {retry_count} retries")
-
-                # Log activity for task failure
-                log_activity(
-                    ActivityType.TASK_FAILED,
-                    f"Scheduled TODO failed: {todo.task[:80]} - {str(e)[:50]}",
-                    user_id=entry.user_id,
-                    thread_id=thread_id,
-                    metadata={"todo_id": todo.id, "error": str(e), "retries": retry_count},
+                    item = todo_list.get_item(todo.id)
+                    if item:
+                        item.last_execution = datetime.now(timezone.utc)
+                self.todo_manager.sync_schedule_to_db(
+                    entry.user_id, todo.id, self.schedule_db,
                 )
-
-                # Clear retry count
-                del self._retry_counts[todo.id]
             else:
-                # Keep in schedule for retry
-                logger.info(f"TODO {todo.id} will retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
+                self.todo_manager.clear_todo_schedule(
+                    entry.user_id, todo.id, self.schedule_db,
+                )
+        else:
+            self.todo_manager.clear_todo_schedule(
+                entry.user_id, todo.id, self.schedule_db,
+            )
 
-        self.schedule_db.clear_execution(todo.id, entry.user_id)
+    def _trim_context_if_needed(
+        self, entry: ScheduledTodoEntry, thread_id: str,
+    ) -> None:
+        if self.agent.settings.context_management != "sliding_window":
+            return
+        cycle_count = self.agent.get_context_cycle_count(thread_id)
+        max_cycles = self.agent.settings.sliding_window_cycles
+        if cycle_count <= max_cycles:
+            return
+        messages_removed = self.agent.trim_context_window(
+            thread_id, max_cycles, user_id=entry.user_id,
+        )
+        if messages_removed > 0:
+            logger.info(
+                f"Thread {thread_id}: Sliding window trimmed "
+                f"{messages_removed} messages "
+                f"(was {cycle_count} cycles, now {max_cycles})"
+            )
+            try:
+                _console.print(
+                    f"[dim]Context window trimmed: kept last {max_cycles} cycles[/dim]"
+                )
+            except Exception:
+                logger.debug("Console render failed for context trim message")
+
+    def _handle_execution_failure(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+        error: Exception,
+    ) -> None:
+        import traceback
+        logger.error(f"[TICKER] === ERROR === TODO {todo.id} failed: {error}")
+        logger.error(f"[TICKER] Traceback:\n{traceback.format_exc()}")
+        try:
+            sanitized_error = _sanitize_unicode(str(error))
+            _console.print(f"[red]Scheduled TODO failed: {sanitized_error}[/red]")
+        except Exception:
+            logger.debug("Console render failed for error message")
+
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=entry.user_id,
+            task_id=todo.id,
+            data={
+                "error": True,
+                "error_message": str(error)[:200],
+                "content": f"Task failed: {str(error)[:200]}",
+                "todo_id": todo.id,
+            },
+        )
+
+        create_autonomous_notification(
+            user_id=entry.user_id,
+            thread_id=thread_id,
+            task_id=todo.id,
+            summary=f"Task failed: {str(error)[:180]}",
+            settings=self.agent.settings,
+            thread_config_manager=self.agent.thread_config_manager,
+        )
+
+        retry_count = self._retry_counts.get(todo.id, 0) + 1
+        self._retry_counts[todo.id] = retry_count
+
+        if retry_count >= self.MAX_RETRIES:
+            self.schedule_db.remove_scheduled(todo.id)
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                todo_list.update_item(
+                    todo.id,
+                    status=TodoStatus.PENDING,
+                    notes=f"Scheduled execution failed after {retry_count} retries: {str(error)[:100]}",
+                    clear_schedule=True,
+                )
+            logger.error(f"TODO {todo.id} failed permanently after {retry_count} retries")
+
+            log_activity(
+                ActivityType.TASK_FAILED,
+                f"Scheduled TODO failed: {todo.task[:80]} - {str(error)[:50]}",
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                metadata={"todo_id": todo.id, "error": str(error), "retries": retry_count},
+            )
+            del self._retry_counts[todo.id]
+        else:
+            logger.info(f"TODO {todo.id} will retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
+
+    @staticmethod
+    def _log_stream_chunk(todo_id: str, chunk: dict, collection: StreamCollection) -> None:
+        chunk_type = chunk.get("type", "unknown")
+        chunk_content_preview = (
+            str(chunk.get("content", ""))[:100] if chunk.get("content") else ""
+        )
+        logger.info(
+            f"[TICKER] Chunk #{collection.chunk_count}: "
+            f"type={chunk_type}, content_preview={chunk_content_preview}"
+        )
+        if chunk_type == "error":
+            logger.error(
+                f"[TICKER] Stream error for TODO {todo_id}: "
+                f"code={chunk.get('code', 'unknown')}, "
+                f"content={chunk.get('content', '')}"
+            )
+        elif chunk_type == "iteration_limit":
+            logger.warning(
+                f"[TICKER] Iteration limit for TODO {todo_id}: "
+                f"scope={chunk.get('scope', 'unknown')}, "
+                f"reason={chunk.get('reason', 'max_iterations')}, "
+                f"max_iterations={chunk.get('max_iterations')}, "
+                f"tool_call_count={chunk.get('tool_call_count')}"
+            )
+
+    @staticmethod
+    def _log_continuation_chunk(todo_id: str, chunk: dict) -> None:
+        chunk_type = chunk.get("type")
+        if chunk_type == "error":
+            logger.error(
+                f"[TICKER] Continuation stream error for TODO "
+                f"{todo_id}: code={chunk.get('code', 'unknown')}, "
+                f"content={chunk.get('content', '')}"
+            )
+        elif chunk_type == "iteration_limit":
+            logger.warning(
+                f"[TICKER] Continuation also hit iteration_limit "
+                f"for TODO {todo_id}. Task too complex — leaving "
+                f"schedule for next tick cycle."
+            )
 
     def _index_todo_completion(
         self,
