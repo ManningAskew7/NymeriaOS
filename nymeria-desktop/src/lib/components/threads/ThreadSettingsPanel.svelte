@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
-  import { Icon } from '$lib/components/common';
+  import { Icon, ToggleSwitch } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { api } from '$lib/services/api.svelte';
@@ -975,17 +975,12 @@
                       <span class="tool-name">{tool.name}</span>
                       <span class="tool-desc">{tool.description}</span>
                     </div>
-                    <button
-                      class="tool-toggle"
-                      class:off={disabledTools.has(tool.name)}
+                    <ToggleSwitch
+                      checked={!disabledTools.has(tool.name)}
                       onclick={() => toggleTool(tool.name)}
-                      type="button"
                       title={disabledTools.has(tool.name) ? 'Enable tool' : 'Disable tool'}
-                    >
-                      <span class="toggle-track">
-                        <span class="toggle-thumb"></span>
-                      </span>
-                    </button>
+                      ariaLabel={`${disabledTools.has(tool.name) ? 'Enable' : 'Disable'} ${tool.name}`}
+                    />
                   </div>
                 {/each}
               {/if}
@@ -1012,17 +1007,12 @@
                         <span class="tool-name">{tool.name}</span>
                         <span class="tool-desc">{tool.description}</span>
                       </div>
-                      <button
-                        class="tool-toggle"
-                        class:off={!enabledTools.has(tool.name)}
+                      <ToggleSwitch
+                        checked={enabledTools.has(tool.name)}
                         onclick={() => toggleOptionalTool(tool.name)}
-                        type="button"
                         title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
-                      >
-                        <span class="toggle-track">
-                          <span class="toggle-thumb"></span>
-                        </span>
-                      </button>
+                        ariaLabel={`${enabledTools.has(tool.name) ? 'Disable' : 'Enable'} optional tool ${tool.name}`}
+                      />
                     </div>
                   {/each}
                 </div>
@@ -1095,17 +1085,12 @@
                                 <span class="tool-name">{tool.shortName}</span>
                                 <span class="tool-desc">{tool.description}</span>
                               </div>
-                              <button
-                                class="tool-toggle"
-                                class:off={!isEnabled}
+                              <ToggleSwitch
+                                checked={isEnabled}
                                 onclick={() => toggleMcpThreadTool(tool)}
-                                type="button"
                                 title={isEnabled ? 'Disable for this thread' : 'Enable for this thread'}
-                              >
-                                <span class="toggle-track">
-                                  <span class="toggle-thumb"></span>
-                                </span>
-                              </button>
+                                ariaLabel={`${isEnabled ? 'Disable' : 'Enable'} MCP tool ${tool.shortName} for this thread`}
+                              />
                             </div>
                           {/each}
                         {/if}
@@ -1500,44 +1485,6 @@
 
   .tool-row.optional-enabled {
     background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
-  }
-
-  /* Toggle switch */
-  .tool-toggle {
-    flex-shrink: 0;
-    padding: 0;
-    background: none;
-    border: none;
-    cursor: pointer;
-  }
-
-  .toggle-track {
-    display: block;
-    width: 32px;
-    height: 18px;
-    border-radius: 9px;
-    background: var(--accent-primary);
-    position: relative;
-    transition: background var(--transition-fast);
-  }
-
-  .tool-toggle.off .toggle-track {
-    background: var(--text-muted);
-  }
-
-  .toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 16px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: white;
-    transition: left var(--transition-fast);
-  }
-
-  .tool-toggle.off .toggle-thumb {
-    left: 2px;
   }
 
   /* Footer */
