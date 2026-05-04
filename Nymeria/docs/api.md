@@ -844,7 +844,7 @@ GET /models
 Authorization: Bearer <token>
 ```
 
-Returns cached OpenRouter model metadata. The backend fetches model data from the OpenRouter API and caches it for 1 hour. Returns an empty list if the cache hasn't been populated yet (non-critical enrichment data).
+Returns cached OpenRouter model metadata. The backend fetches model data from the OpenRouter API and caches it for 1 hour. Returns an empty list if the cache hasn't been populated yet (non-critical enrichment data). Attachment validation uses this live metadata when available, then falls back to a static capability registry for known multimodal families.
 
 **Response:**
 ```json
