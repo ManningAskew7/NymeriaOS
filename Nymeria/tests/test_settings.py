@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from nymeria.config.settings import DEFAULT_CORS_ORIGINS, Settings
+from nymeria.config.settings import DEFAULT_CORS_ORIGINS, MAX_LLM_OUTPUT_TOKENS, Settings
 
 
 def test_cors_default_is_restricted_to_local_desktop_origins():
@@ -20,6 +20,26 @@ def test_cors_wildcard_requires_explicit_override():
     settings = Settings(_env_file=None, cors_origins="*")
 
     assert settings.cors_origins_list == ["*"]
+
+
+@pytest.mark.parametrize("max_tokens", [64000, 128000, MAX_LLM_OUTPUT_TOKENS])
+def test_llm_max_tokens_accepts_large_modern_output_limits(max_tokens):
+    settings = Settings(_env_file=None, llm_max_tokens=max_tokens)
+
+    assert settings.llm_max_tokens == max_tokens
+
+
+def test_llm_max_tokens_accepts_large_env_value(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_TOKENS", "128000")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_max_tokens == 128000
+
+
+def test_llm_max_tokens_rejects_values_above_config_guardrail():
+    with pytest.raises(ValidationError, match="llm_max_tokens"):
+        Settings(_env_file=None, llm_max_tokens=MAX_LLM_OUTPUT_TOKENS + 1)
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high"])

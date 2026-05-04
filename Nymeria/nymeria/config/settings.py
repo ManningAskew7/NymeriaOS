@@ -59,6 +59,7 @@ def _get_project_root() -> Path:
 
 PROJECT_ROOT = _get_project_root()
 DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost"
+MAX_LLM_OUTPUT_TOKENS = 1_000_000
 ReasoningEffort = Literal["low", "medium", "high"]
 
 
@@ -263,7 +264,7 @@ class Settings(BaseSettings):
 
     # Advanced LLM settings (optional - only sent if explicitly set)
     llm_max_tokens: Optional[int] = Field(
-        default=None, ge=1, le=32000, description="Maximum output tokens"
+        default=None, ge=1, le=MAX_LLM_OUTPUT_TOKENS, description="Maximum output tokens"
     )
     llm_top_p: Optional[float] = Field(
         default=None, ge=0.0, le=1.0, description="Nucleus sampling threshold"
