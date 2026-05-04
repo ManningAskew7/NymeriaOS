@@ -7,20 +7,18 @@ code flow with localhost redirect + manual fallback).
 Optional tools, enable per-thread via thread config.
 """
 
-import json
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from . import auth_cache_utils as auth_utils
 from .calendar_auth import (
     CALENDAR_AUTH_TOOLS,
     GOOGLE_SCOPES,
-    load_token_cache,
-    save_token_cache,
+    PROVIDER,
 )
 from .utils import get_user_id
 
@@ -42,71 +40,13 @@ def get_credentials(user_id: str, account_id: Optional[str] = None):
     Returns:
         google.oauth2.credentials.Credentials if available, None otherwise.
     """
-    # Lazy imports — these packages are optional dependencies
-    try:
-        from google.auth.exceptions import RefreshError
-        from google.auth.transport.requests import Request as GoogleAuthRequest
-        from google.oauth2.credentials import Credentials
-    except ImportError:
-        logger.error(
-            "google-auth packages not installed. "
-            "Run: pip install google-api-python-client google-auth-oauthlib"
-        )
-        return None
-
-    cache = load_token_cache(user_id)
-    accounts = cache.get("accounts", {})
-
-    if not accounts:
-        return None
-
-    if account_id:
-        account = accounts.get(account_id)
-        aid = account_id
-    else:
-        aid, account = next(iter(accounts.items()), (None, None))
-
-    if not account:
-        return None
-
-    # Build Credentials object from stored data
-    creds = Credentials(
-        token=account.get("access_token"),
-        refresh_token=account.get("refresh_token"),
-        token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
-        client_id=account.get("client_id"),
-        client_secret=account.get("client_secret"),
-        scopes=account.get("scopes", list(GOOGLE_SCOPES)),
+    return auth_utils.get_google_credentials(
+        user_id,
+        PROVIDER,
+        GOOGLE_SCOPES,
+        account_id=account_id,
+        provider_display_name="Google Calendar",
     )
-
-    # Check expiry (60-second buffer, same as Outlook pattern)
-    expires_at = account.get("expires_at", 0)
-    if time.time() < expires_at - 60:
-        return creds
-
-    # Token expired — refresh it
-    if not creds.refresh_token:
-        logger.warning("Google token expired and no refresh token available.")
-        return None
-
-    try:
-        creds.refresh(GoogleAuthRequest())
-        # Update cache with new token and expiry
-        account["access_token"] = creds.token
-        account["expires_at"] = (
-            creds.expiry.timestamp() if creds.expiry else time.time() + 3600
-        )
-        if creds.refresh_token:
-            account["refresh_token"] = creds.refresh_token
-        cache["accounts"][aid] = account
-        save_token_cache(user_id, cache)
-        return creds
-    except RefreshError as e:
-        logger.warning(f"Refresh token revoked or expired: {e}. User must re-authenticate.")
-        return None
-    except Exception as e:
-        logger.error(f"Google token refresh failed: {e}")
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -130,33 +70,17 @@ def _calendar_request(
     Returns:
         ``(success, result)``. On failure *result* is an error message string.
     """
-    try:
-        from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
-    except ImportError:
-        return False, (
-            "google-api-python-client not installed. "
-            "Run: pip install google-api-python-client google-auth-oauthlib"
-        )
-
-    creds = get_credentials(user_id, account_id)
-    if not creds:
-        return False, "No authenticated Google account. Use calendar_auth_start to authenticate."
-
-    try:
-        service = build("calendar", "v3", credentials=creds)
-        result = operation(service)
-        return True, result
-    except HttpError as e:
-        try:
-            error_details = json.loads(e.content.decode()) if e.content else {}
-            msg = error_details.get("error", {}).get("message", str(e))
-        except Exception:
-            msg = str(e)
-        return False, f"Google Calendar API error ({e.resp.status}): {msg}"
-    except Exception as e:
-        logger.error(f"Calendar request failed: {e}", exc_info=True)
-        return False, f"Request failed: {str(e)}"
+    return auth_utils.google_api_request(
+        user_id,
+        PROVIDER,
+        GOOGLE_SCOPES,
+        operation,
+        service_name="calendar",
+        service_version="v3",
+        account_id=account_id,
+        auth_tool_name="calendar_auth_start",
+        api_label="Google Calendar",
+    )
 
 
 # ---------------------------------------------------------------------------

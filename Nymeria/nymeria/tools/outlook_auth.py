@@ -4,17 +4,16 @@ Bypasses MCP to handle the device code authentication flow directly,
 avoiding the type validation issues in the microsoft-mcp server.
 """
 
-import json
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Annotated, Optional
 
 import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from . import auth_cache_utils as auth_utils
 from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -50,44 +49,19 @@ def get_client_id() -> str:
     return client_id
 
 
-def _safe_user_id(user_id: str) -> str:
-    safe = "".join(c for c in user_id if c.isalnum() or c in "-_")
-    return safe or "default"
-
-
-def _cache_path(user_id: str) -> Path:
-    """Per-user token cache path under ``data/auth_tokens/<user_id>/``."""
-    from ..config import get_settings
-    settings = get_settings()
-    path = settings.data_dir / "auth_tokens" / _safe_user_id(user_id) / _CACHE_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def load_token_cache(user_id: str) -> dict:
     """Load a user's Microsoft token cache. Returns ``{}`` if not yet auth'd."""
-    path = _cache_path(user_id)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            pass
-    return {}
+    return auth_utils.load_token_cache(user_id, _CACHE_FILENAME)
 
 
 def save_token_cache(user_id: str, cache: dict) -> None:
     """Persist a user's Microsoft token cache."""
-    path = _cache_path(user_id)
-    path.write_text(json.dumps(cache, indent=2))
+    auth_utils.save_token_cache(user_id, _CACHE_FILENAME, cache)
 
 
 def delete_token_cache(user_id: str) -> bool:
     """Delete a user's Microsoft token cache file if present."""
-    path = _cache_path(user_id)
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
+    return auth_utils.delete_token_cache(user_id, _CACHE_FILENAME)
 
 
 def _persist_or_delete_cache(user_id: str, cache: dict) -> None:
