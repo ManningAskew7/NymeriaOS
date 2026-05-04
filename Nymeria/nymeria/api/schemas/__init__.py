@@ -7,8 +7,10 @@ from .skills import (
     SkillMetadataResponse,
 )
 from .system import HealthResponse, ReportRequest
+from .tools import DefaultToolsUpdateRequest
 
 __all__ = [
+    "DefaultToolsUpdateRequest",
     "GlobalSkillsUpdateRequest",
     "HealthResponse",
     "ReportRequest",
