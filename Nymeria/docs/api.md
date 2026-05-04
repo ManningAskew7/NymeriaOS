@@ -7,7 +7,8 @@ The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
-callable routes, unified tools, and settings/model catalog now live under
+callable routes, unified tools, settings/model catalog, and MCP server
+management now live under
 `Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
 `Nymeria/nymeria/triggers/api.py` during the migration.
 
@@ -1996,7 +1997,7 @@ POST /mcp-servers/{server_id}/test
 Authorization: Bearer <token>
 ```
 
-Manage MCP server definitions, install from pasted sources, trigger tool discovery, and optionally auto-enable discovered MCP tools for a thread when creating a server.
+Manage MCP server definitions, install from pasted sources, trigger tool discovery, and optionally auto-enable discovered MCP tools for a thread when creating a server. These handlers live in `Nymeria/nymeria/api/routers/mcp_servers.py`; request schemas live in `Nymeria/nymeria/api/schemas/mcp_servers.py`.
 
 Paste install is now a preview-first flow:
 
