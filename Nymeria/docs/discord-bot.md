@@ -263,6 +263,7 @@ This helps Nymeria understand the ongoing conversation even when invoked via `/a
 | What | Where |
 |------|-------|
 | Bot implementation | `nymeria/triggers/discord_bot.py` |
+| Slash command Cogs | `nymeria/triggers/discord_cogs/` (chat, todos, config, tools, memory, info) |
 | API client | `nymeria/triggers/api_client.py` |
 | Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_discord_bot()` |
