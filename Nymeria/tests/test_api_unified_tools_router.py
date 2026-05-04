@@ -1,0 +1,349 @@
+"""Regression tests for the extracted Unified Tools API router."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from nymeria.api.routers import unified_tools as unified_tools_router
+from nymeria.core.accounts import AccountsRepo
+from nymeria.core.chat_bindings import ChatBindingsRepo
+from nymeria.core.time_utils import utc_now
+from nymeria.core.user_profile import UserProfileManager
+from nymeria.tools import (
+    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+    ALL_TOOLS,
+    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+)
+from nymeria.tools.definitions.custom_tool_schema import (
+    CustomToolDefinition,
+    HTTPToolConfig,
+    ToolParameter,
+)
+
+
+class FakeCustomToolLoader:
+    def __init__(self):
+        self.definitions = {}
+
+    def get_all_definitions(self):
+        return list(self.definitions.values())
+
+    def get_definition(self, tool_id: str):
+        return self.definitions.get(tool_id)
+
+    def save_definition(self, definition):
+        definition.updated_at = utc_now()
+        self.definitions[definition.id] = definition
+        return Path(f"/tmp/{definition.id}.json")
+
+    def delete_definition(self, tool_id: str) -> bool:
+        return self.definitions.pop(tool_id, None) is not None
+
+
+class FakeAgent:
+    def __init__(self, data_dir: Path):
+        accounts_db = data_dir / "accounts.db"
+        self.accounts_repo = AccountsRepo(accounts_db)
+        self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
+        self.profile_manager = UserProfileManager(data_dir)
+        self.reload_count = 0
+        self.synced_tools = 0
+        self.default_graph_rebuilds = 0
+
+    def sync_agent_tools(self):
+        self.synced_tools += 1
+
+    def reload_tools(self):
+        self.reload_count += 1
+
+    def _rebuild_default_graphs(self):
+        self.default_graph_rebuilds += 1
+
+
+def _client(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+    *,
+    loader: FakeCustomToolLoader | None = None,
+) -> tuple[Any, FakeAgent, FakeCustomToolLoader]:
+    loader = loader or FakeCustomToolLoader()
+    monkeypatch.setattr(unified_tools_router, "get_custom_tool_loader", lambda: loader)
+    settings = api_client_builder.settings(tmp_path)
+    agent = FakeAgent(tmp_path)
+    client = api_client_builder.client(agent, settings)
+    return client, agent, loader
+
+
+def _create_user(agent: FakeAgent, user_id: str, *, role: str = "user") -> str:
+    agent.accounts_repo.create_user(
+        user_id,
+        f"{user_id}@example.com",
+        user_id.title(),
+        role=role,
+    )
+    return agent.accounts_repo.issue_token(user_id)
+
+
+def _custom_definition(tool_id: str = "price_lookup") -> CustomToolDefinition:
+    return CustomToolDefinition(
+        id=tool_id,
+        name="Price Lookup",
+        description="Look up a price",
+        parameters={
+            "symbol": ToolParameter(
+                type="string",
+                description="Ticker symbol",
+                required=True,
+            )
+        },
+        implementation_type="http",
+        http_config=HTTPToolConfig(
+            method="GET",
+            url="https://api.example.com/prices/${symbol}",
+            headers={"X-Test": "1"},
+            response_format="json",
+        ),
+        enabled=True,
+        tags=["finance"],
+    )
+
+
+def test_unified_tools_list_is_user_scoped_and_hides_custom_tools_from_non_admin(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    client, agent, loader = _client(tmp_path, api_client_builder, monkeypatch)
+    loader.save_definition(_custom_definition())
+    user_token = _create_user(agent, "owner")
+    admin_token = _create_user(agent, "admin", role="admin")
+
+    user_response = client.get(
+        "/users/owner/tools/unified",
+        headers=api_client_builder.auth(user_token),
+    )
+    admin_response = client.get(
+        "/users/admin/tools/unified",
+        headers=api_client_builder.auth(admin_token),
+    )
+    cross_user_response = client.get(
+        "/users/admin/tools/unified",
+        headers=api_client_builder.auth(user_token),
+    )
+
+    assert user_response.status_code == 200
+    assert admin_response.status_code == 200
+    assert cross_user_response.status_code == 404
+
+    user_payload = user_response.json()
+    user_tools = {tool["id"]: tool for tool in user_payload["tools"]}
+    assert "price_lookup" not in user_tools
+    assert user_payload["custom_count"] == 0
+    assert user_tools[ALL_TOOLS[0].name]["tool_type"] == "builtin"
+
+    admin_payload = admin_response.json()
+    admin_tools = {tool["id"]: tool for tool in admin_payload["tools"]}
+    assert admin_tools["price_lookup"]["tool_type"] == "custom"
+    assert admin_tools["price_lookup"]["parameters"]["symbol"]["required"] is True
+    assert admin_tools["price_lookup"]["http_config"]["url"] == (
+        "https://api.example.com/prices/${symbol}"
+    )
+    assert admin_payload["custom_count"] == 1
+
+
+def test_unified_tool_enable_preserves_role_gates_and_rebuilds_defaults(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    user_token = _create_user(agent, "owner")
+    admin_token = _create_user(agent, "admin", role="admin")
+    core_tool = ALL_TOOLS[0].name
+    admin_only = sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)[0]
+
+    disable_response = client.put(
+        f"/users/owner/tools/unified/{core_tool}/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": False},
+    )
+    user_admin_only_response = client.put(
+        f"/users/owner/tools/unified/{admin_only}/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": True},
+    )
+    user_developer_only_response = client.put(
+        f"/users/owner/tools/unified/{developer_only}/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": True},
+    )
+    admin_allowed_response = client.put(
+        f"/users/admin/tools/unified/{admin_only}/enable",
+        headers=api_client_builder.auth(admin_token),
+        json={"enabled": True},
+    )
+
+    assert disable_response.status_code == 200
+    assert disable_response.json() == {
+        "status": "ok",
+        "tool_id": core_tool,
+        "enabled": False,
+        "tool_type": "builtin",
+    }
+    owner_defaults = agent.profile_manager.get_profile(
+        "owner"
+    ).tool_preferences.default_thread_tools
+    assert core_tool not in owner_defaults
+
+    assert user_admin_only_response.status_code == 403
+    assert user_admin_only_response.json()["detail"] == (
+        f"Tool '{admin_only}' is admin-only"
+    )
+    assert user_developer_only_response.status_code == 403
+    assert user_developer_only_response.json()["detail"] == (
+        f"Tool '{developer_only}' is developer-only"
+    )
+    assert admin_allowed_response.status_code == 200
+    assert admin_allowed_response.json()["tool_id"] == admin_only
+    assert agent.default_graph_rebuilds == 2
+
+
+def test_unified_description_and_config_mutations_are_user_scoped(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "owner")
+    _create_user(agent, "other")
+    tool_id = ALL_TOOLS[0].name
+
+    set_description = client.put(
+        f"/users/owner/tools/unified/{tool_id}/description",
+        headers=api_client_builder.auth(token),
+        json={"description": "Short custom description"},
+    )
+    set_config = client.put(
+        f"/users/owner/tools/unified/{tool_id}/config",
+        headers=api_client_builder.auth(token),
+        json={"config": {"mode": "compact"}},
+    )
+    clear_config = client.put(
+        f"/users/owner/tools/unified/{tool_id}/config",
+        headers=api_client_builder.auth(token),
+        json={"config": {}},
+    )
+    cross_user = client.put(
+        f"/users/other/tools/unified/{tool_id}/description",
+        headers=api_client_builder.auth(token),
+        json={"description": "Should not land"},
+    )
+
+    assert set_description.status_code == 200
+    assert set_description.json() == {
+        "status": "ok",
+        "tool_id": tool_id,
+        "action": "set",
+        "description": "Short custom description",
+    }
+    assert set_config.status_code == 200
+    assert set_config.json()["config"] == {"mode": "compact"}
+    assert clear_config.status_code == 200
+    assert clear_config.json() == {
+        "status": "ok",
+        "tool_id": tool_id,
+        "action": "cleared",
+        "config": {},
+    }
+    assert cross_user.status_code == 404
+
+    prefs = agent.profile_manager.get_profile("owner").tool_preferences
+    assert prefs.get_custom_description(tool_id) == "Short custom description"
+    assert prefs.get_tool_config(tool_id) == {}
+
+
+def test_unified_custom_tool_crud_is_admin_only_and_preserves_reload_side_effects(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    client, agent, loader = _client(tmp_path, api_client_builder, monkeypatch)
+    reload_custom_calls = []
+    monkeypatch.setattr(
+        unified_tools_router,
+        "reload_custom_tools",
+        lambda: reload_custom_calls.append("called"),
+    )
+    user_token = _create_user(agent, "owner")
+    admin_token = _create_user(agent, "admin", role="admin")
+
+    user_create = client.post(
+        "/tools/unified",
+        headers=api_client_builder.auth(user_token),
+        json={
+            "id": "price_lookup",
+            "name": "Price Lookup",
+            "description": "Look up a price",
+            "implementation_type": "http",
+            "parameters": {},
+            "http_config": {
+                "method": "GET",
+                "url": "https://api.example.com/prices/${symbol}",
+            },
+        },
+    )
+    admin_create = client.post(
+        "/tools/unified",
+        headers=api_client_builder.auth(admin_token),
+        json={
+            "id": "price_lookup",
+            "name": "Price Lookup",
+            "description": "Look up a price",
+            "implementation_type": "http",
+            "parameters": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol",
+                    "required": True,
+                }
+            },
+            "http_config": {
+                "method": "GET",
+                "url": "https://api.example.com/prices/${symbol}",
+                "headers": {"X-Test": "1"},
+                "response_format": "json",
+            },
+            "tags": ["finance"],
+        },
+    )
+    update_response = client.put(
+        "/tools/unified/price_lookup",
+        headers=api_client_builder.auth(admin_token),
+        json={"description": "Look up a public market price", "enabled": False},
+    )
+
+    assert user_create.status_code == 403
+    assert admin_create.status_code == 200
+    created = admin_create.json()
+    assert created["id"] == "price_lookup"
+    assert created["tool_type"] == "custom"
+    assert created["parameters"]["symbol"]["required"] is True
+    assert created["http_config"]["headers"] == {"X-Test": "1"}
+
+    assert update_response.status_code == 200
+    assert update_response.json()["description"] == "Look up a public market price"
+    assert loader.get_definition("price_lookup").enabled is False
+    assert agent.reload_count == 2
+
+    delete_response = client.delete(
+        "/tools/unified/price_lookup",
+        headers=api_client_builder.auth(admin_token),
+    )
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"status": "ok", "deleted": "price_lookup"}
+    assert loader.get_definition("price_lookup") is None
+    assert reload_custom_calls == ["called"]

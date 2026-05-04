@@ -6,9 +6,10 @@ Implementation note: `create_api_app()` remains the public FastAPI factory.
 The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
-dashboard, and classic tool discovery/default/callable routes now live under
-`Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
-`Nymeria/nymeria/triggers/api.py` during the migration.
+dashboard, custom tools, classic tool discovery/default/callable routes, and
+unified tools now live under `Nymeria/nymeria/api/routers/`, while the rest of
+the surface still lives in `Nymeria/nymeria/triggers/api.py` during the
+migration.
 
 ## Authentication
 
@@ -1836,7 +1837,9 @@ Resets all tool preferences to defaults.
 
 ## Unified Tools API
 
-Access built-in and custom tools through one API surface. This is also where enablement and description updates now live.
+Access built-in, MCP server, and admin-visible custom tools through one API
+surface. This is also where default enablement, description overrides, and
+tool configuration updates live.
 
 ### List Unified Tools
 
@@ -1845,7 +1848,8 @@ GET /users/{user_id}/tools/unified
 Authorization: Bearer <token>
 ```
 
-Returns all tools (built-in + custom) in a unified format.
+Returns all visible tools in a unified format. Custom tool definitions include
+HTTP/MCP configuration, so they are only returned to admin users.
 
 ### Enable Unified Tool
 
@@ -1854,7 +1858,8 @@ PUT /users/{user_id}/tools/unified/{tool_id}/enable
 Authorization: Bearer <token>
 ```
 
-Enable or disable a built-in or custom tool through the unified tool identity.
+Enable or disable a built-in or MCP server tool through the unified tool
+identity.
 
 ### Update Unified Tool Description
 
