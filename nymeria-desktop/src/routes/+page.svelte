@@ -14,14 +14,14 @@
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { startSyncPoll, stopSyncPoll } from '$lib/stores/syncPoll.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { debugLog } from '$lib/utils/debug';
 
-  // Debug: log immediately on script execution
-  console.log('[Page] Script executing - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
+  debugLog('[Page] Script executing - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
 
   // If config is valid but setupCompleted is false, mark setup as completed
   // This handles migration from before setupCompleted flag existed
   if (configStore.isConfigured && !configStore.setupCompleted) {
-    console.log('[Page] Config valid but setupCompleted=false, auto-completing setup');
+    debugLog('[Page] Config valid but setupCompleted=false, auto-completing setup');
     configStore.setupCompleted = true;
   }
 
@@ -33,7 +33,7 @@
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const config = await invoke<{ api_url: string; api_key: string }>('get_auto_config');
-      console.log('[Page] Auto-configuring from Tauri');
+      debugLog('[Page] Auto-configuring from Tauri');
       configStore.apiUrl = config.api_url;
       configStore.apiKey = config.api_key;
       configStore.completeSetup();
@@ -43,7 +43,7 @@
       const envUrl = import.meta.env.VITE_DEFAULT_API_URL;
       const envKey = import.meta.env.VITE_DEFAULT_API_KEY;
       if (envUrl && envKey && !configStore.isConfigured) {
-        console.log('[Page] Auto-configuring from build-time defaults');
+        debugLog('[Page] Auto-configuring from build-time defaults');
         configStore.apiUrl = envUrl;
         configStore.apiKey = envKey;
         configStore.completeSetup();
@@ -113,12 +113,12 @@
     const fallback = fallbackRestorableThread(backendThreads, excludeId);
     if (fallback) {
       threadsStore.selectThread(fallback.id);
-      console.log('[Page] Switched to fallback thread:', fallback.id);
+      debugLog('[Page] Switched to fallback thread:', fallback.id);
       loadThreadHistory(fallback.id);
     } else {
       threadsStore.clearCurrent();
       chatStore.clearMessages();
-      console.log('[Page] No restorable threads available, cleared selection');
+      debugLog('[Page] No restorable threads available, cleared selection');
     }
   }
 
@@ -134,13 +134,13 @@
 
       const match = backendThreads.find((t) => t.thread_id === restoredId);
       if (!match) {
-        console.log(`[Page] Restored thread ${restoredId} is no longer listed, clearing stale selection`);
+        debugLog(`[Page] Restored thread ${restoredId} is no longer listed, clearing stale selection`);
         selectFallbackOrClear(backendThreads, restoredId);
         return;
       }
 
       if (match.platform !== 'desktop' && match.platform !== 'callable') {
-        console.log(`[Page] Restored thread ${restoredId} is ${match.platform}, finding desktop thread`);
+        debugLog(`[Page] Restored thread ${restoredId} is ${match.platform}, finding desktop thread`);
         selectFallbackOrClear(backendThreads, restoredId);
         return;
       }
@@ -158,7 +158,7 @@
 
   // Connect to autonomous event stream on mount
   onMount(() => {
-    console.log('[Page] onMount - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
+    debugLog('[Page] onMount - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
 
     // Initialize Outlook bridge (no-ops if not in Outlook)
     outlookStore.initialize();
@@ -184,7 +184,7 @@
 
     // Return cleanup — SSE disconnect happens via autonomousStore
     return () => {
-      console.log('[Page] Cleanup - disconnecting SSE');
+      debugLog('[Page] Cleanup - disconnecting SSE');
       stopSyncPoll();
       autonomousStore.disconnect();
     };
@@ -223,17 +223,17 @@
       // Restore last thread's chat history if one was saved
       const initialThreadId = threadsStore.currentThreadId;
       if (initialThreadId) {
-        console.log('[Page] Restoring thread:', initialThreadId);
+        debugLog('[Page] Restoring thread:', initialThreadId);
         restoreThread(initialThreadId);
       }
 
-      console.log('[Page] Config ready, connecting to SSE in 500ms');
+      debugLog('[Page] Config ready, connecting to SSE in 500ms');
       setTimeout(() => {
-        console.log('[Page] Calling autonomousStore.connect()');
+        debugLog('[Page] Calling autonomousStore.connect()');
         autonomousStore.connect();
       }, 500);
     } else {
-      console.log('[Page] Config NOT ready (no apiUrl or apiKey), SSE will connect when configured');
+      debugLog('[Page] Config NOT ready (no apiUrl or apiKey), SSE will connect when configured');
     }
   }
 </script>

@@ -11,6 +11,8 @@
  * search with instead of passing raw IDs.
  */
 
+import { debugLog } from '$lib/utils/debug';
+
 declare const Office: any;
 
 function createOutlookStore() {
@@ -110,7 +112,7 @@ function createOutlookStore() {
 
     Office.onReady((info: any) => {
       if (info.host === Office.HostType?.Outlook || info.host === 'Outlook') {
-        console.log('[Outlook] Running inside Outlook, reading email context');
+        debugLog('[Outlook] Running inside Outlook, reading email context');
         isOutlook = true;
         readCurrentItem();
 
@@ -123,7 +125,7 @@ function createOutlookStore() {
           console.warn('[Outlook] Could not register ItemChanged handler:', e);
         }
       } else {
-        console.log('[Outlook] Office.js loaded but not in Outlook host:', info.host);
+        debugLog('[Outlook] Office.js loaded but not in Outlook host:', info.host);
       }
     });
   }

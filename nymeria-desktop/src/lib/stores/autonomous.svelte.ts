@@ -14,6 +14,7 @@ import { todosStore } from './todos.svelte';
 import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
 import { api } from '$lib/services/api.svelte';
+import { debugLog, debugLoggingEnabled } from '$lib/utils/debug';
 import { isTodoTool } from '$lib/utils/todoTools';
 
 interface AutonomousEvent {
@@ -50,11 +51,10 @@ const BASE_RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const IDLE_TIMEOUT_MS = 30000;
 
-// Debug: log when module loads
-console.log('[Autonomous] Store module loading...');
+debugLog('[Autonomous] Store module loading...');
 
 function createAutonomousStore() {
-  console.log('[Autonomous] Creating store instance');
+  debugLog('[Autonomous] Creating store instance');
   let connected = $state(false);
   let streamAbortController: AbortController | null = null;
   let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -108,7 +108,7 @@ function createAutonomousStore() {
     totalEventCount += 1;
 
     if (shouldLogEventSample(event.type, count)) {
-      console.log(
+      debugLog(
         `[Autonomous] Event handled type=${event.type} count=${count} total=${totalEventCount} ` +
         `thread=${event.thread_id || 'none'} task=${event.task_id || 'none'}`
       );
@@ -139,7 +139,7 @@ function createAutonomousStore() {
   function catchUpAfterReconnect() {
     const currentThread = threadsStore.currentThreadId;
     if (currentThread && !chatStore.isStreaming) {
-      console.log('[Autonomous] Reconnected - catching up on thread', currentThread);
+      debugLog('[Autonomous] Reconnected - catching up on thread', currentThread);
       api.getThreadHistory(currentThread).then((history) => {
         if (threadsStore.currentThreadId === currentThread && !chatStore.isStreaming) {
           chatStore.setMessages(history.messages);
@@ -157,7 +157,7 @@ function createAutonomousStore() {
 
   function connect() {
     if (streamAbortController || connecting) {
-      console.log('[Autonomous] Stream already active, skipping connect');
+      debugLog('[Autonomous] Stream already active, skipping connect');
       return;
     }
 
@@ -168,7 +168,7 @@ function createAutonomousStore() {
 
     // Don't connect if not configured
     if (!configStore.isConfigured) {
-      console.log('[Autonomous] Not connecting - config not ready (apiUrl:', configStore.apiUrl, 'apiKey present:', !!configStore.apiKey, ')');
+      debugLog('[Autonomous] Not connecting - config not ready (apiUrl:', configStore.apiUrl, 'apiKey present:', !!configStore.apiKey, ')');
       intentionallyDisconnected = false;
       scheduleReconnect('config_not_ready');
       return;
@@ -178,7 +178,7 @@ function createAutonomousStore() {
     try {
       url = getStreamUrl();
     } catch (e) {
-      console.log('[Autonomous] Not connecting - identity not resolved yet');
+      debugLog('[Autonomous] Not connecting - identity not resolved yet');
       intentionallyDisconnected = false;
       scheduleReconnect('identity_not_ready');
       return;
@@ -193,7 +193,7 @@ function createAutonomousStore() {
     eventCounts = new Map();
     totalEventCount = 0;
 
-    console.log(
+    debugLog(
       `[Autonomous] Connecting to SSE endpoint via fetch (run=${runId}, attempt=${reconnectAttempts + 1}):`,
       url
     );
@@ -215,7 +215,7 @@ function createAutonomousStore() {
 
       if (!firstFrameSeen) {
         firstFrameSeen = true;
-        console.log(
+        debugLog(
           `[Autonomous] First SSE frame received (run=${runId}, ` +
           `kind=${frame.startsWith(':') ? 'heartbeat' : 'data'})`
         );
@@ -241,7 +241,7 @@ function createAutonomousStore() {
 
       if (!firstDataEventSeen) {
         firstDataEventSeen = true;
-        console.log(`[Autonomous] First data event frame received (run=${runId})`);
+        debugLog(`[Autonomous] First data event frame received (run=${runId})`);
       }
 
       try {
@@ -263,7 +263,7 @@ function createAutonomousStore() {
         signal: abortController.signal
       });
 
-      console.log(
+      debugLog(
         `[Autonomous] SSE HTTP status ${response.status} ${response.statusText || ''} (run=${runId})`
       );
 
@@ -282,7 +282,7 @@ function createAutonomousStore() {
       connected = true;
       connecting = false;
       reconnectAttempts = 0;
-      console.log(`[Autonomous] SSE connection established successfully (run=${runId})`);
+      debugLog(`[Autonomous] SSE connection established successfully (run=${runId})`);
 
       if (wasDisconnected) {
         catchUpAfterReconnect();
@@ -302,7 +302,7 @@ function createAutonomousStore() {
 
         if (!firstByteSeen) {
           firstByteSeen = true;
-          console.log(
+          debugLog(
             `[Autonomous] First stream byte received (run=${runId}, bytes=${value.byteLength})`
           );
         }
@@ -330,7 +330,7 @@ function createAutonomousStore() {
         console.warn(`[Autonomous] SSE stream aborted after idle timeout (run=${runId})`);
       } else if ((e as Error)?.name === 'AbortError') {
         reconnectReason = 'aborted';
-        console.log(`[Autonomous] SSE stream aborted (run=${runId})`);
+        debugLog(`[Autonomous] SSE stream aborted (run=${runId})`);
       } else {
         reconnectReason = reconnectReason === 'stream_end' ? 'error' : reconnectReason;
         console.error('[Autonomous] SSE stream error:', e);
@@ -349,7 +349,7 @@ function createAutonomousStore() {
         connecting = false;
         connected = false;
         idleAbortReason = null;
-        console.log(
+        debugLog(
           `[Autonomous] Stream closed (run=${runId}, reason=${reconnectReason}, events={${eventCountSummary()}})`
         );
 
@@ -384,12 +384,12 @@ function createAutonomousStore() {
     }
     _pendingReplayTimers.clear();
     connected = false;
-    console.log(`[Autonomous] Stream intentionally disconnected (events={${eventCountSummary()}})`);
+    debugLog(`[Autonomous] Stream intentionally disconnected (events={${eventCountSummary()}})`);
   }
 
   function scheduleReconnect(reason: string) {
     if (intentionallyDisconnected) {
-      console.log('[Autonomous] Not scheduling reconnect - stream was intentionally disconnected');
+      debugLog('[Autonomous] Not scheduling reconnect - stream was intentionally disconnected');
       return;
     }
 
@@ -399,7 +399,7 @@ function createAutonomousStore() {
 
     reconnectAttempts++;
     const delay = Math.min(BASE_RECONNECT_DELAY_MS * reconnectAttempts, MAX_RECONNECT_DELAY_MS);
-    console.log(
+    debugLog(
       `[Autonomous] Reconnecting in ${delay}ms ` +
       `(attempt ${reconnectAttempts}, reason=${reason})`
     );
@@ -668,7 +668,7 @@ function createAutonomousStore() {
           // Handle error case - task failed
           if (event.error) {
             const errorMsg = (event.error_message as string) || (event.content as string) || 'Task failed';
-            console.log('[Autonomous] Task failed:', errorMsg);
+            debugLog('[Autonomous] Task failed:', errorMsg);
             chatStore.setLastMessageError(errorMsg);
             chatStore.clearActiveToolCalls();
             activeTaskId = null;
@@ -770,7 +770,7 @@ function createAutonomousStore() {
         break;
 
       default:
-        console.log('[Autonomous] Unknown event type:', event.type);
+        debugLog('[Autonomous] Unknown event type:', event.type);
     }
   }
 
@@ -805,8 +805,7 @@ function createAutonomousStore() {
 
 export const autonomousStore = createAutonomousStore();
 
-// Debug: expose on window for console testing
-if (typeof window !== 'undefined') {
+if (debugLoggingEnabled && typeof window !== 'undefined') {
   (window as unknown as { _autonomousStore: typeof autonomousStore })._autonomousStore = autonomousStore;
-  console.log('[Autonomous] Store exposed on window._autonomousStore for debugging');
+  debugLog('[Autonomous] Store exposed on window._autonomousStore for debugging');
 }
