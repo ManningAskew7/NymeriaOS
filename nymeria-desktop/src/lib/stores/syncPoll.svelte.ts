@@ -13,6 +13,7 @@
 import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { api } from '$lib/services/api.svelte';
+import { debugLog } from '$lib/utils/debug';
 
 const SYNC_POLL_INTERVAL = 5000; // 5 seconds
 
@@ -48,11 +49,11 @@ export function startSyncPoll(threadId: string, initialMessageCount?: number) {
       // Refresh if: new messages, thread is processing, or processing just finished
       if (messageCountChanged || isProcessing || processingJustFinished) {
         if (messageCountChanged) {
-          console.log(`[Sync] Messages changed (${lastKnownMessageCount} → ${history.messages.length}), refreshing`);
+          debugLog(`[Sync] Messages changed (${lastKnownMessageCount} → ${history.messages.length}), refreshing`);
         } else if (isProcessing) {
-          console.log('[Sync] Thread still processing, refreshing');
+          debugLog('[Sync] Thread still processing, refreshing');
         } else {
-          console.log('[Sync] Processing just finished, final refresh');
+          debugLog('[Sync] Processing just finished, final refresh');
         }
         lastKnownMessageCount = history.messages.length;
         chatStore.setMessages(history.messages);

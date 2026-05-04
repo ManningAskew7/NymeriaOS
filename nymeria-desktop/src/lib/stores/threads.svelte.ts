@@ -1,5 +1,6 @@
 import type { Thread, ThreadPlatform, ThreadFolder, ThreadTeam, ThreadTeamApi, SortMode, OrganizationMode } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
+import { debugLog } from '$lib/utils/debug';
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 
 // localStorage keys are namespaced by the currently-connected user's id
@@ -655,7 +656,7 @@ function createThreadsStore() {
 
         if (!hasBackendTitles && hasLocalTitles && threads.length > 0) {
           // One-time migration: push local data to backend
-          console.log('[Threads] Migrating local metadata to backend...');
+          debugLog('[Threads] Migrating local metadata to backend...');
           try {
             await api.migrateThreadMetadata(threads);
             // Re-fetch to get the merged data
@@ -727,7 +728,7 @@ function createThreadsStore() {
       }
       saveThreads(threads);
       autoFileSpawnedThreads();
-      console.log('[Threads] Synced from backend:', backendThreads.length, 'threads');
+      debugLog('[Threads] Synced from backend:', backendThreads.length, 'threads');
     },
 
     // Thread task badge support

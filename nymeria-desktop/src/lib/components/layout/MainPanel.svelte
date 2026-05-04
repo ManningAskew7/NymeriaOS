@@ -16,6 +16,7 @@
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { debugLog } from '$lib/utils/debug';
   import { isTodoTool } from '$lib/utils/todoTools';
   import { updateMessageCount } from '$lib/stores/syncPoll.svelte';
   import { untrack } from 'svelte';
@@ -367,7 +368,7 @@
         chatStore.setQueued(true);
         // Log context for debugging
         if (data.holder) {
-          console.log(`[MainPanel] Queued: held by ${data.holder} for ${data.heldSeconds ?? '?'}s`);
+          debugLog(`[MainPanel] Queued: held by ${data.holder} for ${data.heldSeconds ?? '?'}s`);
         }
         break;
       }
