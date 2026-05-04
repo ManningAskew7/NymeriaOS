@@ -332,27 +332,3 @@ def create_graph(
     )
     logger.info(f"[CHECKPOINT] Graph compiled, checkpointer={type(compiled.checkpointer).__name__ if compiled.checkpointer else 'None'}")
     return compiled
-
-
-def get_graph_with_memory(
-    config: Optional[AgentConfig] = None,
-    tools: Optional[List[BaseTool]] = None,
-) -> Any:
-    """
-    Create a graph with in-memory persistence.
-
-    Convenience function for development and testing.
-    For production, use create_graph with sqlite or postgres checkpointer.
-
-    Args:
-        config: Optional AgentConfig
-        tools: Optional tool list
-
-    Returns:
-        Compiled graph with MemorySaver
-    """
-    return create_graph(
-        config=config,
-        tools=tools,
-        checkpointer=MemorySaver()
-    )
