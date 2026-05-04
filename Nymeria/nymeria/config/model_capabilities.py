@@ -133,6 +133,7 @@ DEFAULT_CONTEXT_LIMITS = {
 }
 
 _OPENAI_SNAPSHOT_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_CAPABILITY_SNAPSHOT_SUFFIX_RE = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 _REASONING_SUFFIX_RE = re.compile(r"\((?:none|minimal|low|medium|high|xhigh)\)$")
 
 
@@ -198,6 +199,34 @@ def _model_id_candidates(model_id: str) -> List[str]:
         candidates.append(f"openai/{stripped_bare}")
 
     return _dedupe_preserving_order(candidates)
+
+
+def _without_provider_prefix(model_id: str) -> str:
+    if "/" in model_id:
+        return model_id.split("/", 1)[1]
+    return model_id
+
+
+def _capability_id_candidates(model_id: str) -> List[str]:
+    """Return fallback capability candidates for provider-qualified and bare IDs."""
+    candidates = _model_id_candidates(model_id)
+    candidates.extend(_without_provider_prefix(candidate) for candidate in list(candidates))
+    return _dedupe_preserving_order(candidates)
+
+
+def _is_safe_capability_match(requested: str, known: str) -> bool:
+    """Match exact IDs, OpenRouter variants, and immutable snapshots only."""
+    if requested == known:
+        return True
+
+    if requested.startswith(f"{known}:"):
+        return True
+
+    if not requested.startswith(known):
+        return False
+
+    suffix = requested[len(known):]
+    return bool(_CAPABILITY_SNAPSHOT_SUFFIX_RE.fullmatch(suffix))
 
 
 def _safe_float(value, allow_zero: bool = False) -> Optional[float]:
@@ -328,55 +357,205 @@ def _check_modality(model_id: str, modality: str) -> Optional[bool]:
 # Fallback static lists (used when API is unavailable)
 # ============================================================================
 
-VISION_CAPABLE_MODELS = {
-    # Anthropic Claude 3+ models
+ANTHROPIC_VISION_CAPABLE_MODELS = {
     "anthropic/claude-3-opus",
     "anthropic/claude-3-sonnet",
     "anthropic/claude-3-haiku",
     "anthropic/claude-3.5-sonnet",
     "anthropic/claude-3.5-haiku",
+    "anthropic/claude-3.7-sonnet",
+    "anthropic/claude-haiku-4.5",
     "anthropic/claude-sonnet-4",
+    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-sonnet-4.6",
     "anthropic/claude-opus-4",
-    # OpenAI GPT-4 Vision models
+    "anthropic/claude-opus-4.1",
+    "anthropic/claude-opus-4.5",
+    "anthropic/claude-opus-4.6",
+    "anthropic/claude-opus-4.6-fast",
+    "anthropic/claude-opus-4.7",
+    "claude-3-opus",
+    "claude-3-sonnet",
+    "claude-3-haiku",
+    "claude-3-5-sonnet",
+    "claude-3-5-haiku",
+    "claude-3-7-sonnet",
+    "claude-haiku-4-5",
+    "claude-sonnet-4",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4",
+    "claude-opus-4-1",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+}
+
+ANTHROPIC_DOCUMENT_CAPABLE_MODELS = {
+    "anthropic/claude-3-opus",
+    "anthropic/claude-3-sonnet",
+    "anthropic/claude-3-haiku",
+    "anthropic/claude-3.5-sonnet",
+    "anthropic/claude-3.5-haiku",
+    "anthropic/claude-3.7-sonnet",
+    "anthropic/claude-haiku-4.5",
+    "anthropic/claude-sonnet-4",
+    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-opus-4",
+    "anthropic/claude-opus-4.1",
+    "anthropic/claude-opus-4.5",
+    "anthropic/claude-opus-4.6",
+    "anthropic/claude-opus-4.7",
+    "claude-3-opus",
+    "claude-3-sonnet",
+    "claude-3-haiku",
+    "claude-3-5-sonnet",
+    "claude-3-5-haiku",
+    "claude-3-7-sonnet",
+    "claude-haiku-4-5",
+    "claude-sonnet-4",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4",
+    "claude-opus-4-1",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+}
+
+OPENAI_VISION_CAPABLE_MODELS = {
     "openai/gpt-4o",
     "openai/gpt-4o-mini",
     "openai/gpt-4-turbo",
-    # Google Gemini models
-    "google/gemini-1.5-pro",
-    "google/gemini-1.5-flash",
-    "google/gemini-2.0-flash",
-    "google/gemini-2.5-pro",
-    # Meta Llama models with vision
-    "meta-llama/llama-3.2-11b-vision-instruct",
-    "meta-llama/llama-3.2-90b-vision-instruct",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1-nano",
+    "openai/gpt-5",
+    "openai/gpt-5-chat",
+    "openai/gpt-5-chat-latest",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "openai/gpt-5-pro",
+    "openai/gpt-5-codex",
+    "openai/gpt-5-codex-mini",
+    "openai/gpt-5.1",
+    "openai/gpt-5.1-chat",
+    "openai/gpt-5.1-codex",
+    "openai/gpt-5.1-codex-max",
+    "openai/gpt-5.1-codex-mini",
+    "openai/gpt-5.2",
+    "openai/gpt-5.2-chat",
+    "openai/gpt-5.2-codex",
+    "openai/gpt-5.2-pro",
+    "openai/gpt-5.3-chat",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.4-nano",
+    "openai/gpt-5.4-pro",
+    "openai/gpt-5.5",
+    "openai/gpt-5.5-pro",
 }
 
-DOCUMENT_CAPABLE_MODELS = {
-    # Anthropic Claude 3+ models - all support PDFs natively
-    "anthropic/claude-3-opus",
-    "anthropic/claude-3-sonnet",
-    "anthropic/claude-3-haiku",
-    "anthropic/claude-3.5-sonnet",
-    "anthropic/claude-3.5-haiku",
-    "anthropic/claude-sonnet-4",
-    "anthropic/claude-opus-4",
-    # Google Gemini models - support documents
+OPENAI_DOCUMENT_CAPABLE_MODELS = {
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1-nano",
+    "openai/gpt-5",
+    "openai/gpt-5-chat",
+    "openai/gpt-5-chat-latest",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "openai/gpt-5-pro",
+    "openai/gpt-5.1",
+    "openai/gpt-5.1-chat",
+    "openai/gpt-5.2",
+    "openai/gpt-5.2-chat",
+    "openai/gpt-5.2-pro",
+    "openai/gpt-5.3-chat",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.4-nano",
+    "openai/gpt-5.4-pro",
+    "openai/gpt-5.5",
+    "openai/gpt-5.5-pro",
+}
+
+GEMINI_VISION_CAPABLE_MODELS = {
     "google/gemini-1.5-pro",
     "google/gemini-1.5-flash",
     "google/gemini-2.0-flash",
     "google/gemini-2.5-pro",
+    "google/gemini-2.5-pro-preview",
+    "google/gemini-2.5-pro-preview-05-06",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-preview",
+    "google/gemini-2.5-flash-lite",
+    "google/gemini-2.5-flash-lite-preview-09-2025",
+    "google/gemini-2.5-flash-image",
+    "google/gemini-3-pro-preview",
+    "google/gemini-3-pro-image-preview",
+    "google/gemini-3-flash-preview",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.1-pro-preview-customtools",
+    "google/gemini-3.1-flash-lite-preview",
+    "google/gemini-3.1-flash-image-preview",
 }
+
+GEMINI_DOCUMENT_CAPABLE_MODELS = {
+    "google/gemini-1.5-pro",
+    "google/gemini-1.5-flash",
+    "google/gemini-2.0-flash",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-pro-preview",
+    "google/gemini-2.5-pro-preview-05-06",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-preview",
+    "google/gemini-2.5-flash-lite",
+    "google/gemini-2.5-flash-lite-preview-09-2025",
+    "google/gemini-3-pro-preview",
+    "google/gemini-3-flash-preview",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.1-pro-preview-customtools",
+    "google/gemini-3.1-flash-lite-preview",
+}
+
+VISION_CAPABLE_MODELS = (
+    ANTHROPIC_VISION_CAPABLE_MODELS
+    | OPENAI_VISION_CAPABLE_MODELS
+    | GEMINI_VISION_CAPABLE_MODELS
+    | {
+        "meta-llama/llama-3.2-11b-vision-instruct",
+        "meta-llama/llama-3.2-90b-vision-instruct",
+    }
+)
+
+DOCUMENT_CAPABLE_MODELS = (
+    ANTHROPIC_DOCUMENT_CAPABLE_MODELS
+    | OPENAI_DOCUMENT_CAPABLE_MODELS
+    | GEMINI_DOCUMENT_CAPABLE_MODELS
+)
 
 
 def _fallback_check(model_id: str, model_set: Set[str]) -> bool:
-    """Fallback substring matching against static model sets."""
+    """Fallback capability matching against static model sets."""
     if not model_id:
         return False
 
-    model_lower = model_id.lower()
+    requested_candidates = _capability_id_candidates(model_id)
 
     for known_model in model_set:
-        if known_model.lower() in model_lower or model_lower in known_model.lower():
+        known_lower = known_model.lower()
+        known_candidates = _capability_id_candidates(known_lower)
+        if any(
+            _is_safe_capability_match(requested, known)
+            for requested in requested_candidates
+            for known in known_candidates
+        ):
             return True
 
     return False
