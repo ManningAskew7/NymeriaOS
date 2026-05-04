@@ -432,7 +432,7 @@ function createAutonomousStore() {
     _pendingReplayTimers.set(threadId, timer);
   }
 
-  function ensureStreamingForCurrentTask(event: AutonomousEvent, placeholder = 'Autonomous task in progress...'): boolean {
+  function ensureStreamingForCurrentTask(event: AutonomousEvent): boolean {
     const taskId = event.task_id as string | undefined;
     if (!taskId || event.thread_id !== threadsStore.currentThreadId || chatStore.isStreaming) {
       return false;
@@ -446,7 +446,6 @@ function createAutonomousStore() {
     }
     activeMessageId = messageId;
     chatStore.setStreaming(true);
-    chatStore.setIntermediateContent(placeholder);
     return true;
   }
 
@@ -517,7 +516,7 @@ function createAutonomousStore() {
             chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
           }
 
-          ensureStreamingForCurrentTask(event, 'Autonomous task started...');
+          ensureStreamingForCurrentTask(event);
         }
         break;
 

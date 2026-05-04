@@ -358,6 +358,15 @@ and mobile.
 2. If rendering changes, update `MessageBubble.svelte` on both platforms
 3. Compare diffs before copying because both files have already diverged
 
+Mobile chat now treats `Message.steps` as the only canonical live-streaming
+shape. Its chat store no longer materializes the older
+`intermediateContent`/`toolCalls` fields for new assistant messages; the
+history API mapper keeps those legacy fields only for records that do not have
+steps, and `MessageBubble.svelte` derives fallback display values at render
+time for those older records. Desktop still carries the legacy parallel fields
+in its store and should be changed separately if that behavior is deprecated
+there too.
+
 Desktop currently has an extra presentation-only streaming component,
 `AgentActivityIndicator.svelte`, mounted from `MessageBubble.svelte` when an
 assistant stream is active but no response text is streaming. It derives its
