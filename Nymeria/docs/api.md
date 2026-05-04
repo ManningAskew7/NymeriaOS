@@ -7,7 +7,7 @@ The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
-callable routes, and unified tools now live under
+callable routes, unified tools, and settings/model catalog now live under
 `Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
 `Nymeria/nymeria/triggers/api.py` during the migration.
 
@@ -135,8 +135,8 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
 **Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`, with
-extracted schemas such as System, Skills, Agent Threads, TODOs, and dashboard
-activity/notifications under `Nymeria/nymeria/api/schemas/`):
+extracted schemas such as System, Settings, Skills, Agent Threads, TODOs, and
+dashboard activity/notifications under `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
 // IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,
