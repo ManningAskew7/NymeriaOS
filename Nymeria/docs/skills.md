@@ -157,6 +157,10 @@ Skill metadata responses include `required_tools`, `tool_ttl`,
 `is_skill_kit`, and `default_active` in addition to the portable Agent Skills
 fields.
 
+Implementation: the Skills HTTP routes are mounted from
+`nymeria/api/routers/skills.py`; runtime Skill Kit tool binding remains in the
+`Skill` meta-tool and agent graph path.
+
 ## Agent-facing tools
 
 Registered in `ALL_TOOLS` so the agent can manage its own skill library:
