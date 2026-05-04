@@ -8,7 +8,7 @@ The API is being split incrementally; the System slice (`/health`,
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
 callable routes, unified tools, MCP server management, settings/model catalog,
-and thread config/callable-team routes now live under
+thread config/callable-team routes, and chat-app/BYO Telegram routes now live under
 `Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
 `Nymeria/nymeria/triggers/api.py` during the migration.
 
@@ -137,8 +137,9 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 
 **Response shapes** (Pydantic models for this account surface live in
 `Nymeria/nymeria/api/schemas/accounts.py`; other extracted schemas such as
-System, Settings, Skills, Agent Threads, TODOs, and dashboard
-activity/notifications live under `Nymeria/nymeria/api/schemas/`):
+System, Settings, Skills, Agent Threads, TODOs, Chat App/BYO Telegram, and
+dashboard activity/notifications live under
+`Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
 // IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,
@@ -248,6 +249,50 @@ curl -i -X PATCH "http://localhost:8000/admin/users/default" \
 ```
 
 See [`accounts.md`](accounts.md) for the data model, bootstrap admin flow, and service-token recipe. See [`frontend-accounts.md`](frontend-accounts.md) for how each endpoint is wrapped on the client side and how errors map to toasts.
+
+---
+
+### Chat App Bindings And BYO Telegram Bots
+
+These routes live in `Nymeria/nymeria/api/routers/chat_apps.py`; schemas live
+in `Nymeria/nymeria/api/schemas/chat_apps.py`. The desktop/mobile Chat App
+wizard uses the self-service routes. Telegram bot thin clients use the
+admin/service-token routes, which are rate-limited per admin token and endpoint.
+
+**Self-service — any authenticated user:**
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| `GET` | `/me/platforms` | — | List linked Discord/Telegram/Twitch identities for the caller. |
+| `POST` | `/me/platform-link-codes` | `{provider:"telegram"}` | Issue a 10-minute self-link code and optional `t.me` deep link. |
+| `POST` | `/threads/{thread_id}/chatapp/bind-code` | `{provider:"telegram"}` | Issue a 10-minute thread-bind code. Caller must own the thread and the thread must not already be bound. |
+| `GET` | `/threads/{thread_id}/chatapp/bindings` | — | List chat-app bindings for a thread the caller owns. |
+| `DELETE` | `/threads/{thread_id}/chatapp/bindings/{binding_id}` | — | Delete a binding owned by the caller and emit sidebar platform sync. |
+| `GET` | `/me/telegram-bots` | — | List user-owned Telegram bots without token material. |
+| `POST` | `/me/telegram-bots` | `{bot_token}` | Validate via Telegram `getMe`, encrypt with `NYMERIA_SECRETS_KEY`, and register idempotently for the same owner. |
+| `GET` | `/me/telegram-bots/{bot_id}` | — | Fetch one owned bot; used by the wizard while waiting for supervisor heartbeat. |
+| `DELETE` | `/me/telegram-bots/{bot_id}` | — | Delete an owned bot and cascade-delete bindings served by that bot. |
+
+**Bot/admin — caller must be admin:**
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| `GET` | `/admin/chatapp/bindings` | — | List all bindings, optionally filtered by `?provider=telegram`. |
+| `GET` | `/admin/chatapp/bindings/lookup` | — | Resolve by exactly one of `platform_chat_id` or `thread_id`. |
+| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Shared-bot bind-code claim; verifies the Telegram user is linked to the issuing Nymeria user before consuming the code. |
+| `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | User-owned bot bind-code claim; authorizes by bot owner instead of platform identity. |
+| `DELETE` | `/admin/chatapp/bindings/by-chat` | — | Remove a binding by `provider` and `platform_chat_id`. |
+| `POST` | `/admin/chatapp/bindings/switch` | `{provider, platform_chat_id, thread_id, user_id, user_telegram_bot_id?}` | Move a Telegram chat to another existing user-owned non-native thread. |
+| `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Consume a self-link code and create the platform identity row. |
+| `GET` | `/admin/telegram-bots` | — | Supervisor-only list of enabled user-owned bots with decrypted tokens. |
+| `POST` | `/admin/telegram-bots/{bot_id}/seen` | — | Supervisor heartbeat update for `last_seen_at`. |
+
+Bind-code claim routes inspect and authorize before consuming a code. If
+authorization or binding creation fails, the code remains reusable until it
+expires; successful claims consume it.
+
+See [`telegram-bot.md`](telegram-bot.md) for the bot commands, shared-bot flow,
+and BYO bot supervisor behavior.
 
 ---
 
