@@ -12,11 +12,11 @@ Features:
 
 import base64
 from contextlib import contextmanager
+import importlib.util
 import logging
 import os
 import queue
 import threading
-import time
 import warnings
 from typing import Any, Optional, Tuple
 from urllib.parse import urlparse
@@ -192,9 +192,7 @@ def _should_run_headless() -> bool:
 
 def _check_playwright_available() -> Tuple[bool, str]:
     """Check if Playwright is installed and browsers are available."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
+    if importlib.util.find_spec("playwright.sync_api") is None:
         return False, "Playwright not installed. Run: pip install playwright && playwright install chromium"
     
     # Check if browsers are installed

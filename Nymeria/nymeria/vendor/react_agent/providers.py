@@ -12,7 +12,7 @@ import json
 import os
 import re
 from importlib import metadata as importlib_metadata
-from typing import Any, AsyncIterator, Iterator, List, Optional
+from typing import Any, AsyncIterator, Iterator, List
 from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage

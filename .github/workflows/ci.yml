@@ -41,8 +41,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r Nymeria/requirements.txt -r Nymeria/requirements-docker.txt -r Nymeria/requirements-dev.txt
 
-      - name: Run pytest
-        run: python -m pytest Nymeria/tests
+      - name: Run Ruff
+        run: python -m ruff check Nymeria/nymeria Nymeria/tests Nymeria/run.py
+
+      - name: Run pytest with coverage
+        run: python -m pytest Nymeria/tests --cov=nymeria --cov=run --cov-report=term --cov-fail-under=38
 
   desktop-check:
     name: Desktop type check

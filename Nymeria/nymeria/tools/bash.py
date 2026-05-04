@@ -1,7 +1,6 @@
 """Bash/shell execution tool for Nymeria."""
 
 import logging
-import os
 import subprocess
 import sys
 from typing import Optional

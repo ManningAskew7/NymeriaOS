@@ -42,10 +42,10 @@ from .agent_history import (
     format_conversation_history,
 )
 from .agent_streaming import GraphStreamProcessor
-from .agent_compaction import CompactionManager, create_compaction_marker as _create_compaction_marker
+from .agent_compaction import CompactionManager
 from .time_utils import ensure_aware_utc, utc_now
 from .ticker import Ticker, set_ticker
-from .todo_manager import TodoManager, TodoStatus
+from .todo_manager import TodoManager
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
 from .todo_schedule_db import TodoScheduleDB
 from .prompts import INTERACTIVE_MODE_RULES, AUTONOMOUS_MODE_RULES, get_time_context

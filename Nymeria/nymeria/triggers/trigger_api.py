@@ -4,13 +4,12 @@ Mounted as a sub-router on the main FastAPI app at ``/triggers``.
 """
 
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..config import Settings, get_settings
+from ..config import get_settings
 from ..core.accounts import AuthenticatedUser
 from ..core.time_utils import ensure_aware_utc, utc_now
 from ..core.trigger_manager import (
@@ -23,7 +22,7 @@ from ..core.trigger_manager import (
 )
 
 if TYPE_CHECKING:
-    from ..core.agent import NymeriaAgent
+    pass
 
 logger = logging.getLogger(__name__)
 

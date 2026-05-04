@@ -7,6 +7,8 @@ from typing import List, Dict, Any, TYPE_CHECKING
 
 from rich.panel import Panel
 
+from nymeria.core.thread_classification import classify_platform as _classify_platform
+
 from . import Command, CommandRegistry
 from ..rendering.tables import render_thread_table
 
@@ -44,9 +46,6 @@ def _get_checkpoint_thread_ids(state: "CLIState") -> List[str]:
             logger.warning(f"Failed to query thread IDs from PostgreSQL: {e}")
 
     return thread_ids
-
-
-from nymeria.core.thread_classification import classify_platform as _classify_platform
 
 
 def _build_thread_list(state: "CLIState") -> List[Dict[str, Any]]:

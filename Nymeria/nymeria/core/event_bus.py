@@ -1,12 +1,11 @@
 """Simple in-memory event bus for streaming autonomous outputs to frontend."""
 
-import asyncio
 import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List, Optional, TYPE_CHECKING
-from queue import Queue, Empty, Full
+from typing import Any, Dict, Optional, TYPE_CHECKING
+from queue import Queue, Full
 from urllib.parse import urlsplit, urlunsplit
 
 from .time_utils import utc_now

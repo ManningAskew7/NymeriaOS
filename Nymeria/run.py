@@ -274,7 +274,7 @@ def run_worker(args: argparse.Namespace) -> None:
     if settings.fcm_enabled and settings.fcm_credentials_json:
         from nymeria.core.fcm import _init_firebase
         if _init_firebase(settings.fcm_credentials_json):
-            print(f"  - FCM push notifications: enabled")
+            print("  - FCM push notifications: enabled")
 
     # Create agent with all tools (this starts the ticker)
     agent = NymeriaAgent(tools=list(ALL_TOOLS))
@@ -360,10 +360,10 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     api_key = _require_service_token(settings, "the Discord bot")
 
     print("Starting Nymeria Discord Bot (thin client)...")
-    print(f"  - Mode: gateway (WebSocket)")
+    print("  - Mode: gateway (WebSocket)")
     print(f"  - Respond mode: {settings.discord_respond_mode}")
     print(f"  - API: {api_url}")
-    print(f"  - Auth: service token")
+    print("  - Auth: service token")
 
     # Create API client
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
@@ -415,7 +415,7 @@ def run_watchdog(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print(f"  - Interval: {settings.watchdog_interval_minutes}m")
     print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
-    print(f"  - Auth: service token")
+    print("  - Auth: service token")
 
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
     worker = WatchdogWorker(client=api, settings=settings)
@@ -461,11 +461,11 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
     api_key = _require_service_token(settings, "the Telegram bot")
 
     print("Starting Nymeria Telegram Bot (thin client)...")
-    print(f"  - Mode: polling")
+    print("  - Mode: polling")
     print(f"  - API: {api_url}")
     if settings.telegram_default_chat_id:
         print(f"  - Default chat: {settings.telegram_default_chat_id}")
-    print(f"  - Auth: service token")
+    print("  - Auth: service token")
 
     # Create API client
     api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
@@ -604,7 +604,7 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
     # Use standard logging (console + file) — same as api/worker
     setup_logging(settings.log_level)
 
-    print(f"Starting Nymeria Gateway in foreground mode...")
+    print("Starting Nymeria Gateway in foreground mode...")
     print(f"  REST API: http://{settings.api_host}:{settings.api_port}")
     print(f"  Log file: {settings.logs_dir / settings.service_log_file}")
     print("  Press Ctrl+C to stop")

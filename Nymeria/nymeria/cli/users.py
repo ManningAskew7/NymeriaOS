@@ -14,7 +14,6 @@ from typing import List
 from nymeria.config import get_settings
 from nymeria.core.accounts import (
     AccountsRepo,
-    Provider,
     UserAlreadyExists,
     UserNotFound,
 )

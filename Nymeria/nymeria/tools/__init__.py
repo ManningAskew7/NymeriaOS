@@ -76,6 +76,7 @@ from .search_mcp import (
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
+from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
@@ -91,9 +92,6 @@ _PRV_TOOLS_A = (
     + _PRV_TOOLS_A4
     + _PRV_TOOLS_A5
 )
-
-# Self-modify tools (from core/self_agent.py)
-from ..core.self_agent import SELF_AGENT_TOOLS
 
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.

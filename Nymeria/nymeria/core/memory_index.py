@@ -6,7 +6,6 @@ Implements RAG (Retrieval Augmented Generation) for Nymeria by:
 - Sentence-aware chunking for optimal retrieval
 """
 
-import hashlib
 import json
 import logging
 import re
@@ -17,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .time_utils import ensure_aware_utc, utc_now
 
@@ -460,7 +459,7 @@ class MemoryIndex:
                 if query_embedding:
                     try:
                         # Find similar vectors
-                        cursor.execute(f"""
+                        cursor.execute("""
                             SELECT chunk_id, distance
                             FROM vec_chunks
                             WHERE embedding MATCH ?

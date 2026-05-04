@@ -78,12 +78,14 @@ Starting Nymeria API server on 0.0.0.0:8000...
 
 ### Backend Validation
 
-Install the development requirements when you want to run backend tests. Docker
-production images intentionally omit `pytest` and other dev-only packages:
+Install the development requirements when you want to run backend linting,
+tests, or coverage. Docker production images intentionally omit `pytest`,
+`pytest-cov`, `ruff`, and other dev-only packages:
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q tests/test_notification_delivery_config.py
+python -m ruff check nymeria tests run.py
+python -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-under=38
 ```
 
 ## Step 5: Connect the Desktop App

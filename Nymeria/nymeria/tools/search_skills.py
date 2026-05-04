@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated, List, Literal, Optional
+from typing import Annotated, List, Literal
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool

@@ -4,12 +4,10 @@ Direct Graph API calls for Outlook email operations, bypassing MCP.
 Uses tokens saved by outlook_auth tools.
 """
 
-import json
 import logging
 import re
 import time
 from html import unescape
-from pathlib import Path
 from typing import Annotated, Optional, List
 
 import httpx
@@ -433,8 +431,8 @@ def _format_single_email(result: dict) -> str:
     lines.extend([
         f"**Date:** {date}",
         f"**Subject:** {subject}",
-        f"",
-        f"**Body:**",
+        "",
+        "**Body:**",
         body_content,
     ])
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
 

@@ -21,10 +21,12 @@ from ..skills.marketplace import scan_for_suspicious_patterns
 from .mcp_sources import (
     MCPInstallError,
     classify_mcp_source,
-    describe_definition,  # re-exported for older mcp_installer callers
+    describe_definition,
     new_mcp_server_id,
     package_command_source,
 )
+
+__all__ = ["MCPInstallError", "describe_definition", "parse_mcp_source"]
 
 logger = logging.getLogger(__name__)
 

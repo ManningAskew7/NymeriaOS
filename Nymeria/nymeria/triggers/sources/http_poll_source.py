@@ -10,7 +10,6 @@ the previous state. Supports four trigger modes:
 
 import hashlib
 import logging
-from datetime import datetime
 from typing import Any, Dict, List
 
 from . import register_source

@@ -7,7 +7,6 @@ mixed providers, and missing metadata.
 
 from __future__ import annotations
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from nymeria.core.token_usage import extract_from_message, extract_last_from_messages

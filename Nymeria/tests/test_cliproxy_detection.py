@@ -7,7 +7,6 @@ Covers the centralised `cliproxy.py` module and verifies that
 from __future__ import annotations
 
 import pytest
-from dataclasses import replace
 
 from nymeria.vendor.react_agent.cliproxy import (
     CLIPROXY_BILLING_SYSTEM_BLOCK,

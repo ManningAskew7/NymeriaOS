@@ -883,7 +883,7 @@ def _status(thread_id: str) -> str:
     visible_enabled_perm = enabled_perm - disabled
     visible_temp_map = {k: v for k, v in temp_map.items() if k not in disabled}
 
-    lines = [f"[Thread Tool Status]"]
+    lines = ["[Thread Tool Status]"]
 
     if visible_enabled_perm:
         lines.append(f"\nEnabled (permanent) ({len(visible_enabled_perm)}):")

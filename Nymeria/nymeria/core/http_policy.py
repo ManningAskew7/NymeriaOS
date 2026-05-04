@@ -259,7 +259,7 @@ def evaluate_http_url(
         try:
             resolved = resolver(host, port) if resolver else _resolve_host(host, port)
             resolved_ips = tuple(sorted({str(ip) for ip in resolved}))
-        except socket.gaierror as exc:
+        except socket.gaierror:
             return HTTPPolicyDecision(False, "dns_resolution_failed", url, host, port)
         except OSError:
             return HTTPPolicyDecision(False, "dns_resolution_failed", url, host, port)

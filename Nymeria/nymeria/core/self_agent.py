@@ -155,7 +155,7 @@ def self_file_list(directory: str = "nymeria/tools") -> str:
     try:
         path.relative_to(project_root)
     except ValueError:
-        return f"[Error]: Access denied. Directory must be within project"
+        return "[Error]: Access denied. Directory must be within project"
 
     if not path.exists():
         return f"[Error]: Directory not found: {directory}"

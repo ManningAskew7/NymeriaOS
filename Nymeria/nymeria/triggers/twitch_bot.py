@@ -25,6 +25,8 @@ from .message_splitter import split_twitch_message as split_message
 if TYPE_CHECKING:
     from ..core.agent import NymeriaAgent
 
+__all__ = ["NymeriaTwitchBot", "split_message"]
+
 logger = logging.getLogger(__name__)
 
 # Generic system prompt for auto-setup on first start. Deployment-specific

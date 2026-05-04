@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-import pytest
 
 from nymeria.triggers.sse_consumer import (
     SSEEventHandler,

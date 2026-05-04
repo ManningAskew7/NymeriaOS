@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-logger = logging.getLogger(__name__)
-
 from ..tools.definitions.mcp_schema import MCPServerDefinition
+
+logger = logging.getLogger(__name__)
 
 
 class MCPInstallError(ValueError):

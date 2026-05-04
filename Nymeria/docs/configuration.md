@@ -486,9 +486,10 @@ POSTGRES_URI=postgresql://user:password@localhost:5432/nymeria
 Docker installs the PostgreSQL checkpoint dependencies through
 `requirements-docker.txt`, which includes `requirements-postgres.txt` rather
 than duplicating those package entries. Docker images install runtime
-requirements only; backend tests use `requirements-dev.txt` so `pytest` does
-not ship in production images. For local development, install the relevant
-files explicitly after the base requirements:
+requirements only; backend tests, coverage, and linting use
+`requirements-dev.txt` so `pytest`, `pytest-cov`, and `ruff` do not ship in
+production images. For local development, install the relevant files
+explicitly after the base requirements:
 
 ```bash
 pip install -r requirements.txt
