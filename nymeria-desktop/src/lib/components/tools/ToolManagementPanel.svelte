@@ -12,6 +12,7 @@
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
   import ToolCountWarning from './ToolCountWarning.svelte';
+  import { CATEGORY_ORDER, getCategoryInfo } from '$lib/utils/toolCategories';
 
   // --- Default tools state (absorbed from DefaultToolsPanel) ---
   let selectedTools = $state<Set<string>>(new Set());
@@ -20,24 +21,6 @@
   let showWarning = $state(false);
   let saveMessage = $state('');
   let saveStatus = $state<'idle' | 'success' | 'error'>('idle');
-
-  // Category display info
-  const CATEGORY_INFO: Record<string, { name: string; icon: string }> = {
-    core: { name: 'Core', icon: 'terminal' },
-    profile: { name: 'Profile', icon: 'brain' },
-    notepad: { name: 'Notepad', icon: 'sticky-note' },
-    todo: { name: 'TODOs', icon: 'list' },
-    self_modify: { name: 'Self-Modify', icon: 'code' },
-    subagent: { name: 'Utilities', icon: 'refresh' },
-    trigger: { name: 'Triggers', icon: 'zap' },
-    email: { name: 'Outlook Email', icon: 'mail' },
-    browser: { name: 'Browser', icon: 'globe' },
-    calendar: { name: 'Google Calendar', icon: 'calendar' },
-    skills: { name: 'Agent Skills', icon: 'bolt' },
-    custom: { name: 'Custom', icon: 'puzzle' },
-  };
-
-  const CATEGORY_ORDER = ['core', 'profile', 'notepad', 'todo', 'trigger', 'email', 'browser', 'calendar', 'skills', 'self_modify', 'subagent', 'custom'];
 
   // Tools whose runtime is gated by require_admin_user on the backend
   // (Nymeria/nymeria/triggers/api.py around the optional-tool toggle path).
@@ -215,10 +198,6 @@
       saveMessage = defaultToolsStore.error || 'Failed to reset';
     }
     setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
-  }
-
-  function getCategoryInfo(category: string) {
-    return CATEGORY_INFO[category] || { name: category, icon: 'tool' };
   }
 
   // --- Custom tools handlers ---

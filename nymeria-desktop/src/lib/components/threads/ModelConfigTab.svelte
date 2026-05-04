@@ -1,12 +1,13 @@
 <script lang="ts">
-  import type { AvailableModel } from '$lib/types';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
-  import { api } from '$lib/services/api.svelte';
-
-  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'openai_custom';
-
-  const DEFAULT_CUSTOM_OPENAI_BASE_URL = 'http://cli-proxy-api-latest:8317/v1';
+  import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import {
+    DEFAULT_CUSTOM_OPENAI_BASE_URL,
+    fromThreadDisplayProvider,
+    supportsOpenAiApiMode,
+    type ThreadDisplayProvider,
+  } from '$lib/utils/providerMapping';
 
   interface Props {
     threadDisplayProvider: ThreadDisplayProvider;
@@ -36,56 +37,27 @@
     llmOpenAiApiMode = $bindable(),
   }: Props = $props();
 
-  function fromThreadDisplayProvider(dp: ThreadDisplayProvider): { provider: string; baseUrl: string | null } {
-    if (dp === '') return { provider: '', baseUrl: null };
-    if (dp === 'anthropic_proxy') return { provider: 'anthropic', baseUrl: null };
-    if (dp === 'anthropic_direct') return { provider: 'anthropic', baseUrl: '' };
-    if (dp === 'openai_custom') return { provider: 'openai', baseUrl: DEFAULT_CUSTOM_OPENAI_BASE_URL };
-    return { provider: dp, baseUrl: null };
-  }
-
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
 
-  let availableModels = $state<AvailableModel[]>([]);
-  let loadingAvailableModels = $state(false);
-  let availableModelsProvider = $state<string>('');
+  let availableModelsState = $state<AvailableModelsState>({
+    models: [],
+    provider: '',
+    loading: false,
+  });
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
-  }
-
-  function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
-    return provider === 'openai' || provider === 'openrouter';
-  }
-
-  async function fetchAvailableModels(provider: string) {
-    if (provider !== 'anthropic' && provider !== 'openai') {
-      availableModels = [];
-      availableModelsProvider = '';
-      return;
-    }
-    if (availableModelsProvider === provider && availableModels.length > 0) return;
-    loadingAvailableModels = true;
-    try {
-      availableModels = await api.getAvailableModels(provider);
-      availableModelsProvider = provider;
-    } catch {
-      availableModels = [];
-    } finally {
-      loadingAvailableModels = false;
-    }
   }
 
   $effect(() => {
     const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
     llmProvider = provider;
     if (threadDisplayProvider === 'openai_custom') {
-      availableModels = [];
-      availableModelsProvider = '';
+      clearAvailableModels(availableModelsState);
       return;
     }
     const ep = getEffectiveProvider();
-    fetchAvailableModels(ep);
+    void loadAvailableModels(ep, availableModelsState);
   });
 
   $effect(() => {
@@ -139,7 +111,7 @@
     </div>
   {/if}
 
-  {#if supportsApiMode()}
+  {#if supportsOpenAiApiMode(getEffectiveProvider())}
     <div class="field-group">
       <label class="field-label" for="llm-openai-api-mode">API Mode</label>
       <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>
@@ -166,10 +138,10 @@
       <span class="field-hint">
         The model name the endpoint reports (e.g. <code>gpt-5.5</code> for the CLIProxy sidecar, or the <code>--alias</code> flag value for a local server).
       </span>
-    {:else if availableModels.length > 0}
+    {:else if availableModelsState.models.length > 0}
       <select id="llm-model" class="field-select" bind:value={llmModel}>
         <option value="">Default (inherit global)</option>
-        {#each availableModels as model}
+        {#each availableModelsState.models as model}
           <option value={model.id}>{model.name || model.id}</option>
         {/each}
       </select>
@@ -179,11 +151,11 @@
         class="field-input"
         type="text"
         bind:value={llmModel}
-        placeholder={loadingAvailableModels
+        placeholder={availableModelsState.loading
           ? 'Loading models… or type one (e.g. claude-opus-4-7)'
           : 'Leave empty for global default'}
       />
-      {#if loadingAvailableModels}
+      {#if availableModelsState.loading}
         <span class="field-hint">Fetching available models from {getEffectiveProvider()}…</span>
       {/if}
     {/if}
