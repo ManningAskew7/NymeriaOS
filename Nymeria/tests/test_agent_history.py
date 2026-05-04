@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from nymeria.core import agent_history as agent_history_module
 from nymeria.core.agent_history import (
     TIMESTAMP_SCAN_LIMIT,
     build_message_timestamp_map,
@@ -129,4 +131,32 @@ def test_format_conversation_history_attaches_tool_results_and_artifacts():
             }],
         },
         {"type": "response", "content": "Done"},
+    ]
+
+
+def test_format_conversation_history_uses_message_type_dispatch_table():
+    source = inspect.getsource(format_conversation_history)
+
+    assert "isinstance(msg, HumanMessage)" not in source
+    assert "isinstance(msg, AIMessage)" not in source
+    assert "isinstance(msg, SystemMessage)" not in source
+    assert agent_history_module._HISTORY_MESSAGE_HANDLERS.keys() >= {
+        HumanMessage,
+        AIMessage,
+        SystemMessage,
+    }
+
+    history = format_conversation_history(
+        [
+            SystemMessage(content="System note"),
+            HumanMessage(content="Hello"),
+            AIMessage(content="Hi"),
+        ],
+        thread_id="thread-a",
+    )
+
+    assert history == [
+        {"id": "thread-a-1", "role": "system", "content": "System note"},
+        {"id": "thread-a-2", "role": "user", "content": "Hello"},
+        {"id": "thread-a-3", "role": "assistant", "content": "Hi"},
     ]

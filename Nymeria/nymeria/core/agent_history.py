@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -460,6 +461,33 @@ def _default_extract_workspace_artifacts(_value: str) -> List[Dict[str, Any]]:
     return []
 
 
+@dataclass
+class _HistoryFormatContext:
+    thread_id: str
+    timestamp_map: Dict[str, str]
+    show_autonomous_prompts: bool
+    show_prompt_metadata: bool
+    tool_results: Dict[str, Any]
+    clean_tool_result: ToolResultCleaner
+    extract_workspace_artifacts: WorkspaceArtifactExtractor
+    history: List[Dict[str, Any]] = field(default_factory=list)
+    msg_counter: int = 0
+    current_turn: Optional[Dict[str, Any]] = None
+    pending_reload_info: Optional[Dict[str, Any]] = None
+
+    def next_entry_id(self) -> str:
+        self.msg_counter += 1
+        return f"{self.thread_id}-{self.msg_counter}"
+
+    def flush_current_turn(self, *, populate_legacy_fields: bool = False) -> None:
+        if not self.current_turn:
+            return
+        if populate_legacy_fields:
+            _populate_legacy_turn_fields(self.current_turn)
+        self.history.append(self.current_turn)
+        self.current_turn = None
+
+
 def format_conversation_history(
     messages: List[Any],
     *,
@@ -487,187 +515,206 @@ def format_conversation_history(
         if isinstance(msg, ToolMessage):
             tool_results[msg.tool_call_id] = msg.content
 
-    history: List[Dict[str, Any]] = []
-    msg_counter = 0
-    current_turn: Optional[Dict[str, Any]] = None
-    pending_reload_info = None
+    ctx = _HistoryFormatContext(
+        thread_id=thread_id,
+        timestamp_map=timestamp_map,
+        show_autonomous_prompts=show_autonomous_prompts,
+        show_prompt_metadata=show_prompt_metadata,
+        tool_results=tool_results,
+        clean_tool_result=clean_tool_result,
+        extract_workspace_artifacts=extract_workspace_artifacts,
+    )
 
     for msg in messages:
         if isinstance(msg, ToolMessage):
             continue
 
-        if isinstance(msg, HumanMessage):
-            if msg.additional_kwargs.get("internal_type") == "compaction_marker":
-                if current_turn:
-                    history.append(current_turn)
-                    current_turn = None
+        handler = _get_history_message_handler(msg)
+        if handler is not None:
+            handler(ctx, msg)
 
-                msg_counter += 1
-                marker_kwargs = msg.additional_kwargs or {}
-                timestamp_iso = (
-                    marker_kwargs.get("timestamp")
-                    or (timestamp_map.get(msg.id) if msg.id else None)
-                )
-                entry: Dict[str, Any] = {
-                    "id": f"{thread_id}-{msg_counter}",
-                    "role": "system",
-                    "kind": "compaction_notice",
-                    "content": "Context compacted",
-                    "context_summary": marker_kwargs.get("summary") or "",
-                    "messages_removed": marker_kwargs.get("messages_removed", 0),
-                    "auto_resumed": bool(marker_kwargs.get("auto_resumed", False)),
-                }
-                if timestamp_iso:
-                    entry["timestamp"] = timestamp_iso
-                history.append(entry)
-                continue
+    ctx.flush_current_turn(populate_legacy_fields=True)
 
-            if msg.additional_kwargs.get("internal_type") == "tool_reload_resume":
-                if current_turn:
-                    history.append(current_turn)
-                    current_turn = None
-                content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
-                pending_reload_info = {
-                    "tools": msg.additional_kwargs.get("tool_reload_tools", []),
-                    "ttl": msg.additional_kwargs.get("tool_reload_ttl", ""),
-                    "ttl_seconds": msg.additional_kwargs.get("tool_reload_ttl_seconds"),
-                    "source": msg.additional_kwargs.get("tool_reload_source", "tool_search"),
-                    "skill_name": msg.additional_kwargs.get("tool_reload_skill_name"),
-                    "reason": msg.additional_kwargs.get("tool_reload_reason"),
-                    "resume_prompt": content_str,
-                }
-                continue
+    return ctx.history
 
-            if current_turn:
-                history.append(current_turn)
-                current_turn = None
 
-            msg_counter += 1
-            entry: Dict[str, Any] = {
-                "id": f"{thread_id}-{msg_counter}",
-                "role": "user",
+MessageHistoryHandler = Callable[[_HistoryFormatContext, Any], None]
+
+
+def _get_history_message_handler(msg: Any) -> Optional[MessageHistoryHandler]:
+    for message_type, handler in _HISTORY_MESSAGE_HANDLERS.items():
+        if isinstance(msg, message_type):
+            return handler
+    return None
+
+
+def _handle_human_history_message(
+    ctx: _HistoryFormatContext,
+    msg: HumanMessage,
+) -> None:
+    if msg.additional_kwargs.get("internal_type") == "compaction_marker":
+        ctx.flush_current_turn()
+
+        marker_kwargs = msg.additional_kwargs or {}
+        timestamp_iso = (
+            marker_kwargs.get("timestamp")
+            or (ctx.timestamp_map.get(msg.id) if msg.id else None)
+        )
+        entry: Dict[str, Any] = {
+            "id": ctx.next_entry_id(),
+            "role": "system",
+            "kind": "compaction_notice",
+            "content": "Context compacted",
+            "context_summary": marker_kwargs.get("summary") or "",
+            "messages_removed": marker_kwargs.get("messages_removed", 0),
+            "auto_resumed": bool(marker_kwargs.get("auto_resumed", False)),
+        }
+        if timestamp_iso:
+            entry["timestamp"] = timestamp_iso
+        ctx.history.append(entry)
+        return
+
+    if msg.additional_kwargs.get("internal_type") == "tool_reload_resume":
+        ctx.flush_current_turn()
+        content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+        ctx.pending_reload_info = {
+            "tools": msg.additional_kwargs.get("tool_reload_tools", []),
+            "ttl": msg.additional_kwargs.get("tool_reload_ttl", ""),
+            "ttl_seconds": msg.additional_kwargs.get("tool_reload_ttl_seconds"),
+            "source": msg.additional_kwargs.get("tool_reload_source", "tool_search"),
+            "skill_name": msg.additional_kwargs.get("tool_reload_skill_name"),
+            "reason": msg.additional_kwargs.get("tool_reload_reason"),
+            "resume_prompt": content_str,
+        }
+        return
+
+    ctx.flush_current_turn()
+
+    entry: Dict[str, Any] = {
+        "id": ctx.next_entry_id(),
+        "role": "user",
+    }
+
+    raw_content, attachments = _parse_human_content(msg.content, ctx.msg_counter)
+    timestamp_iso = ctx.timestamp_map.get(msg.id) if msg.id else None
+    if not timestamp_iso:
+        timestamp_iso = extract_timestamp(raw_content)
+
+    if ctx.show_prompt_metadata:
+        entry["content"] = raw_content
+    else:
+        entry["content"] = CONTEXT_PREFIX_PATTERN.sub("", raw_content)
+    if attachments:
+        entry["attachments"] = attachments
+    if timestamp_iso:
+        entry["timestamp"] = timestamp_iso
+
+    if (
+        ctx.show_autonomous_prompts
+        and msg.additional_kwargs.get("internal_type") == "autonomous_wakeup"
+    ):
+        entry["autonomous_source"] = classify_autonomous_source(entry["content"])
+
+    ctx.history.append(entry)
+
+
+def _handle_ai_history_message(
+    ctx: _HistoryFormatContext,
+    msg: AIMessage,
+) -> None:
+    text_content, thinking_blocks = extract_content_parts(msg.content)
+    reasoning_blocks = extract_reasoning_parts(msg)
+
+    if msg.tool_calls:
+        if ctx.current_turn is None:
+            ctx.current_turn = {
+                "id": ctx.next_entry_id(),
+                "role": "assistant",
+                "content": "",
+                "steps": [],
             }
+            if ctx.pending_reload_info:
+                ctx.current_turn["tool_reload_info"] = ctx.pending_reload_info
+                ctx.pending_reload_info = None
+            turn_ts = ctx.timestamp_map.get(msg.id) if msg.id else None
+            if turn_ts:
+                ctx.current_turn["timestamp"] = turn_ts
 
-            raw_content, attachments = _parse_human_content(msg.content, msg_counter)
-            timestamp_iso = timestamp_map.get(msg.id) if msg.id else None
-            if not timestamp_iso:
-                timestamp_iso = extract_timestamp(raw_content)
+        ctx.current_turn["steps"].extend(thinking_steps(reasoning_blocks))
+        _append_tool_call_steps(
+            ctx.current_turn,
+            msg,
+            text_content=text_content,
+            tool_results=ctx.tool_results,
+            clean_tool_result=ctx.clean_tool_result,
+            extract_workspace_artifacts=ctx.extract_workspace_artifacts,
+        )
+        return
 
-            if show_prompt_metadata:
-                entry["content"] = raw_content
-            else:
-                entry["content"] = CONTEXT_PREFIX_PATTERN.sub("", raw_content)
-            if attachments:
-                entry["attachments"] = attachments
-            if timestamp_iso:
-                entry["timestamp"] = timestamp_iso
+    if ctx.current_turn is not None:
+        ctx.current_turn["steps"].extend(
+            thinking_steps(reasoning_blocks + thinking_blocks)
+        )
 
-            if (
-                show_autonomous_prompts
-                and msg.additional_kwargs.get("internal_type") == "autonomous_wakeup"
-            ):
-                entry["autonomous_source"] = classify_autonomous_source(
-                    entry["content"]
-                )
-
-            history.append(entry)
-
-        elif isinstance(msg, AIMessage):
-            text_content, thinking_blocks = extract_content_parts(msg.content)
-            reasoning_blocks = extract_reasoning_parts(msg)
-            has_tool_calls = bool(msg.tool_calls)
-
-            if has_tool_calls:
-                if current_turn is None:
-                    msg_counter += 1
-                    current_turn = {
-                        "id": f"{thread_id}-{msg_counter}",
-                        "role": "assistant",
-                        "content": "",
-                        "steps": [],
-                    }
-                    if pending_reload_info:
-                        current_turn["tool_reload_info"] = pending_reload_info
-                        pending_reload_info = None
-                    turn_ts = timestamp_map.get(msg.id) if msg.id else None
-                    if turn_ts:
-                        current_turn["timestamp"] = turn_ts
-
-                current_turn["steps"].extend(thinking_steps(reasoning_blocks))
-                _append_tool_call_steps(
-                    current_turn,
-                    msg,
-                    text_content=text_content,
-                    tool_results=tool_results,
-                    clean_tool_result=clean_tool_result,
-                    extract_workspace_artifacts=extract_workspace_artifacts,
-                )
-            else:
-                if current_turn is not None:
-                    current_turn["steps"].extend(
-                        thinking_steps(reasoning_blocks + thinking_blocks)
-                    )
-
-                    if text_content:
-                        current_turn["steps"].append({
-                            "type": "response",
-                            "content": text_content,
-                        })
-
-                    current_turn["content"] = text_content
-
-                    if "timestamp" not in current_turn:
-                        backfill_ts = timestamp_map.get(msg.id) if msg.id else None
-                        if backfill_ts:
-                            current_turn["timestamp"] = backfill_ts
-
-                    _populate_legacy_turn_fields(current_turn)
-                    history.append(current_turn)
-                    current_turn = None
-                else:
-                    msg_counter += 1
-                    entry = {
-                        "id": f"{thread_id}-{msg_counter}",
-                        "role": "assistant",
-                        "content": text_content,
-                    }
-                    if pending_reload_info:
-                        entry["tool_reload_info"] = pending_reload_info
-                        pending_reload_info = None
-                    all_thinking_blocks = reasoning_blocks + thinking_blocks
-                    if all_thinking_blocks:
-                        steps = thinking_steps(all_thinking_blocks)
-                        if text_content:
-                            steps.append({
-                                "type": "response",
-                                "content": text_content,
-                            })
-                        entry["steps"] = steps
-                        entry["intermediate_content"] = "\n".join(
-                            s["content"] for s in steps if s["type"] == "thinking"
-                        ) or None
-                    standalone_ts = timestamp_map.get(msg.id) if msg.id else None
-                    if standalone_ts:
-                        entry["timestamp"] = standalone_ts
-                    history.append(entry)
-
-        elif isinstance(msg, SystemMessage):
-            if current_turn:
-                history.append(current_turn)
-                current_turn = None
-
-            msg_counter += 1
-            history.append({
-                "id": f"{thread_id}-{msg_counter}",
-                "role": "system",
-                "content": msg.content if isinstance(msg.content, str) else str(msg.content),
+        if text_content:
+            ctx.current_turn["steps"].append({
+                "type": "response",
+                "content": text_content,
             })
 
-    if current_turn:
-        _populate_legacy_turn_fields(current_turn)
-        history.append(current_turn)
+        ctx.current_turn["content"] = text_content
 
-    return history
+        if "timestamp" not in ctx.current_turn:
+            backfill_ts = ctx.timestamp_map.get(msg.id) if msg.id else None
+            if backfill_ts:
+                ctx.current_turn["timestamp"] = backfill_ts
+
+        ctx.flush_current_turn(populate_legacy_fields=True)
+        return
+
+    entry = {
+        "id": ctx.next_entry_id(),
+        "role": "assistant",
+        "content": text_content,
+    }
+    if ctx.pending_reload_info:
+        entry["tool_reload_info"] = ctx.pending_reload_info
+        ctx.pending_reload_info = None
+    all_thinking_blocks = reasoning_blocks + thinking_blocks
+    if all_thinking_blocks:
+        steps = thinking_steps(all_thinking_blocks)
+        if text_content:
+            steps.append({
+                "type": "response",
+                "content": text_content,
+            })
+        entry["steps"] = steps
+        entry["intermediate_content"] = "\n".join(
+            s["content"] for s in steps if s["type"] == "thinking"
+        ) or None
+    standalone_ts = ctx.timestamp_map.get(msg.id) if msg.id else None
+    if standalone_ts:
+        entry["timestamp"] = standalone_ts
+    ctx.history.append(entry)
+
+
+def _handle_system_history_message(
+    ctx: _HistoryFormatContext,
+    msg: SystemMessage,
+) -> None:
+    ctx.flush_current_turn()
+    ctx.history.append({
+        "id": ctx.next_entry_id(),
+        "role": "system",
+        "content": msg.content if isinstance(msg.content, str) else str(msg.content),
+    })
+
+
+_HISTORY_MESSAGE_HANDLERS: Dict[type, MessageHistoryHandler] = {
+    HumanMessage: _handle_human_history_message,
+    AIMessage: _handle_ai_history_message,
+    SystemMessage: _handle_system_history_message,
+}
 
 
 def _filter_internal_messages(
