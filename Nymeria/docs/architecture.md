@@ -542,8 +542,8 @@ Input interfaces and event-driven adapters that route messages to the agent:
   extracted routers now include System, devices, workspace, RAG, user memory,
   user tool preferences, Skills, voice, Agent Threads, activity/notifications,
   TODO dashboard, autonomous stream, custom tools, classic tool
-  discovery/default/callable routes, unified tools, settings/model catalog, and
-  MCP server management.
+  discovery/default/callable routes, unified tools, MCP server management,
+  settings/model catalog, and thread config/callable-team routes.
 - Key endpoints: `/chat` (SSE), `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents/threads`, `/triggers`
 - Thread metadata management: `PATCH /threads/{id}/metadata` syncs titles, pins, and platform across surfaces. Renaming a callable thread also updates its `callable_name` and rebuilds the tool registry.
 - CRUD for threads, TODOs, custom tools, callable threads, and triggers

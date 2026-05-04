@@ -7,8 +7,8 @@ The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
-callable routes, unified tools, settings/model catalog, and MCP server
-management now live under
+callable routes, unified tools, MCP server management, settings/model catalog,
+and thread config/callable-team routes now live under
 `Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
 `Nymeria/nymeria/triggers/api.py` during the migration.
 
@@ -1549,6 +1549,9 @@ Deletes a team by clearing membership from its threads. Team changes invalidate 
 ---
 
 ### Thread Config (Per-Thread Settings)
+
+Handlers live in `Nymeria/nymeria/api/routers/thread_config.py`; request
+schemas live in `Nymeria/nymeria/api/schemas/thread_config.py`.
 
 ```http
 GET /threads/{thread_id}/config
