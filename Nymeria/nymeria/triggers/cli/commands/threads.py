@@ -180,32 +180,11 @@ def _handle_delete(state: "CLIState", args: List[str]) -> None:
     state.thread_metadata_manager.delete_thread(state.user_id, tid)
 
     # 2. Delete checkpoints
-    if settings.database_backend == "sqlite":
-        import sqlite3
-        try:
-            conn = sqlite3.connect(str(settings.db_path))
-            conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (tid,))
-            try:
-                conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = ?", (tid,))
-            except Exception:
-                pass
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Failed to delete checkpoints for {tid}: {e}")
-    elif settings.database_backend == "postgres":
-        try:
-            import psycopg  # type: ignore[import-untyped]
-            with psycopg.connect(settings.postgres_uri) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM checkpoints WHERE thread_id = %s", (tid,))
-                    try:
-                        cur.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (tid,))
-                    except Exception:
-                        pass
-                conn.commit()
-        except Exception as e:
-            logger.warning(f"Failed to delete checkpoints for {tid}: {e}")
+    try:
+        from ...core.checkpoint_cleanup import delete_thread_checkpoints
+        delete_thread_checkpoints(settings, tid)
+    except Exception as e:
+        logger.warning(f"Failed to delete checkpoints for {tid}: {e}")
 
     # 3. Delete thread config
     try:
