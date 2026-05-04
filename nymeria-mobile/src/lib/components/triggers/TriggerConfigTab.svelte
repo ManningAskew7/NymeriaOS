@@ -510,7 +510,7 @@
     color: white;
     background: var(--accent-primary);
     border-radius: var(--radius-md);
-    min-height: 40px;
+    min-height: var(--touch-target-min);
     white-space: nowrap;
   }
 
@@ -530,7 +530,7 @@
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) 0;
     border-bottom: 1px solid var(--border-subtle);
-    min-height: 48px;
+    min-height: var(--touch-target-min);
   }
 
   .trigger-row:last-child {
@@ -691,7 +691,7 @@
     gap: 2px;
     color: var(--accent-primary);
     font-size: var(--font-size-sm);
-    min-height: 44px;
+    min-height: var(--touch-target-min);
   }
 
   .back-link:active {
@@ -741,7 +741,7 @@
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    min-height: 44px;
+    min-height: var(--touch-target-min);
   }
 
   .field-input:focus {
@@ -846,7 +846,7 @@
     font-size: var(--font-size-base);
     font-weight: 500;
     border-radius: var(--radius-md);
-    min-height: 48px;
+    min-height: var(--touch-target-min);
   }
 
   .footer-btn:disabled {

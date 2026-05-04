@@ -88,7 +88,7 @@
 <style>
   .toast-stack {
     position: fixed;
-    top: calc(env(safe-area-inset-top, 0px) + var(--spacing-sm));
+    top: calc(var(--safe-area-top) + var(--spacing-sm));
     left: var(--spacing-sm);
     right: var(--spacing-sm);
     display: flex;

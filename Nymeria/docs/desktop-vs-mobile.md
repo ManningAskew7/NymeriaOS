@@ -260,6 +260,12 @@ calls are identical.
 
 **When changing**: If adding CSS variables (new colors, spacing), add to both. Theme color variables must be added through the typed `themeColorCssVariables` map in both `themes.ts` files so `npm run check` fails if `ThemeColors` and the applied CSS variables drift. Mobile-specific sizing and touch adaptations are independent.
 
+Mobile component CSS should consume `--touch-target-min` for interactive touch
+targets and `--safe-area-*` for notch/gesture-bar padding instead of hardcoded
+pixel values or direct `env(safe-area-inset-*)` reads. Momentum scrolling is
+centralized in mobile `app.css`, so component scroll containers only need their
+`overflow` behavior.
+
 ---
 
 ### Desktop-Only Files / Features (no mobile equivalent)

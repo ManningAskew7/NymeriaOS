@@ -241,7 +241,7 @@
     align-items: center;
     gap: var(--spacing-sm);
     width: 100%;
-    min-height: 48px;
+    min-height: var(--touch-target-min);
     text-align: left;
     padding: 0.75rem 0.8rem;
     border: 1px solid var(--border-default);

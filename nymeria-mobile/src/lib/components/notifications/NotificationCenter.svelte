@@ -135,7 +135,6 @@
   .sheet-body {
     flex: 1;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain;
   }
 

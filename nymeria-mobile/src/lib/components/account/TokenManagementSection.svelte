@@ -458,8 +458,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     color: var(--text-muted);
     background: transparent;
     border-radius: var(--radius-sm);

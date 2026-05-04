@@ -150,8 +150,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
   }
@@ -186,7 +186,7 @@
     background: transparent;
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    min-height: 36px;
+    min-height: var(--touch-target-min);
     transition: all var(--transition-fast);
   }
 
@@ -203,7 +203,6 @@
   .panel-body {
     flex: 1;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain;
   }
 

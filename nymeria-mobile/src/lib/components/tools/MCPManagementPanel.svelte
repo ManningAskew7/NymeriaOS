@@ -65,15 +65,15 @@
     height: var(--header-height);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
-    padding-top: env(safe-area-inset-top);
+    padding-top: var(--safe-area-top);
   }
 
   .back-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
   }
@@ -96,8 +96,7 @@
   .panel-body {
     flex: 1;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    padding: var(--spacing-sm) var(--spacing-md) calc(var(--spacing-xl) + env(safe-area-inset-bottom));
+    padding: var(--spacing-sm) var(--spacing-md) calc(var(--spacing-xl) + var(--safe-area-bottom));
   }
 
   .panel-hint {

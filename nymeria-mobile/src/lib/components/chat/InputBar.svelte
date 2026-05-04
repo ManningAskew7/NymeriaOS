@@ -260,8 +260,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
     flex-shrink: 0;
@@ -280,7 +280,7 @@
 
   .message-input {
     flex: 1;
-    min-height: 44px;
+    min-height: var(--touch-target-min);
     max-height: 120px;
     padding: 10px var(--spacing-md);
     background: var(--bg-elevated-2);
@@ -292,7 +292,6 @@
     line-height: 1.4;
     resize: none;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
     transition: border-color var(--transition-fast);
   }
 
@@ -314,8 +313,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: 50%;
     background: var(--accent-primary);
     color: var(--bg-base);

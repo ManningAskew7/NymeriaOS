@@ -885,15 +885,15 @@
     height: var(--header-height);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
-    padding-top: env(safe-area-inset-top);
+    padding-top: var(--safe-area-top);
   }
 
   .back-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
   }
@@ -912,7 +912,6 @@
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
     overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
   }
 
   .tab-btn {
@@ -922,7 +921,7 @@
     color: var(--text-muted);
     border-bottom: 2px solid transparent;
     white-space: nowrap;
-    min-height: 44px;
+    min-height: var(--touch-target-min);
   }
 
   .users-placeholder {
@@ -962,7 +961,6 @@
   .settings-body {
     flex: 1;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
     padding: var(--spacing-lg);
     display: flex;
     flex-direction: column;
@@ -998,7 +996,7 @@
     background: var(--bg-elevated);
     color: var(--text-primary);
     font-size: 16px;
-    min-height: 44px;
+    min-height: var(--touch-target-min);
   }
 
   .setting-input:focus {
@@ -1021,7 +1019,7 @@
     gap: var(--spacing-sm);
     font-size: var(--font-size-sm);
     color: var(--text-primary);
-    min-height: 44px;
+    min-height: var(--touch-target-min);
   }
 
   .setting-toggle input {
@@ -1094,7 +1092,7 @@
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
     font-weight: 500;
-    min-height: 48px;
+    min-height: var(--touch-target-min);
   }
 
   .advanced-toggle:active {
@@ -1120,8 +1118,8 @@
   }
 
   .clear-btn {
-    width: 36px;
-    height: 36px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1218,7 +1216,7 @@
     padding: var(--spacing-sm) var(--spacing-md);
     font-size: var(--font-size-sm);
     flex-shrink: 0;
-    padding-bottom: calc(var(--spacing-sm) + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--spacing-sm) + var(--safe-area-bottom));
   }
 
   .status-bar.success {

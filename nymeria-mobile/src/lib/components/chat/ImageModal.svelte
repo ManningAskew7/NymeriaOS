@@ -196,7 +196,7 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--spacing-sm) var(--spacing-md);
-    padding-top: calc(var(--spacing-sm) + env(safe-area-inset-top));
+    padding-top: calc(var(--spacing-sm) + var(--safe-area-top));
     background: rgba(0, 0, 0, 0.6);
     flex-shrink: 0;
     z-index: 1;
@@ -231,8 +231,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: rgba(255, 255, 255, 0.8);
   }

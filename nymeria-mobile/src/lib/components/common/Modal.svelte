@@ -85,8 +85,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
   }
@@ -97,14 +97,13 @@
   }
 
   .spacer {
-    width: 44px;
+    width: var(--touch-target-min);
     flex-shrink: 0;
   }
 
   .modal-content {
     flex: 1;
     overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
     padding: var(--spacing-md);
   }
 

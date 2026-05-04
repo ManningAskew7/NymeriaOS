@@ -158,7 +158,7 @@
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
     font-weight: 500;
-    min-height: 36px;
+    min-height: var(--touch-target-min);
   }
 
   .add-task-btn:active {
