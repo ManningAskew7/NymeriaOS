@@ -53,11 +53,12 @@ Nymeria wraps LangGraph's ReAct (Reasoning + Acting) agent pattern with addition
                            │
            ┌───────────────┼───────────────┬───────────────┐
            ▼               ▼               ▼               ▼
-┌──────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│  SQLite          │ │ User Profile │ │  TODO-based  │ │    Ticker    │
-│  Checkpointer    │ │   Manager    │ │  Scheduling  │ │  (Polling)   │
-│  (nymeria.db)    │ │  (Memories)  │ │ (schedules)  │ │  (5s loop)   │
-└──────────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+┌────────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ Conversation       │ │ User Profile │ │  TODO-based  │ │    Ticker    │
+│ Checkpointer       │ │   Manager    │ │  Scheduling  │ │  (Polling)   │
+│ SQLite local       │ │  (Memories)  │ │ (schedules)  │ │  (5s loop)   │
+│ PostgreSQL Docker  │ │              │ │              │ │              │
+└────────────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
 ---
@@ -616,10 +617,16 @@ memories, skills, and custom tools are preserved.
 
 ### Conversation Storage
 
-SQLite stores conversation state per `thread_id` using LangGraph's checkpointer system:
+Conversation state is stored per `thread_id` through LangGraph's checkpointer
+system. The configured `DATABASE_BACKEND` selects the durable store:
+- Local/default mode uses SQLite at `data/nymeria.db`.
+- Docker mode sets `DATABASE_BACKEND=postgres` and stores checkpoints in the
+  `nymeria-postgres` service via `POSTGRES_URI`.
+- `memory` mode is available for non-persistent test or throwaway runs.
+
+In all durable modes:
 - Each thread is an isolated conversation
 - **Survives application restarts** (true persistence, not in-memory)
-- Located at `data/nymeria.db`
 - Auto-compact summarizes at the configured threshold, defaulting to 80% context (or legacy sliding window keeps last N cycles)
 
 **Shared SQLite saver architecture:**
@@ -638,6 +645,14 @@ experiments could write checkpoints or pending writes that the other execution
 path did not reliably rehydrate, which surfaced as missing history or stale
 thread state when a conversation moved between sync chat, API streaming,
 scheduled TODOs, triggers, callable threads, and spawned threads.
+
+**PostgreSQL checkpointer architecture:**
+- Docker compose provisions `postgres:15-alpine` as `nymeria-postgres`.
+- All app services use `DATABASE_BACKEND=postgres` and a shared
+  `POSTGRES_URI` pointing at that container.
+- `vendor/react_agent/graph.py` creates a LangGraph `PostgresSaver`, runs
+  `setup()`, and wraps it with `AsyncPostgresSaverWrapper` so sync and async
+  agent paths use the same checkpoint tables.
 
 See [LangGraph PERSISTENCE.md](../../LangGraph/docs/PERSISTENCE.md) for full technical details.
 
