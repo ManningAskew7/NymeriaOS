@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { getCategoryInfo as getToolCategoryInfo } from '$lib/utils/toolCategories';
 import { registerIdentityReloadHook } from './config.svelte';
 import { defaultToolsStore } from './defaultTools.svelte';
 import type { UnifiedTool } from '$lib/types';
@@ -32,70 +33,6 @@ function createUnifiedToolsStore() {
     loading = false;
     error = null;
   });
-
-  // Category display names and icons
-  const CATEGORY_INFO: Record<string, { name: string; icon: string; description: string }> = {
-    core: {
-      name: 'Core',
-      icon: 'terminal',
-      description: 'Essential system tools like bash, file operations, and web search'
-    },
-    profile: {
-      name: 'Profile',
-      icon: 'brain',
-      description: 'Tools for saving and retrieving user memories and preferences'
-    },
-    notepad: {
-      name: 'Notepad',
-      icon: 'sticky-note',
-      description: 'Per-thread persistent notes that survive context compaction'
-    },
-    self_modify: {
-      name: 'Self-Modify',
-      icon: 'code',
-      description: 'Tools that allow Nymeria to modify her own code (sensitive)'
-    },
-    todo: {
-      name: 'TODOs',
-      icon: 'list',
-      description: 'Task management and scheduling tools'
-    },
-    trigger: {
-      name: 'Triggers',
-      icon: 'zap',
-      description: 'Event-driven trigger management tools'
-    },
-    email: {
-      name: 'Email',
-      icon: 'mail',
-      description: 'Outlook email tools for reading, sending, and managing mail'
-    },
-    browser: {
-      name: 'Browser',
-      icon: 'globe',
-      description: 'Playwright browser automation tools for web interaction'
-    },
-    calendar: {
-      name: 'Calendar',
-      icon: 'calendar',
-      description: 'Google Calendar tools for managing events and schedules'
-    },
-    google_docs: {
-      name: 'Google Docs',
-      icon: 'file-text',
-      description: 'Google Docs tools for reading, writing, and formatting documents'
-    },
-    custom: {
-      name: 'Custom',
-      icon: 'puzzle',
-      description: 'User-created custom tools (HTTP, MCP, etc.)'
-    },
-    mcp_server: {
-      name: 'MCP Servers',
-      icon: 'server',
-      description: 'Tools auto-discovered from MCP servers'
-    }
-  };
 
   // Getters
   function getTools(): UnifiedTool[] {
@@ -148,13 +85,7 @@ function createUnifiedToolsStore() {
   }
 
   function getCategoryInfo(category: string) {
-    return (
-      CATEGORY_INFO[category] || {
-        name: category,
-        icon: 'tool',
-        description: ''
-      }
-    );
+    return getToolCategoryInfo(category);
   }
 
   function getToolById(id: string): UnifiedTool | undefined {

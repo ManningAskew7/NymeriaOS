@@ -17,6 +17,14 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
+  import {
+    DEFAULT_CUSTOM_OPENAI_BASE_URL,
+    fromThreadDisplayProvider,
+    supportsOpenAiApiMode,
+    toThreadDisplayProvider,
+    type ThreadDisplayProvider,
+  } from '$lib/utils/providerMapping';
+  import { detectThreadPlatform, isNativeDisplayPlatform } from '$lib/utils/platform';
   import ModelConfigTab from './ModelConfigTab.svelte';
   import SkillsConfigTab from './SkillsConfigTab.svelte';
   import ChatAppConfigTab from './ChatAppConfigTab.svelte';
@@ -35,22 +43,8 @@
 
   let { thread, threadConfig, initialTab = 'instructions', onClose, onSaved }: Props = $props();
 
-  function platformFromThreadId(threadId: string): ThreadPlatform {
-    if (threadId.startsWith('discord_')) return 'discord';
-    if (threadId.startsWith('telegram_')) return 'telegram';
-    if (threadId.startsWith('slack_')) return 'slack';
-    if (threadId.startsWith('twitch_')) return 'twitch';
-    if (threadId.startsWith('trigger-')) return 'trigger';
-    if (threadId.startsWith('agent-') || threadId.startsWith('spawned-')) return 'callable';
-    return 'desktop';
-  }
-
-  function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is 'discord' | 'telegram' | 'slack' | 'twitch' | 'trigger' {
-    return platform === 'discord' || platform === 'telegram' || platform === 'slack' || platform === 'twitch' || platform === 'trigger';
-  }
-
   function platformAfterCallableChange(target: Thread, callable: boolean): ThreadPlatform {
-    const detected = platformFromThreadId(target.id);
+    const detected = detectThreadPlatform(target.id);
     if (isNativeDisplayPlatform(target.platform)) return target.platform;
     if (isNativeDisplayPlatform(detected)) return detected;
     if (callable) return 'callable';
@@ -146,32 +140,6 @@
 
   let expandedMcpServer = $state<string | null>(null);
 
-  // Display provider mapping for thread-level overrides
-  // "" = Default (inherit global), "anthropic_proxy" = subscription, "anthropic_direct" = direct API,
-  // "openai_custom" = openai provider pointed at a custom OpenAI-compatible endpoint
-  // (local server, CLIProxy sidecar, etc.)
-  type ThreadDisplayProvider = '' | 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openrouter' | 'openai_custom';
-
-  // Default placeholder for openai_custom — the GPT-5.5 CLIProxy sidecar is the
-  // common target on this stack. Users can edit freely.
-  const DEFAULT_CUSTOM_OPENAI_BASE_URL = 'http://cli-proxy-api-latest:8317/v1';
-
-  function toThreadDisplayProvider(provider: string, baseUrl?: string | null): ThreadDisplayProvider {
-    if (!provider) return '';
-    if (provider === 'anthropic' && baseUrl === '') return 'anthropic_direct';
-    if (provider === 'anthropic') return 'anthropic_proxy';
-    if (provider === 'openai' && baseUrl) return 'openai_custom';
-    return provider as ThreadDisplayProvider;
-  }
-
-  function fromThreadDisplayProvider(dp: ThreadDisplayProvider): { provider: string; baseUrl: string | null } {
-    if (dp === '') return { provider: '', baseUrl: null };
-    if (dp === 'anthropic_proxy') return { provider: 'anthropic', baseUrl: null };
-    if (dp === 'anthropic_direct') return { provider: 'anthropic', baseUrl: '' };
-    if (dp === 'openai_custom') return { provider: 'openai', baseUrl: DEFAULT_CUSTOM_OPENAI_BASE_URL };
-    return { provider: dp, baseUrl: null };
-  }
-
   function getInitialThreadDisplayProvider(): ThreadDisplayProvider {
     return toThreadDisplayProvider(
       threadConfig?.llmConfig?.provider ?? '',
@@ -242,10 +210,6 @@
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
-  }
-
-  function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
-    return provider === 'openai' || provider === 'openrouter';
   }
 
   // System prompt & agent fields
@@ -568,7 +532,7 @@
           // Explicitly clear to remove stale per-thread override
           llm.use_model_defaults = null;
         }
-        llm.openai_api_mode = supportsApiMode() && llmOpenAiApiMode !== 'default'
+        llm.openai_api_mode = supportsOpenAiApiMode(getEffectiveProvider()) && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
         updates.llm_config = llm;

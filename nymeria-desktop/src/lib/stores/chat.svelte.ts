@@ -10,10 +10,7 @@ import type {
   ContextStats
 } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
-
-function generateId(): string {
-  return crypto.randomUUID();
-}
+import { generateId } from '$lib/utils/ids';
 
 function mergeArtifacts(
   existing: WorkspaceArtifact[] | undefined,

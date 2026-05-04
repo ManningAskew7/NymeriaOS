@@ -3,7 +3,7 @@
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { api } from '$lib/services/api.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, ThemeName, SavedConnection, AvailableModel } from '$lib/types';
+  import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, ThemeName, SavedConnection } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { modelsStore } from '$lib/stores/models.svelte';
@@ -15,6 +15,17 @@
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
+  import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import {
+    DEFAULT_CLIPROXY_BASE_URL,
+    DEFAULT_LOCAL_BASE_URL,
+    DEFAULT_OPENAI_CLIPROXY_BASE_URL,
+    fromSettingsDisplayProvider as fromDisplayProvider,
+    isLocalBaseUrl,
+    isManagedBaseUrl,
+    toSettingsDisplayProvider as toDisplayProvider,
+  } from '$lib/utils/providerMapping';
+  import type { SettingsDisplayProvider as DisplayProvider } from '$lib/utils/providerMapping';
 
   interface Props {
     initialTab?: string;
@@ -32,60 +43,8 @@
   let editingConnectionId = $state<string | null>(null);
   let editingName = $state('');
 
-  // Display provider: splits "anthropic" into proxy vs direct based on base_url,
-  // and "openai" into hosted, custom proxy, or local based on base_url.
-  type DisplayProvider = 'anthropic_proxy' | 'anthropic_direct' | 'openai' | 'openai_custom' | 'openrouter' | 'local_openai';
-
-  // Hostnames that indicate a local OpenAI-compatible inference server
-  // (llama.cpp llama-server, LM Studio, Ollama, etc.). host.docker.internal is
-  // how the Nymeria api container reaches the Windows/macOS host.
-  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', 'host.docker.internal'];
-  const DEFAULT_LOCAL_BASE_URL = 'http://host.docker.internal:8080/v1';
-
-  // Default CLIProxy URL inside the Nymeria docker network. Used when the user
-  // picks Anthropic (Subscription) but llmBaseUrl is empty (e.g. they were
-  // previously on Direct API which stores base_url as "").
-  const DEFAULT_CLIPROXY_BASE_URL = 'http://cli-proxy-api:8317';
-  const DEFAULT_OPENAI_CLIPROXY_BASE_URL = 'http://cli-proxy-api-latest:8317/v1';
-  const MANAGED_BASE_URLS = [
-    DEFAULT_CLIPROXY_BASE_URL,
-    DEFAULT_OPENAI_CLIPROXY_BASE_URL,
-    DEFAULT_LOCAL_BASE_URL,
-  ];
-
-  function isLocalBaseUrl(baseUrl: string | null | undefined): boolean {
-    if (!baseUrl) return false;
-    return LOCAL_HOSTS.some(h => baseUrl.includes(h));
-  }
-
-  function normalizeBaseUrl(baseUrl: string | null | undefined): string {
-    return (baseUrl || '').trim().replace(/\/+$/, '');
-  }
-
-  function isManagedBaseUrl(baseUrl: string | null | undefined): boolean {
-    const normalized = normalizeBaseUrl(baseUrl);
-    return !!normalized && MANAGED_BASE_URLS.some(url => normalizeBaseUrl(url) === normalized);
-  }
-
   function shouldReplaceBaseUrlForProvider(): boolean {
     return !llmBaseUrl || isManagedBaseUrl(llmBaseUrl);
-  }
-
-  function toDisplayProvider(provider: LLMProvider, baseUrl: string): DisplayProvider {
-    if (provider === 'anthropic' && !baseUrl) return 'anthropic_direct';
-    if (provider === 'anthropic') return 'anthropic_proxy';
-    if (provider === 'openai' && isLocalBaseUrl(baseUrl)) return 'local_openai';
-    if (provider === 'openai' && baseUrl) return 'openai_custom';
-    return provider as DisplayProvider;
-  }
-
-  function fromDisplayProvider(dp: DisplayProvider): { provider: LLMProvider; clearBaseUrl: boolean } {
-    if (dp === 'anthropic_proxy') return { provider: 'anthropic', clearBaseUrl: false };
-    if (dp === 'anthropic_direct') return { provider: 'anthropic', clearBaseUrl: true };
-    if (dp === 'local_openai') return { provider: 'openai', clearBaseUrl: false };
-    if (dp === 'openai_custom') return { provider: 'openai', clearBaseUrl: false };
-    if (dp === 'openai') return { provider: 'openai', clearBaseUrl: true };
-    return { provider: dp as LLMProvider, clearBaseUrl: false };
   }
 
   // Server settings
@@ -139,27 +98,11 @@
   );
 
   // Dynamic model list for providers that support /v1/models
-  let availableModels = $state<AvailableModel[]>([]);
-  let loadingAvailableModels = $state(false);
-  let availableModelsProvider = $state<string>('');
-
-  async function fetchAvailableModels(provider: string) {
-    if (provider !== 'anthropic' && provider !== 'openai') {
-      availableModels = [];
-      availableModelsProvider = '';
-      return;
-    }
-    if (availableModelsProvider === provider && availableModels.length > 0) return;
-    loadingAvailableModels = true;
-    try {
-      availableModels = await api.getAvailableModels(provider);
-      availableModelsProvider = provider;
-    } catch {
-      availableModels = [];
-    } finally {
-      loadingAvailableModels = false;
-    }
-  }
+  let availableModelsState = $state<AvailableModelsState>({
+    models: [],
+    provider: '',
+    loading: false,
+  });
 
   // Sync llmProvider from displayProvider and fetch models
   // (skip the model fetch for local/custom OpenAI — those endpoints may not
@@ -168,11 +111,10 @@
     const { provider } = fromDisplayProvider(displayProvider);
     llmProvider = provider;
     if (displayProvider === 'local_openai' || displayProvider === 'openai_custom') {
-      availableModels = [];
-      availableModelsProvider = '';
+      clearAvailableModels(availableModelsState);
       return;
     }
-    fetchAvailableModels(provider);
+    void loadAvailableModels(provider, availableModelsState);
   });
 
   // Auto-populate the base URL field when the user picks Local LLM,
@@ -785,14 +727,14 @@
           {#if displayProvider === 'local_openai'}
             <!-- Local LLM model names are whatever the user --alias'd llama-server with;
                  no dropdown — use the free-text input below. -->
-          {:else if availableModels.length > 0 && (llmProvider === 'anthropic' || llmProvider === 'openai')}
+          {:else if availableModelsState.models.length > 0 && (llmProvider === 'anthropic' || llmProvider === 'openai')}
             <select id="llm-model" bind:value={llmModel}>
-              {#each availableModels as model}
+              {#each availableModelsState.models as model}
                 <option value={model.id}>{model.name || model.id}</option>
               {/each}
             </select>
-            <p class="hint">{availableModels.length} models available</p>
-          {:else if loadingAvailableModels}
+            <p class="hint">{availableModelsState.models.length} models available</p>
+          {:else if availableModelsState.loading}
             <select id="llm-model" disabled>
               <option>Loading models...</option>
             </select>
