@@ -135,9 +135,10 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
-**Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`, with
-extracted schemas such as System, Settings, Skills, Agent Threads, TODOs, and
-dashboard activity/notifications under `Nymeria/nymeria/api/schemas/`):
+**Response shapes** (Pydantic models for this account surface live in
+`Nymeria/nymeria/api/schemas/accounts.py`; other extracted schemas such as
+System, Settings, Skills, Agent Threads, TODOs, and dashboard
+activity/notifications live under `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
 // IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,
