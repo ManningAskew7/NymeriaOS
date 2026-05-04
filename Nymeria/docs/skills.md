@@ -209,7 +209,9 @@ uninstall, or reload-skills tool call). Marketplace entries live in
 TTL when the agent searches `source="anthropic"`.
 
 Index storage: `data/skills/index.db` (sqlite). Zero new Python deps —
-`openai` and `sqlite-vec` are already in `requirements.txt` for RAG.
+`openai` is installed transitively by the OpenAI/LangChain dependencies, and
+`sqlite-vec` is installed through `requirements-sqlite.txt`, which
+`requirements.txt` includes for the default local backend.
 
 ### Marketplace fetch performance
 

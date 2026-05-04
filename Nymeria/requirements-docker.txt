@@ -1,13 +1,11 @@
-# Docker-only dependencies (supplements requirements.txt — do not duplicate
-# packages that already appear in the base file).
+# Docker-only dependencies (supplements requirements.txt — include specialized
+# requirement files instead of duplicating package entries).
 
 # Redis support for event bus
 redis>=5.0.0
 
 # PostgreSQL support for production deployments
-langgraph-checkpoint-postgres>=2.0.0
-psycopg[binary]>=3.2.0
-psycopg-pool>=3.2.0
+-r requirements-postgres.txt
 
 # Firebase Cloud Messaging (push notifications to watch/mobile devices)
 firebase-admin>=6.0.0

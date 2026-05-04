@@ -1,0 +1,6 @@
+# SQLite checkpoint and local vector-search dependencies for the default
+# zero-setup local backend.
+
+langgraph-checkpoint-sqlite>=1.0.0
+aiosqlite>=0.20.0
+sqlite-vec>=0.1.0
