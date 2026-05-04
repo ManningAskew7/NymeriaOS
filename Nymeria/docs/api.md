@@ -5,9 +5,9 @@ Base URL: `http://localhost:8000`
 Implementation note: `create_api_app()` remains the public FastAPI factory.
 The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
-tool-preference, Skills, voice, and Agent Threads routes now live under
-`Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
-`Nymeria/nymeria/triggers/api.py` during the migration.
+tool-preference, Skills, voice, Agent Threads, and activity/notification
+routes now live under `Nymeria/nymeria/api/routers/`, while the rest of the
+surface still lives in `Nymeria/nymeria/triggers/api.py` during the migration.
 
 ## Authentication
 
@@ -133,8 +133,8 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
 **Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`, with
-extracted schemas such as System, Skills, and Agent Threads under
-`Nymeria/nymeria/api/schemas/`):
+extracted schemas such as System, Skills, Agent Threads, and dashboard
+activity/notifications under `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
 // IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,

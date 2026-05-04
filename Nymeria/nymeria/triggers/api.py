@@ -38,7 +38,6 @@ from ..core.chat_bindings import (
     BotAlreadyRegistered,
 )
 from ..core import secrets as nymeria_secrets
-from ..core.activity_log import ActivityType, get_activity_log
 from ..core.checkpoint_cleanup import delete_thread_checkpoints
 from ..core.event_bus import (
     AutonomousEvent,
@@ -52,7 +51,6 @@ from ..core.notification_dispatch import (
     create_autonomous_notification as _dispatch_autonomous_notification,
     should_notify_autonomous as _should_notify_autonomous,
 )
-from ..core.notifications import get_notification_store
 from ..core.rate_limit import SlidingWindowRateLimiter
 from ..core.time_utils import utc_now
 from ..core.thread_classification import (
@@ -75,6 +73,7 @@ from ..core.custom_tools import (
     get_custom_tool_loader,
     reload_custom_tools,
 )
+from ..api.routers.activity import create_activity_router
 from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
 from ..api.routers.memory import create_memory_router
@@ -377,42 +376,6 @@ class TodoListResponse(BaseModel):
     user_id: str
     items: List[TodoItemResponse]
     total: int
-
-
-class ActivityEntryResponse(BaseModel):
-    """Response model for an activity entry."""
-
-    id: str
-    timestamp: datetime
-    type: str
-    message: str
-    thread_id: Optional[str] = None
-    metadata: Optional[dict] = None
-
-
-class ActivityLogResponse(BaseModel):
-    """Response model for activity log."""
-
-    entries: List[ActivityEntryResponse]
-    total: int
-
-
-class NotificationResponse(BaseModel):
-    """Response model for a single notification."""
-
-    id: str
-    summary: str
-    thread_id: Optional[str] = None
-    task_id: Optional[str] = None
-    created_at: datetime
-    read: bool
-
-
-class NotificationsListResponse(BaseModel):
-    """Response model for notifications list."""
-
-    notifications: List[NotificationResponse]
-    unread_count: int
 
 
 # Custom Tool Models
@@ -1248,6 +1211,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app.include_router(create_skills_router(verify_api_key, _authed_user_id, get_agent, _require_thread_access))
     app.include_router(create_voice_router(verify_api_key, get_agent, get_settings, _require_thread_access))
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
+    app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
 
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
@@ -5531,118 +5495,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 schedule_db.remove_scheduled(todo_id)
 
             return _todo_to_response(item)
-
-    @app.get("/activity", response_model=ActivityLogResponse, tags=["Dashboard"])
-    async def get_activity(
-        user_id: str = Depends(_authed_user_id),
-        limit: int = Query(default=50, le=100, description="Max entries to return"),
-        activity_type: Optional[str] = Query(default=None, description="Filter by type"),
-        thread_id: Optional[str] = Query(default=None, description="Filter by thread ID"),
-        user: AuthenticatedUser = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """
-        Get activity log for a user.
-
-        Returns recent activity entries, newest first.
-        Optionally filter by thread_id.
-        """
-        activity_log = get_activity_log()
-
-        # Parse activity type filter
-        type_filter = None
-        if activity_type:
-            try:
-                type_filter = ActivityType(activity_type)
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid activity type '{activity_type}'",
-                )
-
-        entries = activity_log.get_entries(
-            user_id, limit=limit, activity_type=type_filter, thread_id=thread_id
-        )
-
-        return ActivityLogResponse(
-            entries=[
-                ActivityEntryResponse(
-                    id=entry.id,
-                    timestamp=entry.timestamp,
-                    type=entry.type.value,
-                    message=entry.message,
-                    thread_id=entry.thread_id,
-                    metadata=entry.metadata,
-                )
-                for entry in entries
-            ],
-            total=len(entries),
-        )
-
-    @app.get("/notifications", response_model=NotificationsListResponse, tags=["Dashboard"])
-    async def get_notifications(
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """
-        Get notifications for a user.
-
-        Returns all notifications with unread count.
-        """
-        store = get_notification_store()
-        notifications = store.get_all(user_id, limit=50)
-        unread_count = store.get_unread_count(user_id)
-
-        return NotificationsListResponse(
-            notifications=[
-                NotificationResponse(
-                    id=n.id,
-                    summary=n.summary,
-                    thread_id=n.thread_id,
-                    task_id=n.task_id,
-                    created_at=n.created_at,
-                    read=n.read,
-                )
-                for n in notifications
-            ],
-            unread_count=unread_count,
-        )
-
-    @app.post("/notifications/{notification_id}/read", tags=["Dashboard"])
-    async def mark_notification_read(
-        notification_id: str,
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """
-        Mark a notification as read.
-        """
-        store = get_notification_store()
-        success = store.mark_read(notification_id, user_id)
-
-        if not success:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Notification '{notification_id}' not found",
-            )
-
-        return {"status": "ok", "notification_id": notification_id}
-
-    @app.post("/notifications/read-all", tags=["Dashboard"])
-    async def mark_all_notifications_read(
-        user_id: str = Depends(_authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-        settings: Settings = Depends(get_settings),
-    ):
-        """
-        Mark all notifications as read for a user.
-        """
-        store = get_notification_store()
-        count = store.mark_all_read(user_id)
-
-        return {"status": "ok", "marked_read": count}
 
     @app.get("/autonomous/stream", tags=["Autonomous"])
     async def stream_autonomous_events(
