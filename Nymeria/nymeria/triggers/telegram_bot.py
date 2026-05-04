@@ -45,6 +45,7 @@ from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens, http_error_detail
 from .message_splitter import split_telegram_message as split_message
 from .sse_consumer import consume_sse_stream, parse_attach_paths as _parse_attach_paths
+from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +354,7 @@ class NymeriaTelegramBot:
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
         self._background_tasks: set[asyncio.Task] = set()
+        self._health_task: Optional[asyncio.Task] = None
 
     async def _get_telegram_autonomous_delivery(self, thread_id: str) -> str:
         """Read and cache this thread's Telegram autonomous delivery mode."""
@@ -756,8 +758,39 @@ class NymeriaTelegramBot:
         # shared bot. User-owned bots receive autonomous events via the
         # shared bot dispatching to their `_handle_sse_event`.
         if self.is_shared_bot:
+            self._start_health_heartbeat()
             self._spawn_background_task(self._api_sse_listener())
             self._spawn_background_task(self._user_bots_supervisor_loop())
+
+    def _start_health_heartbeat(self) -> None:
+        if self._health_task is not None and not self._health_task.done():
+            return
+        self._health_task = self._spawn_background_task(self._health_heartbeat_loop())
+
+    async def _health_heartbeat_loop(self) -> None:
+        """Publish health only while polling and the Nymeria API are usable."""
+        while True:
+            try:
+                app = self._application
+                updater = getattr(app, "updater", None) if app is not None else None
+                app_running = bool(getattr(app, "running", False))
+                polling_running = bool(getattr(updater, "running", False))
+                api_ok = await self.api.health()
+                write_service_heartbeat(
+                    "telegram-bot",
+                    status="ok" if api_ok and app_running and polling_running else "unhealthy",
+                    details={
+                        "api_ok": api_ok,
+                        "app_running": app_running,
+                        "polling_running": polling_running,
+                        "user_bot_count": len(self._user_bots),
+                    },
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Telegram health heartbeat failed", exc_info=True)
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
     def _register_handlers(self, app) -> None:
         """Register all command and message handlers."""

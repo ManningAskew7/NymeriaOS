@@ -61,3 +61,27 @@ def test_compose_watchdog_default_matches_documented_default() -> None:
     api_env = services["api"]["environment"]
 
     assert api_env["WATCHDOG_INTERVAL_MINUTES"] == "${WATCHDOG_INTERVAL_MINUTES:-5}"
+
+
+def test_non_api_services_use_runtime_health_checks() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+
+    for service_name in (
+        "worker",
+        "watchdog",
+        "discord-bot",
+        "telegram-bot",
+        "twitch-bot",
+        "mcp",
+    ):
+        healthcheck = services[service_name]["healthcheck"]["test"]
+        command = " ".join(healthcheck)
+
+        assert "pgrep" not in command
+        assert "nymeria.core.service_health" in command
+
+
+def test_shared_dockerfile_has_no_built_in_healthcheck() -> None:
+    dockerfile = (ROOT / "Dockerfile.full").read_text(encoding="utf-8")
+
+    assert "HEALTHCHECK" not in dockerfile

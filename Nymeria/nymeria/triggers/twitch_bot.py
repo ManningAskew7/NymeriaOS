@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import twitchio
 from twitchio.ext import commands
 
+from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 from .message_splitter import split_twitch_message as split_message
 
 if TYPE_CHECKING:
@@ -250,6 +251,7 @@ class NymeriaTwitchBot(commands.Bot):
         self._start_time = time.time()
         self._stopped = False  # Kill switch — disables all agent responses
         self._pulse_task: Optional[asyncio.Task] = None
+        self._health_task: Optional[asyncio.Task] = None
         self._user_id_cache: Dict[str, str] = {}  # username -> numeric ID
         self._last_delivered: int = 0  # shared cursor — tracks last message delivered to agent
         self._pulse_min_messages: int = pulse_min_messages  # minimum new messages to trigger pulse
@@ -397,6 +399,34 @@ class NymeriaTwitchBot(commands.Bot):
         print(f"\nTwitch bot ready! Watching #{self._channel_name}")
         print(f"  Buffer size: {self._buffer._buffer.maxlen}")
         print(f"  Pulse: {'enabled' if self._pulse_enabled else 'disabled'}")
+        self._start_health_heartbeat()
+
+    def _start_health_heartbeat(self) -> None:
+        if self._health_task is not None and not self._health_task.done():
+            return
+        self._health_task = asyncio.create_task(self._health_heartbeat_loop())
+
+    async def _health_heartbeat_loop(self) -> None:
+        """Publish health only while EventSub chat subscriptions are active."""
+        while True:
+            try:
+                subscriptions = self.websocket_subscriptions()
+                client_connected = bool(self._broadcaster_id and subscriptions)
+                write_service_heartbeat(
+                    "twitch-bot",
+                    status="ok" if client_connected and not self._stopped else "unhealthy",
+                    details={
+                        "client_connected": client_connected,
+                        "broadcaster_resolved": self._broadcaster_id is not None,
+                        "subscription_count": len(subscriptions),
+                        "stopped": self._stopped,
+                    },
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Twitch health heartbeat failed", exc_info=True)
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
     async def event_message(self, payload: twitchio.ChatMessage) -> None:
         """Called for every chat message in the channel."""

@@ -48,6 +48,27 @@ pull request by rendering the default and optional-profile Compose configs from
 `.env.docker.example` and running BuildKit's Dockerfile check against
 `Dockerfile.full`.
 
+### Docker Health Checks
+
+Docker Compose owns the health checks for Nymeria services. The shared
+`Dockerfile.full` intentionally does not define a built-in `HEALTHCHECK`
+because the image runs different commands in different containers.
+
+The API container uses `GET /health`. Worker, watchdog, Discord, Telegram, and
+Twitch containers write runtime heartbeat files under `/tmp/nymeria-health/`;
+Compose validates those heartbeats with `python -m nymeria.core.service_health`.
+Those checks fail when the heartbeat is stale, the heartbeat PID is gone, the
+service reports an unhealthy client/ticker loop, or required dependencies such
+as the API, PostgreSQL, or Redis are unavailable.
+
+Use `docker compose --env-file .env.docker ps` for the container health summary.
+For a direct check inside a container, run a service-specific command such as:
+
+```bash
+docker compose --env-file .env.docker exec worker \
+  python -m nymeria.core.service_health check worker
+```
+
 ## Architecture
 
 ### Docker Deployment Architecture
