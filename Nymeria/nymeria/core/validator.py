@@ -83,7 +83,7 @@ class CodeValidator:
         tool_functions = []
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for decorator in node.decorator_list:
                     # Check for @tool decorator
                     is_tool = False
