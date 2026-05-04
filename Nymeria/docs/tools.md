@@ -1393,15 +1393,22 @@ Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a 
 
 ## Security Levels & Metadata
 
-Tool metadata is defined in `tools/metadata.py`. Each tool has a category, security level, and default enabled state.
+Tool metadata is generated in `tools/metadata.py` from the registered LangChain
+tool objects. Descriptions come from the tool docstrings; `metadata.py` owns the
+policy fields that cannot be inferred from a docstring: category, security
+level, default-enabled state, and config schemas.
 
 ### Security Levels
 
-| Level | Default Enabled | Description |
-|-------|----------------|-------------|
-| **SAFE** | Yes | Always available, no risk |
-| **MODERATE** | Yes | Can be disabled by user |
-| **SENSITIVE** | **No** | Requires explicit opt-in |
+| Level | Description |
+|-------|-------------|
+| **SAFE** | Read-only or low-risk behavior |
+| **MODERATE** | Mutates external/local state or performs broader actions |
+| **SENSITIVE** | Code/runtime mutation or similarly high-risk behavior |
+
+Default availability is separate from security level: tools in `ALL_TOOLS` are
+enabled for new threads by default, and tools in `OPTIONAL_TOOLS` are opt-in by
+default even when they are classified `SAFE`.
 
 ### Tools by Security Level
 
@@ -1413,7 +1420,8 @@ Representative examples:
 
 **SENSITIVE:** self-modify file mutation and rollback tools
 
-For the precise current registry, check `nymeria/tools/metadata.py`, which is the source of truth.
+For the precise current registry, call `get_all_tool_metadata()` or check
+`nymeria/tools/metadata.py` for the generated metadata policy.
 
 ---
 
@@ -1455,6 +1463,9 @@ ALL_TOOLS = [
 ### 3. Tool is Automatically Available
 
 The tool is available on next startup, or call `reload_all()` for hot-reload.
+Metadata is generated automatically from the registered tool object, so adding a
+tool to `ALL_TOOLS` or `OPTIONAL_TOOLS` is enough to get a metadata entry.
+Use clear docstrings: the first paragraph becomes the discovery description.
 
 ---
 

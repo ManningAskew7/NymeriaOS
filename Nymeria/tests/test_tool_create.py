@@ -141,6 +141,7 @@ def test_custom_tool_loader_registers_search_metadata(tmp_path):
     assert meta.category == ToolCategory.CUSTOM
     assert meta.security_level == SecurityLevel.MODERATE
     assert meta.description == "Look up a public market price"
+    assert meta.default_enabled is False
 
     assert loader.delete_definition("price_lookup") is True
     assert get_all_tool_metadata("price_lookup") is None
