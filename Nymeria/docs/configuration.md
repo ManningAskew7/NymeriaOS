@@ -24,7 +24,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 
 | Variable | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `LLM_MAX_TOKENS` | (model limit) | 1 - 32000 | Maximum output tokens |
+| `LLM_MAX_TOKENS` | (model limit) | 1 - 1,000,000 | Maximum output tokens |
 | `LLM_TOP_P` | (provider default) | 0.0 - 1.0 | Nucleus sampling threshold |
 | `LLM_TOP_K` | (provider default) | 1 - 100 | Top-k sampling (limits vocabulary per step) |
 | `LLM_FREQUENCY_PENALTY` | (provider default) | -2.0 - 2.0 | Reduce repetition of token sequences |
