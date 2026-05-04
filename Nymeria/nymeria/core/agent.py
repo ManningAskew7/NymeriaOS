@@ -37,18 +37,11 @@ from .token_tracker import TokenTracker
 from .token_usage import extract_from_message, extract_last_from_messages
 from .agent_history import (
     CONTEXT_PREFIX_PATTERN as _CONTEXT_PREFIX_PATTERN,
-    InlineThinkingTextStripper as _InlineThinkingTextStripper,
     build_message_timestamp_map as _build_message_timestamp_map,
     extract_content_parts as _extract_content_parts,
-    extract_reasoning_text_from_block as _extract_reasoning_text_from_block,
     format_conversation_history,
-    strip_inline_thinking_text as _strip_inline_thinking_text,
 )
-from .agent_streaming import (
-    ReasoningChunkDeduper,
-    has_tool_call_content_delta,
-    has_tool_call_delta,
-)
+from .agent_streaming import GraphStreamProcessor
 from .agent_compaction import CompactionManager, create_compaction_marker as _create_compaction_marker
 from .time_utils import ensure_aware_utc, utc_now
 from .ticker import Ticker, set_ticker
@@ -2833,6 +2826,156 @@ class NymeriaAgent:
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
+    def _prepare_astream_input(
+        self,
+        *,
+        message_with_context: str,
+        thread_id: str,
+        attachments: Optional[List[Dict[str, str]]],
+        images: Optional[List[Dict[str, str]]],
+        force_unsupported_attachments: bool,
+        is_self_invoke: bool,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
+        """Build the LangGraph input state for a streaming turn."""
+        context_summary_for_ui: Optional[str] = None
+        pending_summary = self.get_pending_summary(thread_id)
+        if pending_summary:
+            message_with_context = self._compaction.format_user_resume(
+                message_with_context,
+                pending_summary,
+            )
+            context_summary_for_ui = pending_summary
+            logger.info(f"Thread {thread_id}: Attached pending summary to user message")
+
+        pending_notepad = self._compaction.pop_pending_notepad(thread_id)
+        if pending_notepad:
+            message_with_context += self._format_notepad_section(pending_notepad)
+            logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
+
+        all_attachments = list(attachments or [])
+        if images:
+            for img in images:
+                all_attachments.append({
+                    "file_type": "image",
+                    "data_url": img["data_url"],
+                    "mime_type": img["mime_type"]
+                })
+
+        if not all_attachments:
+            if is_self_invoke:
+                human_msg = _create_human_message(
+                    message_with_context,
+                    internal=True,
+                    internal_type="autonomous_wakeup",
+                )
+            else:
+                human_msg = HumanMessage(content=message_with_context)
+            return {"messages": [human_msg]}, context_summary_for_ui, None
+
+        from ..config.model_capabilities import (
+            evaluate_attachment_compatibility,
+            infer_mime_type,
+            normalize_attachment_file_type,
+        )
+
+        llm_cfg = self._get_llm_config_for_thread(thread_id)
+        effective_provider = llm_cfg.provider or self.settings.llm_provider
+        effective_model = llm_cfg.model or self.settings.llm_model
+
+        compatibility = evaluate_attachment_compatibility(
+            effective_model,
+            effective_provider,
+            all_attachments,
+        )
+
+        if not compatibility["compatible"] and not force_unsupported_attachments:
+            unsupported = ", ".join(compatibility["unsupported_modalities"])
+            warning_text = " ".join(compatibility["warnings"]).strip()
+            message = (
+                f"Current model ({effective_model}) may not support these attachments "
+                f"(unsupported modalities: {unsupported or 'unknown'})."
+            )
+            if warning_text:
+                message = f"{message} {warning_text}"
+
+            return None, context_summary_for_ui, {
+                "type": "error",
+                "content": message,
+            }
+
+        if compatibility["warnings"]:
+            logger.info(
+                "Thread %s attachment warnings for model %s: %s",
+                thread_id,
+                effective_model,
+                compatibility["warnings"],
+            )
+
+        import base64 as b64
+
+        content = [{"type": "text", "text": message_with_context}]
+        for att in all_attachments:
+            mime_type = infer_mime_type(att.get("mime_type", ""), att.get("file_name", ""))
+            file_type = normalize_attachment_file_type(
+                att.get("file_type", ""),
+                mime_type,
+                att.get("file_name", ""),
+            )
+            data_url = att["data_url"]
+
+            if "," in data_url:
+                base64_data = data_url.split(",", 1)[1]
+            else:
+                base64_data = data_url
+
+            if file_type == "image":
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": att["data_url"]},
+                })
+            elif mime_type == "application/pdf":
+                content.append({
+                    "type": "file",
+                    "source_type": "base64",
+                    "mime_type": mime_type,
+                    "data": base64_data,
+                })
+            elif mime_type in ("text/plain", "text/markdown", "text/csv"):
+                try:
+                    text_content = b64.b64decode(base64_data).decode("utf-8")
+                    filename = mime_type.split("/")[-1].upper()
+                    content.append({
+                        "type": "text",
+                        "text": (
+                            f"\n\n--- Attached {filename} file ---\n"
+                            f"{text_content}\n--- End of file ---\n"
+                        ),
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to decode text file: {e}")
+                    content.append({
+                        "type": "text",
+                        "text": f"\n\n[Failed to read attached text file: {e}]\n",
+                    })
+            else:
+                return None, context_summary_for_ui, {
+                    "type": "error",
+                    "content": (
+                        "Unsupported attachment type. Supported types are images and "
+                        "documents (PDF, TXT, MD, CSV)."
+                    ),
+                }
+
+        if is_self_invoke:
+            human_msg = _create_human_message(
+                content,
+                internal=True,
+                internal_type="autonomous_wakeup",
+            )
+        else:
+            human_msg = HumanMessage(content=content)
+        return {"messages": [human_msg]}, context_summary_for_ui, None
+
     async def astream(
         self, message: str, thread_id: str = "default", user_id: str = "default",
         attachments: Optional[List[Dict[str, str]]] = None,
@@ -2969,517 +3112,46 @@ class NymeriaAgent:
                         exc_info=True,
                     )
 
-            # Check for pending summary from manual /compact
-            # If present, attach it to the user's message (for LLM context)
-            # and store it to send to frontend (for collapsible display)
-            context_summary_for_ui: Optional[str] = None
-            pending_summary = self.get_pending_summary(thread_id)
-            if pending_summary:
-                message_with_context = self._compaction.format_user_resume(
-                    message_with_context, pending_summary
-                )
-                context_summary_for_ui = pending_summary
-                logger.info(f"Thread {thread_id}: Attached pending summary to user message")
-
-            # Attach pending notepad content (from compaction)
-            pending_notepad = self._compaction.pop_pending_notepad(thread_id)
-            if pending_notepad:
-                message_with_context += self._format_notepad_section(pending_notepad)
-                logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
-
-            # Pass user_id through config for tools to access
-            config = self._graph_run_config(thread_id, user_id)
-
-            # Merge legacy images into attachments for unified handling
-            all_attachments = list(attachments or [])
-            if images:
-                for img in images:
-                    all_attachments.append({
-                        "file_type": "image",
-                        "data_url": img["data_url"],
-                        "mime_type": img["mime_type"]
-                    })
-
-            # Build input state - multimodal if attachments provided
-            if all_attachments:
-                from ..config.model_capabilities import (
-                    evaluate_attachment_compatibility,
-                    infer_mime_type,
-                    normalize_attachment_file_type,
-                )
-
-                llm_cfg = self._get_llm_config_for_thread(thread_id)
-                effective_provider = llm_cfg.provider or self.settings.llm_provider
-                effective_model = llm_cfg.model or self.settings.llm_model
-
-                compatibility = evaluate_attachment_compatibility(
-                    effective_model,
-                    effective_provider,
-                    all_attachments,
-                )
-
-                if not compatibility["compatible"] and not force_unsupported_attachments:
-                    unsupported = ", ".join(compatibility["unsupported_modalities"])
-                    warning_text = " ".join(compatibility["warnings"]).strip()
-                    message = (
-                        f"Current model ({effective_model}) may not support these attachments "
-                        f"(unsupported modalities: {unsupported or 'unknown'})."
-                    )
-                    if warning_text:
-                        message = f"{message} {warning_text}"
-
-                    yield {
-                        "type": "error",
-                        "content": message
-                    }
-                    return
-
-                if compatibility["warnings"]:
-                    logger.info(
-                        "Thread %s attachment warnings for model %s: %s",
-                        thread_id,
-                        effective_model,
-                        compatibility["warnings"],
-                    )
-
-                # Build multimodal content with text + files
-                import base64 as b64
-
-                content = [{"type": "text", "text": message_with_context}]
-                for att in all_attachments:
-                    mime_type = infer_mime_type(att.get("mime_type", ""), att.get("file_name", ""))
-                    file_type = normalize_attachment_file_type(
-                        att.get("file_type", ""),
-                        mime_type,
-                        att.get("file_name", ""),
-                    )
-                    data_url = att["data_url"]
-
-                    # Strip the data URL prefix to get raw base64
-                    if "," in data_url:
-                        base64_data = data_url.split(",", 1)[1]
-                    else:
-                        base64_data = data_url
-
-                    if file_type == "image":
-                        # Images use image_url format
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": att["data_url"]}
-                        })
-                    elif mime_type == "application/pdf":
-                        # PDFs use file format with base64 data
-                        content.append({
-                            "type": "file",
-                            "source_type": "base64",
-                            "mime_type": mime_type,
-                            "data": base64_data
-                        })
-                    elif mime_type in ("text/plain", "text/markdown", "text/csv"):
-                        # Text files: decode and include as text block
-                        try:
-                            text_content = b64.b64decode(base64_data).decode("utf-8")
-                            # Get filename from data URL if available, otherwise use generic label
-                            filename = mime_type.split("/")[-1].upper()
-                            content.append({
-                                "type": "text",
-                                "text": f"\n\n--- Attached {filename} file ---\n{text_content}\n--- End of file ---\n"
-                            })
-                        except Exception as e:
-                            logger.warning(f"Failed to decode text file: {e}")
-                            content.append({
-                                "type": "text",
-                                "text": f"\n\n[Failed to read attached text file: {e}]\n"
-                            })
-                    else:
-                        yield {
-                            "type": "error",
-                            "content": (
-                                "Unsupported attachment type. Supported types are images and "
-                                "documents (PDF, TXT, MD, CSV)."
-                            ),
-                        }
-                        return
-
-                if _is_self_invoke:
-                    human_msg = _create_human_message(
-                        content, internal=True, internal_type="autonomous_wakeup"
-                    )
-                else:
-                    human_msg = HumanMessage(content=content)
-                input_state = {"messages": [human_msg]}
-            else:
-                if _is_self_invoke:
-                    human_msg = _create_human_message(
-                        message_with_context, internal=True, internal_type="autonomous_wakeup"
-                    )
-                else:
-                    human_msg = HumanMessage(content=message_with_context)
-                input_state = {"messages": [human_msg]}
-
-            # Track final response for RAG indexing.
-            # Mutated by _drive_graph_events (closure) across every invocation
-            # in this turn — including any post-reload re-invocation.
-            final_response_parts: List[str] = []
-
-            # Notify UI if context summary was attached (send content for collapsible display)
+            input_state, context_summary_for_ui, input_error = self._prepare_astream_input(
+                message_with_context=message_with_context,
+                thread_id=thread_id,
+                attachments=attachments,
+                images=images,
+                force_unsupported_attachments=force_unsupported_attachments,
+                is_self_invoke=_is_self_invoke,
+            )
+            if input_error:
+                yield input_error
+                return
+            if input_state is None:
+                yield {"type": "error", "content": "Failed to prepare chat input."}
+                return
             if context_summary_for_ui:
                 yield {"type": "context_attached", "summary": context_summary_for_ui}
 
-            async def _drive_graph_events(graph_obj, in_state):
-                """Drive a single graph invocation and yield converted SSE events.
+            # Pass user_id through config for tools to access.
+            config = self._graph_run_config(thread_id, user_id)
 
-                Hoisted from the original inline loop so we can run it twice
-                in the same turn: once for the user's message, and again
-                after an in-turn tool reload (see MAX_TOOL_RELOADS_PER_TURN).
-                Shared response text accumulates into final_response_parts
-                (closure) so RAG indexing sees both invocations.
-                """
-                emitted_tool_starts: set = set()
-                emitted_tool_ends: set = set()
-                reasoning_deduper = ReasoningChunkDeduper()
-                emitted_tool_call_delta = False
-                streamed_text_in_current_llm_call = False
-                streamed_reasoning_in_current_llm_call = False
-                inline_text_stripper = _InlineThinkingTextStripper()
-                model_call_count = 0
-                model_stream_event_count = 0
-                model_end_without_stream_count = 0
-                model_end_fallback_count = 0
-                current_model_stream_events = 0
-                current_model_started_at: Optional[float] = None
-                graph_stream_started_at = time.monotonic()
-                inline_hold_log_count = 0
-                inline_release_log_count = 0
-                inline_mark_log_count = 0
+            # Track final response for RAG indexing.
+            # Mutated by GraphStreamProcessor across every graph invocation
+            # in this turn, including any post-reload re-invocation.
+            final_response_parts: List[str] = []
 
-                def log_stream_diagnostic(message: str, *args: Any, warning: bool = False) -> None:
-                    if warning:
-                        logger.warning(message, *args)
-                    elif _is_self_invoke:
-                        logger.info(message, *args)
-                    else:
-                        logger.debug(message, *args)
-
-                def process_visible_text(text: str, run_id: Any) -> str:
-                    """Sanitize answer text and log when possible preamble is held."""
-                    nonlocal inline_hold_log_count, inline_release_log_count
-                    was_holding = inline_text_stripper.is_holding_possible_inline_thinking
-                    clean_text = inline_text_stripper.process_text(text)
-                    is_holding = inline_text_stripper.is_holding_possible_inline_thinking
-
-                    if is_holding and not clean_text:
-                        inline_hold_log_count += 1
-                        if inline_hold_log_count <= 3 or inline_hold_log_count % 25 == 0:
-                            log_stream_diagnostic(
-                                "[ASTREAM DIAG] inline_thinking_buffer_hold "
-                                "thread=%s autonomous=%s run_id=%s "
-                                "raw_chars=%d buffered_chars=%d hold_count=%d",
-                                thread_id,
-                                _is_self_invoke,
-                                run_id,
-                                len(text),
-                                inline_text_stripper.buffered_length,
-                                inline_hold_log_count,
-                            )
-                    elif was_holding and not is_holding:
-                        inline_release_log_count += 1
-                        log_stream_diagnostic(
-                            "[ASTREAM DIAG] inline_thinking_buffer_release "
-                            "thread=%s autonomous=%s run_id=%s emitted_chars=%d "
-                            "buffered_chars=%d release_count=%d",
-                            thread_id,
-                            _is_self_invoke,
-                            run_id,
-                            len(clean_text),
-                            inline_text_stripper.buffered_length,
-                            inline_release_log_count,
-                        )
-
-                    return clean_text
-
-                def should_emit_openai_reasoning(text: Any) -> bool:
-                    return reasoning_deduper.should_emit(text)
-
-                async for event in graph_obj.astream_events(
-                    in_state, config=config, version="v2"
-                ):
-                    if abort_event.is_set():
-                        logger.info(f"[ASTREAM] Thread {thread_id}: Aborted by cancel signal")
-                        yield {
-                            "type": "error",
-                            "content": "Operation was cancelled.",
-                            "code": "cancelled",
-                        }
-                        return
-
-                    event_type = event.get("event")
-
-                    if event_type == "on_chat_model_start":
-                        model_call_count += 1
-                        current_model_stream_events = 0
-                        current_model_started_at = time.monotonic()
-                        streamed_text_in_current_llm_call = False
-                        streamed_reasoning_in_current_llm_call = False
-                        emitted_tool_call_delta = False
-                        reasoning_deduper.reset()
-                        inline_text_stripper.reset()
-                        log_stream_diagnostic(
-                            "[ASTREAM DIAG] llm_start thread=%s autonomous=%s run_id=%s",
-                            thread_id,
-                            _is_self_invoke,
-                            event.get("run_id"),
-                        )
-
-                    elif event_type == "on_tool_start":
-                        run_id = event.get("run_id")
-                        if run_id and run_id not in emitted_tool_starts:
-                            emitted_tool_starts.add(run_id)
-                            tool_name = event.get("name", "")
-                            tool_input = event.get("data", {}).get("input", {})
-                            logger.debug(f"[ASTREAM] tool_start: name={tool_name}, input={tool_input}, raw_data_keys={list(event.get('data', {}).keys()) if isinstance(event.get('data'), dict) else type(event.get('data'))}")
-                            yield {
-                                "type": "tool_call",
-                                "id": run_id,
-                                "name": tool_name,
-                                "args": tool_input,
-                            }
-
-                    elif event_type == "on_tool_end":
-                        run_id = event.get("run_id")
-                        if run_id and run_id not in emitted_tool_ends:
-                            emitted_tool_ends.add(run_id)
-                            tool_name = event.get("name", "")
-                            output = event.get("data", {}).get("output", "")
-                            # Tools may return a langgraph Command (e.g. tool_search
-                            # uses Command(goto=END, update={"messages": [...]}) to
-                            # force turn-end before an auto-reload). Unwrap the
-                            # ToolMessage so the SSE shows the human-readable
-                            # content instead of the Command repr.
-                            if hasattr(output, "update") and hasattr(output, "goto"):
-                                cmd_msgs = (output.update or {}).get("messages") if isinstance(output.update, dict) else None
-                                if cmd_msgs:
-                                    last = cmd_msgs[-1]
-                                    output = last
-                            if hasattr(output, "content"):
-                                result = output.content
-                            else:
-                                result = str(output)
-                            raw_result = result if isinstance(result, str) else str(result)
-                            display_result = self._clean_tool_result_for_display(raw_result)
-                            yield {
-                                "type": "tool_result",
-                                "id": run_id,
-                                "name": tool_name,
-                                "result": display_result,
-                            }
-                            for extra_event in self._tool_result_extra_events(
-                                tool_name,
-                                raw_result,
-                                run_id,
-                            ):
-                                yield extra_event
-
-                    elif event_type == "on_chat_model_stream":
-                        model_stream_event_count += 1
-                        current_model_stream_events += 1
-                        if current_model_stream_events == 1:
-                            first_ms = (
-                                int((time.monotonic() - current_model_started_at) * 1000)
-                                if current_model_started_at is not None
-                                else -1
-                            )
-                            log_stream_diagnostic(
-                                "[ASTREAM DIAG] first_model_stream thread=%s autonomous=%s "
-                                "run_id=%s after_ms=%d",
-                                thread_id,
-                                _is_self_invoke,
-                                event.get("run_id"),
-                                first_ms,
-                            )
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk:
-                            tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
-                            content = getattr(chunk, "content", None)
-                            if (
-                                not emitted_tool_call_delta
-                                and (
-                                    has_tool_call_delta(tool_call_chunks)
-                                    or has_tool_call_content_delta(content)
-                                )
-                            ):
-                                emitted_tool_call_delta = True
-                                yield {"type": "tool_call_delta"}
-
-                            # OpenAI-compatible reasoning summaries (gpt-5.x via
-                            # CLIProxy Codex, DeepSeek-R1/Qwen via OpenRouter).
-                            # ChatOpenAIWithReasoning stashes plaintext deltas
-                            # into additional_kwargs because langchain-openai
-                            # drops the `reasoning_content` delta field by design.
-                            extras = getattr(chunk, "additional_kwargs", None) or {}
-                            reasoning = extras.get("reasoning_content")
-                            if should_emit_openai_reasoning(reasoning):
-                                inline_text_stripper.reset()
-                                streamed_reasoning_in_current_llm_call = True
-                                yield {"type": "thinking", "content": reasoning}
-
-                            if content:
-                                if isinstance(content, list):
-                                    # Extended thinking (Anthropic native): typed blocks
-                                    for block in content:
-                                        if not isinstance(block, dict):
-                                            if isinstance(block, str) and block:
-                                                streamed_text_in_current_llm_call = True
-                                                text = process_visible_text(
-                                                    block, event.get("run_id")
-                                                )
-                                                if text:
-                                                    final_response_parts.append(text)
-                                                    yield {"type": "response", "content": text}
-                                            continue
-                                        block_type = block.get("type")
-                                        if block_type == "thinking":
-                                            text = block.get("thinking", "")
-                                            if text:
-                                                inline_text_stripper.reset()
-                                                streamed_reasoning_in_current_llm_call = True
-                                                yield {"type": "thinking", "content": text}
-                                        elif block_type == "reasoning":
-                                            reasoning_texts = _extract_reasoning_text_from_block(block)
-                                            if reasoning_texts:
-                                                inline_text_stripper.reset()
-                                            else:
-                                                inline_text_stripper.mark_possible_inline_thinking()
-                                                inline_mark_log_count += 1
-                                                if inline_mark_log_count <= 3:
-                                                    log_stream_diagnostic(
-                                                        "[ASTREAM DIAG] inline_thinking_possible "
-                                                        "thread=%s autonomous=%s run_id=%s "
-                                                        "stream_events=%d",
-                                                        thread_id,
-                                                        _is_self_invoke,
-                                                        event.get("run_id"),
-                                                        current_model_stream_events,
-                                                    )
-                                            for text in reasoning_texts:
-                                                if should_emit_openai_reasoning(text):
-                                                    streamed_reasoning_in_current_llm_call = True
-                                                    yield {"type": "thinking", "content": text}
-                                        elif block_type in ("text", "output_text"):
-                                            text = block.get("text", "")
-                                            if text:
-                                                streamed_text_in_current_llm_call = True
-                                                clean_text = process_visible_text(
-                                                    text, event.get("run_id")
-                                                )
-                                                if clean_text:
-                                                    final_response_parts.append(clean_text)
-                                                    yield {"type": "response", "content": clean_text}
-                                elif isinstance(content, str):
-                                    streamed_text_in_current_llm_call = True
-                                    clean_text = process_visible_text(
-                                        content, event.get("run_id")
-                                    )
-                                    if clean_text:
-                                        final_response_parts.append(clean_text)
-                                        yield {"type": "response", "content": clean_text}
-
-                    elif event_type == "on_chat_model_end":
-                        if current_model_stream_events == 0:
-                            model_end_without_stream_count += 1
-                            log_stream_diagnostic(
-                                "[ASTREAM DIAG] llm_end_without_stream thread=%s "
-                                "autonomous=%s run_id=%s",
-                                thread_id,
-                                _is_self_invoke,
-                                event.get("run_id"),
-                                warning=_is_self_invoke,
-                            )
-                        else:
-                            log_stream_diagnostic(
-                                "[ASTREAM DIAG] llm_end thread=%s autonomous=%s "
-                                "run_id=%s stream_events=%d",
-                                thread_id,
-                                _is_self_invoke,
-                                event.get("run_id"),
-                                current_model_stream_events,
-                            )
-                        was_holding_inline_text = (
-                            inline_text_stripper.is_holding_possible_inline_thinking
-                        )
-                        buffered_inline_chars = inline_text_stripper.buffered_length
-                        clean_text = inline_text_stripper.flush()
-                        if was_holding_inline_text:
-                            log_stream_diagnostic(
-                                "[ASTREAM DIAG] inline_thinking_buffer_flush "
-                                "thread=%s autonomous=%s run_id=%s "
-                                "buffered_chars=%d emitted_chars=%d",
-                                thread_id,
-                                _is_self_invoke,
-                                event.get("run_id"),
-                                buffered_inline_chars,
-                                len(clean_text),
-                            )
-                        if clean_text:
-                            final_response_parts.append(clean_text)
-                            yield {"type": "response", "content": clean_text}
-                        if not streamed_text_in_current_llm_call:
-                            output = event.get("data", {}).get("output")
-                            if output and hasattr(output, "content") and output.content:
-                                model_end_fallback_count += 1
-                                log_stream_diagnostic(
-                                    "[ASTREAM DIAG] model_end_response_fallback thread=%s "
-                                    "autonomous=%s run_id=%s stream_events=%d",
-                                    thread_id,
-                                    _is_self_invoke,
-                                    event.get("run_id"),
-                                    current_model_stream_events,
-                                    warning=_is_self_invoke and current_model_stream_events == 0,
-                                )
-                                content = output.content
-                                if isinstance(content, str) and content.strip():
-                                    text = _strip_inline_thinking_text(content)
-                                    if text:
-                                        final_response_parts.append(text)
-                                        yield {"type": "response", "content": text}
-                                elif isinstance(content, list):
-                                    for block in content:
-                                        if not isinstance(block, dict):
-                                            if isinstance(block, str) and block:
-                                                text = _strip_inline_thinking_text(block)
-                                                if text:
-                                                    final_response_parts.append(text)
-                                                    yield {"type": "response", "content": text}
-                                            continue
-                                        if block.get("type") == "reasoning":
-                                            if streamed_reasoning_in_current_llm_call:
-                                                continue
-                                            for text in _extract_reasoning_text_from_block(block):
-                                                if should_emit_openai_reasoning(text):
-                                                    yield {"type": "thinking", "content": text}
-                                        elif block.get("type") in ("text", "output_text"):
-                                            text = _strip_inline_thinking_text(block.get("text", ""))
-                                            if text:
-                                                final_response_parts.append(text)
-                                                yield {"type": "response", "content": text}
-
-                log_stream_diagnostic(
-                    "[ASTREAM DIAG] graph_done thread=%s autonomous=%s "
-                    "model_calls=%d model_stream_events=%d "
-                    "model_end_without_stream=%d model_end_fallbacks=%d elapsed_ms=%d",
-                    thread_id,
-                    _is_self_invoke,
-                    model_call_count,
-                    model_stream_event_count,
-                    model_end_without_stream_count,
-                    model_end_fallback_count,
-                    int((time.monotonic() - graph_stream_started_at) * 1000),
-                )
+            stream_processor = GraphStreamProcessor(
+                thread_id=thread_id,
+                config=config,
+                abort_event=abort_event,
+                is_self_invoke=_is_self_invoke,
+                response_parts=final_response_parts,
+                clean_tool_result=self._clean_tool_result_for_display,
+                tool_result_extra_events=self._tool_result_extra_events,
+                stream_logger=logger,
+            )
 
             try:
                 # First pass: the user's message against the current graph.
                 self._prepare_tool_reload_state_for_turn(thread_id, "astream")
-                async for evt in _drive_graph_events(graph, input_state):
+                async for evt in stream_processor.drive(graph, input_state):
                     yield evt
 
                 # In-turn tool reload: if tool_search(action="enable") added a
@@ -3526,7 +3198,7 @@ class NymeriaAgent:
                     resume_msg = self._create_tool_reload_resume_message(reload_info)
                     resume_state = {"messages": [resume_msg]}
 
-                    async for evt in _drive_graph_events(reload_graph, resume_state):
+                    async for evt in stream_processor.drive(reload_graph, resume_state):
                         yield evt
 
                     # Reassign for the rest of astream (token tracking,
@@ -3591,7 +3263,7 @@ class NymeriaAgent:
                                 is_autonomous=_is_self_invoke,
                                 thread_id=thread_id,
                             )
-                            async for evt in _drive_graph_events(resume_graph, resume_state):
+                            async for evt in stream_processor.drive(resume_graph, resume_state):
                                 yield evt
                             graph = resume_graph
                 elif self.settings.context_management == "sliding_window":

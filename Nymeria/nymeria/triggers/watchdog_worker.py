@@ -118,7 +118,7 @@ class WatchdogWorker:
                     self._stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS
                 )
             except asyncio.TimeoutError:
-                pass
+                pass  # Expected heartbeat tick; publish health again unless stopped.
 
     def stop(self) -> None:
         self._stop.set()

@@ -180,6 +180,8 @@ Chat responses (`/ask` and @mentions) are streamed via SSE rather than waiting f
 
 If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint automatically.
 
+Both interactive and autonomous SSE flows use the shared `SSEEventHandler` protocol from `triggers/sse_consumer.py`, so new SSE event types only need to be added in one place.
+
 ## Autonomous Task Delivery
 
 The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO, watchdog nudge, or trigger runs on a Discord thread, the bot streams the same event types it uses for regular chat into the originating channel:

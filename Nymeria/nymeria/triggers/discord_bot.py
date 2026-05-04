@@ -26,7 +26,7 @@ from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens
 from .message_splitter import split_discord_message as split_message
-from .sse_consumer import parse_attach_paths
+from .sse_consumer import SSEEventHandler, consume_sse_stream, dispatch_event, parse_attach_paths
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
 logger = logging.getLogger(__name__)
@@ -2201,76 +2201,64 @@ class NymeriaDiscordBot(discord.Client):
         return user_id
 
     # =========================================================================
-    # Streaming chat dispatcher
+    # SSE handler for interactive chat (implements SSEEventHandler protocol)
     # =========================================================================
 
-    async def _stream_to_channel(
-        self,
-        channel: Any,
-        first_send,  # Callable[[str], Awaitable[discord.Message]]
-        message: str,
-        thread_id: str,
-        user_id: str,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-    ) -> None:
-        """Stream SSE chat events to a Discord channel as multiple messages.
+    class _InteractiveChatHandler:
+        """SSE event handler for Discord interactive chat.
 
-        Args:
-            channel: Discord channel to send messages to.
-            first_send: Callable for the first message (interaction.followup.send
-                        for /ask, channel.send for @mentions).
-            message: The user message to send to the agent.
-            thread_id: Nymeria thread ID.
-            user_id: Nymeria user ID.
+        Implements :class:`~triggers.sse_consumer.SSEEventHandler` and owns
+        the per-stream buffer, progressive-edit, and typing state.
         """
-        EDIT_INTERVAL = 1.5  # seconds between message edits
 
-        # Per-invocation state
-        text_buffer = ""
-        current_msg: Optional[discord.Message] = None
-        last_edit = 0.0
-        tool_call_count = 0
-        first_sent = False
-        tool_msgs: Dict[str, discord.Message] = {}
+        EDIT_INTERVAL = 1.5
 
-        async def _send(content: str) -> discord.Message:
-            """Send a message, using first_send for the first one."""
-            nonlocal first_sent
-            if not first_sent:
-                first_sent = True
-                return await first_send(content)
-            return await channel.send(content)
+        def __init__(
+            self,
+            bot: "NymeriaDiscordBot",
+            channel: Any,
+            first_send,
+        ) -> None:
+            self._bot = bot
+            self._channel = channel
+            self._first_send = first_send
 
-        async def _flush_buffer(final: bool = False):
-            """Send or edit the current text buffer to Discord."""
-            nonlocal text_buffer, current_msg, last_edit
-            if not text_buffer:
+            self._text_buffer = ""
+            self._current_msg: Optional[discord.Message] = None
+            self._last_edit = 0.0
+            self._first_sent = False
+            self._tool_msgs: Dict[str, discord.Message] = {}
+
+        async def _send(self, content: str) -> discord.Message:
+            if not self._first_sent:
+                self._first_sent = True
+                return await self._first_send(content)
+            return await self._channel.send(content)
+
+        async def flush_text(self, final: bool = False) -> None:
+            if not self._text_buffer:
                 if final:
-                    current_msg = None
+                    self._current_msg = None
                 return
             try:
-                if current_msg is None:
-                    current_msg = await _send(text_buffer)
-                    last_edit = time.monotonic()
+                if self._current_msg is None:
+                    self._current_msg = await self._send(self._text_buffer)
+                    self._last_edit = time.monotonic()
                 else:
-                    await current_msg.edit(content=text_buffer)
-                    last_edit = time.monotonic()
+                    await self._current_msg.edit(content=self._text_buffer)
+                    self._last_edit = time.monotonic()
             except discord.HTTPException:
-                # Edit failed (rate limit, token expired) — send new message
                 try:
-                    current_msg = await channel.send(text_buffer)
-                    last_edit = time.monotonic()
+                    self._current_msg = await self._channel.send(self._text_buffer)
+                    self._last_edit = time.monotonic()
                 except Exception:
                     logger.warning("Failed to send fallback Discord message", exc_info=True)
             if final:
-                text_buffer = ""
-                current_msg = None
-
-        async def _finalize_text():
-            """Finalize current text segment (flush + reset for next segment)."""
-            await _flush_buffer(final=True)
+                self._text_buffer = ""
+                self._current_msg = None
 
         async def _send_compaction_embed(
+            self,
             summary: Any,
             messages_removed: int = 0,
             title: str = "Context compacted",
@@ -2285,176 +2273,168 @@ class NymeriaDiscordBot(discord.Client):
             if summary_text:
                 embed.add_field(name="Summary", value=summary_text, inline=False)
             try:
-                await channel.send(embed=embed)
+                await self._channel.send(embed=embed)
             except Exception as e:
                 logger.warning("Failed to send compaction embed: %s", e)
 
-        try:
-            async for event in self.api.chat_stream(
-                message,
-                thread_id,
-                user_id,
-                attachments=attachments,
-                # Chat clients can't surface the desktop's compatibility
-                # modal — auto-accept the risk when the user attached files.
-                force_unsupported_attachments=bool(attachments),
-            ):
-                etype = event.get("type", "")
-                if etype == "thinking":
+        # -- SSEEventHandler callbacks ----------------------------------------
+
+        async def on_thinking(self) -> None:
+            try:
+                await self._channel.trigger_typing()
+            except Exception:
+                logger.debug("Failed to send typing indicator")
+
+        async def on_response_chunk(self, content: str) -> None:
+            self._text_buffer += content
+            if len(self._text_buffer) > 1800:
+                await self.flush_text(final=True)
+            elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
+                await self.flush_text()
+
+        async def on_compacting(self, message: str) -> None:
+            await self._send(message)
+
+        async def on_compacted(
+            self,
+            summary: str,
+            messages_removed: int,
+            title: str,
+        ) -> None:
+            await self._send_compaction_embed(summary, messages_removed, title)
+
+        async def on_tool_call(
+            self,
+            name: str,
+            args: Dict[str, Any],
+            call_id: str,
+            count: int,
+        ) -> None:
+            show_tools = self._bot._show_tool_calls.get(self._channel.id, False)
+            if show_tools:
+                await self.flush_text(final=True)
+                args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "—"
+                if len(args_str) > 1000:
+                    args_str = args_str[:997] + "..."
+                embed = discord.Embed(
+                    title=f"🔧 {name}",
+                    description=f"```json\n{args_str}\n```" if args else None,
+                    color=discord.Color.blue(),
+                )
+                try:
+                    tool_msg = await self._channel.send(embed=embed)
+                    self._tool_msgs[call_id] = tool_msg
+                except Exception as e:
+                    logger.warning(f"Failed to send tool call embed: {e}")
+            try:
+                await self._channel.trigger_typing()
+            except Exception:
+                logger.debug("Failed to send typing indicator")
+
+        async def on_tool_result(
+            self,
+            call_id: str,
+            result: str,
+            attachments: List[str],
+        ) -> None:
+            show_tools = self._bot._show_tool_calls.get(self._channel.id, False)
+            if not show_tools:
+                if self._text_buffer and "──────" not in self._text_buffer[-20:]:
+                    self._text_buffer += "\n\n──────────────────────────────\n\n"
+            else:
+                tool_msg = self._tool_msgs.get(call_id)
+                if tool_msg:
+                    result_str = str(result)
+                    if len(result_str) > 1000:
+                        result_str = result_str[:997] + "..."
                     try:
-                        await channel.trigger_typing()
-                    except Exception:
-                        logger.debug("Failed to send typing indicator")
-
-                elif etype == "compacting":
-                    await _finalize_text()
-                    await _send(event.get("message") or "Compacting context...")
-
-                elif etype == "compacted":
-                    await _finalize_text()
-                    await _send_compaction_embed(
-                        event.get("summary", ""),
-                        int(event.get("messages_removed") or 0),
-                    )
-
-                elif etype == "context_attached":
-                    await _finalize_text()
-                    await _send_compaction_embed(
-                        event.get("summary", ""),
-                        title="Context summary attached",
-                    )
-
-                elif etype == "response":
-                    chunk = event.get("content", "")
-                    if chunk:
-                        text_buffer += chunk
-                        # Check for message overflow
-                        if len(text_buffer) > 1800:
-                            await _flush_buffer(final=True)
-                        # Throttled edit
-                        elif time.monotonic() - last_edit >= EDIT_INTERVAL:
-                            await _flush_buffer()
-
-                elif etype == "tool_call":
-                    tool_call_count += 1
-                    show_tools = self._show_tool_calls.get(channel.id, False)
-                    if show_tools:
-                        await _finalize_text()
-                        name = event.get("name", "?")
-                        args = event.get("args", {})
-                        args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "—"
-                        if len(args_str) > 1000:
-                            args_str = args_str[:997] + "..."
-                        embed = discord.Embed(
-                            title=f"🔧 {name}",
-                            description=f"```json\n{args_str}\n```" if args else None,
-                            color=discord.Color.blue(),
+                        old_embed = tool_msg.embeds[0] if tool_msg.embeds else discord.Embed()
+                        old_embed.color = discord.Color.green()
+                        old_embed.add_field(
+                            name="Result",
+                            value=f"```\n{result_str}\n```" if result_str else "*(empty)*",
+                            inline=False,
                         )
-                        try:
-                            tool_msg = await channel.send(embed=embed)
-                            tool_msgs[event.get("id", "")] = tool_msg
-                        except Exception as e:
-                            logger.warning(f"Failed to send tool call embed: {e}")
-                    try:
-                        await channel.trigger_typing()
-                    except Exception:
-                        logger.debug("Failed to send typing indicator")
-
-                elif etype == "tool_result":
-                    show_tools = self._show_tool_calls.get(channel.id, False)
-                    if not show_tools:
-                        # Inject separator so post-tool text is visually
-                        # distinct from pre-tool text within the same message
-                        if text_buffer and "──────" not in text_buffer[-20:]:
-                            text_buffer += "\n\n──────────────────────────────\n\n"
-                    if show_tools:
-                        tc_id = event.get("id", "")
-                        result = event.get("result", "")
-                        tool_msg = tool_msgs.get(tc_id)
-                        if tool_msg:
-                            result_str = str(result)
-                            if len(result_str) > 1000:
-                                result_str = result_str[:997] + "..."
-                            try:
-                                old_embed = tool_msg.embeds[0] if tool_msg.embeds else discord.Embed()
-                                old_embed.color = discord.Color.green()
-                                old_embed.add_field(
-                                    name="Result",
-                                    value=f"```\n{result_str}\n```" if result_str else "*(empty)*",
-                                    inline=False,
-                                )
-                                await tool_msg.edit(embed=old_embed)
-                            except Exception as e:
-                                logger.warning(f"Failed to edit tool result: {e}")
-                    for attach_path in parse_attach_paths(event.get("result", "")):
-                        await self._send_workspace_attachment(channel, attach_path)
-
-                elif etype == "tool_reload":
-                    await _flush_buffer(final=True)
-                    tools = event.get("tools", [])
-                    ttl = event.get("ttl", "")
-                    names = ", ".join(tools) if tools else "tools"
-                    embed = discord.Embed(
-                        description=f"**{names}** ({ttl})",
-                        color=discord.Color.dark_grey(),
-                    )
-                    embed.set_author(name="⚙️ Tool Binding")
-                    try:
-                        await channel.send(embed=embed)
+                        await tool_msg.edit(embed=old_embed)
                     except Exception as e:
-                        logger.warning(f"Failed to send tool reload embed: {e}")
+                        logger.warning(f"Failed to edit tool result: {e}")
+            for attach_path in attachments:
+                await self._bot._send_workspace_attachment(self._channel, attach_path)
 
-                elif etype == "workspace_artifact":
-                    attach_path = event.get("path")
-                    if isinstance(attach_path, str) and attach_path:
-                        await self._send_workspace_attachment(channel, attach_path)
+        async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
+            names = ", ".join(tools) if tools else "tools"
+            embed = discord.Embed(
+                description=f"**{names}** ({ttl})",
+                color=discord.Color.dark_grey(),
+            )
+            embed.set_author(name="⚙️ Tool Binding")
+            try:
+                await self._channel.send(embed=embed)
+            except Exception as e:
+                logger.warning(f"Failed to send tool reload embed: {e}")
 
-                elif etype == "error":
+        async def on_workspace_artifact(self, path: str) -> None:
+            await self._bot._send_workspace_attachment(self._channel, path)
 
-                    await _finalize_text()
-                    error_content = event.get("content", "Unknown error")
-                    try:
-                        await _send(f"Sorry, I encountered an error: {error_content}")
-                    except Exception:
-                        logger.warning("Failed to send error notification to Discord", exc_info=True)
+        async def on_error(self, content: str) -> None:
+            try:
+                await self._send(f"Sorry, I encountered an error: {content}")
+            except Exception:
+                logger.warning("Failed to send error notification to Discord", exc_info=True)
 
-                elif etype == "iteration_limit":
-                    content = event.get("content", "")
-                    if content:
-                        try:
-                            await channel.send(f"⚠️ {content}")
-                        except Exception:
-                            logger.warning("Failed to send iteration-limit warning to Discord", exc_info=True)
+        async def on_iteration_limit(self, content: str) -> None:
+            try:
+                await self._channel.send(f"⚠️ {content}")
+            except Exception:
+                logger.warning("Failed to send iteration-limit warning to Discord", exc_info=True)
 
-                elif etype == "done":
+        async def on_done(self, tool_call_count: int) -> None:
+            if tool_call_count and self._text_buffer:
+                self._text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
+            elif tool_call_count and self._current_msg:
+                try:
+                    old_content = self._current_msg.content or ""
+                    await self._current_msg.edit(
+                        content=old_content + f"\n\n-# Tool calls: {tool_call_count}"
+                    )
+                except Exception:
+                    logger.debug("Failed to edit Discord message with tool-call footer")
+            await self.flush_text(final=True)
 
-                    # Append tool call footer to remaining buffer
-                    if tool_call_count and text_buffer:
-                        text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
-                    elif tool_call_count and current_msg:
-                        # Buffer empty but we have an existing message to edit
-                        try:
-                            old_content = current_msg.content or ""
-                            await current_msg.edit(
-                                content=old_content + f"\n\n-# Tool calls: {tool_call_count}"
-                            )
-                        except Exception:
-                            logger.debug("Failed to edit Discord message with tool-call footer")
-                    await _flush_buffer(final=True)
-
-                # Silently ignore: queued
-
-            # Stream ended — flush any remaining buffer
-            await _clear_thinking()
-            if text_buffer:
+        async def on_stream_end(self, tool_call_count: int) -> None:
+            if self._text_buffer:
                 if tool_call_count:
-                    text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
-                await _flush_buffer(final=True)
+                    self._text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
+                await self.flush_text(final=True)
 
+    # =========================================================================
+    # Streaming chat dispatcher
+    # =========================================================================
+
+    async def _stream_to_channel(
+        self,
+        channel: Any,
+        first_send,  # Callable[[str], Awaitable[discord.Message]]
+        message: str,
+        thread_id: str,
+        user_id: str,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Stream SSE chat events to a Discord channel as multiple messages."""
+        handler = self._InteractiveChatHandler(self, channel, first_send)
+        try:
+            await consume_sse_stream(
+                self.api.chat_stream(
+                    message,
+                    thread_id,
+                    user_id,
+                    attachments=attachments,
+                    force_unsupported_attachments=bool(attachments),
+                ),
+                handler,
+            )
         except Exception as e:
             logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
-            await _clear_thinking()
-            # Sync fallback
             try:
                 data = await self.api.chat(
                     message,
@@ -2469,12 +2449,20 @@ class NymeriaDiscordBot(discord.Client):
                     response += f"\n\n-# Tool calls: {tc}"
                 chunks = split_message(response)
                 for chunk in chunks:
-                    await _send(chunk) if not first_sent else await channel.send(chunk)
+                    if not handler._first_sent:
+                        handler._first_sent = True
+                        await first_send(chunk)
+                    else:
+                        await channel.send(chunk)
                 await self._send_latest_history_artifacts(channel, thread_id)
             except Exception as e2:
                 logger.error(f"Sync fallback also failed: {e2}", exc_info=True)
                 try:
-                    await _send(f"Sorry, I encountered an error: {e2}")
+                    if not handler._first_sent:
+                        handler._first_sent = True
+                        await first_send(f"Sorry, I encountered an error: {e2}")
+                    else:
+                        await channel.send(f"Sorry, I encountered an error: {e2}")
                 except Exception:
                     logger.warning("Failed to send last-resort error notification to Discord", exc_info=True)
 
@@ -2764,8 +2752,204 @@ class NymeriaDiscordBot(discord.Client):
 
         logger.info("API SSE listener stopped")
 
+    # =========================================================================
+    # SSE handler for autonomous stream (implements SSEEventHandler protocol)
+    # =========================================================================
+
+    class _AutonomousSSEHandler:
+        """SSE event handler for Discord autonomous task delivery.
+
+        Implements :class:`~triggers.sse_consumer.SSEEventHandler` and owns
+        per-thread buffer state, progressive editing, and artifact dedup.
+        """
+
+        EDIT_INTERVAL = 1.5
+
+        def __init__(
+            self,
+            bot: "NymeriaDiscordBot",
+            channel: Any,
+            channel_id: int,
+        ) -> None:
+            self._bot = bot
+            self._channel = channel
+            self._channel_id = channel_id
+
+            self._text_buffer = ""
+            self._current_msg: Optional[discord.Message] = None
+            self._last_edit = 0.0
+            self._tool_msgs: Dict[str, discord.Message] = {}
+            self._tool_count = 0
+            self._response_seen = False
+            self._sent_artifacts: set = set()
+
+        async def _send_text(self, content: str) -> Optional[discord.Message]:
+            last_msg = None
+            for chunk in split_message(content):
+                last_msg = await self._channel.send(chunk)
+            return last_msg
+
+        async def flush_text(self, final: bool = False) -> None:
+            if not self._text_buffer:
+                if final:
+                    self._current_msg = None
+                return
+            try:
+                if len(self._text_buffer) > 2000:
+                    self._current_msg = await self._send_text(self._text_buffer)
+                elif self._current_msg is None:
+                    self._current_msg = await self._channel.send(self._text_buffer)
+                else:
+                    await self._current_msg.edit(content=self._text_buffer)
+                self._last_edit = time.monotonic()
+            except discord.HTTPException:
+                try:
+                    self._current_msg = await self._send_text(self._text_buffer)
+                    self._last_edit = time.monotonic()
+                except Exception:
+                    logger.warning("Failed to send fallback autonomous Discord message", exc_info=True)
+            if final:
+                self._text_buffer = ""
+                self._current_msg = None
+
+        async def _send_compaction_embed(
+            self,
+            summary: Any,
+            messages_removed: int = 0,
+            title: str = "Context compacted",
+        ) -> None:
+            summary_text = str(summary or "").strip()
+            if len(summary_text) > 1000:
+                summary_text = summary_text[:997].rstrip() + "..."
+            embed = discord.Embed(color=discord.Color.dark_grey())
+            embed.set_author(name=title)
+            if messages_removed:
+                embed.description = f"{messages_removed} messages summarized."
+            if summary_text:
+                embed.add_field(name="Summary", value=summary_text, inline=False)
+            await self._channel.send(embed=embed)
+
+        async def _send_workspace_attachment_once(self, path: str) -> None:
+            if not path or path in self._sent_artifacts:
+                return
+            if await self._bot._send_workspace_attachment(self._channel, path):
+                self._sent_artifacts.add(path)
+
+        # -- SSEEventHandler callbacks ----------------------------------------
+
+        async def on_thinking(self) -> None:
+            try:
+                await self._channel.trigger_typing()
+            except Exception:
+                logger.debug("Failed to send autonomous typing indicator")
+
+        async def on_response_chunk(self, content: str) -> None:
+            self._response_seen = True
+            self._text_buffer += content
+            if len(self._text_buffer) > 1800:
+                await self.flush_text(final=True)
+            elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
+                await self.flush_text()
+
+        async def on_compacting(self, message: str) -> None:
+            await self._send_text(message)
+
+        async def on_compacted(
+            self,
+            summary: str,
+            messages_removed: int,
+            title: str,
+        ) -> None:
+            await self._send_compaction_embed(summary, messages_removed, title)
+
+        async def on_tool_call(
+            self,
+            name: str,
+            args: Dict[str, Any],
+            call_id: str,
+            count: int,
+        ) -> None:
+            self._tool_count = count
+            show_tools = self._bot._show_tool_calls.get(self._channel_id, False)
+            if show_tools:
+                await self.flush_text(final=True)
+                args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else ""
+                if len(args_str) > 1000:
+                    args_str = args_str[:997] + "..."
+                embed = discord.Embed(
+                    title=f"🔧 {name}",
+                    description=f"```json\n{args_str}\n```" if args_str else None,
+                    color=discord.Color.blue(),
+                )
+                tool_msg = await self._channel.send(embed=embed)
+                self._tool_msgs[call_id] = tool_msg
+            try:
+                await self._channel.trigger_typing()
+            except Exception:
+                logger.debug("Failed to send autonomous typing indicator")
+
+        async def on_tool_result(
+            self,
+            call_id: str,
+            result: str,
+            attachments: List[str],
+        ) -> None:
+            show_tools = self._bot._show_tool_calls.get(self._channel_id, False)
+            if not show_tools:
+                if self._text_buffer and "──────" not in self._text_buffer[-20:]:
+                    self._text_buffer += "\n\n──────────────────────────────\n\n"
+            else:
+                tool_msg = self._tool_msgs.get(call_id)
+                if tool_msg:
+                    result_str = str(result)
+                    if len(result_str) > 1000:
+                        result_str = result_str[:997] + "..."
+                    try:
+                        old_embed = tool_msg.embeds[0] if tool_msg.embeds else discord.Embed()
+                        old_embed.color = discord.Color.green()
+                        old_embed.add_field(
+                            name="Result",
+                            value=f"```\n{result_str}\n```" if result_str else "*(empty)*",
+                            inline=False,
+                        )
+                        await tool_msg.edit(embed=old_embed)
+                    except Exception as e:
+                        logger.warning(f"Failed to edit autonomous tool result: {e}")
+            for attach_path in attachments:
+                await self._send_workspace_attachment_once(attach_path)
+
+        async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
+            names = ", ".join(str(tool) for tool in tools) if tools else "tools"
+            embed = discord.Embed(
+                description=f"**{names}**{f' ({ttl})' if ttl else ''}",
+                color=discord.Color.dark_grey(),
+            )
+            embed.set_author(name="Tool Binding")
+            await self._channel.send(embed=embed)
+
+        async def on_workspace_artifact(self, path: str) -> None:
+            await self._send_workspace_attachment_once(path)
+
+        async def on_error(self, content: str) -> None:
+            await self._send_text(f"Sorry, I encountered an error: {content}")
+
+        async def on_iteration_limit(self, content: str) -> None:
+            await self._channel.send(f"⚠️ {content}")
+
+        async def on_done(self, tool_call_count: int) -> None:
+            pass  # autonomous uses task_completed, not done
+
+        async def on_stream_end(self, tool_call_count: int) -> None:
+            pass  # autonomous stream is event-by-event, not consumed as stream
+
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
-        """Process a single event from the API SSE stream."""
+        """Process a single event from the API SSE autonomous stream.
+
+        Routes Discord-prefixed thread events through the shared
+        :func:`dispatch_event` for standard SSE types and handles
+        autonomous-specific types (notification, task_started,
+        task_completed) directly.
+        """
         event_type = event.get("type", "")
         thread_id = event.get("thread_id", "")
 
@@ -2786,91 +2970,19 @@ class NymeriaDiscordBot(discord.Client):
             if not channel or not hasattr(channel, "send"):
                 return
 
+            # Get or create handler for this thread
             state = self._autonomous_state.get(thread_id)
+            if state is None:
+                handler = self._AutonomousSSEHandler(self, channel, channel_id)
+                state = {"handler": handler, "prompt": event.get("prompt", "")}
+                self._autonomous_state[thread_id] = state
+            else:
+                handler = state["handler"]
+                handler._channel = channel
+                if event.get("prompt") and not state.get("prompt"):
+                    state["prompt"] = event.get("prompt", "")
 
-            def _ensure_state() -> Dict[str, Any]:
-                nonlocal state
-                if state is None:
-                    state = {
-                        "channel": channel,
-                        "buffer": "",
-                        "current_msg": None,
-                        "last_edit": 0.0,
-                        "tool_count": 0,
-                        "tool_msgs": {},
-                        "prompt": event.get("prompt", ""),
-                        "response_seen": False,
-                        "sent_artifacts": set(),
-                    }
-                    self._autonomous_state[thread_id] = state
-                else:
-                    state["channel"] = channel
-                    if event.get("prompt") and not state.get("prompt"):
-                        state["prompt"] = event.get("prompt", "")
-                return state
-
-            async def _send_text(content: str) -> Optional[discord.Message]:
-                last_msg = None
-                for chunk in split_message(content):
-                    last_msg = await channel.send(chunk)
-                return last_msg
-
-            async def _flush_buffer(final: bool = False) -> None:
-                s = _ensure_state()
-                text_buffer = s.get("buffer", "")
-                if not text_buffer:
-                    if final:
-                        s["current_msg"] = None
-                    return
-                try:
-                    current_msg = s.get("current_msg")
-                    if len(text_buffer) > 2000:
-                        current_msg = await _send_text(text_buffer)
-                    elif current_msg is None:
-                        current_msg = await channel.send(text_buffer)
-                    else:
-                        await current_msg.edit(content=text_buffer)
-                    s["current_msg"] = current_msg
-                    s["last_edit"] = time.monotonic()
-                except discord.HTTPException:
-                    try:
-                        s["current_msg"] = await _send_text(text_buffer)
-                        s["last_edit"] = time.monotonic()
-                    except Exception:
-                        logger.warning("Failed to send fallback autonomous Discord message", exc_info=True)
-                if final:
-                    s["buffer"] = ""
-                    s["current_msg"] = None
-
-            async def _finalize_text() -> None:
-                await _flush_buffer(final=True)
-
-            async def _send_compaction_embed(
-                summary: Any,
-                messages_removed: int = 0,
-                title: str = "Context compacted",
-            ) -> None:
-                summary_text = str(summary or "").strip()
-                if len(summary_text) > 1000:
-                    summary_text = summary_text[:997].rstrip() + "..."
-                embed = discord.Embed(color=discord.Color.dark_grey())
-                embed.set_author(name=title)
-                if messages_removed:
-                    embed.description = f"{messages_removed} messages summarized."
-                if summary_text:
-                    embed.add_field(name="Summary", value=summary_text, inline=False)
-                await channel.send(embed=embed)
-
-            async def _send_workspace_attachment_once(path: str) -> None:
-                if not path:
-                    return
-                s = _ensure_state()
-                sent_artifacts = s.setdefault("sent_artifacts", set())
-                if path in sent_artifacts:
-                    return
-                if await self._send_workspace_attachment(channel, path):
-                    sent_artifacts.add(path)
-
+            # Autonomous-only event types not in the shared SSE protocol
             if event_type == "notification":
                 if event.get("in_app_only"):
                     return
@@ -2881,170 +2993,50 @@ class NymeriaDiscordBot(discord.Client):
                     or ""
                 )
                 if str(message).strip():
-                    await _send_text(str(message))
+                    await handler._send_text(str(message))
                 return
 
             if event_type == "task_started":
-                _ensure_state()
-                return
-
-            if event_type == "thinking" or event_type == "tool_call_delta":
-                try:
-                    await channel.trigger_typing()
-                except Exception:
-                    logger.debug("Failed to send autonomous typing indicator")
-                return
-
-            if event_type == "compacting":
-                await _finalize_text()
-                await _send_text(event.get("message") or "Compacting context...")
-                return
-
-            if event_type == "compacted":
-                await _finalize_text()
-                await _send_compaction_embed(
-                    event.get("summary", ""),
-                    int(event.get("messages_removed") or 0),
-                )
-                return
-
-            if event_type == "context_attached":
-                await _finalize_text()
-                await _send_compaction_embed(
-                    event.get("summary", ""),
-                    title="Context summary attached",
-                )
-                return
-
-            if event_type == "response":
-                s = _ensure_state()
-                chunk = event.get("content", "")
-                if not chunk:
-                    return
-                s["response_seen"] = True
-                s["buffer"] += chunk
-                if len(s["buffer"]) > 1800:
-                    await _flush_buffer(final=True)
-                elif time.monotonic() - s.get("last_edit", 0.0) >= 1.5:
-                    await _flush_buffer()
-                return
-
-            if event_type == "tool_call":
-                s = _ensure_state()
-                s["tool_count"] += 1
-                show_tools = self._show_tool_calls.get(channel_id, False)
-                if show_tools:
-                    await _finalize_text()
-                    name = event.get("name", "?")
-                    args = event.get("args", {})
-                    args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else ""
-                    if len(args_str) > 1000:
-                        args_str = args_str[:997] + "..."
-                    embed = discord.Embed(
-                        title=f"🔧 {name}",
-                        description=f"```json\n{args_str}\n```" if args_str else None,
-                        color=discord.Color.blue(),
-                    )
-                    tool_msg = await channel.send(embed=embed)
-                    s["tool_msgs"][event.get("id", "")] = tool_msg
-                try:
-                    await channel.trigger_typing()
-                except Exception:
-                    logger.debug("Failed to send autonomous typing indicator")
-                return
-
-            if event_type == "tool_result":
-                s = _ensure_state()
-                show_tools = self._show_tool_calls.get(channel_id, False)
-                result = event.get("result", "")
-                if not show_tools:
-                    if s.get("buffer") and "──────" not in s["buffer"][-20:]:
-                        s["buffer"] += "\n\n──────────────────────────────\n\n"
-                else:
-                    tc_id = event.get("id", "")
-                    tool_msg = s["tool_msgs"].get(tc_id)
-                    if tool_msg:
-                        result_str = str(result)
-                        if len(result_str) > 1000:
-                            result_str = result_str[:997] + "..."
-                        try:
-                            old_embed = tool_msg.embeds[0] if tool_msg.embeds else discord.Embed()
-                            old_embed.color = discord.Color.green()
-                            old_embed.add_field(
-                                name="Result",
-                                value=f"```\n{result_str}\n```" if result_str else "*(empty)*",
-                                inline=False,
-                            )
-                            await tool_msg.edit(embed=old_embed)
-                        except Exception as e:
-                            logger.warning(f"Failed to edit autonomous tool result: {e}")
-                for attach_path in parse_attach_paths(result):
-                    await _send_workspace_attachment_once(attach_path)
-                return
-
-            if event_type == "tool_reload":
-                _ensure_state()
-                await _flush_buffer(final=True)
-                tools = event.get("tools") or []
-                ttl = event.get("ttl") or ""
-                names = ", ".join(str(tool) for tool in tools) if tools else "tools"
-                embed = discord.Embed(
-                    description=f"**{names}**{f' ({ttl})' if ttl else ''}",
-                    color=discord.Color.dark_grey(),
-                )
-                embed.set_author(name="Tool Binding")
-                await channel.send(embed=embed)
-                return
-
-            if event_type == "workspace_artifact":
-                attach_path = event.get("path")
-                if isinstance(attach_path, str) and attach_path:
-                    await _send_workspace_attachment_once(attach_path)
-                return
-
-            if event_type == "iteration_limit":
-                content = event.get("content", "")
-                if content:
-                    await channel.send(f"⚠️ {content}")
-                return
-
-            if event_type == "error":
-                await _finalize_text()
-                error_content = event.get("content", "Unknown error")
-                await _send_text(f"Sorry, I encountered an error: {error_content}")
                 return
 
             if event_type == "task_completed":
-                s = _ensure_state()
                 try:
                     if event.get("error"):
-                        await _finalize_text()
+                        await handler.flush_text(final=True)
                         err = (
                             event.get("content")
                             or event.get("error_message")
                             or "Unknown error"
                         )
-                        await _send_text(f"Autonomous task error: {err}")
+                        await handler._send_text(f"Autonomous task error: {err}")
                     else:
-                        if not s.get("response_seen") and not s.get("buffer"):
+                        if not handler._response_seen and not handler._text_buffer:
                             fallback = event.get("content") or ""
                             if fallback:
-                                s["buffer"] = fallback
-                        if s.get("tool_count") and s.get("buffer"):
-                            s["buffer"] += f"\n\n-# Tool calls: {s['tool_count']}"
-                        elif s.get("tool_count") and s.get("current_msg"):
+                                handler._text_buffer = fallback
+                        tc = handler._tool_count
+                        if tc and handler._text_buffer:
+                            handler._text_buffer += f"\n\n-# Tool calls: {tc}"
+                        elif tc and handler._current_msg:
                             try:
-                                old_content = s["current_msg"].content or ""
-                                await s["current_msg"].edit(
+                                old_content = handler._current_msg.content or ""
+                                await handler._current_msg.edit(
                                     content=old_content
-                                    + f"\n\n-# Tool calls: {s['tool_count']}"
+                                    + f"\n\n-# Tool calls: {tc}"
                                 )
                             except Exception:
                                 logger.debug("Failed to edit autonomous message with tool-call footer")
-                        await _flush_buffer(final=True)
+                        await handler.flush_text(final=True)
                     logger.info(f"Streamed autonomous result to Discord channel {channel_id}")
                 finally:
                     self._autonomous_state.pop(thread_id, None)
+                return
+
+            # Standard SSE event types — delegate to shared dispatcher
+            handler._tool_count = await dispatch_event(
+                event, handler, handler._tool_count
+            )
+
         except Exception as e:
             logger.error(f"Error posting SSE event to Discord: {e}", exc_info=True)
             self._autonomous_state.pop(thread_id, None)
