@@ -1,0 +1,5 @@
+# Development and test-only dependencies.
+#
+# Production Docker images intentionally do not install this file.
+
+pytest>=8.0.0

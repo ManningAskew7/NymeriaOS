@@ -63,6 +63,33 @@ def test_compose_watchdog_default_matches_documented_default() -> None:
     assert api_env["WATCHDOG_INTERVAL_MINUTES"] == "${WATCHDOG_INTERVAL_MINUTES:-5}"
 
 
+def test_nymeria_services_use_expected_runtime_images() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+
+    full_services = {"api", "worker", "twitch-bot"}
+    slim_services = {"watchdog", "discord-bot", "telegram-bot", "mcp"}
+
+    for service_name in full_services:
+        service = services[service_name]
+        assert service["image"] == "nymeria-full:local"
+        assert service["build"]["dockerfile"] == "Dockerfile.full"
+
+    for service_name in slim_services:
+        service = services[service_name]
+        assert service["image"] == "nymeria-slim:local"
+        assert service["build"]["dockerfile"] == "Dockerfile.slim"
+
+
+def test_slim_dockerfile_omits_agent_workstation_dependencies() -> None:
+    dockerfile = (ROOT / "Dockerfile.slim").read_text(encoding="utf-8")
+
+    assert "kalilinux/kali-rolling" not in dockerfile
+    assert "playwright install" not in dockerfile
+    assert "npm install" not in dockerfile
+    assert "requirements-dev.txt" not in dockerfile
+    assert "pytest" not in dockerfile
+
+
 def test_non_api_services_use_runtime_health_checks() -> None:
     services = _load_compose("docker-compose.yml")["services"]
 
@@ -82,6 +109,8 @@ def test_non_api_services_use_runtime_health_checks() -> None:
 
 
 def test_shared_dockerfile_has_no_built_in_healthcheck() -> None:
-    dockerfile = (ROOT / "Dockerfile.full").read_text(encoding="utf-8")
+    full_dockerfile = (ROOT / "Dockerfile.full").read_text(encoding="utf-8")
+    slim_dockerfile = (ROOT / "Dockerfile.slim").read_text(encoding="utf-8")
 
-    assert "HEALTHCHECK" not in dockerfile
+    assert "HEALTHCHECK" not in full_dockerfile
+    assert "HEALTHCHECK" not in slim_dockerfile

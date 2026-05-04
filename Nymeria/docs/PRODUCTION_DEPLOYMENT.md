@@ -14,6 +14,7 @@ This document outlines deployment options for Nymeria, from local development to
 ```bash
 cd Nymeria
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Optional: only needed when local development uses DATABASE_BACKEND=postgres
 pip install -r requirements-postgres.txt
@@ -43,16 +44,30 @@ cp .env.docker.example .env.docker
 docker compose --env-file .env.docker up -d
 ```
 
+Docker Compose builds two Nymeria application images:
+
+- `nymeria-full:local` from `Dockerfile.full` for `api`, `worker`, and
+  `twitch-bot`. These services own a `NymeriaAgent` or execute scheduled agent
+  work, so they keep the Kali/browser/CLI workstation runtime used by
+  shell-capable and browser-capable tools.
+- `nymeria-slim:local` from `Dockerfile.slim` for `watchdog`, `discord-bot`,
+  `telegram-bot`, and `mcp`. These processes are HTTP thin clients over the
+  API and do not need Kali tools, Playwright browsers, Node.js, Claude Code CLI,
+  or test dependencies.
+
+Both images install runtime requirements only. Install `requirements-dev.txt`
+on the host when running the backend test suite.
+
 The GitHub Actions CI workflow validates the Docker path on every push and
 pull request by rendering the default and optional-profile Compose configs from
 `.env.docker.example` and running BuildKit's Dockerfile check against
-`Dockerfile.full`.
+both `Dockerfile.full` and `Dockerfile.slim`.
 
 ### Docker Health Checks
 
-Docker Compose owns the health checks for Nymeria services. The shared
-`Dockerfile.full` intentionally does not define a built-in `HEALTHCHECK`
-because the image runs different commands in different containers.
+Docker Compose owns the health checks for Nymeria services. The Nymeria
+application Dockerfiles intentionally do not define a built-in `HEALTHCHECK`
+because the images run different commands in different containers.
 
 The API container uses `GET /health`. Worker, watchdog, Discord, Telegram, and
 Twitch containers write runtime heartbeat files under `/tmp/nymeria-health/`;
@@ -104,8 +119,8 @@ docker compose --env-file .env.docker exec worker \
 |------------|-------|----------------|
 | Core tools | ✅ Host system | ✅ Containerized |
 | Optional and callable-thread tools | ✅ | ✅ |
-| Browser automation | ⚠️ Install Playwright/Chromium | ✅ Included in image |
-| `claude_code` integration | ⚠️ Install Claude Code CLI | ⚠️ Requires CLI availability in container |
+| Browser automation | ⚠️ Install Playwright/Chromium | ✅ Included in `nymeria-full` agent services |
+| `claude_code` integration | ⚠️ Install Claude Code CLI | ⚠️ Available only where configured in `nymeria-full` |
 | Self-modification persistence | ✅ (local filesystem) | ✅ (via mounted volumes) |
 
 ## Configuration
@@ -260,7 +275,7 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 3. **CORS**: Restrict origins in production
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: Use HTTPS in production (reverse proxy)
-6. **Docker**: Current Nymeria application image runs as root by design (Kali tooling), but Compose applies `no-new-privileges:true` and `cap_drop: ALL` to every service. Postgres and Redis run as their built-in non-root users and use read-only root filesystems while keeping their data on named volumes. Redis requires `REDIS_PASSWORD`; unauthenticated containers on the Compose network cannot read or write the event bus.
+6. **Docker**: Agent-executing Nymeria services use the full Kali-based image by design, while HTTP thin clients use the slim Python image. Compose applies `no-new-privileges:true` and `cap_drop: ALL` to every service. Postgres and Redis run as their built-in non-root users and use read-only root filesystems while keeping their data on named volumes. Redis requires `REDIS_PASSWORD`; unauthenticated containers on the Compose network cannot read or write the event bus.
 7. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive. `.env.docker` must stay out of image layers and is ignored by the Docker build context.
 8. **Kali Tools**: Use responsibly and only on authorized targets
 
@@ -303,4 +318,4 @@ docker compose --env-file .env.docker build
 docker compose --env-file .env.docker up -d
 ```
 
-Self-modifications and runtime config are preserved by bind-mounted code/config files (`./nymeria`, `run.py`, `.env.docker`) plus the `nymeria_data` volume. Re-apply carefully after upstream upgrades if merge conflicts occur.
+Self-modifications and runtime config are preserved by bind-mounted code/config files (`./nymeria`, `run.py`, `.env.docker`) plus the `nymeria_data` volume. Re-apply carefully after upstream upgrades if merge conflicts occur. Compose tags the shared app images as `nymeria-full:local` and `nymeria-slim:local`, so rebuilding updates the grouped services instead of creating separate duplicate images for each command.

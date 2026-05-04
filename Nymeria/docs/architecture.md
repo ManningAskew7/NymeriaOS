@@ -282,6 +282,25 @@ watchdog container (run.py watchdog)
 
 ---
 
+### 4.3 Docker Runtime Images
+
+Docker Compose uses two Nymeria application image families instead of one
+workstation image for every process:
+
+- `nymeria-full:local` (`Dockerfile.full`) runs the API, worker, and Twitch
+  bot. These services own a `NymeriaAgent` or execute autonomous agent work, so
+  they keep the Kali tools, browser runtime, and CLI-oriented environment that
+  shell-capable tools may call.
+- `nymeria-slim:local` (`Dockerfile.slim`) runs Watchdog, Discord, Telegram,
+  and MCP. Those services are HTTP thin clients over the API and do not execute
+  local agent tools, so they omit Kali packages, Playwright browsers, Node.js,
+  Claude Code CLI, and dev/test dependencies.
+
+Both images install the same runtime Python requirements so thin-client imports
+stay simple; `requirements-dev.txt` is deliberately host/CI-only.
+
+---
+
 ### 4.1 Event Bus & Autonomous Streaming (`nymeria/core/event_bus.py`)
 
 The **EventBus** enables real-time streaming of autonomous task execution to connected frontend clients.
