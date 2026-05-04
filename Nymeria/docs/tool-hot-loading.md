@@ -263,11 +263,12 @@ The `temporary_tools` field at `:65`:
 temporary_tools: Dict[str, TemporaryToolEntry] = Field(default_factory=dict)
 ```
 
-### Metadata: `tools/metadata.py:983`
+### Metadata: `tools/metadata.py`
 
-The `tool_search` entry's description was updated to mention auto-continue and TTL:
-
-> "Search, enable, and disable optional tools for the current thread. Enabling auto-continues the turn with the new tools bound (no need to wait for the next user message). Enablements have a TTL (default 2h) — pick shortest needed or use 'permanent'."
+Built-in metadata is generated from the registered LangChain tool objects.
+`tool_search` discovery text therefore follows the tool's own docstring instead
+of a separate hand-maintained registry row. `metadata.py` still owns category,
+security-level, default-enabled, and config-schema policy.
 
 ## Safeguards
 

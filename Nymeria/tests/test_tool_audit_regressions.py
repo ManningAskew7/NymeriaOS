@@ -20,7 +20,13 @@ from nymeria.tools import google_sheets
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
 from nymeria.plugins._prv_a import products as _prv_a_products
-from nymeria.tools.metadata import get_all_tool_metadata
+from nymeria.tools.metadata import (
+    TOOL_METADATA,
+    ToolCategory,
+    _description_from_tool,
+    get_all_tool_metadata,
+    refresh_builtin_tool_metadata,
+)
 from nymeria.tools import triggers as trigger_tools
 from nymeria.tools.tool_search import _search, tool_search
 from nymeria.core.thread_config import ThreadConfig
@@ -195,6 +201,7 @@ def test_google_docs_write_passes_user_id_to_segment_executor(monkeypatch):
     assert seen["write"]["account_id"] == "docs-account"
     assert seen["write"]["prefix_requests"] is None
     assert [b.text for b in seen["write"]["blocks"]] == ["Hello"]
+
 
 def test_outlook_attachments_pass_user_and_account(monkeypatch):
     seen = {}
@@ -477,6 +484,67 @@ def test_builtin_tools_have_metadata():
     missing = sorted({tool.name for tool in tools if get_all_tool_metadata(tool.name) is None})
 
     assert missing == []
+
+
+def test_builtin_tool_metadata_is_generated_from_registered_tools():
+    tools = {tool.name: tool for tool in ALL_TOOLS}
+    tools.update(OPTIONAL_TOOLS)
+
+    refresh_builtin_tool_metadata()
+
+    assert set(TOOL_METADATA) == set(tools)
+    assert {
+        name
+        for name, meta in TOOL_METADATA.items()
+        if meta.default_enabled
+    } == {tool.name for tool in ALL_TOOLS}
+    assert [
+        name
+        for name, tool in sorted(tools.items())
+        if get_all_tool_metadata(name).description != _description_from_tool(tool)
+    ] == []
+
+
+def test_new_registered_tools_receive_generated_metadata(monkeypatch):
+    class FakeTool:
+        name = "temporary_probe"
+        description = "Probe generated metadata.\n\nArgs:\n    none: No input."
+
+    class FakeOptionalTool:
+        name = "temporary_optional_probe"
+        description = "Optional generated metadata."
+
+    with monkeypatch.context() as m:
+        m.setattr(tools_package, "ALL_TOOLS", [*ALL_TOOLS, FakeTool()])
+        m.setattr(
+            tools_package,
+            "OPTIONAL_TOOLS",
+            {**OPTIONAL_TOOLS, FakeOptionalTool.name: FakeOptionalTool()},
+        )
+        refresh_builtin_tool_metadata()
+
+        core_meta = get_all_tool_metadata("temporary_probe")
+        optional_meta = get_all_tool_metadata("temporary_optional_probe")
+
+        assert core_meta is not None
+        assert core_meta.description == "Probe generated metadata."
+        assert core_meta.default_enabled is True
+        assert optional_meta is not None
+        assert optional_meta.description == "Optional generated metadata."
+        assert optional_meta.default_enabled is False
+
+    refresh_builtin_tool_metadata()
+    assert get_all_tool_metadata("temporary_probe") is None
+    assert get_all_tool_metadata("temporary_optional_probe") is None
+
+
+def test_optional_profile_tools_keep_profile_category():
+    for tool_name in ("memory_clear_all", "rag_settings"):
+        meta = get_all_tool_metadata(tool_name)
+
+        assert meta is not None
+        assert meta.category == ToolCategory.PROFILE
+        assert meta.default_enabled is False
 
 
 def test_hello_test_is_developer_only_in_tool_discovery():
