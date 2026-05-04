@@ -9,10 +9,11 @@ come back later if they survive.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
+
+from .checkpoint_cleanup import delete_thread_checkpoints
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
@@ -70,10 +71,6 @@ class ThreadDeletionResult:
             "deleted": dict(sorted(self.deleted.items())),
             "warnings": self.warnings,
         }
-
-
-_CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
-
 
 def cascade_delete_thread(
     agent: "NymeriaAgent",
@@ -298,75 +295,5 @@ def _drop_graph_cache_entries(agent: "NymeriaAgent", attr: str, thread_id: str) 
 
 
 def _delete_checkpoints(settings: "Settings", thread_id: str, result: ThreadDeletionResult) -> None:
-    if settings.database_backend == "sqlite":
-        _delete_checkpoints_sqlite(settings.db_path, thread_id, result)
-    elif settings.database_backend == "postgres":
-        _delete_checkpoints_postgres(settings.postgres_uri, thread_id, result)
-    else:
-        result.set("checkpoint_rows_remaining", 0)
-
-
-def _delete_checkpoints_sqlite(db_path: Path, thread_id: str, result: ThreadDeletionResult) -> None:
-    conn = sqlite3.connect(str(db_path))
-    try:
-        for table in _CHECKPOINT_TABLES:
-            if not _sqlite_table_exists(conn, table):
-                result.set(f"{table}_deleted", 0)
-                continue
-            cursor = conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,))
-            result.set(f"{table}_deleted", cursor.rowcount or 0)
-        conn.commit()
-
-        remaining = 0
-        for table in _CHECKPOINT_TABLES:
-            if _sqlite_table_exists(conn, table):
-                row = conn.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE thread_id = ?",
-                    (thread_id,),
-                ).fetchone()
-                remaining += int(row[0] or 0)
-        result.set("checkpoint_rows_remaining", remaining)
-        if remaining:
-            raise RuntimeError(f"{remaining} checkpoint row(s) remain for {thread_id}")
-    finally:
-        conn.close()
-
-
-def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def _delete_checkpoints_postgres(
-    postgres_uri: str | None,
-    thread_id: str,
-    result: ThreadDeletionResult,
-) -> None:
-    if not postgres_uri:
-        raise RuntimeError("Postgres checkpoint backend selected without POSTGRES_URI")
-
-    import psycopg  # type: ignore[import-untyped]
-
-    with psycopg.connect(postgres_uri) as conn:
-        with conn.cursor() as cur:
-            existing_tables = []
-            for table in _CHECKPOINT_TABLES:
-                cur.execute("SELECT to_regclass(%s)", (table,))
-                if cur.fetchone()[0] is None:
-                    result.set(f"{table}_deleted", 0)
-                    continue
-                existing_tables.append(table)
-                cur.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
-                result.set(f"{table}_deleted", cur.rowcount or 0)
-            conn.commit()
-
-            remaining = 0
-            for table in existing_tables:
-                cur.execute(f"SELECT COUNT(*) FROM {table} WHERE thread_id = %s", (thread_id,))
-                remaining += int(cur.fetchone()[0] or 0)
-            result.set("checkpoint_rows_remaining", remaining)
-            if remaining:
-                raise RuntimeError(f"{remaining} checkpoint row(s) remain for {thread_id}")
+    for key, count in delete_thread_checkpoints(settings, thread_id).items():
+        result.set(key, count)
