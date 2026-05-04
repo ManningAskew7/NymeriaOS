@@ -24,30 +24,11 @@ from discord import app_commands
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
+from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens
 from .message_splitter import split_discord_message as split_message
 from .sse_consumer import parse_attach_paths
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# Formatting Helpers (platform-agnostic data → Discord embeds)
-# =============================================================================
-
-
-def fmt_tokens(n: int) -> str:
-    """Format token count: 5353 → '5.4k', 1000000 → '1.0M'."""
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    elif n >= 1_000:
-        return f"{n / 1_000:.1f}k"
-    return str(n)
-
-
-def context_bar(usage_pct: float, width: int = 20) -> str:
-    """Render a text progress bar: `████░░░░░░░░░░░░░░░░` 5%."""
-    filled = int(width * usage_pct / 100) if usage_pct else 0
-    return "`" + "\u2588" * filled + "\u2591" * (width - filled) + f"` {usage_pct}%"
 
 
 # =============================================================================
@@ -60,14 +41,6 @@ def make_thread_id(guild_id: Optional[int], channel_id: int) -> str:
     if guild_id:
         return f"discord_{guild_id}_{channel_id}"
     return f"discord_dm_{channel_id}"
-
-
-# Platform-identity cache TTL. After 30 minutes a Discord user's link is
-# re-fetched from /platform/resolve, so admin relinks propagate to the bot
-# without a restart. Long enough that lookup cost stays out of the hot path
-# (each chat hit is otherwise an extra REST round-trip), short enough that
-# operator changes don't require restarts in normal operation.
-_USER_CACHE_TTL_SECONDS = 30 * 60
 
 
 CONTEXT_MESSAGE_COUNT = 10
@@ -161,13 +134,7 @@ class NymeriaDiscordBot(discord.Client):
         self._context_enabled: Dict[int, bool] = {}  # channel_id -> enabled
         self._show_tool_calls: Dict[int, bool] = {}  # channel_id -> show tool embeds
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
-        # platform-id -> (nymeria user_id or None, expires_at) cache;
-        # populated on demand via the admin-only /platform/resolve endpoint.
-        # A None value (still under TTL) means "we checked recently and
-        # confirmed the Discord user isn't linked" so we don't hammer the
-        # endpoint on every message from strangers. After TTL expiry the
-        # entry is treated as a miss and re-fetched.
-        self._user_cache: Dict[int, tuple[Optional[str], float]] = {}
+        self._user_resolver = UserResolver(self.api, "discord", logger=logger)
 
         # Register slash commands
         self._register_commands()
@@ -577,7 +544,7 @@ class NymeriaDiscordBot(discord.Client):
 
                 # Context Window
                 ctx_lines = [
-                    context_bar(usage_pct),
+                    context_bar(usage_pct, code=True),
                     f"{fmt_tokens(total_tokens)} / {fmt_tokens(context_limit)} tokens",
                 ]
                 if compactions:
@@ -909,19 +876,7 @@ class NymeriaDiscordBot(discord.Client):
             ) is None:
                 return
             try:
-                # Auto-convert value types
-                if value.lower() in ("true", "false"):
-                    parsed = value.lower() == "true"
-                elif value.lower() == "none":
-                    parsed = None
-                else:
-                    try:
-                        parsed = int(value)
-                    except ValueError:
-                        try:
-                            parsed = float(value)
-                        except ValueError:
-                            parsed = value
+                parsed = coerce_value(value)
 
                 result = await self.api.update_settings(**{key: parsed})
                 msg = f"**{key}** set to `{parsed}`."
@@ -1030,19 +985,7 @@ class NymeriaDiscordBot(discord.Client):
             ) is None:
                 return
             try:
-                # Auto-convert types
-                if value.lower() in ("true", "false"):
-                    parsed = value.lower() == "true"
-                elif value.lower() == "none":
-                    parsed = None
-                else:
-                    try:
-                        parsed = int(value)
-                    except ValueError:
-                        try:
-                            parsed = float(value)
-                        except ValueError:
-                            parsed = value
+                parsed = coerce_value(value)
 
                 result = await self.api.update_settings(**{key: parsed})
                 msg = f"**{key}** set to `{parsed}`."
@@ -1382,7 +1325,7 @@ class NymeriaDiscordBot(discord.Client):
                 ctx_mode = context.get("context_management", settings.get("context_management", "?"))
 
                 ctx_lines = [
-                    context_bar(usage_pct),
+                    context_bar(usage_pct, code=True),
                     f"{fmt_tokens(total_tokens)} / {fmt_tokens(context_limit)} tokens",
                 ]
                 if cumulative:
@@ -2190,24 +2133,10 @@ class NymeriaDiscordBot(discord.Client):
     async def resolve_user_id(self, discord_user_id: int) -> Optional[str]:
         """
         Resolve a Discord user id to the Nymeria account it's linked to.
-        Caches the result (including None for confirmed-unlinked users) for
-        ``_USER_CACHE_TTL_SECONDS`` to avoid hammering the admin-only
-        ``/platform/resolve`` endpoint on every message. Returns ``None``
-        for unlinked Discord users (or transient lookup failures).
+        Returns ``None`` for unlinked Discord users or transient lookup
+        failures.
         """
-        now = time.monotonic()
-        cached = self._user_cache.get(discord_user_id)
-        if cached is not None:
-            value, expires_at = cached
-            if now < expires_at:
-                return value
-        try:
-            user_id = await self.api.resolve_platform_user("discord", str(discord_user_id))
-        except Exception as e:  # noqa: BLE001
-            logger.warning("resolve_platform_user(discord, %s) failed: %s", discord_user_id, e)
-            return None
-        self._user_cache[discord_user_id] = (user_id, now + _USER_CACHE_TTL_SECONDS)
-        return user_id
+        return await self._user_resolver.resolve(discord_user_id)
 
     async def _reject_unlinked(self, message: "discord.Message") -> None:
         """Reply to an unlinked Discord user with a polite rejection."""

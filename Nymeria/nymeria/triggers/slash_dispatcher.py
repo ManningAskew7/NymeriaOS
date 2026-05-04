@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 
 from .api_client import NymeriaAPIClient
+from .bot_helpers import coerce_value, fmt_tokens, http_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -79,53 +80,10 @@ Notes:
 """
 
 
-def _coerce(value_str: str) -> Any:
-    """Auto-convert str values to bool/None/int/float/str.
-
-    Matches the logic used in telegram_bot._cmd_config_set.
-    """
-    lower = value_str.lower()
-    if lower in ("true", "false"):
-        return lower == "true"
-    if lower == "none":
-        return None
-    try:
-        return int(value_str)
-    except ValueError:
-        pass
-    try:
-        return float(value_str)
-    except ValueError:
-        pass
-    return value_str
-
-
 def _truncate(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 80] + f"\n\n[Info]: output truncated (was {len(text)} chars)"
-
-
-def _fmt_tokens(n: Optional[int]) -> str:
-    if not n:
-        return "0"
-    if n >= 1000:
-        return f"{n/1000:.1f}k"
-    return str(n)
-
-
-def _http_error_detail(exc: httpx.HTTPStatusError) -> str:
-    resp = exc.response
-    if resp is not None:
-        try:
-            body = resp.json()
-            detail = body.get("detail")
-            if detail:
-                return str(detail)
-        except Exception:
-            pass
-        return f"HTTP {resp.status_code}"
-    return str(exc)
 
 
 class SlashCommandDispatcher:
@@ -194,7 +152,7 @@ class SlashCommandDispatcher:
         try:
             return await method(args, rest)
         except httpx.HTTPStatusError as e:
-            return f"[Error]: {_http_error_detail(e)}"
+            return f"[Error]: {http_error_detail(e)}"
         except Exception as e:
             logger.exception("slash_command dispatch failed for /%s %s", command, subcommand)
             return f"[Error]: {e}"
@@ -261,7 +219,7 @@ class SlashCommandDispatcher:
             f"  {model} | {provider} | thinking: {think_str}",
             "",
             "Context",
-            f"  {_fmt_tokens(total)} / {_fmt_tokens(limit)} tokens ({pct}%)",
+            f"  {fmt_tokens(total)} / {fmt_tokens(limit)} tokens ({pct}%)",
             f"  mode: {ctx_mode}"
             + (f" | {compactions} compaction{'s' if compactions != 1 else ''}" if compactions else ""),
             "",
@@ -281,8 +239,8 @@ class SlashCommandDispatcher:
         lines = [
             "Thread Info",
             f"  thread id: {self.thread_id}",
-            f"  tokens: {_fmt_tokens(stats.get('total_tokens', 0))} / "
-            f"{_fmt_tokens(stats.get('context_limit', 0))} "
+            f"  tokens: {fmt_tokens(stats.get('total_tokens', 0))} / "
+            f"{fmt_tokens(stats.get('context_limit', 0))} "
             f"({stats.get('usage_percentage', 0)}%)",
             f"  compactions: {stats.get('compaction_count', 0)}",
             f"  mode: {stats.get('context_management', 'unknown')}",
@@ -332,9 +290,9 @@ class SlashCommandDispatcher:
 
         lines.append("")
         lines.append("Context Window")
-        token_line = f"  {_fmt_tokens(total)} / {_fmt_tokens(limit)} tokens ({pct}%)"
+        token_line = f"  {fmt_tokens(total)} / {fmt_tokens(limit)} tokens ({pct}%)"
         if cumulative:
-            token_line += f" (cumulative: {_fmt_tokens(cumulative)})"
+            token_line += f" (cumulative: {fmt_tokens(cumulative)})"
         lines.append(token_line)
         if compactions:
             lines.append(f"  {compactions} compaction{'s' if compactions != 1 else ''}")
@@ -458,7 +416,7 @@ class SlashCommandDispatcher:
         for m in models[:25]:
             model_id = m.get("id") or m.get("name", "?")
             ctx_len = m.get("context_length") or m.get("context_window")
-            ctx_str = f" | {_fmt_tokens(ctx_len)} ctx" if ctx_len else ""
+            ctx_str = f" | {fmt_tokens(ctx_len)} ctx" if ctx_len else ""
             marker = " (current)" if model_id == current else ""
             lines.append(f"- {model_id}{marker}{ctx_str}")
         if len(models) > 25:
@@ -547,7 +505,7 @@ class SlashCommandDispatcher:
             return "[Error]: Usage: /config set <key> <value>"
         key = args[0]
         value_str = " ".join(args[1:])
-        parsed = _coerce(value_str)
+        parsed = coerce_value(value_str)
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
         msg = f"[Success]: {key} set to {parsed}."
         if result.get("restart_required"):
@@ -598,7 +556,7 @@ class SlashCommandDispatcher:
             return "[Error]: Usage: /env set <key> <value>"
         key = args[0]
         value_str = " ".join(args[1:])
-        parsed = _coerce(value_str)
+        parsed = coerce_value(value_str)
         # Mirror telegram: env set uses update_settings; the /settings model
         # maps env-var keys through.
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})

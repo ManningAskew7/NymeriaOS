@@ -526,6 +526,11 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - `parse_attach_paths()` extracts `[attach:/path]` tags from tool output
 - Centralises flush-before-status discipline, tool counting, and field extraction
 
+**Shared Bot Helpers** (`bot_helpers.py`):
+- Bot-neutral formatting for token counts and context usage bars
+- Shared slash-command value coercion and HTTP error-detail extraction
+- Cached platform-user resolution for Telegram and Discord thin clients
+
 **Discord Bot** (`discord_bot.py`):
 - Gateway (WebSocket) or webhook mode
 - Configurable respond mode: `mention` (only @Nymeria) or `all`

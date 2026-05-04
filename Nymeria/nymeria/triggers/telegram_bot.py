@@ -42,6 +42,7 @@ from telegram.ext import (
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
+from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens, http_error_detail
 from .message_splitter import split_telegram_message as split_message
 from .sse_consumer import consume_sse_stream, parse_attach_paths as _parse_attach_paths
 
@@ -49,23 +50,8 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Formatting Helpers
+# Telegram Formatting Helpers
 # =============================================================================
-
-
-def fmt_tokens(n: int) -> str:
-    """Format token count: 5353 -> '5.4k', 1000000 -> '1.0M'."""
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    elif n >= 1_000:
-        return f"{n / 1_000:.1f}k"
-    return str(n)
-
-
-def context_bar(usage_pct: float, width: int = 20) -> str:
-    """Render a text progress bar."""
-    filled = int(width * usage_pct / 100) if usage_pct else 0
-    return "\u2588" * filled + "\u2591" * (width - filled) + f" {usage_pct}%"
 
 
 def escape_html(text: str) -> str:
@@ -204,30 +190,6 @@ def make_thread_id(chat_id: int) -> str:
     """Generate a Nymeria thread ID from a Telegram chat ID."""
     return f"telegram_{chat_id}"
 
-
-def _safe_error_detail(e: "httpx.HTTPStatusError") -> str:
-    """Extract a human-readable ``detail`` from a FastAPI error response.
-
-    Falls back to the raw response text (truncated) and finally to the
-    string-form of the exception so users get a useful message even when
-    the upstream isn't FastAPI / doesn't return JSON.
-    """
-    try:
-        body = e.response.json()
-        if isinstance(body, dict) and "detail" in body:
-            return str(body["detail"])
-    except Exception:  # noqa: BLE001
-        pass
-    text = (e.response.text or "").strip()
-    if text:
-        return text[:200]
-    return str(e)
-
-
-# Platform-identity cache TTL. After 30 minutes a Telegram user's link is
-# re-fetched from /platform/resolve, so admin relinks propagate to the bot
-# without a restart. See discord_bot.py for the same constant and rationale.
-_USER_CACHE_TTL_SECONDS = 30 * 60
 
 # How often to re-fetch the full per-thread chat<->thread binding map from
 # the API. Direct cache mutation on /bind and /unbind makes those changes
@@ -374,10 +336,7 @@ class NymeriaTelegramBot:
         # thread_id -> { chat_id, buffer (response text), tool_count, response_seen }
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._application = None
-        # Telegram user_id -> (Nymeria account user_id or None, expires_at)
-        # cache. None (still under TTL) means "checked and confirmed
-        # unlinked"; after TTL expiry the entry is re-fetched.
-        self._user_cache: Dict[int, tuple[Optional[str], float]] = {}
+        self._user_resolver = UserResolver(self.api, "telegram", logger=logger)
         # thread_id -> (telegram_autonomous_delivery, expires_at)
         self._thread_delivery_cache: Dict[str, tuple[str, float]] = {}
         # Per-thread chat-app bindings — populated by _refresh_bindings on
@@ -423,22 +382,9 @@ class NymeriaTelegramBot:
         """Resolve a Telegram user id to a linked Nymeria account, or None.
 
         Caches the result (including ``None`` for confirmed-unlinked users)
-        for ``_USER_CACHE_TTL_SECONDS`` so admin relinks propagate without
-        a restart.
+        so admin relinks propagate without a restart.
         """
-        now = time.monotonic()
-        cached = self._user_cache.get(telegram_user_id)
-        if cached is not None:
-            value, expires_at = cached
-            if now < expires_at:
-                return value
-        try:
-            user_id = await self.api.resolve_platform_user("telegram", str(telegram_user_id))
-        except Exception as e:  # noqa: BLE001
-            logger.warning("resolve_platform_user(telegram, %s) failed: %s", telegram_user_id, e)
-            return None
-        self._user_cache[telegram_user_id] = (user_id, now + _USER_CACHE_TTL_SECONDS)
-        return user_id
+        return await self._user_resolver.resolve(telegram_user_id)
 
     # =========================================================================
     # Per-thread chat-app bindings (Telegram chat <-> Nymeria thread)
@@ -1379,7 +1325,7 @@ class NymeriaTelegramBot:
                 platform_user_id=str(tg_user.id),
             )
         except httpx.HTTPStatusError as e:
-            detail = _safe_error_detail(e)
+            detail = http_error_detail(e)
             if e.response.status_code == 400:
                 await update.message.reply_text(
                     f"That link code is invalid or expired: {detail}\n"
@@ -1399,7 +1345,7 @@ class NymeriaTelegramBot:
             return
         # Invalidate any cached "not linked" entry for this Telegram user so
         # the next message uses the fresh link.
-        self._user_cache.pop(tg_user.id, None)
+        self._user_resolver.invalidate(tg_user.id)
         await update.message.reply_text(
             f"Linked! Your Telegram account is now connected to Nymeria user "
             f"<b>{result.get('user_id')}</b>.\n\n"
@@ -1457,7 +1403,7 @@ class NymeriaTelegramBot:
                     via_user_telegram_bot_id=int(self.user_telegram_bot_id),
                 )
         except httpx.HTTPStatusError as e:
-            detail = _safe_error_detail(e)
+            detail = http_error_detail(e)
             status = e.response.status_code
             if status == 400:
                 await update.message.reply_text(
@@ -1601,7 +1547,7 @@ class NymeriaTelegramBot:
                 user_telegram_bot_id=self.user_telegram_bot_id,
             )
         except httpx.HTTPStatusError as e:
-            await update.message.reply_text(f"Couldn't switch: {_safe_error_detail(e)}")
+            await update.message.reply_text(f"Couldn't switch: {http_error_detail(e)}")
             return
         except Exception as e:  # noqa: BLE001
             logger.exception("thread switch failed")
@@ -1637,7 +1583,7 @@ class NymeriaTelegramBot:
                 user_telegram_bot_id=self.user_telegram_bot_id,
             )
         except httpx.HTTPStatusError as e:
-            await update.message.reply_text(f"Couldn't create thread: {_safe_error_detail(e)}")
+            await update.message.reply_text(f"Couldn't create thread: {http_error_detail(e)}")
             return
         except Exception as e:  # noqa: BLE001
             logger.exception("new thread failed")
@@ -2557,19 +2503,7 @@ class NymeriaTelegramBot:
         key = args[0]
         value_str = " ".join(args[1:])
 
-        # Auto-convert types
-        if value_str.lower() in ("true", "false"):
-            parsed = value_str.lower() == "true"
-        elif value_str.lower() == "none":
-            parsed = None
-        else:
-            try:
-                parsed = int(value_str)
-            except ValueError:
-                try:
-                    parsed = float(value_str)
-                except ValueError:
-                    parsed = value_str
+        parsed = coerce_value(value_str)
 
         try:
             result = await self.api.update_settings(**{key: parsed})
@@ -2695,19 +2629,7 @@ class NymeriaTelegramBot:
         key = args[0]
         value_str = " ".join(args[1:])
 
-        # Auto-convert types
-        if value_str.lower() in ("true", "false"):
-            parsed = value_str.lower() == "true"
-        elif value_str.lower() == "none":
-            parsed = None
-        else:
-            try:
-                parsed = int(value_str)
-            except ValueError:
-                try:
-                    parsed = float(value_str)
-                except ValueError:
-                    parsed = value_str
+        parsed = coerce_value(value_str)
 
         try:
             result = await self.api.update_settings(**{key: parsed})
