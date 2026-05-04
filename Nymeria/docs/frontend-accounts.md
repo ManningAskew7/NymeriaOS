@@ -100,7 +100,8 @@ routes/+page.svelte onMount calls configStore.refreshIdentity()
 GET /me (Bearer apiKey)
   ↓
 Updates configStore.identity AND module-level `currentIdentityId`
-  (used by scopedKey() to namespace localStorage as `nymeria-{user_id}-*`)
+  (used by scopedKey() to namespace localStorage as `{base_key}-{user_id}`,
+   for example `nymeria-threads-{user_id}`)
   ↓
 If user_id changed → migrateLegacyKeys() runs once + identity reload hooks fire
   ↓
@@ -354,6 +355,6 @@ Cross-reference [`chrome-mcp-testing.md`](chrome-mcp-testing.md) for general fro
 ## Where this fits in the overall code map
 
 - Account UI consumes [`accounts.md`](accounts.md)'s data model and [`api.md`](api.md)'s HTTP surface.
-- Identity scoping of localStorage keys (the `nymeria-{user_id}-*` prefix) is set up in `config.svelte.ts::scopedKey` and `registerIdentityReloadHook` — every per-feature store goes through this.
+- Identity scoping of localStorage keys (base key plus `-{user_id}`, for example `nymeria-threads-{user_id}`) is set up in `config.svelte.ts::scopedKey` and `registerIdentityReloadHook` — every per-feature store goes through this.
 - The Setup Wizard's identity preview lives in `components/common/SetupWizard.svelte` and reuses `Avatar` + `RoleChip` from `account/`.
 - The `+page.svelte` root mounts `<ErrorToast />` so it sits above every modal — don't put it inside a panel that conditionally renders.
