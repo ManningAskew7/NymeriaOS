@@ -4,7 +4,6 @@ import json
 import logging
 import math
 import os
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
@@ -63,6 +62,7 @@ from ..api.routers.rag import create_rag_router
 from ..api.routers.settings import create_settings_router
 from ..api.routers.skills import create_skills_router
 from ..api.routers.system import create_system_router
+from ..api.routers.thread_config import create_thread_config_router
 from ..api.routers.thread_operations import create_thread_operations_router
 from ..api.routers.todos import create_todos_router
 from ..api.routers.tools import create_tools_router
@@ -71,6 +71,7 @@ from ..api.routers.user_tools import create_user_tools_router
 from ..api.routers.voice import create_voice_router
 from ..api.routers.workspace import create_workspace_router
 from ..api.schemas.thread_operations import FileData
+from ..api.thread_config_helpers import validate_callable_name
 
 logger = logging.getLogger(__name__)
 
@@ -605,48 +606,6 @@ def _require_same_user_or_admin(user: AuthenticatedUser, path_user_id: str) -> N
         raise HTTPException(status_code=404, detail="Not found")
 
 
-_CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-_THREAD_TEAM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
-
-
-def _validate_callable_name(name: str) -> None:
-    """Reject callable names that would crash LLM tool/function binding.
-
-    OpenAI and Anthropic both require tool names matching
-    ``^[a-zA-Z0-9_-]{1,64}$``. We enforce here so the rejection is HTTP 400
-    at config time rather than a runtime explosion the first time the agent
-    tries to call the tool. Used by both POST /agents/threads (via Pydantic
-    field pattern) and PATCH /threads/{id}/config + the metadata-rename path
-    where Pydantic isn't sufficient because the title flows into
-    ``callable_name``.
-    """
-    if not _CALLABLE_NAME_RE.match(name):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Invalid callable name '{name}': must match "
-                "[a-zA-Z0-9_-]{1,64} for LLM tool binding (no spaces, dots, "
-                "or punctuation)."
-            ),
-        )
-
-
-def _normalize_thread_team_name(name: str) -> str:
-    normalized = " ".join((name or "").strip().split())
-    if not normalized:
-        raise HTTPException(status_code=400, detail="Team name is required")
-    if len(normalized) > 120:
-        raise HTTPException(status_code=400, detail="Team name must be 120 characters or fewer")
-    return normalized
-
-
-def _make_thread_team_id(name: str) -> str:
-    slug = _THREAD_TEAM_SLUG_RE.sub("-", name.strip().lower()).strip("-_")
-    if not slug:
-        slug = "team"
-    return f"team-{slug[:48]}-{uuid.uuid4().hex[:8]}"
-
-
 def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
     """
     Enforce that ``user`` owns ``thread_id`` (or is admin).
@@ -862,6 +821,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             require_admin_caller,
             get_agent,
             get_settings,
+            _require_thread_access,
+        )
+    )
+    app.include_router(
+        create_thread_config_router(
+            verify_api_key,
+            _authed_user_id,
+            get_agent,
             _require_thread_access,
         )
     )
@@ -2942,7 +2909,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                         status_code=400,
                         detail="Cannot rename callable thread to empty title",
                     )
-                _validate_callable_name(new_name)
+                validate_callable_name(new_name)
                 from ..tools import ALL_TOOLS
                 core_tool_names = {t.name for t in ALL_TOOLS}
                 if new_name in core_tool_names:
@@ -3143,452 +3110,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         )
 
         return {"status": "ok", "thread_id": thread_id}
-
-    # =========================================================================
-    # Thread Configuration
-    # =========================================================================
-
-    class ThreadLLMConfigRequest(BaseModel):
-        provider: Optional[str] = None
-        model: Optional[str] = None
-        temperature: Optional[float] = None
-        max_tokens: Optional[int] = None
-        extended_thinking: Optional[bool] = None
-        reasoning_effort: Optional[str] = None
-        use_model_defaults: Optional[bool] = None
-        openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
-        base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
-        api_key: Optional[str] = None  # per-thread key; None = inherit env/global
-
-    class ThreadConfigUpdateRequest(BaseModel):
-        instructions: Optional[str] = Field(default=None, max_length=5000)
-        disabled_tools: Optional[List[str]] = None
-        enabled_tools: Optional[List[str]] = None
-        enabled_skills: Optional[List[str]] = None
-        disabled_skills: Optional[List[str]] = None
-        llm_config: Optional[ThreadLLMConfigRequest] = None
-        system_prompt: Optional[str] = Field(default=None, max_length=50000)
-        callable: Optional[bool] = None
-        callable_name: Optional[str] = Field(default=None, max_length=64)
-        callable_description: Optional[str] = Field(default=None, max_length=500)
-        callable_max_iterations: Optional[int] = Field(default=None, ge=1, le=1000)
-        callable_team_id: Optional[str] = Field(default=None, max_length=120)
-        callable_team_name: Optional[str] = Field(default=None, max_length=120)
-        inject_todos_in_prompt: Optional[bool] = None
-        show_autonomous_prompts: Optional[bool] = None
-        show_prompt_metadata: Optional[bool] = None
-        telegram_autonomous_delivery: Optional[Literal["full", "notify_only", "off"]] = None
-        in_app_notification_level: Optional[Literal["notify_only", "all_autonomous", "off"]] = None
-        clear_instructions: bool = False
-        clear_disabled_tools: bool = False
-        clear_enabled_tools: bool = False
-        clear_enabled_skills: bool = False
-        clear_disabled_skills: bool = False
-        clear_llm_config: bool = False
-        clear_system_prompt: bool = False
-
-    @app.get("/threads/{thread_id}/config", tags=["Threads"])
-    async def get_thread_config(
-        thread_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Get per-thread configuration (returns defaults if none saved)."""
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-        tc = agent.thread_config_manager.get_config(thread_id)
-        if tc:
-            result = tc.model_dump(mode="json")
-            result["has_customizations"] = tc.has_customizations()
-            return result
-        # Return empty default
-        return {
-            "thread_id": thread_id,
-            "instructions": None,
-            "disabled_tools": [],
-            "enabled_tools": [],
-            "llm_config": None,
-            "system_prompt": None,
-            "callable": False,
-            "callable_name": None,
-            "callable_description": None,
-            "callable_max_iterations": None,
-            "callable_team_id": None,
-            "callable_team_name": None,
-            "inject_todos_in_prompt": False,
-            "show_autonomous_prompts": False,
-            "show_prompt_metadata": False,
-            "telegram_autonomous_delivery": "full",
-            "in_app_notification_level": "notify_only",
-            "created_at": None,
-            "updated_at": None,
-            "has_customizations": False,
-        }
-
-    @app.patch("/threads/{thread_id}/config", tags=["Threads"])
-    async def update_thread_config(
-        thread_id: str,
-        request: ThreadConfigUpdateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Update per-thread configuration (partial update)."""
-        _require_thread_access(user, thread_id)
-        from ..core.thread_config import ThreadConfig, ThreadLLMConfig
-
-        agent = get_agent()
-        tc = agent.thread_config_manager.get_config(thread_id)
-
-        if tc is None:
-            tc = ThreadConfig(thread_id=thread_id)
-
-        # Apply clears first
-        if request.clear_instructions:
-            tc.instructions = None
-        if request.clear_disabled_tools:
-            tc.disabled_tools = []
-        if request.clear_enabled_tools:
-            tc.enabled_tools = []
-        if request.clear_enabled_skills:
-            tc.enabled_skills = []
-        if request.clear_disabled_skills:
-            tc.disabled_skills = []
-        if request.clear_llm_config:
-            tc.llm_config = None
-        if request.clear_system_prompt:
-            tc.system_prompt = None
-
-        # Apply updates
-        if request.instructions is not None and not request.clear_instructions:
-            tc.instructions = request.instructions
-        if request.disabled_tools is not None and not request.clear_disabled_tools:
-            tc.disabled_tools = request.disabled_tools
-        if request.enabled_tools is not None and not request.clear_enabled_tools:
-            # Admin-only optional tools (self-modify, runtime-admin reload) are
-            # equivalent to authenticated RCE on the shared backend — a
-            # non-admin must not be able to enable them via thread config.
-            if user.role != "admin":
-                from ..tools import (
-                    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-                    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-                )
-                blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(request.enabled_tools)
-                if blocked:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Admin-only tools cannot be enabled by this user: {sorted(blocked)}",
-                    )
-                blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(request.enabled_tools)
-                if blocked:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Developer-only diagnostic tools cannot be enabled by this user: {sorted(blocked)}",
-                    )
-            tc.enabled_tools = request.enabled_tools
-        if request.enabled_skills is not None and not request.clear_enabled_skills:
-            tc.enabled_skills = request.enabled_skills
-        if request.disabled_skills is not None and not request.clear_disabled_skills:
-            tc.disabled_skills = request.disabled_skills
-        if request.llm_config is not None and not request.clear_llm_config:
-            # Use exclude_unset to distinguish "not sent" from "explicitly set to null"
-            llm_data = request.llm_config.model_dump(exclude_unset=True)
-            if tc.llm_config is None:
-                # For new configs, filter out None values (no field to clear)
-                tc.llm_config = ThreadLLMConfig(**{k: v for k, v in llm_data.items() if v is not None})
-            else:
-                for key, value in llm_data.items():
-                    setattr(tc.llm_config, key, value)
-        if request.system_prompt is not None and not request.clear_system_prompt:
-            tc.system_prompt = request.system_prompt
-        if request.callable is not None:
-            tc.callable = request.callable
-            # Require callable_name when enabling callable
-            if request.callable and not (request.callable_name or tc.callable_name):
-                raise HTTPException(
-                    status_code=400,
-                    detail="callable_name is required when enabling callable",
-                )
-        if request.callable_name is not None:
-            # Validate callable_name doesn't collide with core tool names
-            if request.callable_name:
-                _validate_callable_name(request.callable_name)
-                from ..tools import ALL_TOOLS
-                core_tool_names = {t.name for t in ALL_TOOLS}
-                if request.callable_name in core_tool_names:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Callable name '{request.callable_name}' conflicts with a core tool name",
-                    )
-                # Check for duplicate callable_name within this user's own
-                # callables. Cross-user collisions are fine: callable threads
-                # are scoped per-user at invocation time.
-                owned = set(agent.accounts_repo.list_threads_for_user(user.id))
-                existing = agent.thread_config_manager.get_callable_thread_by_name(
-                    request.callable_name, owned_thread_ids=owned
-                )
-                if existing and existing.thread_id != thread_id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Callable name '{request.callable_name}' is already used by thread {existing.thread_id}",
-                    )
-            tc.callable_name = request.callable_name
-        if request.callable_description is not None:
-            tc.callable_description = request.callable_description
-        if request.callable_max_iterations is not None:
-            tc.callable_max_iterations = request.callable_max_iterations
-        if request.callable_team_id is not None:
-            tc.callable_team_id = request.callable_team_id
-        if request.callable_team_name is not None:
-            tc.callable_team_name = request.callable_team_name
-        if request.inject_todos_in_prompt is not None:
-            tc.inject_todos_in_prompt = request.inject_todos_in_prompt
-        if request.show_autonomous_prompts is not None:
-            tc.show_autonomous_prompts = request.show_autonomous_prompts
-        if request.show_prompt_metadata is not None:
-            tc.show_prompt_metadata = request.show_prompt_metadata
-        if request.telegram_autonomous_delivery is not None:
-            tc.telegram_autonomous_delivery = request.telegram_autonomous_delivery
-        if request.in_app_notification_level is not None:
-            tc.in_app_notification_level = request.in_app_notification_level
-
-        if not agent.thread_config_manager.save_config(tc):
-            raise HTTPException(status_code=500, detail="Failed to save thread config")
-
-        agent.invalidate_thread_config_cache(thread_id)
-        if request.callable_team_id is not None or request.callable_team_name is not None:
-            for owned_thread_id in agent.accounts_repo.list_threads_for_user(user.id):
-                agent.invalidate_thread_config_cache(owned_thread_id)
-            agent.invalidate_thread_config_cache("")
-
-        # If this is an agent thread config change, rebuild agent tools
-        if (
-            request.callable is not None
-            or request.callable_name is not None
-            or request.callable_description is not None
-            or request.callable_max_iterations is not None
-        ):
-            agent.sync_agent_tools()
-
-        # Sync callable thread metadata (title = callable_name) under the
-        # caller — _require_thread_access above already proved this user owns
-        # the thread (or is admin acting-as the owner), so user.id is the
-        # right partition for the metadata store.
-        if tc.callable and tc.callable_name:
-            agent.thread_metadata_manager.upsert_thread(
-                user.id, thread_id,
-                title=tc.callable_name,
-                title_source="callable",
-                platform="callable",
-            )
-
-        result = tc.model_dump(mode="json")
-        result["has_customizations"] = tc.has_customizations()
-        return result
-
-    @app.delete("/threads/{thread_id}/config", tags=["Threads"])
-    async def delete_thread_config(
-        thread_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Reset thread to global defaults (delete custom config)."""
-        _require_thread_access(user, thread_id)
-        agent = get_agent()
-        # Check if this was an agent thread before deleting
-        tc = agent.thread_config_manager.get_config(thread_id)
-        was_agent = tc.callable if tc else False
-        agent.thread_config_manager.delete_config(thread_id)
-        agent.invalidate_thread_config_cache(thread_id)
-        # If it was an agent thread, rebuild tool registry to remove the stale tool
-        if was_agent:
-            agent.sync_agent_tools()
-        return {"status": "ok", "thread_id": thread_id}
-
-    # =========================================================================
-    # Callable Thread Teams
-    # =========================================================================
-
-    class ThreadTeamCreateRequest(BaseModel):
-        name: str = Field(..., min_length=1, max_length=120)
-        thread_ids: List[str] = Field(default_factory=list)
-
-    class ThreadTeamUpdateRequest(BaseModel):
-        name: Optional[str] = Field(default=None, max_length=120)
-        thread_ids: Optional[List[str]] = None
-
-    def _serialize_thread_teams(agent, user_id: str) -> Dict[str, Any]:
-        owned = list(agent.accounts_repo.list_threads_for_user(user_id))
-        teams: Dict[str, Dict[str, Any]] = {}
-        for thread_id in owned:
-            tc = agent.thread_config_manager.get_config(thread_id)
-            if not (tc and tc.callable_team_id):
-                continue
-            team_id = tc.callable_team_id
-            team = teams.setdefault(
-                team_id,
-                {
-                    "id": team_id,
-                    "name": tc.callable_team_name or team_id,
-                    "thread_ids": [],
-                },
-            )
-            team["thread_ids"].append(thread_id)
-            if tc.callable_team_name:
-                team["name"] = tc.callable_team_name
-
-        result = sorted(teams.values(), key=lambda t: str(t["name"]).lower())
-        return {"teams": result, "total": len(result)}
-
-    def _get_thread_team(agent, user_id: str, team_id: str) -> Optional[Dict[str, Any]]:
-        for team in _serialize_thread_teams(agent, user_id)["teams"]:
-            if team["id"] == team_id:
-                return team
-        return None
-
-    def _thread_team_name_exists(
-        agent,
-        user_id: str,
-        name: str,
-        *,
-        excluding_team_id: Optional[str] = None,
-    ) -> bool:
-        needle = name.strip().lower()
-        for team in _serialize_thread_teams(agent, user_id)["teams"]:
-            if excluding_team_id and team["id"] == excluding_team_id:
-                continue
-            if str(team["name"]).strip().lower() == needle:
-                return True
-        return False
-
-    def _require_team_thread_ids(user: AuthenticatedUser, thread_ids: List[str]) -> List[str]:
-        seen: set[str] = set()
-        clean: List[str] = []
-        for raw_id in thread_ids:
-            thread_id = str(raw_id or "").strip()
-            if not thread_id or thread_id in seen:
-                continue
-            _require_thread_access(user, thread_id)
-            clean.append(thread_id)
-            seen.add(thread_id)
-        if not clean:
-            raise HTTPException(status_code=400, detail="At least one thread is required")
-        return clean
-
-    def _save_thread_team_membership(
-        agent,
-        thread_id: str,
-        *,
-        team_id: Optional[str],
-        team_name: Optional[str],
-    ) -> None:
-        from ..core.thread_config import ThreadConfig
-
-        tc = agent.thread_config_manager.get_config(thread_id)
-        if tc is None:
-            tc = ThreadConfig(thread_id=thread_id)
-        tc.callable_team_id = team_id
-        tc.callable_team_name = team_name
-        if not agent.thread_config_manager.save_config(tc):
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to save team membership for thread {thread_id}",
-            )
-
-    def _invalidate_user_team_graphs(agent, user_id: str) -> None:
-        for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
-            agent.invalidate_thread_config_cache(owned_thread_id)
-        # Also clear per-user no-custom sentinel graphs, whose key uses "".
-        agent.invalidate_thread_config_cache("")
-
-    @app.get("/thread-teams", tags=["Threads"])
-    async def list_thread_teams(user: AuthenticatedUser = Depends(verify_api_key)):
-        """List callable visibility teams for the authenticated user's threads."""
-        agent = get_agent()
-        return _serialize_thread_teams(agent, user.id)
-
-    @app.post("/thread-teams", tags=["Threads"])
-    async def create_thread_team(
-        request: ThreadTeamCreateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Create a callable team and move the requested threads into it."""
-        agent = get_agent()
-        name = _normalize_thread_team_name(request.name)
-        if _thread_team_name_exists(agent, user.id, name):
-            raise HTTPException(status_code=409, detail=f"Thread team '{name}' already exists")
-        thread_ids = _require_team_thread_ids(user, request.thread_ids)
-        team_id = _make_thread_team_id(name)
-        for thread_id in thread_ids:
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=team_id,
-                team_name=name,
-            )
-        _invalidate_user_team_graphs(agent, user.id)
-        team = _get_thread_team(agent, user.id, team_id)
-        return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
-
-    @app.patch("/thread-teams/{team_id}", tags=["Threads"])
-    async def update_thread_team(
-        team_id: str,
-        request: ThreadTeamUpdateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Rename a callable team and/or replace its thread membership."""
-        agent = get_agent()
-        existing = _get_thread_team(agent, user.id, team_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Thread team not found")
-
-        name = str(existing["name"])
-        if request.name is not None:
-            name = _normalize_thread_team_name(request.name)
-            if _thread_team_name_exists(agent, user.id, name, excluding_team_id=team_id):
-                raise HTTPException(status_code=409, detail=f"Thread team '{name}' already exists")
-
-        if request.thread_ids is None:
-            thread_ids = list(existing["thread_ids"])
-        else:
-            thread_ids = _require_team_thread_ids(user, request.thread_ids)
-
-        old_ids = set(existing["thread_ids"])
-        new_ids = set(thread_ids)
-        for thread_id in sorted(old_ids - new_ids):
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=None,
-                team_name=None,
-            )
-        for thread_id in thread_ids:
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=team_id,
-                team_name=name,
-            )
-
-        _invalidate_user_team_graphs(agent, user.id)
-        team = _get_thread_team(agent, user.id, team_id)
-        return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
-
-    @app.delete("/thread-teams/{team_id}", tags=["Threads"])
-    async def delete_thread_team(
-        team_id: str,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Delete a callable team by clearing membership from its threads."""
-        agent = get_agent()
-        existing = _get_thread_team(agent, user.id, team_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Thread team not found")
-        for thread_id in existing["thread_ids"]:
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=None,
-                team_name=None,
-            )
-        _invalidate_user_team_graphs(agent, user.id)
-        return {"status": "ok", "team_id": team_id}
 
     return app
 
