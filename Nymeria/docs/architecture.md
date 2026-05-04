@@ -260,7 +260,7 @@ watchdog container (run.py watchdog)
     │
     ├─ every watchdog_interval_minutes:
     │     GET /todos/users  → list user IDs
-    │     GET /todos?user_id=X  → fetch each user's TODOs
+    │     GET /todos with X-Nymeria-Act-As: X  → fetch each user's TODOs
     │     filter: active + not recurring + scheduled_for not in future
     │            + updated_at older than todo_staleness_minutes
     │     group stale TODOs by thread_id
@@ -540,7 +540,8 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - Low-coupling route slices are being extracted under `nymeria/api/routers/`
   while `triggers/api.py` remains the app factory and owns shared dependencies;
   extracted routers now include System, devices, workspace, RAG, user memory,
-  user tool preferences, Skills, voice, Agent Threads, and activity/notifications.
+  user tool preferences, Skills, voice, Agent Threads, activity/notifications,
+  and TODO dashboard routes.
 - Key endpoints: `/chat` (SSE), `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents/threads`, `/triggers`
 - Thread metadata management: `PATCH /threads/{id}/metadata` syncs titles, pins, and platform across surfaces. Renaming a callable thread also updates its `callable_name` and rebuilds the tool registry.
 - CRUD for threads, TODOs, custom tools, callable threads, and triggers
