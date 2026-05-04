@@ -174,13 +174,6 @@
     if (hasDetails) expanded = !expanded;
   }
 
-  function onKeydownCard(e: KeyboardEvent) {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      toggleExpand();
-    }
-  }
-
   function stop(e: Event) {
     e.stopPropagation();
   }
@@ -232,8 +225,6 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
   class="trigger-card"
   class:disabled={!trigger.enabled}
@@ -241,11 +232,6 @@
   class:expanded
   class:unhealthy={trigger.health_status !== 'healthy' && trigger.enabled}
   style="animation-delay: {animationDelay}ms"
-  role={hasDetails ? 'button' : undefined}
-  tabindex={hasDetails ? 0 : undefined}
-  aria-expanded={hasDetails ? expanded : undefined}
-  onclick={toggleExpand}
-  onkeydown={onKeydownCard}
 >
   <span class="health-rail" style="background: {healthColor}" aria-hidden="true"></span>
 
@@ -271,8 +257,7 @@
       </div>
     </div>
 
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="header-actions" onclick={stop} onkeydown={stop} role="group">
+    <div class="header-actions">
       <ToggleSwitch
         checked={trigger.enabled}
         disabled={toggling}
@@ -284,29 +269,39 @@
       />
 
       {#if hasDetails}
-        <span class="chevron" class:rotated={expanded} aria-hidden="true">
+        <button
+          class="expand-btn"
+          class:rotated={expanded}
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse trigger details' : 'Expand trigger details'}
+          onclick={toggleExpand}
+        >
           <Icon name="chevronDown" size={12} />
-        </span>
+        </button>
       {/if}
     </div>
   </div>
 
   <!-- Thread pill: most visible in global view so you know what thread this belongs to -->
   {#if threadTitle}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <button
-      class="thread-pill"
-      class:clickable={!!onNavigateToThread}
-      onclick={handleThreadClick}
-      type="button"
-      title={onNavigateToThread ? `Go to thread: ${threadTitle}` : threadTitle}
-    >
-      <Icon name="chat" size={10} />
-      <span class="thread-name">{threadTitle}</span>
-      {#if onNavigateToThread}
+    {#if onNavigateToThread}
+      <button
+        class="thread-pill clickable"
+        onclick={handleThreadClick}
+        type="button"
+        title={`Go to thread: ${threadTitle}`}
+      >
+        <Icon name="chat" size={10} />
+        <span class="thread-name">{threadTitle}</span>
         <Icon name="chevronRight" size={10} />
-      {/if}
-    </button>
+      </button>
+    {:else}
+      <span class="thread-pill" title={threadTitle}>
+        <Icon name="chat" size={10} />
+        <span class="thread-name">{threadTitle}</span>
+      </span>
+    {/if}
   {/if}
 
   <!-- Source summary always visible -->
@@ -356,8 +351,7 @@
 
   <!-- Expanded details -->
   {#if expanded && hasDetails}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="details" onclick={stop} onkeydown={stop} role="group">
+    <div class="details">
       {#if actionTemplate}
         <div class="detail-block">
           <div class="detail-label">
@@ -468,18 +462,9 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .trigger-card.expandable {
-    cursor: pointer;
-  }
-
   .trigger-card:hover {
     background: var(--bg-hover);
     border-color: var(--border-default);
-  }
-
-  .trigger-card:focus-visible {
-    outline: 1px solid var(--accent-primary);
-    outline-offset: 1px;
   }
 
   .trigger-card.disabled {
@@ -632,13 +617,27 @@
     margin-top: 1px;
   }
 
-  .chevron {
+  .expand-btn {
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
     color: var(--text-muted);
     transition: transform var(--transition-fast);
+    cursor: pointer;
   }
 
-  .chevron.rotated {
+  .expand-btn:hover {
+    background: var(--bg-elevated-3);
+    color: var(--text-primary);
+  }
+
+  .expand-btn.rotated {
     transform: rotate(180deg);
   }
 

@@ -69,13 +69,7 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="activity-item"
-  class:clickable={!!onNavigate}
-  onclick={onNavigate}
->
+{#snippet activityContent()}
   <div class="activity-icon" style="color: {color}">
     <Icon name={icon} size={12} />
   </div>
@@ -89,14 +83,30 @@
       <span class="activity-time">{timeAgo}</span>
     </div>
   </div>
-</div>
+{/snippet}
+
+{#if onNavigate}
+  <button class="activity-item clickable" type="button" onclick={onNavigate}>
+    {@render activityContent()}
+  </button>
+{:else}
+  <div class="activity-item">
+    {@render activityContent()}
+  </div>
+{/if}
 
 <style>
   .activity-item {
     display: flex;
     gap: var(--spacing-sm);
+    width: 100%;
     padding: var(--spacing-xs) var(--spacing-sm);
+    border: 0;
     border-radius: var(--radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     transition: background var(--transition-fast), transform var(--transition-fast);
     animation: staggerFadeIn 0.3s ease-out backwards;
   }

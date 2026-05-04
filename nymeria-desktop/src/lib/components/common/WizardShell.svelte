@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { trapFocus } from '$lib/actions/focus';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -21,7 +22,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="wizard" style:width={width} role="dialog" aria-modal="true" aria-label={title}>
+<div class="wizard" style:width={width} role="dialog" aria-modal="true" aria-label={title} tabindex="-1" use:trapFocus>
   <header class="wizard-header">
     <h3>{title}</h3>
     <button class="close-btn" type="button" onclick={onClose} aria-label="Close">

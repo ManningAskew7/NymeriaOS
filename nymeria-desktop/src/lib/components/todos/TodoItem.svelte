@@ -191,14 +191,16 @@
     {#if threadTitle || recurrenceLabel || scheduledInfo}
       <div class="todo-meta">
         {#if threadTitle}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span
-            class="meta-thread"
-            class:clickable={!!onNavigateToThread}
-            title={threadTitle}
-            onclick={(e) => { if (onNavigateToThread) { e.stopPropagation(); onNavigateToThread(); } }}
-          >{threadTitle}</span>
+          {#if onNavigateToThread}
+            <button
+              class="meta-thread clickable"
+              type="button"
+              title={threadTitle}
+              onclick={(e) => { e.stopPropagation(); onNavigateToThread(); }}
+            >{threadTitle}</button>
+          {:else}
+            <span class="meta-thread" title={threadTitle}>{threadTitle}</span>
+          {/if}
         {/if}
         {#if recurrenceLabel}
           {#if threadTitle}<span class="meta-sep" aria-hidden="true">·</span>{/if}
@@ -430,7 +432,11 @@
   }
 
   .meta-thread {
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--text-secondary);
+    font: inherit;
     font-weight: 500;
     max-width: 140px;
     overflow: hidden;

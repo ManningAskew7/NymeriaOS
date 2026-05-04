@@ -138,7 +138,7 @@
 </div>
 
 {#if showChatAppWizard}
-  <div class="chatapp-wizard-backdrop" role="dialog" aria-modal="true">
+  <div class="chatapp-wizard-backdrop">
     <div class="chatapp-wizard-card">
       <ConnectTelegramWizard
         threadId={thread.id}
@@ -153,7 +153,7 @@
 {/if}
 
 {#if showMyBotWizard}
-  <div class="chatapp-wizard-backdrop" role="dialog" aria-modal="true">
+  <div class="chatapp-wizard-backdrop">
     <div class="chatapp-wizard-card">
       <ConnectMyTelegramBotWizard
         threadId={thread.id}

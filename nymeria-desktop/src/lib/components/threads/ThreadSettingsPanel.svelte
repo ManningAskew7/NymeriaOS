@@ -5,6 +5,7 @@
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { trapFocus } from '$lib/actions/focus';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
@@ -695,12 +696,6 @@
     }
   }
 
-  function handleBackdropClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).classList.contains('modal-backdrop')) {
-      onClose();
-    }
-  }
-
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
   }
@@ -708,12 +703,19 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
-  <div class="modal-panel">
+<div class="modal-backdrop">
+  <button
+    class="modal-backdrop-button"
+    type="button"
+    tabindex="-1"
+    aria-label="Close thread settings"
+    onclick={onClose}
+  ></button>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="thread-settings-title" tabindex="-1" use:trapFocus>
     <div class="modal-header">
-      <h2>Thread Settings</h2>
+      <h2 id="thread-settings-title">Thread Settings</h2>
       <span class="modal-subtitle">{thread.title}</span>
-      <button class="close-btn" onclick={onClose} type="button">
+      <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
         <Icon name="x" size={18} />
       </button>
     </div>
@@ -1174,7 +1176,16 @@
     z-index: 1000;
   }
 
+  .modal-backdrop-button {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   .modal-panel {
+    position: relative;
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);

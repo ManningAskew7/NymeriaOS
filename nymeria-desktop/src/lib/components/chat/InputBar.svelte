@@ -228,10 +228,11 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="input-container"
   class:drag-over={isDragOver}
+  role="region"
+  aria-label="Message composer"
   ondragenter={handleDragEnter}
   ondragover={handleDragOver}
   ondragleave={handleDragLeave}
