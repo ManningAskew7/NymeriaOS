@@ -115,11 +115,9 @@ function createChatStore() {
         id,
         role: 'assistant',
         content: '',
-        steps: [],                    // Ordered steps array
-        intermediateContent: '',      // Legacy field (computed from steps)
+        steps: [],
         timestamp: new Date(),
-        status: 'streaming',
-        toolCalls: []                 // Legacy field (computed from steps)
+        status: 'streaming'
       };
       messages = [...messages, message];
       return id;
@@ -136,8 +134,7 @@ function createChatStore() {
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            content: lastMessage.content + content,
-            intermediateContent: lastMessage.intermediateContent || undefined
+            content: lastMessage.content + content
           }
         ];
       }
@@ -154,8 +151,7 @@ function createChatStore() {
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            content,
-            intermediateContent: lastMessage.intermediateContent || undefined
+            content
           }
         ];
       }
@@ -174,8 +170,7 @@ function createChatStore() {
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            status: lastMessage.status === 'error' ? 'error' : 'complete',
-            intermediateContent: lastMessage.intermediateContent || undefined
+            status: lastMessage.status === 'error' ? 'error' : 'complete'
           }
         ];
       }
@@ -239,90 +234,16 @@ function createChatStore() {
             ...lastMessage,
             content: mergedContent,
             status: 'error',
-            steps: updatedSteps,
-            intermediateContent: lastMessage.intermediateContent || undefined
+            steps: updatedSteps
           }
         ];
-      }
-    },
-
-    addToolCall(id: string, name: string, args: Record<string, unknown>) {
-      const toolCall: ToolCall = {
-        id,
-        name,
-        arguments: args,
-        status: 'running',
-        startTime: new Date()
-      };
-
-      activeToolCalls = new Map(activeToolCalls).set(id, toolCall);
-
-      // Also add to the last assistant message
-      if (messages.length > 0) {
-        const lastIndex = messages.length - 1;
-        const lastMessage = messages[lastIndex];
-
-        if (lastMessage.role === 'assistant') {
-          const existingToolCalls = lastMessage.toolCalls || [];
-
-          // If this is the first tool call and there's content, move it to intermediateContent
-          // This makes the "thinking" text appear above tool calls during streaming
-          let newIntermediate = lastMessage.intermediateContent;
-          let newContent = lastMessage.content;
-
-          if (existingToolCalls.length === 0 && lastMessage.content && !lastMessage.intermediateContent) {
-            // First tool call - move current content to intermediate
-            newIntermediate = lastMessage.content;
-            newContent = '';
-          }
-
-          messages = [
-            ...messages.slice(0, lastIndex),
-            {
-              ...lastMessage,
-              content: newContent,
-              toolCalls: [...existingToolCalls, toolCall],
-              intermediateContent: newIntermediate || undefined
-            }
-          ];
-        }
-      }
-    },
-
-    updateToolCallResult(id: string, result: string, status: ToolCallStatus) {
-      const existing = activeToolCalls.get(id);
-      if (existing) {
-        const updated: ToolCall = {
-          ...existing,
-          result,
-          status,
-          endTime: new Date()
-        };
-
-        const newMap = new Map(activeToolCalls);
-        newMap.set(id, updated);
-        activeToolCalls = newMap;
-
-        // Update in the message as well
-        messages = messages.map((msg) => {
-          if (msg.role === 'assistant' && msg.toolCalls) {
-            return {
-              ...msg,
-              toolCalls: msg.toolCalls.map((tc) =>
-                tc.id === id ? updated : tc
-              ),
-              intermediateContent: msg.intermediateContent || undefined
-            };
-          }
-          return msg;
-        });
       }
     },
 
     updateToolCallResultByName(name: string, result: string, status: ToolCallStatus, id?: string) {
       // If ID is provided, use it directly for matching
       if (id && activeToolCalls.has(id)) {
-        this.updateToolCallResult(id, result, status);
+        this.updateToolCallStepResult(id, result, status);
         return;
       }
 
@@ -336,31 +257,7 @@ function createChatStore() {
       }
 
       if (foundId) {
-        const existing = activeToolCalls.get(foundId)!;
-        const updated: ToolCall = {
-          ...existing,
-          result,
-          status,
-          endTime: new Date()
-        };
-
-        const newMap = new Map(activeToolCalls);
-        newMap.set(foundId, updated);
-        activeToolCalls = newMap;
-
-        // Update in the message as well
-        messages = messages.map((msg) => {
-          if (msg.role === 'assistant' && msg.toolCalls) {
-            return {
-              ...msg,
-              toolCalls: msg.toolCalls.map((tc) =>
-                tc.id === foundId ? updated : tc
-              ),
-              intermediateContent: msg.intermediateContent || undefined
-            };
-          }
-          return msg;
-        });
+        this.updateToolCallStepResult(foundId, result, status);
       }
     },
 
@@ -376,27 +273,6 @@ function createChatStore() {
     setLoadingHistory(loading: boolean) {
       isLoadingHistory = loading;
     },
-
-    setIntermediateContent(content: string) {
-      if (messages.length === 0) return;
-
-      const lastIndex = messages.length - 1;
-      const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        // Append to existing intermediateContent (thinking can stream in chunks)
-        const existing = lastMessage.intermediateContent || '';
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            intermediateContent: existing + content
-          }
-        ];
-      }
-    },
-
-    // === New step-based methods for interleaved thinking/tool ordering ===
 
     /**
      * Add a thinking step to the last assistant message.
@@ -444,8 +320,7 @@ function createChatStore() {
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
-              steps: updatedSteps,
-              intermediateContent: this._computeIntermediateContent(updatedSteps)
+              steps: updatedSteps
             }
           ];
         } else {
@@ -455,8 +330,7 @@ function createChatStore() {
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
-              steps: updatedSteps,
-              intermediateContent: this._computeIntermediateContent(updatedSteps)
+              steps: updatedSteps
             }
           ];
         }
@@ -497,15 +371,11 @@ function createChatStore() {
         };
         const updatedSteps = [...(lastMessage.steps || []), newStep];
 
-        // Compute legacy toolCalls array from steps
-        const legacyToolCalls = this._computeToolCalls(updatedSteps);
-
         messages = [
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            steps: updatedSteps,
-            toolCalls: legacyToolCalls,
+            steps: updatedSteps
           }
         ];
       }
@@ -540,8 +410,7 @@ function createChatStore() {
           });
           return {
             ...msg,
-            steps: updatedSteps,
-            toolCalls: this._computeToolCalls(updatedSteps)
+            steps: updatedSteps
           };
         }
         return msg;
@@ -576,8 +445,7 @@ function createChatStore() {
 
           return {
             ...msg,
-            steps: updatedSteps,
-            toolCalls: this._computeToolCalls(updatedSteps)
+            steps: updatedSteps
           };
         }
 
@@ -652,10 +520,7 @@ function createChatStore() {
       if (_responseBuffer) this._flushResponse();
     },
 
-    /**
-     * Set the final response content (after all steps).
-     * Legacy method - kept for backwards compatibility.
-     */
+    /** Set the final response content after all steps. */
     setResponseContent(content: string) {
       if (messages.length === 0) return;
 
@@ -675,8 +540,7 @@ function createChatStore() {
 
     /**
      * Finalize the last assistant message after streaming completes.
-     * Computes message.content from response steps (for history/search)
-     * and intermediateContent from thinking steps (legacy compatibility).
+     * Computes message.content from response steps for history/search.
      *
      * Note: thinking steps are NOT reclassified — the backend already
      * distinguishes actual thinking (type: "thinking") from preamble/
@@ -703,35 +567,11 @@ function createChatStore() {
             ...messages.slice(0, lastIndex),
             {
               ...lastMessage,
-              content: responseContent,
-              intermediateContent: this._computeIntermediateContent(steps)
+              content: responseContent
             }
           ];
         }
       }
-    },
-
-    // Helper to compute legacy intermediateContent from steps
-    _computeIntermediateContent(steps: MessageStep[]): string {
-      return steps
-        .filter((s) => s.type === 'thinking')
-        .map((s) => s.content || '')
-        .join('');
-    },
-
-    // Helper to compute legacy toolCalls array from steps
-    _computeToolCalls(steps: MessageStep[]): ToolCall[] {
-      return steps
-        .filter((s): s is MessageStep & { type: 'tool_call' } => s.type === 'tool_call')
-        .map((s) => ({
-          id: s.id || '',
-          name: s.name || '',
-          arguments: s.arguments || {},
-          result: s.result,
-          status: s.status || 'pending',
-          startTime: s.startTime,
-          endTime: s.endTime
-        }));
     },
 
     setMessages(newMessages: Message[]) {
@@ -796,13 +636,6 @@ function createChatStore() {
             return step;
           });
 
-          const updatedToolCalls = lastMessage.toolCalls?.map((tc) => {
-            if (tc.status === 'running') {
-              return { ...tc, status: 'cancelled' as ToolCallStatus, endTime: new Date() };
-            }
-            return tc;
-          });
-
           const stoppedContent = lastMessage.content
             ? lastMessage.content + '\n\n[User stopped this output]'
             : '[User stopped this output]';
@@ -813,7 +646,6 @@ function createChatStore() {
               ...lastMessage,
               content: stoppedContent,
               steps: updatedSteps ?? lastMessage.steps,
-              toolCalls: updatedToolCalls ?? lastMessage.toolCalls,
               status: 'complete' as const,
             }
           ];
@@ -909,10 +741,8 @@ function createChatStore() {
             role: 'assistant' as const,
             content: '',
             steps: [],
-            intermediateContent: '',
             timestamp: new Date(),
-            status: 'streaming' as const,
-            toolCalls: []
+            status: 'streaming' as const
           }
         ];
       } else {
@@ -951,10 +781,8 @@ function createChatStore() {
           role: 'assistant' as const,
           content: '',
           steps: [],
-          intermediateContent: '',
           timestamp: new Date(),
           status: 'streaming' as const,
-          toolCalls: [],
           toolReloadInfo: { tools, ttl, ttlSeconds, source, skillName, reason } as ToolReloadInfo,
         }
       ];

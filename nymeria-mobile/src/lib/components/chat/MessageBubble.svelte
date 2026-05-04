@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Message, FileAttachment } from '$lib/types';
+  import type { Message, MessageStep, ToolCall, FileAttachment } from '$lib/types';
   import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
@@ -119,6 +119,28 @@
     return { hidden: false };
   }
 
+  function thinkingContentFromSteps(steps: MessageStep[] | undefined): string {
+    return (steps || [])
+      .filter((step) => step.type === 'thinking')
+      .map((step) => step.content || '')
+      .join('');
+  }
+
+  function toolCallsFromSteps(steps: MessageStep[] | undefined): ToolCall[] {
+    return (steps || [])
+      .filter((step): step is MessageStep & { type: 'tool_call' } => step.type === 'tool_call')
+      .map((step) => ({
+        id: step.id || '',
+        name: step.name || '',
+        arguments: step.arguments || {},
+        result: step.result,
+        artifacts: step.artifacts,
+        status: step.status || 'pending',
+        startTime: step.startTime,
+        endTime: step.endTime
+      }));
+  }
+
   // Computed: parsed user message (extracts summary if embedded in content)
   let parsedUserContent = $derived(
     message.role === 'user'
@@ -147,10 +169,17 @@
 
   let isUser = $derived(message.role === 'user');
   let isStreaming = $derived(message.status === 'streaming');
-  let hasSteps = $derived(message.steps && message.steps.length > 0);
-  // Legacy fallbacks for messages without steps array
-  let hasToolCalls = $derived(message.toolCalls && message.toolCalls.length > 0);
-  let hasIntermediateContent = $derived(!!message.intermediateContent);
+  let hasSteps = $derived(!!message.steps?.length);
+  let fallbackIntermediateContent = $derived(
+    message.intermediateContent || thinkingContentFromSteps(message.steps)
+  );
+  let fallbackToolCalls = $derived(
+    message.toolCalls && message.toolCalls.length > 0
+      ? message.toolCalls
+      : toolCallsFromSteps(message.steps)
+  );
+  let hasToolCalls = $derived(!hasSteps && fallbackToolCalls.length > 0);
+  let hasIntermediateContent = $derived(!hasSteps && !!fallbackIntermediateContent);
   // Support attachments field
   let allAttachments = $derived(message.attachments || []);
   let hasAttachments = $derived(allAttachments.length > 0);
@@ -314,14 +343,14 @@
         {#if hasIntermediateContent}
           <div class="intermediate-content">
             <div class="markdown-content">
-              {@html renderMarkdown(message.intermediateContent || '')}
+              {@html renderMarkdown(fallbackIntermediateContent)}
             </div>
           </div>
         {/if}
 
         {#if hasToolCalls}
           <div class="tool-calls">
-            {#each message.toolCalls || [] as toolCall (toolCall.id)}
+            {#each fallbackToolCalls as toolCall (toolCall.id)}
               <ToolCallCard {toolCall} />
             {/each}
           </div>

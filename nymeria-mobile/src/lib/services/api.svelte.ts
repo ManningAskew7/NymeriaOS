@@ -1243,25 +1243,31 @@ export class NymeriaAPI {
     const data = await response.json();
 
     // Convert API messages to our format
-    const messages: Message[] = (data.messages || []).map(
-      (m: Record<string, unknown>) => ({
+    const messages: Message[] = (data.messages || []).map((m: Record<string, unknown>) => {
+      const steps = Array.isArray(m.steps)
+        ? m.steps
+            .map((step) => this.normalizeMessageStep(step))
+            .filter((step): step is MessageStep => step !== null)
+        : undefined;
+      const hasSteps = !!steps?.length;
+      const legacyToolCalls = !hasSteps && Array.isArray(m.tool_calls)
+        ? m.tool_calls
+            .map((toolCall) => this.normalizeToolCall(toolCall))
+            .filter((toolCall): toolCall is ToolCall => toolCall !== null)
+        : undefined;
+
+      return {
         id: (m.id as string) || crypto.randomUUID(),
         role: m.role as 'user' | 'assistant' | 'system',
         kind: m.kind as Message['kind'],
         content: m.content as string,
-        steps: Array.isArray(m.steps)
-          ? m.steps
-              .map((step) => this.normalizeMessageStep(step))
-              .filter((step): step is MessageStep => step !== null)
-          : undefined,
-        intermediateContent: m.intermediate_content as string | undefined,
+        steps,
         timestamp: new Date((m.timestamp as string) || Date.now()),
         status: 'complete' as const,
-        toolCalls: Array.isArray(m.tool_calls)
-          ? m.tool_calls
-              .map((toolCall) => this.normalizeToolCall(toolCall))
-              .filter((toolCall): toolCall is ToolCall => toolCall !== null)
-          : undefined,
+        ...(!hasSteps ? {
+          intermediateContent: m.intermediate_content as string | undefined,
+          toolCalls: legacyToolCalls,
+        } : {}),
         attachments: m.attachments as Message['attachments'],
         contextSummary: (m.context_summary as string | undefined) || (m.contextSummary as string | undefined),
         messagesRemoved: (m.messages_removed as number | undefined) ?? (m.messagesRemoved as number | undefined),
@@ -1276,8 +1282,8 @@ export class NymeriaAPI {
           reason: ((m.tool_reload_info as Record<string, unknown>).reason as string | null) || undefined,
           resumePrompt: ((m.tool_reload_info as Record<string, unknown>).resume_prompt as string) || undefined,
         } : undefined
-      })
-    );
+      };
+    });
 
     return {
       threadId,

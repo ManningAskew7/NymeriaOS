@@ -58,11 +58,11 @@ export interface Message {
   role: MessageRole;
   kind?: 'compaction_notice';
   content: string;
-  steps?: MessageStep[];          // Ordered list of thinking/tool_call steps
-  intermediateContent?: string;   // Legacy: concatenated thinking (computed from steps)
+  steps?: MessageStep[];          // Ordered list of thinking/tool_call/response steps
+  intermediateContent?: string;   // Legacy history fallback for messages without steps
   timestamp: Date;
   status: MessageStatus;
-  toolCalls?: ToolCall[];         // Legacy: all tool calls (computed from steps)
+  toolCalls?: ToolCall[];         // Legacy history fallback for messages without steps
   attachments?: FileAttachment[]; // File attachments for multimodal messages
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
   messagesRemoved?: number;       // Number of messages summarized by compaction
