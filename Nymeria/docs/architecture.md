@@ -540,7 +540,7 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - Low-coupling route slices are being extracted under `nymeria/api/routers/`
   while `triggers/api.py` remains the app factory and owns shared dependencies;
   extracted routers now include System, devices, workspace, RAG, user memory,
-  user tool preferences, Skills, and voice.
+  user tool preferences, Skills, voice, and Agent Threads.
 - Key endpoints: `/chat` (SSE), `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents/threads`, `/triggers`
 - Thread metadata management: `PATCH /threads/{id}/metadata` syncs titles, pins, and platform across surfaces. Renaming a callable thread also updates its `callable_name` and rebuilds the tool registry.
 - CRUD for threads, TODOs, custom tools, callable threads, and triggers

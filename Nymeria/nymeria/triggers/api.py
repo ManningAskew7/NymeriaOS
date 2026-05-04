@@ -75,6 +75,7 @@ from ..core.custom_tools import (
     get_custom_tool_loader,
     reload_custom_tools,
 )
+from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
 from ..api.routers.memory import create_memory_router
 from ..api.routers.rag import create_rag_router
@@ -1246,6 +1247,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app.include_router(create_user_tools_router(verify_api_key, get_agent, _require_same_user_or_admin))
     app.include_router(create_skills_router(verify_api_key, _authed_user_id, get_agent, _require_thread_access))
     app.include_router(create_voice_router(verify_api_key, get_agent, get_settings, _require_thread_access))
+    app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
 
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
@@ -6749,136 +6751,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             confirmed=request.confirmed,
             config_values=request.config_values,
         )
-
-    # ========================================================================
-    # Agent Thread Endpoints
-    # ========================================================================
-
-    @app.get("/agents/templates", tags=["Agent Threads"])
-    async def list_agent_templates(user: AuthenticatedUser = Depends(verify_api_key)):
-        """List agent templates (legacy — returns empty list)."""
-        return {"templates": [], "total": 0}
-
-    @app.get("/agents/threads", tags=["Agent Threads"])
-    async def list_agent_threads(user: AuthenticatedUser = Depends(verify_api_key)):
-        """List the caller's callable threads (callable=True). Admins see only
-        their own callable threads here; act-as via X-Nymeria-Act-As to see
-        another user's set."""
-        agent = get_agent()
-        owned = set(agent.accounts_repo.list_threads_for_user(user.id))
-        threads = agent.thread_config_manager.list_callable_threads(owned_thread_ids=owned)
-        result = []
-        for tc in threads:
-            data = tc.model_dump(mode="json")
-            data["has_customizations"] = tc.has_customizations()
-            result.append(data)
-        return {"threads": result, "total": len(result)}
-
-    class AgentThreadCreateRequest(BaseModel):
-        """Request to create a new callable thread."""
-        # callable_name becomes the LangChain tool name and is bound to the
-        # LLM via tool/function specs. OpenAI and Anthropic both reject names
-        # outside ^[a-zA-Z0-9_-]{1,64}$, so reject early instead of crashing
-        # on the first invocation attempt.
-        callable_name: str = Field(
-            ..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$"
-        )
-        callable_description: str = Field(default="", max_length=500)
-        system_prompt: str = Field(default="", max_length=50000)
-        llm_provider: Optional[str] = None
-        llm_model: Optional[str] = None
-        llm_temperature: Optional[float] = None
-        llm_max_tokens: Optional[int] = None
-
-    @app.post("/agents/threads", tags=["Agent Threads"])
-    async def create_agent_thread(
-        http_request: Request,
-        request: AgentThreadCreateRequest,
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """Create a new callable thread."""
-        import uuid
-        from ..core.thread_config import ThreadConfig, ThreadLLMConfig
-
-        agent = get_agent()
-
-        # Validate callable_name doesn't collide with core tool names
-        from ..tools import ALL_TOOLS
-        core_tool_names = {t.name for t in ALL_TOOLS}
-        if request.callable_name in core_tool_names:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Callable name '{request.callable_name}' conflicts with a core tool name",
-            )
-
-        # Check if a callable thread with this name already exists for THIS
-        # user. Two users can each have a "Helper" — invocation is gated by
-        # ownership at runtime so there's no actual conflict.
-        owned = set(agent.accounts_repo.list_threads_for_user(user.id))
-        existing = agent.thread_config_manager.get_callable_thread_by_name(
-            request.callable_name, owned_thread_ids=owned
-        )
-        if existing:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Callable thread for '{request.callable_name}' already exists: {existing.thread_id}",
-            )
-
-        # Build LLM config
-        llm_config = None
-        if request.llm_provider or request.llm_model or request.llm_temperature is not None or request.llm_max_tokens is not None:
-            llm_config = ThreadLLMConfig(
-                provider=request.llm_provider,
-                model=request.llm_model,
-                temperature=request.llm_temperature,
-                max_tokens=request.llm_max_tokens,
-            )
-
-        # Generate thread ID
-        random_suffix = uuid.uuid4().hex[:8]
-        thread_id = f"agent-{request.callable_name.lower()}-{random_suffix}"
-
-        tc = ThreadConfig(
-            thread_id=thread_id,
-            system_prompt=request.system_prompt,
-            callable=True,
-            callable_name=request.callable_name,
-            callable_description=request.callable_description or f"Invoke the {request.callable_name} callable thread",
-            llm_config=llm_config,
-        )
-
-        if not agent.thread_config_manager.save_config(tc):
-            raise HTTPException(status_code=500, detail="Failed to create agent thread")
-
-        # Claim the thread for the creator so the runtime ownership gate
-        # in create_callable_thread_tool() lets the creator invoke it but
-        # rejects anyone else.
-        agent.accounts_repo.claim_thread(thread_id, user.id)
-
-        # Create thread metadata with callable_name as title (under creator)
-        agent.thread_metadata_manager.upsert_thread(
-            user.id, thread_id,
-            title=request.callable_name,
-            title_source="callable",
-            platform="callable",
-        )
-
-        # Rebuild agent tools to include the new callable thread
-        agent.sync_agent_tools()
-
-        # Publish sync event so other clients see the new thread
-        client_id = http_request.headers.get("x-nymeria-client-id", "")
-        publish_sync_event(
-            event_type="thread_created",
-            thread_id=thread_id,
-            user_id=user.id,
-            data={"title": request.callable_name, "title_source": "callable", "platform": "callable"},
-            origin_client_id=client_id,
-        )
-
-        result = tc.model_dump(mode="json")
-        result["has_customizations"] = tc.has_customizations()
-        return result
 
     @app.get("/tools/categories", tags=["Tools"])
     async def list_tool_categories(
