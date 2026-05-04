@@ -6,12 +6,10 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_metadata import ThreadMetadataManager
@@ -23,43 +21,21 @@ from nymeria.core import ticker as ticker_module
 from nymeria.triggers import api as api_module
 
 
-@dataclass
-class FakeSettings:
-    data_dir: Path
-    database_backend: str = "sqlite"
-    postgres_uri: str | None = None
-    redis_enabled: bool = False
-    redis_url: str | None = None
-    fcm_enabled: bool = False
-    fcm_credentials_json: str | None = None
-    context_management: str = "none"
-    sliding_window_cycles: int = 20
-    todo_auto_archive_days: int = 7
-    cors_origins_list: list[str] | None = None
-
-    def __post_init__(self):
-        if self.cors_origins_list is None:
-            self.cors_origins_list = ["*"]
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "nymeria.db"
-
-
 class FakeThreadConfigManager:
     def get_config(self, thread_id: str):
         return None
 
 
 class FakeAgent:
-    def __init__(self, data_dir: Path):
+    def __init__(self, settings):
+        data_dir = settings.data_dir
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.thread_metadata_manager = ThreadMetadataManager(data_dir)
         self.todo_manager = TodoManager(data_dir)
         self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
         self.trigger_manager = TriggerManager(data_dir)
         self.thread_config_manager = FakeThreadConfigManager()
-        self.settings = FakeSettings(data_dir)
+        self.settings = settings
 
     def sync_agent_tools(self):
         pass
@@ -68,17 +44,22 @@ class FakeAgent:
         raise RuntimeError("boom")
 
 
-def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, FakeAgent, str]:
-    settings = FakeSettings(tmp_path)
-    with sqlite3.connect(settings.db_path) as conn:
-        conn.execute("CREATE TABLE checkpoints (thread_id TEXT)")
-        conn.commit()
-    agent = FakeAgent(tmp_path)
-    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
-    app = api_module.create_api_app(agent)
-    agent.accounts_repo.create_user("owner", "owner@example.com", "Owner")
-    token = agent.accounts_repo.issue_token("owner")
-    return TestClient(app), agent, token
+def _agent(tmp_path: Path, api_client_builder) -> FakeAgent:
+    return FakeAgent(api_client_builder.settings(tmp_path))
+
+
+def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]:
+    settings = api_client_builder.settings(tmp_path)
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    client, token = api_client_builder.authenticated_client(
+        agent,
+        settings,
+        user_id="owner",
+        email="owner@example.com",
+        display_name="Owner",
+    )
+    return client, agent, token
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -122,8 +103,8 @@ def test_schedule_db_clears_stale_active_execution_markers(tmp_path: Path):
     assert db.mark_execution_started("todo-1", "owner", "thread-1")
 
 
-def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path, monkeypatch):
-    client, _agent, token = _client(tmp_path, monkeypatch)
+def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path, api_client_builder):
+    client, _agent, token = _client(tmp_path, api_client_builder)
 
     response = client.get("/tasks", headers=_headers(token))
 
@@ -142,12 +123,12 @@ def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path
 )
 def test_todo_write_endpoints_reject_active_execution(
     tmp_path: Path,
-    monkeypatch,
+    api_client_builder,
     method: str,
     path_suffix: str,
     json_body: dict[str, str] | None,
 ):
-    client, agent, token = _client(tmp_path, monkeypatch)
+    client, agent, token = _client(tmp_path, api_client_builder)
     todo = _add_todo(agent)
     assert agent._schedule_db.mark_execution_started(todo.id, "owner", todo.thread_id)
 
@@ -171,12 +152,12 @@ def test_todo_write_endpoints_reject_active_execution(
 )
 def test_todo_write_endpoints_succeed_after_execution_marker_clears(
     tmp_path: Path,
-    monkeypatch,
+    api_client_builder,
     method: str,
     path_suffix: str,
     json_body: dict[str, str] | None,
 ):
-    client, agent, token = _client(tmp_path, monkeypatch)
+    client, agent, token = _client(tmp_path, api_client_builder)
     todo = _add_todo(agent)
     assert agent._schedule_db.mark_execution_started(todo.id, "owner", todo.thread_id)
     assert agent._schedule_db.clear_execution(todo.id, "owner")
@@ -190,8 +171,8 @@ def test_todo_write_endpoints_succeed_after_execution_marker_clears(
     assert response.status_code == 200
 
 
-def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path):
-    agent = FakeAgent(tmp_path)
+def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path, api_client_builder):
+    agent = _agent(tmp_path, api_client_builder)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
     todo = _add_todo(agent)
     entry = ScheduledTodoEntry(
@@ -208,8 +189,8 @@ def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path):
     assert not agent._schedule_db.is_execution_active(todo.id, "owner")
 
 
-def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Path):
-    agent = FakeAgent(tmp_path)
+def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Path, api_client_builder):
+    agent = _agent(tmp_path, api_client_builder)
     agent.settings.todo_auto_archive_days = 3
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
 
@@ -234,8 +215,8 @@ def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Pa
     assert active.id in remaining_ids
 
 
-def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, monkeypatch):
-    agent = FakeAgent(tmp_path)
+def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, monkeypatch, api_client_builder):
+    agent = _agent(tmp_path, api_client_builder)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
     todo = _add_todo(agent)
     entry = ScheduledTodoEntry(
@@ -307,9 +288,9 @@ def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, mon
 # ---- AGENT-010: Poll-loop isolation tests ----
 
 
-def test_trigger_poll_does_not_occupy_autonomous_worker_pool(tmp_path: Path, monkeypatch):
+def test_trigger_poll_does_not_occupy_autonomous_worker_pool(tmp_path: Path, monkeypatch, api_client_builder):
     """A slow trigger source poll cannot starve a due scheduled TODO."""
-    agent = FakeAgent(tmp_path)
+    agent = _agent(tmp_path, api_client_builder)
     entry = ScheduledTodoEntry(
         todo_id="todo-1",
         user_id="owner",
@@ -356,9 +337,9 @@ def test_trigger_poll_does_not_occupy_autonomous_worker_pool(tmp_path: Path, mon
         ticker._executor.shutdown(wait=True)
 
 
-def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch):
+def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch, api_client_builder):
     """An exception in _check_triggers resets the guard flag."""
-    agent = FakeAgent(tmp_path)
+    agent = _agent(tmp_path, api_client_builder)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
 
     def exploding_triggers():
@@ -372,9 +353,9 @@ def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch)
     assert not ticker._trigger_poll_running
 
 
-def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch):
+def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch, api_client_builder):
     """A second trigger poll is not submitted while one is in progress."""
-    agent = FakeAgent(tmp_path)
+    agent = _agent(tmp_path, api_client_builder)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -401,9 +382,9 @@ def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch):
     assert call_count == 1
 
 
-def test_trigger_poll_failed_submit_clears_running_flag(tmp_path: Path):
+def test_trigger_poll_failed_submit_clears_running_flag(tmp_path: Path, api_client_builder):
     """A shutdown-time submit failure does not leave polling permanently stuck."""
-    agent = FakeAgent(tmp_path)
+    agent = _agent(tmp_path, api_client_builder)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
     ticker._housekeeping_executor.shutdown(wait=True)
@@ -412,9 +393,9 @@ def test_trigger_poll_failed_submit_clears_running_flag(tmp_path: Path):
     assert not ticker._trigger_poll_running
 
 
-def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch):
+def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch, api_client_builder):
     """_archive_completed_todos runs in housekeeping, not inline."""
-    agent = FakeAgent(tmp_path)
+    agent = _agent(tmp_path, api_client_builder)
     ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
