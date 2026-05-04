@@ -7,9 +7,10 @@ const STORAGE_KEY = 'nymeria-config';
 // Identity-scoped localStorage helpers
 // ---------------------------------------------------------------------------
 // Mirror of nymeria-desktop/src/lib/stores/config.svelte.ts — keep in sync.
-// User-scoped data lives under `nymeria-<user_id>-<key>` once identity is
-// known. Before /me returns, unscoped legacy keys are still used so
-// pre-Step-2 installs keep working. First /me success migrates legacy → scoped.
+// User-scoped data lives under `{base_key}-{user_id}` once identity is known,
+// for example `nymeria-threads-{user_id}`. Before /me returns, legacy keys are
+// used so pre-Step-2 installs keep working. First /me success migrates legacy
+// → scoped.
 
 const NON_SCOPED_KEYS = new Set<string>([
   'nymeria-config',
@@ -128,6 +129,17 @@ function createConfigStore() {
     saveConfig({ apiUrl, apiKey, setupCompleted, theme, suppressAttachmentWarnings, identity });
   }
 
+  function applyLoadedConfig(config: AppConfig): void {
+    apiUrl = config.apiUrl;
+    apiKey = config.apiKey;
+    setupCompleted = config.setupCompleted ?? false;
+    theme = config.theme ?? 'midnight';
+    suppressAttachmentWarnings = config.suppressAttachmentWarnings ?? false;
+    identity = config.identity ?? null;
+    currentIdentityId = identity?.id ?? null;
+    applyTheme(theme);
+  }
+
   function notifyIdentityReloadHooks(label: string): void {
     for (const hook of reloadHooks) {
       try {
@@ -192,6 +204,18 @@ function createConfigStore() {
     identity = null;
     currentIdentityId = null;
     saveCurrentConfig();
+  }
+
+  /**
+   * Mobile restores Capacitor Preferences after stores are constructed. Reload
+   * the persisted config into live state, then ask scoped stores to re-read.
+   */
+  function reloadFromStorage(label: string = 'reloadFromStorage'): void {
+    applyLoadedConfig(loadConfig());
+    if (currentIdentityId) {
+      migrateLegacyKeys(currentIdentityId);
+    }
+    notifyIdentityReloadHooks(label);
   }
 
   /**
@@ -291,6 +315,7 @@ function createConfigStore() {
     },
     refreshIdentity,
     clearIdentity,
+    reloadFromStorage,
     signOut,
     updateIdentityDisplayName,
     reset() {

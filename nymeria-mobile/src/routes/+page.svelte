@@ -15,9 +15,12 @@
   import { initLifecycle, destroyLifecycle, backupToPreferences, restoreFromPreferences } from '$lib/utils/lifecycle';
 
   // If config is valid but setupCompleted is false, auto-complete
-  if (configStore.isConfigured && !configStore.setupCompleted) {
-    configStore.setupCompleted = true;
+  function completeSetupIfConfigured() {
+    if (configStore.isConfigured && !configStore.setupCompleted) {
+      configStore.setupCompleted = true;
+    }
   }
+  completeSetupIfConfigured();
 
   function loadThreadHistory(threadId: string) {
     chatStore.clearMessages();
@@ -74,26 +77,36 @@
   }
 
   onMount(() => {
-    // Restore from Capacitor Preferences (if localStorage was cleared)
-    restoreFromPreferences();
+    let destroyed = false;
 
-    // Initialize Capacitor lifecycle
-    initLifecycle({
-      onBackButton: handleBackButton,
-      onAppStateChange: handleAppStateChange,
-    });
+    async function startMobileRuntime() {
+      const restored = await restoreFromPreferences();
+      if (destroyed) return;
+      if (restored) {
+        configStore.reloadFromStorage('restoreFromPreferences');
+        completeSetupIfConfigured();
+      }
 
-    if (configStore.isConfigured) {
-      // Start health and notification polling + autonomous stream
-      healthStore.startPolling();
-      notificationStore.startPolling();
-      autonomousStore.connect();
+      // Initialize Capacitor lifecycle
+      await initLifecycle({
+        onBackButton: handleBackButton,
+        onAppStateChange: handleAppStateChange,
+      });
+      if (destroyed) {
+        await destroyLifecycle();
+        return;
+      }
 
-      // Resolve identity FIRST so subsequent reads use the correctly-scoped
-      // localStorage keys. Awaited — otherwise the unscoped read of
-      // threadsStore.currentThreadId below races the identity refresh and
-      // momentarily renders the previous user's thread on a returning user.
-      (async () => {
+      if (configStore.isConfigured) {
+        // Start health and notification polling + autonomous stream
+        healthStore.startPolling();
+        notificationStore.startPolling();
+        autonomousStore.connect();
+
+        // Resolve identity FIRST so subsequent reads use the correctly-scoped
+        // localStorage keys. Awaited — otherwise the unscoped read of
+        // threadsStore.currentThreadId below races the identity refresh and
+        // momentarily renders the previous user's thread on a returning user.
         try {
           const id = await configStore.refreshIdentity();
           if (id === null && !configStore.isConfigured) {
@@ -108,10 +121,13 @@
         if (initialThreadId) {
           loadThreadHistory(initialThreadId);
         }
-      })();
+      }
     }
 
+    void startMobileRuntime();
+
     return () => {
+      destroyed = true;
       healthStore.stopPolling();
       notificationStore.stopPolling();
       autonomousStore.disconnect();

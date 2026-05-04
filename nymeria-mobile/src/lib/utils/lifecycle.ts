@@ -16,6 +16,52 @@ type BackButtonCallback = () => void;
 let onAppStateChange: AppStateCallback | null = null;
 let onBackButton: BackButtonCallback | null = null;
 
+const EXACT_PREFERENCE_BACKUP_KEYS = ['nymeria-config'] as const;
+const SCOPED_PREFERENCE_BACKUP_BASES = [
+  'nymeria-threads',
+  'nymeria-current-thread',
+  'nymeria-thread-folders',
+  'nymeria-thread-sort-mode',
+  'nymeria-ui-mobile',
+] as const;
+
+type PreferenceKeyReader = {
+  keys(): Promise<{ keys: string[] }>;
+};
+
+function isPreferenceBackupKey(key: string): boolean {
+  return (
+    EXACT_PREFERENCE_BACKUP_KEYS.includes(key as (typeof EXACT_PREFERENCE_BACKUP_KEYS)[number]) ||
+    SCOPED_PREFERENCE_BACKUP_BASES.some((base) => key === base || key.startsWith(`${base}-`))
+  );
+}
+
+function localStorageKeysToBackup(): string[] {
+  if (typeof localStorage === 'undefined') return [];
+
+  const keys = new Set<string>();
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && isPreferenceBackupKey(key)) {
+      keys.add(key);
+    }
+  }
+  return Array.from(keys).sort();
+}
+
+async function preferenceKeysToRestore(Preferences: PreferenceKeyReader): Promise<string[]> {
+  const keys = new Set<string>([...EXACT_PREFERENCE_BACKUP_KEYS, ...SCOPED_PREFERENCE_BACKUP_BASES]);
+
+  const { keys: storedKeys } = await Preferences.keys();
+  for (const key of storedKeys) {
+    if (isPreferenceBackupKey(key)) {
+      keys.add(key);
+    }
+  }
+
+  return Array.from(keys).sort();
+}
+
 /**
  * Initialize Capacitor app lifecycle listeners.
  * Safe to call in browser (no-ops if plugins unavailable).
@@ -68,11 +114,10 @@ export async function destroyLifecycle(): Promise<void> {
 export async function backupToPreferences(): Promise<void> {
   try {
     const { Preferences } = await import('@capacitor/preferences');
-    const keysToBackup = ['nymeria-config', 'nymeria-threads', 'nymeria-current-thread', 'nymeria-ui-mobile'];
 
-    for (const key of keysToBackup) {
+    for (const key of localStorageKeysToBackup()) {
       const value = localStorage.getItem(key);
-      if (value) {
+      if (value !== null) {
         await Preferences.set({ key, value });
       }
     }
@@ -82,23 +127,28 @@ export async function backupToPreferences(): Promise<void> {
 }
 
 /**
- * Restore localStorage from Capacitor Preferences (if localStorage is empty).
- * Call on app startup before stores initialize.
+ * Restore missing localStorage keys from Capacitor Preferences.
+ * Returns true when at least one key was restored.
  */
-export async function restoreFromPreferences(): Promise<void> {
+export async function restoreFromPreferences(): Promise<boolean> {
   try {
     const { Preferences } = await import('@capacitor/preferences');
-    const keysToRestore = ['nymeria-config', 'nymeria-threads', 'nymeria-current-thread', 'nymeria-ui-mobile'];
 
-    for (const key of keysToRestore) {
-      if (!localStorage.getItem(key)) {
+    if (typeof localStorage === 'undefined') return false;
+
+    let restored = false;
+    for (const key of await preferenceKeysToRestore(Preferences)) {
+      if (localStorage.getItem(key) === null) {
         const { value } = await Preferences.get({ key });
-        if (value) {
+        if (value !== null) {
           localStorage.setItem(key, value);
+          restored = true;
         }
       }
     }
+    return restored;
   } catch {
     // Preferences plugin not available
+    return false;
   }
 }
