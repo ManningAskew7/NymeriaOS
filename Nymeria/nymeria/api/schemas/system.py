@@ -1,6 +1,6 @@
 """System endpoint schemas."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HealthResponse(BaseModel):
@@ -8,3 +8,14 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = "1.0.0"
+
+
+class ReportRequest(BaseModel):
+    """Request model for error report endpoint."""
+
+    thread_id: str | None = None
+    message_id: str = ""
+    description: str = ""
+    messages: list[dict] = Field(default_factory=list)
+    timestamp: str = ""
+    client_info: dict = Field(default_factory=dict)
