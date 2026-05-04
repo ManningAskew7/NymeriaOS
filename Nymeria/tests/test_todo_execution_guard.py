@@ -18,7 +18,7 @@ from nymeria.core.todo_manager import TodoManager, TodoStatus
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from nymeria.core.trigger_manager import TriggerManager
 from nymeria.core import ticker as ticker_module
-from nymeria.triggers import api as api_module
+from nymeria.api.schemas.settings import ServerSettingsResponse, ServerSettingsUpdate
 
 
 class FakeThreadConfigManager:
@@ -109,8 +109,8 @@ def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path
     response = client.get("/tasks", headers=_headers(token))
 
     assert response.status_code == 404
-    assert "max_self_invokes_per_hour" not in api_module.ServerSettingsResponse.model_fields
-    assert "max_self_invokes_per_hour" not in api_module.ServerSettingsUpdate.model_fields
+    assert "max_self_invokes_per_hour" not in ServerSettingsResponse.model_fields
+    assert "max_self_invokes_per_hour" not in ServerSettingsUpdate.model_fields
 
 
 @pytest.mark.parametrize(
