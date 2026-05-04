@@ -65,6 +65,15 @@ from ..skills.meta_tool import create_skill_meta_tool
 logger = logging.getLogger(__name__)
 
 
+def _resolve_thread_llm_override(thread_value: Any, global_value: Any) -> Any:
+    """Resolve a thread LLM override against its global fallback."""
+    if thread_value is None:
+        return global_value
+    if isinstance(thread_value, str) and thread_value == "":
+        return global_value
+    return thread_value
+
+
 class ThreadLockManager:
     """Per-thread locking to prevent concurrent access to the same conversation.
 
@@ -1537,19 +1546,17 @@ class NymeriaAgent:
             if tc_obj:
                 tc = tc_obj.llm_config
 
-        provider = tc.provider if tc and tc.provider else self.settings.llm_provider
-        model = tc.model if tc and tc.model else self.settings.llm_model
-        temperature = tc.temperature if tc and tc.temperature is not None else self.settings.llm_temperature
-        max_tokens = tc.max_tokens if tc and tc.max_tokens is not None else self.settings.llm_max_tokens
-        extended_thinking = tc.extended_thinking if tc and tc.extended_thinking is not None else self.settings.llm_extended_thinking
-        reasoning_effort = tc.reasoning_effort if tc and tc.reasoning_effort else self.settings.llm_reasoning_effort
+        def resolve(attr: str, global_value: Any) -> Any:
+            thread_value = getattr(tc, attr, None) if tc else None
+            return _resolve_thread_llm_override(thread_value, global_value)
 
-        # Resolve use_model_defaults (per-thread overrides global)
-        use_model_defaults = (
-            tc.use_model_defaults
-            if tc and tc.use_model_defaults is not None
-            else self.settings.llm_use_model_defaults
-        )
+        provider = resolve("provider", self.settings.llm_provider)
+        model = resolve("model", self.settings.llm_model)
+        temperature = resolve("temperature", self.settings.llm_temperature)
+        max_tokens = resolve("max_tokens", self.settings.llm_max_tokens)
+        extended_thinking = resolve("extended_thinking", self.settings.llm_extended_thinking)
+        reasoning_effort = resolve("reasoning_effort", self.settings.llm_reasoning_effort)
+        use_model_defaults = resolve("use_model_defaults", self.settings.llm_use_model_defaults)
 
         top_p = self.settings.llm_top_p
         frequency_penalty = self.settings.llm_frequency_penalty
@@ -1592,8 +1599,9 @@ class NymeriaAgent:
         # different CLIProxy sidecar with its own auth without touching
         # global settings, while preserving today's behavior when no override
         # is set.
-        if tc and tc.api_key:
-            api_key = tc.api_key
+        api_key_override = resolve("api_key", None)
+        if api_key_override is not None:
+            api_key = api_key_override
         else:
             if provider == "anthropic":
                 # A configured Anthropic base_url means CLIProxy or another
@@ -1627,7 +1635,7 @@ class NymeriaAgent:
             presence_penalty=presence_penalty,
             reasoning_effort=reasoning_effort,
             extended_thinking=extended_thinking,
-            openai_api_mode=(tc.openai_api_mode if tc else None) or self.settings.openai_api_mode,
+            openai_api_mode=resolve("openai_api_mode", self.settings.openai_api_mode),
             stream_max_retries=self.settings.llm_stream_max_retries,
             stream_retry_initial_delay=self.settings.llm_stream_retry_initial_delay,
             stream_retry_max_delay=self.settings.llm_stream_retry_max_delay,
@@ -3183,7 +3191,7 @@ class NymeriaAgent:
                 model_end_fallback_count = 0
                 current_model_stream_events = 0
                 current_model_started_at: Optional[float] = None
-                graph_stream_started_at = _time.monotonic()
+                graph_stream_started_at = time.monotonic()
                 inline_hold_log_count = 0
                 inline_release_log_count = 0
                 inline_mark_log_count = 0
@@ -3253,7 +3261,7 @@ class NymeriaAgent:
                     if event_type == "on_chat_model_start":
                         model_call_count += 1
                         current_model_stream_events = 0
-                        current_model_started_at = _time.monotonic()
+                        current_model_started_at = time.monotonic()
                         streamed_text_in_current_llm_call = False
                         streamed_reasoning_in_current_llm_call = False
                         emitted_tool_call_delta = False
@@ -3320,7 +3328,7 @@ class NymeriaAgent:
                         current_model_stream_events += 1
                         if current_model_stream_events == 1:
                             first_ms = (
-                                int((_time.monotonic() - current_model_started_at) * 1000)
+                                int((time.monotonic() - current_model_started_at) * 1000)
                                 if current_model_started_at is not None
                                 else -1
                             )
@@ -3508,7 +3516,7 @@ class NymeriaAgent:
                     model_stream_event_count,
                     model_end_without_stream_count,
                     model_end_fallback_count,
-                    int((_time.monotonic() - graph_stream_started_at) * 1000),
+                    int((time.monotonic() - graph_stream_started_at) * 1000),
                 )
 
             try:
@@ -3643,11 +3651,11 @@ class NymeriaAgent:
                         ai_response="".join(final_response_parts),
                     )
 
-                _elapsed = _time.monotonic() - _stream_start
+                _elapsed = time.monotonic() - _stream_start
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
 
             except Exception as e:
-                _elapsed = _time.monotonic() - _stream_start
+                _elapsed = time.monotonic() - _stream_start
                 logger.error(f"[ASTREAM] === ERROR === thread={thread_id}, elapsed={_elapsed:.1f}s: {e}", exc_info=True)
                 yield self._classify_stream_exception(e)
 
