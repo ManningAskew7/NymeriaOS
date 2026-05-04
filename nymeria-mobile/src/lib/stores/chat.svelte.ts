@@ -1,9 +1,6 @@
 import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
-
-function generateId(): string {
-  return crypto.randomUUID();
-}
+import { generateId } from '$lib/utils/ids';
 
 function mergeArtifacts(
   existing: WorkspaceArtifact[] | undefined,
@@ -22,23 +19,6 @@ function mergeArtifacts(
     }
   }
   return merged;
-}
-
-/**
- * Result of parsing Nymeria's response format.
- * Now simplified - just returns content as-is since we no longer use structured output.
- */
-interface ParsedResponse {
-  content: string;
-  intermediateContent?: string;
-}
-
-/**
- * Parse Nymeria's response - now just returns content as-is.
- * Visibility is controlled by tools, not embedded in response format.
- */
-function parseNymeriaResponse(content: string): ParsedResponse {
-  return { content: content || '' };
 }
 
 const FLUSH_INTERVAL = 48; // ~20 updates/sec
