@@ -40,6 +40,7 @@ from ..core.chat_bindings import (
 )
 from ..core import secrets as nymeria_secrets
 from ..core.activity_log import ActivityLog, ActivityEntry, ActivityType, get_activity_log, log_activity
+from ..core.checkpoint_cleanup import delete_thread_checkpoints
 from ..core.event_bus import (
     AutonomousEvent,
     get_event_bus,
@@ -3603,51 +3604,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         agent.thread_metadata_manager.delete_thread(user_id, thread_id)
 
         # 2. Delete checkpoints (messages, tool calls, thinking blocks)
-        if settings.database_backend == "sqlite":
-            import sqlite3 as _sqlite3
-            try:
-                conn = _sqlite3.connect(str(settings.db_path))
-                conn.execute(
-                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-                )
-                for table in ("checkpoint_writes", "checkpoint_blobs"):
-                    try:
-                        conn.execute(
-                            f"DELETE FROM {table} WHERE thread_id = ?",
-                            (thread_id,),
-                        )
-                    except Exception:
-                        pass
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
-        elif settings.database_backend == "postgres":
-            import psycopg  # type: ignore[import-untyped]
-            try:
-                with psycopg.connect(settings.postgres_uri) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "DELETE FROM checkpoints WHERE thread_id = %s",
-                            (thread_id,),
-                        )
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_writes WHERE thread_id = %s",
-                                (thread_id,),
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
-                                (thread_id,),
-                            )
-                        except Exception:
-                            pass
-                    conn.commit()
-            except Exception as e:
-                logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
+        try:
+            delete_thread_checkpoints(settings, thread_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
 
         logger.info(f"Thread {thread_id} conversation cleared (config + notepad preserved)")
 

@@ -32,7 +32,7 @@ Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when tok
                                     then one HumanMessage with internal_type='compaction_marker'
                                     is written as a single-message placeholder with
                                     summary/messages_removed/auto_resumed/timestamp metadata
-5.   _prune_checkpoints_before()  — raw SQL DELETEs all pre-compact rows
+5.   prune_checkpoints_before()   — raw SQL DELETEs all pre-compact rows
 6.   Manual/sync/pre-flight compact: _pending_summaries[thread_id] = summary
      Post-turn async auto-compact: stream compacted, then stream the resume turn immediately
 7.   Restart recovery: if _pending_summaries is lost (process restart between
@@ -45,9 +45,9 @@ The compaction_marker exists because LangGraph's router accesses `messages[-1]` 
 
 The pre-compact RAG flush (step 3) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
 
-### Checkpoint pruning (added 2026-04-21)
+### Checkpoint pruning and deletion
 
-LangGraph has no public checkpoint-delete API, so `prune_checkpoints_before()` in `core/agent_compaction.py` uses raw SQL (mirrors the thread-delete pattern in `triggers/api.py`). It runs *inside* `_clear_and_reset`, *after* `verify_state` confirms exactly 1 message remains, so a prune failure never blocks the compaction itself.
+LangGraph has no public checkpoint-delete API, so `core/checkpoint_cleanup.py` centralizes raw SQL cleanup behind a small `CheckpointCleaner` interface. Compaction calls `prune_checkpoints_before()` from that module, and thread deletion calls `delete_thread_checkpoints()` so SQLite and Postgres deletion logic lives in one backend-specific implementation. Pruning runs *inside* `_clear_and_reset`, *after* `verify_state` confirms exactly 1 message remains, so a prune failure never blocks the compaction itself.
 
 Three deletes, each try/except-wrapped:
 
@@ -182,6 +182,8 @@ Run inside the API container:
 ```bash
 docker exec nymeria-api python -c "
 from nymeria.core.agent import NymeriaAgent
+from nymeria.core.checkpoint_cleanup import prune_checkpoints_before
+
 a = NymeriaAgent()
 tid = 'YOUR_THREAD_ID'
 st = a._default_graph.get_state({'configurable': {'thread_id': tid}})
@@ -190,7 +192,7 @@ cp = a._default_graph.checkpointer.get_tuple(
     {'configurable': {'thread_id': tid, 'checkpoint_id': cp_id}}
 )
 floor = cp.checkpoint.get('channel_versions', {}) if cp else {}
-print(a._prune_checkpoints_before(tid, cp_id, floor))
+print(prune_checkpoints_before(tid, cp_id, floor))
 "
 ```
 
@@ -256,12 +258,11 @@ Only `core/` files should show constructor calls. If you see them in `triggers/a
 
 | Path | Purpose |
 |------|---------|
-| `core/agent_compaction.py` | `CompactionManager` — owns compaction policy, execution, pruning, and pending state |
-| `core/agent_compaction.py` | `prune_checkpoints_before` — raw SQL DELETEs, per-backend (SQLite + Postgres) |
+| `core/agent_compaction.py` | `CompactionManager` — owns compaction policy, execution, and pending state |
+| `core/checkpoint_cleanup.py` | `CheckpointCleaner`, `prune_checkpoints_before`, and `delete_thread_checkpoints` — raw SQL cleanup, per-backend (SQLite + Postgres) |
 | `core/agent_compaction.py` | `create_compaction_marker` — durable history marker |
 | `core/agent.py` | `NymeriaAgent` delegates to `self._compaction` (CompactionManager) |
 | `core/agent.py` | `_build_message_timestamp_map` — checkpoint walker for timestamps |
 | `core/agent.py` | display filter in `get_conversation_history` — internal_type branches |
 | `triggers/api.py` | `/threads/{id}/history` endpoint |
-| `triggers/api.py` | `_get_checkpoint_thread_ids` — reference pattern for raw SQL dispatch |
-| `triggers/api.py` | thread-delete — reference pattern for DELETE across all three tables |
+| `triggers/api.py` | `_get_checkpoint_thread_ids` — reference pattern for raw SQL checkpoint reads |

@@ -107,54 +107,13 @@ def _get_parent_spawn_depth(
 def _delete_checkpoints(thread_id: str) -> None:
     """Delete all checkpoint rows for a thread (SQLite or Postgres)."""
     from ..config.settings import get_settings
+    from ..core.checkpoint_cleanup import delete_thread_checkpoints
 
     settings = get_settings()
-
-    if settings.database_backend == "sqlite":
-        import sqlite3
-
-        try:
-            conn = sqlite3.connect(str(settings.db_path))
-            try:
-                conn.execute(
-                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-                )
-                for table in ("checkpoint_writes", "checkpoint_blobs"):
-                    try:
-                        conn.execute(
-                            f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,)
-                        )
-                    except Exception:
-                        pass
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.warning(
-                f"spawn_thread: SQLite checkpoint delete failed for {thread_id}: {e}"
-            )
-    elif settings.database_backend == "postgres":
-        import psycopg  # type: ignore[import-untyped]
-
-        try:
-            with psycopg.connect(settings.postgres_uri) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,)
-                    )
-                    for table in ("checkpoint_writes", "checkpoint_blobs"):
-                        try:
-                            cur.execute(
-                                f"DELETE FROM {table} WHERE thread_id = %s",
-                                (thread_id,),
-                            )
-                        except Exception:
-                            pass
-                conn.commit()
-        except Exception as e:
-            logger.warning(
-                f"spawn_thread: Postgres checkpoint delete failed for {thread_id}: {e}"
-            )
+    try:
+        delete_thread_checkpoints(settings, thread_id)
+    except Exception as e:
+        logger.warning(f"spawn_thread: checkpoint delete failed for {thread_id}: {e}")
 
 
 def _delete_spawned(

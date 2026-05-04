@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import logging
 import uuid as _uuid
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
-from ..config import get_settings
 from ..config.model_capabilities import get_context_limit
+from .checkpoint_cleanup import prune_checkpoints_before
 from .time_utils import utc_now
 
 if TYPE_CHECKING:
@@ -756,134 +756,3 @@ class CompactionManager:
             self._pending_notepads.pop(thread_id, None)
             cleared += 1
         return cleared
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint pruning (raw SQL, supports both SQLite and Postgres)
-# ---------------------------------------------------------------------------
-
-def prune_checkpoints_before(
-    thread_id: str,
-    boundary_checkpoint_id: str,
-    floor_channel_versions: Dict[str, Any],
-) -> Tuple[int, int, int]:
-    """Delete pre-compact checkpoint/write/blob rows for a thread.
-
-    Safe to call only while holding the thread lock AND only after the
-    compact write has been verified — we delete anything strictly older
-    than ``boundary_checkpoint_id``, plus any blob whose version is below
-    the floor referenced by the surviving (post-compact) checkpoint.
-
-    Each DELETE is wrapped individually: a prune failure must never fail
-    the compaction that already succeeded.
-
-    Returns ``(checkpoints_deleted, writes_deleted, blobs_deleted)``.
-    """
-    settings = get_settings()
-    checkpoints_deleted = 0
-    writes_deleted = 0
-    blobs_deleted = 0
-
-    if settings.database_backend == "postgres":
-        import psycopg  # type: ignore[import-untyped]
-        try:
-            with psycopg.connect(settings.postgres_uri) as conn:
-                with conn.cursor() as cur:
-                    try:
-                        cur.execute(
-                            "DELETE FROM checkpoint_writes "
-                            "WHERE thread_id = %s AND checkpoint_ns = '' "
-                            "AND checkpoint_id < %s",
-                            (thread_id, boundary_checkpoint_id),
-                        )
-                        writes_deleted = cur.rowcount or 0
-                    except Exception as e:
-                        logger.warning(
-                            f"Thread {thread_id}: prune checkpoint_writes failed: {e}"
-                        )
-                    try:
-                        cur.execute(
-                            "DELETE FROM checkpoints "
-                            "WHERE thread_id = %s AND checkpoint_ns = '' "
-                            "AND checkpoint_id < %s",
-                            (thread_id, boundary_checkpoint_id),
-                        )
-                        checkpoints_deleted = cur.rowcount or 0
-                    except Exception as e:
-                        logger.warning(
-                            f"Thread {thread_id}: prune checkpoints failed: {e}"
-                        )
-                    for channel, floor_v in floor_channel_versions.items():
-                        try:
-                            floor_int = int(floor_v)
-                        except (TypeError, ValueError):
-                            continue
-                        try:
-                            cur.execute(
-                                "DELETE FROM checkpoint_blobs "
-                                "WHERE thread_id = %s AND channel = %s "
-                                "AND CAST(version AS INTEGER) < %s",
-                                (thread_id, channel, floor_int),
-                            )
-                            blobs_deleted += cur.rowcount or 0
-                        except Exception as e:
-                            logger.warning(
-                                f"Thread {thread_id}: prune blob channel={channel} failed: {e}"
-                            )
-                conn.commit()
-        except Exception as e:
-            logger.warning(f"Thread {thread_id}: Checkpoint prune (postgres) failed: {e}")
-    elif settings.database_backend == "sqlite":
-        import sqlite3 as _sqlite3
-        try:
-            conn = _sqlite3.connect(str(settings.db_path))
-            try:
-                cur = conn.cursor()
-                try:
-                    cur.execute(
-                        "DELETE FROM checkpoint_writes "
-                        "WHERE thread_id = ? AND checkpoint_ns = '' "
-                        "AND checkpoint_id < ?",
-                        (thread_id, boundary_checkpoint_id),
-                    )
-                    writes_deleted = cur.rowcount or 0
-                except Exception as e:
-                    logger.warning(
-                        f"Thread {thread_id}: prune checkpoint_writes failed: {e}"
-                    )
-                try:
-                    cur.execute(
-                        "DELETE FROM checkpoints "
-                        "WHERE thread_id = ? AND checkpoint_ns = '' "
-                        "AND checkpoint_id < ?",
-                        (thread_id, boundary_checkpoint_id),
-                    )
-                    checkpoints_deleted = cur.rowcount or 0
-                except Exception as e:
-                    logger.warning(
-                        f"Thread {thread_id}: prune checkpoints failed: {e}"
-                    )
-                for channel, floor_v in floor_channel_versions.items():
-                    try:
-                        floor_int = int(floor_v)
-                    except (TypeError, ValueError):
-                        continue
-                    try:
-                        cur.execute(
-                            "DELETE FROM checkpoint_blobs "
-                            "WHERE thread_id = ? AND channel = ? "
-                            "AND CAST(version AS INTEGER) < ?",
-                            (thread_id, channel, floor_int),
-                        )
-                        blobs_deleted += cur.rowcount or 0
-                    except Exception as e:
-                        logger.warning(
-                            f"Thread {thread_id}: prune blob channel={channel} failed: {e}"
-                        )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.warning(f"Thread {thread_id}: Checkpoint prune (sqlite) failed: {e}")
-
-    return (checkpoints_deleted, writes_deleted, blobs_deleted)

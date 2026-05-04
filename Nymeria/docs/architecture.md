@@ -371,8 +371,8 @@ When token usage reaches the threshold (default: 80% of model's context limit):
 
 **Key Components:**
 - `TokenTracker` (`token_tracker.py`): Tracks cumulative tokens per thread
-- `CompactionManager` (`agent_compaction.py`): Owns compaction policy, summary generation, message clearing, checkpoint pruning, and pending-summary state. `NymeriaAgent` delegates via `self._compaction`.
-- `prune_checkpoints_before()` (`agent_compaction.py`): raw-SQL pruner invoked by `_clear_and_reset`
+- `CompactionManager` (`agent_compaction.py`): Owns compaction policy, summary generation, message clearing, and pending-summary state. `NymeriaAgent` delegates via `self._compaction`.
+- `CheckpointCleaner` (`checkpoint_cleanup.py`): shared raw-SQL checkpoint deletion and pruning for SQLite/Postgres, used by compaction and thread deletion.
 - Model limits are resolved from live model metadata when available, including bare OpenAI IDs routed through CLIProxy (`gpt-5.5` -> `openai/gpt-5.5`), with static fallbacks for known long-context models
 
 See [compaction-and-checkpoints.md](./compaction-and-checkpoints.md) for the end-to-end flow, the display filter's `internal_type` branches (including the `compaction_marker` edge case), and a troubleshooting playbook.
