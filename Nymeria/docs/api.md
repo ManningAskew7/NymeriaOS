@@ -5,9 +5,10 @@ Base URL: `http://localhost:8000`
 Implementation note: `create_api_app()` remains the public FastAPI factory.
 The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
-tool-preference, Skills, voice, Agent Threads, and activity/notification
-routes now live under `Nymeria/nymeria/api/routers/`, while the rest of the
-surface still lives in `Nymeria/nymeria/triggers/api.py` during the migration.
+tool-preference, Skills, voice, Agent Threads, activity/notification, and TODO
+dashboard routes now live under `Nymeria/nymeria/api/routers/`, while the rest
+of the surface still lives in `Nymeria/nymeria/triggers/api.py` during the
+migration.
 
 ## Authentication
 
@@ -133,7 +134,7 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
 **Response shapes** (Pydantic models in `Nymeria/nymeria/triggers/api.py`, with
-extracted schemas such as System, Skills, Agent Threads, and dashboard
+extracted schemas such as System, Skills, Agent Threads, TODOs, and dashboard
 activity/notifications under `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
@@ -1019,6 +1020,10 @@ See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the f
 
 Manage TODO items with optional scheduling for autonomous execution.
 
+TODO routes resolve the user from the Bearer token. Admin callers can target a
+specific user with `X-Nymeria-Act-As`; client-supplied `?user_id=` values are
+ignored by these routes for account isolation.
+
 Completed TODOs are retained in the active TODO JSON list until ticker cleanup
 removes completed items older than `TODO_AUTO_ARCHIVE_DAYS` (default 7 days).
 Cleanup removes them from `data/todos/{user_id}.json`; it does not write a
@@ -1045,14 +1050,13 @@ No query parameters.
 ### List TODOs
 
 ```http
-GET /todos?user_id=default&filter_status=all
+GET /todos?filter_status=all
 Authorization: Bearer <token>
 ```
 
 **Query Parameters:**
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `user_id` | `"default"` | User ID |
 | `filter_status` | active only | Filter: `all`, `pending`, `in_progress`, `done` |
 | `thread_id` | - | Filter TODOs to a specific thread |
 
@@ -1082,7 +1086,7 @@ Authorization: Bearer <token>
 ### Create TODO
 
 ```http
-POST /todos?user_id=default
+POST /todos
 Content-Type: application/json
 Authorization: Bearer <token>
 ```
@@ -1113,7 +1117,7 @@ Authorization: Bearer <token>
 ### Update TODO
 
 ```http
-PATCH /todos/{todo_id}?user_id=default
+PATCH /todos/{todo_id}
 Content-Type: application/json
 Authorization: Bearer <token>
 ```
@@ -1151,7 +1155,7 @@ Authorization: Bearer <token>
 ### Complete TODO
 
 ```http
-POST /todos/{todo_id}/complete?user_id=default
+POST /todos/{todo_id}/complete
 Authorization: Bearer <token>
 ```
 
@@ -1166,7 +1170,7 @@ Marks the TODO as done. Recurring TODOs are rescheduled by the backend rather th
 ### Delete TODO
 
 ```http
-DELETE /todos/{todo_id}?user_id=default
+DELETE /todos/{todo_id}
 Authorization: Bearer <token>
 ```
 
