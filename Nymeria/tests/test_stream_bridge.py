@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -78,6 +80,58 @@ def test_iter_agent_astream_closes_async_generator_when_consumer_stops():
     iterator.close()
 
     assert released == [True]
+
+
+def test_iter_agent_astream_reuses_bridge_loop_for_loop_bound_clients():
+    class LoopBoundAgent:
+        def __init__(self):
+            self.loop = None
+
+        async def astream(self, **kwargs):
+            loop = asyncio.get_running_loop()
+            if self.loop is None:
+                self.loop = loop
+            elif loop is not self.loop:
+                if self.loop.is_closed():
+                    raise RuntimeError("Event loop is closed")
+                raise RuntimeError("changed event loop")
+            yield {"type": "response", "content": kwargs["message"]}
+
+    agent = LoopBoundAgent()
+
+    assert list(iter_agent_astream(agent, message="first")) == [
+        {"type": "response", "content": "first"}
+    ]
+    assert list(iter_agent_astream(agent, message="second")) == [
+        {"type": "response", "content": "second"}
+    ]
+    assert agent.loop is not None
+    assert not agent.loop.is_closed()
+
+
+def test_iter_agent_astream_uses_one_bridge_loop_for_parallel_sync_consumers():
+    loop_ids = set()
+
+    class ConcurrentAgent:
+        async def astream(self, **kwargs):
+            loop_ids.add(id(asyncio.get_running_loop()))
+            await asyncio.sleep(0.01)
+            yield {"type": "response", "content": kwargs["message"]}
+
+    agent = ConcurrentAgent()
+
+    def consume(index: int):
+        return list(iter_agent_astream(agent, message=f"run-{index}"))
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(consume, range(3)))
+
+    assert results == [
+        [{"type": "response", "content": "run-0"}],
+        [{"type": "response", "content": "run-1"}],
+        [{"type": "response", "content": "run-2"}],
+    ]
+    assert len(loop_ids) == 1
 
 
 def test_stream_and_collect_tracks_common_stream_state():

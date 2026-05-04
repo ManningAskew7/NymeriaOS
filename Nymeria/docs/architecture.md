@@ -102,6 +102,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
 | `thread_agent_executor.py` | Delegates tasks to callable threads through `stream_and_collect()` over the sync `iter_agent_astream()` bridge. Publishes live SSE events. |
+| `stream_bridge.py` | Lets synchronous autonomous/callable workers consume `NymeriaAgent.astream()` through one process-local asyncio loop, keeping async provider clients on a stable loop while preserving live chunks. |
 | `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
 | `activity_log.py` | Per-thread activity feed with time-based retention |
 | `prompts.py` | System prompt templates, mode-specific rules, time context generation |
@@ -497,7 +498,7 @@ The agent has one streaming implementation: `NymeriaAgent.astream()`.
 - Captures complete tool call information via `on_tool_start` events
 - Returns tool calls with full arguments
 - Used by FastAPI for SSE responses to desktop UI
-- Also used by the CLI, scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch through `core/stream_bridge.py`; autonomous callers share `stream_and_collect()` for response collection, error propagation, and iteration-limit bookkeeping while still publishing caller-specific events.
+- Also used by the CLI, scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch through `core/stream_bridge.py`; autonomous callers share `stream_and_collect()` for response collection, error propagation, and iteration-limit bookkeeping while still publishing caller-specific events. Sync callers share a process-local bridge event loop so concurrent callable threads do not reuse async HTTP clients across short-lived loops.
 
 **Why these stream modes?**
 
@@ -521,7 +522,7 @@ The `get_conversation_history()` method (used for page refresh/checkpoint rebuil
 
 **Callable Thread Streaming**
 
-Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support. This dict is intentionally process-local — a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
+Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Blocking `mode="ask"` calls run through the shared sync stream bridge loop rather than creating a fresh event loop per invocation; this keeps provider SDK async transports stable when a parent calls multiple callable threads in parallel. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support. This dict is intentionally process-local — a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
 
 ---
 
