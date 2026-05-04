@@ -2,17 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-
-class FileData(BaseModel):
-    """Generic file attachment data for multimodal messages."""
-
-    file_type: str = Field(..., description="File type: 'image' or 'document'")
-    data_url: str = Field(..., description="Base64 data URL (data:mime/type;base64,...)")
-    mime_type: str = Field(..., description="MIME type (image/jpeg, application/pdf, etc.)")
-    file_name: str | None = Field(
-        default=None,
-        description="Original filename (used for MIME fallback when browser MIME type is missing)",
-    )
+from .chat import FileData
 
 
 class AttachmentValidationRequest(BaseModel):
