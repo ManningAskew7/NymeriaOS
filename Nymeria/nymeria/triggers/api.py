@@ -61,18 +61,12 @@ from ..core.thread_classification import (
 from ..core.todo_manager import TodoManager
 from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..tools import ALL_TOOLS
-from ..tools.definitions.custom_tool_schema import (
-    CustomToolDefinition,
-    HTTPToolConfig,
-    ToolParameter,
-)
-from ..tools.definitions.mcp_schema import (
-    MCPToolConfig,
-)
+from ..tools.definitions.custom_tool_schema import CustomToolDefinition
 from ..core.custom_tools import (
     get_custom_tool_loader,
     reload_custom_tools,
 )
+from ..api.routers.custom_tools import create_custom_tools_router
 from ..api.routers.activity import create_activity_router
 from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
@@ -85,6 +79,13 @@ from ..api.routers.tools import create_tools_router
 from ..api.routers.user_tools import create_user_tools_router
 from ..api.routers.voice import create_voice_router
 from ..api.routers.workspace import create_workspace_router
+from ..api.schemas.custom_tools import (
+    CustomToolCreateRequest,
+    CustomToolUpdateRequest,
+    http_config_to_core,
+    mcp_config_to_core,
+    tool_parameters_to_core,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -327,99 +328,6 @@ class LLMRuntimeDiagnosticsResponse(BaseModel):
     effective_max_tokens: Optional[int] = None
     source_env_files: List[str] = []
     openrouter: Optional[OpenRouterKeyDiagnostics] = None
-
-
-# Custom Tool Models
-
-
-class ToolParameterModel(BaseModel):
-    """API model for tool parameters."""
-
-    type: str = "string"
-    description: str = ""
-    required: bool = False
-    default: Optional[str] = None
-    enum: Optional[List[str]] = None
-
-
-class HTTPToolConfigModel(BaseModel):
-    """API model for HTTP tool configuration."""
-
-    method: str = "GET"
-    url: str
-    headers: Dict[str, str] = {}
-    body_template: Optional[str] = None
-    query_params: Dict[str, str] = {}
-    timeout_seconds: int = 30
-    response_path: Optional[str] = None
-    response_format: str = "auto"
-
-
-class MCPToolConfigModel(BaseModel):
-    """API model for MCP tool configuration."""
-
-    server_command: str
-    server_args: List[str] = []
-    tool_name: str
-    env_vars: Dict[str, str] = {}
-    working_directory: Optional[str] = None
-    idle_timeout_seconds: int = 300
-    startup_timeout_seconds: int = 30
-
-
-class CustomToolResponse(BaseModel):
-    """Response model for a custom tool."""
-
-    id: str
-    name: str
-    description: str
-    parameters: Dict[str, ToolParameterModel]
-    implementation_type: str
-    http_config: Optional[HTTPToolConfigModel] = None
-    mcp_config: Optional[MCPToolConfigModel] = None
-    enabled: bool
-    tags: List[str] = []
-    created_at: datetime
-    updated_at: datetime
-
-
-class CustomToolCreateRequest(BaseModel):
-    """Request model for creating a custom tool."""
-
-    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$")
-    name: str = Field(..., min_length=1, max_length=64)
-    description: str = Field(..., min_length=1, max_length=1000)
-    parameters: Dict[str, ToolParameterModel] = {}
-    implementation_type: str = Field(..., pattern=r"^(http|mcp)$")
-    http_config: Optional[HTTPToolConfigModel] = None
-    mcp_config: Optional[MCPToolConfigModel] = None
-    enabled: bool = True
-    tags: List[str] = []
-
-
-class CustomToolUpdateRequest(BaseModel):
-    """Request model for updating a custom tool."""
-
-    name: Optional[str] = Field(default=None, max_length=64)
-    description: Optional[str] = Field(default=None, max_length=1000)
-    parameters: Optional[Dict[str, ToolParameterModel]] = None
-    http_config: Optional[HTTPToolConfigModel] = None
-    mcp_config: Optional[MCPToolConfigModel] = None
-    enabled: Optional[bool] = None
-    tags: Optional[List[str]] = None
-
-
-class CustomToolTestRequest(BaseModel):
-    """Request model for testing a custom tool."""
-
-    params: Dict[str, Any] = {}
-
-
-class CustomToolListResponse(BaseModel):
-    """Response model for custom tools list."""
-
-    tools: List[CustomToolResponse]
-    total: int
 
 
 # Unified Tool Models
@@ -1164,6 +1072,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
     app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
     app.include_router(create_todos_router(verify_api_key, _authed_user_id, get_settings))
+    app.include_router(create_custom_tools_router(require_admin_user, get_agent))
     app.include_router(
         create_tools_router(
             verify_api_key,
@@ -4905,349 +4814,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         )
 
     # ========================================================================
-    # Custom Tools Endpoints
-    # ========================================================================
-
-    def _tool_definition_to_response(defn: CustomToolDefinition) -> CustomToolResponse:
-        """Convert a CustomToolDefinition to API response format."""
-        return CustomToolResponse(
-            id=defn.id,
-            name=defn.name,
-            description=defn.description,
-            parameters={
-                k: ToolParameterModel(
-                    type=v.type,
-                    description=v.description,
-                    required=v.required,
-                    default=str(v.default) if v.default is not None else None,
-                    enum=v.enum,
-                )
-                for k, v in defn.parameters.items()
-            },
-            implementation_type=defn.implementation_type,
-            http_config=HTTPToolConfigModel(
-                method=defn.http_config.method,
-                url=defn.http_config.url,
-                headers=defn.http_config.headers,
-                body_template=defn.http_config.body_template,
-                query_params=defn.http_config.query_params,
-                timeout_seconds=defn.http_config.timeout_seconds,
-                response_path=defn.http_config.response_path,
-                response_format=defn.http_config.response_format,
-            ) if defn.http_config else None,
-            mcp_config=MCPToolConfigModel(
-                server_command=defn.mcp_config.server_command,
-                server_args=defn.mcp_config.server_args,
-                tool_name=defn.mcp_config.tool_name,
-                env_vars=defn.mcp_config.env_vars,
-                working_directory=defn.mcp_config.working_directory,
-                idle_timeout_seconds=defn.mcp_config.idle_timeout_seconds,
-                startup_timeout_seconds=defn.mcp_config.startup_timeout_seconds,
-            ) if defn.mcp_config else None,
-            enabled=defn.enabled,
-            tags=defn.tags,
-            created_at=defn.created_at,
-            updated_at=defn.updated_at,
-        )
-
-    @app.get("/tools/custom", response_model=CustomToolListResponse, tags=["Custom Tools"])
-    async def list_custom_tools(
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """List all custom tools. Admin-only — definitions include URL
-        templates, headers (with ``${env:VAR}`` interpolation hints) and
-        local subprocess commands; non-admins should not enumerate them."""
-        loader = get_custom_tool_loader()
-        definitions = loader.get_all_definitions()
-
-        return CustomToolListResponse(
-            tools=[_tool_definition_to_response(d) for d in definitions],
-            total=len(definitions),
-        )
-
-    @app.post("/tools/custom", response_model=CustomToolResponse, tags=["Custom Tools"])
-    async def create_custom_tool(
-        request: CustomToolCreateRequest,
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Create a new custom tool. Admin-only — custom tools register
-        global HTTP/MCP entries that every user's agent can call, so
-        non-admins must not be able to mint them."""
-        loader = get_custom_tool_loader()
-
-        # Check if tool ID already exists
-        existing = loader.get_definition(request.id)
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tool with ID '{request.id}' already exists",
-            )
-
-        # Build the definition
-        try:
-            http_config = None
-            mcp_config = None
-
-            if request.implementation_type == "http":
-                if not request.http_config:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="http_config is required for HTTP tools",
-                    )
-                http_config = HTTPToolConfig(
-                    method=request.http_config.method,
-                    url=request.http_config.url,
-                    headers=request.http_config.headers,
-                    body_template=request.http_config.body_template,
-                    query_params=request.http_config.query_params,
-                    timeout_seconds=request.http_config.timeout_seconds,
-                    response_path=request.http_config.response_path,
-                    response_format=request.http_config.response_format,
-                )
-            elif request.implementation_type == "mcp":
-                if not request.mcp_config:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="mcp_config is required for MCP tools",
-                    )
-                mcp_config = MCPToolConfig(
-                    server_command=request.mcp_config.server_command,
-                    server_args=request.mcp_config.server_args,
-                    tool_name=request.mcp_config.tool_name,
-                    env_vars=request.mcp_config.env_vars,
-                    working_directory=request.mcp_config.working_directory,
-                    idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
-                    startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
-                )
-
-            definition = CustomToolDefinition(
-                id=request.id,
-                name=request.name,
-                description=request.description,
-                parameters={
-                    k: ToolParameter(
-                        type=v.type,
-                        description=v.description,
-                        required=v.required,
-                        default=v.default,
-                        enum=v.enum,
-                    )
-                    for k, v in request.parameters.items()
-                },
-                implementation_type=request.implementation_type,
-                http_config=http_config,
-                mcp_config=mcp_config,
-                enabled=request.enabled,
-                tags=request.tags,
-            )
-
-            loader.save_definition(definition)
-
-            # Reload tools to make the new tool available
-            agent = get_agent()
-            agent.reload_tools()
-
-            return _tool_definition_to_response(definition)
-
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-    @app.get("/tools/custom/{tool_id}", response_model=CustomToolResponse, tags=["Custom Tools"])
-    async def get_custom_tool(
-        tool_id: str,
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Get a custom tool by ID. Admin-only — same secret-leakage
-        concerns as the list endpoint."""
-        loader = get_custom_tool_loader()
-        definition = loader.get_definition(tool_id)
-
-        if not definition:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tool '{tool_id}' not found",
-            )
-
-        return _tool_definition_to_response(definition)
-
-    @app.put("/tools/custom/{tool_id}", response_model=CustomToolResponse, tags=["Custom Tools"])
-    async def update_custom_tool(
-        tool_id: str,
-        request: CustomToolUpdateRequest,
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Update an existing custom tool. Admin-only — mirrors the create
-        endpoint."""
-        loader = get_custom_tool_loader()
-        definition = loader.get_definition(tool_id)
-
-        if not definition:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tool '{tool_id}' not found",
-            )
-
-        # Update fields
-        if request.name is not None:
-            definition.name = request.name
-        if request.description is not None:
-            definition.description = request.description
-        if request.parameters is not None:
-            definition.parameters = {
-                k: ToolParameter(
-                    type=v.type,
-                    description=v.description,
-                    required=v.required,
-                    default=v.default,
-                    enum=v.enum,
-                )
-                for k, v in request.parameters.items()
-            }
-        if request.enabled is not None:
-            definition.enabled = request.enabled
-        if request.tags is not None:
-            definition.tags = request.tags
-
-        # Update config based on type
-        if request.http_config is not None and definition.implementation_type == "http":
-            definition.http_config = HTTPToolConfig(
-                method=request.http_config.method,
-                url=request.http_config.url,
-                headers=request.http_config.headers,
-                body_template=request.http_config.body_template,
-                query_params=request.http_config.query_params,
-                timeout_seconds=request.http_config.timeout_seconds,
-                response_path=request.http_config.response_path,
-                response_format=request.http_config.response_format,
-            )
-        if request.mcp_config is not None and definition.implementation_type == "mcp":
-            definition.mcp_config = MCPToolConfig(
-                server_command=request.mcp_config.server_command,
-                server_args=request.mcp_config.server_args,
-                tool_name=request.mcp_config.tool_name,
-                env_vars=request.mcp_config.env_vars,
-                working_directory=request.mcp_config.working_directory,
-                idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
-                startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
-            )
-
-        loader.save_definition(definition)
-
-        # Reload tools
-        agent = get_agent()
-        agent.reload_tools()
-
-        return _tool_definition_to_response(definition)
-
-    @app.delete("/tools/custom/{tool_id}", tags=["Custom Tools"])
-    async def delete_custom_tool(
-        tool_id: str,
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Delete a custom tool. Admin-only — mirrors the create endpoint."""
-        loader = get_custom_tool_loader()
-
-        if not loader.delete_definition(tool_id):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tool '{tool_id}' not found",
-            )
-
-        # Reload tools
-        agent = get_agent()
-        agent.reload_tools()
-
-        return {"status": "ok", "deleted_id": tool_id}
-
-    @app.post("/tools/custom/{tool_id}/test", tags=["Custom Tools"])
-    async def test_custom_tool(
-        tool_id: str,
-        request: CustomToolTestRequest,
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Test a custom tool with sample parameters. Admin-only — this
-        actually executes the upstream HTTP call or MCP subprocess, so it
-        must not be reachable by a non-admin who could probe arbitrary
-        URLs/commands."""
-        loader = get_custom_tool_loader()
-        definition = loader.get_definition(tool_id)
-
-        if not definition:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tool '{tool_id}' not found",
-            )
-
-        # Execute the tool
-        try:
-            if definition.implementation_type == "http":
-                from ..core.custom_tools import execute_http_tool
-                result = await execute_http_tool(definition.http_config, request.params)
-            elif definition.implementation_type == "mcp":
-                result = await loader.mcp_manager.call_tool(definition.mcp_config, request.params)
-            else:
-                result = f"[Error]: Unknown implementation type: {definition.implementation_type}"
-
-            return {
-                "status": "ok",
-                "tool_id": tool_id,
-                "result": result,
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "tool_id": tool_id,
-                "error": str(e),
-            }
-
-    @app.get("/tools/custom/export", tags=["Custom Tools"])
-    async def export_custom_tools(
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Export all custom tools as JSON. Admin-only — exports include
-        full HTTP/MCP configs."""
-        loader = get_custom_tool_loader()
-        definitions = loader.get_all_definitions()
-
-        return {
-            "tools": [d.model_dump() for d in definitions],
-            "total": len(definitions),
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    @app.post("/tools/custom/import", tags=["Custom Tools"])
-    async def import_custom_tools(
-        request: Request,
-        user: AuthenticatedUser = Depends(require_admin_user),
-    ):
-        """Import custom tools from JSON. Admin-only — same as create."""
-        loader = get_custom_tool_loader()
-        body = await request.json()
-
-        tools_data = body.get("tools", [])
-        imported = 0
-        errors = []
-
-        for tool_data in tools_data:
-            try:
-                definition = CustomToolDefinition(**tool_data)
-                loader.save_definition(definition)
-                imported += 1
-            except Exception as e:
-                errors.append(f"{tool_data.get('id', 'unknown')}: {str(e)}")
-
-        # Reload tools
-        if imported > 0:
-            agent = get_agent()
-            agent.reload_tools()
-
-        return {
-            "status": "ok",
-            "imported": imported,
-            "errors": errors,
-        }
-
-    # ========================================================================
     # MCP Server Endpoints
     # ========================================================================
 
@@ -6243,18 +5809,6 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 detail=f"Tool '{request.id}' already exists",
             )
 
-        # Build parameters dict (CustomToolDefinition.parameters is Dict[str, ToolParameter]).
-        params: Dict[str, ToolParameter] = {
-            k: ToolParameter(
-                type=v.type,
-                description=v.description,
-                required=v.required,
-                default=v.default,
-                enum=v.enum,
-            )
-            for k, v in (request.parameters or {}).items()
-        }
-
         http_config = None
         mcp_config = None
         if request.implementation_type == "http":
@@ -6263,37 +5817,20 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                     status_code=400,
                     detail="http_config is required for HTTP tools",
                 )
-            http_config = HTTPToolConfig(
-                method=request.http_config.method,
-                url=request.http_config.url,
-                headers=request.http_config.headers,
-                body_template=request.http_config.body_template,
-                query_params=request.http_config.query_params,
-                timeout_seconds=request.http_config.timeout_seconds,
-                response_path=request.http_config.response_path,
-                response_format=request.http_config.response_format,
-            )
+            http_config = http_config_to_core(request.http_config)
         elif request.implementation_type == "mcp":
             if not request.mcp_config:
                 raise HTTPException(
                     status_code=400,
                     detail="mcp_config is required for MCP tools",
                 )
-            mcp_config = MCPToolConfig(
-                server_command=request.mcp_config.server_command,
-                server_args=request.mcp_config.server_args,
-                tool_name=request.mcp_config.tool_name,
-                env_vars=request.mcp_config.env_vars,
-                working_directory=request.mcp_config.working_directory,
-                idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
-                startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
-            )
+            mcp_config = mcp_config_to_core(request.mcp_config)
 
         definition = CustomToolDefinition(
             id=request.id,
             name=request.name,
             description=request.description,
-            parameters=params,
+            parameters=tool_parameters_to_core(request.parameters or {}),
             implementation_type=request.implementation_type,
             http_config=http_config,
             mcp_config=mcp_config,
@@ -6345,37 +5882,11 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         if request.description is not None:
             definition.description = request.description
         if request.parameters is not None:
-            definition.parameters = {
-                k: ToolParameter(
-                    type=v.type,
-                    description=v.description,
-                    required=v.required,
-                    default=v.default,
-                    enum=v.enum,
-                )
-                for k, v in request.parameters.items()
-            }
+            definition.parameters = tool_parameters_to_core(request.parameters)
         if request.http_config is not None and definition.implementation_type == "http":
-            definition.http_config = HTTPToolConfig(
-                method=request.http_config.method,
-                url=request.http_config.url,
-                headers=request.http_config.headers,
-                body_template=request.http_config.body_template,
-                query_params=request.http_config.query_params,
-                timeout_seconds=request.http_config.timeout_seconds,
-                response_path=request.http_config.response_path,
-                response_format=request.http_config.response_format,
-            )
+            definition.http_config = http_config_to_core(request.http_config)
         if request.mcp_config is not None and definition.implementation_type == "mcp":
-            definition.mcp_config = MCPToolConfig(
-                server_command=request.mcp_config.server_command,
-                server_args=request.mcp_config.server_args,
-                tool_name=request.mcp_config.tool_name,
-                env_vars=request.mcp_config.env_vars,
-                working_directory=request.mcp_config.working_directory,
-                idle_timeout_seconds=request.mcp_config.idle_timeout_seconds,
-                startup_timeout_seconds=request.mcp_config.startup_timeout_seconds,
-            )
+            definition.mcp_config = mcp_config_to_core(request.mcp_config)
         if request.enabled is not None:
             definition.enabled = request.enabled
         if request.tags is not None:
