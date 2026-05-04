@@ -5,10 +5,10 @@ Base URL: `http://localhost:8000`
 Implementation note: `create_api_app()` remains the public FastAPI factory.
 The API is being split incrementally; the System slice (`/health`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
-tool-preference, Skills, voice, Agent Threads, activity/notification, and TODO
-dashboard routes now live under `Nymeria/nymeria/api/routers/`, while the rest
-of the surface still lives in `Nymeria/nymeria/triggers/api.py` during the
-migration.
+tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
+dashboard, and classic tool discovery/default/callable routes now live under
+`Nymeria/nymeria/api/routers/`, while the rest of the surface still lives in
+`Nymeria/nymeria/triggers/api.py` during the migration.
 
 ## Authentication
 
