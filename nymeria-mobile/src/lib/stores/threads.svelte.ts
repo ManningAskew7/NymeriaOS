@@ -1,6 +1,8 @@
 import type { Thread, ThreadPlatform, ThreadFolder, SortMode } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
+import { generateId } from '$lib/utils/ids';
+import { platformFromThreadId } from '$lib/utils/threadPlatform';
 
 // localStorage keys are namespaced by the currently-connected user's id.
 // See config.svelte.ts::scopedKey for details.
@@ -40,7 +42,7 @@ function loadThreads(): Thread[] {
         ...t,
         createdAt: new Date(t.createdAt),
         updatedAt: new Date(t.updatedAt),
-        platform: t.platform || detectPlatform(t.id),
+        platform: t.platform || platformFromThreadId(t.id),
         callable: t.callable ?? t.platform === 'callable',
       }));
     }
@@ -109,21 +111,6 @@ function saveSortMode(mode: SortMode): void {
   }
 }
 
-function detectPlatform(threadId: string): ThreadPlatform {
-  if (threadId.startsWith('discord_')) return 'discord';
-  if (threadId.startsWith('telegram_')) return 'telegram';
-  if (threadId.startsWith('slack_')) return 'slack';
-  if (threadId.startsWith('twitch_')) return 'twitch';
-  if (threadId.startsWith('trigger-')) return 'trigger';
-  if (threadId.startsWith('agent-')) return 'callable';
-  if (threadId.startsWith('spawned-')) return 'callable';
-  return 'desktop';
-}
-
-function generateId(): string {
-  return crypto.randomUUID();
-}
-
 function generateTitleFromMessage(message: string, maxLength: number = 40): string {
   // Clean up the message - remove extra whitespace
   const cleaned = message.trim().replace(/\s+/g, ' ');
@@ -166,7 +153,7 @@ function createThreadsStore() {
       if (id) {
         // Use metadata platform if available, fall back to ID-prefix detection
         const thread = threads.find(t => t.id === id);
-        const platform = thread?.platform || detectPlatform(id);
+        const platform = thread?.platform || platformFromThreadId(id);
         const platformNativeId =
           id.startsWith('discord_') ||
           id.startsWith('telegram_') ||
@@ -403,7 +390,7 @@ function createThreadsStore() {
           createdAt: new Date(),
           updatedAt: new Date(),
           messageCount: 0,
-          platform: detectPlatform(id),
+          platform: platformFromThreadId(id),
         };
         threads = [thread, ...threads];
         saveThreads(threads);
@@ -425,7 +412,7 @@ function createThreadsStore() {
           createdAt: new Date(),
           updatedAt: new Date(),
           messageCount: 0,
-          platform: detectPlatform(id),
+          platform: platformFromThreadId(id),
         };
         threads = [thread, ...threads];
         saveThreads(threads);
@@ -559,7 +546,7 @@ function createThreadsStore() {
           id: bt.thread_id,
           title: bt.title || local?.title || 'New Chat',
           pinned: bt.pinned ?? local?.pinned ?? false,
-          platform: (bt.platform as ThreadPlatform) || detectPlatform(bt.thread_id),
+          platform: (bt.platform as ThreadPlatform) || platformFromThreadId(bt.thread_id),
           callable: bt.callable ?? local?.callable ?? bt.platform === 'callable',
           platformMeta: bt.platform_meta ? {
             guildName: bt.platform_meta.guild_name,

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SkillMetadata, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
+  import type { SkillMetadata, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool } from '$lib/types';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -16,6 +16,7 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
+  import { platformAfterCallableChange } from '$lib/utils/threadPlatform';
   import MCPServerForm from '$lib/components/tools/MCPServerForm.svelte';
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
@@ -29,28 +30,6 @@
   }
 
   let { threadId, open, onClose }: Props = $props();
-
-  function platformFromThreadId(id: string): ThreadPlatform {
-    if (id.startsWith('discord_')) return 'discord';
-    if (id.startsWith('telegram_')) return 'telegram';
-    if (id.startsWith('slack_')) return 'slack';
-    if (id.startsWith('twitch_')) return 'twitch';
-    if (id.startsWith('trigger-')) return 'trigger';
-    if (id.startsWith('agent-') || id.startsWith('spawned-')) return 'callable';
-    return 'desktop';
-  }
-
-  function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is 'discord' | 'telegram' | 'slack' | 'twitch' | 'trigger' {
-    return platform === 'discord' || platform === 'telegram' || platform === 'slack' || platform === 'twitch' || platform === 'trigger';
-  }
-
-  function platformAfterCallableChange(id: string, currentPlatform: ThreadPlatform | undefined, callable: boolean): ThreadPlatform {
-    const detected = platformFromThreadId(id);
-    if (isNativeDisplayPlatform(currentPlatform)) return currentPlatform;
-    if (isNativeDisplayPlatform(detected)) return detected;
-    if (callable) return 'callable';
-    return currentPlatform === 'callable' ? 'desktop' : (currentPlatform ?? detected);
-  }
 
   type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
