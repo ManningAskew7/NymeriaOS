@@ -300,7 +300,10 @@ Tool Binding event to unrelated output.
 
 Sync workers such as ticker, triggers, callable thread execution, spawned
 threads, and CLI use `core/stream_bridge.py` to consume `astream()` live, so
-they share the same in-turn reload loop as regular chat streaming.
+they share the same in-turn reload loop as regular chat streaming. The
+autonomous workers also share `stream_and_collect()` for response collection
+and iteration-limit bookkeeping; caller-specific event payloads remain in the
+ticker, trigger, callable-thread, and spawned-thread modules.
 
 Both `_pending_tool_reload` and `_turn_reload_count` are intentionally process-local and ephemeral. A process restart loses any in-flight reload, but the underlying tool enablement is already persisted in the thread config before the reload flag is set. The next turn's graph build picks up the enabled tools normally.
 
