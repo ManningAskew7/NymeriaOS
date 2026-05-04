@@ -54,24 +54,6 @@ function createToolsStore() {
     return tools.filter((t) => t.enabled);
   }
 
-  function getDisabledTools(): CustomTool[] {
-    return tools.filter((t) => !t.enabled);
-  }
-
-  function getToolsByType(type: 'http' | 'mcp'): CustomTool[] {
-    return tools.filter((t) => t.implementationType === type);
-  }
-
-  function getToolsByTag(tag: string): CustomTool[] {
-    return tools.filter((t) => t.tags.includes(tag));
-  }
-
-  function getAllTags(): string[] {
-    const tagSet = new Set<string>();
-    tools.forEach((t) => t.tags.forEach((tag) => tagSet.add(tag)));
-    return Array.from(tagSet).sort();
-  }
-
   // Actions
   async function loadTools(): Promise<void> {
     if (loading || loaded) {
@@ -217,10 +199,6 @@ function createToolsStore() {
     // Helper getters
     getToolById,
     getEnabledTools,
-    getDisabledTools,
-    getToolsByType,
-    getToolsByTag,
-    getAllTags,
 
     // Actions
     loadTools,
