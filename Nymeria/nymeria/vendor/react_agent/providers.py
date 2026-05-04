@@ -7,8 +7,11 @@ Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 
 import logging
 import hashlib
+import inspect
 import json
 import os
+import re
+from importlib import metadata as importlib_metadata
 from typing import Any, AsyncIterator, Iterator, List, Optional
 from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
@@ -38,6 +41,8 @@ _RESPONSES_REASONING_FALLBACK_EVENTS = {
     "response.reasoning.delta",
 }
 _RESPONSES_CONVERTER_FALLBACK_WARNED: set[str] = set()
+_LANGCHAIN_ANTHROPIC_PROXY_PATCH_MAX_MAJOR = 2
+_LANGCHAIN_ANTHROPIC_PROXY_CONTEXT_MARKER = "context_management.model_dump"
 
 
 def _looks_like_openrouter_base_url(base_url: Any) -> bool:
@@ -1257,39 +1262,143 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     return ChatOpenAI(**kwargs)
 
 
-def _patch_langchain_anthropic_proxy_compat():
-    """Patch langchain-anthropic to handle CLIProxyAPI response format.
+class _DictContextManagement:
+    """Small adapter matching the Pydantic method LangChain expects."""
 
-    CLIProxyAPI returns `context_management` as a plain dict, but
-    langchain-anthropic expects a Pydantic model with .model_dump().
-    """
+    def __init__(self, value: dict[str, Any]):
+        self._value = value
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        return self._value
+
+
+def _get_langchain_anthropic_version() -> str | None:
     try:
-        from langchain_anthropic import chat_models
+        return importlib_metadata.version("langchain-anthropic")
+    except importlib_metadata.PackageNotFoundError:
+        return None
 
-        original = chat_models.ChatAnthropic._make_message_chunk_from_anthropic_event
 
-        def patched(self, event, **kwargs):
-            # Wrap dict context_management so .model_dump() works
-            if hasattr(event, "context_management") and isinstance(
-                event.context_management, dict
-            ):
+def _langchain_anthropic_version_allows_proxy_patch(
+    version: str | None,
+) -> tuple[bool, str]:
+    if version is None:
+        return True, "package version unavailable"
 
-                class _DictWrapper:
-                    def __init__(self, d):
-                        self._d = d
+    match = re.match(r"\s*(\d+)", version)
+    if not match:
+        return False, f"unparseable langchain-anthropic version {version!r}"
 
-                    def model_dump(self, **kw):
-                        return self._d
+    major = int(match.group(1))
+    if major >= _LANGCHAIN_ANTHROPIC_PROXY_PATCH_MAX_MAJOR:
+        return (
+            False,
+            f"langchain-anthropic {version} is outside the verified patch range",
+        )
+    return True, f"langchain-anthropic {version}"
 
-                event.context_management = _DictWrapper(event.context_management)
-            return original(self, event, **kwargs)
 
-        chat_models.ChatAnthropic._make_message_chunk_from_anthropic_event = patched
+def _langchain_anthropic_method_still_needs_proxy_patch(method: Any) -> tuple[bool, str]:
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError) as exc:
+        return False, f"cannot inspect Anthropic stream converter signature: {exc}"
+
+    if "event" not in signature.parameters:
+        return False, "Anthropic stream converter signature no longer has event"
+
+    try:
+        source = inspect.getsource(method)
+    except (OSError, TypeError):
+        return True, "source unavailable; assuming known dict incompatibility"
+
+    if _LANGCHAIN_ANTHROPIC_PROXY_CONTEXT_MARKER not in source:
+        return False, "upstream converter no longer calls context_management.model_dump()"
+
+    return True, "upstream converter still expects context_management.model_dump()"
+
+
+def _should_use_cliproxy_context_management_adapter(
+    chat_model_cls: type[Any],
+) -> tuple[bool, str]:
+    version_allowed, version_reason = _langchain_anthropic_version_allows_proxy_patch(
+        _get_langchain_anthropic_version()
+    )
+    if not version_allowed:
+        return False, version_reason
+
+    method = getattr(
+        chat_model_cls,
+        "_make_message_chunk_from_anthropic_event",
+        None,
+    )
+    if method is None:
+        return False, "Anthropic stream converter method is missing"
+
+    method_needs_patch, method_reason = (
+        _langchain_anthropic_method_still_needs_proxy_patch(method)
+    )
+    if not method_needs_patch:
+        return False, method_reason
+
+    return True, f"{version_reason}; {method_reason}"
+
+
+def _wrap_cliproxy_context_management_event(event: Any) -> Any:
+    context_management = getattr(event, "context_management", None)
+    if not isinstance(context_management, dict):
+        return event
+
+    wrapped = _DictContextManagement(context_management)
+    try:
+        event.context_management = wrapped
+        logger.debug(
+            "[LLM] Wrapped CLIProxy context_management dict for "
+            "langchain-anthropic streaming"
+        )
+        return event
     except Exception:
-        pass
+        model_copy = getattr(event, "model_copy", None)
+        if callable(model_copy):
+            copied_event = model_copy(update={"context_management": wrapped})
+            logger.debug(
+                "[LLM] Copied CLIProxy stream event with wrapped "
+                "context_management dict for langchain-anthropic streaming"
+            )
+            return copied_event
+        raise
 
 
-_patch_langchain_anthropic_proxy_compat()
+def _anthropic_chat_model_class_for_config(
+    chat_model_cls: type[Any],
+    config: LLMConfig,
+) -> type[Any]:
+    if not config.base_url or not looks_like_cliproxy_url(config.base_url):
+        return chat_model_cls
+
+    use_adapter, reason = _should_use_cliproxy_context_management_adapter(
+        chat_model_cls
+    )
+    if not use_adapter:
+        logger.info("[LLM] CLIProxy context_management adapter not enabled: %s", reason)
+        return chat_model_cls
+
+    logger.info("[LLM] Enabling CLIProxy context_management adapter: %s", reason)
+
+    class CLIProxyCompatibleChatAnthropic(chat_model_cls):
+        def _make_message_chunk_from_anthropic_event(
+            self,
+            event: Any,
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            return super()._make_message_chunk_from_anthropic_event(
+                _wrap_cliproxy_context_management_event(event),
+                *args,
+                **kwargs,
+            )
+
+    return CLIProxyCompatibleChatAnthropic
 
 
 def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
@@ -1374,7 +1483,8 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
                 )
             kwargs["temperature"] = 1
 
-    return ChatAnthropic(**kwargs)
+    chat_model_cls = _anthropic_chat_model_class_for_config(ChatAnthropic, config)
+    return chat_model_cls(**kwargs)
 
 
 # Models known to have issues with tool calling
