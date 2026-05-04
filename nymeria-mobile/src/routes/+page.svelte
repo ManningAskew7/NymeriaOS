@@ -66,11 +66,14 @@
     if (isActive) {
       // App foregrounded — resume polling
       if (configStore.isConfigured) {
-        healthStore.check();
+        healthStore.startPolling();
+        notificationStore.startPolling();
         autonomousStore.connect();
       }
     } else {
       // App backgrounded — pause polling, backup state
+      healthStore.stopPolling();
+      notificationStore.stopPolling();
       autonomousStore.disconnect();
       backupToPreferences();
     }

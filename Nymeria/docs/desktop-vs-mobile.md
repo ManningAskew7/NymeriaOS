@@ -432,8 +432,8 @@ Use `hapticImpact('light')` for navigation and sends, `hapticNotification('succe
 
 ### Lifecycle
 Mobile apps pause/resume. The `lifecycle.ts` utility handles:
-- **Background**: Stop polling, disconnect SSE, backup localStorage to Capacitor Preferences. The backup includes legacy keys and identity-scoped variants such as `nymeria-threads-{user_id}`.
-- **Foreground/startup**: Restore missing localStorage keys from Preferences, reload live config if Preferences restored data, then resume polling and reconnect SSE
+- **Background**: Stop health and notification polling, disconnect SSE, backup localStorage to Capacitor Preferences. The backup includes legacy keys and identity-scoped variants such as `nymeria-threads-{user_id}`.
+- **Foreground/startup**: Restore missing localStorage keys from Preferences, reload live config if Preferences restored data, then resume health and notification polling and reconnect SSE
 - **Back button**: Navigate to chat panel first, then allow app exit
 
 ### Dynamic Viewport
