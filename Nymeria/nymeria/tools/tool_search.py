@@ -936,6 +936,8 @@ def tool_search(
 ) -> Union[str, Command]:
     """
     Search, enable, disable, and inspect available tools for this thread.
+    Enabling new tools auto-continues the turn after a graph rebuild, and
+    enablements use a TTL.
 
     Actions:
       search: find tools by query/category.
