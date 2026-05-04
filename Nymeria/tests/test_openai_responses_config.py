@@ -5,8 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 import warnings
 
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 
+from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
     _convert_responses_chunk_to_generation_chunk_compat,
@@ -14,6 +16,7 @@ from nymeria.vendor.react_agent.providers import (
     _normalize_openai_base_url,
     _normalize_openrouter_responses_payload,
     _should_disable_streaming_for_local_base_url,
+    _wrap_cliproxy_context_management_event,
     create_llm,
 )
 
@@ -161,6 +164,110 @@ def test_anthropic_client_retries_disabled_for_central_retry_policy():
     llm = create_llm(_anthropic_config())
 
     assert llm.max_retries == 0
+
+
+def test_anthropic_non_cliproxy_base_url_does_not_use_context_management_adapter(
+    monkeypatch,
+):
+    def fail_if_checked(_chat_model_cls):
+        raise AssertionError("adapter guard should only run for CLIProxy URLs")
+
+    monkeypatch.setattr(
+        providers,
+        "_should_use_cliproxy_context_management_adapter",
+        fail_if_checked,
+    )
+
+    llm = create_llm(_anthropic_config(base_url="https://api.anthropic.com"))
+
+    assert type(llm) is ChatAnthropic
+
+
+def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch):
+    monkeypatch.setattr(
+        providers,
+        "_should_use_cliproxy_context_management_adapter",
+        lambda _chat_model_cls: (True, "test"),
+    )
+
+    llm = create_llm(
+        _anthropic_config(base_url="http://cli-proxy-api-latest:8317")
+    )
+
+    assert isinstance(llm, ChatAnthropic)
+    assert type(llm) is not ChatAnthropic
+
+
+def test_cliproxy_context_management_dict_is_wrapped_for_langchain():
+    event = SimpleNamespace(context_management={"strategy": "clear"})
+
+    wrapped = _wrap_cliproxy_context_management_event(event)
+
+    assert wrapped is event
+    assert wrapped.context_management.model_dump() == {"strategy": "clear"}
+
+
+def test_cliproxy_context_management_adapter_detects_affected_langchain(
+    monkeypatch,
+):
+    class AffectedChatAnthropic:
+        def _make_message_chunk_from_anthropic_event(self, event):
+            context_management = getattr(event, "context_management", None)
+            return context_management.model_dump()
+
+    monkeypatch.setattr(
+        providers,
+        "_get_langchain_anthropic_version",
+        lambda: "1.4.2",
+    )
+
+    use_adapter, reason = providers._should_use_cliproxy_context_management_adapter(
+        AffectedChatAnthropic
+    )
+
+    assert use_adapter is True
+    assert "context_management.model_dump" in reason
+
+
+def test_cliproxy_context_management_adapter_skips_fixed_langchain(monkeypatch):
+    class FixedChatAnthropic:
+        def _make_message_chunk_from_anthropic_event(self, event):
+            context_management = getattr(event, "context_management", None)
+            if isinstance(context_management, dict):
+                return context_management
+            return None
+
+    monkeypatch.setattr(
+        providers,
+        "_get_langchain_anthropic_version",
+        lambda: "1.4.2",
+    )
+
+    use_adapter, reason = providers._should_use_cliproxy_context_management_adapter(
+        FixedChatAnthropic
+    )
+
+    assert use_adapter is False
+    assert "no longer calls" in reason
+
+
+def test_cliproxy_context_management_adapter_skips_unverified_major(monkeypatch):
+    class FutureChatAnthropic:
+        def _make_message_chunk_from_anthropic_event(self, event):
+            return event
+
+    monkeypatch.setattr(
+        providers,
+        "_get_langchain_anthropic_version",
+        lambda: "2.0.0",
+    )
+
+    use_adapter, reason = providers._should_use_cliproxy_context_management_adapter(
+        FutureChatAnthropic
+    )
+
+    assert use_adapter is False
+    assert "outside the verified patch range" in reason
 
 
 def test_openrouter_chat_completions_mode_stays_on_messages_payload():
