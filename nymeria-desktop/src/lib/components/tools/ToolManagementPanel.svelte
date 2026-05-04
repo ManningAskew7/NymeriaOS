@@ -99,7 +99,7 @@
     return tool.category === 'mcp_server' || tool.name.startsWith('mcp__');
   }
 
-  const filteredTools = $derived(() => {
+  const filteredTools = $derived.by(() => {
     const visibleTools = defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool));
     if (!searchQuery.trim()) return visibleTools;
     const q = searchQuery.toLowerCase();
@@ -112,9 +112,9 @@
   });
 
   // Split into core (selected) and available (not selected), grouped by category
-  const coreToolsByCategory = $derived(() => {
+  const coreToolsByCategory = $derived.by(() => {
     const result: Record<string, DefaultToolInfo[]> = {};
-    for (const tool of filteredTools()) {
+    for (const tool of filteredTools) {
       if (selectedTools.has(tool.name)) {
         if (!result[tool.category]) result[tool.category] = [];
         result[tool.category].push(tool);
@@ -123,9 +123,9 @@
     return result;
   });
 
-  const availableToolsByCategory = $derived(() => {
+  const availableToolsByCategory = $derived.by(() => {
     const result: Record<string, DefaultToolInfo[]> = {};
-    for (const tool of filteredTools()) {
+    for (const tool of filteredTools) {
       if (!selectedTools.has(tool.name)) {
         if (!result[tool.category]) result[tool.category] = [];
         result[tool.category].push(tool);
@@ -144,13 +144,13 @@
   // Match counts within the current search, per section. Used to show
   // "no results" hints inside sections the search failed to find anything in.
   const coreMatchCount = $derived(
-    Object.values(coreToolsByCategory()).reduce((n, arr) => n + arr.length, 0)
+    Object.values(coreToolsByCategory).reduce((n, arr) => n + arr.length, 0)
   );
   const availableMatchCount = $derived(
-    Object.values(availableToolsByCategory()).reduce((n, arr) => n + arr.length, 0)
+    Object.values(availableToolsByCategory).reduce((n, arr) => n + arr.length, 0)
   );
 
-  const hasChanges = $derived(() => {
+  const hasChanges = $derived.by(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
     if (selectedTools.size !== saved.size) return true;
     for (const t of selectedTools) {
@@ -220,7 +220,7 @@
   }
 
   // --- Custom tools handlers ---
-  const filteredCustomTools = $derived(() => {
+  const filteredCustomTools = $derived.by(() => {
     let result = toolsStore.tools;
     if (customFilter !== 'all') {
       result = result.filter((t) => t.implementationType === customFilter);
@@ -384,9 +384,9 @@
         {/if}
         <div class="tools-list">
           {#each CATEGORY_ORDER as category}
-            {#if coreToolsByCategory()[category]?.length}
+            {#if coreToolsByCategory[category]?.length}
               {@const info = getCategoryInfo(category)}
-              {@const categoryTools = coreToolsByCategory()[category]}
+              {@const categoryTools = coreToolsByCategory[category]}
               <div class="category-group">
                 <div class="category-label">
                   <span class="category-name">{info.name}</span>
@@ -432,10 +432,10 @@
           {/each}
 
           <!-- Categories not in CATEGORY_ORDER -->
-          {#each Object.keys(coreToolsByCategory()) as category}
-            {#if !CATEGORY_ORDER.includes(category) && coreToolsByCategory()[category]?.length}
+          {#each Object.keys(coreToolsByCategory) as category}
+            {#if !CATEGORY_ORDER.includes(category) && coreToolsByCategory[category]?.length}
               {@const info = getCategoryInfo(category)}
-              {@const categoryTools = coreToolsByCategory()[category]}
+              {@const categoryTools = coreToolsByCategory[category]}
               <div class="category-group">
                 <div class="category-label">
                   <span class="category-name">{info.name}</span>
@@ -506,9 +506,9 @@
         {/if}
         <div class="tools-list">
           {#each CATEGORY_ORDER as category}
-            {#if availableToolsByCategory()[category]?.length}
+            {#if availableToolsByCategory[category]?.length}
               {@const info = getCategoryInfo(category)}
-              {@const categoryTools = availableToolsByCategory()[category]}
+              {@const categoryTools = availableToolsByCategory[category]}
               <div class="category-group">
                 <div class="category-label">
                   <span class="category-name">{info.name}</span>
@@ -557,10 +557,10 @@
           {/each}
 
           <!-- Categories not in CATEGORY_ORDER -->
-          {#each Object.keys(availableToolsByCategory()) as category}
-            {#if !CATEGORY_ORDER.includes(category) && availableToolsByCategory()[category]?.length}
+          {#each Object.keys(availableToolsByCategory) as category}
+            {#if !CATEGORY_ORDER.includes(category) && availableToolsByCategory[category]?.length}
               {@const info = getCategoryInfo(category)}
-              {@const categoryTools = availableToolsByCategory()[category]}
+              {@const categoryTools = availableToolsByCategory[category]}
               <div class="category-group">
                 <div class="category-label">
                   <span class="category-name">{info.name}</span>
@@ -631,7 +631,7 @@
 
     {#if toolsStore.loading}
       <div class="loading">Loading custom tools...</div>
-    {:else if filteredCustomTools().length === 0}
+    {:else if filteredCustomTools.length === 0}
       <div class="empty-state">
         <div class="empty-icon">+</div>
         <h4>No Custom Tools Yet</h4>
@@ -641,7 +641,7 @@
       </div>
     {:else}
       <div class="tool-list">
-        {#each filteredCustomTools() as tool (tool.id)}
+        {#each filteredCustomTools as tool (tool.id)}
           <div class="tool-item" class:disabled={!tool.enabled}>
             <div class="tool-info">
               <div class="tool-header">
@@ -708,7 +708,7 @@
       <button
         class="btn btn-primary"
         onclick={handleSave}
-        disabled={defaultToolsStore.saving || !hasChanges()}
+        disabled={defaultToolsStore.saving || !hasChanges}
         type="button"
       >
         {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}

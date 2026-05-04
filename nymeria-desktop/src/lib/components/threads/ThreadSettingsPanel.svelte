@@ -109,7 +109,7 @@
   }
 
   // Optional non-MCP tools (derived from defaultToolsStore — tools NOT in the user's core set)
-  const optionalTools = $derived(() => {
+  const optionalTools = $derived.by(() => {
     if (!defaultToolsStore.loaded) return [];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
@@ -991,7 +991,7 @@
               {/if}
             </div>
 
-            {#if optionalTools().length > 0}
+            {#if optionalTools.length > 0}
               <div class="optional-tools-section">
                 <span class="field-label">
                   Optional Tools
@@ -1003,7 +1003,7 @@
                   These tools are not in your core set. Enable them for this thread only.
                 </p>
                 <div class="tools-list">
-                  {#each optionalTools() as tool (tool.name)}
+                  {#each optionalTools as tool (tool.name)}
                     <div
                       class="tool-row"
                       class:optional-enabled={enabledTools.has(tool.name)}

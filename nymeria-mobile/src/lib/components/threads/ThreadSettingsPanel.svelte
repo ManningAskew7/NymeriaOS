@@ -141,7 +141,7 @@
   });
 
   // Optional tools (not in core set), excluding MCP tools
-  const optionalTools = $derived(() => {
+  const optionalTools = $derived.by(() => {
     if (!defaultToolsStore.loaded) return [];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
@@ -151,7 +151,7 @@
 
   // MCP tools grouped by server. Default MCP tools can be disabled for this
   // thread; non-default MCP tools can be enabled for this thread.
-  const mcpServersForThread = $derived(() => {
+  const mcpServersForThread = $derived.by(() => {
     if (!defaultToolsStore.loaded) return [] as {
       id: string;
       name: string;
@@ -955,7 +955,7 @@
             {/if}
           </div>
 
-          {#if optionalTools().length > 0}
+          {#if optionalTools.length > 0}
             <div class="section-divider">
               <span class="section-title">
                 Optional Tools
@@ -964,7 +964,7 @@
               <p class="hint">Not in your core set. Enable for this thread only.</p>
             </div>
             <div class="tools-list">
-              {#each optionalTools() as tool (tool.name)}
+              {#each optionalTools as tool (tool.name)}
                 <div class="tool-row" class:tool-enabled={enabledTools.has(tool.name)}>
                   <div class="tool-info">
                     <span class="tool-name">{tool.name}</span>
@@ -999,10 +999,10 @@
             <p class="hint">Tools from MCP servers. Enable for this thread.</p>
           </div>
 
-          {#if mcpServersForThread().length === 0}
+          {#if mcpServersForThread.length === 0}
             <div class="loading-state">No MCP servers installed.</div>
           {:else}
-            {#each mcpServersForThread() as server (server.id)}
+            {#each mcpServersForThread as server (server.id)}
               <div class="mcp-server-group">
                 <div class="mcp-server-header-row">
                   <button
