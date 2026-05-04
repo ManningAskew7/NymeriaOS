@@ -2199,49 +2199,6 @@ class NymeriaAgent:
             logger.warning(f"Failed to patch dangling tool calls: {e}")
             return 0
 
-    async def _apatch_dangling_tool_calls(self, graph, config: dict) -> int:
-        """Async version of _patch_dangling_tool_calls for astream()."""
-        try:
-            state = await graph.aget_state(config)
-            messages = state.values.get("messages", [])
-            if not messages:
-                return 0
-
-            last_msg = messages[-1]
-            if not (isinstance(last_msg, AIMessage) and last_msg.tool_calls):
-                return 0
-
-            pending_ids = {tc["id"] for tc in last_msg.tool_calls if tc.get("id")}
-
-            for msg in reversed(messages[:-1]):
-                if isinstance(msg, ToolMessage) and msg.tool_call_id in pending_ids:
-                    pending_ids.discard(msg.tool_call_id)
-                elif isinstance(msg, (AIMessage, HumanMessage)):
-                    break
-
-            if not pending_ids:
-                return 0
-
-            synthetic = []
-            for tc in last_msg.tool_calls:
-                if tc.get("id") in pending_ids:
-                    synthetic.append(ToolMessage(
-                        content="[Cancelled by user before this tool completed]",
-                        tool_call_id=tc["id"],
-                        name=tc.get("name", ""),
-                    ))
-
-            await graph.aupdate_state(config, {"messages": synthetic})
-            names = [tc.get("name", "?") for tc in last_msg.tool_calls if tc.get("id") in pending_ids]
-            logger.info(
-                f"Patched {len(synthetic)} dangling tool call(s) after cancellation: {names}"
-            )
-            return len(synthetic)
-
-        except Exception as e:
-            logger.warning(f"Failed to patch dangling tool calls: {e}")
-            return 0
-
     def _callable_timeout_scope_user_id(
         self,
         user_id: Optional[str],
