@@ -323,7 +323,7 @@ If you add a new account/admin endpoint, follow this exact pattern so error toas
 
 If you're adding something like "user activity log" or "two-factor enrollment", follow this template:
 
-1. **Backend first**: add the endpoint in `Nymeria/nymeria/triggers/api.py` with the right `Depends(require_admin_user)` or `Depends(verify_api_key)`. Wrap the `AccountsRepo` method, raise `HTTPException` with the same `detail` shape as existing endpoints (so `_toastAndExtractError`'s parser keeps working).
+1. **Backend first**: add account endpoints in `Nymeria/nymeria/api/routers/accounts.py` with schemas in `Nymeria/nymeria/api/schemas/accounts.py` and the right `Depends(require_admin_user)` or `Depends(verify_api_key)`. Wrap the `AccountsRepo` method, raise `HTTPException` with the same `detail` shape as existing endpoints (so `_toastAndExtractError`'s parser keeps working).
 2. **Add types**: append the new `Pydantic` response shape to `nymeria-{desktop,mobile}/src/lib/types/index.ts` (mirror the field names exactly).
 3. **Add API method**: in both apps' `api.svelte.ts`, add a method that follows the existing `_toastAndExtractError` pattern.
 4. **Build the component**: under `components/account/`. Re-use `Avatar`, `RoleChip`, `Modal`, `Button`, and the section-styling conventions in `AccountTab.svelte` / `UsersTab.svelte` for consistency.
