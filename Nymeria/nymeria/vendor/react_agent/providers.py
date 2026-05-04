@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import re
+from functools import cached_property
 from importlib import metadata as importlib_metadata
 from typing import Any, AsyncIterator, Iterator, List
 from urllib.parse import urlparse
@@ -1384,19 +1385,47 @@ def _anthropic_chat_model_class_for_config(
     chat_model_cls: type[Any],
     config: LLMConfig,
 ) -> type[Any]:
+    class NymeriaChatAnthropic(chat_model_cls):
+        """Anthropic chat model with an instance-local async HTTP client.
+
+        langchain-anthropic caches its default async httpx client globally by
+        base URL/timeout. Nymeria can stream normal chat on the API event loop
+        while synchronous callable/autonomous workers consume async streams on a
+        bridge loop, so a globally shared async pool can cross event loops.
+        """
+
+        _nymeria_uses_instance_async_client = True
+
+        @cached_property
+        def _async_client(self) -> Any:
+            import anthropic
+            import httpx
+
+            client_params = self._client_params
+            http_client_params = {"base_url": client_params["base_url"]}
+            if "timeout" in client_params:
+                http_client_params["timeout"] = client_params["timeout"]
+            if self.anthropic_proxy:
+                http_client_params["proxy"] = self.anthropic_proxy
+            http_client = httpx.AsyncClient(**http_client_params)
+            return anthropic.AsyncClient(
+                **client_params,
+                http_client=http_client,
+            )
+
     if not config.base_url or not looks_like_cliproxy_url(config.base_url):
-        return chat_model_cls
+        return NymeriaChatAnthropic
 
     use_adapter, reason = _should_use_cliproxy_context_management_adapter(
         chat_model_cls
     )
     if not use_adapter:
         logger.info("[LLM] CLIProxy context_management adapter not enabled: %s", reason)
-        return chat_model_cls
+        return NymeriaChatAnthropic
 
     logger.info("[LLM] Enabling CLIProxy context_management adapter: %s", reason)
 
-    class CLIProxyCompatibleChatAnthropic(chat_model_cls):
+    class CLIProxyCompatibleChatAnthropic(NymeriaChatAnthropic):
         def _make_message_chunk_from_anthropic_event(
             self,
             event: Any,

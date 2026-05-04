@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
+import concurrent.futures
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional
@@ -43,11 +46,17 @@ def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
     call sites, but regular chat uses ``NymeriaAgent.astream()`` so async-only
     tools can run. This bridge preserves live streaming while letting those sync
     callers use the same async agent path.
+
+    A single process-local background event loop owns the async consumption for
+    sync callers. Provider SDKs such as Anthropic and OpenAI keep async HTTP
+    transports inside model instances; creating and closing a fresh loop for
+    each callable invocation can leave concurrent streams trying to close a
+    transport tied to a loop that has already been closed.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        yield from _iter_in_local_loop(agent, **kwargs)
+        yield from _iter_in_bridge_loop(agent, **kwargs)
         return
 
     raise RuntimeError("iter_agent_astream() is only supported from synchronous code")
@@ -109,11 +118,9 @@ def stream_and_collect(
     return collection
 
 
-def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
-    loop = asyncio.new_event_loop()
+def _iter_in_bridge_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
+    bridge = _get_bridge_loop()
     agen: Optional[Any] = None
-    previous_loop = None
-    had_previous_loop = True
     chunk_count = 0
     started_at = time.monotonic()
     thread_id = kwargs.get("thread_id", "")
@@ -126,16 +133,10 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
             user_id,
         )
     try:
-        try:
-            previous_loop = asyncio.get_event_loop()
-        except RuntimeError:
-            had_previous_loop = False
-
-        asyncio.set_event_loop(loop)
-        agen = agent.astream(**kwargs).__aiter__()
+        agen = bridge.result(_create_async_iterator(agent, dict(kwargs)))
         while True:
             try:
-                chunk = loop.run_until_complete(agen.__anext__())
+                chunk = bridge.result(_next_async_iterator(agen))
                 chunk_count += 1
                 if is_autonomous and chunk_count == 1:
                     logger.info(
@@ -150,15 +151,9 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
     finally:
         if agen is not None:
             try:
-                loop.run_until_complete(agen.aclose())
+                bridge.result(_close_async_iterator(agen))
             except RuntimeError:
                 pass  # event loop may already be closed
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
-        if had_previous_loop:
-            asyncio.set_event_loop(previous_loop)
-        else:
-            asyncio.set_event_loop(None)
         if is_autonomous:
             logger.info(
                 "[STREAM_BRIDGE] end thread=%s chunks=%d elapsed_ms=%d",
@@ -166,3 +161,98 @@ def _iter_in_local_loop(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
                 chunk_count,
                 int((time.monotonic() - started_at) * 1000),
             )
+
+
+async def _create_async_iterator(agent: Any, kwargs: Mapping[str, Any]) -> Any:
+    stream = agent.astream(**dict(kwargs))
+    try:
+        return stream.__aiter__()
+    except AttributeError as exc:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+        raise TypeError("agent.astream() must return an async iterator") from exc
+
+
+async def _next_async_iterator(agen: Any) -> Dict[str, Any]:
+    return await agen.__anext__()
+
+
+async def _close_async_iterator(agen: Any) -> None:
+    await agen.aclose()
+
+
+class _StreamBridgeLoop:
+    """Dedicated asyncio loop for sync callers that consume async streams."""
+
+    def __init__(self) -> None:
+        self._ready = threading.Event()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="NymeriaStreamBridgeLoop",
+            daemon=True,
+        )
+        self._thread.start()
+        self._ready.wait(timeout=5)
+        if self._loop is None:
+            raise RuntimeError("Stream bridge loop failed to start")
+        atexit.register(self.stop)
+
+    @property
+    def closed(self) -> bool:
+        return self._loop is None or self._loop.is_closed()
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    def submit(self, coro: Any) -> concurrent.futures.Future:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("Stream bridge loop is closed")
+        return asyncio.run_coroutine_threadsafe(coro, loop)
+
+    def result(self, coro: Any) -> Any:
+        try:
+            future = self.submit(coro)
+        except Exception:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise
+        return future.result()
+
+    def stop(self) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(loop.stop)
+        self._thread.join(timeout=2)
+
+
+_bridge_loop: Optional[_StreamBridgeLoop] = None
+_bridge_loop_lock = threading.Lock()
+
+
+def _get_bridge_loop() -> _StreamBridgeLoop:
+    global _bridge_loop
+    with _bridge_loop_lock:
+        if _bridge_loop is None or _bridge_loop.closed:
+            _bridge_loop = _StreamBridgeLoop()
+        return _bridge_loop

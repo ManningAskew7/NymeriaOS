@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 import warnings
 
@@ -195,7 +196,9 @@ def test_anthropic_non_cliproxy_base_url_does_not_use_context_management_adapter
 
     llm = create_llm(_anthropic_config(base_url="https://api.anthropic.com"))
 
-    assert type(llm) is ChatAnthropic
+    assert isinstance(llm, ChatAnthropic)
+    assert type(llm) is not ChatAnthropic
+    assert type(llm).__name__ == "NymeriaChatAnthropic"
 
 
 def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch):
@@ -211,6 +214,38 @@ def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch
 
     assert isinstance(llm, ChatAnthropic)
     assert type(llm) is not ChatAnthropic
+    assert type(llm).__name__ == "CLIProxyCompatibleChatAnthropic"
+
+
+def test_anthropic_async_http_client_is_instance_local_and_preserves_cliproxy_headers(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        providers,
+        "_should_use_cliproxy_context_management_adapter",
+        lambda _chat_model_cls: (True, "test"),
+    )
+
+    config = _anthropic_config(base_url="http://cli-proxy-api-latest:8317")
+    first = create_llm(config)
+    second = create_llm(config)
+
+    first_async_client = first._async_client
+    second_async_client = second._async_client
+
+    try:
+        assert first_async_client is not second_async_client
+        assert first_async_client._client is not second_async_client._client
+        assert (
+            first_async_client.default_headers["User-Agent"]
+            == "claude-cli/2.1.113"
+        )
+        assert str(first_async_client.base_url).rstrip("/") == (
+            "http://cli-proxy-api-latest:8317"
+        )
+    finally:
+        asyncio.run(first_async_client.close())
+        asyncio.run(second_async_client.close())
 
 
 def test_cliproxy_context_management_dict_is_wrapped_for_langchain():
