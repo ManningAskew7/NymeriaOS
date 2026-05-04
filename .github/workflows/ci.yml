@@ -32,6 +32,8 @@ jobs:
           cache-dependency-path: |
             Nymeria/requirements.txt
             Nymeria/requirements-docker.txt
+            Nymeria/requirements-postgres.txt
+            Nymeria/requirements-sqlite.txt
 
       - name: Install Python dependencies
         run: |

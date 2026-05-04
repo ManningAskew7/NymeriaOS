@@ -484,13 +484,18 @@ POSTGRES_URI=postgresql://user:password@localhost:5432/nymeria
 ```
 
 Docker installs the PostgreSQL checkpoint dependencies through
-`requirements-docker.txt`. For local development, install them explicitly after
-the base requirements:
+`requirements-docker.txt`, which includes `requirements-postgres.txt` rather
+than duplicating those package entries. For local development, install them
+explicitly after the base requirements:
 
 ```bash
 pip install -r requirements.txt
 pip install -r requirements-postgres.txt
 ```
+
+The default SQLite checkpoint and local vector-search dependencies live in
+`requirements-sqlite.txt`, and `requirements.txt` includes that file so the
+zero-setup local backend remains the default install path.
 
 ### Memory (Testing)
 

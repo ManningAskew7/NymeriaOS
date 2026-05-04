@@ -21,6 +21,7 @@ See [QUICKSTART.md](./QUICKSTART.md) for detailed setup instructions.
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+# requirements.txt includes the default SQLite backend extras.
 # Optional local PostgreSQL backend:
 # pip install -r requirements-postgres.txt
 
@@ -121,7 +122,10 @@ Nymeria/
 │   └── custom_tools/       # Custom tool definitions (JSON)
 ├── docs/                   # Documentation
 ├── run.py                  # Entry point
-├── requirements.txt        # Dependencies
+├── requirements.txt        # Base dependencies plus SQLite extras include
+├── requirements-sqlite.txt # Default local SQLite/checkpoint dependencies
+├── requirements-postgres.txt # Optional PostgreSQL checkpoint dependencies
+├── requirements-docker.txt # Docker-only supplemental dependencies
 └── .env.docker.example     # Configuration template
 ```
 

@@ -172,8 +172,8 @@ python tools/inspect_thread.py YOUR_THREAD_ID --full
 Use `--backend`, `--sqlite-path`, or `--postgres-uri` when inspecting a database
 other than the one selected by the current environment. Local PostgreSQL
 inspection requires the Postgres checkpoint extras from
-`requirements-postgres.txt`; Docker installs them through
-`requirements-docker.txt`.
+`requirements-postgres.txt`; Docker installs them through the
+`requirements-docker.txt` include chain.
 
 ### One-shot cleanup for a single bloated thread
 
