@@ -15,8 +15,11 @@ from nymeria.tools import (
 )
 from nymeria.tools import auth_cache_utils
 from nymeria.tools import calendar
+from nymeria.tools import calendar_auth
 from nymeria.tools import google_docs
+from nymeria.tools import google_docs_auth
 from nymeria.tools import google_sheets
+from nymeria.tools import outlook_auth
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
 from nymeria.plugins._prv_a import products as _prv_a_products
@@ -301,6 +304,166 @@ def test_google_account_display_validation_refreshes_and_prunes(monkeypatch):
     assert statuses["active"]["usable"] is True
     assert statuses["expired"]["status"] == "active (refreshed)"
     assert statuses["missing_scope"]["usable"] is False
+
+
+def test_google_credentials_helper_loads_provider_cache_and_refreshes(monkeypatch):
+    now = time.time()
+    cache = {
+        "accounts": {
+            "acct": {
+                "email": "docs@example.com",
+                "access_token": "old-token",
+                "refresh_token": "refresh-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "scopes": ["scope-a"],
+                "expires_at": now - 10,
+            }
+        }
+    }
+    calls = {}
+
+    def fake_load(user_id, cache_filename):
+        calls["load"] = (user_id, cache_filename)
+        return cache
+
+    def fake_save(user_id, cache_filename, saved_cache):
+        calls["save"] = (user_id, cache_filename, saved_cache)
+
+    def fake_refresh(account, scopes):
+        calls["refresh"] = (account["email"], scopes)
+        account["access_token"] = "new-token"
+        account["expires_at"] = now + 3600
+        return "refreshed", ""
+
+    monkeypatch.setattr(auth_cache_utils, "load_token_cache", fake_load)
+    monkeypatch.setattr(auth_cache_utils, "save_token_cache", fake_save)
+    monkeypatch.setattr(auth_cache_utils, "refresh_google_account", fake_refresh)
+
+    creds = auth_cache_utils.get_google_credentials(
+        "docs-user",
+        "google_docs",
+        ["scope-a"],
+        account_id="acct",
+        provider_display_name="Google Docs",
+    )
+
+    assert creds.token == "new-token"
+    assert calls["load"] == ("docs-user", "google_docs.json")
+    assert calls["refresh"] == ("docs@example.com", ["scope-a"])
+    assert calls["save"][0:2] == ("docs-user", "google_docs.json")
+
+
+def test_google_api_request_helper_builds_service(monkeypatch):
+    import googleapiclient.discovery
+
+    calls = {}
+
+    def fake_get_credentials(*args, **kwargs):
+        calls["credentials"] = (args, kwargs)
+        return "creds"
+
+    def fake_build(service_name, service_version, credentials, **kwargs):
+        calls["build"] = (service_name, service_version, credentials, kwargs)
+        return {"service": service_name}
+
+    monkeypatch.setattr(auth_cache_utils, "get_google_credentials", fake_get_credentials)
+    monkeypatch.setattr(googleapiclient.discovery, "build", fake_build)
+
+    success, result = auth_cache_utils.google_api_request(
+        "docs-user",
+        "google_docs",
+        ["scope-a"],
+        lambda service: {"ok": service["service"]},
+        service_name="docs",
+        service_version="v1",
+        account_id="acct",
+        auth_tool_name="google_docs_auth_start",
+        api_label="Google Docs",
+    )
+
+    assert success is True
+    assert result == {"ok": "docs"}
+    assert calls["credentials"][0] == ("docs-user", "google_docs", ["scope-a"])
+    assert calls["credentials"][1]["account_id"] == "acct"
+    assert calls["build"] == ("docs", "v1", "creds", {})
+
+
+def test_google_request_wrappers_delegate_to_shared_helper(monkeypatch):
+    calls = []
+
+    def fake_google_api_request(user_id, provider, scopes, operation, **kwargs):
+        calls.append((user_id, provider, scopes, kwargs))
+        return True, operation("service")
+
+    monkeypatch.setattr(calendar.auth_utils, "google_api_request", fake_google_api_request)
+
+    assert calendar._calendar_request("calendar-user", lambda s: f"calendar:{s}", account_id="cal") == (
+        True,
+        "calendar:service",
+    )
+    assert google_docs._docs_request("docs-user", lambda s: f"docs:{s}", account_id="doc") == (
+        True,
+        "docs:service",
+    )
+    assert google_docs._drive_request("drive-user", lambda s: f"drive:{s}", account_id="drive") == (
+        True,
+        "drive:service",
+    )
+
+    assert calls[0][1] == "google_calendar"
+    assert calls[0][3]["service_name"] == "calendar"
+    assert calls[1][1] == "google_docs"
+    assert calls[1][3]["service_name"] == "docs"
+    assert calls[2][1] == "google_docs"
+    assert calls[2][3]["service_name"] == "drive"
+
+
+def test_google_auth_tool_sets_are_generated_with_stable_names():
+    assert [tool.name for tool in calendar_auth.CALENDAR_AUTH_TOOLS] == [
+        "calendar_auth_start",
+        "calendar_auth_complete",
+        "calendar_auth_clear",
+        "calendar_list_authenticated_accounts",
+    ]
+    assert [tool.name for tool in google_docs_auth.GOOGLE_DOCS_AUTH_TOOLS] == [
+        "google_docs_auth_start",
+        "google_docs_auth_complete",
+        "google_docs_auth_clear",
+        "google_docs_list_accounts",
+    ]
+    assert calendar_auth.calendar_auth_start is calendar_auth.CALENDAR_AUTH_TOOLS[0]
+    assert google_docs_auth.google_docs_auth_start is google_docs_auth.GOOGLE_DOCS_AUTH_TOOLS[0]
+
+
+def test_outlook_auth_cache_wrappers_delegate_to_shared_cache(monkeypatch):
+    calls = []
+
+    def fake_load(user_id, cache_filename):
+        calls.append(("load", user_id, cache_filename))
+        return {"ok": True}
+
+    def fake_save(user_id, cache_filename, cache):
+        calls.append(("save", user_id, cache_filename, cache))
+
+    def fake_delete(user_id, cache_filename):
+        calls.append(("delete", user_id, cache_filename))
+        return True
+
+    monkeypatch.setattr(outlook_auth.auth_utils, "load_token_cache", fake_load)
+    monkeypatch.setattr(outlook_auth.auth_utils, "save_token_cache", fake_save)
+    monkeypatch.setattr(outlook_auth.auth_utils, "delete_token_cache", fake_delete)
+
+    assert outlook_auth.load_token_cache("ms-user") == {"ok": True}
+    outlook_auth.save_token_cache("ms-user", {"saved": True})
+    assert outlook_auth.delete_token_cache("ms-user") is True
+
+    assert calls == [
+        ("load", "ms-user", "microsoft.json"),
+        ("save", "ms-user", "microsoft.json", {"saved": True}),
+        ("delete", "ms-user", "microsoft.json"),
+    ]
 
 
 def test_trigger_tool_schema_exposes_object_configs():

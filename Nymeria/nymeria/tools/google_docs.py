@@ -10,18 +10,17 @@ Optional tools, enable per-thread via thread config.
 import json
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from . import auth_cache_utils as auth_utils
 from .google_docs_auth import (
     GOOGLE_DOCS_AUTH_TOOLS,
     GOOGLE_SCOPES,
-    load_token_cache,
-    save_token_cache,
+    PROVIDER,
 )
 from .utils import get_user_id
 
@@ -53,66 +52,13 @@ def get_credentials(user_id: str, account_id: Optional[str] = None):
     Returns:
         google.oauth2.credentials.Credentials if available, None otherwise.
     """
-    try:
-        from google.auth.exceptions import RefreshError
-        from google.auth.transport.requests import Request as GoogleAuthRequest
-        from google.oauth2.credentials import Credentials
-    except ImportError:
-        logger.error(
-            "google-auth packages not installed. "
-            "Run: pip install google-api-python-client google-auth-oauthlib"
-        )
-        return None
-
-    cache = load_token_cache(user_id)
-    accounts = cache.get("accounts", {})
-
-    if not accounts:
-        return None
-
-    if account_id:
-        account = accounts.get(account_id)
-        aid = account_id
-    else:
-        aid, account = next(iter(accounts.items()), (None, None))
-
-    if not account:
-        return None
-
-    creds = Credentials(
-        token=account.get("access_token"),
-        refresh_token=account.get("refresh_token"),
-        token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
-        client_id=account.get("client_id"),
-        client_secret=account.get("client_secret"),
-        scopes=account.get("scopes", list(GOOGLE_SCOPES)),
+    return auth_utils.get_google_credentials(
+        user_id,
+        PROVIDER,
+        GOOGLE_SCOPES,
+        account_id=account_id,
+        provider_display_name="Google Docs",
     )
-
-    expires_at = account.get("expires_at", 0)
-    if time.time() < expires_at - 60:
-        return creds
-
-    if not creds.refresh_token:
-        logger.warning("Google Docs token expired and no refresh token available.")
-        return None
-
-    try:
-        creds.refresh(GoogleAuthRequest())
-        account["access_token"] = creds.token
-        account["expires_at"] = (
-            creds.expiry.timestamp() if creds.expiry else time.time() + 3600
-        )
-        if creds.refresh_token:
-            account["refresh_token"] = creds.refresh_token
-        cache["accounts"][aid] = account
-        save_token_cache(user_id, cache)
-        return creds
-    except RefreshError as e:
-        logger.warning(f"Refresh token revoked or expired: {e}. User must re-authenticate.")
-        return None
-    except Exception as e:
-        logger.error(f"Google Docs token refresh failed: {e}")
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -125,33 +71,17 @@ def _docs_request(
     account_id: Optional[str] = None,
 ) -> tuple[bool, Any]:
     """Execute a Google Docs API operation on behalf of ``user_id``."""
-    try:
-        from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
-    except ImportError:
-        return False, (
-            "google-api-python-client not installed. "
-            "Run: pip install google-api-python-client google-auth-oauthlib"
-        )
-
-    creds = get_credentials(user_id, account_id)
-    if not creds:
-        return False, "No authenticated Google account. Use google_docs_auth_start to authenticate."
-
-    try:
-        service = build("docs", "v1", credentials=creds)
-        result = operation(service)
-        return True, result
-    except HttpError as e:
-        try:
-            error_details = json.loads(e.content.decode()) if e.content else {}
-            msg = error_details.get("error", {}).get("message", str(e))
-        except Exception:
-            msg = str(e)
-        return False, f"Google Docs API error ({e.resp.status}): {msg}"
-    except Exception as e:
-        logger.error(f"Docs request failed: {e}", exc_info=True)
-        return False, f"Request failed: {str(e)}"
+    return auth_utils.google_api_request(
+        user_id,
+        PROVIDER,
+        GOOGLE_SCOPES,
+        operation,
+        service_name="docs",
+        service_version="v1",
+        account_id=account_id,
+        auth_tool_name="google_docs_auth_start",
+        api_label="Google Docs",
+    )
 
 
 def _drive_request(
@@ -160,33 +90,17 @@ def _drive_request(
     account_id: Optional[str] = None,
 ) -> tuple[bool, Any]:
     """Execute a Google Drive API operation on behalf of ``user_id``."""
-    try:
-        from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
-    except ImportError:
-        return False, (
-            "google-api-python-client not installed. "
-            "Run: pip install google-api-python-client google-auth-oauthlib"
-        )
-
-    creds = get_credentials(user_id, account_id)
-    if not creds:
-        return False, "No authenticated Google account. Use google_docs_auth_start to authenticate."
-
-    try:
-        service = build("drive", "v3", credentials=creds)
-        result = operation(service)
-        return True, result
-    except HttpError as e:
-        try:
-            error_details = json.loads(e.content.decode()) if e.content else {}
-            msg = error_details.get("error", {}).get("message", str(e))
-        except Exception:
-            msg = str(e)
-        return False, f"Google Drive API error ({e.resp.status}): {msg}"
-    except Exception as e:
-        logger.error(f"Drive request failed: {e}", exc_info=True)
-        return False, f"Request failed: {str(e)}"
+    return auth_utils.google_api_request(
+        user_id,
+        PROVIDER,
+        GOOGLE_SCOPES,
+        operation,
+        service_name="drive",
+        service_version="v3",
+        account_id=account_id,
+        auth_tool_name="google_docs_auth_start",
+        api_label="Google Drive",
+    )
 
 
 # ---------------------------------------------------------------------------

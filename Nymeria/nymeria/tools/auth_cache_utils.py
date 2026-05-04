@@ -1,4 +1,4 @@
-"""Shared OAuth scaffold for Google-based tools (calendar, docs, drive, sheets).
+"""Shared OAuth scaffold for provider token caches and Google-based tools.
 
 Per-user OAuth flow state, callback server, token-cache I/O, userinfo and
 token-exchange helpers, previously duplicated in calendar_auth.py and
@@ -11,7 +11,9 @@ google_docs_auth.py. The duplication caused two real bugs:
 
 This module fixes both: flow state is keyed by ``(user_id, provider)``, the
 callback handler dispatches by state parameter (unique per flow, signed and
-validated), and token persistence accepts ``user_id`` explicitly.
+validated), token persistence accepts ``user_id`` explicitly, and the shared
+Google credential/request/auth-tool helpers keep Calendar and Docs behavior in
+one place.
 """
 
 from __future__ import annotations
@@ -26,9 +28,11 @@ import time
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Annotated, Any, Callable, Dict, Optional, Sequence, Tuple
 
 import httpx
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 logger = logging.getLogger(__name__)
 
@@ -447,6 +451,544 @@ def validate_google_accounts_for_display(
         })
 
     return rows, changed
+
+
+def _google_cache_filename(provider: str, cache_filename: Optional[str] = None) -> str:
+    return cache_filename or f"{provider}.json"
+
+
+def _google_scopes_are_satisfied(account: dict, scopes: Sequence[str]) -> bool:
+    saved_scopes = set(account.get("scopes", []))
+    return saved_scopes >= set(scopes)
+
+
+def get_google_credentials(
+    user_id: str,
+    provider: str,
+    scopes: Sequence[str],
+    account_id: Optional[str] = None,
+    *,
+    cache_filename: Optional[str] = None,
+    provider_display_name: Optional[str] = None,
+):
+    """Return valid Google OAuth credentials for a saved provider account.
+
+    ``provider`` is the cache namespace, for example ``google_calendar`` or
+    ``google_docs``. Tokens are refreshed with the same 60-second expiry buffer
+    used by the older per-tool implementations.
+    """
+    try:
+        from google.oauth2.credentials import Credentials
+    except ImportError:
+        logger.error(
+            "google-auth packages not installed. "
+            "Run: pip install google-api-python-client google-auth-oauthlib"
+        )
+        return None
+
+    filename = _google_cache_filename(provider, cache_filename)
+    cache = load_token_cache(user_id, filename)
+    accounts = cache.get("accounts", {})
+    if not accounts:
+        return None
+
+    if account_id:
+        aid = account_id
+        account = accounts.get(account_id)
+    else:
+        aid, account = next(iter(accounts.items()), (None, None))
+
+    if not aid or not account:
+        return None
+
+    if not _google_scopes_are_satisfied(account, scopes):
+        logger.info(
+            "%s token for %s is missing required scopes; re-authentication required.",
+            provider_display_name or provider,
+            account.get("email", "unknown"),
+        )
+        return None
+
+    expires_at = account.get("expires_at", 0)
+    if time.time() >= expires_at - 60:
+        status, reason = refresh_google_account(account, list(scopes))
+        if status != "refreshed":
+            display_name = provider_display_name or provider
+            if status == "invalid":
+                logger.warning(
+                    "%s refresh token revoked or expired for %s: %s",
+                    display_name,
+                    account.get("email", "unknown"),
+                    reason,
+                )
+            else:
+                logger.error("%s token refresh failed: %s", display_name, reason)
+            return None
+        accounts[aid] = account
+        cache["accounts"] = accounts
+        save_token_cache(user_id, filename, cache)
+
+    return Credentials(
+        token=account.get("access_token"),
+        refresh_token=account.get("refresh_token"),
+        token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=account.get("client_id"),
+        client_secret=account.get("client_secret"),
+        scopes=account.get("scopes", list(scopes)),
+    )
+
+
+def google_api_request(
+    user_id: str,
+    provider: str,
+    scopes: Sequence[str],
+    operation: Callable[[Any], Any],
+    *,
+    service_name: str,
+    service_version: str,
+    account_id: Optional[str] = None,
+    auth_tool_name: str,
+    api_label: str,
+    cache_filename: Optional[str] = None,
+    build_kwargs: Optional[dict[str, Any]] = None,
+) -> tuple[bool, Any]:
+    """Execute a Google API operation with shared auth and error handling."""
+    try:
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        return False, (
+            "google-api-python-client not installed. "
+            "Run: pip install google-api-python-client google-auth-oauthlib"
+        )
+
+    creds = get_google_credentials(
+        user_id,
+        provider,
+        scopes,
+        account_id=account_id,
+        cache_filename=cache_filename,
+        provider_display_name=api_label,
+    )
+    if not creds:
+        return False, f"No authenticated Google account. Use {auth_tool_name} to authenticate."
+
+    try:
+        kwargs = build_kwargs or {}
+        service = build(service_name, service_version, credentials=creds, **kwargs)
+        result = operation(service)
+        return True, result
+    except HttpError as e:
+        try:
+            error_details = json.loads(e.content.decode()) if e.content else {}
+            msg = error_details.get("error", {}).get("message", str(e))
+        except Exception:
+            msg = str(e)
+        status = getattr(getattr(e, "resp", None), "status", "unknown")
+        return False, f"{api_label} API error ({status}): {msg}"
+    except Exception as e:
+        logger.error("%s request failed: %s", api_label, e, exc_info=True)
+        return False, f"Request failed: {str(e)}"
+
+
+@dataclass(frozen=True)
+class GoogleOAuthToolSpec:
+    """Text and cache settings for one generated Google OAuth tool set."""
+
+    provider: str
+    cache_filename: str
+    scopes: list[str]
+    service_display_name: str
+    setup_api_name: str
+    usable_tools_label: str
+    start_tool_name: str
+    complete_tool_name: str
+    clear_tool_name: str
+    list_tool_name: str
+    no_accounts_message: str
+    no_usable_accounts_message: str
+    list_heading: str
+
+
+def _persist_or_delete_google_cache(user_id: str, spec: GoogleOAuthToolSpec, cache: dict) -> None:
+    if cache:
+        save_token_cache(user_id, spec.cache_filename, cache)
+    else:
+        delete_token_cache(user_id, spec.cache_filename)
+
+
+def _existing_google_auth_message(user_id: str, spec: GoogleOAuthToolSpec) -> Optional[str]:
+    """Return an already-authenticated message, pruning dead tokens first."""
+    cache = load_token_cache(user_id, spec.cache_filename)
+    accounts = cache.get("accounts", {})
+    if not accounts:
+        return None
+
+    required_scopes = set(spec.scopes)
+    changed = False
+    for account_id, account in list(accounts.items()):
+        email = account.get("email", "unknown")
+        has_refresh = bool(account.get("refresh_token"))
+        saved_scopes = set(account.get("scopes", []))
+        missing_scopes = required_scopes - saved_scopes
+
+        if not has_refresh:
+            continue
+        if missing_scopes:
+            logger.info(
+                "%s scope change detected for %s. Missing scopes: %s. "
+                "Proceeding with re-auth.",
+                spec.service_display_name,
+                email,
+                missing_scopes,
+            )
+            continue
+
+        expires_at = account.get("expires_at", 0)
+        if time.time() >= expires_at - 60:
+            status, reason = refresh_google_account(account, spec.scopes)
+            if status == "refreshed":
+                accounts[account_id] = account
+                changed = True
+            elif status == "invalid":
+                logger.info(
+                    "Clearing invalid %s token for %s: %s",
+                    spec.service_display_name,
+                    email,
+                    reason,
+                )
+                del accounts[account_id]
+                changed = True
+                continue
+            else:
+                if changed:
+                    cache["accounts"] = accounts
+                    _persist_or_delete_google_cache(user_id, spec, cache)
+                return (
+                    f"[Warning]: Found expired {spec.service_display_name} credentials for "
+                    f"**{account.get('name', 'Unknown')}** ({email}), but could not "
+                    f"verify the refresh token: {reason}\n\n"
+                    f"Use `{spec.clear_tool_name}` to remove the saved token, then run "
+                    f"`{spec.start_tool_name}` again."
+                )
+
+        if changed:
+            cache["accounts"] = accounts
+            _persist_or_delete_google_cache(user_id, spec, cache)
+
+        return (
+            f"[Info]: Already authenticated as **{account.get('name', 'Unknown')}** ({email}). "
+            "Tokens will auto-refresh. To add another account or re-authenticate, "
+            f"call `{spec.clear_tool_name}` first."
+        )
+
+    if changed:
+        if accounts:
+            cache["accounts"] = accounts
+        else:
+            cache.pop("accounts", None)
+        _persist_or_delete_google_cache(user_id, spec, cache)
+
+    return None
+
+
+def _build_google_auth_success_message(
+    spec: GoogleOAuthToolSpec,
+    account_id: str,
+    email: str,
+    name: str,
+) -> str:
+    return (
+        f"[Success]: {spec.service_display_name} authentication complete!\n\n"
+        f"**Account:** {name} ({email})\n"
+        f"**Account ID:** {account_id}\n\n"
+        f"You can now use the {spec.usable_tools_label}."
+    )
+
+
+def _exchange_and_save_google_flow(
+    user_id: str,
+    spec: GoogleOAuthToolSpec,
+    flow: OAuthFlow,
+    auth_code: str,
+) -> tuple[bool, str]:
+    success, token_data = exchange_code_for_tokens(
+        auth_code,
+        flow.client_id,
+        flow.client_secret,
+        flow.redirect_uri,
+        flow.token_uri,
+    )
+    if not success:
+        return False, f"[Error]: {token_data}"
+
+    account_id, email, name = save_google_account(
+        user_id,
+        spec.cache_filename,
+        token_data,
+        flow.client_id,
+        flow.client_secret,
+        flow.token_uri,
+        spec.scopes,
+    )
+    clear_flow(user_id, spec.provider)
+    return True, _build_google_auth_success_message(spec, account_id, email, name)
+
+
+def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
+    """Generate start/complete/clear/list tools for one Google OAuth provider."""
+    from .utils import get_user_id
+
+    @tool(
+        spec.start_tool_name,
+        description=f"Start {spec.service_display_name} OAuth authentication.",
+    )
+    def auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
+        user_id = get_user_id(config)
+
+        existing_message = _existing_google_auth_message(user_id, spec)
+        if existing_message:
+            return existing_message
+
+        existing = get_flow(user_id, spec.provider)
+        if existing and existing.server_thread and existing.server_thread.is_alive() and not existing.completed:
+            elapsed = time.time() - existing.started_at
+            remaining = max(0, OAUTH_TIMEOUT_SECONDS - elapsed)
+            return (
+                "[Info]: Authentication is already in progress!\n\n"
+                "Open the authorization URL in your browser (if you haven't already), "
+                f"then call {spec.complete_tool_name}.\n\n"
+                f"The session will expire in about {int(remaining / 60)} minutes."
+            )
+
+        creds_path = get_google_credentials_path()
+        if not creds_path:
+            return (
+                "[Error]: GOOGLE_OAUTH_CREDENTIALS environment variable is not set or the file was not found.\n\n"
+                "**Setup instructions:**\n"
+                "1. Go to https://console.cloud.google.com\n"
+                "2. Create a project (or select existing)\n"
+                f"3. Enable the **{spec.setup_api_name}** under APIs & Services > Library\n"
+                "4. Go to APIs & Services > Credentials > Create Credentials > OAuth Client ID\n"
+                "5. Application type: **Desktop app**\n"
+                "6. Download the JSON credentials file\n"
+                "7. Set `GOOGLE_OAUTH_CREDENTIALS=/path/to/credentials.json` in your .env file\n"
+                "8. Restart Nymeria and try again"
+            )
+
+        try:
+            with open(creds_path) as f:
+                client_config = json.load(f)
+            creds_data = client_config.get("installed") or client_config.get("web")
+            if not creds_data:
+                return "[Error]: Invalid credentials file format. Expected 'installed' or 'web' key in the JSON."
+
+            client_id = creds_data["client_id"]
+            client_secret = creds_data["client_secret"]
+            auth_uri = creds_data.get("auth_uri", "https://accounts.google.com/o/oauth2/auth")
+            token_uri = creds_data.get("token_uri", "https://oauth2.googleapis.com/token")
+
+            import secrets
+
+            flow = OAuthFlow(
+                user_id=user_id,
+                provider=spec.provider,
+                state_param=secrets.token_urlsafe(16),
+                client_id=client_id,
+                client_secret=client_secret,
+                token_uri=token_uri,
+                redirect_uri="",
+                started_at=time.time(),
+            )
+            register_flow(flow)
+            port = start_callback_server(flow)
+            flow.redirect_uri = f"http://localhost:{port}"
+
+            params = {
+                "client_id": client_id,
+                "redirect_uri": flow.redirect_uri,
+                "response_type": "code",
+                "scope": " ".join(spec.scopes),
+                "access_type": "offline",
+                "prompt": "consent",
+                "state": flow.state_param,
+            }
+            auth_url = auth_uri + "?" + urllib.parse.urlencode(params)
+
+            return (
+                "[Success]: Authorization URL generated.\n\n"
+                "**Open this URL in your browser to sign in:**\n\n"
+                f"{auth_url}\n\n"
+                "After signing in and granting access, the page should redirect automatically "
+                "and show a success message.\n\n"
+                f"Then call `{spec.complete_tool_name}` to finish.\n\n"
+                "**If the redirect page doesn't load** (e.g. Docker/remote), copy the full URL "
+                "from your browser's address bar and give it to me. I'll extract the auth code from it."
+            )
+
+        except KeyError as e:
+            return f"[Error]: Credentials file is missing required field: {e}"
+        except json.JSONDecodeError:
+            return "[Error]: Credentials file is not valid JSON."
+        except Exception as e:
+            logger.error("%s failed: %s", spec.start_tool_name, e, exc_info=True)
+            return f"[Error]: Failed to start authentication: {str(e)}"
+
+    @tool(
+        spec.clear_tool_name,
+        description=f"Clear saved {spec.service_display_name} authentication.",
+    )
+    def auth_clear(
+        account_id: Optional[str] = None,
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    ) -> str:
+        user_id = get_user_id(config)
+        cache = load_token_cache(user_id, spec.cache_filename)
+        accounts = cache.get("accounts", {})
+
+        clear_flow(user_id, spec.provider)
+
+        if account_id:
+            account = accounts.pop(account_id, None)
+            if account is None:
+                return (
+                    f"[Info]: No {spec.service_display_name} account found with ID `{account_id}`. "
+                    f"Use {spec.list_tool_name} to see saved accounts."
+                )
+
+            email = account.get("email", "unknown")
+            name = account.get("name", "Unknown")
+            if accounts:
+                cache["accounts"] = accounts
+            else:
+                cache.pop("accounts", None)
+            _persist_or_delete_google_cache(user_id, spec, cache)
+            return (
+                f"[Success]: Cleared {spec.service_display_name} authentication for "
+                f"**{name}** ({email}). Run `{spec.start_tool_name}` to authenticate again."
+            )
+
+        removed_count = len(accounts)
+        cache.pop("accounts", None)
+        _persist_or_delete_google_cache(user_id, spec, cache)
+
+        if removed_count:
+            return (
+                f"[Success]: Cleared {removed_count} saved {spec.service_display_name} account(s) "
+                f"and any pending {spec.service_display_name} OAuth flow. "
+                f"Run `{spec.start_tool_name}` to authenticate again."
+            )
+
+        return (
+            f"[Info]: No saved {spec.service_display_name} authentication was present. "
+            f"Any pending {spec.service_display_name} OAuth flow was cleared."
+        )
+
+    @tool(
+        spec.complete_tool_name,
+        description=f"Complete pending {spec.service_display_name} OAuth authentication.",
+    )
+    def auth_complete(
+        redirect_url: Optional[str] = None,
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    ) -> str:
+        user_id = get_user_id(config)
+        flow = get_flow(user_id, spec.provider)
+        if flow is None:
+            return f"[Error]: No pending authentication. Please call {spec.start_tool_name} first."
+
+        if redirect_url:
+            try:
+                parsed = urllib.parse.urlparse(redirect_url)
+                params = urllib.parse.parse_qs(parsed.query)
+                auth_code = params.get("code", [None])[0]
+                returned_state = params.get("state", [None])[0]
+                if not auth_code:
+                    return "[Error]: No authorization code found in the URL. Make sure you copied the full URL from the browser's address bar."
+            except Exception:
+                return "[Error]: Could not parse the redirect URL. Please copy the complete URL."
+
+            if returned_state != flow.state_param:
+                return (
+                    "[Error]: State parameter mismatch. The URL may be from a different "
+                    f"auth session. Please call {spec.start_tool_name} to begin again."
+                )
+
+            _, message = _exchange_and_save_google_flow(user_id, spec, flow, auth_code)
+            return message
+
+        server_alive = flow.server_thread is not None and flow.server_thread.is_alive()
+        if not flow.completed and server_alive:
+            elapsed = int(time.time() - flow.started_at)
+            remaining = max(0, OAUTH_TIMEOUT_SECONDS - elapsed)
+            return (
+                f"[Info]: Still waiting for browser redirect ({elapsed}s elapsed, "
+                f"{remaining}s remaining).\n\n"
+                "Open the URL in your browser if you haven't yet.\n\n"
+                "If the redirect page didn't load, copy the full URL from your "
+                "browser's address bar and call this tool again with `redirect_url`."
+            )
+
+        if flow.auth_error == "timeout":
+            clear_flow(user_id, spec.provider)
+            return f"[Error]: Authentication timed out (5 minutes). Please call {spec.start_tool_name} to begin again."
+
+        if flow.auth_error:
+            err = flow.auth_error
+            clear_flow(user_id, spec.provider)
+            return f"[Error]: Authentication failed: {err}. Please call {spec.start_tool_name} to try again."
+
+        if not flow.auth_code:
+            clear_flow(user_id, spec.provider)
+            return f"[Error]: Authentication completed but no code was received. Please call {spec.start_tool_name} to try again."
+
+        success, message = _exchange_and_save_google_flow(user_id, spec, flow, flow.auth_code)
+        if not success:
+            clear_flow(user_id, spec.provider)
+        return message
+
+    @tool(
+        spec.list_tool_name,
+        description=f"List authenticated accounts for {spec.service_display_name}.",
+    )
+    def list_accounts(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
+        user_id = get_user_id(config)
+        cache = load_token_cache(user_id, spec.cache_filename)
+        accounts = cache.get("accounts", {})
+
+        if not accounts:
+            return spec.no_accounts_message
+
+        rows, changed = validate_google_accounts_for_display(accounts, spec.scopes)
+        if changed:
+            if accounts:
+                cache["accounts"] = accounts
+            else:
+                cache.pop("accounts", None)
+            _persist_or_delete_google_cache(user_id, spec, cache)
+
+        if not rows:
+            return spec.no_usable_accounts_message
+
+        lines = [spec.list_heading]
+        for row in rows:
+            row_account_id = row["account_id"]
+            info = row["account"]
+            email = info.get("email", "unknown")
+            name = info.get("name", "Unknown")
+            status = row["status"]
+
+            lines.append(f"- **{name}** ({email})")
+            lines.append(f"  Account ID: `{row_account_id}` ({status})")
+            if not row["usable"] and row.get("reason"):
+                lines.append(
+                    f"  Action: run `{spec.clear_tool_name}(account_id=\"{row_account_id}\")`, "
+                    f"then `{spec.start_tool_name}`."
+                )
+
+        return "\n".join(lines)
+
+    return [auth_start, auth_complete, auth_clear, list_accounts]
 
 
 def exchange_code_for_tokens(
