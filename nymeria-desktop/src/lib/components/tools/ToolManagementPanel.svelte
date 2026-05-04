@@ -7,6 +7,7 @@
   import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
+  import ToggleSwitch from '../common/ToggleSwitch.svelte';
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
   import ToolCountWarning from './ToolCountWarning.svelte';
@@ -413,16 +414,12 @@
                         >
                           <Icon name="edit" size={14} />
                         </button>
-                        <button
-                          class="tool-toggle"
+                        <ToggleSwitch
+                          checked={true}
                           onclick={() => toggleTool(tool.name)}
-                          type="button"
                           title="Remove from core"
-                        >
-                          <span class="toggle-track">
-                            <span class="toggle-thumb"></span>
-                          </span>
-                        </button>
+                          ariaLabel={`Remove ${tool.name} from core tools`}
+                        />
                       </div>
                     </div>
                   {/each}
@@ -462,16 +459,12 @@
                         >
                           <Icon name="edit" size={14} />
                         </button>
-                        <button
-                          class="tool-toggle"
+                        <ToggleSwitch
+                          checked={true}
                           onclick={() => toggleTool(tool.name)}
-                          type="button"
                           title="Remove from core"
-                        >
-                          <span class="toggle-track">
-                            <span class="toggle-thumb"></span>
-                          </span>
-                        </button>
+                          ariaLabel={`Remove ${tool.name} from core tools`}
+                        />
                       </div>
                     </div>
                   {/each}
@@ -538,16 +531,12 @@
                         >
                           <Icon name="edit" size={14} />
                         </button>
-                        <button
-                          class="tool-toggle off"
+                        <ToggleSwitch
+                          checked={false}
                           onclick={() => toggleTool(tool.name)}
-                          type="button"
                           title="Add to core"
-                        >
-                          <span class="toggle-track">
-                            <span class="toggle-thumb"></span>
-                          </span>
-                        </button>
+                          ariaLabel={`Add ${tool.name} to core tools`}
+                        />
                       </div>
                     </div>
                   {/each}
@@ -582,16 +571,12 @@
                         >
                           <Icon name="edit" size={14} />
                         </button>
-                        <button
-                          class="tool-toggle off"
+                        <ToggleSwitch
+                          checked={false}
                           onclick={() => toggleTool(tool.name)}
-                          type="button"
                           title="Add to core"
-                        >
-                          <span class="toggle-track">
-                            <span class="toggle-thumb"></span>
-                          </span>
-                        </button>
+                          ariaLabel={`Add ${tool.name} to core tools`}
+                        />
                       </div>
                     </div>
                   {/each}
@@ -1270,44 +1255,6 @@
     color: var(--text-primary);
     border-color: var(--border-subtle);
     background: var(--bg-secondary);
-  }
-
-  /* Toggle switch */
-  .tool-toggle {
-    flex-shrink: 0;
-    padding: 0;
-    background: none;
-    border: none;
-    cursor: pointer;
-  }
-
-  .toggle-track {
-    display: block;
-    width: 32px;
-    height: 18px;
-    border-radius: 9px;
-    background: var(--accent-primary);
-    position: relative;
-    transition: background var(--transition-fast);
-  }
-
-  .tool-toggle.off .toggle-track {
-    background: var(--text-muted);
-  }
-
-  .toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 16px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: white;
-    transition: left var(--transition-fast);
-  }
-
-  .tool-toggle.off .toggle-thumb {
-    left: 2px;
   }
 
   /* Footer */

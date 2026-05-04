@@ -254,6 +254,7 @@ calls are identical.
 | Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
 | `components/common/StartupOverlay.svelte` | Backend startup/readiness overlay | Desktop-only Tauri startup behavior |
+| `components/common/ToggleSwitch.svelte` | Shared desktop switch primitive used by tool, trigger, and MCP management surfaces | Mobile still uses platform-specific switch markup pending a touch-target-focused mobile primitive |
 | `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |
 | `components/chat/AgentActivityIndicator.svelte` | Inline animated phase text for silent assistant phases (`Processing...`, `Thinking...`, `Formulating...`, `Processing results...`, `Waiting...`); visible response chunks render directly without a separate typing label or cursor | Desktop-only v1; mobile still uses its existing dots/ThinkingIndicator flow |
 | `components/tools/ToolForm.svelte` | Create/edit custom tool form | Desktop-only today |

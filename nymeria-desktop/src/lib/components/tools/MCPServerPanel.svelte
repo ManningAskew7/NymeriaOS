@@ -5,6 +5,7 @@
   import type { MCPServer, MCPServerCreateRequest } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
+  import ToggleSwitch from '../common/ToggleSwitch.svelte';
   import MCPServerForm from './MCPServerForm.svelte';
   import MCPInstallModal from './MCPInstallModal.svelte';
 
@@ -340,14 +341,13 @@
               <span class="updated-at">{timeAgo(server.updatedAt)}</span>
               <Icon name={expandedServer === server.id ? 'chevronDown' : 'chevronRight'} size={16} />
             </button>
-            <label class="enable-toggle">
-              <input
-                type="checkbox"
-                checked={server.enabled}
-                onchange={() => handleToggleEnabled(server)}
-              />
-              <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            </label>
+            <ToggleSwitch
+              checked={server.enabled}
+              onclick={() => handleToggleEnabled(server)}
+              title={server.enabled ? 'Disable MCP server' : 'Enable MCP server'}
+              ariaLabel={`${server.enabled ? 'Disable' : 'Enable'} MCP server ${server.name}`}
+              variant="outlined"
+            />
           </div>
 
           {#if expandedServer === server.id}
@@ -442,14 +442,14 @@
                               <span class="tool-description">{tool.description}</span>
                             {/if}
                           </div>
-                          <label class="tool-toggle">
-                            <input
-                              type="checkbox"
-                              checked={isEnabled}
-                              onchange={() => toggleGlobalTool(server.id, tool.name)}
-                            />
-                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                          </label>
+                          <ToggleSwitch
+                            checked={isEnabled}
+                            onclick={() => toggleGlobalTool(server.id, tool.name)}
+                            title={isEnabled ? 'Disable MCP tool globally' : 'Enable MCP tool globally'}
+                            ariaLabel={`${isEnabled ? 'Disable' : 'Enable'} MCP tool ${tool.name} globally`}
+                            size="sm"
+                            variant="outlined"
+                          />
                         </div>
                       {/each}
                     </div>
@@ -700,79 +700,6 @@
     font-size: 0.7rem;
     color: var(--text-muted, #777);
     white-space: nowrap;
-  }
-
-  /* Toggle switch */
-  .enable-toggle {
-    display: flex;
-    align-items: center;
-    cursor: pointer;
-  }
-
-  .enable-toggle input {
-    display: none;
-  }
-
-  .toggle-track {
-    position: relative;
-    width: 32px;
-    height: 18px;
-    background: var(--bg-base, #1a1a1a);
-    border: 1px solid var(--border-default, #3a3a3a);
-    border-radius: 9px;
-    transition: all var(--transition-fast, 0.15s);
-  }
-
-  .toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 12px;
-    height: 12px;
-    background: var(--text-muted, #777);
-    border-radius: 50%;
-    transition: all var(--transition-fast, 0.15s);
-  }
-
-  .enable-toggle input:checked + .toggle-track {
-    background: var(--accent-primary, #6c9fff);
-    border-color: var(--accent-primary, #6c9fff);
-  }
-
-  .enable-toggle input:checked + .toggle-track .toggle-thumb {
-    left: 16px;
-    background: white;
-  }
-
-  .tool-toggle {
-    display: flex;
-    align-items: center;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-
-  .tool-toggle input {
-    display: none;
-  }
-
-  .tool-toggle .toggle-track {
-    width: 28px;
-    height: 16px;
-  }
-
-  .tool-toggle .toggle-thumb {
-    width: 10px;
-    height: 10px;
-  }
-
-  .tool-toggle input:checked + .toggle-track {
-    background: var(--accent-primary, #6c9fff);
-    border-color: var(--accent-primary, #6c9fff);
-  }
-
-  .tool-toggle input:checked + .toggle-track .toggle-thumb {
-    left: 14px;
-    background: white;
   }
 
   /* Server body */

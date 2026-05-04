@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Trigger, TriggerSourceInfo } from '$lib/types';
-  import { Icon } from '$lib/components/common';
+  import { Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
 
   interface Props {
@@ -273,21 +273,15 @@
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="header-actions" onclick={stop} onkeydown={stop} role="group">
-      <label
-        class="toggle"
-        class:on={trigger.enabled}
+      <ToggleSwitch
+        checked={trigger.enabled}
+        disabled={toggling}
+        onclick={handleToggle}
         title={trigger.enabled ? 'Disable' : 'Enable'}
-      >
-        <input
-          type="checkbox"
-          checked={trigger.enabled}
-          disabled={toggling}
-          onchange={handleToggle}
-        />
-        <span class="toggle-track">
-          <span class="toggle-thumb"></span>
-        </span>
-      </label>
+        ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
+        size="sm"
+        variant="outlined"
+      />
 
       {#if hasDetails}
         <span class="chevron" class:rotated={expanded} aria-hidden="true">
@@ -636,52 +630,6 @@
     align-items: center;
     gap: 6px;
     margin-top: 1px;
-  }
-
-  /* Toggle */
-  .toggle {
-    position: relative;
-    display: inline-flex;
-    cursor: pointer;
-  }
-
-  .toggle input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .toggle-track {
-    display: block;
-    width: 28px;
-    height: 16px;
-    border-radius: 8px;
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-default);
-    position: relative;
-    transition: all var(--transition-fast);
-  }
-
-  .toggle-thumb {
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    transition: all var(--transition-fast);
-  }
-
-  .toggle.on .toggle-track {
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
-  }
-
-  .toggle.on .toggle-thumb {
-    left: 13px;
-    background: white;
   }
 
   .chevron {

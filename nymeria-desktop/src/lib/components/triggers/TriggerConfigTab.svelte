@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Thread, Trigger, TriggerCreateRequest, TriggerUpdateRequest, TriggerActionType, TriggerSourceInfo } from '$lib/types';
-  import { Icon } from '$lib/components/common';
+  import { Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
 
   interface Props {
@@ -312,17 +312,12 @@
               </button>
             {/if}
 
-            <button
-              class="tool-toggle"
-              class:off={!trigger.enabled}
+            <ToggleSwitch
+              checked={trigger.enabled}
               onclick={() => handleToggle(trigger)}
-              type="button"
               title={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
-            >
-              <span class="toggle-track">
-                <span class="toggle-thumb"></span>
-              </span>
-            </button>
+              ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
+            />
           </div>
         </div>
       {/each}
@@ -384,17 +379,11 @@
             </label>
             <p class="field-hint">{schema.description}</p>
             {#if schema.type === 'boolean'}
-              <button
-                class="tool-toggle"
-                class:off={!formSourceConfig[key]}
+              <ToggleSwitch
+                checked={Boolean(formSourceConfig[key])}
                 onclick={() => handleSourceConfigChange(key, !formSourceConfig[key])}
-                type="button"
-                aria-label={fieldLabel(key)}
-              >
-                <span class="toggle-track">
-                  <span class="toggle-thumb"></span>
-                </span>
-              </button>
+                ariaLabel={fieldLabel(key)}
+              />
             {:else if schema.type === 'integer' || schema.type === 'number'}
               <input
                 id="src-{key}"
@@ -693,44 +682,6 @@
     text-align: center;
     color: var(--text-muted);
     font-size: var(--font-size-sm);
-  }
-
-  /* Toggle switch (matching ThreadSettingsPanel) */
-  .tool-toggle {
-    flex-shrink: 0;
-    padding: 0;
-    background: none;
-    border: none;
-    cursor: pointer;
-  }
-
-  .toggle-track {
-    display: block;
-    width: 32px;
-    height: 18px;
-    border-radius: 9px;
-    background: var(--accent-primary);
-    position: relative;
-    transition: background var(--transition-fast);
-  }
-
-  .tool-toggle.off .toggle-track {
-    background: var(--text-muted);
-  }
-
-  .toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 16px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: white;
-    transition: left var(--transition-fast);
-  }
-
-  .tool-toggle.off .toggle-thumb {
-    left: 2px;
   }
 
   /* Form */
