@@ -59,6 +59,7 @@ def _get_project_root() -> Path:
 
 PROJECT_ROOT = _get_project_root()
 DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost"
+DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
 ReasoningEffort = Literal["low", "medium", "high"]
 
@@ -369,7 +370,7 @@ class Settings(BaseSettings):
 
     # User Timezone
     user_timezone: str = Field(
-        default="Australia/Sydney",
+        default=DEFAULT_USER_TIMEZONE,
         description="IANA timezone for the user (e.g., 'America/New_York', 'Europe/London')"
     )
 

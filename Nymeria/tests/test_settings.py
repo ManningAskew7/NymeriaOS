@@ -1,7 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from nymeria.config.settings import DEFAULT_CORS_ORIGINS, MAX_LLM_OUTPUT_TOKENS, Settings
+from nymeria.config.settings import (
+    DEFAULT_CORS_ORIGINS,
+    DEFAULT_USER_TIMEZONE,
+    MAX_LLM_OUTPUT_TOKENS,
+    Settings,
+)
 
 
 def test_cors_default_is_restricted_to_local_desktop_origins():
@@ -20,6 +25,15 @@ def test_cors_wildcard_requires_explicit_override():
     settings = Settings(_env_file=None, cors_origins="*")
 
     assert settings.cors_origins_list == ["*"]
+
+
+def test_user_timezone_defaults_to_utc(monkeypatch):
+    monkeypatch.delenv("USER_TIMEZONE", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert Settings.model_fields["user_timezone"].default == DEFAULT_USER_TIMEZONE
+    assert settings.user_timezone == "UTC"
 
 
 @pytest.mark.parametrize("max_tokens", [64000, 128000, MAX_LLM_OUTPUT_TOKENS])

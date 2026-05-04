@@ -139,7 +139,7 @@ services:
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:1420,tauri://localhost}
       # User preferences
-      USER_TIMEZONE: ${USER_TIMEZONE:-Australia/Sydney}
+      USER_TIMEZONE: ${USER_TIMEZONE:-UTC}
       # Context management
       CONTEXT_MANAGEMENT: ${CONTEXT_MANAGEMENT:-auto_compact}
       COMPACT_THRESHOLD: ${COMPACT_THRESHOLD:-0.8}

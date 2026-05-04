@@ -46,3 +46,11 @@ def test_postgres_and_redis_use_read_only_rootfs_with_persistent_data_volumes() 
     assert redis.get("read_only") is True
     assert set(redis.get("tmpfs", [])) >= {"/tmp"}
     assert "redis_data:/data" in redis["volumes"]
+
+
+def test_compose_timezone_defaults_are_consistent() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+    api_env = services["api"]["environment"]
+
+    assert api_env["TZ"] == "${USER_TIMEZONE:-UTC}"
+    assert api_env["USER_TIMEZONE"] == "${USER_TIMEZONE:-UTC}"
