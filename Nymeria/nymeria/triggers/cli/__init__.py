@@ -39,9 +39,9 @@ def run_cli(
     """
     if agent is None:
         from ...core.agent import NymeriaAgent
-        from ...tools import get_all_tools_with_agents
+        from ...tools import ALL_TOOLS
 
-        agent = NymeriaAgent(tools=get_all_tools_with_agents())
+        agent = NymeriaAgent(tools=list(ALL_TOOLS))
 
     cli = CLITrigger(agent, thread_id=thread_id)
     cli.start()

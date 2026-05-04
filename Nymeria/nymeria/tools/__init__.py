@@ -4,7 +4,6 @@ Consolidated tool set for maximum autonomy with minimal complexity.
 Callable threads replace the old sub-agent system. Any thread can become
 a callable tool with its own system prompt, LLM config, and tool set.
 
-Use get_all_tools_with_agents() for backward compatibility (returns ALL_TOOLS).
 Callable thread tools are added per-graph in _build_graph_with_prompt(), not globally.
 """
 
@@ -35,7 +34,6 @@ from .runtime_admin import (
     self_modify_rollback,
     RUNTIME_ADMIN_TOOLS,
 )
-SUBAGENT_TOOLS = RUNTIME_ADMIN_TOOLS
 from .outlook_auth import AUTH_TOOLS
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
@@ -108,7 +106,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + BROWSER_TOOLS
     + CALENDAR_TOOLS
     + SELF_AGENT_TOOLS
-    + SUBAGENT_TOOLS
+    + RUNTIME_ADMIN_TOOLS
     + GOOGLE_DOCS_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
@@ -130,7 +128,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
 # /tools), and as defense-in-depth at graph-build time. Names — not tool
 # objects — so the gate survives reload_all().
 ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
-    [t.name for t in (SELF_AGENT_TOOLS + SUBAGENT_TOOLS)] + [claude_code.name]
+    [t.name for t in (SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)] + [claude_code.name]
 )
 
 # Optional tools that exist for development/regression validation rather than
@@ -238,7 +236,6 @@ __all__ = [
     "reload_all",
     "self_modify_rollback",
     "RUNTIME_ADMIN_TOOLS",
-    "SUBAGENT_TOOLS",
     "notify",
     "NOTIFY_TOOLS",
     "trigger_config",
@@ -257,7 +254,6 @@ __all__ = [
     "filter_developer_only_tools",
     "filter_discoverable_optional_tool_names",
     "ALL_TOOLS",
-    "get_all_tools_with_agents",
     "hello_test",
     "sticky_note",
     "STICKY_NOTE_TOOLS",
@@ -298,16 +294,3 @@ __all__ = [
     "spawn_thread",
     "SPAWN_THREAD_TOOLS",
 ]
-
-
-def get_all_tools_with_agents() -> list:
-    """
-    Get ALL_TOOLS list.
-
-    Kept for backward compatibility. Callable thread tools are now added
-    per-graph in _build_graph_with_prompt(), not globally.
-
-    Returns:
-        List of core tools
-    """
-    return list(ALL_TOOLS)
