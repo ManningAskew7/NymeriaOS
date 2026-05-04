@@ -137,8 +137,8 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 
 **Response shapes** (Pydantic models for this account surface live in
 `Nymeria/nymeria/api/schemas/accounts.py`; other extracted schemas such as
-System, Settings, Skills, Agent Threads, TODOs, Chat App/BYO Telegram, and
-dashboard activity/notifications live under
+System, Settings, Skills, Agent Threads, TODOs, MCP servers, Chat App/BYO
+Telegram, and dashboard activity/notifications live under
 `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
