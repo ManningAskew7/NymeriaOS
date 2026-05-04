@@ -123,9 +123,12 @@ Nymeria/
 ├── docs/                   # Documentation
 ├── run.py                  # Entry point
 ├── requirements.txt        # Base dependencies plus SQLite extras include
+├── requirements-dev.txt    # Development/test dependencies
 ├── requirements-sqlite.txt # Default local SQLite/checkpoint dependencies
 ├── requirements-postgres.txt # Optional PostgreSQL checkpoint dependencies
 ├── requirements-docker.txt # Docker-only supplemental dependencies
+├── Dockerfile.full         # Agent executor image with Kali/browser/CLI tooling
+├── Dockerfile.slim         # HTTP thin-client image without workstation tooling
 └── .env.docker.example     # Configuration template
 ```
 

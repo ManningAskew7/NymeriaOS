@@ -13,6 +13,18 @@ x-security-hardening: &security-hardening
   cap_drop:
     - ALL
 
+x-nymeria-full-image: &nymeria-full-image
+  image: nymeria-full:local
+  build:
+    context: .
+    dockerfile: Dockerfile.full
+
+x-nymeria-slim-image: &nymeria-slim-image
+  image: nymeria-slim:local
+  build:
+    context: .
+    dockerfile: Dockerfile.slim
+
 services:
   # ============================================================================
   # Infrastructure
@@ -76,10 +88,7 @@ services:
   # ============================================================================
 
   api:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-full-image]
     container_name: nymeria-api
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
@@ -215,10 +224,7 @@ services:
       - nymeria-network
 
   worker:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-full-image]
     container_name: nymeria-worker
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
@@ -264,10 +270,7 @@ services:
 
   # Watchdog thin-client worker (polls API for stale TODOs)
   watchdog:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-slim-image]
     container_name: nymeria-watchdog
     restart: unless-stopped
     command: ["python", "run.py", "watchdog", "--api-url", "http://nymeria-api:8000"]
@@ -292,10 +295,7 @@ services:
 
   # Discord Bot for two-way communication
   discord-bot:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-slim-image]
     container_name: nymeria-discord-bot
     restart: unless-stopped
     dns:
@@ -328,10 +328,7 @@ services:
 
   # Telegram Bot for two-way communication
   telegram-bot:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-slim-image]
     container_name: nymeria-telegram-bot
     restart: unless-stopped
     dns:
@@ -363,10 +360,7 @@ services:
 
   # Twitch Bot for chat integration
   twitch-bot:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-full-image]
     container_name: nymeria-twitch-bot
     restart: unless-stopped
     dns:
@@ -415,10 +409,7 @@ services:
 
   # MCP Server for agent-to-agent communication
   mcp:
-    <<: *security-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.full
+    <<: [*security-hardening, *nymeria-slim-image]
     container_name: nymeria-mcp
     restart: unless-stopped
     dns:

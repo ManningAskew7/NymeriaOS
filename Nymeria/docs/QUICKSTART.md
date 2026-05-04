@@ -78,12 +78,12 @@ Starting Nymeria API server on 0.0.0.0:8000...
 
 ### Backend Validation
 
-`pytest` is installed with the backend dependencies. In Docker, the API service
-also mounts `./tests` at `/app/tests`, so focused checks can run against the
-live container:
+Install the development requirements when you want to run backend tests. Docker
+production images intentionally omit `pytest` and other dev-only packages:
 
 ```bash
-docker exec nymeria-api python -m pytest -q /app/tests/test_notification_delivery_config.py
+pip install -r requirements-dev.txt
+python -m pytest -q tests/test_notification_delivery_config.py
 ```
 
 ## Step 5: Connect the Desktop App

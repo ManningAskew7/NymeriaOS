@@ -31,6 +31,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             Nymeria/requirements.txt
+            Nymeria/requirements-dev.txt
             Nymeria/requirements-docker.txt
             Nymeria/requirements-postgres.txt
             Nymeria/requirements-sqlite.txt
@@ -38,7 +39,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r Nymeria/requirements.txt -r Nymeria/requirements-docker.txt
+          python -m pip install -r Nymeria/requirements.txt -r Nymeria/requirements-docker.txt -r Nymeria/requirements-dev.txt
 
       - name: Run pytest
         run: python -m pytest Nymeria/tests
@@ -138,6 +139,10 @@ jobs:
         working-directory: Nymeria
         run: docker compose --profile discord --profile telegram --profile twitch --profile voice --env-file .env.docker.example -f docker-compose.yml config --quiet
 
-      - name: Check Dockerfile
+      - name: Check full Dockerfile
         working-directory: Nymeria
         run: docker buildx build --check -f Dockerfile.full .
+
+      - name: Check slim Dockerfile
+        working-directory: Nymeria
+        run: docker buildx build --check -f Dockerfile.slim .

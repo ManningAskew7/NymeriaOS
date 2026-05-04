@@ -44,3 +44,13 @@ def test_ci_validates_docker_compose_and_dockerfile() -> None:
         "config --quiet"
     ) in commands
     assert "docker buildx build --check -f Dockerfile.full ." in commands
+    assert "docker buildx build --check -f Dockerfile.slim ." in commands
+
+
+def test_ci_installs_dev_requirements_for_backend_tests() -> None:
+    jobs = _load_ci_workflow()["jobs"]
+
+    backend_job = jobs["backend-tests"]
+    commands = _run_commands(backend_job)
+
+    assert any("Nymeria/requirements-dev.txt" in command for command in commands)

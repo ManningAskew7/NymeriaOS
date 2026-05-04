@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENT_FILES = (
     ROOT / "requirements.txt",
+    ROOT / "requirements-dev.txt",
     ROOT / "requirements-docker.txt",
     ROOT / "requirements-postgres.txt",
     ROOT / "requirements-sqlite.txt",
@@ -44,9 +45,17 @@ def test_requirement_files_do_not_duplicate_package_entries() -> None:
 
 def test_requirement_includes_preserve_backend_ownership() -> None:
     base = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    dev = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
     docker = (ROOT / "requirements-docker.txt").read_text(encoding="utf-8")
-    dockerfile = (ROOT / "Dockerfile.full").read_text(encoding="utf-8")
+    full_dockerfile = (ROOT / "Dockerfile.full").read_text(encoding="utf-8")
+    slim_dockerfile = (ROOT / "Dockerfile.slim").read_text(encoding="utf-8")
 
     assert "-r requirements-sqlite.txt" in base
+    assert "pytest" in dev
+    assert "pytest" not in base
+    assert "pytest" not in docker
     assert "-r requirements-postgres.txt" in docker
-    assert "COPY requirements*.txt ./" in dockerfile
+    assert "COPY requirements*.txt ./" in full_dockerfile
+    assert "COPY requirements*.txt ./" in slim_dockerfile
+    assert "requirements-dev.txt" not in full_dockerfile
+    assert "requirements-dev.txt" not in slim_dockerfile
