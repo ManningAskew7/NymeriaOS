@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from nymeria.core.stream_bridge import iter_agent_astream
+from pathlib import Path
+
+import pytest
+
+from nymeria.core.stream_bridge import iter_agent_astream, stream_and_collect
 
 
 class _FakeAgent:
@@ -74,3 +78,82 @@ def test_iter_agent_astream_closes_async_generator_when_consumer_stops():
     iterator.close()
 
     assert released == [True]
+
+
+def test_stream_and_collect_tracks_common_stream_state():
+    class CollectingAgent:
+        async def astream(self, **kwargs):
+            yield {"type": "thinking", "content": "working"}
+            yield {"type": "tool_call", "name": "lookup"}
+            yield {"type": "response", "content": "done"}
+            yield {"type": "iteration_limit", "scope": "sub_agent"}
+            yield {
+                "type": "iteration_limit",
+                "scope": "main_agent",
+                "reason": "max_iterations",
+            }
+
+    seen = []
+
+    def on_chunk(chunk, collection):
+        seen.append((chunk["type"], collection.chunk_count, collection.tool_call_count))
+
+    result = stream_and_collect(
+        CollectingAgent(),
+        astream_kwargs={"message": "x"},
+        on_chunk=on_chunk,
+        should_mark_iteration_limit=lambda chunk: chunk.get("scope") == "main_agent",
+    )
+
+    assert result.response_parts == ["done"]
+    assert result.thinking_parts == ["working"]
+    assert result.response_text() == "done"
+    assert result.chunk_count == 5
+    assert result.tool_call_count == 1
+    assert result.iteration_limit_hit is True
+    assert result.iteration_limit_event == {
+        "type": "iteration_limit",
+        "scope": "main_agent",
+        "reason": "max_iterations",
+    }
+    assert seen == [
+        ("thinking", 1, 0),
+        ("tool_call", 2, 1),
+        ("response", 3, 1),
+        ("iteration_limit", 4, 1),
+        ("iteration_limit", 5, 1),
+    ]
+
+
+def test_stream_and_collect_raises_error_after_chunk_callback():
+    class ErrorAgent:
+        async def astream(self, **kwargs):
+            yield {"type": "error", "content": "", "code": "boom"}
+
+    seen = []
+
+    def on_chunk(chunk, collection):
+        seen.append((chunk["type"], collection.chunk_count))
+
+    with pytest.raises(RuntimeError, match="custom boom"):
+        stream_and_collect(
+            ErrorAgent(),
+            astream_kwargs={"message": "x"},
+            on_chunk=on_chunk,
+            error_message_factory=lambda chunk: f"custom {chunk['code']}",
+        )
+
+    assert seen == [("error", 1)]
+
+
+def test_autonomous_callers_use_stream_and_collect_for_collection_loops():
+    repo_root = Path(__file__).resolve().parents[1]
+    paths = [
+        repo_root / "nymeria/core/ticker.py",
+        repo_root / "nymeria/core/trigger_manager.py",
+        repo_root / "nymeria/core/thread_agent_executor.py",
+        repo_root / "nymeria/tools/spawn_thread.py",
+    ]
+
+    for path in paths:
+        assert "for chunk in iter_agent_astream(" not in path.read_text()
