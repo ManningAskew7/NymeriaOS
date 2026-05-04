@@ -210,7 +210,12 @@ class Settings(BaseSettings):
     twitch_bot_user_id: Optional[str] = Field(default=None, description="Twitch bot numeric user ID")
     twitch_broadcaster_token: Optional[str] = Field(default=None, description="Broadcaster's OAuth token (channel:bot scope)")
     twitch_broadcaster_refresh_token: Optional[str] = Field(default=None, description="Broadcaster's refresh token")
-    twitch_channel: str = Field(default="silk", description="Twitch channel to join")
+    twitch_channel: Optional[str] = Field(default=None, description="Twitch channel to join")
+    twitch_system_prompt: Optional[str] = Field(
+        default=None,
+        max_length=50000,
+        description="Optional initial Twitch thread system prompt. Existing thread config takes precedence.",
+    )
     twitch_buffer_size: int = Field(default=500, ge=50, le=5000, description="Chat message ring buffer size")
     twitch_pulse_enabled: bool = Field(default=True, description="Enable periodic chat pulse")
     twitch_pulse_interval: int = Field(default=300, ge=60, le=3600, description="Seconds between pulse checks")

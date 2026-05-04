@@ -5339,6 +5339,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
                 "twitch_bot_access_token", "twitch_bot_refresh_token",
                 "twitch_bot_user_id", "twitch_broadcaster_token",
                 "twitch_broadcaster_refresh_token", "twitch_channel",
+                "twitch_system_prompt",
                 "twitch_buffer_size", "twitch_pulse_enabled",
                 "twitch_pulse_interval", "twitch_respond_mode",
             ],

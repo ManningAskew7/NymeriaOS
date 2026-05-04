@@ -130,7 +130,8 @@ package from the checkout or runtime config directory.
 | `TWITCH_BOT_USER_ID` | - | Bot's numeric Twitch user ID |
 | `TWITCH_BROADCASTER_TOKEN` | - | Broadcaster's OAuth token (channel:bot scope) |
 | `TWITCH_BROADCASTER_REFRESH_TOKEN` | - | Broadcaster's refresh token |
-| `TWITCH_CHANNEL` | `silk` | Twitch channel to join |
+| `TWITCH_CHANNEL` | - | Twitch channel to join (required when `twitch-bot` runs) |
+| `TWITCH_SYSTEM_PROMPT` | - | Optional initial system prompt for the Twitch thread; existing thread config takes precedence |
 | `TWITCH_BUFFER_SIZE` | `500` | Chat message ring buffer size (50-5000) |
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat evaluation |
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks (60-3600) |

@@ -97,6 +97,8 @@ TWITCH_BOT_USER_ID=bot-numeric-user-id
 TWITCH_BROADCASTER_TOKEN=broadcaster-access-token
 TWITCH_BROADCASTER_REFRESH_TOKEN=broadcaster-refresh-token
 TWITCH_CHANNEL=channelname
+# Optional initial prompt; existing thread config takes precedence
+TWITCH_SYSTEM_PROMPT="You are an autonomous Twitch chat and moderation bot..."
 ```
 
 ### 5. Start
@@ -225,7 +227,8 @@ Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.
 | `TWITCH_BOT_USER_ID` | — | Bot's numeric Twitch user ID |
 | `TWITCH_BROADCASTER_TOKEN` | — | Broadcaster's OAuth token (channel:bot scope) |
 | `TWITCH_BROADCASTER_REFRESH_TOKEN` | — | Broadcaster's refresh token |
-| `TWITCH_CHANNEL` | `silk` | Channel to join |
+| `TWITCH_CHANNEL` | — | Channel to join (required) |
+| `TWITCH_SYSTEM_PROMPT` | — | Optional initial system prompt for the Twitch thread; existing thread config takes precedence |
 | `TWITCH_BUFFER_SIZE` | `500` | Max messages in ring buffer |
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat pulse |
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
@@ -236,10 +239,10 @@ Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.
 
 ## Thread Configuration
 
-The bot auto-creates a `twitch_{channel}` thread with a default system prompt on first start. You can customize the personality, tools, and LLM settings via the API or desktop UI:
+The bot auto-creates a `twitch_{channel}` thread with a generic default system prompt on first start, or `TWITCH_SYSTEM_PROMPT` if set. After that, thread config is authoritative: the bot will not overwrite a custom prompt or non-empty tool list on restart. You can customize the personality, tools, and LLM settings via the API or desktop UI:
 
 ```bash
-curl -X PUT "http://localhost:8000/threads/twitch_silk/config" \
+curl -X PUT "http://localhost:8000/threads/twitch_channelname/config" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"system_prompt": "Your custom bot personality..."}'
