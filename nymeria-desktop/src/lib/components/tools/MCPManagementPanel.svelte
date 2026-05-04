@@ -29,7 +29,7 @@
 
   const totalWithCallable = $derived(selectedTools.size + defaultToolsStore.callableThreadCount);
 
-  const hasChanges = $derived(() => {
+  const hasChanges = $derived.by(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
     if (selectedTools.size !== saved.size) return true;
     for (const toolName of selectedTools) {
@@ -104,7 +104,7 @@
       <button
         class="btn btn-ghost"
         onclick={discardChanges}
-        disabled={defaultToolsStore.saving || !hasChanges()}
+        disabled={defaultToolsStore.saving || !hasChanges}
         type="button"
       >
         Discard Changes
@@ -112,7 +112,7 @@
       <button
         class="btn btn-primary"
         onclick={handleSave}
-        disabled={defaultToolsStore.saving || !hasChanges()}
+        disabled={defaultToolsStore.saving || !hasChanges}
         type="button"
       >
         {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}

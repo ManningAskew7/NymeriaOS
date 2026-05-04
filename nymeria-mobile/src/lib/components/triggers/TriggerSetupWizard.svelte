@@ -74,7 +74,7 @@
   );
 
   // Group fields by group label
-  const fieldGroups = $derived(() => {
+  const fieldGroups = $derived.by(() => {
     const groups: Record<string, [string, TriggerSourceSchemaField][]> = {};
     for (const entry of sortedFields) {
       const group = entry[1].group || 'General';
@@ -316,7 +316,7 @@
           {/if}
 
           <div class="config-form">
-            {#each Object.entries(fieldGroups()) as [group, fields]}
+            {#each Object.entries(fieldGroups) as [group, fields]}
               <div class="field-group">
                 <h4 class="group-title">{group}</h4>
                 {#each fields as [key, field]}
