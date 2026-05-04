@@ -221,7 +221,7 @@ def create_trigger_router(
                     platform="trigger",
                 )
             except Exception:
-                pass
+                logger.warning("Failed to upsert thread metadata for new trigger", exc_info=True)
 
         return TriggerResponse.from_definition(trigger)
 
@@ -343,7 +343,7 @@ def create_trigger_router(
                 agent = get_agent_fn()
                 agent.thread_metadata_manager.delete_thread(user_id, trigger.thread_id)
             except Exception:
-                pass
+                logger.warning("Failed to clean up orphaned trigger thread metadata", exc_info=True)
 
     @router.get("/{trigger_id}/executions")
     async def get_trigger_executions(

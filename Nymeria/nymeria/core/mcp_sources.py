@@ -9,11 +9,14 @@ local runtimes.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
+
+logger = logging.getLogger(__name__)
 
 from ..tools.definitions.mcp_schema import MCPServerDefinition
 
@@ -76,7 +79,7 @@ def extract_install_source(source: str) -> str:
             json.loads(candidate)
             return candidate
         except Exception:
-            pass
+            logger.debug("Candidate substring is not valid JSON")
     fence = re.search(r"```[^\n]*\n(.*?)```", s, re.S)
     if fence:
         body = fence.group(1).strip()

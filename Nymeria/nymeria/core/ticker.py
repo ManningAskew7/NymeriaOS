@@ -22,7 +22,7 @@ from .activity_log import ActivityType, log_activity
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
-from .stream_bridge import iter_agent_astream
+from .stream_bridge import stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
@@ -130,7 +130,7 @@ def _render_tool_line(
     try:
         _console.print(" ".join(parts))
     except Exception:
-        pass
+        logger.debug("Console render failed for tool line")
 
 
 # Global ticker instance
@@ -520,22 +520,47 @@ class Ticker:
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
             logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
 
-            response_parts = []
-            thinking_parts = []
             pending_calls = {}  # call_id → {name, args} for console rendering
             response_buffer = ""  # for inline console rendering
             printed_header = False  # "Nymeria:" label
             had_tool_calls = False
-            chunk_count = 0
-            iteration_limit_hit = False
             started_published = False
-            for chunk in iter_agent_astream(
-                self.agent,
-                message=prompt,
-                thread_id=thread_id,
-                user_id=entry.user_id,
-                _is_self_invoke=True,
-            ):
+
+            def flush_response_buffer() -> None:
+                nonlocal response_buffer, printed_header
+                if response_buffer.strip():
+                    try:
+                        if not printed_header:
+                            _console.print()
+                            _console.print("[bold green]Nymeria:[/bold green]")
+                            printed_header = True
+                        elif had_tool_calls:
+                            _console.print()
+                        _console.print(Markdown(_sanitize_unicode(response_buffer.strip())))
+                    except Exception:
+                        logger.debug("Console render failed for preamble flush")
+                    response_buffer = ""
+
+            def render_collected_chunk(chunk: dict) -> None:
+                nonlocal response_buffer, had_tool_calls
+                chunk_type = chunk.get("type")
+                if chunk_type == "tool_call":
+                    # Flush buffered preamble text before tool one-liners
+                    flush_response_buffer()
+                    pending_calls[chunk.get("id", "")] = {
+                        "name": chunk.get("name", "unknown"),
+                        "args": chunk.get("args", {}),
+                    }
+                elif chunk_type == "tool_result":
+                    _render_tool_line(pending_calls, chunk)
+                    had_tool_calls = True
+                elif chunk_type == "response":
+                    content = chunk.get("content", "")
+                    if content:
+                        response_buffer += content
+
+            def handle_initial_chunk(chunk: dict, collection) -> None:
+                nonlocal started_published
                 # Hold task_started until astream actually owns the thread
                 # lock — otherwise a `queued` chunk (user chat in progress)
                 # would flip the frontend into autonomous-streaming mode
@@ -550,11 +575,16 @@ class Ticker:
                     )
                     started_published = True
 
-                chunk_count += 1
-                chunk_type = chunk.get('type', 'unknown')
-                chunk_content_preview = str(chunk.get('content', ''))[:100] if chunk.get('content') else ''
-                logger.info(f"[TICKER] Chunk #{chunk_count}: type={chunk_type}, content_preview={chunk_content_preview}")
-                chunk_type = chunk.get("type")
+                chunk_type = chunk.get("type", "unknown")
+                chunk_content_preview = (
+                    str(chunk.get("content", ""))[:100]
+                    if chunk.get("content")
+                    else ""
+                )
+                logger.info(
+                    f"[TICKER] Chunk #{collection.chunk_count}: "
+                    f"type={chunk_type}, content_preview={chunk_content_preview}"
+                )
                 publish_agent_stream_chunk(
                     chunk,
                     thread_id=thread_id,
@@ -562,48 +592,15 @@ class Ticker:
                     task_id=todo.id,
                 )
 
-                # Publish each event live as it arrives
-                if chunk_type == "tool_call":
-                    # Flush buffered preamble text before tool one-liners
-                    if response_buffer.strip():
-                        try:
-                            if not printed_header:
-                                _console.print()
-                                _console.print("[bold green]Nymeria:[/bold green]")
-                                printed_header = True
-                            elif had_tool_calls:
-                                _console.print()
-                            _console.print(Markdown(_sanitize_unicode(response_buffer.strip())))
-                        except Exception:
-                            pass
-                        response_buffer = ""
+                render_collected_chunk(chunk)
 
-                    pending_calls[chunk.get("id", "")] = {
-                        "name": chunk.get("name", "unknown"),
-                        "args": chunk.get("args", {}),
-                    }
-                elif chunk_type == "tool_result":
-                    _render_tool_line(pending_calls, chunk)
-                    had_tool_calls = True
-                elif chunk_type == "thinking":
-                    content = chunk.get("content", "")
-                    if content:
-                        thinking_parts.append(content)
-                elif chunk_type == "response":
-                    content = chunk.get("content", "")
-                    if content:
-                        response_parts.append(content)
-                        response_buffer += content
-
-                elif chunk_type == "error":
+                chunk_type = chunk.get("type")
+                if chunk_type == "error":
                     error_content = chunk.get("content", "")
                     error_code = chunk.get("code", "unknown")
                     logger.error(
                         f"[TICKER] Stream error for TODO {todo.id}: "
                         f"code={error_code}, content={error_content}"
-                    )
-                    raise RuntimeError(
-                        error_content or f"Agent stream error (code={error_code})"
                     )
 
                 elif chunk_type == "iteration_limit":
@@ -621,11 +618,33 @@ class Ticker:
                     # can still continue working.
                     # Repeated tool/result loops are likely runaways, not
                     # useful continuation checkpoints.
-                    if scope == "main_agent" and reason != "repeated_tool_result":
-                        iteration_limit_hit = True
+
+            def should_continue_after_limit(chunk: dict) -> bool:
+                return (
+                    chunk.get("scope", "unknown") == "main_agent"
+                    and chunk.get("reason", "max_iterations") != "repeated_tool_result"
+                )
+
+            def stream_error_message(chunk: dict) -> str:
+                error_content = chunk.get("content", "")
+                error_code = chunk.get("code", "unknown")
+                return error_content or f"Agent stream error (code={error_code})"
+
+            stream_result = stream_and_collect(
+                self.agent,
+                astream_kwargs={
+                    "message": prompt,
+                    "thread_id": thread_id,
+                    "user_id": entry.user_id,
+                    "_is_self_invoke": True,
+                },
+                on_chunk=handle_initial_chunk,
+                error_message_factory=stream_error_message,
+                should_mark_iteration_limit=should_continue_after_limit,
+            )
 
             # --- Continuation on iteration_limit (one attempt max) ---
-            if iteration_limit_hit:
+            if stream_result.iteration_limit_hit:
                 continuation_prompt = (
                     f"Continue working on the scheduled task: {todo.task}. "
                     f"If you have already completed everything, please confirm "
@@ -637,14 +656,7 @@ class Ticker:
                 )
                 continuation_limit_hit = False
 
-                for chunk in iter_agent_astream(
-                    self.agent,
-                    message=continuation_prompt,
-                    thread_id=thread_id,
-                    user_id=entry.user_id,
-                    _is_self_invoke=True,
-                ):
-                    chunk_count += 1
+                def handle_continuation_chunk(chunk: dict, _collection) -> None:
                     chunk_type = chunk.get("type")
                     publish_agent_stream_chunk(
                         chunk,
@@ -653,38 +665,9 @@ class Ticker:
                         task_id=todo.id,
                     )
 
-                    if chunk_type == "tool_call":
-                        # Flush buffered preamble text
-                        if response_buffer.strip():
-                            try:
-                                if not printed_header:
-                                    _console.print()
-                                    _console.print("[bold green]Nymeria:[/bold green]")
-                                    printed_header = True
-                                elif had_tool_calls:
-                                    _console.print()
-                                _console.print(Markdown(_sanitize_unicode(response_buffer.strip())))
-                            except Exception:
-                                pass
-                            response_buffer = ""
+                    render_collected_chunk(chunk)
 
-                        pending_calls[chunk.get("id", "")] = {
-                            "name": chunk.get("name", "unknown"),
-                            "args": chunk.get("args", {}),
-                        }
-                    elif chunk_type == "tool_result":
-                        _render_tool_line(pending_calls, chunk)
-                        had_tool_calls = True
-                    elif chunk_type == "thinking":
-                        content = chunk.get("content", "")
-                        if content:
-                            thinking_parts.append(content)
-                    elif chunk_type == "response":
-                        content = chunk.get("content", "")
-                        if content:
-                            response_parts.append(content)
-                            response_buffer += content
-                    elif chunk_type == "error":
+                    if chunk_type == "error":
                         error_content = chunk.get("content", "")
                         error_code = chunk.get("code", "unknown")
                         logger.error(
@@ -692,17 +675,36 @@ class Ticker:
                             f"{todo.id}: code={error_code}, "
                             f"content={error_content}"
                         )
-                        raise RuntimeError(
-                            error_content
-                            or f"Agent continuation error (code={error_code})"
-                        )
                     elif chunk_type == "iteration_limit":
                         logger.warning(
                             f"[TICKER] Continuation also hit iteration_limit "
                             f"for TODO {todo.id}. Task too complex — leaving "
                             f"schedule for next tick cycle."
                         )
-                        continuation_limit_hit = True
+
+                def continuation_error_message(chunk: dict) -> str:
+                    error_content = chunk.get("content", "")
+                    error_code = chunk.get("code", "unknown")
+                    return (
+                        error_content
+                        or f"Agent continuation error (code={error_code})"
+                    )
+
+                continuation_result = stream_and_collect(
+                    self.agent,
+                    astream_kwargs={
+                        "message": continuation_prompt,
+                        "thread_id": thread_id,
+                        "user_id": entry.user_id,
+                        "_is_self_invoke": True,
+                    },
+                    on_chunk=handle_continuation_chunk,
+                    error_message_factory=continuation_error_message,
+                )
+                stream_result.response_parts.extend(continuation_result.response_parts)
+                stream_result.thinking_parts.extend(continuation_result.thinking_parts)
+                stream_result.chunk_count += continuation_result.chunk_count
+                continuation_limit_hit = continuation_result.iteration_limit_hit
 
                 if continuation_limit_hit:
                     # Task too complex even with a second pass.
@@ -747,14 +749,14 @@ class Ticker:
             # --- End continuation ---
 
             # Compute final response text
-            if response_parts:
-                response_text = "".join(response_parts)
-            elif thinking_parts:
-                response_text = "".join(thinking_parts)
-                logger.info(f"[TICKER] No response chunks, using thinking content as response ({len(thinking_parts)} parts)")
+            if stream_result.response_parts:
+                response_text = "".join(stream_result.response_parts)
+            elif stream_result.thinking_parts:
+                response_text = "".join(stream_result.thinking_parts)
+                logger.info(f"[TICKER] No response chunks, using thinking content as response ({len(stream_result.thinking_parts)} parts)")
             else:
                 response_text = ""
-            logger.info(f"[TICKER] === STREAM DONE === chunks={chunk_count}, response_parts={len(response_parts)}, thinking_parts={len(thinking_parts)}, response_len={len(response_text)}")
+            logger.info(f"[TICKER] === STREAM DONE === chunks={stream_result.chunk_count}, response_parts={len(stream_result.response_parts)}, thinking_parts={len(stream_result.thinking_parts)}, response_len={len(response_text)}")
 
             logger.info(f"Raw autonomous response (first 500 chars): {response_text[:500] if response_text else 'empty'}")
 
@@ -852,12 +854,12 @@ class Ticker:
                 try:
                     _console.print(f"[yellow]Notification sent: {notification_summary}[/yellow]")
                 except Exception:
-                    pass
+                    logger.debug("Console render failed for notification message")
 
             try:
                 _console.print()
             except Exception:
-                pass
+                logger.debug("Console render failed for output spacing")
             logger.info(f"TODO {todo.id} scheduled execution completed, notify={should_notify}")
 
             # Trim context window if needed (only in sliding_window mode)
@@ -876,7 +878,7 @@ class Ticker:
                                 f"[dim]Context window trimmed: kept last {max_cycles} cycles[/dim]"
                             )
                         except Exception:
-                            pass  # Console output is cosmetic
+                            logger.debug("Console render failed for context trim message")
 
         except Exception as e:
             import traceback
@@ -886,7 +888,7 @@ class Ticker:
                 sanitized_error = _sanitize_unicode(str(e))
                 _console.print(f"[red]Scheduled TODO failed: {sanitized_error}[/red]")
             except Exception:
-                pass  # Console output is cosmetic
+                logger.debug("Console render failed for error message")
 
             # Always publish task_completed so frontend can exit streaming state
             publish_autonomous_event(
@@ -1021,7 +1023,7 @@ class Ticker:
                 )
                 _console.print()
             except Exception:
-                pass  # Console output is cosmetic
+                logger.debug("Console render failed for output spacing")
 
         return len(missed_entries)
 

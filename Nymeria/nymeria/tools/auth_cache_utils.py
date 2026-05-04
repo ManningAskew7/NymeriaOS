@@ -94,7 +94,7 @@ def register_flow(flow: OAuthFlow) -> None:
                 try:
                     old.httpd.server_close()
                 except Exception:
-                    pass
+                    logger.debug("Error closing previous OAuth HTTP server")
         _FLOW_REGISTRY[key] = flow
         _STATE_INDEX[flow.state_param] = key
 
@@ -126,7 +126,7 @@ def clear_flow(user_id: str, provider: str) -> None:
         try:
             flow.httpd.server_close()
         except Exception:
-            pass
+            logger.debug("Error closing OAuth HTTP server on flow clear")
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ def start_callback_server(flow: OAuthFlow) -> int:
             try:
                 httpd.server_close()
             except Exception:
-                pass
+                logger.debug("Error closing OAuth callback server")
         if not flow.completed:
             flow.auth_error = "timeout"
             flow.completed = True
@@ -263,7 +263,7 @@ def load_token_cache(user_id: str, cache_filename: str) -> dict:
         try:
             return json.loads(path.read_text())
         except Exception:
-            pass
+            logger.warning("Failed to read token cache file", exc_info=True)
     return {}
 
 
@@ -312,7 +312,7 @@ def fetch_google_user_info(access_token: str) -> Tuple[str, str]:
             info = response.json()
             return info.get("email", "unknown"), info.get("name", "Unknown User")
     except Exception:
-        pass
+        logger.debug("Failed to fetch Google user info")
     return "unknown", "Unknown User"
 
 

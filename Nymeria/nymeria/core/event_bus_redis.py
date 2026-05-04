@@ -265,14 +265,14 @@ class RedisEventBus(EventBus):
                 self._pubsub.unsubscribe()
                 self._pubsub.close()
             except Exception:
-                pass
+                logger.debug("Error closing Redis pubsub during shutdown")
             self._pubsub = None
 
         if self._redis_client:
             try:
                 self._redis_client.close()
             except Exception:
-                pass
+                logger.debug("Error closing Redis client during shutdown")
             self._redis_client = None
 
         self._connected = False

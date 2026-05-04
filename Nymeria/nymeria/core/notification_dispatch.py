@@ -249,7 +249,7 @@ def create_in_app_notification(
                 data={"summary": message[:200], "in_app_only": True},
             )
         except Exception:
-            pass
+            logger.warning("Failed to publish notification event to event bus", exc_info=True)
         logger.info("In-app notification created: id=%s user=%s", notification.id, user_id)
         return f"Sent to Desktop (notification_id: {notification.id})"
     except Exception as e:

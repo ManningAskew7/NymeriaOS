@@ -230,7 +230,7 @@ def _reserved_tool_names(agent: Any = None) -> set[str]:
         try:
             names.update(agent.tool_registry.list_tools())
         except Exception:
-            pass
+            logger.debug("Failed to query tool registry for reserved names")
     return names
 
 

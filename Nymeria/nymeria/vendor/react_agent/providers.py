@@ -712,7 +712,7 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                         "reasoning_details"
                     ] = _reasoning_details_for_storage(reasoning_details)
         except (AttributeError, KeyError, IndexError, TypeError):
-            pass
+            pass  # reasoning metadata shape varies by provider
         return generation_chunk
 
     def _stream(

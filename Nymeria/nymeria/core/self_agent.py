@@ -93,7 +93,7 @@ def self_file_write(file_path: str, content: str) -> str:
             in_allowed = True
             break
         except ValueError:
-            pass
+            pass  # not a valid override entry, skip
 
     if not in_allowed:
         return f"[Error]: Access denied. Can only write to files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
@@ -226,7 +226,7 @@ def self_file_delete(file_path: str) -> str:
             in_allowed = True
             break
         except ValueError:
-            pass
+            pass  # not a valid override entry, skip
 
     if not in_allowed:
         return f"[Error]: Access denied. Can only delete files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"

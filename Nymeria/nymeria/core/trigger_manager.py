@@ -788,22 +788,12 @@ class TriggerManager:
         Returns (response_parts, thinking_parts, iteration_limit_hit).
         """
         from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
-        from .stream_bridge import iter_agent_astream
+        from .stream_bridge import stream_and_collect
 
-        response_parts: List[str] = []
-        thinking_parts: List[str] = []
-        chunk_count = 0
-        iteration_limit_hit = False
         started_published = False
 
-        for chunk in iter_agent_astream(
-            agent,
-            message=prompt,
-            thread_id=thread_id,
-            user_id=user_id,
-            _is_self_invoke=True,
-            attachments=attachments,
-        ):
+        def handle_chunk(chunk: Dict[str, Any], collection) -> None:
+            nonlocal started_published
             if (
                 not started_published
                 and task_started_data is not None
@@ -819,8 +809,10 @@ class TriggerManager:
                 started_published = True
 
             chunk_type = chunk.get("type")
-            chunk_count += 1
-            logger.debug(f"[TRIGGER] thread={thread_id}: chunk #{chunk_count} type={chunk_type}")
+            logger.debug(
+                f"[TRIGGER] thread={thread_id}: chunk #{collection.chunk_count} "
+                f"type={chunk_type}"
+            )
             publish_agent_stream_chunk(
                 chunk,
                 thread_id=thread_id,
@@ -828,28 +820,15 @@ class TriggerManager:
                 task_id=task_id,
             )
 
-            if chunk_type == "thinking":
-                content = chunk.get("content", "")
-                if content:
-                    thinking_parts.append(content)
-            elif chunk_type == "response":
-                content = chunk.get("content", "")
-                if content:
-                    response_parts.append(content)
-
-            elif chunk_type == "error":
+            if chunk_type == "error":
                 error_content = chunk.get("content", "")
                 error_code = chunk.get("code", "unknown")
                 logger.error(
                     f"[TRIGGER] Stream error on thread {thread_id}: "
                     f"code={error_code}, content={error_content}"
                 )
-                raise RuntimeError(
-                    error_content or f"Trigger stream error (code={error_code})"
-                )
 
             elif chunk_type == "iteration_limit":
-                iteration_limit_hit = True
                 logger.warning(
                     f"[TRIGGER] Iteration limit on thread {thread_id}: "
                     f"scope={chunk.get('scope')}, "
@@ -858,11 +837,30 @@ class TriggerManager:
                     f"Using partial response."
                 )
 
-        # If no response chunks, promote thinking to response
-        if not response_parts and thinking_parts:
-            response_parts = thinking_parts
+        def stream_error_message(chunk: Dict[str, Any]) -> str:
+            error_content = chunk.get("content", "")
+            error_code = chunk.get("code", "unknown")
+            return error_content or f"Trigger stream error (code={error_code})"
 
-        return response_parts, thinking_parts, iteration_limit_hit
+        result = stream_and_collect(
+            agent,
+            astream_kwargs={
+                "message": prompt,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "_is_self_invoke": True,
+                "attachments": attachments,
+            },
+            on_chunk=handle_chunk,
+            error_message_factory=stream_error_message,
+        )
+
+        # If no response chunks, promote thinking to response
+        response_parts = result.response_parts
+        if not response_parts and result.thinking_parts:
+            response_parts = result.thinking_parts
+
+        return response_parts, result.thinking_parts, result.iteration_limit_hit
 
     def _publish_trigger_completion(
         self,

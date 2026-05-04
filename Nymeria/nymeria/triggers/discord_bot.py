@@ -2259,7 +2259,7 @@ class NymeriaDiscordBot(discord.Client):
                     current_msg = await channel.send(text_buffer)
                     last_edit = time.monotonic()
                 except Exception:
-                    pass
+                    logger.warning("Failed to send fallback Discord message", exc_info=True)
             if final:
                 text_buffer = ""
                 current_msg = None
@@ -2302,7 +2302,7 @@ class NymeriaDiscordBot(discord.Client):
                     try:
                         await channel.trigger_typing()
                     except Exception:
-                        pass
+                        logger.debug("Failed to send typing indicator")
 
                 elif etype == "compacting":
                     await _finalize_text()
@@ -2356,7 +2356,7 @@ class NymeriaDiscordBot(discord.Client):
                     try:
                         await channel.trigger_typing()
                     except Exception:
-                        pass
+                        logger.debug("Failed to send typing indicator")
 
                 elif etype == "tool_result":
                     show_tools = self._show_tool_calls.get(channel.id, False)
@@ -2414,7 +2414,7 @@ class NymeriaDiscordBot(discord.Client):
                     try:
                         await _send(f"Sorry, I encountered an error: {error_content}")
                     except Exception:
-                        pass
+                        logger.warning("Failed to send error notification to Discord", exc_info=True)
 
                 elif etype == "iteration_limit":
                     content = event.get("content", "")
@@ -2422,7 +2422,7 @@ class NymeriaDiscordBot(discord.Client):
                         try:
                             await channel.send(f"⚠️ {content}")
                         except Exception:
-                            pass
+                            logger.warning("Failed to send iteration-limit warning to Discord", exc_info=True)
 
                 elif etype == "done":
 
@@ -2437,7 +2437,7 @@ class NymeriaDiscordBot(discord.Client):
                                 content=old_content + f"\n\n-# Tool calls: {tool_call_count}"
                             )
                         except Exception:
-                            pass
+                            logger.debug("Failed to edit Discord message with tool-call footer")
                     await _flush_buffer(final=True)
 
                 # Silently ignore: queued
@@ -2474,7 +2474,7 @@ class NymeriaDiscordBot(discord.Client):
                 try:
                     await _send(f"Sorry, I encountered an error: {e2}")
                 except Exception:
-                    pass
+                    logger.warning("Failed to send last-resort error notification to Discord", exc_info=True)
 
     async def _send_workspace_attachment(self, channel: Any, file_path: str) -> bool:
         """Download a workspace file from the API and upload it to Discord."""
@@ -2586,7 +2586,7 @@ class NymeriaDiscordBot(discord.Client):
             try:
                 await message.channel.send(err)
             except Exception:
-                pass
+                logger.warning("Failed to send attachment error to Discord", exc_info=True)
 
         if not content.strip() and not attachments:
             return
@@ -2805,7 +2805,7 @@ class NymeriaDiscordBot(discord.Client):
                         s["current_msg"] = await _send_text(text_buffer)
                         s["last_edit"] = time.monotonic()
                     except Exception:
-                        pass
+                        logger.warning("Failed to send fallback autonomous Discord message", exc_info=True)
                 if final:
                     s["buffer"] = ""
                     s["current_msg"] = None
@@ -2860,7 +2860,7 @@ class NymeriaDiscordBot(discord.Client):
                 try:
                     await channel.trigger_typing()
                 except Exception:
-                    pass
+                    logger.debug("Failed to send autonomous typing indicator")
                 return
 
             if event_type == "compacting":
@@ -2918,7 +2918,7 @@ class NymeriaDiscordBot(discord.Client):
                 try:
                     await channel.trigger_typing()
                 except Exception:
-                    pass
+                    logger.debug("Failed to send autonomous typing indicator")
                 return
 
             if event_type == "tool_result":
@@ -3008,7 +3008,7 @@ class NymeriaDiscordBot(discord.Client):
                                     + f"\n\n-# Tool calls: {s['tool_count']}"
                                 )
                             except Exception:
-                                pass
+                                logger.debug("Failed to edit autonomous message with tool-call footer")
                         await _flush_buffer(final=True)
                     logger.info(f"Streamed autonomous result to Discord channel {channel_id}")
                 finally:

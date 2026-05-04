@@ -76,7 +76,7 @@ def _find_item(items: list[tuple[bool, str]], query: str) -> Optional[int]:
         if 1 <= n <= len(items):
             return n - 1
     except ValueError:
-        pass
+        pass  # not a valid integer, skip
     # Substring match (case-insensitive)
     q = query.lower()
     for i, (_, text) in enumerate(items):

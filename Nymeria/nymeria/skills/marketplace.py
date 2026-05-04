@@ -275,7 +275,7 @@ class AnthropicSkillsFetcher:
                         if hits:
                             warnings.append(f"{rel_path}: {hits}")
                     except Exception:
-                        pass
+                        logger.warning("Security scan failed for skill file", exc_info=True)
 
                 staged.append((skill_dir / rel_path, content_bytes))
 

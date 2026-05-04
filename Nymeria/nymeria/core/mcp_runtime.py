@@ -132,7 +132,7 @@ def cleanup_expired_previews() -> None:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
         except OSError:
-            pass
+            pass  # file may already be removed
 
 
 def save_preview(defn: MCPServerDefinition, plan: MCPInstallPlan, *, source: str = "") -> str:
@@ -602,7 +602,7 @@ def _prepare_bundle(
         try:
             entry_path.chmod(entry_path.stat().st_mode | 0o111)
         except OSError:
-            pass
+            pass  # chmod may fail on read-only filesystem
         defn.server_command = str(entry_path)
         defn.server_args = []
     else:

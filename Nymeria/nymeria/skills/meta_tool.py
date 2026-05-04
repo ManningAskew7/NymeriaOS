@@ -143,7 +143,7 @@ def _known_nymeria_tool_names() -> set[str]:
         names.update(t.name for t in ALL_TOOLS)
         names.update(OPTIONAL_TOOLS.keys())
     except Exception:
-        pass
+        logger.warning("Failed to import tool names from tools module", exc_info=True)
 
     try:
         from ..core.agent import get_current_agent
@@ -157,7 +157,7 @@ def _known_nymeria_tool_names() -> set[str]:
                 if item.get("name")
             )
     except Exception:
-        pass
+        logger.debug("Failed to query dynamic tool registry")
 
     return names
 

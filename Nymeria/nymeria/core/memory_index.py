@@ -83,7 +83,7 @@ class MemoryIndex:
                 if embedding_model is None:
                     embedding_model = settings.embedding_model
             except Exception:
-                pass
+                logger.warning("Failed to load settings for embedding config", exc_info=True)
         self.embedding_api_key = embedding_api_key
         self.embedding_base_url = embedding_base_url
         self.embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
@@ -781,7 +781,7 @@ class MemoryIndex:
                     """, (user_id,))
                     vector_count = cursor.fetchone()['count']
                 except sqlite3.OperationalError:
-                    pass
+                    pass  # sqlite-vec table may not exist yet
 
                 return {
                     "total_chunks": total,
