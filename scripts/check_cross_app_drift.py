@@ -40,7 +40,10 @@ EXACT_MATCH: set[str] = {
     "lib/stores/serverSettings.svelte.ts",
     "lib/stores/threadConfig.svelte.ts",
     "lib/themes.ts",
+    "lib/services/api.svelte.ts",
+    "lib/services/api/index.ts",
     "lib/utils/fileProcessing.ts",
+    "lib/utils/ids.ts",
     "lib/utils/todoTools.ts",
 }
 
@@ -118,8 +121,19 @@ KNOWN_DRIFT: set[str] = {
     # Notifications: different prop contracts (MOB-003)
     "lib/components/notifications/NotificationCenter.svelte",
     "lib/components/notifications/NotificationItem.svelte",
-    # API service: desktop is superset
-    "lib/services/api.svelte.ts",
+    # API service modules: same domain split, different platform/API surface
+    "lib/services/api/accounts.ts",
+    "lib/services/api/base.ts",
+    "lib/services/api/chat.ts",
+    "lib/services/api/mcp.ts",
+    "lib/services/api/reporting.ts",
+    "lib/services/api/skills.ts",
+    "lib/services/api/system.ts",
+    "lib/services/api/thread-config.ts",
+    "lib/services/api/threads.ts",
+    "lib/services/api/todos.ts",
+    "lib/services/api/tools.ts",
+    "lib/services/api/triggers.ts",
     # Types: desktop is superset
     "lib/types/index.ts",
     # Stores with platform-specific behavior
