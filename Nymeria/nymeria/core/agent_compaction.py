@@ -356,36 +356,93 @@ class CompactionManager:
             "summary": summary,
         }
 
+    def _summary_input(self) -> dict:
+        """Build the graph input state for summary generation."""
+        from .agent import _create_human_message
+
+        return {"messages": [_create_human_message(
+            self.get_compact_prompt(),
+            internal=True,
+            internal_type="compact_prompt",
+        )]}
+
+    @staticmethod
+    def _extract_summary_from_result(
+        messages: List[Any],
+    ) -> Optional[str]:
+        """Find the last AIMessage in a graph result and extract the summary."""
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                return CompactionManager.extract_summary(msg)
+        return None
+
     async def _generate_summary(
         self,
         thread_id: str,
         user_id: str,
     ) -> Optional[str]:
         """Generate a summary by injecting a compaction prompt and running the agent."""
-        from .agent import _create_human_message
-
         agent = self._agent
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._get_async_graph_for_user(user_id, thread_id=thread_id)
 
-        compact_prompt = self.get_compact_prompt()
-        input_state = {"messages": [_create_human_message(
-            compact_prompt,
-            internal=True,
-            internal_type="compact_prompt",
-        )]}
-
-        summary_response = None
-        async for event in graph.astream_events(input_state, config=config, version="v2"):
-            if event.get("event") == "on_chat_model_end":
-                output = event.get("data", {}).get("output")
-                if output and hasattr(output, "content"):
-                    summary_response = output
-
-        if not summary_response:
+        try:
+            result = await graph.ainvoke(self._summary_input(), config=config)
+            return self._extract_summary_from_result(result.get("messages", []))
+        except Exception as e:
+            logger.error(
+                f"Thread {thread_id}: Async summary generation failed: {e}",
+                exc_info=True,
+            )
             return None
 
-        return self.extract_summary(summary_response)
+    @staticmethod
+    def _build_clear_payload(
+        messages: List[Any],
+        msg_count_before: int,
+        summary: str,
+        auto_resumed: bool,
+    ) -> Dict[str, Any]:
+        """Build the RemoveMessage + compaction marker payload for update_state."""
+        remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
+        marker = create_compaction_marker(
+            summary=summary,
+            messages_removed=msg_count_before,
+            auto_resumed=auto_resumed,
+        )
+        marker.id = str(_uuid.uuid4())
+        return {"messages": remove_commands + [marker]}
+
+    @staticmethod
+    def _verify_clear(thread_id: str, verify_state: Any) -> bool:
+        """Check that only the compaction marker remains after clearing."""
+        remaining = verify_state.values.get("messages", [])
+        if len(remaining) != 1:
+            logger.error(
+                f"Thread {thread_id}: Clear verification failed — "
+                f"{len(remaining)} messages remain (expected 1 marker)"
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _prune_old_checkpoints(
+        thread_id: str,
+        verify_state: Any,
+        cp_tuple: Any,
+    ) -> None:
+        """Prune pre-compaction checkpoint history using an already-fetched tuple."""
+        post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
+        if not post_cp_id:
+            return
+        floor_versions: Dict[str, Any] = {}
+        if cp_tuple is not None and cp_tuple.checkpoint:
+            floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
+        counts = prune_checkpoints_before(thread_id, post_cp_id, floor_versions)
+        logger.info(
+            f"Thread {thread_id}: Pruned pre-compact history — "
+            f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
+        )
 
     async def _clear_and_reset(
         self,
@@ -411,26 +468,13 @@ class CompactionManager:
                 logger.info(f"Thread {thread_id}: No messages to clear")
                 return True
 
-            remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-            compaction_marker = create_compaction_marker(
-                summary=summary,
-                messages_removed=msg_count_before,
-                auto_resumed=auto_resumed,
+            payload = self._build_clear_payload(
+                messages, msg_count_before, summary, auto_resumed,
             )
-            compaction_marker.id = str(_uuid.uuid4())
-
-            await graph.aupdate_state(
-                config,
-                {"messages": remove_commands + [compaction_marker]},
-            )
+            await graph.aupdate_state(config, payload)
 
             verify_state = await graph.aget_state(config)
-            remaining = verify_state.values.get("messages", [])
-            if len(remaining) > 1:
-                logger.error(
-                    f"Thread {thread_id}: Clear verification failed - "
-                    f"{len(remaining)} messages remain (expected 1 marker)"
-                )
+            if not self._verify_clear(thread_id, verify_state):
                 return False
 
             logger.info(
@@ -440,7 +484,6 @@ class CompactionManager:
 
             try:
                 post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
-                floor_versions: Dict[str, Any] = {}
                 if post_cp_id:
                     cp_tuple = await graph.checkpointer.aget_tuple({
                         "configurable": {
@@ -448,15 +491,7 @@ class CompactionManager:
                             "checkpoint_id": post_cp_id,
                         }
                     })
-                    if cp_tuple is not None and cp_tuple.checkpoint:
-                        floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
-                    counts = prune_checkpoints_before(
-                        thread_id, post_cp_id, floor_versions
-                    )
-                    logger.info(
-                        f"Thread {thread_id}: Pruned pre-compact history — "
-                        f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
-                    )
+                    self._prune_old_checkpoints(thread_id, verify_state, cp_tuple)
             except Exception as e:
                 logger.warning(f"Thread {thread_id}: Pruning call failed: {e}")
 
@@ -629,32 +664,19 @@ class CompactionManager:
         user_id: str,
     ) -> Optional[str]:
         """Generate context summary via sync graph.invoke()."""
-        from .agent import _create_human_message
-
         agent = self._agent
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._get_graph_for_user(user_id, thread_id=thread_id)
 
-        compact_prompt = self.get_compact_prompt()
-        input_state = {"messages": [_create_human_message(
-            compact_prompt,
-            internal=True,
-            internal_type="compact_prompt",
-        )]}
-
         try:
-            result = graph.invoke(input_state, config=config)
-            messages = result.get("messages", [])
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage) and msg.content:
-                    return self.extract_summary(msg)
+            result = graph.invoke(self._summary_input(), config=config)
+            return self._extract_summary_from_result(result.get("messages", []))
         except Exception as e:
             logger.error(
                 f"Thread {thread_id}: Sync summary generation failed: {e}",
                 exc_info=True,
             )
-
-        return None
+            return None
 
     def _clear_and_reset_sync(
         self,
@@ -675,23 +697,13 @@ class CompactionManager:
             if not messages:
                 return True
 
-            remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-            compaction_marker = create_compaction_marker(
-                summary=summary,
-                messages_removed=msg_count_before,
-                auto_resumed=auto_resumed,
+            payload = self._build_clear_payload(
+                messages, msg_count_before, summary, auto_resumed,
             )
-            compaction_marker.id = str(_uuid.uuid4())
-
-            graph.update_state(config, {"messages": remove_commands + [compaction_marker]})
+            graph.update_state(config, payload)
 
             verify_state = graph.get_state(config)
-            remaining = verify_state.values.get("messages", [])
-            if len(remaining) != 1:
-                logger.error(
-                    f"Thread {thread_id}: Sync clear verification failed — "
-                    f"{len(remaining)} messages remain (expected 1 marker)"
-                )
+            if not self._verify_clear(thread_id, verify_state):
                 return False
 
             logger.info(
@@ -701,7 +713,6 @@ class CompactionManager:
 
             try:
                 post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
-                floor_versions: Dict[str, Any] = {}
                 if post_cp_id:
                     cp_tuple = graph.checkpointer.get_tuple({
                         "configurable": {
@@ -709,15 +720,7 @@ class CompactionManager:
                             "checkpoint_id": post_cp_id,
                         }
                     })
-                    if cp_tuple is not None and cp_tuple.checkpoint:
-                        floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
-                    counts = prune_checkpoints_before(
-                        thread_id, post_cp_id, floor_versions
-                    )
-                    logger.info(
-                        f"Thread {thread_id}: Pruned pre-compact history — "
-                        f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
-                    )
+                    self._prune_old_checkpoints(thread_id, verify_state, cp_tuple)
             except Exception as e:
                 logger.warning(f"Thread {thread_id}: Pruning call failed (sync): {e}")
 
