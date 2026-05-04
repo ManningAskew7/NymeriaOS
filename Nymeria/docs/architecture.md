@@ -97,7 +97,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 |--------|---------|
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
 | `agent_history.py` | Conversation-history projection for API/frontend clients, including checkpoint timestamp recovery, internal-message filtering, reasoning/tool-step rendering, and attachment metadata |
-| `agent_streaming.py` | Pure helpers for classifying streamed model chunks and deduplicating reasoning deltas in `NymeriaAgent.astream()` |
+| `agent_streaming.py` | `GraphStreamProcessor` for converting LangGraph stream events into Nymeria SSE chunks, plus helpers for classifying streamed model chunks and deduplicating reasoning deltas |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
@@ -461,6 +461,12 @@ The agent has one streaming implementation: `NymeriaAgent.astream()`.
 
 **`astream()` (Asynchronous)**
 - Uses `graph.astream_events()` with `version="v2"`
+- Delegates event conversion to `core/agent_streaming.py::GraphStreamProcessor`,
+  which owns tool-start/tool-end events, provider reasoning/text chunk
+  classification, inline `<think>` stripping, cancellation chunks, diagnostic
+  counters, and model-end fallback emission. `astream()` remains the
+  orchestrator for lock handling, input preparation, in-turn tool reloads,
+  compaction, token tracking, and RAG indexing.
 - The ReAct agent node has an async implementation that consumes the model via
   `llm_with_tools.astream()` and merges the chunks back into the final
   `AIMessage`. This is what makes `on_chat_model_stream` provider-token events
@@ -766,7 +772,7 @@ The codebase underwent significant modularization:
    - `time_utils.py`: Shared time parsing (from TODO tools and scheduler parsing)
    - `todo_constants.py`: TODO display constants
    - `agent_history.py`: Conversation-history projection, checkpoint timestamp recovery, and provider reasoning/tool-step rendering
-   - `agent_streaming.py`: Stream chunk classification and reasoning-delta deduplication helpers
+   - `agent_streaming.py`: Graph stream event processing, stream chunk classification, and reasoning-delta deduplication helpers
 
 2. **Removed Legacy Scheduler:**
    - `scheduler.py`, `rate_limiter.py`, `migration.py`, and `_deprecated/task_db.py` were removed after scheduled TODOs became the only runtime scheduling path.
