@@ -3,35 +3,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi.routing import APIRoute
-from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.triggers import api as api_module
-
-
-@dataclass
-class FakeSettings:
-    data_dir: Path
-    nymeria_api_key: str | None = "legacy-secret"
-    database_backend: str = "sqlite"
-    postgres_uri: str | None = None
-    redis_enabled: bool = False
-    redis_url: str | None = None
-    fcm_enabled: bool = False
-    fcm_credentials_json: str | None = None
-    cors_origins_list: list[str] | None = None
-
-    def __post_init__(self):
-        if self.cors_origins_list is None:
-            self.cors_origins_list = ["*"]
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "nymeria.db"
 
 
 class FakeAgent:
@@ -214,27 +191,25 @@ def _schema_routes(app):
     )
 
 
-def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, FakeAgent]:
-    settings = FakeSettings(tmp_path)
+def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent]:
+    settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
-    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
-    app = api_module.create_api_app(agent)
-    return TestClient(app), agent
+    return api_client_builder.client(agent, settings), agent
 
 
 def _auth(token: str, **headers: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", **headers}
 
 
-def test_api_schema_route_inventory_is_stable(tmp_path: Path, monkeypatch):
-    client, agent = _client(tmp_path, monkeypatch)
+def test_api_schema_route_inventory_is_stable(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
 
     assert _schema_routes(client.app) == EXPECTED_ROUTES
     assert agent.synced_tools == 1
 
 
-def test_public_health_does_not_require_auth(tmp_path: Path, monkeypatch):
-    client, _agent = _client(tmp_path, monkeypatch)
+def test_public_health_does_not_require_auth(tmp_path: Path, api_client_builder):
+    client, _agent = _client(tmp_path, api_client_builder)
 
     response = client.get("/health")
 
@@ -242,8 +217,8 @@ def test_public_health_does_not_require_auth(tmp_path: Path, monkeypatch):
     assert response.json()["status"] == "ok"
 
 
-def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, monkeypatch):
-    client, agent = _client(tmp_path, monkeypatch)
+def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
     token = agent.accounts_repo.issue_token("alice")
 
@@ -274,6 +249,7 @@ def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, monk
 def test_workspace_download_requires_admin_and_workspace_path(
     tmp_path: Path,
     monkeypatch,
+    api_client_builder,
 ):
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -283,7 +259,7 @@ def test_workspace_download_requires_admin_and_workspace_path(
     outside.write_text("secret", encoding="utf-8")
     monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(workspace_dir))
 
-    client, agent = _client(tmp_path, monkeypatch)
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
     agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
     user_token = agent.accounts_repo.issue_token("alice")
@@ -311,8 +287,8 @@ def test_workspace_download_requires_admin_and_workspace_path(
     assert admin_response.text == "workspace data"
 
 
-def test_user_auth_contract_for_me_endpoint(tmp_path: Path, monkeypatch):
-    client, agent = _client(tmp_path, monkeypatch)
+def test_user_auth_contract_for_me_endpoint(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
     token = agent.accounts_repo.issue_token("alice")
 
@@ -331,8 +307,8 @@ def test_user_auth_contract_for_me_endpoint(tmp_path: Path, monkeypatch):
     }
 
 
-def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, monkeypatch):
-    client, agent = _client(tmp_path, monkeypatch)
+def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
     agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
     user_token = agent.accounts_repo.issue_token("alice")
@@ -346,8 +322,8 @@ def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, monke
     assert {row["id"] for row in allowed.json()} == {"alice", "admin"}
 
 
-def test_deprecated_nymeria_api_key_is_hidden_from_config_api(tmp_path: Path, monkeypatch):
-    client, agent = _client(tmp_path, monkeypatch)
+def test_deprecated_nymeria_api_key_is_hidden_from_config_api(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
     admin_token = agent.accounts_repo.issue_token("admin")
 
@@ -366,13 +342,13 @@ def test_deprecated_nymeria_api_key_is_hidden_from_config_api(tmp_path: Path, mo
 
 
 def test_admin_bot_endpoint_rate_limit_is_per_admin_and_endpoint(
-    tmp_path: Path, monkeypatch, request
+    tmp_path: Path, monkeypatch, request, api_client_builder
 ):
     api_module._reset_admin_bot_endpoint_rate_limiter_for_tests()
     request.addfinalizer(api_module._reset_admin_bot_endpoint_rate_limiter_for_tests)
     monkeypatch.setattr(api_module, "_BOT_ADMIN_ENDPOINT_RATE_LIMIT", 2)
     monkeypatch.setattr(api_module, "_BOT_ADMIN_ENDPOINT_RATE_WINDOW_SECONDS", 60.0)
-    client, agent = _client(tmp_path, monkeypatch)
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("service", "service@example.com", "Service", role="admin")
     agent.accounts_repo.create_user("other", "other@example.com", "Other", role="admin")
     service_token = agent.accounts_repo.issue_token("service")
@@ -411,9 +387,9 @@ def test_admin_bot_endpoint_rate_limit_is_per_admin_and_endpoint(
 
 
 def test_admin_service_token_style_act_as_resolves_target_user(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, api_client_builder
 ):
-    client, agent = _client(tmp_path, monkeypatch)
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
     agent.accounts_repo.create_user("service", "service@example.com", "Service", role="admin")
     service_token = agent.accounts_repo.issue_token("service")
@@ -429,8 +405,8 @@ def test_admin_service_token_style_act_as_resolves_target_user(
     }
 
 
-def test_non_admin_act_as_is_rejected(tmp_path: Path, monkeypatch):
-    client, agent = _client(tmp_path, monkeypatch)
+def test_non_admin_act_as_is_rejected(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
     agent.accounts_repo.create_user("bob", "bob@example.com", "Bob")
     token = agent.accounts_repo.issue_token("alice")

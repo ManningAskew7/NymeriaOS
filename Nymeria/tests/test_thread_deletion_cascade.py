@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -29,17 +28,6 @@ from nymeria.core.trigger_manager import (
     TriggerManager,
     TriggerStore,
 )
-
-
-@dataclass
-class FakeSettings:
-    data_dir: Path
-    database_backend: str = "sqlite"
-    postgres_uri: str | None = None
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "nymeria.db"
 
 
 class FakeThreadLocks:
@@ -146,10 +134,10 @@ def test_thread_deletion_result_requires_explicit_counts():
         result.inc("thread_owners_deleted", False)
 
 
-def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
+def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, api_client_builder):
     target = "telegram_5551234567"
     survivor = "survivor-thread"
-    settings = FakeSettings(tmp_path)
+    settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
 
     _create_checkpoint_rows(settings.db_path, target, survivor)
@@ -308,9 +296,9 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path):
     assert agent._token_tracker.get_usage(target).total_tokens == 0
 
 
-def test_cascade_delete_thread_reports_missing_thread_owner_as_zero(tmp_path: Path):
+def test_cascade_delete_thread_reports_missing_thread_owner_as_zero(tmp_path: Path, api_client_builder):
     target = "orphan-thread"
-    settings = FakeSettings(tmp_path)
+    settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
 
     result = cascade_delete_thread(agent, settings, "default", target)

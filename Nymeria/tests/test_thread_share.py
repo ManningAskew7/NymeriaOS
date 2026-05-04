@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import (
@@ -16,27 +13,6 @@ from nymeria.core.thread_config import (
     ThreadLLMConfig,
 )
 from nymeria.core.thread_metadata import ThreadMetadataManager
-from nymeria.triggers import api as api_module
-
-
-@dataclass
-class FakeSettings:
-    data_dir: Path
-    database_backend: str = "sqlite"
-    postgres_uri: str | None = None
-    redis_enabled: bool = False
-    redis_url: str | None = None
-    fcm_enabled: bool = False
-    fcm_credentials_json: str | None = None
-    cors_origins_list: list[str] | None = None
-
-    def __post_init__(self):
-        if self.cors_origins_list is None:
-            self.cors_origins_list = ["*"]
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "nymeria.db"
 
 
 class FakeToolRegistry:
@@ -72,18 +48,21 @@ class FakeAgent:
         self.synced_tools += 1
 
 
-def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, FakeAgent, str]:
-    settings = FakeSettings(tmp_path)
+def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]:
+    settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
-    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
-    app = api_module.create_api_app(agent)
-    agent.accounts_repo.create_user("owner", "owner@example.com", "Owner")
-    token = agent.accounts_repo.issue_token("owner")
-    return TestClient(app), agent, token
+    client, token = api_client_builder.authenticated_client(
+        agent,
+        settings,
+        user_id="owner",
+        email="owner@example.com",
+        display_name="Owner",
+    )
+    return client, agent, token
 
 
-def test_thread_export_omits_history_notepad_temporary_tools_and_api_key(tmp_path: Path, monkeypatch):
-    client, agent, token = _client(tmp_path, monkeypatch)
+def test_thread_export_omits_history_notepad_temporary_tools_and_api_key(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
     thread_id = "thread-export"
     agent.accounts_repo.claim_thread(thread_id, "owner")
     agent.thread_metadata_manager.upsert_thread("owner", thread_id, title="Export Me")
@@ -125,8 +104,8 @@ def test_thread_export_omits_history_notepad_temporary_tools_and_api_key(tmp_pat
     assert "api_key" not in body["config"]["llm_config"]
 
 
-def test_thread_import_creates_empty_owned_thread_and_sanitizes_references(tmp_path: Path, monkeypatch):
-    client, agent, token = _client(tmp_path, monkeypatch)
+def test_thread_import_creates_empty_owned_thread_and_sanitizes_references(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
     existing_id = "existing-callable"
     agent.accounts_repo.claim_thread(existing_id, "owner")
     agent.thread_config_manager.save_config(
@@ -196,8 +175,8 @@ def test_thread_import_creates_empty_owned_thread_and_sanitizes_references(tmp_p
     assert "Ignored llm_config.api_key" in warnings
 
 
-def test_thread_import_rejects_unknown_share_version(tmp_path: Path, monkeypatch):
-    client, _agent, token = _client(tmp_path, monkeypatch)
+def test_thread_import_rejects_unknown_share_version(tmp_path: Path, api_client_builder):
+    client, _agent, token = _client(tmp_path, api_client_builder)
 
     response = client.post(
         "/threads/import",
