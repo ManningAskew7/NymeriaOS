@@ -8,9 +8,6 @@ Frameworks can override these by passing custom AgentConfig instances.
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Literal
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 @dataclass

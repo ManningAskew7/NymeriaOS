@@ -1078,18 +1078,3 @@ class NodeFactory:
     def create_tools_router(self) -> Callable[[AgentState], str]:
         """Create the post-tools routing function."""
         return route_after_tools
-
-
-# === BACKWARD COMPATIBILITY ===
-# These maintain compatibility with the old interface
-# Lazy-initialized to avoid crashing on import when env vars aren't set for the
-# vendored defaults (Nymeria creates its own config via agent.py).
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-should_continue = simple_should_continue  # Use simple version for backward compat
-
-agent_node = None
-tools_node = None
