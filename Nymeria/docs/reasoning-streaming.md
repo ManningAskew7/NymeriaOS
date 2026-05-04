@@ -136,7 +136,7 @@ All under `/opt/NymeriaOS/Nymeria/`:
 
 | Where | What |
 | --- | --- |
-| `nymeria/vendor/react_agent/providers.py`, `_get_chat_openai_with_reasoning()` | Factory that builds `ChatOpenAIWithReasoning`, a `ChatOpenAI` subclass overriding `_convert_chunk_to_generation_chunk`, `_get_request_payload`, `_stream`, `_astream`, `_stream_responses`, and `_astream_responses`. It normalises `delta.reasoning_content` (CLIProxy / DeepSeek / Qwen), `delta.reasoning` (OpenRouter), and displayable `delta.reasoning_details` text into `message.additional_kwargs["reasoning_content"]`. It also preserves raw OpenRouter `reasoning_details` in `message.additional_kwargs["reasoning_details"]`, replays them on later OpenRouter chat-completions requests as assistant-message `reasoning_details`, fills OpenRouter-required Responses history ids/statuses, strips leaked inline `<think>` text before OpenRouter replay, and rescues OpenRouter-specific Responses stream events such as `response.reasoning.delta` and `response.reasoning_text.delta` into typed `reasoning` content blocks. Responses streaming goes through a compatibility wrapper around LangChain's private converter; if that private symbol is renamed or removed, Nymeria falls back to a limited local converter for standard text deltas and plaintext reasoning summary deltas instead of breaking the stream outright. |
+| `nymeria/vendor/react_agent/providers.py`, `ChatOpenAIWithReasoning` | Top-level `ChatOpenAI` subclass overriding `_convert_chunk_to_generation_chunk`, `_get_request_payload`, `_stream`, `_astream`, `_stream_responses`, and `_astream_responses`. It normalises `delta.reasoning_content` (CLIProxy / DeepSeek / Qwen), `delta.reasoning` (OpenRouter), and displayable `delta.reasoning_details` text into `message.additional_kwargs["reasoning_content"]`. It also preserves raw OpenRouter `reasoning_details` in `message.additional_kwargs["reasoning_details"]`, replays them on later OpenRouter chat-completions requests as assistant-message `reasoning_details`, fills OpenRouter-required Responses history ids/statuses, strips leaked inline `<think>` text before OpenRouter replay, and rescues OpenRouter-specific Responses stream events such as `response.reasoning.delta` and `response.reasoning_text.delta` into typed `reasoning` content blocks. Responses streaming goes through a compatibility wrapper around LangChain's private converter; if that private symbol is renamed or removed, Nymeria falls back to a limited local converter for standard text deltas and plaintext reasoning summary deltas instead of breaking the stream outright. |
 | `nymeria/vendor/react_agent/providers.py`, `_create_openai_llm` | Uses `ChatOpenAIWithReasoning` instead of vanilla `ChatOpenAI`. Covers direct OpenAI, the CLIProxy GPT-5.5 sidecar, and any OpenAI-compatible endpoint that sets `provider=openai`. CLIProxy-looking OpenAI base URLs are normalized to include `/v1` before `ChatOpenAI` is constructed; without that, Responses mode hits `POST /responses` and returns `404 page not found`. When `llm_config.openai_api_mode="responses"`, it sets `use_responses_api=True`, `output_version="responses/v1"`, and `store=False`; it intentionally does not set `use_previous_response_id`, so the next request replays checkpointed Responses items without relying on provider-side response retention. |
 | `nymeria/vendor/react_agent/providers.py`, `_create_openrouter_llm` | Same subclass, used for all OpenRouter traffic. Defaults to OpenRouter Responses beta with `use_responses_api=True`, `output_version="responses/v1"`, `store=False`, and full-history replay. `openai_api_mode="chat_completions"` keeps the older Chat Completions behavior, including `extra_body.reasoning` and assistant-message `reasoning_details` replay. |
 | `nymeria/vendor/react_agent/nodes.py`, `create_agent_node()` | Builds the ReAct agent node with separate sync and async implementations. The async implementation consumes `llm_with_tools.astream()` and merges `AIMessageChunk`s back into the final `AIMessage`, so `graph.astream_events()` can surface provider-token `on_chat_model_stream` events for regular chat, scheduled TODOs, triggers, callable threads, spawned threads, and the CLI. |
@@ -196,9 +196,8 @@ Expected: ten `"reasoning_content":"..."` lines. If you get none:
 
 ```bash
 docker exec -i nymeria-api python - <<'PY'
-from nymeria.vendor.react_agent.providers import _get_chat_openai_with_reasoning
-Cls = _get_chat_openai_with_reasoning()
-llm = Cls(
+from nymeria.vendor.react_agent.providers import ChatOpenAIWithReasoning
+llm = ChatOpenAIWithReasoning(
     model='gpt-5.5',
     api_key='cpx-latest-local-test',
     base_url='http://cli-proxy-api-latest:8317/v1',
@@ -214,7 +213,7 @@ print('preview:', ''.join(rc)[:200])
 PY
 ```
 
-Expected: 20+ chunks and a plaintext preview. If `reasoning chunks: 0` but the curl above shows the wire has them, the subclass isn't being used — check `_create_openai_llm` and `_create_openrouter_llm` in providers.py both call `_get_chat_openai_with_reasoning()`.
+Expected: 20+ chunks and a plaintext preview. If `reasoning chunks: 0` but the curl above shows the wire has them, the subclass isn't being used — check `_create_openai_llm` and `_create_openrouter_llm` in providers.py both instantiate `ChatOpenAIWithReasoning`.
 
 ### Is the agent emitting thinking SSE events?
 

@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
+    ChatOpenAIWithReasoning,
     _convert_responses_chunk_to_generation_chunk_compat,
     _convert_openrouter_responses_chunk_to_generation_chunk,
     _normalize_openai_base_url,
@@ -54,6 +55,20 @@ def _anthropic_config(**overrides) -> LLMConfig:
     }
     values.update(overrides)
     return LLMConfig(**values)
+
+
+def test_chat_openai_with_reasoning_is_importable_stable_class():
+    assert providers._get_chat_openai_with_reasoning() is ChatOpenAIWithReasoning
+    assert (
+        providers._get_chat_openai_with_reasoning()
+        is providers._get_chat_openai_with_reasoning()
+    )
+
+    openai_llm = create_llm(_openai_config())
+    openrouter_llm = create_llm(_openrouter_config())
+
+    assert type(openai_llm) is ChatOpenAIWithReasoning
+    assert type(openrouter_llm) is ChatOpenAIWithReasoning
 
 
 def test_openai_responses_mode_replays_checkpoint_items_payload():
