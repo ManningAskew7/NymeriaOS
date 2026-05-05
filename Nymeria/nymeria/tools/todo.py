@@ -71,6 +71,21 @@ def _format_todo_item(item, show_notes: bool = False) -> str:
     return line
 
 
+def _get_todo_for_thread(todo_list, todo_id: str, thread_id: str):
+    """Return a TODO only when it belongs to the current thread."""
+    item = todo_list.get_item(todo_id)
+    if not item or item.thread_id != thread_id:
+        return None
+    return item
+
+
+def _todo_not_found_for_thread(todo_id: str) -> str:
+    return (
+        f"[Error]: TODO '{todo_id}' not found for this thread. "
+        "Use nym_todo_list to see available TODOs."
+    )
+
+
 @tool
 def nym_todo(
     todo_id: Optional[str] = None,
@@ -202,6 +217,10 @@ def nym_todo(
     # Use atomic update to prevent race conditions
     rescheduled_time = None
     with manager.atomic_update(user_id) as todo_list:
+        item = _get_todo_for_thread(todo_list, todo_id, thread_id)
+        if not item:
+            return _todo_not_found_for_thread(todo_id)
+
         success = todo_list.update_item(
             todo_id,
             task=task,
@@ -286,7 +305,7 @@ def nym_todo(
                 result += " (recurrence cleared)"
             return result
         else:
-            return f"[Error]: TODO '{todo_id}' not found. Use nym_todo_list to see available TODOs."
+            return _todo_not_found_for_thread(todo_id)
 
 
 def _todo_complete_internal(
@@ -377,11 +396,16 @@ def nym_todo_delete(
     logger.info(f"nym_todo_delete called: id={todo_id}")
 
     user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
     manager = _get_todo_manager()
     schedule_db = _get_schedule_db()
 
     # Use atomic update to prevent race conditions
     with manager.atomic_update(user_id) as todo_list:
+        item = _get_todo_for_thread(todo_list, todo_id, thread_id)
+        if not item:
+            return _todo_not_found_for_thread(todo_id)
+
         deleted = todo_list.delete_item(todo_id)
         if deleted:
             logger.info(f"TODO deleted for user {user_id}: {todo_id}")
@@ -399,7 +423,7 @@ def nym_todo_delete(
             )
             return f"[Deleted]: {deleted.task[:100]}"
         else:
-            return f"[Error]: TODO '{todo_id}' not found. Use nym_todo_list to see available TODOs."
+            return _todo_not_found_for_thread(todo_id)
 
 
 @tool
@@ -417,26 +441,28 @@ def nym_todo_list(
     logger.info(f"nym_todo_list called: filter={filter_status}")
 
     user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
     manager = _get_todo_manager()
     todo_list_obj = manager.get_todos(user_id)
+    thread_items = [i for i in todo_list_obj.items if i.thread_id == thread_id]
 
     # Filter items
     if filter_status == "all":
-        items = todo_list_obj.items
+        items = thread_items
     elif filter_status:
         try:
             status = TodoStatus(filter_status.lower())
-            items = [i for i in todo_list_obj.items if i.status == status]
+            items = [i for i in thread_items if i.status == status]
         except ValueError:
             return f"[Error]: Invalid status filter '{filter_status}'. Use 'pending', 'in_progress', 'done', or 'all'."
     else:
         # Default: active (non-done) items
-        items = todo_list_obj.get_active_todos()
+        items = [i for i in thread_items if i.is_active()]
 
     if not items:
         if filter_status:
-            return f"[Info]: No TODOs with status '{filter_status}'."
-        return "[Info]: No active TODOs. Use nym_todo to create tasks."
+            return f"[Info]: No TODOs with status '{filter_status}' for this thread."
+        return "[Info]: No active TODOs for this thread. Use nym_todo to create tasks."
 
     # Sort: in_progress first, then pending, then done; then by scheduled_for, then created_at
     sorted_items = sorted(

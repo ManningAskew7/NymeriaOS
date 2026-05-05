@@ -475,6 +475,8 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Limits:** 50 active TODOs per user (`MAX_TODOS` in `TodoList`).
 
+**Thread scope:** Creates TODOs on the current thread. Updates only find TODOs that already belong to the current thread; a TODO ID from another thread is treated as not found.
+
 **Statuses:** `pending` (default), `in_progress`, `done`. Use `nym_todo(todo_id=..., status="done")` to complete a TODO.
 
 **Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
@@ -494,13 +496,15 @@ nym_todo_delete(todo_id: str)
 **Parameters:**
 - `todo_id` (`str`): The 8-character TODO ID
 
+Only deletes TODOs that belong to the current thread. A TODO ID from another thread is treated as not found.
+
 **Returns:** Confirmation with deleted task text, or error.
 
 ---
 
 ### nym_todo_list
 
-List TODO items. Shows active (non-done) by default.
+List TODO items for the current thread. Shows active (non-done) by default.
 
 ```python
 nym_todo_list(filter_status: Optional[str] = None)
@@ -508,6 +512,8 @@ nym_todo_list(filter_status: Optional[str] = None)
 
 **Parameters:**
 - `filter_status` (`Optional[str]`): `"pending"`, `"in_progress"`, `"done"`, or `"all"`
+
+`filter_status="all"` includes all statuses for the current thread only. It does not list TODOs from other threads; use explicit dashboard/API views or `watchdog_todo_overview` for cross-thread TODOs.
 
 **Returns:** Formatted list sorted by: status (in_progress first, then pending, then done), then scheduled time, then creation date.
 
