@@ -580,7 +580,7 @@ reasoning text.
 
 | File | Responsibility |
 | --- | --- |
-| `nymeria/vendor/react_agent/providers.py` | Builds OpenRouter `ChatOpenAI`, selects Responses vs Chat Completions, normalizes payloads, rescues OpenRouter reasoning stream events, replays chat-completions reasoning details. |
+| `nymeria/vendor/react_agent/providers.py` | Builds OpenRouter `ChatOpenAIWithReasoning`, selects Responses vs Chat Completions, normalizes payloads, rescues OpenRouter reasoning stream events, replays chat-completions reasoning details, and supplies loop-local async HTTP pools so OpenRouter graphs are safe across FastAPI and bridge event loops. |
 | `nymeria/core/agent.py` | Streams LangGraph events to Nymeria SSE events, extracts thinking/content blocks, strips inline `<think>` leaks, rehydrates `/history`. |
 | `nymeria/vendor/react_agent/nodes.py` | Builds the message list passed to the LLM node and handles provider-specific sanitation before invocation. |
 | `nymeria/config/settings.py` | Global `OPENAI_API_MODE`, provider, model, reasoning, and base URL settings. |

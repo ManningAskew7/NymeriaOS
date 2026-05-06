@@ -19,6 +19,7 @@ from nymeria.tools import calendar_auth
 from nymeria.tools import google_docs
 from nymeria.tools import google_docs_auth
 from nymeria.tools import google_sheets
+from nymeria.tools import gmail_auth
 from nymeria.tools import outlook_auth
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
@@ -433,8 +434,15 @@ def test_google_auth_tool_sets_are_generated_with_stable_names():
         "google_docs_auth_clear",
         "google_docs_list_accounts",
     ]
+    assert [tool.name for tool in gmail_auth.GMAIL_AUTH_TOOLS] == [
+        "gmail_auth_start",
+        "gmail_auth_complete",
+        "gmail_auth_clear",
+        "gmail_list_accounts",
+    ]
     assert calendar_auth.calendar_auth_start is calendar_auth.CALENDAR_AUTH_TOOLS[0]
     assert google_docs_auth.google_docs_auth_start is google_docs_auth.GOOGLE_DOCS_AUTH_TOOLS[0]
+    assert gmail_auth.gmail_auth_start is gmail_auth.GMAIL_AUTH_TOOLS[0]
 
 
 def test_outlook_auth_cache_wrappers_delegate_to_shared_cache(monkeypatch):
@@ -577,20 +585,35 @@ def test_legacy_tool_names_migrate_to_consolidated_tools():
         "trigger_list",
         "trigger_inspect",
         "trigger_sources_info",
+        "mcp_search",
+        "mcp_install",
+        "mcp_manage",
     ]) == [
         "nym_todo",
         "nym_todo_delete",
         "nym_todo_list",
         "trigger_config",
         "trigger_info",
+        "search_mcp",
+        "install_mcp_server",
+        "manage_mcp",
     ]
 
     prefs = ToolPreferences(default_thread_tools=[
         "trigger_create",
         "trigger_update",
         "trigger_list",
+        "mcp_search",
+        "mcp_install",
+        "mcp_manage",
     ])
-    assert prefs.default_thread_tools == ["trigger_config", "trigger_info"]
+    assert prefs.default_thread_tools == [
+        "trigger_config",
+        "trigger_info",
+        "search_mcp",
+        "install_mcp_server",
+        "manage_mcp",
+    ]
 
     now = datetime.now(timezone.utc)
     tc = ThreadConfig(
@@ -601,12 +624,24 @@ def test_legacy_tool_names_migrate_to_consolidated_tools():
             "trigger_inspect": {
                 "enabled_at": now.isoformat(),
                 "expires_at": (now + timedelta(hours=1)).isoformat(),
+            },
+            "mcp_manage": {
+                "enabled_at": now.isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+            },
+            "mcp_install": {
+                "enabled_at": now.isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
             }
         },
     )
     assert tc.enabled_tools == ["trigger_config", "trigger_info"]
     assert tc.disabled_tools == ["trigger_config"]
-    assert list(tc.temporary_tools.keys()) == ["trigger_info"]
+    assert list(tc.temporary_tools.keys()) == [
+        "trigger_info",
+        "manage_mcp",
+        "install_mcp_server",
+    ]
 
 
 def test_legacy_tool_symbols_are_not_public_exports():
@@ -666,6 +701,27 @@ def test_builtin_tool_metadata_is_generated_from_registered_tools():
         for name, tool in sorted(tools.items())
         if get_all_tool_metadata(name).description != _description_from_tool(tool)
     ] == []
+
+
+def test_builtin_tool_names_avoid_claude_oauth_reserved_mcp_namespace():
+    registered_names = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)
+    rejected_by_claude_oauth = sorted(
+        name
+        for name in registered_names
+        if (
+            (name.startswith("mcp_") and not name.startswith("mcp__"))
+            or name.startswith("mcp.")
+            or name.startswith("mcp/")
+        )
+    )
+
+    assert "manage_mcp" in registered_names
+    assert "mcp_manage" not in registered_names
+    assert "search_mcp" in registered_names
+    assert "install_mcp_server" in registered_names
+    assert "mcp_search" not in registered_names
+    assert "mcp_install" not in registered_names
+    assert rejected_by_claude_oauth == []
 
 
 def test_new_registered_tools_receive_generated_metadata(monkeypatch):

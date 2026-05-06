@@ -109,6 +109,7 @@ async def _run_mcp_install(
     require_thread_access_fn: Callable[[AuthenticatedUser, str], None],
 ):
     from ...core.mcp_runtime import make_failed_draft, prepare_runtime
+    from ...core.mcp_auth_bridge import apply_mcp_auth_presets
 
     if plan.confirmation_required and not confirmed:
         defn.install_status = "draft"
@@ -126,6 +127,7 @@ async def _run_mcp_install(
     logs: List[str] = []
     try:
         defn, logs = prepare_runtime(defn, plan, config_values=config_values, log_sink=logs)
+        defn = apply_mcp_auth_presets(defn, user_id=user.id, log_sink=logs)
     except Exception as e:
         failed = make_failed_draft(defn, plan, str(e), logs)
         registry.save_server(failed)
@@ -253,6 +255,11 @@ def create_mcp_servers_router(
             startup_timeout_seconds=request.startup_timeout_seconds,
             enabled=request.enabled,
         )
+        install_logs: List[str] = []
+        from ...core.mcp_auth_bridge import apply_mcp_auth_presets
+
+        defn = apply_mcp_auth_presets(defn, user_id=user.id, log_sink=install_logs)
+        defn.install_logs = install_logs
         registry.save_server(defn)
 
         # Discover tools
@@ -330,6 +337,11 @@ def create_mcp_servers_router(
         for key, value in update_data.items():
             setattr(defn, key, value)
 
+        install_logs = list(defn.install_logs or [])
+        from ...core.mcp_auth_bridge import apply_mcp_auth_presets
+
+        defn = apply_mcp_auth_presets(defn, user_id=user.id, log_sink=install_logs)
+        defn.install_logs = install_logs
         registry.save_server(defn)
 
         # Re-discover tools

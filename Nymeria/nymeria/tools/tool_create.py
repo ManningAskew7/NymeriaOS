@@ -340,6 +340,8 @@ def _publish_draft(
     thread_id: str,
     ttl: str,
     tool_call_id: str,
+    reload_source: str = "tool_create",
+    reload_reason: str = "tool_published",
 ) -> Union[str, Command]:
     from ..core.agent import get_current_agent
 
@@ -411,8 +413,8 @@ def _publish_draft(
         user_id,
         ttl=ttl_key,
         tool_call_id=tool_call_id,
-        source="tool_create",
-        reason="tool_published",
+        source=reload_source,
+        reason=reload_reason,
     )
     return _prefix_command_result(enable_result, publish_text, tool_call_id)
 

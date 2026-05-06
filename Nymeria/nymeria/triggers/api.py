@@ -400,6 +400,15 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         redoc_url="/redoc",
     )
 
+    async def _close_provider_http_pools() -> None:
+        from ..vendor.react_agent.providers import (
+            close_provider_async_http_pools_for_loop,
+        )
+
+        await close_provider_async_http_pools_for_loop()
+
+    app.router.add_event_handler("shutdown", _close_provider_http_pools)
+
     # Add CORS middleware with configurable origins
     app.add_middleware(
         CORSMiddleware,

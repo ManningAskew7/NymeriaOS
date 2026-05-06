@@ -4,13 +4,14 @@ How Nymeria enables and uses optional tools within a single user turn, without r
 
 ## Problem
 
-LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()`. Once a graph invocation starts, the tool list is frozen. When the agent discovers it needs a tool it doesn't have (e.g. `pdf_write`), calling `tool_search(action="enable")` persists the enablement but the tool isn't callable until the **next** graph invocation — which normally means the next user message.
+LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()`. Once a graph invocation starts, the tool list is frozen. When the agent discovers it needs a tool it doesn't have (e.g. `pdf_write`), calling `tool_enable(action="enable")` persists the enablement but the tool isn't callable until the **next** graph invocation — which normally means the next user message.
 
 This breaks the autonomous "search, enable, use" flow:
 
 ```
+Skill("self-improve")       → binds capability expansion tools
 tool_search("pdf")          → finds pdf_view, pdf_edit, pdf_write
-tool_search(enable, [...])  → persists to thread config
+tool_enable(enable, [...])  → persists to thread config
 pdf_write(...)              → fails: not bound to the LLM
 ```
 
@@ -24,9 +25,10 @@ Tool hot-loading does the same thing:
 User: "convert report.docx to PDF"
   │
   ├─ Graph invocation #1 (no pdf_* tools bound)
-  │    ├─ tool_call: tool_search(action="search", query="pdf")
+  │    ├─ tool_call: Skill(name="self-improve")
+  │    ├─ tool_call: tool_search(query="pdf")
   │    ├─ tool_result: pdf_view, pdf_edit, pdf_write found
-  │    ├─ tool_call: tool_search(action="enable", tools=["pdf_write"])
+  │    ├─ tool_call: tool_enable(action="enable", tools=["pdf_write"])
   │    │    ├─ Persists to thread config (with TTL)
   │    │    ├─ Sets agent._pending_tool_reload[thread_id]
   │    │    ├─ Invalidates cached graph
@@ -59,7 +61,7 @@ even when LangGraph also sees a regular post-tools edge.
 
 ## Skill Kit Binding
 
-Skill Kits use the same reload path as `tool_search`. When `Skill(name=...)`
+Skill Kits use the same reload path as `tool_enable`. When `Skill(name=...)`
 activates a skill whose `metadata.nymeria.required_tools` list contains tools
 that are not currently bound, the Skill tool:
 
@@ -68,7 +70,7 @@ that are not currently bound, the Skill tool:
 2. Writes the required tools to `temporary_tools` or `enabled_tools` using the
    skill's `metadata.nymeria.tool_ttl` (`2h` by default).
 3. Removes required tools from `disabled_tools` when needed, matching
-   `tool_search(action="enable")`.
+   `tool_enable(action="enable")`.
 4. Queues `_pending_tool_reload[thread_id]` with `source="skill_kit"`,
    `skill_name`, and `reason`.
 5. Returns the skill body plus STOP guidance in a marked `Command(goto=END)`
@@ -87,7 +89,12 @@ validated HTTP tool definition, reloads the custom-tool registry, and enables
 the new tool on the publishing thread. These reloads carry
 `source="tool_create"` and `reason="tool_published"` so history, resume text,
 and frontend indicators can distinguish agent-authored tools from a normal
-`tool_search(action="enable")` request.
+`tool_enable(action="enable")` request.
+
+`manage_mcp(action="install")` uses the same path after successful MCP tool
+discovery. It enables discovered `mcp__...` tools on the current thread and
+queues reload metadata with `source="mcp_install"` so the tools are usable in
+the same user turn.
 
 ## Skill Publish Reloads
 
@@ -97,6 +104,10 @@ and updates `ThreadConfig.enabled_skills`. In this case the reload refreshes
 the generated `Skill` meta-tool index rather than binding a normal tool, so
 the emitted `tool_reload` event may have `tools: []` with
 `source="skill_config"`, `skill_name`, and `reason="skill_published"`.
+
+`skill_manage(action="install"|"enable", activate_current_thread=true)` queues
+`source="skill_install"`. `skill_kit_create(action="publish"|"package")`
+queues `source="skill_kit_create"` and `reason="skill_kit_created"`.
 
 ## TTL (Time-to-Live) Enablements
 
@@ -116,7 +127,7 @@ Not every tool enable should be permanent. A one-shot PDF conversion doesn't nee
 
 `ThreadConfig` has two fields for enabled tools:
 
-- **`enabled_tools: List[str]`** — Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_search(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
+- **`enabled_tools: List[str]`** — Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_enable(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
 
 - **`temporary_tools: Dict[str, TemporaryToolEntry]`** — TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps. This is the new field.
 
@@ -128,7 +139,7 @@ No background scheduler. At graph-build time, `_resolve_temporary_tools()` filte
 
 ### Sliding Renewal
 
-Calling `tool_search(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
+Calling `tool_enable(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
 
 ### Disable Preserves State
 
@@ -136,17 +147,17 @@ When a tool is disabled, it's added to `disabled_tools` but **not** removed from
 
 ## Code Reference
 
-### Entry Point: `tool_search()` — `tools/tool_search.py:703`
+### Entry Points: `tool_search()` and `tool_enable()` — `tools/tool_search.py`
 
-The `@tool` function dispatches on `action`:
+`tool_search()` is search-only. `tool_enable()` dispatches on binding actions:
 
 | Action | Handler | Returns |
 |--------|---------|---------|
-| `search` | `_search()` `:174` | String with up to 15 results, annotated with `[ENABLED Xh Ym left]` or `[DISABLED]` |
-| `enable` | `_enable()` `:246` | `Command(goto=END)` if reload needed, plain string otherwise |
-| `disable` | `_disable()` `:538` | String summary |
-| `status` | `_status()` `:652` | Thread's full tool status (permanent, TTL, disabled sections) |
-| `list_categories` | `_list_categories()` `:632` | All categories with tool counts |
+| `tool_search` | `_search()` | String with up to `top_k` results, optionally annotated with `[ENABLED Xh Ym left]` or `[DISABLED]` |
+| `tool_enable(action="enable")` | `_enable()` | `Command(goto=END)` if reload needed, plain string otherwise |
+| `tool_enable(action="disable")` | `_disable()` | String summary |
+| `tool_enable(action="status")` | `_status()` | Thread's full tool status (permanent, TTL, disabled sections) |
+| `tool_enable(action="list_categories")` | `_list_categories()` | All categories with tool counts |
 
 ### Enable Classification: `_enable()` — `tools/tool_search.py:246`
 
@@ -305,6 +316,13 @@ autonomous workers also share `stream_and_collect()` for response collection
 and iteration-limit bookkeeping; caller-specific event payloads remain in the
 ticker, trigger, callable-thread, and spawned-thread modules.
 
+The bridge owns one process-local asyncio loop for sync callers. Async graph
+caches include the owning loop id, and provider HTTP pools in
+`vendor/react_agent/providers.py` are loop-local for Anthropic plus
+OpenAI-compatible providers. Do not replace this with per-call
+`asyncio.run()`/fresh-loop execution; that can move cached provider clients
+across closed or foreign loops during callable orchestration.
+
 Both `_pending_tool_reload` and `_turn_reload_count` are intentionally process-local and ephemeral. A process restart loses any in-flight reload, but the underlying tool enablement is already persisted in the thread config before the reload flag is set. The next turn's graph build picks up the enabled tools normally.
 
 ### Dangling Tool Calls
@@ -313,14 +331,14 @@ The `finally` block at `:4280` patches dangling tool calls for **both** invocati
 
 ### Idempotence
 
-If `tool_search(action="enable")` is called with tools that are already enabled, no reload flag is set (they fall into `already_permanent`, `already_default`, or `refreshed` buckets). No auto-continue triggers, the turn proceeds normally.
+If `tool_enable(action="enable")` is called with tools that are already enabled, no reload flag is set (they fall into `already_permanent`, `already_default`, or `refreshed` buckets). No auto-continue triggers, the turn proceeds normally.
 
 ## SSE Event Protocol
 
 The new `tool_reload` event sits between the two graph invocations:
 
 ```
-tool_call(tool_search enable) → tool_result → tool_reload → [second invocation events] → done
+tool_call(tool_enable enable) → tool_result → tool_reload → [second invocation events] → done
 ```
 
 | Field | Type | Description |
@@ -329,8 +347,8 @@ tool_call(tool_search enable) → tool_result → tool_reload → [second invoca
 | `tools` | `string[]` | Names of newly-loaded tools |
 | `ttl` | `string` | TTL preset key (`"2h"`, `"permanent"`, etc.) |
 | `ttl_seconds` | `int \| null` | TTL in seconds, or null for permanent |
-| `source` | `string` | `"tool_search"`, `"tool_create"`, `"skill_kit"`, or `"skill_config"` |
-| `skill_name` | `string \| null` | Skill Kit name when `source="skill_kit"` or `source="skill_config"` |
+| `source` | `string` | `"tool_enable"`, `"tool_create"`, `"skill_kit"`, `"skill_config"`, `"mcp_install"`, `"skill_install"`, or `"skill_kit_create"` |
+| `skill_name` | `string \| null` | Skill Kit/name context for skill-driven reloads |
 | `reason` | `string \| null` | Human-readable reload reason |
 
 Existing clients can ignore `source`, `skill_name`, and `reason`; they are
@@ -372,7 +390,7 @@ Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffere
 | `tools/tool_search.py` | +492 | TTL support, classification buckets, `Command(goto=END)` return, reload cap logic, preserve-on-disable, status/search annotations |
 | `core/tool_reload.py` + `vendor/react_agent/{graph,nodes}.py` | small | Private reload marker plus post-tools routing guard so same-turn reloads end before the model continues |
 | `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()` and `chat()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
-| `core/stream_bridge.py` | new | Sync worker bridge that lets scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` live |
+| `core/stream_bridge.py` | new | Sync worker bridge that lets scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` live on one bridge loop |
 | `core/thread_config.py` | +19 | `TemporaryToolEntry` model, `temporary_tools` field on `ThreadConfig` |
 | `tools/metadata.py` | +7 | Updated `tool_search` description |
 | `docs/tools.md` | +46 | Updated tool_search section with TTL and auto-continue docs |

@@ -343,7 +343,7 @@ class Settings(BaseSettings):
     # MCP discovery registries
     mcp_registry_url: str = Field(
         default="https://registry.modelcontextprotocol.io",
-        description="Base URL of the official MCP registry used by mcp_search/mcp_install",
+        description="Base URL of the official MCP registry used by search_mcp/install_mcp_server",
     )
     smithery_api_key: Optional[str] = Field(
         default=None,

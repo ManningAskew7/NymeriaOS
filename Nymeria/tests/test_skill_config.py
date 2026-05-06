@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import importlib
 import threading
 from pathlib import Path
@@ -21,6 +22,7 @@ from nymeria.tools.skill_config import (
     SkillDraftStore,
     create_skill_draft,
     skill_config,
+    skill_kit_create,
 )
 
 
@@ -157,6 +159,40 @@ def test_skill_config_publish_user_skill_activates_thread_and_queues_reload(tmp_
     assert message.additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
     assert agent._pending_tool_reload["thread-a"]["source"] == "skill_config"
     assert agent._pending_tool_reload["thread-a"]["skill_name"] == "hello-workflow"
+
+
+def test_skill_kit_create_package_uses_facade_reload_source(tmp_path: Path, monkeypatch):
+    skill_config_module = importlib.import_module("nymeria.tools.skill_config")
+
+    monkeypatch.setattr(
+        skill_config_module,
+        "_draft_store",
+        lambda: SkillDraftStore(tmp_path / "drafts"),
+    )
+    agent = _FakeAgent(tmp_path)
+    set_current_agent(agent)
+    try:
+        result = asyncio.run(
+            skill_kit_create.coroutine(
+                "package",
+                name="facade-workflow",
+                description="Package an existing workflow through the facade.",
+                body="# Facade Workflow\n\nUse bash_execute only if needed.",
+                required_tools=["bash_execute"],
+                tool_call_id="call-1",
+                config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
+            )
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, Command)
+    message = result.update["messages"][0]
+    payload = _json_prefix(message.content)
+    assert payload["ok"] is True
+    assert payload["skill"]["name"] == "facade-workflow"
+    assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit_create"
+    assert agent._pending_tool_reload["thread-a"]["reason"] == "skill_kit_created"
 
 
 def test_skill_config_rejects_admin_only_required_tool_without_write(tmp_path: Path, monkeypatch):

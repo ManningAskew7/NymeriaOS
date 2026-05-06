@@ -202,19 +202,24 @@ Back this file up alongside `nymeria.db` — losing it locks every user out.
 
 ## Per-user OAuth token caches
 
-Google (Calendar/Docs/Drive/Sheets) and Microsoft (Outlook/Graph) OAuth tokens live at `data/auth_tokens/<user_id>/` — isolated per Nymeria user so one account's bot agent can't read another's Gmail/Outlook.
+Google (Calendar/Docs/Drive/Sheets/Gmail) and Microsoft (Outlook/Graph) OAuth tokens live at `data/auth_tokens/<user_id>/` — isolated per Nymeria user so one account's bot agent can't read another's Gmail/Outlook.
 
 | Service | Cache file |
 |---|---|
 | Google Calendar | `data/auth_tokens/<user_id>/google_calendar.json` |
 | Google Docs/Drive/Sheets | `data/auth_tokens/<user_id>/google_docs.json` |
+| Google Gmail | `data/auth_tokens/<user_id>/google_gmail.json` |
+| Gmail MCP credential export | `data/auth_tokens/<user_id>/mcp/gmail/credentials.json` |
 | Microsoft Outlook/Graph | `data/auth_tokens/<user_id>/microsoft.json` |
+| Private B/Moodle | `data/auth_tokens/<user_id>/_prv_b.json` |
 
 **On first boot with the per-user refactor**, existing global caches (`data/auth_tokens/.microsoft_mcp_token_cache.json` etc.) are automatically migrated to `data/auth_tokens/default/*.json`. The owner's existing Google/Outlook auth survives — other users start with empty caches and run the usual `calendar_auth_start` / `google_docs_auth_start` / `outlook_auth_start` tool flows to authenticate their own accounts independently.
 
 Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the agent sets `configurable.user_id` on every graph invocation). No tool can be tricked into loading a different user's token cache.
 
-If an OAuth token becomes stale, revoked, or attached to the wrong account, use the matching clear tool instead of deleting legacy home-directory files: `calendar_auth_clear`, `google_docs_auth_clear`, or `outlook_auth_clear`. With no `account_id`, each clear tool removes all cached accounts for the current Nymeria user and clears any pending auth flow for that provider; with `account_id`, it removes only that saved account. `calendar_auth_start` and `google_docs_auth_start` also prune expired Google accounts automatically when Google rejects the stored refresh token.
+If an OAuth token becomes stale, revoked, or attached to the wrong account, use the matching clear tool instead of deleting legacy home-directory files: `calendar_auth_clear`, `google_docs_auth_clear`, `gmail_auth_clear`, `outlook_auth_clear`, or `_prv_b_auth(action="clear")`. With no `account_id`, each OAuth clear tool removes all cached accounts for the current Nymeria user and clears any pending auth flow for that provider; with `account_id`, it removes only that saved account. `calendar_auth_start`, `google_docs_auth_start`, and `gmail_auth_start` also prune expired Google accounts automatically when Google rejects the stored refresh token.
+
+`_prv_b.json` currently stores the the LMS calendar export URL, RSS feed URLs, and Moodle mobile `wstoken` as plaintext JSON, matching the existing token-cache pattern. Before production or multi-user hosting with untrusted users, migrate those fields to Fernet-encrypted values using `NYMERIA_SECRETS_KEY` from `nymeria/core/secrets.py`.
 
 ## Thread ownership
 

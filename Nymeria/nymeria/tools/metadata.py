@@ -26,6 +26,7 @@ class ToolCategory(str, Enum):
     BROWSER = "browser"
     CALENDAR = "calendar"
     GOOGLE_DOCS = "google_docs"
+    _PRV_B = "_prv_b"
     TWITCH = "twitch"
     _PRV_A = "_prv_a"
     SKILLS = "skills"
@@ -113,10 +114,11 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.SELF_MODIFY, ("SELF_AGENT_TOOLS", "RUNTIME_ADMIN_TOOLS")),
     (ToolCategory.THREAD_SPAWN, ("SPAWN_THREAD_TOOLS",)),
     (ToolCategory.TRIGGER, ("TRIGGER_TOOLS",)),
-    (ToolCategory.EMAIL, ("OUTLOOK_TOOLS", "OUTLOOK_ATTACHMENT_TOOLS")),
+    (ToolCategory.EMAIL, ("OUTLOOK_TOOLS", "GMAIL_AUTH_TOOLS", "OUTLOOK_ATTACHMENT_TOOLS")),
     (ToolCategory.BROWSER, ("BROWSER_TOOLS",)),
     (ToolCategory.CALENDAR, ("CALENDAR_TOOLS",)),
     (ToolCategory.GOOGLE_DOCS, ("GOOGLE_DOCS_TOOLS", "GOOGLE_SHEETS_TOOLS")),
+    (ToolCategory._PRV_B, ("_PRV_TOOLS_B",)),
     (
         ToolCategory._PRV_A,
         (
@@ -131,7 +133,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),
-    (ToolCategory.CUSTOM, ("TOOL_CREATE_TOOLS", "SKILL_CONFIG_TOOLS")),
+    (ToolCategory.CUSTOM, ("TOOL_CREATE_TOOLS", "SKILL_CONFIG_TOOLS", "SKILL_KIT_CREATE_TOOLS")),
 )
 
 
@@ -145,6 +147,10 @@ _CORE_MODERATE_TOOL_NAMES = frozenset(
         "slash_command",
         "http_request",
         "api_discover",
+        "tool_enable",
+        "manage_mcp",
+        "skill_manage",
+        "skill_kit_create",
     }
 )
 
@@ -174,6 +180,7 @@ _EMAIL_SAFE_TOOL_NAMES = frozenset(
         "outlook_mark_email",
         "outlook_get_attachments",
         "outlook_set_category",
+        "gmail_list_accounts",
     }
 )
 
@@ -309,12 +316,14 @@ def _infer_security_level(
             if tool_name in _GOOGLE_DOCS_SAFE_TOOL_NAMES
             else SecurityLevel.MODERATE
         )
+    if category == ToolCategory._PRV_B:
+        return SecurityLevel.MODERATE
     if category == ToolCategory.TWITCH:
         return SecurityLevel.SAFE if tool_name.startswith(("twitch_read", "twitch_get")) else SecurityLevel.MODERATE
     if category == ToolCategory.SKILLS:
-        return SecurityLevel.MODERATE if tool_name == "install_skill" else SecurityLevel.SAFE
+        return SecurityLevel.MODERATE if tool_name in {"install_skill", "skill_manage"} else SecurityLevel.SAFE
     if category == ToolCategory.MCP_SERVER:
-        return SecurityLevel.MODERATE if tool_name == "mcp_install" else SecurityLevel.SAFE
+        return SecurityLevel.MODERATE if tool_name in {"install_mcp_server", "manage_mcp"} else SecurityLevel.SAFE
     if category == ToolCategory.AUTONOMY:
         return SecurityLevel.MODERATE if tool_name == "watchdog_dispatch" else SecurityLevel.SAFE
     if category in {ToolCategory.THREAD_SPAWN, ToolCategory.CUSTOM}:

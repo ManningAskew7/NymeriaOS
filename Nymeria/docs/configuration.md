@@ -437,11 +437,12 @@ ANTHROPIC_API_KEY=nymeria-local-dev-key  # Proxy auth key (matches api-keys in p
 
 When `LLM_BASE_URL` is set for the `anthropic` provider, `ChatAnthropic` is configured with:
 - `anthropic_api_url` pointed at the proxy
-- A `User-Agent: claude-cli/nymeria` header that tells CLIProxyAPI to skip system prompt cloaking (so Nymeria's own `soul.md` is preserved)
+- A `User-Agent: claude-cli/2.1.113` header that tells CLIProxyAPI v6.9.36 to skip system prompt cloaking (so Nymeria's own `soul.md` is preserved)
+- Loop-local async HTTP clients so cached graph/model objects are safe when regular API chat and callable/autonomous bridge execution use different asyncio event loops
 
 #### OpenAI-Compatible / Codex OAuth
 
-Uses `ChatOpenAI` pointed at the proxy's OpenAI-compatible endpoint. The base URL must include `/v1`; otherwise Responses mode posts to `/responses` and CLIProxy returns `404 page not found`.
+Uses Nymeria's `ChatOpenAIWithReasoning` subclass pointed at the proxy's OpenAI-compatible endpoint. The base URL must include `/v1`; otherwise Responses mode posts to `/responses` and CLIProxy returns `404 page not found`.
 
 ```bash
 LLM_PROVIDER=openai
@@ -453,6 +454,8 @@ EMBEDDING_API_KEY=sk-...               # Optional hosted/local embeddings key; d
 ```
 
 For GPT-5.5 through Codex OAuth, run the sidecar documented in `docs/cliproxy.md`. To route individual threads, use **Thread Settings → Model → OpenAI (Custom base URL)** and set the thread-level Base URL/API Key fields; the default OpenAI API mode is `Responses API`, with `Chat Completions` available only as a compatibility override and not recommended if thinking is enabled. To route the whole deployment, use **Settings → LLM → OpenAI (Custom base URL)** and keep `OPENAI_API_MODE=responses` in `.env.docker`. Per-thread overrides honor `provider`, `base_url`, `api_key`, and `openai_api_mode` — the API key is the CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI key.
+
+OpenAI-compatible providers also receive Nymeria-managed loop-local `http_async_client` pools. This bypasses LangChain's process-global async `httpx` client cache so direct OpenAI, OpenRouter, and CLIProxy/Codex models remain safe when a cached thread graph is used from both the FastAPI event loop and the sync stream-bridge loop.
 
 **Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy.
 

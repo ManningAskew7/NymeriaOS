@@ -13,7 +13,7 @@ from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, Tempor
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.skills import load_skill_directory
 from nymeria.skills.meta_tool import create_skill_meta_tool
-from nymeria.tools.tool_search import bind_tools_for_thread
+from nymeria.tools.tool_search import bind_tools_for_thread, tool_enable, tool_search
 
 
 KIT_MD = """---
@@ -54,6 +54,16 @@ metadata:
 
 Use bash_execute only if needed.
 """
+
+SELF_IMPROVE_REQUIRED_TOOLS = [
+    "tool_search",
+    "tool_enable",
+    "manage_mcp",
+    "skill_manage",
+    "api_discover",
+    "http_request",
+    "skill_kit_create",
+]
 
 
 class _FakeRegistry:
@@ -139,6 +149,152 @@ def test_skill_kit_binding_writes_ttl_and_source_reload_metadata(tmp_path: Path)
     assert "hello_test" in tc.temporary_tools
     assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit"
     assert agent._pending_tool_reload["thread-a"]["skill_name"] == "hello-kit"
+
+
+def test_self_improve_required_tools_bind_for_non_admin(tmp_path: Path):
+    agent = _FakeAgent(tmp_path, role="user")
+    set_current_agent(agent)
+    try:
+        result = bind_tools_for_thread(
+            SELF_IMPROVE_REQUIRED_TOOLS,
+            "",
+            "thread-a",
+            "user-a",
+            ttl="2h",
+            strict=True,
+            source="skill_kit",
+            skill_name="self-improve",
+        )
+    finally:
+        set_current_agent(None)
+
+    assert result.ok is True
+    assert result.reload_tools == sorted(SELF_IMPROVE_REQUIRED_TOOLS)
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert set(SELF_IMPROVE_REQUIRED_TOOLS).issubset(tc.temporary_tools)
+    assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit"
+    assert agent._pending_tool_reload["thread-a"]["skill_name"] == "self-improve"
+
+
+def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: Path):
+    agent = _FakeAgent(tmp_path)
+    set_current_agent(agent)
+    try:
+        search_result = tool_search.func(
+            query="browser",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+            top_k=5,
+        )
+        status_result = tool_enable.func(
+            action="status",
+            tool_call_id="call-status",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+        enable_result = tool_enable.func(
+            action="enable",
+            tools=["sticky_note"],
+            tool_call_id="call-enable",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert "[Tool Search]" in search_result
+    assert "browser_" in search_result
+    assert "[Thread Tool Status]" in status_result
+    assert isinstance(enable_result, Command)
+    assert "sticky_note" in agent.thread_config_manager.get_config("thread-a").temporary_tools
+    assert agent._pending_tool_reload["thread-a"]["source"] == "tool_enable"
+
+
+def test_mcp_install_binds_discovered_tools_and_queues_reload(tmp_path: Path, monkeypatch):
+    from nymeria.core import mcp_auth_bridge, mcp_runtime, mcp_servers
+    from nymeria.core.mcp_runtime import MCPInstallPlan
+    from nymeria.tools.definitions.mcp_schema import MCPDiscoveredTool, MCPServerDefinition
+    from nymeria.tools.metadata import clear_mcp_server_tool_metadata, register_mcp_server_tool_metadata
+    from nymeria.tools.search_mcp import _install_mcp_server_impl
+
+    clear_mcp_server_tool_metadata()
+
+    defn = MCPServerDefinition(
+        id="demo",
+        name="Demo",
+        transport="http",
+        url="http://example.test/mcp",
+    )
+    plan = MCPInstallPlan(
+        source_type="http",
+        runtime_type="http",
+        risk_level="low",
+        confirmation_required=False,
+        parsed_summary="Demo HTTP MCP server",
+    )
+    discovered = [MCPDiscoveredTool(name="lookup", description="Lookup data.")]
+
+    class FakeMCPRegistry:
+        def __init__(self):
+            self.saved = []
+
+        def get_server(self, server_id):
+            return None
+
+        def save_server(self, server_def):
+            self.saved.append(server_def)
+
+        def discover_tools(self, server_id):
+            defn.discovered_tools = discovered
+            return discovered
+
+    registry = FakeMCPRegistry()
+    live_tools = {}
+
+    class FakeRegistry:
+        def get_tool(self, name: str):
+            return live_tools.get(name)
+
+    agent = _FakeAgent(tmp_path)
+    agent.tool_registry = FakeRegistry()
+
+    def reload_mcp_server_tools():
+        tool_name = "mcp__demo__lookup"
+        register_mcp_server_tool_metadata(tool_name, "Lookup data.")
+        live_tools[tool_name] = SimpleNamespace(name=tool_name, description="Lookup data.")
+        return [tool_name]
+
+    agent.reload_mcp_server_tools = reload_mcp_server_tools
+
+    monkeypatch.setattr(mcp_runtime, "plan_text_source", lambda source, name=None: (defn, plan))
+    monkeypatch.setattr(
+        mcp_runtime,
+        "prepare_runtime",
+        lambda server_def, install_plan, config_values, log_sink: (server_def, log_sink),
+    )
+    monkeypatch.setattr(
+        mcp_auth_bridge,
+        "apply_mcp_auth_presets",
+        lambda server_def, user_id, log_sink: server_def,
+    )
+    monkeypatch.setattr(mcp_servers, "get_mcp_server_registry", lambda: registry)
+
+    set_current_agent(agent)
+    try:
+        result = _install_mcp_server_impl(
+            source="http://example.test/mcp",
+            ttl="2h",
+            tool_call_id="call-mcp",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+        clear_mcp_server_tool_metadata()
+
+    assert isinstance(result, Command)
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert "mcp__demo__lookup" in tc.temporary_tools
+    assert agent._pending_tool_reload["thread-a"]["source"] == "mcp_install"
+    assert agent._pending_tool_reload["thread-a"]["new_tools"] == ["mcp__demo__lookup"]
 
 
 def test_skill_kit_binding_un_disables_required_tool(tmp_path: Path):

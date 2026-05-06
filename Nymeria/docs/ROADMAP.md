@@ -37,7 +37,7 @@ Rather than filling out the MCP tool form by hand, users (and the agent) can pas
 - `core/mcp_installer.py` — paste parser
 - `core/mcp_runtime.py` — preview, smart-confirm metadata, managed cache/source directories, Git/package/bundle preparation, encrypted config values, disabled failure drafts
 - `core/mcp_registry_client.py` — clients for registry.modelcontextprotocol.io + Smithery
-- `tools/search_mcp.py` — agent-facing `mcp_search` + `mcp_install`
+- `tools/search_mcp.py` — agent-facing `search_mcp` + `install_mcp_server`
 - `POST /mcp-servers/install/preview`, `/preview-upload`, `/install`, and `/{server_id}/retry` — REST endpoints for the desktop paste box
 - HTTP transport in `core/mcp_manager.py` alongside the existing stdio path
 - Lifecycle fixes: process-group spawn + kill, stderr drain thread, per-phase timeouts (init 10s / list 30s / call 60s)

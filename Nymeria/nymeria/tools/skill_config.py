@@ -360,7 +360,14 @@ def _activate_skill_on_thread(agent, thread_id: str, skill_name: str) -> bool:
     return changed
 
 
-def _queue_skill_reload(agent, thread_id: str, skill_name: str) -> tuple[bool, bool]:
+def _queue_skill_reload(
+    agent,
+    thread_id: str,
+    skill_name: str,
+    *,
+    source: str = "skill_config",
+    reason: str = "skill_published",
+) -> tuple[bool, bool]:
     """Queue a same-turn graph rebuild after a skill list change.
 
     Returns (queued, cap_hit).
@@ -378,9 +385,9 @@ def _queue_skill_reload(agent, thread_id: str, skill_name: str) -> tuple[bool, b
         "new_tools": [],
         "ttl": "",
         "ttl_seconds": None,
-        "source": "skill_config",
+        "source": source,
         "skill_name": skill_name,
-        "reason": "skill_published",
+        "reason": reason,
     }
     return True, False
 
@@ -448,6 +455,8 @@ def _publish_skill(
     thread_id: str,
     overwrite: bool,
     activate_current_thread: bool,
+    reload_source: str = "skill_config",
+    reload_reason: str = "skill_published",
 ) -> tuple[str, bool, bool, Skill]:
     from ..core.agent import get_current_agent
 
@@ -499,7 +508,13 @@ def _publish_skill(
     cap_hit = False
     if activate_current_thread:
         activated = _activate_skill_on_thread(agent, thread_id, draft.name)
-        queued_reload, cap_hit = _queue_skill_reload(agent, thread_id, draft.name)
+        queued_reload, cap_hit = _queue_skill_reload(
+            agent,
+            thread_id,
+            draft.name,
+            source=reload_source,
+            reason=reload_reason,
+        )
 
     _invalidate_graph_caches(agent)
     return str(skill_md), activated, cap_hit if not queued_reload else False, loaded
@@ -717,4 +732,237 @@ def skill_config(
         return _json_result(ok=False, error={"type": type(exc).__name__, "message": str(exc)})
 
 
+@tool
+async def skill_kit_create(
+    action: str,
+    name: str = "",
+    description: str = "",
+    body: str = "",
+    allowed_tools: Optional[list[str] | str] = None,
+    required_tools: Optional[list[str] | str] = None,
+    tool_ttl: str = DEFAULT_SKILL_KIT_TOOL_TTL,
+    draft_id: str = "",
+    scope: str = "user",
+    overwrite: bool = False,
+    activate_current_thread: bool = True,
+    tool_id: str = "",
+    parameters: Optional[dict[str, Any]] = None,
+    http_config: Optional[dict[str, Any]] = None,
+    sample_params: Optional[dict[str, Any]] = None,
+    ttl: str = DEFAULT_SKILL_KIT_TOOL_TTL,
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> Union[str, Command]:
+    """Create durable Skill Kits, optionally drafting HTTP tools first.
+
+    Actions:
+      draft:             Save a Skill Kit draft.
+      validate:          Validate a draft or inline Skill Kit fields.
+      publish/package:   Publish a Skill Kit and optionally activate it here.
+      list:              List Skill Kit drafts, installed skills, and HTTP drafts.
+      draft_http_tool:   Draft an HTTP custom tool.
+      test_http_tool:    Test an HTTP custom tool draft.
+      publish_http_tool: Publish a tested HTTP tool and enable it on this thread.
+    """
+    user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
+    store = _draft_store()
+    action_key = (action or "").strip().lower()
+
+    try:
+        if action_key == "draft":
+            draft = create_skill_draft(
+                user_id=user_id,
+                name=name,
+                description=description,
+                body=body,
+                allowed_tools=allowed_tools,
+                required_tools=required_tools,
+                tool_ttl=tool_ttl,
+                draft_id=draft_id,
+            )
+            store.save(user_id, draft)
+            return _json_result(ok=True, action="draft", draft=draft.public_summary())
+
+        if action_key == "validate":
+            draft = _load_draft_or_inline(
+                store=store,
+                user_id=user_id,
+                draft_id=draft_id,
+                name=name,
+                description=description,
+                body=body,
+                allowed_tools=allowed_tools,
+                required_tools=required_tools,
+                tool_ttl=tool_ttl,
+            )
+            return _json_result(ok=True, action="validate", draft=draft.public_summary())
+
+        if action_key in {"publish", "package"}:
+            from ..core.agent import get_current_agent
+
+            agent = get_current_agent()
+            if agent is None or getattr(agent, "skill_manager", None) is None:
+                return _json_result(ok=False, error={"type": "unavailable", "message": "skills subsystem not initialized"})
+            publish_scope = _coerce_scope(scope)
+            draft = _load_draft_or_inline(
+                store=store,
+                user_id=user_id,
+                draft_id=draft_id,
+                name=name,
+                description=description,
+                body=body,
+                allowed_tools=allowed_tools,
+                required_tools=required_tools,
+                tool_ttl=tool_ttl,
+            )
+            saved_path, activated, cap_hit, skill = _publish_skill(
+                draft=draft,
+                scope=publish_scope,
+                user_id=user_id,
+                thread_id=thread_id,
+                overwrite=overwrite,
+                activate_current_thread=activate_current_thread,
+                reload_source="skill_kit_create",
+                reload_reason="skill_kit_created",
+            )
+            queued_reload = bool(
+                activate_current_thread
+                and not cap_hit
+                and getattr(agent, "_pending_tool_reload", {}).get(thread_id)
+            )
+            payload = _json_result(
+                ok=True,
+                action="publish",
+                published=True,
+                saved_path=saved_path,
+                activated_current_thread=activated,
+                reload_queued=queued_reload,
+                reload_cap_hit=cap_hit,
+                skill={
+                    "name": skill.name,
+                    "description": skill.description,
+                    "scope": skill.scope,
+                    "required_tools": skill.required_tools,
+                    "tool_ttl": skill.tool_ttl,
+                    "is_skill_kit": skill.is_skill_kit,
+                },
+            )
+            if queued_reload:
+                payload += (
+                    "\n\n[Skill Kit reload queued - STOP NOW]\n"
+                    "The Skill Kit was created and enabled on this thread, but "
+                    "the current graph invocation cannot see the updated Skill "
+                    "meta-tool index. Do not write a final answer or call "
+                    "another tool now. The system will automatically resume "
+                    "you after rebuilding."
+                )
+            elif cap_hit:
+                payload += (
+                    "\n\n[Reload cap hit]: the Skill Kit was created and enabled "
+                    "on this thread, but it will not be visible until the next "
+                    "user message."
+                )
+            return _command_or_text(payload, queued_reload, tool_call_id)
+
+        if action_key == "list":
+            from .tool_create import _draft_store as tool_draft_store
+            from .tool_create import _published_summary
+            from ..core.custom_tools import get_custom_tool_loader
+            from ..core.agent import get_current_agent
+
+            agent = get_current_agent()
+            installed = []
+            if agent is not None and getattr(agent, "skill_manager", None) is not None:
+                installed = [
+                    {
+                        "name": skill.name,
+                        "description": skill.description,
+                        "scope": skill.scope,
+                        "required_tools": skill.required_tools,
+                        "tool_ttl": skill.tool_ttl,
+                        "is_skill_kit": skill.is_skill_kit,
+                    }
+                    for skill in agent.skill_manager.list_installed(user_id=user_id)
+                ]
+            loader = get_custom_tool_loader()
+            return _json_result(
+                ok=True,
+                action="list",
+                skill_drafts=[draft.public_summary() for draft in store.list(user_id)],
+                installed=installed,
+                http_tool_drafts=[
+                    draft.public_summary() for draft in tool_draft_store().list(user_id)
+                ],
+                published_http_tools=[
+                    _published_summary(defn)
+                    for defn in sorted(loader.get_all_definitions(), key=lambda item: item.id)
+                ],
+            )
+
+        if action_key == "draft_http_tool":
+            from .tool_create import _draft_store as tool_draft_store
+            from .tool_create import _json_result as tool_json_result
+            from .tool_create import create_draft_definition
+            from ..core.agent import get_current_agent
+
+            draft = create_draft_definition(
+                user_id=user_id,
+                tool_id=tool_id,
+                name=name,
+                description=description,
+                parameters=parameters,
+                http_config=http_config,
+                draft_id=draft_id,
+                agent=get_current_agent(),
+            )
+            tool_draft_store().save(user_id, draft)
+            return tool_json_result(ok=True, action="draft_http_tool", draft=draft.public_summary())
+
+        if action_key == "test_http_tool":
+            from .tool_create import _draft_store as tool_draft_store
+            from .tool_create import _json_result as tool_json_result
+            from .tool_create import _normalize_draft_id as normalize_tool_draft_id
+            from .tool_create import test_draft
+
+            target_draft_id = normalize_tool_draft_id(draft_id or tool_id)
+            result = await test_draft(tool_draft_store(), user_id, target_draft_id, sample_params)
+            return tool_json_result(action="test_http_tool", **result)
+
+        if action_key == "publish_http_tool":
+            from .tool_create import _draft_store as tool_draft_store
+            from .tool_create import _normalize_draft_id as normalize_tool_draft_id
+            from .tool_create import _publish_draft
+
+            target_draft_id = normalize_tool_draft_id(draft_id or tool_id)
+            return _publish_draft(
+                store=tool_draft_store(),
+                user_id=user_id,
+                draft_id=target_draft_id,
+                thread_id=thread_id,
+                ttl=ttl,
+                tool_call_id=tool_call_id,
+                reload_source="skill_kit_create",
+                reload_reason="http_tool_published_for_skill_kit",
+            )
+
+        return _json_result(
+            ok=False,
+            error={
+                "type": "validation_error",
+                "message": (
+                    "action must be one of: draft, validate, publish, package, "
+                    "list, draft_http_tool, test_http_tool, publish_http_tool"
+                ),
+            },
+        )
+    except ValueError as exc:
+        return _json_result(ok=False, error={"type": "validation_error", "message": str(exc)})
+    except Exception as exc:
+        logger.error("skill_kit_create failed", exc_info=True)
+        return _json_result(ok=False, error={"type": type(exc).__name__, "message": str(exc)})
+
+
 SKILL_CONFIG_TOOLS = [skill_config]
+SKILL_KIT_CREATE_TOOLS = [skill_kit_create]

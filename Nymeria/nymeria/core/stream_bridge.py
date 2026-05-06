@@ -242,6 +242,21 @@ class _StreamBridgeLoop:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
+        try:
+            from ..vendor.react_agent.providers import (
+                close_provider_async_http_pools_for_loop,
+            )
+
+            future = asyncio.run_coroutine_threadsafe(
+                close_provider_async_http_pools_for_loop(loop),
+                loop,
+            )
+            future.result(timeout=2)
+        except Exception:
+            logger.debug(
+                "[STREAM_BRIDGE] Failed to close loop-local provider HTTP pools",
+                exc_info=True,
+            )
         loop.call_soon_threadsafe(loop.stop)
         self._thread.join(timeout=2)
 

@@ -1,43 +1,55 @@
 ---
 name: self-improve
-description: Build durable Nymeria capabilities from plain-language user requests by discovering APIs, creating tested tools, and packaging them into Skill Kits.
+description: Expand Nymeria's capabilities by discovering tools, managing MCP servers and skills, probing APIs, and authoring durable Skill Kits.
 allowed-tools: Read
 metadata:
   nymeria:
     required_tools:
+      - tool_search
+      - tool_enable
+      - manage_mcp
+      - skill_manage
       - api_discover
       - http_request
-      - tool_create
-      - skill_config
+      - skill_kit_create
     tool_ttl: 2h
 ---
 
-# Self Improve
+# Capability Expansion / Skill Kit Authoring
 
-Use this skill when the user asks Nymeria to gain a durable new capability,
-integration, reusable workflow, or future behavior. The user should not need
-to know tool names, API schemas, YAML, or Skill Kit mechanics.
+Use this skill when the user asks Nymeria to gain a capability it does not
+already have: finding and enabling tools, installing or enabling skills,
+finding or installing MCP servers, probing an API, or creating a reusable
+Skill Kit. The user should not need to know tool names, schemas, YAML, MCP
+configuration, or Skill Kit mechanics.
 
 ## Workflow
 
-1. Decide whether an existing tool or skill already covers the request. Use
-   existing capabilities when they are sufficient; do not create duplicates.
-2. If a new HTTP/API tool is needed, discover the API first:
+1. Check whether an installed capability already covers the request:
+   - Use `tool_search` to find local, optional, custom, or discovered MCP tools.
+   - Use `tool_enable` only after you know the exact tool names or category.
+   - Use `skill_manage(action="search"|"list")` for installed or marketplace skills.
+   - Use `manage_mcp(action="search"|"inspect")` for MCP server capabilities.
+2. Enable existing capabilities before creating new ones:
+   - `tool_enable(action="enable", tools=[...])` for tools.
+   - `skill_manage(action="enable", name=...)` for installed skills.
+   - `manage_mcp(action="install", ...)` only when an MCP server is the right fit.
+3. If a new HTTP/API tool is needed, discover and test the API first:
    - Use `api_discover` when there is an API base URL or docs URL.
    - Use `http_request` for one-off probes against documented endpoints.
    - Do not include secrets in headers or payloads unless the user explicitly
      provided them for this request.
-3. After a working request shape is proven, create a reusable tool:
-   - `tool_create(action="draft", ...)`
-   - `tool_create(action="test", draft_id=..., sample_params=...)`
-   - `tool_create(action="publish", draft_id=...)`
-   Only publish after a successful test.
-4. Package the durable workflow as a Skill Kit with `skill_config`.
-   Include concise instructions, exact required tool names, and examples only
-   where they reduce mistakes. Use `activate_current_thread=true` so the new
-   Skill Kit is immediately available in this conversation.
-5. Verify the result. If the new Skill Kit activates with a reload, stop after
-   the publish result and continue only after the automatic resume.
+4. Create durable capabilities through `skill_kit_create`:
+   - Use `skill_kit_create(action="draft_http_tool")`, `test_http_tool`, and
+     `publish_http_tool` for reusable HTTP tools.
+   - Use `skill_kit_create(action="package"|"publish", required_tools=[...])`
+     to package existing or newly published tools into a Skill Kit.
+   - Include concise instructions, exact required tool names, and examples only
+     where they reduce mistakes.
+   - Use `activate_current_thread=true` so the new Skill Kit is immediately
+     available in this conversation.
+5. Verify the result. If enabling, installing, or publishing queues a reload,
+   stop after that tool result and continue only after the automatic resume.
 
 ## Skill Kit Writing Rules
 
@@ -52,6 +64,8 @@ to know tool names, API schemas, YAML, or Skill Kit mechanics.
 - Ask a plain-language confirmation before publishing anything that uses
   secrets, paid APIs, destructive actions, messages sent to other people, or
   global scope.
+- Do not use `claude_code`, `reload_all`, or rollback tools as part of this
+  workflow. Codebase self-modification is a separate admin-only path.
 
 ## Example: Wrap An Existing Tool
 
@@ -59,7 +73,7 @@ If the needed tool already exists:
 
 ```json
 {
-  "action": "publish",
+  "action": "package",
   "name": "trigger-monitoring",
   "description": "Inspect and troubleshoot recurring Nymeria trigger failures.",
   "required_tools": ["trigger_info"],
@@ -75,7 +89,7 @@ After `http_request` proves the endpoint works:
 
 ```json
 {
-  "action": "draft",
+  "action": "draft_http_tool",
   "tool_id": "public_status_lookup",
   "name": "Public Status Lookup",
   "description": "Look up a public service status by service slug.",
@@ -94,11 +108,28 @@ After `http_request` proves the endpoint works:
 }
 ```
 
-Then test, publish, and create a Skill Kit requiring the published tool:
+Then test and publish the HTTP tool:
 
 ```json
 {
-  "action": "publish",
+  "action": "test_http_tool",
+  "draft_id": "public_status_lookup",
+  "sample_params": {"service": "example"}
+}
+```
+
+```json
+{
+  "action": "publish_http_tool",
+  "draft_id": "public_status_lookup"
+}
+```
+
+Finally package a Skill Kit requiring the published tool:
+
+```json
+{
+  "action": "package",
   "name": "service-status-checks",
   "description": "Check public service status pages and explain incidents.",
   "required_tools": ["public_status_lookup"],
