@@ -3,6 +3,7 @@ import type {
   Message,
   MessageStep,
   ThreadHistory,
+  ThreadStatus,
   ToolCall
 } from '$lib/types';
 import { ChatApi } from './chat';
@@ -186,6 +187,26 @@ export class ThreadsApi extends ChatApi {
     return {
       threadId,
       messages
+    };
+  }
+
+  async getThreadStatus(threadId: string): Promise<ThreadStatus> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/status`,
+      {
+        headers: this.getHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return {
+      threadId: data.thread_id as string,
+      revision: (data.revision as string | null | undefined) ?? null,
+      processing: Boolean(data.processing),
     };
   }
 

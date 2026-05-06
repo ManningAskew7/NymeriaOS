@@ -382,6 +382,34 @@ Authorization: Bearer <token>
 
 ---
 
+### Get Thread Status
+
+```http
+GET /threads/{thread_id}/status
+Authorization: Bearer <token>
+```
+
+Lightweight status for sync polling. `revision` is the latest checkpoint ID as
+an opaque string, or `null` when the thread has no checkpoint yet. SQL-backed
+deployments query checkpoint metadata only and do not deserialize checkpoint
+blobs. `processing` is true while the thread has an active agent lock.
+
+The desktop client uses this endpoint for 5-second cross-client sync polling
+and only refreshes full history/context when the revision changes, processing
+finishes, or it has no local revision baseline. Mobile remains primarily
+event/reconnect driven.
+
+**Response:**
+```json
+{
+  "thread_id": "abc123",
+  "revision": "1f07bcb2-1d7a-67d2-8003-65db7b8e71f9",
+  "processing": false
+}
+```
+
+---
+
 ### Get Thread History
 
 ```http

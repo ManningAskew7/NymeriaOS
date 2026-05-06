@@ -18,7 +18,7 @@
   import { api } from '$lib/services/api.svelte';
   import { debugLog } from '$lib/utils/debug';
   import { isTodoTool } from '$lib/utils/todoTools';
-  import { updateMessageCount } from '$lib/stores/syncPoll.svelte';
+  import { refreshThreadSyncBaseline } from '$lib/stores/syncPoll.svelte';
   import { untrack } from 'svelte';
   import type {
     SSEEvent,
@@ -127,7 +127,7 @@
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();
         // Update sync poll baseline so it doesn't re-fetch what we just streamed
-        updateMessageCount(chatStore.messages.length);
+        if (threadId) void refreshThreadSyncBaseline(threadId);
       }
     }
   }

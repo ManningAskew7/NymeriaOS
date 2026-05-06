@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +131,109 @@ def test_thread_history_visibility_flags_and_context_processing_state(
         "thread_id": thread_id,
         "tokens": 42,
         "processing": True,
+    }
+
+
+def test_thread_status_returns_revision_and_processing_state(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    settings = api_client_builder.settings(tmp_path)
+    token = _create_user(agent, "owner")
+    thread_id = "thread-status"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._thread_locks.lock_info = {"owner": "test"}
+
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute(
+            "CREATE TABLE checkpoints ("
+            "thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+            "checkpoint BLOB, metadata BLOB)"
+        )
+        conn.executemany(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (thread_id, "", "0001", b"old checkpoint", b"{}"),
+                (thread_id, "", "0003", b"new checkpoint", b"{}"),
+                (thread_id, "nested", "9999", b"nested checkpoint", b"{}"),
+                ("other-thread", "", "9999", b"other checkpoint", b"{}"),
+            ],
+        )
+        conn.commit()
+
+    response = client.get(
+        f"/threads/{thread_id}/status",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "thread_id": thread_id,
+        "revision": "0003",
+        "processing": True,
+    }
+
+
+def test_thread_status_enforces_thread_access(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    owner_token = _create_user(agent, "owner")
+    other_token = _create_user(agent, "other")
+    thread_id = "thread-owned"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    owner = client.get(
+        f"/threads/{thread_id}/status",
+        headers=api_client_builder.auth(owner_token),
+    )
+    other = client.get(
+        f"/threads/{thread_id}/status",
+        headers=api_client_builder.auth(other_token),
+    )
+
+    assert owner.status_code == 200
+    assert owner.json() == {
+        "thread_id": thread_id,
+        "revision": None,
+        "processing": False,
+    }
+    assert other.status_code == 404
+
+
+def test_thread_status_falls_back_to_graph_state_for_memory_backend(
+    tmp_path: Path,
+    api_client_builder,
+):
+    class FakeState:
+        config = {"configurable": {"checkpoint_id": "memory-revision"}}
+
+    class FakeGraph:
+        def get_state(self, config):
+            assert config == {"configurable": {"thread_id": "thread-memory"}}
+            return FakeState()
+
+    settings = api_client_builder.settings(tmp_path, database_backend="memory")
+    agent = FakeAgent(tmp_path)
+    agent._default_graph = FakeGraph()
+    client = api_client_builder.client(agent, settings)
+    token = _create_user(agent, "owner")
+    agent.accounts_repo.claim_thread("thread-memory", "owner")
+
+    response = client.get(
+        "/threads/thread-memory/status",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "thread_id": "thread-memory",
+        "revision": "memory-revision",
+        "processing": False,
     }
 
 

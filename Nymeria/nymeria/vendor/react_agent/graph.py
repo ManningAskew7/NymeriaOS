@@ -41,44 +41,44 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
         self._backend_label = backend_label
 
     async def aget_tuple(self, config):
-        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.aget_tuple config={config}")
+        logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.aget_tuple config={config}")
         try:
             result = await asyncio.to_thread(self._saver.get_tuple, config)
-            logger.info(f"[CHECKPOINT] aget_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
+            logger.debug(f"[CHECKPOINT] aget_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
             return result
         except Exception as e:
             logger.error(f"[CHECKPOINT] aget_tuple ERROR: {e}", exc_info=True)
             raise
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
-        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.alist called")
+        logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.alist called")
         return await asyncio.to_thread(
             self._saver.list, config, filter=filter, before=before, limit=limit
         )
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.aput new_versions={new_versions}")
+        logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.aput new_versions={new_versions}")
         try:
             result = await asyncio.to_thread(
                 self._saver.put, config, checkpoint, metadata, new_versions
             )
-            logger.info("[CHECKPOINT] aput SUCCESS")
+            logger.debug("[CHECKPOINT] aput SUCCESS")
             return result
         except Exception as e:
             logger.error(f"[CHECKPOINT] aput ERROR: {e}", exc_info=True)
             raise
 
     async def aput_writes(self, config, writes, task_id):
-        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.aput_writes task_id={task_id}")
+        logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.aput_writes task_id={task_id}")
         return await asyncio.to_thread(
             self._saver.put_writes, config, writes, task_id
         )
 
     def get_tuple(self, config):
-        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.get_tuple config={config}")
+        logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.get_tuple config={config}")
         try:
             result = self._saver.get_tuple(config)
-            logger.info(f"[CHECKPOINT] get_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
+            logger.debug(f"[CHECKPOINT] get_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
             return result
         except Exception as e:
             logger.error(f"[CHECKPOINT] get_tuple ERROR: {e}", exc_info=True)
@@ -88,10 +88,10 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
         return self._saver.list(config, filter=filter, before=before, limit=limit)
 
     def put(self, config, checkpoint, metadata, new_versions):
-        logger.info(f"[CHECKPOINT] {self._backend_label}Wrapper.put new_versions={new_versions}")
+        logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.put new_versions={new_versions}")
         try:
             result = self._saver.put(config, checkpoint, metadata, new_versions)
-            logger.info("[CHECKPOINT] put SUCCESS")
+            logger.debug("[CHECKPOINT] put SUCCESS")
             return result
         except Exception as e:
             logger.error(f"[CHECKPOINT] put ERROR: {e}", exc_info=True)
