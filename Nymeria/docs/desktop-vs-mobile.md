@@ -289,7 +289,7 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `stores/cliproxy.svelte.ts` | CLIProxy status and controls | Desktop-only |
 | `stores/connections.svelte.ts` | Connection-switching helpers | Desktop-only |
 | `stores/outlook.svelte.ts` | Outlook mode state | Desktop-only |
-| `stores/syncPoll.svelte.ts` | Sync/message-count polling helpers | Desktop-only |
+| `stores/syncPoll.svelte.ts` | Lightweight checkpoint revision polling via `/threads/{thread_id}/status`; full history/context is fetched only when the revision changes, processing finishes, or no baseline is known | Desktop-only |
 | `lib/index.ts` | Barrel exports | Not needed |
 
 ### Mobile-Only Files / Features (no desktop equivalent)

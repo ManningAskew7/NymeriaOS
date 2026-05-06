@@ -12,6 +12,14 @@ class ThreadHistoryResponse(BaseModel):
     messages: list[Any]
 
 
+class ThreadStatusResponse(BaseModel):
+    """Lightweight thread status response for sync polling."""
+
+    thread_id: str
+    revision: str | None
+    processing: bool
+
+
 class ThreadMetadataUpdateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     pinned: bool | None = None

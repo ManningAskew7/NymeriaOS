@@ -122,6 +122,7 @@ EXPECTED_ROUTES = [
     ("/threads/{thread_id}/metadata", ("GET",)),
     ("/threads/{thread_id}/metadata", ("PATCH",)),
     ("/threads/{thread_id}/skills", ("GET",)),
+    ("/threads/{thread_id}/status", ("GET",)),
     ("/threads/{thread_id}/stop", ("POST",)),
     ("/todos", ("GET",)),
     ("/todos", ("POST",)),

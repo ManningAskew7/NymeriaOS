@@ -62,7 +62,8 @@
     Promise.all([
       api.getThreadHistory(threadId),
       api.getThreadContextStats(threadId),
-    ]).then(([history, stats]) => {
+      api.getThreadStatus(threadId),
+    ]).then(([history, stats, status]) => {
       // Only apply if the user hasn't switched threads or started streaming
       if (threadsStore.currentThreadId === threadId && !chatStore.isStreaming) {
         chatStore.setMessages(history.messages);
@@ -71,7 +72,7 @@
         chatStore.setLoadingHistory(false);
 
         // Start the cross-client sync poller
-        startSyncPoll(threadId, history.messages.length);
+        startSyncPoll(threadId, status);
       } else {
         // Stale: another loader now owns the flag, don't touch it.
       }

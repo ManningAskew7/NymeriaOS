@@ -1,10 +1,10 @@
 /**
  * Cross-client sync poller.
  *
- * Polls the current thread's history every few seconds to detect changes
- * from other clients (Outlook, browser, desktop app). Refreshes when:
- *  - Message count changes (new message added)
- *  - Thread is still processing (assistant message being built)
+ * Polls the current thread's lightweight checkpoint status every few seconds
+ * to detect changes from other clients (Outlook, browser, desktop app).
+ * Fetches full history/context only when the checkpoint revision changes,
+ * processing finishes, or no revision baseline is known.
  *
  * Skips polling while the current client is actively streaming (it already
  * has the latest data from its own SSE connection).
@@ -14,55 +14,24 @@ import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { api } from '$lib/services/api.svelte';
 import { debugLog } from '$lib/utils/debug';
+import type { ThreadStatus } from '$lib/types';
 
 const SYNC_POLL_INTERVAL = 5000; // 5 seconds
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let lastKnownMessageCount = 0;
+let baselineKnown = false;
+let lastKnownRevision: string | null = null;
 let wasProcessing = false;
+let pollInFlight = false;
 
-export function startSyncPoll(threadId: string, initialMessageCount?: number) {
+export function startSyncPoll(threadId: string, initialStatus?: ThreadStatus) {
   stopSyncPoll();
-  lastKnownMessageCount = initialMessageCount ?? chatStore.messages.length;
-  wasProcessing = false;
+  baselineKnown = initialStatus !== undefined;
+  lastKnownRevision = initialStatus?.revision ?? null;
+  wasProcessing = initialStatus?.processing ?? false;
 
   pollTimer = setInterval(() => {
-    // Stop if thread changed
-    if (threadsStore.currentThreadId !== threadId) {
-      stopSyncPoll();
-      return;
-    }
-    // Skip if actively streaming — our own SSE has the latest
-    if (chatStore.isStreaming) return;
-
-    // Fetch both history and context stats in parallel
-    Promise.all([
-      api.getThreadHistory(threadId),
-      api.getThreadContextStats(threadId),
-    ]).then(([history, stats]) => {
-      if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
-
-      const messageCountChanged = history.messages.length !== lastKnownMessageCount;
-      const isProcessing = stats?.processing ?? false;
-      const processingJustFinished = wasProcessing && !isProcessing;
-
-      // Refresh if: new messages, thread is processing, or processing just finished
-      if (messageCountChanged || isProcessing || processingJustFinished) {
-        if (messageCountChanged) {
-          debugLog(`[Sync] Messages changed (${lastKnownMessageCount} → ${history.messages.length}), refreshing`);
-        } else if (isProcessing) {
-          debugLog('[Sync] Thread still processing, refreshing');
-        } else {
-          debugLog('[Sync] Processing just finished, final refresh');
-        }
-        lastKnownMessageCount = history.messages.length;
-        chatStore.setMessages(history.messages);
-        chatStore.setContextStats(stats);
-        chatStore.setActiveModel(stats?.model ?? null);
-      }
-
-      wasProcessing = isProcessing;
-    }).catch(() => {});
+    void pollThreadStatus(threadId);
   }, SYNC_POLL_INTERVAL);
 }
 
@@ -71,9 +40,75 @@ export function stopSyncPoll() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  pollInFlight = false;
 }
 
-/** Update the baseline so the next poll doesn't spuriously refresh. */
-export function updateMessageCount(count: number) {
-  lastKnownMessageCount = count;
+export function updateThreadStatusBaseline(status: ThreadStatus) {
+  baselineKnown = true;
+  lastKnownRevision = status.revision;
+  wasProcessing = status.processing;
+}
+
+/**
+ * Refresh only the lightweight status baseline after this client streamed a
+ * turn locally. This prevents the next idle poll from re-fetching history the
+ * SSE stream already applied to the UI.
+ */
+export async function refreshThreadSyncBaseline(threadId: string) {
+  try {
+    const status = await api.getThreadStatus(threadId);
+    if (threadsStore.currentThreadId !== threadId) return;
+    updateThreadStatusBaseline(status);
+  } catch {
+    // Keep the previous baseline; the next normal poll can recover.
+  }
+}
+
+async function pollThreadStatus(threadId: string) {
+  if (pollInFlight) return;
+
+  if (threadsStore.currentThreadId !== threadId) {
+    stopSyncPoll();
+    return;
+  }
+
+  // Skip if actively streaming — our own SSE has the latest.
+  if (chatStore.isStreaming) return;
+
+  pollInFlight = true;
+  try {
+    const status = await api.getThreadStatus(threadId);
+    if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
+
+    const revisionChanged = baselineKnown && status.revision !== lastKnownRevision;
+    const processingJustFinished = wasProcessing && !status.processing;
+    const needsBaseline = !baselineKnown;
+
+    if (needsBaseline || revisionChanged || processingJustFinished) {
+      if (needsBaseline) {
+        debugLog('[Sync] Establishing revision baseline, refreshing history');
+      } else if (revisionChanged) {
+        debugLog(`[Sync] Revision changed (${lastKnownRevision ?? 'null'} -> ${status.revision ?? 'null'}), refreshing`);
+      } else {
+        debugLog('[Sync] Processing finished, final refresh');
+      }
+
+      const [history, stats] = await Promise.all([
+        api.getThreadHistory(threadId),
+        api.getThreadContextStats(threadId),
+      ]);
+      if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
+
+      chatStore.setMessages(history.messages);
+      chatStore.setContextStats(stats);
+      chatStore.setActiveModel(stats?.model ?? null);
+    }
+
+    updateThreadStatusBaseline(status);
+  } catch {
+    // Polling is best-effort; explicit navigation and SSE reconnect paths
+    // still refresh persisted state.
+  } finally {
+    pollInFlight = false;
+  }
 }

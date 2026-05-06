@@ -345,6 +345,12 @@ export interface ThreadHistory {
   messages: Message[];
 }
 
+export interface ThreadStatus {
+  threadId: string;
+  revision: string | null;
+  processing: boolean;
+}
+
 // TODO types (from backend)
 export type TodoStatus = 'pending' | 'in_progress' | 'done';
 export type TodoRecurrence = '5min' | '10min' | '15min' | '30min' | 'hourly' | 'daily' | 'weekly' | 'monthly';

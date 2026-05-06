@@ -5,9 +5,15 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 
 from ...core.accounts import AuthenticatedUser
 from ...core.checkpoint_cleanup import delete_thread_checkpoints
+from ...core.checkpoint_status import (
+    get_graph_state_revision,
+    get_latest_checkpoint_revision,
+    has_direct_checkpoint_revision_backend,
+)
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_classification import (
     classify_platform as _classify_thread_platform_from_id,
@@ -19,6 +25,7 @@ from ..schemas.threads import (
     ThreadHistoryResponse,
     ThreadMetadataMigrateRequest,
     ThreadMetadataUpdateRequest,
+    ThreadStatusResponse,
 )
 from ..thread_config_helpers import validate_callable_name
 
@@ -256,6 +263,17 @@ def _thread_list_payload(
     return payload
 
 
+def _is_thread_processing(agent: Any, thread_id: str) -> bool:
+    thread_locks = getattr(agent, "_thread_locks", None)
+    if thread_locks is None:
+        return False
+    try:
+        return thread_locks.get_lock_info(thread_id) is not None
+    except Exception as e:
+        logger.warning("Failed to inspect processing state for %s: %s", thread_id, e)
+        return False
+
+
 def create_threads_router(
     verify_api_key: Callable[..., Any],
     authed_user_id: Callable[..., Any],
@@ -266,6 +284,44 @@ def create_threads_router(
 ) -> APIRouter:
     """Create the thread read/list/metadata/lifecycle router."""
     router = APIRouter(tags=["Threads"])
+
+    @router.get(
+        "/threads/{thread_id}/status",
+        response_model=ThreadStatusResponse,
+    )
+    async def get_thread_status(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Get lightweight status for a thread.
+
+        Returns the latest checkpoint ID as an opaque revision marker and the
+        current in-process state. SQL checkpoint backends query only checkpoint
+        metadata; the graph-state fallback is reserved for non-SQL backends.
+        """
+        require_thread_access_fn(user, thread_id)
+        agent = get_agent_fn()
+        settings = get_settings_fn()
+
+        if has_direct_checkpoint_revision_backend(settings):
+            revision = await run_in_threadpool(
+                get_latest_checkpoint_revision,
+                settings,
+                thread_id,
+            )
+        else:
+            revision = await run_in_threadpool(
+                get_graph_state_revision,
+                agent,
+                thread_id,
+            )
+
+        return ThreadStatusResponse(
+            thread_id=thread_id,
+            revision=revision,
+            processing=_is_thread_processing(agent, thread_id),
+        )
 
     @router.get(
         "/threads/{thread_id}/history",
@@ -299,7 +355,8 @@ def create_threads_router(
                 if tc.show_prompt_metadata:
                     show_prompt_metadata = True
 
-        history = agent.get_conversation_history(
+        history = await run_in_threadpool(
+            agent.get_conversation_history,
             thread_id,
             include_internal=include_internal,
             show_autonomous_prompts=show_autonomous,
@@ -319,10 +376,9 @@ def create_threads_router(
         """
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
-        stats = agent.get_context_stats(thread_id)
-        lock_info = agent._thread_locks.get_lock_info(thread_id)
+        stats = await run_in_threadpool(agent.get_context_stats, thread_id)
         if isinstance(stats, dict):
-            stats["processing"] = lock_info is not None
+            stats["processing"] = _is_thread_processing(agent, thread_id)
         return stats
 
     @router.get("/threads/{thread_id}/metadata")

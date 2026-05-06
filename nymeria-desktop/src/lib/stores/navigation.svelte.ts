@@ -33,9 +33,10 @@ export async function switchToThread(
   chatStore.setLoadingHistory(true);
 
   try {
-    const [history, stats] = await Promise.all([
+    const [history, stats, status] = await Promise.all([
       api.getThreadHistory(threadId),
       api.getThreadContextStats(threadId),
+      api.getThreadStatus(threadId),
     ]);
 
     // Stale navigation guard — user clicked another thread during the await.
@@ -49,7 +50,7 @@ export async function switchToThread(
     chatStore.setLoadingHistory(false);
 
     // Start cross-client sync poller
-    startSyncPoll(threadId, history.messages.length);
+    startSyncPoll(threadId, status);
 
     // Stream recovery — resume if thread has an active task or interactive stream
     const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);
