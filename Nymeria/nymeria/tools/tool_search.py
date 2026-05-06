@@ -1,7 +1,7 @@
-"""Tool search and discovery for Nymeria.
+"""Tool search, discovery, and per-thread binding for Nymeria.
 
-Allows the agent to search optional tools by keyword or category,
-enable/disable them for the current thread, and check tool status.
+``tool_search`` is intentionally search-only. ``tool_enable`` owns the
+thread-binding mutations that used to live behind ``tool_search(action=...)``.
 
 Enabling a tool with a TTL (default 2h) triggers an in-turn auto-continue:
 the turn finishes the current graph invocation, rebuilds a fresh graph with
@@ -94,8 +94,6 @@ def _build_catalog() -> Dict[str, dict]:
     all_tools.update(OPTIONAL_TOOLS)
 
     for name, tool_obj in all_tools.items():
-        if name == "tool_search":
-            continue
         meta = get_all_tool_metadata(name)
         desc = tool_obj.description or ""
         if meta and meta.description:
@@ -183,7 +181,7 @@ def _format_unloadable_error(unloadable: List[str]) -> str:
             f"  MCP server(s) installed but disabled: {', '.join(sorted(mcp_servers))}"
         )
         lines.append(
-            "  Activate them via mcp_install (which auto-enables) or the "
+            "  Activate them via manage_mcp(action=\"install\", ...) or the "
             "Settings → MCP UI before retrying enable."
         )
     if other:
@@ -206,7 +204,15 @@ def _get_thread_status(thread_id: str) -> Tuple[set, dict, set]:
     return set(tc.enabled_tools), dict(tc.temporary_tools), set(tc.disabled_tools)
 
 
-def _search(query: str, category: str, thread_id: str, user_role: str = "user") -> str:
+def _search(
+    query: str,
+    category: str,
+    thread_id: str,
+    user_role: str = "user",
+    *,
+    top_k: int = 15,
+    include_status: bool = True,
+) -> str:
     catalog = _build_discovery_catalog(user_role)
     enabled_perm, temp_map, disabled = _get_thread_status(thread_id)
 
@@ -250,7 +256,8 @@ def _search(query: str, category: str, thread_id: str, user_role: str = "user") 
                 results.append((score, c))
 
     results.sort(key=lambda x: (-x[0], x[1]["name"]))
-    results = results[:15]
+    limit = max(1, min(int(top_k or 15), 50))
+    results = results[:limit]
 
     if not results:
         return f"[No results]: No tools matched '{query}'." + (
@@ -264,12 +271,13 @@ def _search(query: str, category: str, thread_id: str, user_role: str = "user") 
         status = ""
         # disabled_tools is authoritative — check it first so a disabled
         # tool with a preserved enabled/TTL entry doesn't get labeled ENABLED.
-        if c["name"] in disabled:
-            status = " [DISABLED]"
-        elif c["name"] in enabled_perm:
-            status = " [ENABLED permanent]"
-        elif c["name"] in temp_map:
-            status = f" [ENABLED {_format_remaining(temp_map[c['name']].expires_at)}]"
+        if include_status:
+            if c["name"] in disabled:
+                status = " [DISABLED]"
+            elif c["name"] in enabled_perm:
+                status = " [ENABLED permanent]"
+            elif c["name"] in temp_map:
+                status = f" [ENABLED {_format_remaining(temp_map[c['name']].expires_at)}]"
         lines.append(
             f"  {c['name']} ({c['category']}, {c['security_level']}){status}"
             f"\n    {c['description']}"
@@ -440,7 +448,7 @@ def bind_tools_for_thread(
         )
 
     # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config —
-    # without this, an agent could call tool_search(action="enable",
+    # without this, an agent could call tool_enable(action="enable",
     # tools=["reload_all"]) to escalate to admin-only tools that are
     # equivalent to authenticated RCE on the shared backend.
     from . import filter_admin_only_tools, filter_developer_only_tools
@@ -831,7 +839,7 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
         lines.append(
             f"[Warning]: {len(forced_core)} CORE tool(s) disabled (force=True): "
             f"{', '.join(sorted(forced_core))}. "
-            "Re-enable with tool_search(action=\"enable\", ...) if you need them."
+            "Re-enable with tool_enable(action=\"enable\", ...) if you need them."
         )
     if refused_core:
         lines.append(
@@ -924,10 +932,44 @@ def _status(thread_id: str) -> str:
 
 @tool
 def tool_search(
-    action: str,
     query: str = "",
     category: str = "",
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+    top_k: int = 15,
+    include_status: bool = True,
+) -> str:
+    """
+    Search available tools by keyword or category.
+
+    Args:
+        query: Search keyword.
+        category: Optional category filter (e.g. "email", "twitch").
+        top_k: Max results to return, capped at 50.
+        include_status: Include current-thread enabled/disabled annotations.
+    """
+    thread_id = get_thread_id(config)
+    user_id = get_user_id(config)
+    user_role = _get_user_role(user_id)
+    logger.info(
+        f"tool_search: query={query!r}, category={category!r}, "
+        f"top_k={top_k!r}, include_status={include_status!r}"
+    )
+    return _search(
+        query,
+        category,
+        thread_id,
+        user_role=user_role,
+        top_k=top_k,
+        include_status=include_status,
+    )
+
+
+@tool
+def tool_enable(
+    action: str,
     tools: Optional[List[str]] = None,
+    category: str = "",
     ttl: str = DEFAULT_TTL,
     force: bool = False,
     *,
@@ -935,50 +977,44 @@ def tool_search(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> Union[str, Command]:
     """
-    Search, enable, disable, and inspect available tools for this thread.
-    Enabling new tools auto-continues the turn after a graph rebuild, and
-    enablements use a TTL.
-
-    Actions:
-      search: find tools by query/category.
-      enable: bind tools or a category. If new tools are added, stop after
-        this tool result; the harness reloads and resumes with them callable.
-      disable: unbind tools. Core tools require force=True.
-      list_categories: show categories.
-      status: show enabled/disabled tools and TTLs.
+    Enable, disable, or inspect current-thread tool bindings.
 
     Args:
-        action: One of: search, enable, disable, list_categories, status
-        query: Search keyword (for 'search' action)
-        category: Category name to filter or enable (e.g. "email", "twitch")
-        tools: List of tool names to enable or disable
-        ttl: For enable: "30m", "2h" (default), "6h", "24h", or "permanent"
-        force: For 'disable' only. Set True to allow disabling core tools.
+        action: One of: enable, disable, list_categories, status.
+        tools: Tool names to enable or disable.
+        category: Category name to enable or list/filter.
+        ttl: For enable: "30m", "2h" (default), "6h", "24h", or "permanent".
+        force: For disable only. Set True to allow disabling core tools.
     """
     action = action.strip().lower()
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
     user_role = _get_user_role(user_id)
     logger.info(
-        f"tool_search: action={action}, query={query!r}, category={category!r}, "
+        f"tool_enable: action={action}, category={category!r}, "
         f"tools={tools}, ttl={ttl!r}"
     )
 
-    if action == "search":
-        return _search(query, category, thread_id, user_role=user_role)
-    elif action == "enable":
-        return _enable(tools or [], category, thread_id, user_id, ttl=ttl, tool_call_id=tool_call_id)
-    elif action == "disable":
-        return _disable(tools or [], thread_id, force=force)
-    elif action == "list_categories":
-        return _list_categories(user_role=user_role)
-    elif action == "status":
-        return _status(thread_id)
-    else:
-        return (
-            f"[Error]: Unknown action '{action}'. "
-            "Use: search, enable, disable, list_categories, status"
+    if action == "enable":
+        return _enable(
+            tools or [],
+            category,
+            thread_id,
+            user_id,
+            ttl=ttl,
+            tool_call_id=tool_call_id,
+            source="tool_enable",
         )
+    if action == "disable":
+        return _disable(tools or [], thread_id, force=force)
+    if action == "list_categories":
+        return _list_categories(user_role=user_role)
+    if action in {"status", "inspect"}:
+        return _status(thread_id)
+    return (
+        f"[Error]: Unknown action '{action}'. "
+        "Use: enable, disable, list_categories, status"
+    )
 
 
-TOOL_SEARCH_TOOLS = [tool_search]
+TOOL_SEARCH_TOOLS = [tool_search, tool_enable]

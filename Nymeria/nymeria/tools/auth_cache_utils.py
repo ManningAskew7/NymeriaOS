@@ -608,6 +608,8 @@ class GoogleOAuthToolSpec:
     no_accounts_message: str
     no_usable_accounts_message: str
     list_heading: str
+    post_save_hook: Optional[Callable[[str, str], Optional[str]]] = None
+    post_clear_hook: Optional[Callable[[str, Optional[str]], Optional[str]]] = None
 
 
 def _persist_or_delete_google_cache(user_id: str, spec: GoogleOAuthToolSpec, cache: dict) -> None:
@@ -731,8 +733,50 @@ def _exchange_and_save_google_flow(
         flow.token_uri,
         spec.scopes,
     )
+    hook_message = None
+    if spec.post_save_hook:
+        try:
+            hook_message = spec.post_save_hook(user_id, account_id)
+        except Exception as e:
+            logger.warning(
+                "%s post-save hook failed for %s: %s",
+                spec.service_display_name,
+                account_id,
+                e,
+                exc_info=True,
+            )
+            hook_message = (
+                f"[Warning]: {spec.service_display_name} authentication succeeded, "
+                f"but post-auth setup failed: {e}"
+            )
     clear_flow(user_id, spec.provider)
-    return True, _build_google_auth_success_message(spec, account_id, email, name)
+    message = _build_google_auth_success_message(spec, account_id, email, name)
+    if hook_message:
+        message = f"{message}\n\n{hook_message}"
+    return True, message
+
+
+def _run_google_post_clear_hook(
+    user_id: str,
+    spec: GoogleOAuthToolSpec,
+    account_id: Optional[str],
+) -> Optional[str]:
+    if not spec.post_clear_hook:
+        return None
+    try:
+        return spec.post_clear_hook(user_id, account_id)
+    except Exception as e:
+        logger.warning(
+            "%s post-clear hook failed for %s: %s",
+            spec.service_display_name,
+            account_id or "(all)",
+            e,
+            exc_info=True,
+        )
+        return (
+            f"[Warning]: {spec.service_display_name} auth cache was cleared, "
+            f"but post-clear cleanup failed: {e}"
+        )
 
 
 def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
@@ -863,26 +907,37 @@ def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
             else:
                 cache.pop("accounts", None)
             _persist_or_delete_google_cache(user_id, spec, cache)
-            return (
+            message = (
                 f"[Success]: Cleared {spec.service_display_name} authentication for "
                 f"**{name}** ({email}). Run `{spec.start_tool_name}` to authenticate again."
             )
+            hook_message = _run_google_post_clear_hook(user_id, spec, account_id)
+            if hook_message:
+                message = f"{message}\n\n{hook_message}"
+            return message
 
         removed_count = len(accounts)
         cache.pop("accounts", None)
         _persist_or_delete_google_cache(user_id, spec, cache)
+        hook_message = _run_google_post_clear_hook(user_id, spec, None)
 
         if removed_count:
-            return (
+            message = (
                 f"[Success]: Cleared {removed_count} saved {spec.service_display_name} account(s) "
                 f"and any pending {spec.service_display_name} OAuth flow. "
                 f"Run `{spec.start_tool_name}` to authenticate again."
             )
+            if hook_message:
+                message = f"{message}\n\n{hook_message}"
+            return message
 
-        return (
+        message = (
             f"[Info]: No saved {spec.service_display_name} authentication was present. "
             f"Any pending {spec.service_display_name} OAuth flow was cleared."
         )
+        if hook_message:
+            message = f"{message}\n\n{hook_message}"
+        return message
 
     @tool(
         spec.complete_tool_name,

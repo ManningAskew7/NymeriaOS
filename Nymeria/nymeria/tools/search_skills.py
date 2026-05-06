@@ -12,14 +12,18 @@ carry the (name, description) index for the current thread's active skills.
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Annotated, List, Literal
+import json
+from typing import Annotated, List, Literal, Optional, Union
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, tool
+from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
+from langgraph.types import Command
 
+from ..core.thread_config import ThreadConfig
+from ..core.tool_reload import tool_reload_command
 from .utils import get_user_id
+from .utils import get_thread_id
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,16 @@ def _agent():
     """Lazy import to avoid a tool->agent circular import at module load."""
     from ..core.agent import get_current_agent
     return get_current_agent()
+
+
+def _command_or_text(text: str, queued_reload: bool, tool_call_id: Optional[str]) -> Union[str, Command]:
+    if queued_reload and tool_call_id:
+        return tool_reload_command(text, tool_call_id)
+    return text
+
+
+def _json_result(**payload) -> str:
+    return json.dumps(payload, indent=2, default=str)
 
 
 @tool
@@ -319,9 +333,223 @@ def install_skill(
     return "\n".join(details)
 
 
-SEARCH_SKILLS_TOOLS = [list_installed_skills, search_skills, install_skill]
+def _set_thread_skill_enabled(
+    *,
+    skill_name: str,
+    enabled: bool,
+    user_id: str,
+    thread_id: str,
+    tool_call_id: Optional[str],
+) -> Union[str, Command]:
+    agent = _agent()
+    if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
+        return _json_result(ok=False, error="skills subsystem not initialized")
+    if not thread_id:
+        return _json_result(ok=False, error="thread_id is required")
+
+    target = (skill_name or "").strip()
+    if not target:
+        return _json_result(ok=False, error="name is required")
+    skill = agent.skill_manager.get(target, user_id=user_id)
+    if skill is None:
+        return _json_result(ok=False, error=f"skill not installed or not visible: {target}")
+
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        tc = ThreadConfig(thread_id=thread_id)
+
+    changed = False
+    if enabled:
+        if target not in tc.enabled_skills:
+            tc.enabled_skills = [*tc.enabled_skills, target]
+            changed = True
+        if target in tc.disabled_skills:
+            tc.disabled_skills = [name for name in tc.disabled_skills if name != target]
+            changed = True
+    else:
+        if target not in tc.disabled_skills:
+            tc.disabled_skills = [*tc.disabled_skills, target]
+            changed = True
+        if target in tc.enabled_skills:
+            tc.enabled_skills = [name for name in tc.enabled_skills if name != target]
+            changed = True
+
+    if changed:
+        if not agent.thread_config_manager.save_config(tc):
+            return _json_result(ok=False, error="failed to save thread skill config")
+        if hasattr(agent, "invalidate_thread_config_cache"):
+            agent.invalidate_thread_config_cache(thread_id)
+
+    queued_reload = False
+    cap_hit = False
+    if enabled and changed:
+        from .skill_config import _queue_skill_reload
+
+        queued_reload, cap_hit = _queue_skill_reload(
+            agent,
+            thread_id,
+            target,
+            source="skill_install",
+            reason="skill_enabled_on_thread",
+        )
+    elif changed:
+        try:
+            with agent._graph_cache_lock:
+                agent._user_graphs.clear()
+            agent._async_user_graphs.clear()
+        except Exception:
+            logger.debug("Failed to clear graph caches after skill disable")
+
+    payload = _json_result(
+        ok=True,
+        action="enable" if enabled else "disable",
+        changed=changed,
+        skill={
+            "name": skill.name,
+            "description": skill.description,
+            "scope": skill.scope,
+            "required_tools": skill.required_tools,
+            "tool_ttl": skill.tool_ttl,
+        },
+        active_on_current_thread=enabled,
+        reload_queued=queued_reload,
+        reload_cap_hit=cap_hit,
+    )
+    if queued_reload:
+        payload += (
+            "\n\n[Skill reload queued - STOP NOW]\n"
+            "The skill list changed for this thread, but the current graph "
+            "invocation cannot see the updated Skill meta-tool index. Do not "
+            "write a final answer or call another tool now. The system will "
+            "automatically resume you after rebuilding."
+        )
+    elif cap_hit:
+        payload += (
+            "\n\n[Reload cap hit]: the skill was enabled on this thread, but "
+            "it will not be visible to the model until the next user message."
+        )
+    return _command_or_text(payload, queued_reload, tool_call_id)
+
+
+@tool
+def skill_manage(
+    action: str,
+    query: str = "",
+    name: str = "",
+    source: Literal["installed", "anthropic"] = "installed",
+    scope: Literal["all", "user", "global", "bundled"] = "user",
+    activate_current_thread: bool = False,
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> Union[str, Command]:
+    """List, search, install, enable, or disable Agent Skills.
+
+    Args:
+        action: One of: list, search, install, enable, disable, inspect.
+        query: Search query.
+        name: Skill name for install/enable/disable/inspect.
+        source: "installed" or marketplace source "anthropic".
+        scope: Install/list scope. Global install requires admin.
+        activate_current_thread: After install, enable this skill on the thread.
+    """
+    user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
+    action_key = (action or "").strip().lower()
+
+    if action_key in {"list", "inspect"}:
+        if name:
+            agent = _agent()
+            skill = (
+                agent.skill_manager.get(name, user_id=user_id)
+                if agent is not None and getattr(agent, "skill_manager", None) is not None
+                else None
+            )
+            if skill is None:
+                return _json_result(ok=False, error=f"skill not installed or not visible: {name}")
+            return _json_result(
+                ok=True,
+                skill={
+                    "name": skill.name,
+                    "description": skill.description,
+                    "scope": skill.scope,
+                    "required_tools": skill.required_tools,
+                    "tool_ttl": skill.tool_ttl,
+                    "is_skill_kit": skill.is_skill_kit,
+                    "has_scripts": skill.has_scripts,
+                    "has_references": skill.has_references,
+                },
+            )
+        list_scope = scope if scope in ("all", "user", "global", "bundled") else "all"
+        return list_installed_skills.func(scope=list_scope, config=config)
+
+    if action_key == "search":
+        search_source = source if source in ("installed", "anthropic") else "installed"
+        return search_skills.func(
+            query=query or name,
+            source=search_source,
+            top_k=8,
+            config=config,
+        )
+
+    if action_key == "install":
+        install_source = source if source != "installed" else "anthropic"
+        install_scope = "global" if scope == "global" else "user"
+        result = install_skill.func(
+            name=name or query,
+            source=install_source,
+            scope=install_scope,
+            config=config,
+        )
+        if str(result).startswith("[error]") or not activate_current_thread:
+            return result
+        enabled_result = _set_thread_skill_enabled(
+            skill_name=name or query,
+            enabled=True,
+            user_id=user_id,
+            thread_id=thread_id,
+            tool_call_id=tool_call_id,
+        )
+        if isinstance(enabled_result, Command):
+            try:
+                messages = enabled_result.update.get("messages", [])
+                content = str(messages[0].content) if messages else ""
+            except Exception:
+                content = ""
+            return tool_reload_command(
+                f"{result}\n\nThread activation result:\n{content}".strip(),
+                tool_call_id,
+            )
+        return f"{result}\n\nThread activation result:\n{enabled_result}".strip()
+
+    if action_key == "enable":
+        return _set_thread_skill_enabled(
+            skill_name=name or query,
+            enabled=True,
+            user_id=user_id,
+            thread_id=thread_id,
+            tool_call_id=tool_call_id,
+        )
+
+    if action_key == "disable":
+        return _set_thread_skill_enabled(
+            skill_name=name or query,
+            enabled=False,
+            user_id=user_id,
+            thread_id=thread_id,
+            tool_call_id=tool_call_id,
+        )
+
+    return _json_result(
+        ok=False,
+        error="action must be one of: list, search, install, enable, disable, inspect",
+    )
+
+
+SEARCH_SKILLS_TOOLS = [skill_manage, list_installed_skills, search_skills, install_skill]
 
 __all__ = [
+    "skill_manage",
     "list_installed_skills",
     "search_skills",
     "install_skill",

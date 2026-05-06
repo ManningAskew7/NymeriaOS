@@ -14,26 +14,45 @@
 
   const isSkillKit = $derived(info.source === 'skill_kit');
   const isSkillConfig = $derived(info.source === 'skill_config');
+  const isSkillKitCreate = $derived(info.source === 'skill_kit_create');
+  const isSkillInstall = $derived(info.source === 'skill_install');
+  const isMcpInstall = $derived(info.source === 'mcp_install');
   const isToolCreate = $derived(info.source === 'tool_create');
   const labelText = $derived(
-    isSkillConfig
-      ? 'Skill Kit Published'
-      : isSkillKit
-        ? 'Skill Kit Binding'
-        : isToolCreate
-          ? 'Tool Created'
-          : 'Tool Binding'
+    isMcpInstall
+      ? 'MCP Tools Installed'
+      : isSkillInstall
+        ? 'Skill Enabled'
+        : isSkillKitCreate
+          ? 'Skill Kit Created'
+          : isSkillConfig
+            ? 'Skill Kit Published'
+            : isSkillKit
+              ? 'Skill Kit Binding'
+              : isToolCreate
+                ? 'Tool Created'
+                : 'Tool Binding'
   );
   const sourceText = $derived(
     isSkillKit && info.skillName
       ? `Skill Kit "${info.skillName}"`
-      : isSkillConfig && info.skillName
-        ? `skill_config publishing Skill Kit "${info.skillName}"`
-        : isSkillConfig
-          ? 'skill_config'
-          : isToolCreate
-            ? 'tool_create publishing a new tool'
-            : 'tool_search(action="enable")'
+      : isSkillInstall && info.skillName
+        ? `skill_manage enabling Skill "${info.skillName}"`
+        : isSkillInstall
+          ? 'skill_manage'
+          : isSkillKitCreate && info.skillName
+            ? `skill_kit_create publishing Skill Kit "${info.skillName}"`
+            : isSkillKitCreate
+              ? 'skill_kit_create'
+              : isMcpInstall
+                ? 'MCP server installation'
+                : isSkillConfig && info.skillName
+                  ? `skill_config publishing Skill Kit "${info.skillName}"`
+                  : isSkillConfig
+                    ? 'skill_config'
+                    : isToolCreate
+                      ? 'tool_create publishing a new tool'
+                      : 'tool_enable(action="enable")'
   );
 
   const ttlText = $derived(ttlPhrase(info.ttlSeconds, info.ttl));

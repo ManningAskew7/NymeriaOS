@@ -5,13 +5,17 @@ Makes it easy to swap between different LLM providers without changing agent cod
 Supports OpenRouter, OpenAI, Anthropic, and custom providers.
 """
 
-import logging
+import asyncio
+import atexit
 import hashlib
 import inspect
 import json
+import logging
 import os
 import re
-from functools import cached_property
+import threading
+import weakref
+from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
 from typing import Any, AsyncIterator, Iterator, List
 from urllib.parse import urlparse
@@ -60,6 +64,33 @@ _RESPONSES_REASONING_FALLBACK_EVENTS = {
 _RESPONSES_CONVERTER_FALLBACK_WARNED: set[str] = set()
 _LANGCHAIN_ANTHROPIC_PROXY_PATCH_MAX_MAJOR = 2
 _LANGCHAIN_ANTHROPIC_PROXY_CONTEXT_MARKER = "context_management.model_dump"
+_ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+_ANTHROPIC_TIMEOUT_MISSING = object()
+
+
+@dataclass
+class _AnthropicAsyncHttpPool:
+    loop_ref: weakref.ReferenceType[asyncio.AbstractEventLoop]
+    client: Any
+
+
+@dataclass
+class _OpenAIAsyncHttpPool:
+    loop_ref: weakref.ReferenceType[asyncio.AbstractEventLoop]
+    client: Any
+
+
+_anthropic_async_http_pool_lock = threading.RLock()
+_anthropic_async_http_pools: dict[
+    tuple[int, str, tuple[Any, ...], str | None],
+    _AnthropicAsyncHttpPool,
+] = {}
+_openai_async_http_pool_lock = threading.RLock()
+_openai_async_http_pools: dict[
+    tuple[int, str, tuple[Any, ...], tuple[Any, ...]],
+    _OpenAIAsyncHttpPool,
+] = {}
 
 
 def _looks_like_openrouter_base_url(base_url: Any) -> bool:
@@ -1196,6 +1227,7 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     if model_kwargs:
         kwargs["model_kwargs"] = model_kwargs
 
+    _attach_loop_local_openai_async_http_client(kwargs)
     return ChatOpenAIWithReasoning(**kwargs)
 
 
@@ -1271,6 +1303,15 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     elif config.reasoning_effort is not None:
         kwargs["model_kwargs"] = {"reasoning_effort": config.reasoning_effort}
 
+    preserve_stream_usage = (
+        not config.base_url
+        and "OPENAI_API_BASE" not in os.environ
+        and "OPENAI_BASE_URL" not in os.environ
+    )
+    _attach_loop_local_openai_async_http_client(
+        kwargs,
+        preserve_direct_stream_usage_default=preserve_stream_usage,
+    )
     return ChatOpenAIWithReasoning(**kwargs)
 
 
@@ -1381,37 +1422,345 @@ def _wrap_cliproxy_context_management_event(event: Any) -> Any:
         raise
 
 
+def _get_running_or_current_event_loop() -> asyncio.AbstractEventLoop:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            return asyncio.get_event_loop_policy().get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop
+
+
+def _normalise_timeout_for_cache(timeout: Any) -> tuple[Any, ...]:
+    if timeout is _ANTHROPIC_TIMEOUT_MISSING:
+        return ("missing",)
+
+    as_dict = getattr(timeout, "as_dict", None)
+    if callable(as_dict):
+        return ("httpx.Timeout", tuple(sorted(as_dict().items())))
+
+    try:
+        hash(timeout)
+    except TypeError:
+        return (
+            "repr",
+            type(timeout).__module__,
+            type(timeout).__qualname__,
+            repr(timeout),
+        )
+    return ("value", timeout)
+
+
+def _normalise_anthropic_base_url(base_url: Any) -> str:
+    return str(
+        base_url
+        or os.environ.get("ANTHROPIC_BASE_URL")
+        or _ANTHROPIC_DEFAULT_BASE_URL
+    )
+
+
+def _normalise_anthropic_timeout_for_cache(timeout: Any) -> tuple[Any, ...]:
+    return _normalise_timeout_for_cache(timeout)
+
+
+def _normalise_openai_http_base_url(base_url: Any) -> str:
+    return str(
+        base_url
+        or os.environ.get("OPENAI_API_BASE")
+        or os.environ.get("OPENAI_BASE_URL")
+        or _OPENAI_DEFAULT_BASE_URL
+    )
+
+
+def _openai_socket_options_for_default_async_client() -> tuple[Any, ...]:
+    try:
+        from langchain_openai.chat_models import _client_utils as client_utils
+
+        if client_utils._should_bypass_socket_options_for_proxy_env(
+            http_socket_options=None,
+            http_client=None,
+            http_async_client=None,
+            openai_proxy=None,
+        ):
+            return ()
+        return client_utils._resolve_socket_options(None)
+    except Exception:
+        logger.debug(
+            "[LLM] Falling back to plain OpenAI async HTTP client settings",
+            exc_info=True,
+        )
+        return ()
+
+
+def _get_loop_local_openai_http_client(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    base_url: Any,
+    timeout: Any = None,
+) -> Any:
+    from langchain_openai.chat_models import _client_utils as client_utils
+
+    resolved_base_url = _normalise_openai_http_base_url(base_url)
+    socket_options = _openai_socket_options_for_default_async_client()
+    cache_key = (
+        id(loop),
+        resolved_base_url,
+        _normalise_timeout_for_cache(timeout),
+        tuple(socket_options),
+    )
+
+    with _openai_async_http_pool_lock:
+        cached = _openai_async_http_pools.get(cache_key)
+        if (
+            cached is not None
+            and cached.loop_ref() is loop
+            and not getattr(cached.client, "is_closed", False)
+        ):
+            return cached.client
+
+        http_client = client_utils._build_async_httpx_client(
+            resolved_base_url,
+            timeout,
+            socket_options,
+        )
+        _openai_async_http_pools[cache_key] = _OpenAIAsyncHttpPool(
+            loop_ref=weakref.ref(loop),
+            client=http_client,
+        )
+        return http_client
+
+
+def _attach_loop_local_openai_async_http_client(
+    kwargs: dict[str, Any],
+    *,
+    preserve_direct_stream_usage_default: bool = False,
+) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    kwargs["http_async_client"] = _get_loop_local_openai_http_client(
+        loop=loop,
+        base_url=kwargs.get("base_url"),
+        timeout=kwargs.get("timeout"),
+    )
+    if preserve_direct_stream_usage_default:
+        kwargs.setdefault("stream_usage", True)
+
+
+def _get_loop_local_anthropic_http_client(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    base_url: Any,
+    timeout: Any = _ANTHROPIC_TIMEOUT_MISSING,
+    proxy: str | None = None,
+) -> Any:
+    import anthropic
+
+    resolved_base_url = _normalise_anthropic_base_url(base_url)
+    cache_key = (
+        id(loop),
+        resolved_base_url,
+        _normalise_anthropic_timeout_for_cache(timeout),
+        str(proxy) if proxy is not None else None,
+    )
+
+    with _anthropic_async_http_pool_lock:
+        cached = _anthropic_async_http_pools.get(cache_key)
+        if (
+            cached is not None
+            and cached.loop_ref() is loop
+            and not getattr(cached.client, "is_closed", False)
+        ):
+            return cached.client
+
+        client_kwargs: dict[str, Any] = {"base_url": resolved_base_url}
+        if timeout is not _ANTHROPIC_TIMEOUT_MISSING:
+            client_kwargs["timeout"] = timeout
+        if proxy is not None:
+            client_kwargs["proxy"] = proxy
+
+        http_client = anthropic.DefaultAsyncHttpxClient(**client_kwargs)
+        _anthropic_async_http_pools[cache_key] = _AnthropicAsyncHttpPool(
+            loop_ref=weakref.ref(loop),
+            client=http_client,
+        )
+        return http_client
+
+
+async def close_anthropic_async_http_pools_for_loop(
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Close Anthropic async HTTP pools owned by one event loop."""
+    target_loop = loop if loop is not None else asyncio.get_running_loop()
+    target_loop_id = id(target_loop)
+
+    with _anthropic_async_http_pool_lock:
+        pools = [
+            _anthropic_async_http_pools.pop(key)
+            for key, pool in list(_anthropic_async_http_pools.items())
+            if key[0] == target_loop_id and pool.loop_ref() is target_loop
+        ]
+
+    for pool in pools:
+        client = pool.client
+        if getattr(client, "is_closed", False):
+            continue
+        try:
+            await client.aclose()
+        except Exception:
+            logger.debug(
+                "[LLM] Failed to close Anthropic async HTTP pool for loop %s",
+                target_loop_id,
+                exc_info=True,
+            )
+
+
+async def close_openai_async_http_pools_for_loop(
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Close OpenAI-compatible async HTTP pools owned by one event loop."""
+    target_loop = loop if loop is not None else asyncio.get_running_loop()
+    target_loop_id = id(target_loop)
+
+    with _openai_async_http_pool_lock:
+        pools = [
+            _openai_async_http_pools.pop(key)
+            for key, pool in list(_openai_async_http_pools.items())
+            if key[0] == target_loop_id and pool.loop_ref() is target_loop
+        ]
+
+    for pool in pools:
+        client = pool.client
+        if getattr(client, "is_closed", False):
+            continue
+        try:
+            await client.aclose()
+        except Exception:
+            logger.debug(
+                "[LLM] Failed to close OpenAI-compatible async HTTP pool for loop %s",
+                target_loop_id,
+                exc_info=True,
+            )
+
+
+async def close_provider_async_http_pools_for_loop(
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Close all provider async HTTP pools owned by one event loop."""
+    target_loop = loop if loop is not None else asyncio.get_running_loop()
+    await close_anthropic_async_http_pools_for_loop(target_loop)
+    await close_openai_async_http_pools_for_loop(target_loop)
+
+
+def _close_async_http_pool_at_exit(
+    provider_label: str,
+    loop: asyncio.AbstractEventLoop | None,
+    client: Any,
+) -> None:
+    if getattr(client, "is_closed", False):
+        return
+
+    try:
+        if loop is not None and not loop.is_closed() and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(client.aclose(), loop)
+            future.result(timeout=2)
+        elif loop is not None and not loop.is_closed():
+            loop.run_until_complete(client.aclose())
+        else:
+            asyncio.run(client.aclose())
+    except Exception:
+        logger.debug(
+            "[LLM] Failed to close %s async HTTP pool during process exit",
+            provider_label,
+            exc_info=True,
+        )
+
+
+def _close_remaining_anthropic_async_http_pools_at_exit() -> None:
+    with _anthropic_async_http_pool_lock:
+        pools = list(_anthropic_async_http_pools.values())
+        _anthropic_async_http_pools.clear()
+
+    for pool in pools:
+        _close_async_http_pool_at_exit("Anthropic", pool.loop_ref(), pool.client)
+
+
+def _close_remaining_openai_async_http_pools_at_exit() -> None:
+    with _openai_async_http_pool_lock:
+        pools = list(_openai_async_http_pools.values())
+        _openai_async_http_pools.clear()
+
+    for pool in pools:
+        _close_async_http_pool_at_exit("OpenAI-compatible", pool.loop_ref(), pool.client)
+
+
+atexit.register(_close_remaining_anthropic_async_http_pools_at_exit)
+atexit.register(_close_remaining_openai_async_http_pools_at_exit)
+
+
 def _anthropic_chat_model_class_for_config(
     chat_model_cls: type[Any],
     config: LLMConfig,
 ) -> type[Any]:
     class NymeriaChatAnthropic(chat_model_cls):
-        """Anthropic chat model with an instance-local async HTTP client.
+        """Anthropic chat model with loop-local async HTTP clients.
 
         langchain-anthropic caches its default async httpx client globally by
         base URL/timeout. Nymeria can stream normal chat on the API event loop
         while synchronous callable/autonomous workers consume async streams on a
-        bridge loop, so a globally shared async pool can cross event loops.
+        bridge loop. Cached graph/model instances can be reused on both loops,
+        so the SDK HTTP pool underneath each model wrapper must stay loop-local.
         """
 
         _nymeria_uses_instance_async_client = True
 
-        @cached_property
+        @property
         def _async_client(self) -> Any:
             import anthropic
-            import httpx
 
-            client_params = self._client_params
-            http_client_params = {"base_url": client_params["base_url"]}
-            if "timeout" in client_params:
-                http_client_params["timeout"] = client_params["timeout"]
-            if self.anthropic_proxy:
-                http_client_params["proxy"] = self.anthropic_proxy
-            http_client = httpx.AsyncClient(**http_client_params)
-            return anthropic.AsyncClient(
-                **client_params,
-                http_client=http_client,
-            )
+            loop = _get_running_or_current_event_loop()
+            loop_id = id(loop)
+            with _anthropic_async_http_pool_lock:
+                wrapper_cache = self.__dict__.setdefault(
+                    "_nymeria_async_clients_by_loop",
+                    {},
+                )
+                cached_client = wrapper_cache.get(loop_id)
+                cached_http_client = getattr(cached_client, "_client", None)
+                if cached_client is not None and not getattr(
+                    cached_http_client,
+                    "is_closed",
+                    False,
+                ):
+                    return cached_client
+
+                client_params = self._client_params
+                http_client_timeout = client_params.get(
+                    "timeout",
+                    _ANTHROPIC_TIMEOUT_MISSING,
+                )
+                if http_client_timeout is None:
+                    http_client_timeout = _ANTHROPIC_TIMEOUT_MISSING
+                http_client = _get_loop_local_anthropic_http_client(
+                    loop=loop,
+                    base_url=client_params["base_url"],
+                    timeout=http_client_timeout,
+                    proxy=self.anthropic_proxy or None,
+                )
+                async_client_params = dict(client_params)
+                if async_client_params.get("timeout") is None:
+                    async_client_params.pop("timeout", None)
+                async_client = anthropic.AsyncClient(
+                    **async_client_params,
+                    http_client=http_client,
+                )
+                wrapper_cache[loop_id] = async_client
+                return async_client
 
     if not config.base_url or not looks_like_cliproxy_url(config.base_url):
         return NymeriaChatAnthropic

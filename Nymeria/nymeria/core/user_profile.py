@@ -38,6 +38,12 @@ LEGACY_TOOL_RENAMES: Dict[str, str] = {
     "trigger_list": "trigger_info",
     "trigger_inspect": "trigger_info",
     "trigger_sources_info": "trigger_info",
+    # 2026-05-06: Claude OAuth classifies local helper tools named
+    # mcp_<name> as third-party MCP apps. The tool facade was renamed while
+    # keeping the Python symbol/import surface compatible.
+    "mcp_search": "search_mcp",
+    "mcp_install": "install_mcp_server",
+    "mcp_manage": "manage_mcp",
 }
 
 DEFAULT_GLOBAL_SKILLS: List[str] = ["self-improve"]

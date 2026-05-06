@@ -424,14 +424,14 @@ class NymeriaAgent:
         self._async_user_graphs: Dict[tuple, tuple] = {}  # For async operations
         self._GRAPH_CACHE_MAX = 50  # LRU eviction threshold
 
-        # Mid-turn tool reload: set by tool_search(action="enable") when a
+        # Mid-turn tool reload: set by tool_enable(action="enable") when a
         # genuinely new tool was added to the thread. Consumed at the end of
         # the current astream() invocation to trigger an in-stream graph
         # rebuild + resume (see _do_tool_reload). Capped at MAX_TOOL_RELOADS
         # per user turn to prevent runaway enable loops.
         self._pending_tool_reload: Dict[str, dict] = {}
         # Per-turn reload counter, written by astream/chat and read by
-        # tool_search._enable to degrade gracefully once the cap is reached
+        # tool_search._enable/tool_enable to degrade gracefully once the cap is reached
         # (returns a plain string instead of Command(goto=END), letting the
         # agent respond in-turn rather than leaving an orphan tool_result).
         self._turn_reload_count: Dict[str, int] = {}
@@ -554,11 +554,25 @@ class NymeriaAgent:
 
     def _tool_reload_source_label(self, reload_info: dict) -> str:
         source = reload_info.get("source") or "tool_search"
+        if source == "tool_enable":
+            return 'tool_enable(action="enable")'
         if source == "skill_kit":
             skill_name = reload_info.get("skill_name")
             if skill_name:
                 return f'Skill Kit "{skill_name}"'
             return "a Skill Kit"
+        if source == "mcp_install":
+            return "MCP server installation"
+        if source == "skill_install":
+            skill_name = reload_info.get("skill_name")
+            if skill_name:
+                return f'skill_manage enabling Skill "{skill_name}"'
+            return "skill_manage"
+        if source == "skill_kit_create":
+            skill_name = reload_info.get("skill_name")
+            if skill_name:
+                return f'skill_kit_create publishing Skill Kit "{skill_name}"'
+            return "skill_kit_create"
         if source == "skill_config":
             skill_name = reload_info.get("skill_name")
             if skill_name:
@@ -566,7 +580,7 @@ class NymeriaAgent:
             return "skill_config"
         if source == "tool_create":
             return "tool_create publishing a new tool"
-        return 'tool_search(action="enable")'
+        return 'tool_enable(action="enable")'
 
     def _create_tool_reload_resume_message(self, reload_info: dict) -> HumanMessage:
         new_tools = reload_info.get("new_tools", [])
@@ -1892,7 +1906,7 @@ class NymeriaAgent:
 
         # Apply per-thread tool filtering. disabled_tools is AUTHORITATIVE —
         # it filters both the default-bound set AND the extras (enabled_tools
-        # ∪ live_temp). Without this, `tool_search(action="disable", ...)`
+        # ∪ live_temp). Without this, `tool_enable(action="disable", ...)`
         # would have to destructively remove from enabled_tools/temporary_tools
         # to actually disable a tool that's in both lists, which means a
         # subsequent un-disable couldn't restore the original state. By
@@ -1987,6 +2001,7 @@ class NymeriaAgent:
         thread_id: str,
         cache: Dict[tuple, tuple],
         build_fn,
+        cache_key_fn=None,
     ):
         """Shared implementation for sync/async graph-for-user lookup.
 
@@ -2001,7 +2016,8 @@ class NymeriaAgent:
             return build_fn(full_prompt, user_id=user_id, thread_id=thread_id)
 
         memory_hash = self._get_memory_hash(user_id, thread_id)
-        cache_key = (user_id, thread_id)
+        build_cache_key = cache_key_fn or (lambda u, t: (u, t))
+        cache_key = build_cache_key(user_id, thread_id)
 
         with self._graph_cache_lock:
             if cache_key in cache:
@@ -2026,7 +2042,7 @@ class NymeriaAgent:
             # it was built without a user_id at startup, so its callable tool
             # list contains every user's callables (cross-user leak). Build a
             # per-user graph and cache under the sentinel thread_id "".
-            no_cust_key = (user_id, "")
+            no_cust_key = build_cache_key(user_id, "")
             with self._graph_cache_lock:
                 if no_cust_key in cache:
                     cached_hash, cached_graph = cache[no_cust_key]
@@ -2067,7 +2083,15 @@ class NymeriaAgent:
         return self._get_graph_for_user_impl(
             user_id, is_autonomous, thread_id,
             self._async_user_graphs, self._build_async_graph_with_prompt,
+            self._async_graph_cache_key,
         )
+
+    def _async_graph_cache_key(self, user_id: str, thread_id: str) -> tuple:
+        try:
+            loop_id = id(asyncio.get_running_loop())
+        except RuntimeError:
+            loop_id = None
+        return (loop_id, user_id, thread_id)
 
     def register_tool(self, tool: BaseTool) -> "NymeriaAgent":
         """Register a tool with the agent."""
@@ -2339,7 +2363,11 @@ class NymeriaAgent:
             keys_to_remove = [k for k in self._user_graphs if k[1] == thread_id]
             for k in keys_to_remove:
                 del self._user_graphs[k]
-            keys_to_remove = [k for k in self._async_user_graphs if k[1] == thread_id]
+            keys_to_remove = [
+                k
+                for k in self._async_user_graphs
+                if (k[2] if len(k) > 2 else k[1]) == thread_id
+            ]
             for k in keys_to_remove:
                 del self._async_user_graphs[k]
         logger.debug(f"Invalidated graph cache for thread {thread_id}")
@@ -2609,8 +2637,10 @@ class NymeriaAgent:
         - Removed core tools are cleaned out to avoid stale entries.
         - Users whose default_thread_tools is None (legacy mode) are skipped.
         """
+        from ..tools import CAPABILITY_EXPANSION_TOOL_NAMES
+
         added = new_core - old_core
-        removed = old_core - new_core
+        removed = (old_core - new_core) | set(CAPABILITY_EXPANSION_TOOL_NAMES)
         if not added and not removed:
             return
 
@@ -2739,7 +2769,7 @@ class NymeriaAgent:
                 messages = result.get("messages", [])
 
                 # Mirror astream()'s in-turn tool-reload loop for sync callers
-                # (MCP `nymeria_chat`, CLI). If tool_search(action="enable")
+                # (MCP `nymeria_chat`, CLI). If tool_enable(action="enable")
                 # flagged a new tool, rebuild a fresh graph with it bound and
                 # continue via an internal resume message. See
                 # MAX_TOOL_RELOADS_PER_TURN and docs/tools.md.
@@ -3154,7 +3184,7 @@ class NymeriaAgent:
                 async for evt in stream_processor.drive(graph, input_state):
                     yield evt
 
-                # In-turn tool reload: if tool_search(action="enable") added a
+                # In-turn tool reload: if tool_enable(action="enable") added a
                 # genuinely new tool during the first pass, rebuild a fresh
                 # graph with the new tools bound and resume. See docs/tools.md.
                 reload_count = 0
@@ -3616,15 +3646,32 @@ class NymeriaAgent:
         into the default_thread_tools list, then the old fields are ignored via
         extra='ignore' on ToolPreferences.
         """
-        from ..tools import ALL_TOOLS
+        from ..tools import ALL_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
 
         for user_id in self.profile_manager.list_users():
             profile = self.profile_manager.get_profile(user_id)
             if profile.tool_preferences.default_thread_tools is not None:
+                current = set(profile.tool_preferences.default_thread_tools)
+                updated = [
+                    name
+                    for name in profile.tool_preferences.default_thread_tools
+                    if name not in CAPABILITY_EXPANSION_TOOL_NAMES
+                ]
+                if set(updated) != current:
+                    profile.tool_preferences.default_thread_tools = updated
+                    self.profile_manager.save_profile(profile)
+                    logger.info(
+                        "Removed capability expansion tools from default_thread_tools "
+                        "for user %s",
+                        user_id,
+                    )
                 continue  # Already migrated
 
             # Start with all core tools
-            default_names = [t.name for t in ALL_TOOLS]
+            default_names = [
+                t.name for t in ALL_TOOLS
+                if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES
+            ]
 
             # Check raw data for old enabled_overrides to incorporate
             profile_path = self.profile_manager._get_profile_path(user_id)

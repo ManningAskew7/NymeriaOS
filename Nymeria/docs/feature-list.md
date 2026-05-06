@@ -94,28 +94,27 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - New threads inherit this personalized baseline automatically
 - Core tools always available; optional tools curated per user preference
 
-### Runtime Tool Management (`tool_search`)
-- **Search** — Find tools by keyword or category (returns up to 15 results with status)
-- **Enable** — Activate optional tools per-thread with TTL (30m, 2h, 6h, 24h, permanent)
-- **Disable** — Non-destructively remove tools (preserves state for re-enable)
-- **Status** — View thread's full tool inventory with TTL remaining
+### Runtime Capability Expansion (`self-improve`)
+- **Search** — `tool_search` finds tools by keyword/category after `self-improve` loads
+- **Enable** — `tool_enable` activates optional tools per-thread with TTL (30m, 2h, 6h, 24h, permanent)
+- **MCP** — `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
+- **Skills** — `skill_manage` lists, searches, installs, enables, and disables Agent Skills
+- **Skill Kits** — `skill_kit_create` packages existing tools or creates HTTP tools before publishing a durable Skill Kit
 
 ### In-Turn Hot-Loading
 - **Mid-stream graph rebuild** — Enable a tool and use it in the same turn (up to 3 reloads per turn)
-- Agent calls `tool_search(action="enable")` → graph ends → fresh graph compiled with new tool → agent continues in same SSE stream
+- Agent calls `tool_enable(action="enable")` → graph ends → fresh graph compiled with new tool → agent continues in same SSE stream
 - Skill Kit activation uses the same path when `metadata.nymeria.required_tools` declares required tool schemas
-- `skill_config(action="publish")` uses the reload loop to refresh the `Skill` meta-tool index after publishing a generated Skill Kit
+- `skill_config(action="publish")`, `skill_kit_create`, `skill_manage`, and `manage_mcp(action="install")` use reload metadata to refresh the right schemas/indexes in the same turn
 - **Sliding renewal** — Re-enabling refreshes expiry; promoting to permanent upgrades classification
 - **Lazy eviction** — Expired TTL tools filtered at graph-build time, no background scheduler
 
 ### MCP Server Discovery & Installation
-- **`mcp_search`** — Search official MCP registry + Smithery for servers
-- **`mcp_install`** — Install from Claude Desktop JSON, bare CLI command, HTTP URL, or registry ID
-- Auto-discovers tools, namespaces as `mcp__<server>__<tool>`, available after reload
+- **`manage_mcp`** — Search official MCP registry + Smithery, preview install plans, install from Claude Desktop JSON/bare command/HTTP URL/registry ID, and inspect installed servers
+- Auto-discovers tools, namespaces as `mcp__<server>__<tool>`, and enables them in the same turn when requested
 
 ### Skill Discovery & Installation
-- **`search_skills`** — Semantic search over installed + Anthropic marketplace skills
-- **`install_skill`** — Install skill bundles from Anthropic `anthropics/skills` repo
+- **`skill_manage`** — List/search installed + Anthropic marketplace skills, install bundles, and enable/disable them per-thread
 - **Security scanning** — Detects curl|bash pipes, rm -rf, eval base64, fork bombs before install
 - **Progressive disclosure** — Only name + description loaded; full body on activation
 - **Skill Kits** — Skills may declare exact Nymeria `required_tools`; activation strictly binds them with TTL
@@ -164,11 +163,11 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 |----------|-------|
 | **Shell & Files** | `bash_execute`, `file_read`, `file_write` |
 | **Web** | `web_search` (Perplexity, 3 depth levels) |
-| **Multi-Model** | `consult` (Gemini second opinion), `claude_code` (headless CLI) |
+| **Multi-Model** | `consult` (Gemini second opinion) |
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
-| **Self-Customization** | `tool_search`, `mcp_search`, `mcp_install`, `list_installed_skills`, `search_skills`, `install_skill`, `reload_all` |
+| **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when needed |
 
 ### Optional Tool Categories
 

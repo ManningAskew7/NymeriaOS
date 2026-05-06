@@ -2158,14 +2158,20 @@ Returns available tool categories.
 ```json
 {
   "categories": {
-    "core": ["bash_execute", "file_read", "file_write", "file_list", "web_search", "think", "claude_code", "notify"],
+    "core": ["bash_execute", "file_read", "file_write", "web_search", "consult", "notify"],
     "profile": ["memory_add", "memory_edit", "memory_read", "personality_set", "rag_search"],
     "todo": ["nym_todo", "nym_todo_delete", "nym_todo_list"],
+    "skills": ["skill_manage", "list_installed_skills", "search_skills", "install_skill"],
+    "mcp_server": ["manage_mcp", "search_mcp", "install_mcp_server"],
+    "custom": ["tool_search", "tool_enable", "api_discover", "http_request", "tool_create", "skill_config", "skill_kit_create"],
     "self_modify": ["self_modify_rollback", "reload_all"],
     "thread_spawn": ["spawn_thread"]
   }
 }
 ```
+
+Capability-expansion categories are optional by default; the bundled
+`self-improve` Skill Kit binds the consolidated facades when needed.
 
 ---
 

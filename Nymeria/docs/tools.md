@@ -22,18 +22,16 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
 | 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
 | 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
-| 15 | `tool_search` | Core | SAFE | On | Search, enable, and disable tools for the current thread |
-| 16 | `list_installed_skills` | Skills | SAFE | On | List Agent Skills installed on disk (all scopes) |
-| 17 | `search_skills` | Skills | SAFE | On | Semantic search over installed skills or the Anthropic marketplace (OpenAI embeddings → BM25 → substring fallback) |
-| 18 | `install_skill` | Skills | MODERATE | On | Install a skill from `anthropics/skills` into user or global scope |
-| 19 | `mcp_search` | MCP | SAFE | On | Search public MCP server registries (official + Smithery) for installable servers |
-| 20 | `mcp_install` | MCP | MODERATE | On | Install an MCP server from a paste (Claude JSON, command, URL, package page, registry id, or bundle) |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. See `docs/skills.md`.
+
+> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when the agent activates it.
 
 > **Note:** `claude_code`, `reload_all`, and `self_modify_rollback` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `RUNTIME_ADMIN_TOOLS`, `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them per-thread, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
 
 > **Tool output guard:** After any tool executes, Nymeria truncates oversized `ToolMessage` content before it is stored in thread history. `TOOL_OUTPUT_MAX_CHARS` defaults to `100000`; larger outputs keep the first ~75k and last ~25k characters with a marker showing the original and omitted sizes.
+
+> **CLIProxy OAuth note:** Installed server tools keep the safe dynamic namespace `mcp__<server>__<tool>`. Nymeria-owned helper tools must avoid the `mcp_<name>`, `mcp.<name>`, and `mcp/<name>` namespaces because Claude OAuth classifies those as third-party MCP apps. The consolidated facade is named `manage_mcp`; legacy helpers remain `search_mcp` and `install_mcp_server` for compatibility. The observed probe matrix is documented in `docs/cliproxy.md`.
 
 ### Optional: Trigger Tools (2)
 
@@ -52,16 +50,37 @@ Not loaded by default. Enable per-thread to let the agent invoke the same user-f
 |---|------|----------|----------|-------------|
 | 1 | `slash_command` | Self | MODERATE | Run a Nymeria slash command on the current thread (config, env, tools, memory, TODOs, notepad, status). Destructive commands blocked. |
 
-### Optional: HTTP/API and Skill Authoring (4)
+### Optional: Capability Expansion and Authoring
 
-Not loaded by default. Enable per-thread when the agent needs ad hoc API calls, machine-readable API discovery, a reusable public HTTP tool, or a generated Skill Kit.
+Not loaded by default. The normal path is to activate `Skill(name="self-improve")`,
+which binds the facades below with a TTL.
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
-| 1 | `http_request` | Core | MODERATE | Make a one-off HTTP request to a documented API endpoint |
-| 2 | `api_discover` | Core | MODERATE | Discover OpenAPI/Swagger metadata for an API base URL |
-| 3 | `tool_create` | Custom | MODERATE | Draft, test, and publish reusable HTTP tools into the global custom-tool registry |
-| 4 | `skill_config` | Custom | MODERATE | Draft, validate, publish, list, and delete user-scoped Nymeria Skills and Skill Kits |
+| 1 | `tool_search` | Core | SAFE | Search available tools |
+| 2 | `tool_enable` | Core | MODERATE | Enable, disable, and inspect current-thread tool bindings |
+| 3 | `manage_mcp` | MCP | MODERATE | Search, preview, install, and inspect MCP servers |
+| 4 | `skill_manage` | Skills | MODERATE | List, search, install, enable, disable, and inspect skills |
+| 5 | `http_request` | Core | MODERATE | Make a one-off HTTP request to a documented API endpoint |
+| 6 | `api_discover` | Core | MODERATE | Discover OpenAPI/Swagger metadata for an API base URL |
+| 7 | `skill_kit_create` | Custom | MODERATE | Create HTTP tools and package durable Skill Kits |
+| 8 | `tool_create` | Custom | MODERATE | Compatibility low-level HTTP tool authoring |
+| 9 | `skill_config` | Custom | MODERATE | Compatibility low-level Skill Kit authoring |
+| 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
+| 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
+
+### Optional: Private B Tools (4)
+
+Not loaded by default. Enable per-thread when the agent needs to manage Example University workload data from the LMS/Moodle. Configuration lives per user in `data/auth_tokens/<user_id>/_prv_b.json`; env fallbacks are `_PRV_B_CALENDAR_URL`, `_PRV_B_RSS_FEEDS`, `_PRV_B_MOODLE_BASE_URL`, and `_PRV_B_MOODLE_TOKEN`. See `docs/_prv_b.md`.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `_prv_b_auth` | Private B | MODERATE | Configure/inspect the LMS auth; actions: `status`, `setup_guide`, `start_mobile_token_flow`, `parse_mobile_redirect`, `configure_calendar`, `configure_rss`, `configure_moodle_token`, `clear` |
+| 2 | `_prv_b_calendar` | Private B | MODERATE | Read the Moodle calendar `.ics` export URL; actions: `configure`, `status`, `clear`, `list`, `get`, `search` |
+| 3 | `_prv_b_rss` | Private B | MODERATE | Read the LMS forum or announcement RSS feeds; actions: `configure`, `status`, `clear`, `list`, `get`, `search` |
+| 4 | `_prv_b_moodle` | Private B | MODERATE | Read Moodle mobile API data from a `moodle_mobile_app` token; actions: `configure`, `status`, `clear`, `site_info`, `courses`, `course_contents`, `course_module`, `assignments`, `upcoming_events`, `grades`, `forums`, `forum_discussions`, `discussion_posts` |
+
+`_prv_b_auth(start_mobile_token_flow)` returns an the LMS mobile-app launch URL. The user completes the LMS/Microsoft MFA in a browser and gives Nymeria the resulting `moodlemobile://token=...` redirect via `parse_mobile_redirect`; Nymeria then stores the decoded Moodle `wstoken` for the read tools. The tool does not store the user's MQ password or TOTP secret.
 
 ### Optional: File Editing (1)
 
@@ -551,26 +570,40 @@ notify(message: str, platform: Literal["auto", "desktop", "telegram", "discord",
 
 ### tool_search
 
-Search, enable, and disable tools for the current thread. Allows the agent to discover tools it doesn't currently have loaded and activate them.
+Search available tools by keyword/category. This is search-only; mutations live
+in `tool_enable`.
 
 ```python
-tool_search(action: str, query: str = "", category: str = "", tools: list[str] = None, ttl: str = "2h", force: bool = False)
+tool_search(query: str = "", category: str = "", top_k: int = 15, include_status: bool = True)
+```
+
+**Parameters:**
+- `query` (`str`): Keyword to search tool names and descriptions.
+- `category` (`str`): Optional category filter (e.g. `"email"`, `"twitch"`).
+- `top_k` (`int`): Result count, default 15 and capped at 50.
+- `include_status` (`bool`): Include current-thread enabled/disabled annotations.
+
+### tool_enable
+
+Enable, disable, or inspect current-thread tool bindings. This is normally
+available after the agent activates `Skill(name="self-improve")`.
+
+```python
+tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str = "2h", force: bool = False)
 ```
 
 **Actions:**
-- `search` — Search tools by keyword and/or category. Returns up to 15 results with name, description, category, security level, and enabled status (including TTL remaining).
-- `enable` — Enable tools by name (`tools` param) or by category (`category` param). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
-- `disable` — Disable tools for the thread (`tools` param). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`). A tool like `memory_read` is in both, so it needs `force=True` to disable; but a tool in `ALL_TOOLS` that's absent from `default_thread_tools` is still core-protected even though it isn't default-bound.
+- `enable` — Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
+- `disable` — Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
 - `list_categories` — List all tool categories with tool counts.
-- `status` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
+- `status` / `inspect` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
 **Parameters:**
-- `action` (`str`): One of: `search`, `enable`, `disable`, `list_categories`, `status`
-- `query` (`str`): Keyword to search tool names and descriptions (for `search`)
-- `category` (`str`): Category name to filter search or enable all tools in (e.g. `"email"`, `"twitch"`)
-- `tools` (`list[str]`): Specific tool names to enable or disable
-- `ttl` (`str`): For `enable` only — how long to keep the tools bound before lazy eviction. One of: `"30m"`, `"2h"` (default), `"6h"`, `"24h"`, `"permanent"`. Ignored for other actions.
-- `force` (`bool`): For `disable` only — set `True` to allow disabling core tools. Default `False`. Non-core tools are unaffected by this flag.
+- `action` (`str`): One of: `enable`, `disable`, `list_categories`, `status`.
+- `tools` (`list[str]`): Specific tool names to enable or disable.
+- `category` (`str`): Category name to enable all tools in.
+- `ttl` (`str`): For `enable` only — how long to keep tools bound before lazy eviction. One of: `"30m"`, `"2h"` (default), `"6h"`, `"24h"`, `"permanent"`.
+- `force` (`bool`): For `disable` only — set `True` to allow disabling core tools. Default `False`.
 
 **Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order — (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS — the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set — `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
 
@@ -580,9 +613,38 @@ The classifier sources its default-bound set from the same place as graph-build 
 
 **Status display filters disabled tools from the enabled sections.** Because `disabled_tools` is authoritative, a tool that has a preserved `enabled_tools` or `temporary_tools` entry while ALSO being in `disabled_tools` is currently unbound. The `status` and `search` renderers suppress such tools from the `Enabled (permanent)` / `Enabled (TTL)` sections and annotate them in the `Disabled` section with `(preserved: permanent)` or `(preserved: Xm left)`, so the user can still see what will round-trip back on un-disable without seeing the same tool in two places.
 
+### manage_mcp
+
+Search, preview, install, and inspect MCP servers through the capability
+expansion path.
+
+```python
+manage_mcp(action: str, query: str = "", source: str = "", name: str = "", confirmed: bool = False, config_values: dict = {}, ttl: str = "2h", auto_enable_thread: bool = True)
+```
+
+Actions are `search`, `preview`, `install`, and `inspect`/`status`/`list`.
+Successful installs reload MCP server tools, enable discovered
+`mcp__<server>__<tool>` tools on the current thread when
+`auto_enable_thread=true`, and queue a same-turn reload with
+`source="mcp_install"`. Installing MCP servers remains admin-only at execution
+time because stdio servers can launch local commands.
+
+### skill_manage
+
+List, search, install, enable, disable, or inspect Agent Skills.
+
+```python
+skill_manage(action: str, query: str = "", name: str = "", source: str = "installed", scope: str = "user", activate_current_thread: bool = False)
+```
+
+Actions are `list`, `search`, `install`, `enable`, `disable`, and `inspect`.
+Marketplace installs default to user scope; global scope requires admin.
+When a skill is installed or enabled on the current thread and a graph rebuild
+is needed, reload metadata uses `source="skill_install"`.
+
 #### In-turn auto-continue
 
-When the agent calls `tool_search(action="enable", tools=[...])` during a turn, the enable result explicitly tells the agent to stop after that tool result. It should not write a final answer, explain the enablement, or attempt to call the newly enabled tool in the same graph invocation. The harness then:
+When the agent calls `tool_enable(action="enable", tools=[...])` during a turn, the enable result explicitly tells the agent to stop after that tool result. It should not write a final answer, explain the enablement, or attempt to call the newly enabled tool in the same graph invocation. The harness then:
 
 1. Persists the enablement to the thread config (with TTL) and invalidates the cached graph.
 2. Finishes the current graph invocation normally.
@@ -590,9 +652,9 @@ When the agent calls `tool_search(action="enable", tools=[...])` during a turn, 
 4. Builds a fresh graph with the new tools bound to the LLM.
 5. Injects an internal resume message (`internal_type="tool_reload_resume"`) and drives the new graph against it, streaming into the same SSE connection.
 
-To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_search(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
+To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_enable(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
 
-`astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path) honor the auto-continue. The streaming path emits `tool_reload` and then drives the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. Scheduled TODOs, triggers, callable threads, spawned threads, and the CLI consume `astream()` through `core/stream_bridge.py`, which keeps async-only tools such as `tool_create` available outside regular chat. The bridge uses one process-local asyncio loop for synchronous callers so provider SDK async clients are not moved across short-lived event loops during parallel callable-thread calls. Autonomous callers use `stream_and_collect()` for shared response/thinking collection, error propagation, and iteration-limit tracking before publishing their own completion payloads. `chat()` remains non-streaming and returns only the final string.
+`astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path) honor the auto-continue. The streaming path emits `tool_reload` and then drives the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. Scheduled TODOs, triggers, callable threads, spawned threads, and the CLI consume `astream()` through `core/stream_bridge.py`, which keeps async-only tools such as `tool_create` available outside regular chat. The bridge uses one process-local asyncio loop for synchronous callers, and async graph caches plus provider SDK HTTP pools are loop-local so FastAPI-loop chat and bridge-loop callable calls do not share loop-bound transports. Autonomous callers use `stream_and_collect()` for shared response/thinking collection, error propagation, and iteration-limit tracking before publishing their own completion payloads. `chat()` remains non-streaming and returns only the final string.
 
 #### TTL and eviction
 
@@ -800,7 +862,7 @@ slash_command(command: str)
 
 ## HTTP/API and Skill Authoring Tools (Optional)
 
-General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP tools, and generated Skill Kits. These are not loaded by default; enable per-thread with `tool_search`, a Skill Kit, or thread config.
+General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP tools, and generated Skill Kits. These are not loaded by default; normally load `Skill(name="self-improve")`, then enable per-thread with `tool_enable` when needed.
 
 ### http_request
 
@@ -897,7 +959,7 @@ tool_create(
 - `list` — Show this user's drafts plus globally published custom tools without exposing request headers or bodies.
 - `delete` — Delete this user's draft only. It does not delete a globally published tool.
 
-**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`30m`, `2h`, `6h`, `24h`, or `permanent`; default `2h`) using the same in-turn auto-reload path as `tool_search(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
+**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`30m`, `2h`, `6h`, `24h`, or `permanent`; default `2h`) using the same in-turn auto-reload path as `tool_enable(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
 
 **V1 limits:** Only `implementation_type="http"` is supported. Agent-created tools reject inline secrets, `Authorization`/API-key/cookie headers, and `${env:...}` references. For authenticated reusable tools, use the Desktop/REST custom-tool flow for now; future production work should add domain/method/path-scoped secret injection.
 
@@ -935,6 +997,35 @@ skill_config(
 **Skill Kit dependency checks:** `required_tools` are validated before any publish write. Unknown, unloadable, or admin-blocked tools fail strictly. Publishing a user skill that would shadow an existing bundled/global skill is rejected; replacing an existing generated skill requires `overwrite=true` and the existing directory must contain only `SKILL.md`.
 
 **Same-turn activation:** When `activate_current_thread=true`, publish adds the skill name to `ThreadConfig.enabled_skills`, reloads the skill manager, invalidates graph caches, and queues a same-turn `tool_reload` with `source="skill_config"` and `reason="skill_published"`. The event may have an empty `tools` list because the reload refreshes the `Skill` meta-tool index rather than binding a new normal tool.
+
+### skill_kit_create
+
+Preferred facade for durable capability authoring from `self-improve`.
+
+```python
+skill_kit_create(
+    action: str,
+    name: str = "",
+    description: str = "",
+    body: str = "",
+    required_tools: Optional[list[str] | str] = None,
+    draft_id: str = "",
+    tool_id: str = "",
+    parameters: Optional[dict] = None,
+    http_config: Optional[dict] = None,
+    sample_params: Optional[dict] = None,
+)
+```
+
+Actions:
+- `draft`, `validate`, `publish`, `package`, `list` — Skill Kit lifecycle.
+- `draft_http_tool`, `test_http_tool`, `publish_http_tool` — guided HTTP tool
+  creation before packaging a Skill Kit around it.
+
+`publish`/`package` use the Skill publish reload path with
+`source="skill_kit_create"` and `reason="skill_kit_created"`. Publishing an
+HTTP tool through this facade enables the new tool on the current thread with
+`source="skill_kit_create"` and `reason="http_tool_published_for_skill_kit"`.
 
 ---
 
@@ -1162,6 +1253,30 @@ Microsoft tokens are stored with the shared cache I/O helpers in
 
 ---
 
+### Gmail Auth Tools (4)
+
+Optional Google Gmail OAuth tools for MCP auth bridging. They use the same
+Google OAuth factory as Calendar and Docs, but request Gmail scopes and store
+tokens at `data/auth_tokens/<user_id>/google_gmail.json`.
+
+After `gmail_auth_complete` succeeds, Nymeria exports a google-auth-library
+compatible token file to `data/auth_tokens/<user_id>/mcp/gmail/credentials.json`.
+Managed MCP install/retry/create automatically applies this file as
+`GMAIL_CREDENTIALS_PATH` for `@gongrzhe/server-gmail-autoauth-mcp` and applies
+`GOOGLE_OAUTH_CREDENTIALS` as `GMAIL_OAUTH_PATH`. Existing Calendar or Docs
+Google tokens are exported only if they already include the Gmail scopes; most
+older tokens will require `gmail_auth_start` because Google scopes are fixed at
+consent time.
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `gmail_auth_start` | `()` | Start Google Gmail OAuth flow. Returns authorization URL for the user. |
+| `gmail_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in and export MCP credentials. |
+| `gmail_auth_clear` | `(account_id?)` | Clear one saved Gmail account by ID, or all Gmail accounts plus any pending Gmail OAuth flow when omitted. |
+| `gmail_list_accounts` | `()` | List authenticated Google accounts for Gmail with verified token/scopes status. Invalid refresh tokens are pruned. |
+
+---
+
 ### Calendar Tools (15)
 
 Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (4 auth) and `tools/calendar.py` (11 event). Uses `google-api-python-client` for direct API calls with agent-guided OAuth flow.
@@ -1249,7 +1364,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
-- Utility tools: `claude_code`, `sticky_note`, `http_request`, `api_discover`, `tool_create` = 5 public utilities, plus the admin-only diagnostic `hello_test` used for dynamic-load validation
+- Utility tools: `claude_code`, `sticky_note`, `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_config`, `skill_kit_create` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
@@ -1317,6 +1432,11 @@ The MCP paste installer accepts Claude Desktop JSON, bare stdio commands, HTTP/S
 
 Managed MCP servers and their discovered tools are configured from the dedicated **Settings → MCP** tab on desktop and mobile. Legacy user-created MCP custom tools remain under **Settings → Tools** with the other custom tools.
 
+Known MCP auth presets are applied during install, retry, create, and update.
+For `@gongrzhe/server-gmail-autoauth-mcp`, Nymeria wires
+`GMAIL_OAUTH_PATH` from `GOOGLE_OAUTH_CREDENTIALS` and
+`GMAIL_CREDENTIALS_PATH` from the current user's Gmail MCP credential export.
+
 For stdio servers, Nymeria launches the command from the backend process. In Docker, that means paths and Python/Node dependencies must exist inside the `nymeria-api` container, and host services should normally be referenced as `host.docker.internal:<port>` rather than `localhost:<port>`. Startup and discovery failures include the server process's recent stderr when available.
 
 **Configuration:**
@@ -1378,7 +1498,7 @@ POST /tools/custom/{tool_id}/test  # Test a tool
 
 **Storage:** Custom tools are stored as JSON files in `data/custom_tools/`, one `.json` per tool ID.
 
-**Agent-created tools:** `tool_create(action="publish")` writes the same JSON definition format into `data/custom_tools/`, then reloads the custom-tool loader and registers metadata so `tool_search(action="search")` can find the new tool. Agent-created tools are global but remain opt-in per thread.
+**Agent-created tools:** `tool_create(action="publish")` writes the same JSON definition format into `data/custom_tools/`, then reloads the custom-tool loader and registers metadata so `tool_search(query=...)` can find the new tool. Agent-created tools are global but remain opt-in per thread.
 
 ### HexStrike MCP Sidecar
 

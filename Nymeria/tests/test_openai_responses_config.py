@@ -6,6 +6,8 @@ import asyncio
 from types import SimpleNamespace
 import warnings
 
+import anthropic
+import httpx
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 
@@ -56,6 +58,15 @@ def _anthropic_config(**overrides) -> LLMConfig:
     }
     values.update(overrides)
     return LLMConfig(**values)
+
+
+def _run_in_new_event_loop(async_fn):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(async_fn())
+    finally:
+        loop.run_until_complete(providers.close_provider_async_http_pools_for_loop(loop))
+        loop.close()
 
 
 def test_chat_openai_with_reasoning_is_importable_stable_class():
@@ -176,6 +187,97 @@ def test_openrouter_client_retries_disabled_for_central_retry_policy():
     assert llm.root_async_client.max_retries == 0
 
 
+def test_direct_openai_loop_local_client_preserves_stream_usage_default(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    async def touch_client():
+        llm = create_llm(_openai_config(base_url=None))
+        return llm.stream_usage, llm.root_async_client.max_retries
+
+    stream_usage, max_retries = _run_in_new_event_loop(touch_client)
+
+    assert stream_usage is True
+    assert max_retries == 0
+
+
+def test_openai_loop_local_client_honors_openai_api_base_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_BASE", "http://env-openai.test/v1")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    async def touch_client():
+        llm = create_llm(_openai_config(base_url=None))
+        return llm.root_async_client._client.base_url, llm.stream_usage
+
+    base_url, stream_usage = _run_in_new_event_loop(touch_client)
+
+    assert str(base_url).rstrip("/") == "http://env-openai.test/v1"
+    assert stream_usage is None
+
+
+def test_openai_async_http_client_is_reused_within_one_event_loop():
+    async def touch_two_clients():
+        first = create_llm(_openai_config())
+        second = create_llm(_openai_config())
+        return first.root_async_client._client, second.root_async_client._client
+
+    first_http_client, second_http_client = _run_in_new_event_loop(touch_two_clients)
+
+    assert first_http_client is second_http_client
+
+
+def test_openai_async_http_client_is_loop_local_across_event_loops():
+    async def touch_client():
+        llm = create_llm(_openai_config())
+        return llm.root_async_client._client
+
+    first_http_client = _run_in_new_event_loop(touch_client)
+    second_http_client = _run_in_new_event_loop(touch_client)
+
+    assert first_http_client is not second_http_client
+
+
+def test_openrouter_async_http_client_is_loop_local_across_event_loops():
+    async def touch_client():
+        llm = create_llm(_openrouter_config())
+        return llm.root_async_client._client
+
+    first_http_client = _run_in_new_event_loop(touch_client)
+    second_http_client = _run_in_new_event_loop(touch_client)
+
+    assert first_http_client is not second_http_client
+
+
+def test_openai_async_http_pool_close_is_loop_scoped():
+    loop_one = asyncio.new_event_loop()
+    loop_two = asyncio.new_event_loop()
+
+    async def touch_client():
+        llm = create_llm(_openai_config())
+        return llm.root_async_client._client
+
+    try:
+        first_http_client = loop_one.run_until_complete(touch_client())
+        second_http_client = loop_two.run_until_complete(touch_client())
+
+        assert first_http_client is not second_http_client
+        assert not first_http_client.is_closed
+        assert not second_http_client.is_closed
+
+        loop_one.run_until_complete(
+            providers.close_openai_async_http_pools_for_loop(loop_one)
+        )
+
+        assert first_http_client.is_closed
+        assert not second_http_client.is_closed
+    finally:
+        loop_two.run_until_complete(
+            providers.close_openai_async_http_pools_for_loop(loop_two)
+        )
+        loop_one.close()
+        loop_two.close()
+
+
 def test_anthropic_client_retries_disabled_for_central_retry_policy():
     llm = create_llm(_anthropic_config())
 
@@ -217,35 +319,119 @@ def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch
     assert type(llm).__name__ == "CLIProxyCompatibleChatAnthropic"
 
 
-def test_anthropic_async_http_client_is_instance_local_and_preserves_cliproxy_headers(
-    monkeypatch,
-):
+def test_anthropic_async_client_is_reused_within_one_event_loop(monkeypatch):
     monkeypatch.setattr(
         providers,
         "_should_use_cliproxy_context_management_adapter",
         lambda _chat_model_cls: (True, "test"),
     )
 
-    config = _anthropic_config(base_url="http://cli-proxy-api-latest:8317")
-    first = create_llm(config)
-    second = create_llm(config)
+    llm = create_llm(
+        _anthropic_config(base_url="http://cli-proxy-api-latest:8317")
+    )
 
-    first_async_client = first._async_client
-    second_async_client = second._async_client
+    async def touch_client_twice():
+        return llm._async_client, llm._async_client
 
-    try:
-        assert first_async_client is not second_async_client
-        assert first_async_client._client is not second_async_client._client
-        assert (
-            first_async_client.default_headers["User-Agent"]
-            == "claude-cli/2.1.113"
+    first_async_client, second_async_client = _run_in_new_event_loop(
+        touch_client_twice
+    )
+
+    assert first_async_client is second_async_client
+
+
+def test_anthropic_async_client_is_loop_local_across_event_loops(monkeypatch):
+    monkeypatch.setattr(
+        providers,
+        "_should_use_cliproxy_context_management_adapter",
+        lambda _chat_model_cls: (True, "test"),
+    )
+
+    llm = create_llm(
+        _anthropic_config(base_url="http://cli-proxy-api-latest:8317")
+    )
+
+    async def touch_client():
+        return llm._async_client
+
+    first_async_client = _run_in_new_event_loop(touch_client)
+    second_async_client = _run_in_new_event_loop(touch_client)
+
+    assert first_async_client is not second_async_client
+    assert first_async_client._client is not second_async_client._client
+
+
+def test_anthropic_async_client_preserves_cliproxy_http_settings(monkeypatch):
+    monkeypatch.setattr(
+        providers,
+        "_should_use_cliproxy_context_management_adapter",
+        lambda _chat_model_cls: (True, "test"),
+    )
+    monkeypatch.setenv("ANTHROPIC_PROXY", "http://proxy.example:8080")
+
+    captured_http_kwargs = []
+    original_http_client_cls = anthropic.DefaultAsyncHttpxClient
+
+    class RecordingDefaultAsyncHttpxClient(original_http_client_cls):
+        def __init__(self, **kwargs):
+            captured_http_kwargs.append(dict(kwargs))
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(
+        anthropic,
+        "DefaultAsyncHttpxClient",
+        RecordingDefaultAsyncHttpxClient,
+    )
+
+    llm = create_llm(
+        _anthropic_config(
+            base_url="http://cli-proxy-api-latest:8317",
+            request_timeout=123,
         )
-        assert str(first_async_client.base_url).rstrip("/") == (
-            "http://cli-proxy-api-latest:8317"
-        )
-    finally:
-        asyncio.run(first_async_client.close())
-        asyncio.run(second_async_client.close())
+    )
+
+    async def touch_client():
+        return llm._async_client
+
+    async_client = _run_in_new_event_loop(touch_client)
+
+    assert async_client.max_retries == 0
+    assert async_client.timeout == 123
+    assert async_client.default_headers["User-Agent"] == "claude-cli/2.1.113"
+    assert str(async_client.base_url).rstrip("/") == (
+        "http://cli-proxy-api-latest:8317"
+    )
+    assert captured_http_kwargs == [
+        {
+            "base_url": "http://cli-proxy-api-latest:8317",
+            "timeout": 123,
+            "proxy": "http://proxy.example:8080",
+        }
+    ]
+
+
+def test_anthropic_async_http_client_uses_sdk_default_client_defaults(monkeypatch):
+    monkeypatch.setattr(
+        providers,
+        "_should_use_cliproxy_context_management_adapter",
+        lambda _chat_model_cls: (True, "test"),
+    )
+
+    llm = create_llm(
+        _anthropic_config(base_url="http://cli-proxy-api-latest:8317")
+    )
+
+    async def touch_http_client():
+        async_client = llm._async_client
+        return async_client._client, async_client.timeout
+
+    http_client, wrapper_timeout = _run_in_new_event_loop(touch_http_client)
+
+    assert isinstance(http_client, anthropic.DefaultAsyncHttpxClient)
+    assert type(http_client) is not httpx.AsyncClient
+    assert http_client.follow_redirects is True
+    assert http_client.timeout.read == 600
+    assert wrapper_timeout.read == 600
 
 
 def test_cliproxy_context_management_dict_is_wrapped_for_langchain():

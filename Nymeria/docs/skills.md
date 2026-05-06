@@ -73,7 +73,7 @@ metadata:
 - Binding is strict. If any required tool is unknown, unloadable, or blocked
   by the admin-only gate, activation fails and no tool config is mutated.
 - Activation may remove required tools from `disabled_tools`, matching
-  `tool_search(action="enable")`; admin-only restrictions still apply.
+  `tool_enable(action="enable")`; admin-only restrictions still apply.
 
 If a Skill Kit binds a new tool, the current graph invocation ends with
 `Command(goto=END)`, Nymeria rebuilds the graph, emits a `tool_reload` event
@@ -89,19 +89,25 @@ is the source of truth: unticking it removes `self-improve` from the user's
 default thread skill set and Nymeria will not silently re-add it.
 
 Use it when the user asks Nymeria to gain a durable capability, integration,
-or reusable workflow. Activation binds:
+or reusable workflow, or before tool search/enabling, MCP search/install,
+skill search/install, API probing, or Skill Kit authoring. Activation binds:
 
+- `tool_search`
+- `tool_enable`
+- `manage_mcp`
+- `skill_manage`
 - `api_discover`
 - `http_request`
-- `tool_create`
-- `skill_config`
+- `skill_kit_create`
 
 The Skill Kit teaches the end-to-end sequence: inspect existing capabilities,
-discover/test APIs, create a reusable HTTP tool when needed, then package the
-workflow into a user-scope Skill Kit with `skill_config`. Generated Skill Kits
-are enabled on the current thread by default through `ThreadConfig.enabled_skills`;
-they are not added to `enabled_global_skills` unless the user later enables
-them globally in Settings.
+enable tools/skills/MCP servers when they already fit, discover/test APIs when
+needed, create reusable HTTP tools through `skill_kit_create`, then package the
+workflow into a user-scope Skill Kit. Generated Skill Kits are enabled on the
+current thread by default through `ThreadConfig.enabled_skills`; they are not
+added to `enabled_global_skills` unless the user later enables them globally in
+Settings. Codebase self-modification tools (`claude_code`, `reload_all`, and
+rollback) stay separate and admin-only.
 
 ## Progressive disclosure (how the context budget stays small)
 
@@ -163,15 +169,18 @@ Implementation: the Skills HTTP routes are mounted from
 
 ## Agent-facing tools
 
-Registered in `ALL_TOOLS` so the agent can manage its own skill library:
+Capability-expansion tools are optional and normally arrive through
+`Skill(name="self-improve")`, not through the default tool list:
 
+- `skill_manage(action='list'|'search'|'install'|'enable'|'disable'|'inspect', ...)`
 - `list_installed_skills(scope='all'|'user'|'global'|'bundled')`
 - `search_skills(query, source='installed'|'anthropic', top_k=8)`
 - `install_skill(name, source='anthropic', scope='user'|'global')`
 
-`skill_config` is optional and is normally exposed by the `self-improve`
-Skill Kit. It drafts, validates, publishes, lists, and deletes generated
-Skills/Skill Kits, writing only validated `SKILL.md` files in v1.
+`skill_kit_create` is the preferred authoring facade exposed by
+`self-improve`; it can package existing tools into a Skill Kit or run the
+draft/test/publish flow for reusable HTTP tools before publishing the kit.
+`skill_config` and `tool_create` remain optional compatibility internals.
 
 The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS` —
 it's synthesized per-graph in
@@ -278,6 +287,10 @@ caches, and queues a same-turn reload with `source="skill_config"` and
 `tools` list because the refreshed capability is the `Skill` meta-tool index,
 not a newly bound normal tool.
 
+`skill_kit_create(action="publish"|"package")` uses the same path with
+`source="skill_kit_create"` and `reason="skill_kit_created"`. Marketplace
+installs or thread enables through `skill_manage` use `source="skill_install"`.
+
 ## Security posture
 
 - Skill bodies execute nothing themselves — they are instructions to the
@@ -285,7 +298,7 @@ not a newly bound normal tool.
   (`bash_execute`, `file_write`, etc.) which already honor the thread's
   enabled-tools and disabled-tools lists.
 - Skill Kits can only bind tools that the same user could enable through
-  `tool_search(action="enable")`; invalid, unloadable, and admin-blocked
+  `tool_enable(action="enable")`; invalid, unloadable, and admin-blocked
   dependencies fail strictly with no partial writes.
 - `allowed-tools` frontmatter is advisory and portable. Nymeria only appends
   a missing-tool notice when an entry is also a known Nymeria tool name that

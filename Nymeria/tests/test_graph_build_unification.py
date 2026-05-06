@@ -7,8 +7,10 @@ tool selection and that sync/async paths differ only in checkpointer config.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import textwrap
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from nymeria.vendor.react_agent.config import CheckpointerConfig
@@ -132,6 +134,18 @@ def test_sync_async_differ_only_in_checkpointer():
     assert sync_cfg.verbose == async_cfg.verbose
 
 
+def test_default_graph_excludes_capability_expansion_tools():
+    agent = _make_agent()
+
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    names = {tool.name for tool in tools}
+
+    from nymeria.tools import CAPABILITY_EXPANSION_TOOL_NAMES
+
+    assert {"bash_execute", "file_read", "notify"}.issubset(names)
+    assert names.isdisjoint(CAPABILITY_EXPANSION_TOOL_NAMES)
+
+
 def test_build_agent_config_uses_callable_iteration_limit():
     """Callable threads get a lower iteration limit."""
     agent = _make_agent()
@@ -163,7 +177,15 @@ def test_get_graph_for_user_delegates_to_impl():
     agent._GRAPH_CACHE_MAX = 100
 
     calls = []
-    def mock_impl(self, user_id, is_autonomous, thread_id, cache, build_fn):
+    def mock_impl(
+        self,
+        user_id,
+        is_autonomous,
+        thread_id,
+        cache,
+        build_fn,
+        cache_key_fn=None,
+    ):
         calls.append((cache is self._user_graphs, cache is self._async_user_graphs))
         return MagicMock()
 
@@ -173,6 +195,49 @@ def test_get_graph_for_user_delegates_to_impl():
 
     assert calls[0] == (True, False)
     assert calls[1] == (False, True)
+
+
+def test_async_graph_cache_is_scoped_to_running_event_loop():
+    agent = _make_agent()
+    agent._async_user_graphs = {}
+    agent._graph_cache_lock = __import__("threading").Lock()
+    agent._GRAPH_CACHE_MAX = 100
+    agent._base_system_prompt = "base"
+    agent._get_memory_hash = MagicMock(return_value="hash")
+    agent._build_full_system_prompt = MagicMock(return_value="full")
+    agent.profile_manager.get_profile.return_value = SimpleNamespace(
+        memories={},
+        personality_overrides={},
+        tool_preferences=SimpleNamespace(default_thread_tools=[]),
+    )
+    todo_list = MagicMock()
+    todo_list.get_active_todos_for_thread.return_value = []
+    agent.todo_manager = MagicMock()
+    agent.todo_manager.get_todos.return_value = todo_list
+
+    first_graph = object()
+    second_graph = object()
+    agent._build_async_graph_with_prompt = MagicMock(
+        side_effect=[first_graph, second_graph]
+    )
+
+    async def get_graph():
+        return agent._get_async_graph_for_user("u1", thread_id="t1")
+
+    loop_one = asyncio.new_event_loop()
+    loop_two = asyncio.new_event_loop()
+    try:
+        graph_one = loop_one.run_until_complete(get_graph())
+        graph_one_again = loop_one.run_until_complete(get_graph())
+        graph_two = loop_two.run_until_complete(get_graph())
+    finally:
+        loop_one.close()
+        loop_two.close()
+
+    assert graph_one is first_graph
+    assert graph_one_again is first_graph
+    assert graph_two is second_graph
+    assert agent._build_async_graph_with_prompt.call_count == 2
 
 
 def test_toolset_mutators_delegate_default_graph_rebuild():

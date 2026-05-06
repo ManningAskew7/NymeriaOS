@@ -48,6 +48,13 @@ from .hello_test import hello_test
 from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
 from .google_docs import GOOGLE_DOCS_TOOLS
 from .google_sheets import GOOGLE_SHEETS_TOOLS
+from .gmail_auth import (
+    gmail_auth_start,
+    gmail_auth_complete,
+    gmail_auth_clear,
+    gmail_list_accounts,
+    GMAIL_AUTH_TOOLS,
+)
 from ..plugins._prv_a import (
     _PRV_TOOLS_A1,
     _PRV_TOOLS_A2,
@@ -58,19 +65,27 @@ from ..plugins._prv_a import (
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
-from .tool_search import tool_search, TOOL_SEARCH_TOOLS
+from .tool_search import tool_enable, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
-from .skill_config import skill_config, SKILL_CONFIG_TOOLS
+from ._prv_b import _PRV_TOOLS_B
+from .skill_config import (
+    skill_config,
+    skill_kit_create,
+    SKILL_CONFIG_TOOLS,
+    SKILL_KIT_CREATE_TOOLS,
+)
 from .search_skills import (
+    skill_manage,
     list_installed_skills,
     search_skills,
     install_skill,
     SEARCH_SKILLS_TOOLS,
 )
 from .search_mcp import (
-    mcp_search,
-    mcp_install,
+    mcp_manage,
+    search_mcp,
+    install_mcp_server,
     SEARCH_MCP_TOOLS,
 )
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
@@ -99,6 +114,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     [claude_code, sticky_note, hello_test, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
+    + GMAIL_AUTH_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
     + BROWSER_TOOLS
@@ -109,12 +125,33 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
     + SLASH_COMMAND_TOOLS
+    + TOOL_SEARCH_TOOLS
+    + SEARCH_SKILLS_TOOLS
+    + SEARCH_MCP_TOOLS
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
+    + _PRV_TOOLS_B
     + SKILL_CONFIG_TOOLS
+    + SKILL_KIT_CREATE_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
 )}
+
+# Capability expansion tools are deliberately opt-in through the bundled
+# self-improve Skill Kit. They remain valid explicit per-thread enablements for
+# compatibility, but should not live in profile default_thread_tools.
+CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
+    t.name
+    for t in (
+        TOOL_SEARCH_TOOLS
+        + SEARCH_MCP_TOOLS
+        + SEARCH_SKILLS_TOOLS
+        + HTTP_API_TOOLS
+        + TOOL_CREATE_TOOLS
+        + SKILL_CONFIG_TOOLS
+        + SKILL_KIT_CREATE_TOOLS
+    )
+)
 
 # Tools that mutate the running codebase (read/write/delete project source,
 # reload modules, roll back self-modifications, run arbitrary bash via
@@ -198,15 +235,6 @@ ALL_TOOLS = [
     nym_todo_list,
     # Unified notification tool
     notify,
-    # Tool discovery and management
-    tool_search,
-    # Skill discovery and installation
-    list_installed_skills,
-    search_skills,
-    install_skill,
-    # MCP server discovery and installation
-    mcp_search,
-    mcp_install,
 ]
 
 __all__ = [
@@ -248,6 +276,7 @@ __all__ = [
     "OPTIONAL_TOOLS",
     "ADMIN_ONLY_OPTIONAL_TOOL_NAMES",
     "DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES",
+    "CAPABILITY_EXPANSION_TOOL_NAMES",
     "filter_admin_only_tools",
     "filter_developer_only_tools",
     "filter_discoverable_optional_tool_names",
@@ -257,6 +286,11 @@ __all__ = [
     "STICKY_NOTE_TOOLS",
     "GOOGLE_DOCS_TOOLS",
     "GOOGLE_SHEETS_TOOLS",
+    "gmail_auth_start",
+    "gmail_auth_complete",
+    "gmail_auth_clear",
+    "gmail_list_accounts",
+    "GMAIL_AUTH_TOOLS",
     "_PRV_TOOLS_A1",
     "_PRV_TOOLS_A2",
     "_PRV_TOOLS_A3",
@@ -267,20 +301,26 @@ __all__ = [
     "slash_command",
     "SLASH_COMMAND_TOOLS",
     "tool_search",
+    "tool_enable",
     "TOOL_SEARCH_TOOLS",
     "http_request",
     "api_discover",
     "HTTP_API_TOOLS",
     "tool_create",
     "TOOL_CREATE_TOOLS",
+    "_PRV_TOOLS_B",
     "skill_config",
+    "skill_kit_create",
     "SKILL_CONFIG_TOOLS",
+    "SKILL_KIT_CREATE_TOOLS",
+    "skill_manage",
     "list_installed_skills",
     "search_skills",
     "install_skill",
     "SEARCH_SKILLS_TOOLS",
-    "mcp_search",
-    "mcp_install",
+    "mcp_manage",
+    "search_mcp",
+    "install_mcp_server",
     "SEARCH_MCP_TOOLS",
     "activity_feed",
     "ACTIVITY_FEED_TOOLS",
