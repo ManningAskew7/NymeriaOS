@@ -104,7 +104,8 @@ python -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-unde
 
 1. Open the Nymeria desktop app
 2. The setup wizard will guide you through:
-   - Entering the backend URL (default: `http://localhost:8000`)
+   - Entering the backend URL (default: `http://localhost:8000`; auto-filled
+     from the current page origin when the web UI is served by the backend)
    - Pasting the bootstrap account token from `<data_dir>/BOOTSTRAP_TOKEN.txt`
      (also logged at WARNING level on first API boot)
    - Testing the connection
