@@ -755,6 +755,11 @@ Examples:
         action="store_true",
         help="Require flags instead of prompting",
     )
+    init_parser.add_argument(
+        "--skip-llm-test",
+        action="store_true",
+        help="Write config without making the provider smoke-test API call",
+    )
 
     # Discord bot subcommand
     discord_parser = subparsers.add_parser(

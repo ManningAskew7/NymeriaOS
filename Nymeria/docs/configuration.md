@@ -62,9 +62,12 @@ Set the API key for your chosen provider:
 | `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
 
 `nymeria init` can collect these optional capability keys during first-run
-setup. In non-interactive mode, pass `--embedding-api-key`, `--openai-api-key`,
-`--gemini-api-key`, or `--perplexity-api-key`; keys that are not supplied are
-left out of `config.env`.
+setup. It validates the selected provider/model/key combination with a small
+LLM API call before writing `config.env`. In non-interactive mode, pass
+`--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, or
+`--perplexity-api-key`; keys that are not supplied are left out of
+`config.env`. Add `--skip-llm-test` only for deliberate offline/scripted
+setup where provider access will be verified separately.
 
 ### Database
 

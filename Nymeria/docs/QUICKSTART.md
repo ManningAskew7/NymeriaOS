@@ -21,8 +21,9 @@ nymeria api
 ```
 
 `nymeria init` prompts for the provider, model, API key, and optional
-capability keys. It writes `~/.nymeria/config.env`, creates
-`~/.nymeria/data/`, and creates the first bootstrap admin token.
+capability keys. It validates the provider key with a small LLM API call,
+writes `~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the
+first bootstrap admin token.
 
 For source-checkout development:
 
@@ -99,6 +100,11 @@ PERPLEXITY_API_KEY=pplx-...   # Web search
 
 If `LLM_PROVIDER=openai`, the primary `OPENAI_API_KEY` also covers optional
 OpenAI-backed features.
+
+For scripted setup in CI or an offline support session, `nymeria init` accepts
+`--non-interactive` plus flags such as `--provider`, `--model`, `--api-key`,
+and `--root`. Add `--skip-llm-test` only when you intentionally want to write
+the config without validating provider access.
 
 ## Step 4: Start the Backend
 
