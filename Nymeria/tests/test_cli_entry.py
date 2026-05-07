@@ -1,8 +1,20 @@
 from pathlib import Path
 
 from nymeria import _runtime_paths
+from nymeria import setup_wizard
 from nymeria.config import settings as settings_module
 from nymeria.setup_wizard import main as setup_main
+
+
+def _stub_llm_connection(monkeypatch):
+    calls = []
+
+    def fake_connection(provider, model, api_key):
+        calls.append((provider.name, model, api_key))
+        return setup_wizard.LLMConnectionResult(model=model)
+
+    monkeypatch.setattr(setup_wizard, "_test_llm_connection", fake_connection)
+    return calls
 
 
 def test_runtime_bootstrap_uses_source_checkout_when_markers_exist(
@@ -57,7 +69,11 @@ def test_settings_package_paths_do_not_follow_runtime_project_root(
     assert settings.bundled_skills_dir == package_root / "skills_bundled"
 
 
-def test_init_noninteractive_writes_config_and_bootstrap_token(tmp_path: Path):
+def test_init_noninteractive_writes_config_and_bootstrap_token(
+    monkeypatch,
+    tmp_path: Path,
+):
+    llm_calls = _stub_llm_connection(monkeypatch)
     root = tmp_path / "runtime"
 
     result = setup_main(
@@ -82,9 +98,14 @@ def test_init_noninteractive_writes_config_and_bootstrap_token(tmp_path: Path):
     assert f"NYMERIA_DATA_DIR={root / 'data'}" in config
     assert (root / "data" / "accounts.db").exists()
     assert (root / "data" / "BOOTSTRAP_TOKEN.txt").exists()
+    assert llm_calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
 
 
-def test_init_noninteractive_writes_optional_capability_keys(tmp_path: Path):
+def test_init_noninteractive_writes_optional_capability_keys(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _stub_llm_connection(monkeypatch)
     root = tmp_path / "runtime"
 
     result = setup_main(
@@ -117,7 +138,11 @@ def test_init_noninteractive_writes_optional_capability_keys(tmp_path: Path):
     assert "PERPLEXITY_API_KEY=pplx-test" in config
 
 
-def test_init_noninteractive_does_not_duplicate_primary_openai_key(tmp_path: Path):
+def test_init_noninteractive_does_not_duplicate_primary_openai_key(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _stub_llm_connection(monkeypatch)
     root = tmp_path / "runtime"
 
     result = setup_main(
@@ -139,3 +164,96 @@ def test_init_noninteractive_does_not_duplicate_primary_openai_key(tmp_path: Pat
     config = (root / "config.env").read_text(encoding="utf-8")
     assert result == 0
     assert config.count("OPENAI_API_KEY=") == 1
+
+
+def test_init_noninteractive_skip_llm_test_does_not_call_provider(
+    monkeypatch,
+    tmp_path: Path,
+):
+    root = tmp_path / "runtime"
+
+    def fail_connection(*args, **kwargs):
+        raise AssertionError("LLM connection test should have been skipped")
+
+    monkeypatch.setattr(setup_wizard, "_test_llm_connection", fail_connection)
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--root",
+            str(root),
+            "--non-interactive",
+            "--skip-llm-test",
+        ]
+    )
+
+    assert result == 0
+    assert (root / "config.env").exists()
+
+
+def test_init_noninteractive_stops_when_llm_connection_fails(
+    monkeypatch,
+    tmp_path: Path,
+):
+    root = tmp_path / "runtime"
+
+    def fail_connection(*args, **kwargs):
+        raise setup_wizard.LLMConnectionError("bad key")
+
+    monkeypatch.setattr(setup_wizard, "_test_llm_connection", fail_connection)
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    assert result == 2
+    assert not (root / "config.env").exists()
+
+
+def test_llm_connection_uses_provider_specific_endpoint(monkeypatch):
+    calls = []
+
+    def fake_post_json(url, *, headers, json):
+        calls.append((url, headers, json))
+
+    monkeypatch.setattr(setup_wizard, "_post_json", fake_post_json)
+
+    result = setup_wizard._test_llm_connection(
+        setup_wizard.PROVIDERS["openrouter"],
+        "anthropic/claude-test-model",
+        "sk-or-test-key",
+    )
+
+    assert result == setup_wizard.LLMConnectionResult(
+        model="anthropic/claude-test-model"
+    )
+    assert calls == [
+        (
+            "https://openrouter.ai/api/v1/responses",
+            {
+                "Authorization": "Bearer sk-or-test-key",
+                "HTTP-Referer": "https://github.com/ManningAskew7/NymeriaOS",
+                "X-Title": "Nymeria",
+            },
+            {
+                "model": "anthropic/claude-test-model",
+                "input": "Reply with ok.",
+                "max_output_tokens": 16,
+            },
+        )
+    ]

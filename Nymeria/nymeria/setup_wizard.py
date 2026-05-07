@@ -8,8 +8,9 @@ import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
+import httpx
 from prompt_toolkit import prompt
 from rich.console import Console
 
@@ -23,6 +24,15 @@ class ProviderOption:
     label: str
     env_var: str
     key_prefix: str
+
+
+@dataclass(frozen=True)
+class LLMConnectionResult:
+    model: str
+
+
+class LLMConnectionError(RuntimeError):
+    """Raised when first-run provider validation cannot complete."""
 
 
 PROVIDERS = {
@@ -71,6 +81,17 @@ def run_init(args: argparse.Namespace) -> int:
             f"`{provider.key_prefix}`.[/red]"
         )
         return 2
+    if getattr(args, "skip_llm_test", False):
+        console.print("[yellow]Skipping LLM connection test.[/yellow]")
+    else:
+        console.print("\nTesting LLM connection...")
+        try:
+            result = _test_llm_connection(provider, model, api_key)
+        except LLMConnectionError as exc:
+            console.print(f"[red]LLM connection failed:[/red] {exc}")
+            return 2
+        console.print(f"[green]Connected:[/green] {result.model}")
+
     optional_env = _resolve_optional_capabilities(
         args,
         provider=provider,
@@ -104,6 +125,7 @@ def run_init(args: argparse.Namespace) -> int:
             return 1
 
     data_dir.mkdir(parents=True, exist_ok=True)
+    console.print("\n[bold]Step 6/6: Configuration[/bold]")
     _write_config(config_path, provider, model, api_key, data_dir, optional_env)
 
     repo = AccountsRepo(data_dir / "accounts.db")
@@ -129,7 +151,7 @@ def _resolve_provider(
     if non_interactive:
         raise SystemExit("--provider is required with --non-interactive")
 
-    console.print("[bold]Step 1/5: LLM Provider[/bold]")
+    console.print("[bold]Step 1/6: LLM Provider[/bold]")
     for idx, key in enumerate(PROVIDER_ORDER, start=1):
         suffix = " - recommended" if key == "anthropic" else ""
         console.print(f"  [{idx}] {PROVIDERS[key].label}{suffix}")
@@ -285,6 +307,98 @@ def _valid_key_format(provider: ProviderOption, api_key: str) -> bool:
     return bool(api_key) and api_key.startswith(provider.key_prefix)
 
 
+def _test_llm_connection(
+    provider: ProviderOption,
+    model: str,
+    api_key: str,
+) -> LLMConnectionResult:
+    try:
+        if provider.name == "anthropic":
+            _post_json(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": model,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "Reply with ok."}],
+                },
+            )
+        elif provider.name == "openai":
+            _post_json(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "input": "Reply with ok.",
+                    "max_output_tokens": 16,
+                },
+            )
+        elif provider.name == "openrouter":
+            _post_json(
+                "https://openrouter.ai/api/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "HTTP-Referer": "https://github.com/ManningAskew7/NymeriaOS",
+                    "X-Title": "Nymeria",
+                },
+                json={
+                    "model": model,
+                    "input": "Reply with ok.",
+                    "max_output_tokens": 16,
+                },
+            )
+        else:
+            raise LLMConnectionError(f"Unsupported provider: {provider.name}")
+    except httpx.TimeoutException as exc:
+        raise LLMConnectionError("provider did not respond before the 15s timeout") from exc
+    except httpx.HTTPStatusError as exc:
+        detail = _http_error_detail(exc.response)
+        raise LLMConnectionError(
+            f"{provider.label} returned HTTP {exc.response.status_code}: {detail}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise LLMConnectionError(str(exc)) from exc
+
+    return LLMConnectionResult(model=model)
+
+
+def _post_json(
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    json: Mapping[str, Any],
+) -> None:
+    request_headers = {
+        "Content-Type": "application/json",
+        **headers,
+    }
+    with httpx.Client(timeout=15.0) as client:
+        response = client.post(url, headers=request_headers, json=json)
+        response.raise_for_status()
+
+
+def _http_error_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:300] or response.reason_phrase
+
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:300]
+        message = body.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:300]
+    return response.reason_phrase
+
+
 def _check_writable(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     probe = root / ".write-test"
@@ -375,6 +489,11 @@ def main(argv: list[str] | None = None) -> int:
         "--non-interactive",
         action="store_true",
         help="Require flags instead of prompting",
+    )
+    parser.add_argument(
+        "--skip-llm-test",
+        action="store_true",
+        help="Write config without making the provider smoke-test API call",
     )
     return run_init(parser.parse_args(argv))
 
