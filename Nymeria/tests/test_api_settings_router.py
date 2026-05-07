@@ -219,3 +219,25 @@ def test_patch_settings_hot_reloads_env_and_rebuilds_graphs(
     assert agent._user_graphs == {}
     assert agent._async_user_graphs == {}
     assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_patch_settings_updates_existing_config_env_for_packaged_runtime(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / "config.env").write_text(
+        "LLM_MODEL=old-model\nTTS_PROVIDER=none\n",
+        encoding="utf-8",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_model": "new-model"},
+    )
+
+    assert response.status_code == 200
+    config = (tmp_path / "config.env").read_text(encoding="utf-8")
+    assert "LLM_MODEL=new-model" in config
+    assert not (tmp_path / ".env").exists()

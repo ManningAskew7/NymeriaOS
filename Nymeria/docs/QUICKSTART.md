@@ -62,7 +62,7 @@ Or create `.env` manually for a lighter local setup. The runtime loads `.env`,
 
 ## Step 3: Set Your API Keys
 
-Edit `.env` or `.env.docker` and fill in the required values:
+Edit `.env`, `config.env`, or `.env.docker` and fill in the required values:
 
 ### Account token
 

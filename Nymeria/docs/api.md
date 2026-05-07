@@ -915,7 +915,7 @@ Authorization: Bearer <token>
 }
 ```
 
-**Note:** This endpoint is admin-only. Changes are written to `.env`/`.env.docker`, hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override.
+**Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override.
 
 ---
 
