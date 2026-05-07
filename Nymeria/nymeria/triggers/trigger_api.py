@@ -3,10 +3,11 @@
 Mounted as a sub-router on the main FastAPI app at ``/triggers``.
 """
 
+import inspect
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
@@ -137,6 +138,29 @@ def create_trigger_router(
             settings = get_settings()
             _manager = TriggerManager(settings.data_dir)
         return _manager
+
+    async def _optional_authenticated_user(
+        authorization: Optional[str] = Header(default=None),
+        x_nymeria_act_as: Optional[str] = Header(default=None),
+        settings=Depends(get_settings),
+    ) -> Optional[AuthenticatedUser]:
+        """Return an authenticated user when a token is supplied.
+
+        Webhook fires are intentionally public for external services, so
+        missing auth is allowed here. Invalid auth should still fail instead
+        of silently falling back to shared-secret auth.
+        """
+        if authorization is None:
+            return None
+
+        maybe_user = verify_api_key_fn(
+            authorization=authorization,
+            x_nymeria_act_as=x_nymeria_act_as,
+            settings=settings,
+        )
+        if inspect.isawaitable(maybe_user):
+            maybe_user = await maybe_user
+        return maybe_user
 
     # -- CRUD endpoints ---------------------------------------------------
 
@@ -414,14 +438,17 @@ def create_trigger_router(
         request: Request,
         secret: Optional[str] = Query(default=None),
         user_id: str = Query(default="default"),
+        auth_user: Optional[AuthenticatedUser] = Depends(_optional_authenticated_user),
     ):
         """Fire a webhook trigger.
 
-        This endpoint does NOT require API key auth -- it's designed to be
-        called by external services (Tasker, IFTTT, Zapier, n8n, etc.).
-        Authentication is via the optional per-trigger shared secret.
+        External services authenticate with the per-trigger shared secret.
+        Authenticated API callers may fire their own webhook triggers without
+        putting that secret in the URL.
         """
         manager = _get_manager()
+        if auth_user is not None:
+            user_id = auth_user.id
         trigger = manager.get_trigger(user_id, trigger_id)
 
         if trigger is None:
@@ -433,12 +460,17 @@ def create_trigger_router(
         if trigger.source_type != "webhook":
             raise HTTPException(status_code=400, detail="Trigger is not a webhook source")
 
-        # Validate secret
-        from .sources import get_source
-        source = get_source("webhook")
-        if source and hasattr(source, "validate_secret"):
+        # Public callers must present a valid per-trigger secret. A trigger
+        # configured without one is only fireable by an authenticated API
+        # caller, which prevents trigger-ID discovery from becoming prompt
+        # injection with tool access.
+        if auth_user is None:
+            from .sources import get_source
+            source = get_source("webhook")
+            if not source or not hasattr(source, "validate_secret"):
+                raise HTTPException(status_code=500, detail="Webhook source unavailable")
             if not source.validate_secret(trigger.source_config, secret):
-                raise HTTPException(status_code=403, detail="Invalid secret")
+                raise HTTPException(status_code=403, detail="Invalid or missing webhook secret")
 
         # Parse request body
         try:
