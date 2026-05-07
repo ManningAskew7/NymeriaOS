@@ -2,7 +2,7 @@
 
 A skill is a directory containing:
     SKILL.md        required — YAML frontmatter + markdown body
-    scripts/        optional — scripts invoked via bash_execute when enabled
+    scripts/        optional — scripts invoked via the existing bash_execute tool
     references/     optional — markdown files the agent reads on demand
     assets/         optional — binary/template files, referenced by path only
 

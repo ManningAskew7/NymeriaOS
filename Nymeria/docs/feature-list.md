@@ -161,18 +161,13 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 | Category | Tools |
 |----------|-------|
+| **Shell & Files** | `bash_execute`, `file_read`, `file_write` |
 | **Web** | `web_search` (Perplexity, 3 depth levels) |
 | **Multi-Model** | `consult` (Gemini second opinion) |
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when needed |
-
-### Optional Admin-Only Local Tools
-
-| Category | Tools |
-|----------|-------|
-| **Shell & Files** | `bash_execute`, `file_read`, `file_write` are per-thread optional tools. They are not default-bound or allowed in user-level defaults. |
 
 ### Optional Tool Categories
 

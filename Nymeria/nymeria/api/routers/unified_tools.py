@@ -191,7 +191,6 @@ def create_unified_tools_router(
             ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
             ALL_TOOLS,
             DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-            LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
         )
         from ...tools.metadata import get_all_tool_metadata
 
@@ -203,17 +202,6 @@ def create_unified_tools_router(
                 detail=f"Tool '{tool_id}' not found",
             )
 
-        if (
-            request.enabled
-            and tool_id in LOCAL_SYSTEM_ACCESS_TOOL_NAMES
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Tool '{tool_id}' must be enabled per-thread by an admin, "
-                    "not as a user default"
-                ),
-            )
         if (
             request.enabled
             and tool_id in ADMIN_ONLY_OPTIONAL_TOOL_NAMES

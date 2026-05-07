@@ -20,7 +20,7 @@ from ...core.thread_classification import (
     is_shared_channel as _is_shared_channel_thread,
 )
 from ...core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
-from ...tools import builtin_tool_names
+from ...tools import ALL_TOOLS
 from ..schemas.threads import (
     ThreadHistoryResponse,
     ThreadMetadataMigrateRequest,
@@ -514,10 +514,11 @@ def create_threads_router(
                         detail="Cannot rename callable thread to empty title",
                     )
                 validate_callable_name(new_name)
-                if new_name in builtin_tool_names():
+                core_tool_names = {t.name for t in ALL_TOOLS}
+                if new_name in core_tool_names:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Callable name '{new_name}' conflicts with a built-in tool name",
+                        detail=f"Callable name '{new_name}' conflicts with a core tool name",
                     )
                 owned = set(agent.accounts_repo.list_threads_for_user(user_id))
                 existing = agent.thread_config_manager.get_callable_thread_by_name(

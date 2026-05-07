@@ -96,12 +96,6 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
-# Local system access tools can execute commands or read/write host files.
-# They are intentionally optional and admin-only, not part of the default
-# graph-bound core set.
-LOCAL_SYSTEM_ACCESS_TOOLS = [bash_execute, file_read, file_write]
-LOCAL_SYSTEM_ACCESS_TOOL_NAMES = frozenset(t.name for t in LOCAL_SYSTEM_ACCESS_TOOLS)
-
 # Combined Outlook tools list
 OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
 
@@ -118,8 +112,7 @@ _PRV_TOOLS_A = (
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
 OPTIONAL_TOOLS = {t.name: t for t in (
-    LOCAL_SYSTEM_ACCESS_TOOLS
-    + [claude_code, sticky_note, hello_test, memory_clear_all, rag_settings]
+    [claude_code, sticky_note, hello_test, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
     + GMAIL_AUTH_TOOLS
@@ -162,18 +155,17 @@ CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
     )
 )
 
-# Tools that access the local host or mutate the running codebase (shell
-# execution, host file reads/writes, read/write/delete project source, reload
-# modules, roll back self-modifications, run arbitrary bash via claude_code).
-# In multi-user mode these are admin-only — a non-admin enabling them on their
-# own thread would effectively be authenticated local system/code access on the
-# shared backend. Enforced at every API write boundary (thread config, default
-# tool set, unified enable), at every agent-callable write site (tool_search,
-# spawn_thread, slash /tools), and as defense-in-depth at graph-build time.
-# Names — not tool objects — so the gate survives reload_all().
+# Tools that mutate the running codebase (read/write/delete project source,
+# reload modules, roll back self-modifications, run arbitrary bash via
+# claude_code). In multi-user mode these are admin-only — a non-admin
+# enabling them on their own thread would effectively be authenticated
+# remote code modification of the shared backend. Enforced at every API
+# write boundary (thread config, default tool set, unified enable), at
+# every agent-callable write site (tool_search, spawn_thread, slash
+# /tools), and as defense-in-depth at graph-build time. Names — not tool
+# objects — so the gate survives reload_all().
 ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
-    [t.name for t in (LOCAL_SYSTEM_ACCESS_TOOLS + SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)]
-    + [claude_code.name]
+    [t.name for t in (SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)] + [claude_code.name]
 )
 
 # Optional tools that exist for development/regression validation rather than
@@ -225,14 +217,12 @@ def filter_admin_only_tools(
     blocked = names & ADMIN_ONLY_OPTIONAL_TOOL_NAMES
     return names - blocked, blocked
 
-
-def builtin_tool_names() -> set[str]:
-    """Return all statically registered built-in tool names."""
-    return {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys())
-
 # All available tools
 ALL_TOOLS = [
     # Core system tools
+    bash_execute,
+    file_read,
+    file_write,
     web_search,
     consult,
     # Memory tools (unified profile + thread-notepad CRUD)
@@ -290,10 +280,7 @@ __all__ = [
     "OPTIONAL_TOOLS",
     "ADMIN_ONLY_OPTIONAL_TOOL_NAMES",
     "DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES",
-    "LOCAL_SYSTEM_ACCESS_TOOLS",
-    "LOCAL_SYSTEM_ACCESS_TOOL_NAMES",
     "CAPABILITY_EXPANSION_TOOL_NAMES",
-    "builtin_tool_names",
     "filter_admin_only_tools",
     "filter_developer_only_tools",
     "filter_discoverable_optional_tool_names",
