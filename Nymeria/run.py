@@ -718,6 +718,26 @@ Examples:
     )
     init_parser.add_argument("--api-key", default=None)
     init_parser.add_argument(
+        "--embedding-api-key",
+        default=None,
+        help="Optional OpenAI-compatible key for RAG/memory/skill embeddings",
+    )
+    init_parser.add_argument(
+        "--openai-api-key",
+        default=None,
+        help="Optional OpenAI key for image generation/STT/OpenAI-backed tools",
+    )
+    init_parser.add_argument(
+        "--gemini-api-key",
+        default=None,
+        help="Optional Gemini key for Gemini image/document/TTS tools",
+    )
+    init_parser.add_argument(
+        "--perplexity-api-key",
+        default=None,
+        help="Optional Perplexity key for web search",
+    )
+    init_parser.add_argument(
         "--root",
         default=None,
         help="Runtime root for config.env and data/",
