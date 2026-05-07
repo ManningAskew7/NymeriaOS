@@ -64,6 +64,35 @@ default and optional-profile Compose configs from `.env.docker.example` and
 runs BuildKit's Dockerfile check against both `Dockerfile.full` and
 `Dockerfile.slim`.
 
+### Release Versioning
+
+The Python package version is defined once in `Nymeria/nymeria/__init__.py`;
+`Nymeria/pyproject.toml` reads that value through setuptools dynamic metadata.
+The desktop release metadata must stay in sync with it:
+
+- `nymeria-desktop/package.json`
+- `nymeria-desktop/src-tauri/Cargo.toml`
+- `nymeria-desktop/src-tauri/tauri.conf.json`
+- `nymeria-desktop/src-tauri/Cargo.lock`
+
+Check the current checkout before tagging:
+
+```bash
+python scripts/sync_versions.py --check
+```
+
+For a beta release, bump all manifests together and then create a matching
+`v`-prefixed tag:
+
+```bash
+python scripts/sync_versions.py --set 0.2.0-beta.1
+python scripts/sync_versions.py --tag v0.2.0-beta.1
+git tag v0.2.0-beta.1
+```
+
+When the release workflow is enabled, pushing the tag is what starts the
+package and desktop publishing jobs.
+
 ### Docker Health Checks
 
 Docker Compose owns the health checks for Nymeria services. The Nymeria
