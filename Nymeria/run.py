@@ -26,13 +26,15 @@ from pathlib import Path
 
 import os
 
+from nymeria._runtime_paths import default_user_project_root
+
 # Add project to path — for PyInstaller frozen builds and installed package
 # entrypoints, the bundled modules are already on sys.path, but we still need
 # the runtime project root for environment/config resolution.
 if os.environ.get("NYMERIA_PROJECT_ROOT"):
     _project_root = Path(os.environ["NYMERIA_PROJECT_ROOT"]).expanduser().resolve()
 elif getattr(sys, "frozen", False):
-    _project_root = Path(sys.executable).resolve().parent
+    _project_root = default_user_project_root()
 else:
     _project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(_project_root))

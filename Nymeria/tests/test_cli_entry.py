@@ -50,6 +50,25 @@ def test_runtime_bootstrap_uses_user_root_for_installed_package(
     assert resolved == (home / ".nymeria").resolve()
 
 
+def test_runtime_bootstrap_uses_user_root_for_frozen_build(
+    monkeypatch,
+    tmp_path: Path,
+):
+    fake_meipass_entry = tmp_path / "_MEIPASS" / "nymeria" / "_runtime_paths.py"
+    fake_config_dir = tmp_path / "_MEIPASS" / "nymeria" / "config"
+    fake_config_dir.mkdir(parents=True)
+    (tmp_path / "_MEIPASS" / "run.py").write_text("", encoding="utf-8")
+    (fake_config_dir / "soul.md").write_text("", encoding="utf-8")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(_runtime_paths.sys, "frozen", True, raising=False)
+
+    resolved = _runtime_paths.configure_project_root(fake_meipass_entry)
+
+    assert resolved == (home / ".nymeria").resolve()
+
+
 def test_settings_package_paths_do_not_follow_runtime_project_root(
     monkeypatch,
     tmp_path: Path,

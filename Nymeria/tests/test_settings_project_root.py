@@ -21,6 +21,15 @@ def test_project_root_env_override_is_normalized(monkeypatch, tmp_path):
     assert settings_module._get_project_root() == root.resolve()
 
 
+def test_project_root_uses_user_root_for_frozen_build_without_override(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(settings_module.sys, "frozen", True, raising=False)
+
+    assert settings_module._get_project_root() == (home / ".nymeria").resolve()
+
+
 def test_project_root_discovers_markers_when_settings_file_moves(monkeypatch, tmp_path):
     root = _create_backend_root(tmp_path)
     moved_settings = root / "nymeria" / "config" / "packaged" / "settings.py"

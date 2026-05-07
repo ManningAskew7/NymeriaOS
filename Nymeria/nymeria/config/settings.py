@@ -10,6 +10,8 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
+from .._runtime_paths import default_user_project_root
+
 
 _PROJECT_ROOT_MARKERS: Tuple[Tuple[str, ...], ...] = (
     ("run.py", "nymeria/config/soul.md"),
@@ -35,7 +37,7 @@ def _get_project_root() -> Path:
 
     Resolution order:
     1. NYMERIA_PROJECT_ROOT env var (set by Tauri launcher/package entrypoints)
-    2. PyInstaller frozen exe: directory containing the exe
+    2. PyInstaller frozen exe: ~/.nymeria user runtime root
     3. Marker discovery above this module, then the current working directory
     4. Compatibility fallback: three levels up from this file
     """
@@ -43,7 +45,7 @@ def _get_project_root() -> Path:
     if env_root:
         return Path(env_root).expanduser().resolve()
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        return default_user_project_root()
 
     module_path = Path(__file__).resolve()
     discovered_root = _find_project_root(module_path.parent)
