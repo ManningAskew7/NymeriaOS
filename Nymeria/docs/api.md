@@ -2339,6 +2339,17 @@ All errors follow this format:
 
 ---
 
+## Hosted Frontend
+
+When a built frontend is present at `Nymeria/frontend/index.html`, the API
+serves it at `GET /`. Browser navigation to unmatched non-API paths also
+returns `index.html` so the SPA can handle refreshes and deep links.
+
+Unmatched paths that look like API routes, missing static assets, or requests
+that do not accept `text/html` still return `404`.
+
+---
+
 ## CORS
 
 CORS is controlled by `CORS_ORIGINS` in environment settings. The default
