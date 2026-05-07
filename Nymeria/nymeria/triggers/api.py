@@ -132,7 +132,7 @@ def _register_frontend_routes(app: FastAPI, frontend_dir: str) -> None:
     # and any copied static/ files) without swallowing API 404s.
     for asset_path in sorted(frontend_path.iterdir()):
         asset_name = asset_path.name
-        if asset_name == "index.html" or asset_name.startswith("."):
+        if asset_name in {"index.html", "_app"} or asset_name.startswith("."):
             continue
         if _first_path_segment(asset_name) in api_prefixes:
             logger.warning("Skipping frontend asset that conflicts with an API route: /%s", asset_name)
