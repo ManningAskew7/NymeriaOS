@@ -364,6 +364,31 @@ def test_user_auth_contract_for_me_endpoint(tmp_path: Path, api_client_builder):
     }
 
 
+def test_failed_auth_attempts_are_rate_limited_without_blocking_valid_tokens(
+    tmp_path: Path, monkeypatch, request, api_client_builder
+):
+    api_module._reset_auth_failure_rate_limiter_for_tests()
+    request.addfinalizer(api_module._reset_auth_failure_rate_limiter_for_tests)
+    monkeypatch.setattr(api_module, "_AUTH_FAILURE_RATE_LIMIT", 2)
+    monkeypatch.setattr(api_module, "_AUTH_FAILURE_RATE_WINDOW_SECONDS", 60.0)
+    client, agent = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    token = agent.accounts_repo.issue_token("alice")
+
+    first = client.get("/me")
+    second = client.get("/me", headers={"Authorization": "Basic nope"})
+    limited = client.get("/me", headers=_auth("nym_invalid_3"))
+    valid = client.get("/me", headers=_auth(token))
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert limited.status_code == 429
+    assert limited.json()["detail"] == "Too many failed authentication attempts"
+    assert int(limited.headers["retry-after"]) >= 1
+    assert valid.status_code == 200
+    assert valid.json()["id"] == "alice"
+
+
 def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, api_client_builder):
     client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")

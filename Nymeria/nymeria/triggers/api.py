@@ -4,7 +4,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +56,9 @@ _agent: Optional[NymeriaAgent] = None
 _BOT_ADMIN_ENDPOINT_RATE_LIMIT = 120
 _BOT_ADMIN_ENDPOINT_RATE_WINDOW_SECONDS = 60.0
 _bot_admin_endpoint_rate_limiter = SlidingWindowRateLimiter()
+_AUTH_FAILURE_RATE_LIMIT = 10
+_AUTH_FAILURE_RATE_WINDOW_SECONDS = 60.0
+_auth_failure_rate_limiter = SlidingWindowRateLimiter()
 _FRONTEND_ROOT_ASSET_NAMES = ("favicon.png", "icon-16.png", "icon-32.png", "icon-80.png", "manifest.xml")
 _FRONTEND_RESERVED_PREFIXES = {"_app", "docs", "openapi.json", "redoc"}
 
@@ -148,6 +151,7 @@ def _register_frontend_routes(app: FastAPI, frontend_dir: str) -> None:
 
 
 async def verify_api_key(
+    request: Request,
     authorization: Optional[str] = Header(None),
     x_nymeria_act_as: Optional[str] = Header(None),
     settings: Settings = Depends(get_settings),
@@ -165,6 +169,7 @@ async def verify_api_key(
     IDs in request body or query params.
     """
     return await resolve_authenticated_user(
+        request=request,
         authorization=authorization,
         x_nymeria_act_as=x_nymeria_act_as,
         settings=settings,
@@ -186,7 +191,64 @@ def _extract_bearer_token(authorization: Optional[str]) -> str:
     return parts[1]
 
 
+def _auth_failure_rate_limit_key(request: Request) -> str:
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown-client"
+
+
+def _raise_rate_limited_auth_failure(request: Request, failure: HTTPException) -> NoReturn:
+    result = _auth_failure_rate_limiter.check(
+        _auth_failure_rate_limit_key(request),
+        limit=_AUTH_FAILURE_RATE_LIMIT,
+        window_seconds=_AUTH_FAILURE_RATE_WINDOW_SECONDS,
+    )
+    if result.allowed:
+        raise failure
+
+    retry_after = max(1, math.ceil(result.retry_after))
+    logger.warning(
+        "Rate limited failed authentication attempts from %s; retry_after=%ss",
+        _auth_failure_rate_limit_key(request),
+        retry_after,
+    )
+    raise HTTPException(
+        status_code=429,
+        detail="Too many failed authentication attempts",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _resolve_caller_from_bearer(
+    *,
+    request: Request,
+    authorization: Optional[str],
+) -> tuple[AuthenticatedUser, Optional[NymeriaAgent]]:
+    try:
+        presented = _extract_bearer_token(authorization)
+    except HTTPException as exc:
+        _raise_rate_limited_auth_failure(request, exc)
+
+    try:
+        agent = get_agent()
+    except RuntimeError:
+        agent = None
+
+    caller = None
+    if agent is not None:
+        caller = agent.accounts_repo.verify_token(presented)
+
+    if caller is None:
+        _raise_rate_limited_auth_failure(
+            request,
+            HTTPException(status_code=401, detail="Invalid API key"),
+        )
+
+    return caller, agent
+
+
 async def resolve_authenticated_user(
+    request: Request,
     authorization: Optional[str] = Header(None),
     x_nymeria_act_as: Optional[str] = Header(None),
     settings: Settings = Depends(get_settings),
@@ -203,19 +265,10 @@ async def resolve_authenticated_user(
     without holding each user's raw token. Non-admin use → 403. Unknown or
     disabled target → 404.
     """
-    presented = _extract_bearer_token(authorization)
-
-    try:
-        agent = get_agent()
-    except RuntimeError:
-        agent = None
-
-    caller = None
-    if agent is not None:
-        caller = agent.accounts_repo.verify_token(presented)
-
-    if caller is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    caller, agent = _resolve_caller_from_bearer(
+        request=request,
+        authorization=authorization,
+    )
 
     if x_nymeria_act_as:
         if caller.role != "admin":
@@ -283,7 +336,12 @@ def _reset_admin_bot_endpoint_rate_limiter_for_tests() -> None:
     _bot_admin_endpoint_rate_limiter.clear()
 
 
+def _reset_auth_failure_rate_limiter_for_tests() -> None:
+    _auth_failure_rate_limiter.clear()
+
+
 async def require_admin_caller(
+    request: Request,
     authorization: Optional[str] = Header(None),
     x_nymeria_act_as: Optional[str] = Header(None),
     settings: Settings = Depends(get_settings),
@@ -304,19 +362,10 @@ async def require_admin_caller(
     impersonation entirely (correct for endpoints whose privilege only
     makes sense as an admin operation, like raw MCP CRUD).
     """
-    presented = _extract_bearer_token(authorization)
-
-    try:
-        agent = get_agent()
-    except RuntimeError:
-        agent = None
-
-    caller = None
-    if agent is not None:
-        caller = agent.accounts_repo.verify_token(presented)
-
-    if caller is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    caller, agent = _resolve_caller_from_bearer(
+        request=request,
+        authorization=authorization,
+    )
 
     if caller.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
