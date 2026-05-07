@@ -104,6 +104,10 @@ root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `config.env`, `data/`, and logs while loading bundled package assets such as
 `nymeria/config/soul.md` from the installed Python package.
 
+Runtime settings updates choose the highest-precedence existing config file:
+`.env.docker`, then `config.env`, then `.env`. If no config file exists yet,
+source checkouts create `.env`; packaged installs create `config.env`.
+
 ### Browser Tools
 
 | Variable | Default | Description |
@@ -286,7 +290,9 @@ checkouts that defaults to `Nymeria/data/`; in packaged installs it defaults to
 | Directory | Purpose |
 |-----------|---------|
 | `data/nymeria.db` | SQLite conversation database |
+| `data/accounts.db` | Account users, tokens, and chat-app bindings |
 | `data/todo_schedule.db` | SQLite scheduled TODO index for polling |
+| `data/BOOTSTRAP_TOKEN.txt` | First-run admin bootstrap token, written with mode 0600 |
 | `data/todos/` | TODO list storage (`{user_id}.json`) |
 | `data/logs/` | HTTP/API primitive tool audit logs (`audit_YYYYMMDD.jsonl`) |
 | `data/users/` | User profiles, memories, thread configs, activity logs, triggers |

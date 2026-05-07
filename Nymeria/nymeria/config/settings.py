@@ -72,6 +72,24 @@ def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
     return tuple(root / filename for filename in ENV_FILENAMES)
 
 
+def get_env_write_path(project_root: Path | None = None) -> Path:
+    """Return the dotenv file that should receive runtime settings updates."""
+    root = project_root or PROJECT_ROOT
+
+    # Match load precedence: .env, config.env, then .env.docker. Updating the
+    # highest-precedence existing file prevents lower files from being shadowed
+    # after restart.
+    for path in reversed(get_env_file_paths(root)):
+        if path.exists():
+            return path
+
+    # Source checkouts conventionally use .env for light local setup. Packaged
+    # installs use config.env under the writable runtime root.
+    if _find_project_root(root) == root:
+        return root / ".env"
+    return root / "config.env"
+
+
 class _NonEmptyEnvSource(EnvSettingsSource):
     """
     Env settings source that treats empty-string values as missing.

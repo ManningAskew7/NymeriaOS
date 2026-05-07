@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import Settings
-from ...config.settings import get_env_file_paths
+from ...config.settings import get_env_file_paths, get_env_write_path
 from ...config.model_capabilities import get_max_output_tokens, list_all_models
 from ...core.accounts import AuthenticatedUser
 from ..schemas.settings import (
@@ -407,12 +407,7 @@ def create_settings_router(
         Update server settings with hot-reload. Admin-only because settings are
         global and can include provider credentials.
         """
-        env_docker_path = settings.project_root / ".env.docker"
-        env_path = (
-            env_docker_path
-            if env_docker_path.exists()
-            else settings.project_root / ".env"
-        )
+        env_path = get_env_write_path(settings.project_root)
 
         existing_lines = []
         if env_path.exists():
