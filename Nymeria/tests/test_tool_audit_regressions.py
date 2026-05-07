@@ -703,6 +703,28 @@ def test_builtin_tool_metadata_is_generated_from_registered_tools():
     ] == []
 
 
+def test_local_system_access_tools_are_admin_only_optional():
+    from nymeria.tools import (
+        ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+        LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
+    )
+
+    core_names = {tool.name for tool in ALL_TOOLS}
+
+    assert LOCAL_SYSTEM_ACCESS_TOOL_NAMES == {
+        "bash_execute",
+        "file_read",
+        "file_write",
+    }
+    assert core_names.isdisjoint(LOCAL_SYSTEM_ACCESS_TOOL_NAMES)
+    assert LOCAL_SYSTEM_ACCESS_TOOL_NAMES.issubset(OPTIONAL_TOOLS)
+    assert LOCAL_SYSTEM_ACCESS_TOOL_NAMES.issubset(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)
+    for name in LOCAL_SYSTEM_ACCESS_TOOL_NAMES:
+        meta = get_all_tool_metadata(name)
+        assert meta is not None
+        assert meta.default_enabled is False
+
+
 def test_builtin_tool_names_avoid_claude_oauth_reserved_mcp_namespace():
     registered_names = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)
     rejected_by_claude_oauth = sorted(

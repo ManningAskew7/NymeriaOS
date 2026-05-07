@@ -1706,6 +1706,7 @@ class NymeriaAgent:
         """
         from ..tools import (
             ALL_TOOLS,
+            LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
             OPTIONAL_TOOLS,
             filter_admin_only_tools,
             filter_developer_only_tools,
@@ -1722,6 +1723,17 @@ class NymeriaAgent:
 
         core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
         if default_tools is not None:
+            blocked_default_core = set(core_names) & LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+            if blocked_default_core:
+                logger.warning(
+                    "Callable graph build for thread=%s owner=%s: stripped "
+                    "per-thread-only local system access defaults %s",
+                    tc.thread_id, owner_id, sorted(blocked_default_core),
+                )
+                core_names = [
+                    name for name in core_names
+                    if name not in LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+                ]
             owner = self.accounts_repo.get_user_by_id(owner_id) if owner_id else None
             owner_role = owner.role if owner else "user"
             allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
@@ -1848,6 +1860,7 @@ class NymeriaAgent:
 
             from ..tools import (
                 ALL_TOOLS,
+                LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
                 OPTIONAL_TOOLS,
                 filter_admin_only_tools,
                 filter_developer_only_tools,
@@ -1857,6 +1870,17 @@ class NymeriaAgent:
 
             core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
             if default_tools is not None:
+                blocked_default_core = set(core_names) & LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+                if blocked_default_core:
+                    logger.warning(
+                        "Graph build for thread=%s user=%s: stripped "
+                        "per-thread-only local system access defaults %s",
+                        thread_id, user_id, sorted(blocked_default_core),
+                    )
+                    core_names = [
+                        name for name in core_names
+                        if name not in LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+                    ]
                 owner = self.accounts_repo.get_user_by_id(user_id) if user_id else None
                 owner_role = owner.role if owner else "user"
                 allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
@@ -2552,8 +2576,9 @@ class NymeriaAgent:
         graphs so new tools become available on the NEXT message turn.
 
         New core tools (added to ALL_TOOLS) are automatically registered in each
-        user's default_thread_tools so they appear as enabled by default.  Removed
-        core tools are cleaned out of the list as well.
+        user's default_thread_tools so they appear as enabled by default. Removed
+        core tools and per-thread-only local system access tools are cleaned out
+        of the list as well.
 
         NOTE: Due to how LangGraph works, newly created tools are NOT available
         in the same conversation turn. The current turn's graph was captured at
@@ -2637,10 +2662,17 @@ class NymeriaAgent:
         - Removed core tools are cleaned out to avoid stale entries.
         - Users whose default_thread_tools is None (legacy mode) are skipped.
         """
-        from ..tools import CAPABILITY_EXPANSION_TOOL_NAMES
+        from ..tools import (
+            CAPABILITY_EXPANSION_TOOL_NAMES,
+            LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
+        )
 
         added = new_core - old_core
-        removed = (old_core - new_core) | set(CAPABILITY_EXPANSION_TOOL_NAMES)
+        removed = (
+            (old_core - new_core)
+            | set(CAPABILITY_EXPANSION_TOOL_NAMES)
+            | set(LOCAL_SYSTEM_ACCESS_TOOL_NAMES)
+        )
         if not added and not removed:
             return
 
@@ -3646,7 +3678,15 @@ class NymeriaAgent:
         into the default_thread_tools list, then the old fields are ignored via
         extra='ignore' on ToolPreferences.
         """
-        from ..tools import ALL_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
+        from ..tools import (
+            ALL_TOOLS,
+            CAPABILITY_EXPANSION_TOOL_NAMES,
+            LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
+        )
+
+        stripped_default_tool_names = (
+            CAPABILITY_EXPANSION_TOOL_NAMES | LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+        )
 
         for user_id in self.profile_manager.list_users():
             profile = self.profile_manager.get_profile(user_id)
@@ -3655,13 +3695,13 @@ class NymeriaAgent:
                 updated = [
                     name
                     for name in profile.tool_preferences.default_thread_tools
-                    if name not in CAPABILITY_EXPANSION_TOOL_NAMES
+                    if name not in stripped_default_tool_names
                 ]
                 if set(updated) != current:
                     profile.tool_preferences.default_thread_tools = updated
                     self.profile_manager.save_profile(profile)
                     logger.info(
-                        "Removed capability expansion tools from default_thread_tools "
+                        "Removed opt-in-only tools from default_thread_tools "
                         "for user %s",
                         user_id,
                     )
@@ -3670,7 +3710,7 @@ class NymeriaAgent:
             # Start with all core tools
             default_names = [
                 t.name for t in ALL_TOOLS
-                if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES
+                if t.name not in stripped_default_tool_names
             ]
 
             # Check raw data for old enabled_overrides to incorporate

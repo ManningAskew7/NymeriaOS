@@ -14,6 +14,7 @@ from nymeria.tools import (
     ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
     ALL_TOOLS,
     DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+    LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
 )
 from nymeria.tools.definitions.custom_tool_schema import (
     CustomToolDefinition,
@@ -162,13 +163,23 @@ def test_unified_tool_enable_preserves_role_gates_and_rebuilds_defaults(
     user_token = _create_user(agent, "owner")
     admin_token = _create_user(agent, "admin", role="admin")
     core_tool = ALL_TOOLS[0].name
-    admin_only = sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)[0]
+    admin_only = next(
+        name
+        for name in sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)
+        if name not in LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+    )
+    local_system_tool = sorted(LOCAL_SYSTEM_ACCESS_TOOL_NAMES)[0]
     developer_only = sorted(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)[0]
 
     disable_response = client.put(
         f"/users/owner/tools/unified/{core_tool}/enable",
         headers=api_client_builder.auth(user_token),
         json={"enabled": False},
+    )
+    admin_local_default_response = client.put(
+        f"/users/admin/tools/unified/{local_system_tool}/enable",
+        headers=api_client_builder.auth(admin_token),
+        json={"enabled": True},
     )
     user_admin_only_response = client.put(
         f"/users/owner/tools/unified/{admin_only}/enable",
@@ -198,6 +209,8 @@ def test_unified_tool_enable_preserves_role_gates_and_rebuilds_defaults(
     ).tool_preferences.default_thread_tools
     assert core_tool not in owner_defaults
 
+    assert admin_local_default_response.status_code == 400
+    assert "must be enabled per-thread" in admin_local_default_response.json()["detail"]
     assert user_admin_only_response.status_code == 403
     assert user_admin_only_response.json()["detail"] == (
         f"Tool '{admin_only}' is admin-only"

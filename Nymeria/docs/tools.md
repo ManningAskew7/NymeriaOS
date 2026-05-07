@@ -8,30 +8,41 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
-| 1 | `bash_execute` | Core | MODERATE | On | Execute shell commands |
-| 2 | `file_read` | Core | SAFE | On | Read file contents |
-| 3 | `file_write` | Core | MODERATE | On | Write content to files |
-| 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
-| 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
-| 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
-| 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
-| 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
-| 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
-| 10 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
-| 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
-| 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
-| 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
-| 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
+| 1 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
+| 2 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
+| 3 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
+| 4 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
+| 5 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
+| 6 | `personality_set` | Profile | SAFE | On | Set communication preferences |
+| 7 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
+| 8 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
+| 9 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
+| 10 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
+| 11 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. See `docs/skills.md`.
 
 > **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when the agent activates it.
 
-> **Note:** `claude_code`, `reload_all`, and `self_modify_rollback` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `RUNTIME_ADMIN_TOOLS`, `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them per-thread, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
+> **Local system access:** `bash_execute`, `file_read`, and `file_write` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS`, are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES`, and are excluded from user-level default tool sets. Admins can enable them per-thread; non-admins are blocked at every enable boundary.
+
+> **Note:** `claude_code`, `reload_all`, and `self_modify_rollback` are also **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `RUNTIME_ADMIN_TOOLS`, `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
 
 > **Tool output guard:** After any tool executes, Nymeria truncates oversized `ToolMessage` content before it is stored in thread history. `TOOL_OUTPUT_MAX_CHARS` defaults to `100000`; larger outputs keep the first ~75k and last ~25k characters with a marker showing the original and omitted sizes.
 
 > **CLIProxy OAuth note:** Installed server tools keep the safe dynamic namespace `mcp__<server>__<tool>`. Nymeria-owned helper tools must avoid the `mcp_<name>`, `mcp.<name>`, and `mcp/<name>` namespaces because Claude OAuth classifies those as third-party MCP apps. The consolidated facade is named `manage_mcp`; legacy helpers remain `search_mcp` and `install_mcp_server` for compatibility. The observed probe matrix is documented in `docs/cliproxy.md`.
+
+### Optional: Local System Access Tools (3)
+
+Not loaded by default and cannot be set as user-level defaults. Admins can
+enable them per-thread when a task explicitly needs local command or filesystem
+access; non-admins cannot enable them.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `bash_execute` | Core | MODERATE | Execute shell commands |
+| 2 | `file_read` | Core | SAFE | Read file contents |
+| 3 | `file_write` | Core | MODERATE | Write content to files |
 
 ### Optional: Trigger Tools (2)
 
@@ -163,9 +174,9 @@ The frontend header count uses `GET /threads/{thread_id}/callable-tools`, which 
 
 ---
 
-## Core System Tools
+## Local System Access Tools
 
-### bash_execute
+### bash_execute (Optional, Admin-Only)
 
 Execute shell commands on the local system.
 
@@ -184,7 +195,7 @@ bash_execute(command: str, working_directory: Optional[str] = None, timeout_seco
 
 ---
 
-### file_read
+### file_read (Optional, Admin-Only)
 
 Read the contents of a file.
 
@@ -203,7 +214,7 @@ file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = No
 
 ---
 
-### file_write
+### file_write (Optional, Admin-Only)
 
 Write content to a file.
 
@@ -611,7 +622,7 @@ tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str =
 
 **Actions:**
 - `enable` — Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
-- `disable` — Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
+- `disable` — Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses current core tools (`web_search`, `consult`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
 - `list_categories` — List all tool categories with tool counts.
 - `status` / `inspect` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
@@ -1381,12 +1392,13 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
+- Local system access tools: `bash_execute`, `file_read`, `file_write` (admin-only, per-thread only)
 - Utility tools: `claude_code`, `sticky_note`, `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_config`, `skill_kit_create` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
 2. Per-thread config has an `enabled_tools` list (tool names)
-3. The profile-level `default_thread_tools` list is the default-bound core set for each thread; an empty list means no core tools
+3. The profile-level `default_thread_tools` list is the default-bound set for each thread; an empty list means no default-bound tools. Local system access tools are stripped from this list and must be enabled per thread.
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
 5. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
 
@@ -1562,13 +1574,16 @@ level, default-enabled state, and config schemas.
 
 Default availability is separate from security level: tools in `ALL_TOOLS` are
 enabled for new threads by default, and tools in `OPTIONAL_TOOLS` are opt-in by
-default even when they are classified `SAFE`.
+default even when they are classified `SAFE`. Local system access tools are an
+extra-restricted subset: `bash_execute`, `file_read`, and `file_write` are
+admin-only, per-thread optional tools and are not allowed in user-level default
+tool sets.
 
 ### Tools by Security Level
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read` (admin-only optional because it exposes local host data), `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 
