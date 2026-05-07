@@ -11,15 +11,15 @@ and tokens are auto-refreshed on expiry (60-second buffer) by ``google_docs.py``
 Optional tools, enable per-thread via thread config.
 """
 
-from pathlib import Path
-
 from dotenv import load_dotenv
+
+from nymeria.config.settings import get_env_file_paths
 
 from . import auth_cache_utils as auth_utils
 
-# Load .env so GOOGLE_OAUTH_CREDENTIALS is available via os.environ
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_ENV_PATH)
+# Load env files so GOOGLE_OAUTH_CREDENTIALS is available via os.environ.
+for _ENV_PATH in get_env_file_paths():
+    load_dotenv(_ENV_PATH)
 
 PROVIDER = "google_docs"
 _CACHE_FILENAME = "google_docs.json"

@@ -46,11 +46,11 @@ def create_system_router(
                 ticker.stop()
 
             from dotenv import dotenv_values
+            from ...config.settings import get_env_file_paths
 
             child_env = os.environ.copy()
             project_root = get_settings_fn().project_root
-            for filename in (".env", ".env.docker"):
-                env_path = project_root / filename
+            for env_path in get_env_file_paths(project_root):
                 if not env_path.exists():
                     continue
                 for key, value in dotenv_values(env_path).items():

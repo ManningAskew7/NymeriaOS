@@ -25,10 +25,13 @@ from pathlib import Path
 
 import os
 
-# Add project to path — for PyInstaller frozen builds, the bundled modules are
-# already on sys.path, but we still need the project root for .env resolution.
-if getattr(sys, "frozen", False):
-    _project_root = Path(os.environ.get("NYMERIA_PROJECT_ROOT", Path(sys.executable).resolve().parent))
+# Add project to path — for PyInstaller frozen builds and installed package
+# entrypoints, the bundled modules are already on sys.path, but we still need
+# the runtime project root for environment/config resolution.
+if os.environ.get("NYMERIA_PROJECT_ROOT"):
+    _project_root = Path(os.environ["NYMERIA_PROJECT_ROOT"]).expanduser().resolve()
+elif getattr(sys, "frozen", False):
+    _project_root = Path(sys.executable).resolve().parent
 else:
     _project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(_project_root))
@@ -40,11 +43,12 @@ def _load_environment() -> None:
     """Load environment files relative to project root, overriding inherited values."""
     project_root = _project_root
 
-    # Load base config first, then docker overrides if present.
+    # Load base config first, then package-user config and docker overrides if
+    # present.
     # override=True ensures restarts pick up latest .env values even when
     # the parent process has stale exported environment variables.
-    load_dotenv(project_root / ".env", override=True)
-    load_dotenv(project_root / ".env.docker", override=True)
+    for filename in (".env", "config.env", ".env.docker"):
+        load_dotenv(project_root / filename, override=True)
 
 
 # Load environment variables before importing settings/users of os.environ
@@ -238,6 +242,13 @@ def run_api(args: argparse.Namespace) -> None:
 def run_service(args: argparse.Namespace) -> None:
     """Handle service subcommand (foreground gateway mode)."""
     run_gateway_foreground(args)
+
+
+def run_init(args: argparse.Namespace) -> int:
+    """Run first-time package setup."""
+    from nymeria.setup_wizard import run_init as start_init
+
+    return start_init(args)
 
 
 def run_worker(args: argparse.Namespace) -> None:
@@ -690,6 +701,38 @@ Examples:
         help="Start worker (ticker only, for Docker deployments)"
     )
 
+    # Init subcommand
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create first-time config.env and data directory",
+    )
+    init_parser.add_argument(
+        "--provider",
+        choices=("anthropic", "openai", "openrouter"),
+        default=None,
+    )
+    init_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model identifier to write to config.env",
+    )
+    init_parser.add_argument("--api-key", default=None)
+    init_parser.add_argument(
+        "--root",
+        default=None,
+        help="Runtime root for config.env and data/",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite config.env if it exists",
+    )
+    init_parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Require flags instead of prompting",
+    )
+
     # Discord bot subcommand
     discord_parser = subparsers.add_parser(
         "discord-bot",
@@ -775,7 +818,7 @@ Examples:
     # Setup logging (except for service commands and STDIO MCP, which must keep
     # stdout reserved for JSON-RPC messages. The MCP server configures stderr
     # logging internally so client transports are not corrupted.
-    if args.command not in ("service", "mcp"):
+    if args.command not in ("service", "mcp", "init"):
         setup_logging(args.log_level)
 
     if service_token_required:
@@ -798,6 +841,8 @@ Examples:
         run_api(args)
     elif args.command == "worker":
         run_worker(args)
+    elif args.command == "init":
+        sys.exit(run_init(args))
     elif args.command == "discord-bot":
         run_discord_bot(args)
     elif args.command == "telegram-bot":

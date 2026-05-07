@@ -59,3 +59,13 @@ def test_project_root_keeps_fixed_depth_fallback(monkeypatch, tmp_path):
     monkeypatch.chdir(no_marker_cwd)
 
     assert settings_module._get_project_root() == fallback_root.resolve()
+
+
+def test_env_file_paths_include_package_config_file(tmp_path):
+    root = tmp_path / "runtime"
+
+    assert settings_module.get_env_file_paths(root) == (
+        root / ".env",
+        root / "config.env",
+        root / ".env.docker",
+    )

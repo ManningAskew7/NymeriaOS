@@ -5,15 +5,15 @@ compatible credentials file. Tokens are stored in Nymeria's normal per-user
 auth cache and exported to the MCP credential path after successful auth.
 """
 
-from pathlib import Path
-
 from dotenv import load_dotenv
+
+from nymeria.config.settings import get_env_file_paths
 
 from . import auth_cache_utils as auth_utils
 
-# Load .env so GOOGLE_OAUTH_CREDENTIALS is available via os.environ
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_ENV_PATH)
+# Load env files so GOOGLE_OAUTH_CREDENTIALS is available via os.environ.
+for _ENV_PATH in get_env_file_paths():
+    load_dotenv(_ENV_PATH)
 
 PROVIDER = "google_gmail"
 _CACHE_FILENAME = "google_gmail.json"
