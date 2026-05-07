@@ -107,6 +107,12 @@ root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `config.env`, `data/`, and logs while loading bundled package assets such as
 `nymeria/config/soul.md` from the installed Python package.
 
+Run `nymeria doctor` after `nymeria init` or after manual config edits to check
+the effective Python version, config files, data directory, LLM connectivity,
+SQLite/Postgres state, optional Redis/voice setup, bundled frontend, and API
+port. Use `nymeria doctor --skip-llm-test` when diagnosing an offline system or
+when provider credentials are intentionally unavailable.
+
 Runtime settings updates choose the highest-precedence existing config file:
 `.env.docker`, then `config.env`, then `.env`. If no config file exists yet,
 source checkouts create `.env`; packaged installs create `config.env`.
