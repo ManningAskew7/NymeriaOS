@@ -24,6 +24,8 @@ Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Crea
 
 `X-Nymeria-Act-As: <user_id>` is honored only for admin-role callers and rewrites the effective user to the target (403 for non-admin, 404 for unknown/disabled target).
 
+Failed bearer authentication attempts are rate-limited per client IP. After 10 missing, malformed, or invalid tokens within 60 seconds, further failed attempts return `429` with a `Retry-After` header. Valid tokens are not blocked by this failed-auth counter.
+
 Exceptions without Bearer auth:
 - `GET /health`
 - `POST /triggers/fire/{trigger_id}` (public callers must provide the trigger's shared `secret`; Bearer auth can be used instead)
@@ -207,6 +209,7 @@ Telegram, and dashboard activity/notifications live under
 | Status | Body | UI behaviour |
 |---|---|---|
 | `401` | `{"detail": "Invalid or revoked token"}` | Frontend `_toastAndExtractError` triggers `pushAuthInvalid` → user signed out, routed to SetupWizard. |
+| `429` | `{"detail": "Too many failed authentication attempts"}` | Retry after the `Retry-After` header duration. |
 | `403` | `{"detail": "Admin role required"}` | Toast: "Admin role required". |
 | `409` | `{"detail": "Cannot demote the only enabled admin"}` | Toast: `last_admin` kind. |
 | `409` | `{"detail": "User still owns N threads / M todos"}` | Toast: `resource_owned` kind. |

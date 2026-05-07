@@ -140,6 +140,7 @@ def create_trigger_router(
         return _manager
 
     async def _optional_authenticated_user(
+        request: Request,
         authorization: Optional[str] = Header(default=None),
         x_nymeria_act_as: Optional[str] = Header(default=None),
         settings=Depends(get_settings),
@@ -154,6 +155,7 @@ def create_trigger_router(
             return None
 
         maybe_user = verify_api_key_fn(
+            request=request,
             authorization=authorization,
             x_nymeria_act_as=x_nymeria_act_as,
             settings=settings,

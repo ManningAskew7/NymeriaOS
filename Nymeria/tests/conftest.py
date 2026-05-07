@@ -82,4 +82,6 @@ class ApiTestClientBuilder:
 
 @pytest.fixture
 def api_client_builder(monkeypatch: pytest.MonkeyPatch) -> ApiTestClientBuilder:
-    return ApiTestClientBuilder(monkeypatch)
+    api_module._reset_auth_failure_rate_limiter_for_tests()
+    yield ApiTestClientBuilder(monkeypatch)
+    api_module._reset_auth_failure_rate_limiter_for_tests()
