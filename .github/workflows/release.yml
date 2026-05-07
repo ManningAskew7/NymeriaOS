@@ -1,0 +1,160 @@
+name: Release
+
+"on":
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  python-package:
+    name: Build Python package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache desktop npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-desktop-release-${{ hashFiles('nymeria-desktop/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-desktop-release-
+            ${{ runner.os }}-npm-desktop-
+
+      - name: Install desktop dependencies
+        working-directory: nymeria-desktop
+        run: npm install
+
+      - name: Build desktop frontend
+        working-directory: nymeria-desktop
+        run: npm run build
+
+      - name: Bundle frontend into Python package
+        run: |
+          rm -rf Nymeria/nymeria/frontend
+          mkdir -p Nymeria/nymeria/frontend
+          cp -a nymeria-desktop/build/. Nymeria/nymeria/frontend/
+          test -f Nymeria/nymeria/frontend/index.html
+          test -d Nymeria/nymeria/frontend/_app
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            Nymeria/pyproject.toml
+            Nymeria/requirements-dev.txt
+
+      - name: Install Python build tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python scripts/sync_versions.py --check --tag "$GITHUB_REF_NAME"
+
+      - name: Clean Python build outputs
+        working-directory: Nymeria
+        run: rm -rf build dist *.egg-info
+
+      - name: Build Python distribution
+        working-directory: Nymeria
+        run: python -m build
+
+      - name: Check Python distribution metadata
+        working-directory: Nymeria
+        run: python -m twine check dist/*.whl dist/*.tar.gz
+
+      - name: Upload Python distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nymeria-python-dist
+          path: |
+            Nymeria/dist/*.whl
+            Nymeria/dist/*.tar.gz
+          if-no-files-found: error
+
+  github-release:
+    name: Upload GitHub Release assets
+    needs: python-package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Python distribution artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nymeria-python-dist
+          path: Nymeria/dist
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_args=(--title "$GITHUB_REF_NAME" --generate-notes)
+          if [[ "$GITHUB_REF_NAME" =~ (alpha|beta|rc) ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" Nymeria/dist/*.whl Nymeria/dist/*.tar.gz --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" Nymeria/dist/*.whl Nymeria/dist/*.tar.gz "${release_args[@]}"
+          fi
+
+  private-python-index:
+    name: Publish private Python index
+    needs: python-package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download Python distribution artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nymeria-python-dist
+          path: dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Twine
+        run: python -m pip install --upgrade pip twine
+
+      - name: Publish to private Python index
+        env:
+          TWINE_REPOSITORY_URL: ${{ secrets.NYMERIA_PYPI_REPOSITORY_URL }}
+          TWINE_USERNAME: ${{ secrets.NYMERIA_PYPI_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.NYMERIA_PYPI_PASSWORD }}
+        run: |
+          if [[ -z "$TWINE_REPOSITORY_URL" || -z "$TWINE_USERNAME" || -z "$TWINE_PASSWORD" ]]; then
+            echo "Private Python index publish skipped; set NYMERIA_PYPI_REPOSITORY_URL, NYMERIA_PYPI_USERNAME, and NYMERIA_PYPI_PASSWORD secrets to enable it."
+            exit 0
+          fi
+
+          python -m twine upload --non-interactive --skip-existing --repository-url "$TWINE_REPOSITORY_URL" dist/*.whl dist/*.tar.gz

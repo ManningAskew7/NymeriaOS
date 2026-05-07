@@ -4,7 +4,7 @@ Get Nymeria running in under 10 minutes.
 
 ## Prerequisites
 
-- **Python 3.10+** - Check with `python --version`
+- **Python 3.11+** - Check with `python --version`
 - **LLM API Key** - From one of:
   - [Anthropic](https://console.anthropic.com/) (recommended)
   - [OpenAI](https://platform.openai.com/)
