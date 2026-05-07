@@ -26,7 +26,7 @@ Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Crea
 
 Exceptions without Bearer auth:
 - `GET /health`
-- `POST /triggers/fire/{trigger_id}` (uses optional per-trigger secret instead)
+- `POST /triggers/fire/{trigger_id}` (public callers must provide the trigger's shared `secret`; Bearer auth can be used instead)
 
 ---
 
@@ -2200,7 +2200,7 @@ Returns all registered trigger sources with metadata.
       "icon": "bolt",
       "setup_guide": "...",
       "template_variables": ["fired_at", "source_ip"],
-      "example_config": {},
+      "example_config": {"secret": "my-shared-secret"},
       "requires_auth": null
     }
   }
@@ -2313,11 +2313,14 @@ All recent executions across triggers.
 ### Fire Webhook
 
 ```http
-POST /triggers/fire/{trigger_id}
+POST /triggers/fire/{trigger_id}?secret=<shared-secret>
 Content-Type: application/json
 ```
 
-Push-based endpoint for webhook triggers. Accepts any JSON body.
+Push-based endpoint for webhook triggers. Accepts any JSON body. Public callers
+must include the trigger's shared `secret` query parameter; alternatively,
+include `Authorization: Bearer <token>` to fire the authenticated user's own
+webhook trigger without putting the shared secret in the URL.
 
 ---
 

@@ -36,7 +36,7 @@ Sources auto-register on startup. Use `POST /triggers/sources/reload` to reload 
 
 ### Webhook
 
-Optional `secret` for authentication. Fire via `POST /triggers/fire/{trigger_id}?secret=<value>` with a JSON body.
+A non-empty shared `secret` is required for public webhook fire requests. Fire via `POST /triggers/fire/{trigger_id}?secret=<value>` with a JSON body. Authenticated API callers may instead include `Authorization: Bearer <token>` to fire their own webhook trigger without placing the shared secret in the URL.
 
 Template variables: any keys in the POST body, plus `{fired_at}`, `{source_ip}`, `{trigger_id}`, `{trigger_name}`.
 
@@ -213,7 +213,7 @@ Returns a preview of what would happen if the trigger fired — sample event dat
 
 ### Webhook fire (real execution)
 
-The webhook fire endpoint is **public** (no API key required) so external services can call it. Authentication is via an optional per-trigger `secret` query parameter.
+The webhook fire endpoint is **public** so external services can call it, but public calls must include the trigger's shared `secret` query parameter. A trigger without a configured secret is not publicly fireable; use Bearer auth to fire it from a trusted Nymeria client.
 
 ```bash
 curl -X POST "http://localhost:8000/triggers/fire/{trigger_id}?secret=<value>&user_id=default" \
@@ -408,4 +408,4 @@ The webhook source works with any service that can send HTTP POST requests:
 - **GitHub** — Configure repository webhooks to send events to your trigger endpoint
 - **Tasker / n8n / custom scripts** — Any `curl` or HTTP client can fire a webhook trigger
 
-The secret query parameter (if configured on the trigger) is the only auth mechanism — do not expose the webhook URL publicly without one.
+The secret query parameter is required for public webhook calls. Treat webhook URLs as secrets because the shared secret is embedded in the URL for many third-party webhook integrations.

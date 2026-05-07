@@ -9,9 +9,10 @@ Events are persisted to disk so they survive API restarts.
 
 import json
 import logging
+import secrets
 import threading
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from . import register_source
 from .base import BaseTriggerSource
@@ -37,7 +38,7 @@ class WebhookSource(BaseTriggerSource):
         "1. Create the trigger and copy the fire URL shown after creation.\n"
         "2. Paste the URL into your external service (Tasker, IFTTT, Zapier, n8n, etc.).\n"
         "3. Send a JSON body — all keys become available as `{template_variables}` in your action template.\n\n"
-        "Optionally set a **shared secret** for authentication."
+        "Set a **shared secret** and include it as the `secret` query parameter."
     )
     template_variables = ["fired_at", "source_ip"]
     example_config = {"secret": "my-shared-secret"}
@@ -45,8 +46,8 @@ class WebhookSource(BaseTriggerSource):
     config_schema: Dict[str, Any] = {
         "secret": {
             "type": "string",
-            "description": "Shared secret for request authentication (optional)",
-            "required": False,
+            "description": "Shared secret required for public webhook fire requests",
+            "required": True,
             "placeholder": "my-shared-secret",
             "secret": True,
             "order": 1,
@@ -107,12 +108,23 @@ class WebhookSource(BaseTriggerSource):
                 self._persist()
         return events
 
+    def validate_config(self, config: dict) -> Tuple[bool, str]:
+        ok, msg = super().validate_config(config)
+        if not ok:
+            return ok, msg
+        configured_secret = config.get("secret")
+        if not isinstance(configured_secret, str) or not configured_secret.strip():
+            return False, "Field 'secret' must be a non-empty string"
+        return True, "ok"
+
     def validate_secret(self, config: dict, provided_secret: str | None) -> bool:
-        """Check the shared secret if one is configured."""
+        """Check the required shared secret for public fire requests."""
         expected = config.get("secret")
-        if not expected:
-            return True
-        return provided_secret == expected
+        if not isinstance(expected, str) or not expected:
+            return False
+        if not isinstance(provided_secret, str):
+            return False
+        return secrets.compare_digest(provided_secret, expected)
 
     def get_sample_event(self, config: dict) -> dict:
         return {

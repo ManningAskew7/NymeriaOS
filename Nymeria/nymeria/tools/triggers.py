@@ -79,7 +79,8 @@ def _trigger_create(
             notify: {"message_template": "...", "platform": "auto"}
             create_todo: {"task_template": "..."}
             Templates support {variable} interpolation from event data.
-        source_config: Source-specific config (e.g. {"secret": "mykey"} for webhooks).
+        source_config: Source-specific config. Webhooks require
+            {"secret": "mykey"} for public fire requests.
         cooldown_seconds: Minimum seconds between trigger firings (0 = no cooldown).
         conditions: Optional list of filter conditions (AND logic). Each condition
             is a dict with keys: field, operator, value, case_sensitive.
@@ -92,7 +93,8 @@ def _trigger_create(
     Examples:
         trigger_config(action="create", name="Deploy alert", source_type="webhook",
             action_type="agent_prompt",
-            action_config={"prompt_template": "Deploy event: {message}. Summarize and notify."})
+            action_config={"prompt_template": "Deploy event: {message}. Summarize and notify."},
+            source_config={"secret": "my-shared-secret"})
         trigger_config(action="create", name="RSS monitor", source_type="rss",
             action_type="notify",
             action_config={"message_template": "New post: {title} -- {link}"},
