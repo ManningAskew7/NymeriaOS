@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
@@ -13,9 +14,9 @@
   let currentStep = $state(1);
   let totalSteps = 4;
 
-  // Form values (use build-time defaults if available)
-  let apiUrl = $state(import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000');
-  let apiKey = $state(import.meta.env.VITE_DEFAULT_API_KEY || '');
+  // Form values (use saved or build-time defaults if available)
+  let apiUrl = $state(configStore.apiUrl || import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000');
+  let apiKey = $state(configStore.apiKey || import.meta.env.VITE_DEFAULT_API_KEY || '');
 
   // Status
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -24,6 +25,15 @@
   // Resolved identity from /me — surfaces in Step 3 so the user can confirm
   // they're signing in as the expected account before completing setup.
   let resolvedIdentity = $state<AccountIdentity | null>(null);
+
+  onMount(() => {
+    const initialApiUrl = apiUrl;
+    void configStore.autoDetectBackendOrigin().then((detected) => {
+      if (detected && apiUrl === initialApiUrl) {
+        apiUrl = detected;
+      }
+    });
+  });
 
   // Validates URL+token via probeConnection — a stateless module-level helper
   // that does NOT touch configStore. Writing apiUrl/apiKey here (as the

@@ -2345,6 +2345,10 @@ When a built frontend is present at `Nymeria/frontend/index.html`, the API
 serves it at `GET /`. Browser navigation to unmatched non-API paths also
 returns `index.html` so the SPA can handle refreshes and deep links.
 
+In this backend-served browser mode, the desktop setup wizard probes same-origin
+`/health` and fills the API URL with the current page origin when the health
+JSON validates. Users still need to paste and test an account token.
+
 Unmatched paths that look like API routes, missing static assets, or requests
 that do not accept `text/html` still return `404`.
 

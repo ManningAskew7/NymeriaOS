@@ -6,6 +6,45 @@ const STORAGE_KEY = 'nymeria-config';
 // Build-time defaults (set via VITE_DEFAULT_API_URL / VITE_DEFAULT_API_KEY env vars)
 const DEFAULT_API_URL = import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000';
 const DEFAULT_API_KEY = import.meta.env.VITE_DEFAULT_API_KEY || '';
+const BACKEND_ORIGIN_PROBE_TIMEOUT_MS = 1500;
+
+type HealthProbeResponse = {
+  status?: string;
+  version?: string;
+};
+
+function isTauriRuntime(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+async function detectBackendOrigin(): Promise<string | null> {
+  if (typeof window === 'undefined' || isTauriRuntime()) return null;
+
+  const origin = window.location.origin;
+  if (!origin || origin === 'null') return null;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), BACKEND_ORIGIN_PROBE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${origin}/health`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.toLowerCase().includes('application/json')) return null;
+
+    const health = (await response.json()) as HealthProbeResponse;
+    return health.status === 'ok' ? origin : null;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Identity-scoped localStorage helpers
@@ -148,13 +187,13 @@ function createConfigStore() {
 
   // Seed the module-level scope cache with whatever identity is persisted so
   // stores that load before refreshIdentity() runs still pick the right keys.
-  if (identity) {
-    currentIdentityId = identity.id;
+  if (initial.identity) {
+    currentIdentityId = initial.identity.id;
   }
 
   // Apply theme on initial load (client-side only)
   if (typeof document !== 'undefined') {
-    applyTheme(theme);
+    applyTheme(initial.theme ?? 'midnight');
   }
 
   function saveCurrentConfig() {
@@ -274,6 +313,19 @@ function createConfigStore() {
     return data;
   }
 
+  async function autoDetectBackendOrigin(): Promise<string | null> {
+    if (setupCompleted && apiKey.trim().length > 0) return null;
+
+    const detected = await detectBackendOrigin();
+    if (!detected) return null;
+
+    if (apiUrl !== detected) {
+      apiUrl = detected;
+      saveCurrentConfig();
+    }
+    return detected;
+  }
+
   return {
     get apiUrl() {
       return apiUrl;
@@ -336,6 +388,7 @@ function createConfigStore() {
     clearIdentity,
     signOut,
     updateIdentityDisplayName,
+    autoDetectBackendOrigin,
     reset() {
       apiUrl = DEFAULT_API_URL;
       apiKey = DEFAULT_API_KEY;

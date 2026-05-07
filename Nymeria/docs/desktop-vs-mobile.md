@@ -78,6 +78,7 @@ The default `apiUrl` still differs by platform, but this is no longer the only d
 |-|---------|--------|
 | Default `apiUrl` | `'http://localhost:8000'` | `''` (empty) |
 | Reset `apiUrl` | `'http://localhost:8000'` | `''` |
+| Backend-served browser setup | Probes same-origin `/health` and fills the URL with the current origin when valid | Not enabled; mobile still requires a network address |
 | Setup gate | `needsSetup` is true when setup is incomplete or URL/token is blank | Same |
 | `/me` 401 handling | Clears token, setup flag, identity, and identity scope | Same |
 
