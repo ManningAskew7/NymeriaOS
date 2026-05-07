@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -7,9 +9,10 @@ from nymeria.config.settings import (
     MAX_LLM_OUTPUT_TOKENS,
     Settings,
 )
+from nymeria.triggers.api import _validate_cors_settings
 
 
-def test_cors_default_is_restricted_to_local_desktop_origins():
+def test_cors_default_is_restricted_to_local_ui_origins():
     assert Settings.model_fields["cors_origins"].default == DEFAULT_CORS_ORIGINS
     assert DEFAULT_CORS_ORIGINS != "*"
 
@@ -18,13 +21,21 @@ def test_cors_default_is_restricted_to_local_desktop_origins():
     assert settings.cors_origins_list == [
         "http://localhost:1420",
         "tauri://localhost",
+        "http://localhost:8000",
     ]
 
 
-def test_cors_wildcard_requires_explicit_override():
-    settings = Settings(_env_file=None, cors_origins="*")
+@pytest.mark.parametrize("cors_origins", ["*", " http://localhost:1420 , * "])
+def test_cors_wildcard_is_rejected_with_credentials(cors_origins):
+    with pytest.raises(ValidationError, match="CORS_ORIGINS cannot include '\\*'"):
+        Settings(_env_file=None, cors_origins=cors_origins)
 
-    assert settings.cors_origins_list == ["*"]
+
+def test_api_startup_rejects_wildcard_cors_from_injected_settings():
+    settings = SimpleNamespace(cors_origins_list=["*"])
+
+    with pytest.raises(RuntimeError, match="CORS_ORIGINS cannot include '\\*'"):
+        _validate_cors_settings(settings)
 
 
 def test_user_timezone_defaults_to_utc(monkeypatch):

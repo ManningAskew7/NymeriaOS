@@ -159,10 +159,10 @@ To access from other devices:
 ```bash
 # Allow specific origins
 CORS_ORIGINS=http://192.168.1.100:1420,http://myphone.local:1420
-
-# Temporary trusted-network troubleshooting only
-CORS_ORIGINS=*
 ```
+
+Do not use `CORS_ORIGINS=*`. The API allows credentialed CORS requests and
+refuses to start when wildcard origins are configured.
 
 ### Messaging Integrations
 
