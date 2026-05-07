@@ -7,7 +7,7 @@ name = "nymeria"
 dynamic = ["version"]
 description = "Personal AI assistant platform built on LangGraph, FastAPI, and local-first persistence."
 readme = { file = "docs/README.md", content-type = "text/markdown" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 authors = [
   { name = "Manning Askew", email = "160990142+ManningAskew7@users.noreply.github.com" },
@@ -18,7 +18,6 @@ classifiers = [
   "Framework :: FastAPI",
   "Intended Audience :: End Users/Desktop",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Topic :: Communications :: Chat",

@@ -47,6 +47,7 @@ python run.py cli
 - [Configuration](./configuration.md) - Environment variables and settings
 - [API Reference](./api.md) - REST API endpoints including settings, tools, TODOs, MCP servers, voice, and callable threads
 - [Beta Troubleshooting](./BETA_TROUBLESHOOTING.md) - Install diagnostics, `nymeria doctor`, auth, provider, and SQLite troubleshooting for beta testers
+- [Release Workflow](./release-workflow.md) - Tagged beta package builds, bundled frontend artifacts, GitHub Release uploads, and private Python index publishing
 - [Compaction & Checkpoints](./compaction-and-checkpoints.md) - How `/compact` trims state and prunes the checkpointer, the display filter's internal-message handling, and troubleshooting for blank threads or slow `/history`
 - [OpenRouter Provider Integration](./openrouter.md) - OpenRouter Responses beta, Chat Completions compatibility mode, reasoning/tool replay, and debugging checklist
 

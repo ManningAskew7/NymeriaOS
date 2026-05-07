@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,12 @@ def test_python_package_reads_version_from_backend_init() -> None:
 
     assert 'dynamic = ["version"]' in pyproject
     assert 'version = { attr = "nymeria.__version__" }' in pyproject
+
+
+def test_python_package_requires_supported_python_version() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["requires-python"] == ">=3.11"
 
 
 def test_frontend_bundle_exists_inside_python_package() -> None:
