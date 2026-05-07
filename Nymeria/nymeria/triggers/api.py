@@ -55,6 +55,8 @@ _agent: Optional[NymeriaAgent] = None
 _BOT_ADMIN_ENDPOINT_RATE_LIMIT = 120
 _BOT_ADMIN_ENDPOINT_RATE_WINDOW_SECONDS = 60.0
 _bot_admin_endpoint_rate_limiter = SlidingWindowRateLimiter()
+_FRONTEND_ROOT_ASSET_NAMES = ("favicon.png", "icon-16.png", "icon-32.png", "icon-80.png", "manifest.xml")
+_FRONTEND_RESERVED_PREFIXES = {"_app", "docs", "openapi.json", "redoc"}
 
 
 def get_agent() -> NymeriaAgent:
@@ -62,6 +64,78 @@ def get_agent() -> NymeriaAgent:
     if _agent is None:
         raise RuntimeError("Agent not initialized. Call create_api_app() first.")
     return _agent
+
+
+def _frontend_static_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
+
+
+def _first_path_segment(path: str) -> str:
+    return path.strip("/").split("/", 1)[0]
+
+
+def _registered_api_prefixes(app: FastAPI) -> set[str]:
+    prefixes = set(_FRONTEND_RESERVED_PREFIXES)
+    for route in app.routes:
+        route_path = getattr(route, "path", "")
+        first_segment = _first_path_segment(route_path)
+        if first_segment and not first_segment.startswith("{"):
+            prefixes.add(first_segment)
+    return prefixes
+
+
+def _is_api_like_frontend_miss(path: str, api_prefixes: set[str]) -> bool:
+    first_segment = _first_path_segment(path)
+    if not first_segment:
+        return False
+    if first_segment in api_prefixes:
+        return True
+
+    # Missing root assets should remain 404s instead of returning index.html.
+    return any("." in segment for segment in path.strip("/").split("/"))
+
+
+def _request_accepts_html(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "")
+
+
+def _register_frontend_routes(app: FastAPI, frontend_dir: str) -> None:
+    index_path = os.path.join(frontend_dir, "index.html")
+    if not os.path.isfile(index_path):
+        logger.warning("Frontend directory exists but index.html is missing: %s", frontend_dir)
+        return
+
+    logger.info("Serving frontend from %s", frontend_dir)
+
+    # Serve SvelteKit's _app/ assets and other static files.
+    _app_dir = os.path.join(frontend_dir, "_app")
+    if os.path.isdir(_app_dir):
+        app.mount("/_app", StaticFiles(directory=_app_dir), name="frontend-assets")
+
+    # Serve static assets from frontend root (icons, favicon, manifest, etc.).
+    for asset_name in _FRONTEND_ROOT_ASSET_NAMES:
+        asset_path = os.path.join(frontend_dir, asset_name)
+        if os.path.isfile(asset_path):
+            def _make_asset_handler(p: str):
+                async def handler():
+                    return FileResponse(p)
+                return handler
+
+            app.get(f"/{asset_name}", include_in_schema=False)(_make_asset_handler(asset_path))
+
+    api_prefixes = _registered_api_prefixes(app)
+
+    # SPA entry point and browser-route fallback. These are registered after
+    # all API routers so concrete API routes still win.
+    @app.get("/", include_in_schema=False)
+    async def serve_spa_root():
+        return FileResponse(index_path)
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def serve_spa_fallback(path: str, request: Request):
+        if not _request_accepts_html(request) or _is_api_like_frontend_miss(path, api_prefixes):
+            raise HTTPException(status_code=404, detail="Not found")
+        return FileResponse(index_path)
 
 
 # ============================================================================
@@ -537,30 +611,9 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # Frontend static hosting (Outlook add-in / web UI)
     # ========================================================================
 
-    _frontend_dir = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
+    _frontend_dir = _frontend_static_dir()
     if os.path.isdir(_frontend_dir):
-        logger.info(f"Serving frontend from {_frontend_dir}")
-
-        # Serve SvelteKit's _app/ assets and other static files
-        _app_dir = os.path.join(_frontend_dir, "_app")
-        if os.path.isdir(_app_dir):
-            app.mount("/_app", StaticFiles(directory=_app_dir), name="frontend-assets")
-
-        # Serve static assets from frontend root (icons, favicon, manifest, etc.)
-        for _icon_name in ["favicon.png", "icon-16.png", "icon-32.png", "icon-80.png", "manifest.xml"]:
-            _icon_path = os.path.join(_frontend_dir, _icon_name)
-            if os.path.isfile(_icon_path):
-                def _make_icon_handler(p: str):
-                    async def handler():
-                        return FileResponse(p)
-                    return handler
-                app.get(f"/{_icon_name}", include_in_schema=False)(_make_icon_handler(_icon_path))
-
-        # SPA entry point — serves index.html at root
-        # This must be registered AFTER all API routes so it doesn't shadow them
-        @app.get("/", include_in_schema=False)
-        async def serve_spa_root():
-            return FileResponse(os.path.join(_frontend_dir, "index.html"))
+        _register_frontend_routes(app, _frontend_dir)
 
     return app
 

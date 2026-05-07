@@ -218,6 +218,42 @@ def test_public_health_does_not_require_auth(tmp_path: Path, api_client_builder)
     assert response.json()["status"] == "ok"
 
 
+def test_frontend_spa_fallback_serves_browser_routes(
+    tmp_path: Path, monkeypatch, api_client_builder
+):
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+    (frontend_dir / "index.html").write_text("<main>Nymeria SPA</main>", encoding="utf-8")
+    monkeypatch.setattr(api_module, "_frontend_static_dir", lambda: str(frontend_dir))
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    root = client.get("/")
+    fallback = client.get("/dashboard", headers={"accept": "text/html"})
+
+    assert root.status_code == 200
+    assert fallback.status_code == 200
+    assert root.text == "<main>Nymeria SPA</main>"
+    assert fallback.text == "<main>Nymeria SPA</main>"
+
+
+def test_frontend_spa_fallback_preserves_api_and_asset_404s(
+    tmp_path: Path, monkeypatch, api_client_builder
+):
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+    (frontend_dir / "index.html").write_text("<main>Nymeria SPA</main>", encoding="utf-8")
+    monkeypatch.setattr(api_module, "_frontend_static_dir", lambda: str(frontend_dir))
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    api_miss = client.get("/threads/not-a-route/unknown", headers={"accept": "text/html"})
+    asset_miss = client.get("/missing.js", headers={"accept": "text/html"})
+    json_miss = client.get("/dashboard", headers={"accept": "application/json"})
+
+    assert api_miss.status_code == 404
+    assert asset_miss.status_code == 404
+    assert json_miss.status_code == 404
+
+
 def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, api_client_builder):
     client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
