@@ -121,6 +121,8 @@ Nymeria/
 │   ├── backups/            # Self-modification backups
 │   └── custom_tools/       # Custom tool definitions (JSON)
 ├── docs/                   # Documentation
+├── pyproject.toml          # Python package metadata and optional extras
+├── README.md               # Backend package overview
 ├── run.py                  # Entry point
 ├── requirements.txt        # Base dependencies plus SQLite extras include
 ├── requirements-dev.txt    # Development/test dependencies
