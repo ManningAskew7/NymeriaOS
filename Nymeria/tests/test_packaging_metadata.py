@@ -11,6 +11,13 @@ def test_python_package_includes_frontend_bundle_pattern() -> None:
     assert '"frontend/**/*"' in pyproject
 
 
+def test_python_package_reads_version_from_backend_init() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'dynamic = ["version"]' in pyproject
+    assert 'version = { attr = "nymeria.__version__" }' in pyproject
+
+
 def test_frontend_bundle_exists_inside_python_package() -> None:
     frontend_dir = ROOT / "nymeria" / "frontend"
 
