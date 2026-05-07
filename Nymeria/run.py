@@ -229,8 +229,11 @@ def run_api(args: argparse.Namespace) -> None:
     port = args.port or settings.api_port
 
     print(f"Starting Nymeria API server on {host}:{port}...")
-    print(f"  - Docs: http://{host}:{port}/docs")
-    print(f"  - ReDoc: http://{host}:{port}/redoc")
+    if settings.api_docs_enabled:
+        print(f"  - Docs: http://{host}:{port}/docs")
+        print(f"  - ReDoc: http://{host}:{port}/redoc")
+    else:
+        print("  - API docs: disabled (set NYMERIA_API_DOCS=true to enable)")
     if settings.redis_enabled and settings.redis_url:
         print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
 

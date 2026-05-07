@@ -24,6 +24,7 @@ class ApiTestSettings:
     context_management: str = "none"
     sliding_window_cycles: int = 20
     todo_auto_archive_days: int = 7
+    api_docs_enabled: bool = False
     cors_origins_list: list[str] | None = None
 
     def __post_init__(self) -> None:

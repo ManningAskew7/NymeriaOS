@@ -80,6 +80,7 @@ class FakeSettings:
     postgres_uri: str | None = None
     fcm_enabled: bool = False
     fcm_credentials_json: str | None = None
+    api_docs_enabled: bool = False
     cors_origins_list: list[str] | None = None
 
     def __post_init__(self) -> None:

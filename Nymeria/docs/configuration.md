@@ -84,6 +84,8 @@ left out of `config.env`.
 | `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
+| `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
+| `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost` | Comma-separated allowed CORS origins. Use `*` only for temporary troubleshooting on trusted networks |
 | `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
@@ -347,6 +349,8 @@ DATABASE_BACKEND=sqlite
 NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
 API_HOST=0.0.0.0
 API_PORT=8000
+# NYMERIA_API_DOCS=false            # Set true only in trusted local development
+# NYMERIA_DEBUG=false               # Also enables API docs when true
 
 # Logging
 LOG_LEVEL=INFO

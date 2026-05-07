@@ -2369,6 +2369,8 @@ networks.
 
 ## Interactive Documentation
 
-When the server is running:
+Interactive documentation is disabled by default. In trusted local development,
+set `NYMERIA_API_DOCS=true` or `NYMERIA_DEBUG=true` and restart the API server:
 - **Swagger UI:** http://localhost:8000/docs
 - **ReDoc:** http://localhost:8000/redoc
+- **OpenAPI schema:** http://localhost:8000/openapi.json
