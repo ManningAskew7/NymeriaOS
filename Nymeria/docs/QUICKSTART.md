@@ -17,13 +17,17 @@ For beta package installs:
 ```bash
 pipx install nymeria --index-url <private-index-url>
 nymeria init
+nymeria doctor
 nymeria api
 ```
 
 `nymeria init` prompts for the provider, model, API key, and optional
 capability keys. It validates the provider key with a small LLM API call,
 writes `~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the
-first bootstrap admin token.
+first bootstrap admin token. `nymeria doctor` checks the installed Python
+version, config files, data directory, LLM connectivity, local databases,
+optional Redis/voice setup, bundled frontend, and API port before you start the
+server.
 
 For source-checkout development:
 
@@ -105,6 +109,15 @@ For scripted setup in CI or an offline support session, `nymeria init` accepts
 `--non-interactive` plus flags such as `--provider`, `--model`, `--api-key`,
 and `--root`. Add `--skip-llm-test` only when you intentionally want to write
 the config without validating provider access.
+
+To diagnose an existing install without changing files, run:
+
+```bash
+nymeria doctor
+```
+
+If you are offline or intentionally testing without provider access, use
+`nymeria doctor --skip-llm-test` to keep the rest of the checks useful.
 
 ## Step 4: Start the Backend
 

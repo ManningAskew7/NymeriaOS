@@ -6,6 +6,7 @@ Usage:
     python run.py cli          # Start CLI interface
     python run.py api          # Start REST API server
     python run.py api --port 8080  # Start API on custom port
+    python run.py doctor           # Diagnose local configuration
     python run.py worker           # Start worker (ticker only, for Docker)
     python run.py discord-bot     # Start Discord bot (gateway mode)
     python run.py telegram-bot    # Start Telegram bot (polling mode)
@@ -252,6 +253,13 @@ def run_init(args: argparse.Namespace) -> int:
     from nymeria.setup_wizard import run_init as start_init
 
     return start_init(args)
+
+
+def run_doctor(args: argparse.Namespace) -> int:
+    """Run installation diagnostics."""
+    from nymeria.doctor import run_doctor as start_doctor
+
+    return start_doctor(args)
 
 
 def run_worker(args: argparse.Namespace) -> None:
@@ -656,6 +664,7 @@ Examples:
     python run.py cli -t mythread    # Start CLI with specific thread ID
     python run.py api                # Start API server (default port 8000)
     python run.py api -p 8080        # Start API on port 8080
+    python run.py doctor             # Diagnose local configuration
     python run.py discord-bot       # Start Discord bot (gateway mode)
     python run.py mcp                # Start MCP server (STDIO mode)
     python run.py mcp --http         # Start MCP server (HTTP mode)
@@ -761,6 +770,17 @@ Examples:
         help="Write config without making the provider smoke-test API call",
     )
 
+    # Doctor subcommand
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Diagnose Nymeria configuration, storage, and optional services",
+    )
+    doctor_parser.add_argument(
+        "--skip-llm-test",
+        action="store_true",
+        help="Skip the live provider connection check",
+    )
+
     # Discord bot subcommand
     discord_parser = subparsers.add_parser(
         "discord-bot",
@@ -846,7 +866,7 @@ Examples:
     # Setup logging (except for service commands and STDIO MCP, which must keep
     # stdout reserved for JSON-RPC messages. The MCP server configures stderr
     # logging internally so client transports are not corrupted.
-    if args.command not in ("service", "mcp", "init"):
+    if args.command not in ("service", "mcp", "init", "doctor"):
         setup_logging(args.log_level)
 
     if service_token_required:
@@ -871,6 +891,8 @@ Examples:
         run_worker(args)
     elif args.command == "init":
         sys.exit(run_init(args))
+    elif args.command == "doctor":
+        sys.exit(run_doctor(args))
     elif args.command == "discord-bot":
         run_discord_bot(args)
     elif args.command == "telegram-bot":
