@@ -82,3 +82,60 @@ def test_init_noninteractive_writes_config_and_bootstrap_token(tmp_path: Path):
     assert f"NYMERIA_DATA_DIR={root / 'data'}" in config
     assert (root / "data" / "accounts.db").exists()
     assert (root / "data" / "BOOTSTRAP_TOKEN.txt").exists()
+
+
+def test_init_noninteractive_writes_optional_capability_keys(tmp_path: Path):
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--embedding-api-key",
+            "sk-embedding-test",
+            "--openai-api-key",
+            "sk-openai-test",
+            "--gemini-api-key",
+            "gemini-test",
+            "--perplexity-api-key",
+            "pplx-test",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert result == 0
+    assert "EMBEDDING_API_KEY=sk-embedding-test" in config
+    assert "OPENAI_API_KEY=sk-openai-test" in config
+    assert "GEMINI_API_KEY=gemini-test" in config
+    assert "PERPLEXITY_API_KEY=pplx-test" in config
+
+
+def test_init_noninteractive_does_not_duplicate_primary_openai_key(tmp_path: Path):
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "openai",
+            "--model",
+            "openai-test-model",
+            "--api-key",
+            "sk-openai-primary",
+            "--openai-api-key",
+            "sk-openai-primary",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert result == 0
+    assert config.count("OPENAI_API_KEY=") == 1

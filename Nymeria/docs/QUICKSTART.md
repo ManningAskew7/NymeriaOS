@@ -20,9 +20,9 @@ nymeria init
 nymeria api
 ```
 
-`nymeria init` prompts for the provider, model, and API key, writes
-`~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the first
-bootstrap admin token.
+`nymeria init` prompts for the provider, model, API key, and optional
+capability keys. It writes `~/.nymeria/config.env`, creates
+`~/.nymeria/data/`, and creates the first bootstrap admin token.
 
 For source-checkout development:
 
@@ -87,6 +87,18 @@ For OpenRouter:
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=sk-or-...your-key-here...
 ```
+
+Optional capability keys:
+
+```ini
+EMBEDDING_API_KEY=sk-...      # Semantic memory/RAG/skill search
+OPENAI_API_KEY=sk-...         # OpenAI image generation/STT/OpenAI-backed tools
+GEMINI_API_KEY=...            # Gemini image/document extraction/TTS tools
+PERPLEXITY_API_KEY=pplx-...   # Web search
+```
+
+If `LLM_PROVIDER=openai`, the primary `OPENAI_API_KEY` also covers optional
+OpenAI-backed features.
 
 ## Step 4: Start the Backend
 
