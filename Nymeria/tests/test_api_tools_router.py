@@ -11,6 +11,7 @@ from nymeria.tools import (
     ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
     ALL_TOOLS,
     DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+    LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
 )
 from nymeria.vendor.react_agent.tool_registry import ToolRegistry
 
@@ -211,9 +212,19 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
     client, agent = _client(tmp_path, api_client_builder)
     user_token = _create_user(agent, "owner")
     admin_token = _create_user(agent, "admin", role="admin")
-    admin_only = sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)[0]
+    admin_only = next(
+        name
+        for name in sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)
+        if name not in LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+    )
+    local_system_tool = sorted(LOCAL_SYSTEM_ACCESS_TOOL_NAMES)[0]
     developer_only = sorted(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)[0]
 
+    admin_local_default = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(admin_token),
+        json={"tool_names": [ALL_TOOLS[0].name, local_system_tool]},
+    )
     user_admin_only = client.put(
         "/tools/defaults",
         headers=api_client_builder.auth(user_token),
@@ -230,6 +241,8 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
         json={"tool_names": [ALL_TOOLS[0].name, admin_only, "todo"]},
     )
 
+    assert admin_local_default.status_code == 400
+    assert "must be enabled per-thread" in admin_local_default.json()["detail"]
     assert user_admin_only.status_code == 403
     assert "Admin-only tools" in user_admin_only.json()["detail"]
     assert user_developer_only.status_code == 403

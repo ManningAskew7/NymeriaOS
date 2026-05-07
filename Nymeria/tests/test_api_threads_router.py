@@ -290,7 +290,7 @@ def test_thread_metadata_rename_callable_validates_conflicts_and_publishes_event
     assert duplicate.status_code == 409
     assert "already used by thread callable-existing" in duplicate.json()["detail"]
     assert core_conflict.status_code == 400
-    assert "conflicts with a core tool name" in core_conflict.json()["detail"]
+    assert "conflicts with a built-in tool name" in core_conflict.json()["detail"]
     assert renamed.status_code == 200
     body = renamed.json()
     assert body["title"] == "RenamedHelper"

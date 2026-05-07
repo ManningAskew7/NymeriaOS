@@ -1036,7 +1036,7 @@ Authorization: Bearer <token>
 }
 ```
 
-Updates the thread's server-side metadata. If the thread is callable, renaming also updates its `callable_name` in thread config and rebuilds the tool registry (so the LLM sees the new tool name). Name collisions with core tools or other callables are silently skipped.
+Updates the thread's server-side metadata. If the thread is callable, renaming also updates its `callable_name` in thread config and rebuilds the tool registry (so the LLM sees the new tool name). Name collisions with built-in tools or other callables are rejected.
 
 **Response:**
 ```json
@@ -1747,8 +1747,6 @@ Authorization: Bearer <token>
 }
 ```
 
----
-
 ### Update RAG Settings
 
 ```http
@@ -1971,7 +1969,7 @@ Update configuration for a unified tool entry.
       "description": "Execute shell commands...",
       "type": "builtin",
       "category": "core",
-      "enabled": true,
+      "enabled": false,
       "parameters": {...}
     },
     {
@@ -2172,6 +2170,10 @@ Returns available tool categories.
   }
 }
 ```
+
+Category is not the same as default availability. `bash_execute`, `file_read`,
+and `file_write` are categorized as core local-system tools for discovery, but
+they are admin-only optional tools and are not enabled by default.
 
 Capability-expansion categories are optional by default; the bundled
 `self-improve` Skill Kit binds the consolidated facades when needed.

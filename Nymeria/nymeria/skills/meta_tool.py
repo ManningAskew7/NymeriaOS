@@ -36,9 +36,10 @@ description explaining when to use it.
 When you judge that a skill applies to the current task, call this tool with
 that skill's name. The return value is the skill's full body — read it
 carefully and follow its instructions. Skills may instruct you to read
-reference files or run scripts using your existing tools (file_read,
-bash_execute, etc.); the skill's directory path is included in the returned
-body so you can resolve those references.
+reference files or run scripts using tools enabled on the current thread (for
+example file_read or bash_execute when an admin has enabled local system
+access); the skill's directory path is included in the returned body so you can
+resolve those references.
 
 Call this tool at most once per distinct skill per turn. If no skill applies,
 do not call it — proceed with your regular tools.
@@ -88,13 +89,13 @@ def _render_skill_body(skill: Skill) -> str:
 
     aux_lines: List[str] = []
     if skill.has_references:
-        aux_lines.append("References (read on demand with file_read):")
+        aux_lines.append("References (read on demand with file_read if enabled):")
         for ref in skill.list_references():
             aux_lines.append(f"  - {skill.path}/{ref}")
     if skill.has_scripts:
         if aux_lines:
             aux_lines.append("")
-        aux_lines.append("Scripts (invoke via bash_execute):")
+        aux_lines.append("Scripts (invoke via bash_execute if enabled):")
         for script in skill.list_scripts():
             aux_lines.append(f"  - {skill.path}/{script}")
     if skill.has_assets:

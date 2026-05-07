@@ -409,11 +409,14 @@ def test_skill_meta_tool_plain_skill_returns_body_without_reload(tmp_path: Path)
     assert "Plain Skill" in result
 
 
-def test_skill_meta_tool_required_tools_already_bound_returns_body(tmp_path: Path):
+def test_skill_meta_tool_required_tools_already_enabled_returns_body(tmp_path: Path):
     skill_dir = _write_skill(tmp_path, "bash-kit", BASH_KIT_MD)
     skill = load_skill_directory(skill_dir, scope="bundled")
     assert skill is not None
     agent = _FakeAgent(tmp_path / "data")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-a", enabled_tools=["bash_execute"])
+    )
     set_current_agent(agent)
     try:
         skill_tool = create_skill_meta_tool([skill], thread_tool_names=["bash_execute"])
