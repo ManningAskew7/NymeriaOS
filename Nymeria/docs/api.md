@@ -2360,10 +2360,10 @@ that do not accept `text/html` still return `404`.
 ## CORS
 
 CORS is controlled by `CORS_ORIGINS` in environment settings. The default
-allows local desktop development origins only:
-`http://localhost:1420,tauri://localhost`. Add exact LAN or production frontend
-origins as needed; reserve `*` for temporary troubleshooting on trusted
-networks.
+allows local desktop development and the bundled web UI:
+`http://localhost:1420,tauri://localhost,http://localhost:8000`. Add exact LAN
+or production frontend origins as needed. Wildcard origins are rejected because
+the API allows credentialed CORS requests.
 
 ---
 

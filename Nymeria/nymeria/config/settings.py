@@ -60,7 +60,7 @@ def _get_project_root() -> Path:
 PROJECT_ROOT = _get_project_root()
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILENAMES = (".env", "config.env", ".env.docker")
-DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost"
+DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost,http://localhost:8000"
 DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
 ReasoningEffort = Literal["low", "medium", "high"]
@@ -123,6 +123,16 @@ class Settings(BaseSettings):
                     values[key] = None
         return values
 
+    @model_validator(mode="after")
+    def reject_wildcard_cors_with_credentials(self):
+        """Reject wildcard CORS origins because the API allows credentials."""
+        if "*" in self.cors_origins_list:
+            raise ValueError(
+                "CORS_ORIGINS cannot include '*' while credentialed CORS is enabled. "
+                "List explicit origins instead."
+            )
+        return self
+
     # API Authentication — legacy shared key, retired. Kept as a field so
     # existing `.env.docker` values don't raise validation errors, but the
     # server no longer accepts it; authentication is per-user account
@@ -161,7 +171,7 @@ class Settings(BaseSettings):
     # CORS Configuration (for remote frontends)
     cors_origins: str = Field(
         default=DEFAULT_CORS_ORIGINS,
-        description="Comma-separated list of allowed CORS origins, or '*' for all"
+        description="Comma-separated list of allowed CORS origins"
     )
 
     # Worker mode flag

@@ -85,7 +85,11 @@ class FakeSettings:
 
     def __post_init__(self) -> None:
         if self.cors_origins_list is None:
-            self.cors_origins_list = ["*"]
+            self.cors_origins_list = [
+                "http://localhost:1420",
+                "tauri://localhost",
+                "http://localhost:8000",
+            ]
 
     def get_api_key_for_provider(self) -> str | None:
         if self.llm_provider == "openai":

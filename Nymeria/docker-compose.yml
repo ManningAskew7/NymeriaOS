@@ -146,7 +146,7 @@ services:
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace
       # CORS
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:1420,tauri://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:1420,tauri://localhost,http://localhost:8000}
       # User preferences
       USER_TIMEZONE: ${USER_TIMEZONE:-UTC}
       # Context management

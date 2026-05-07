@@ -432,6 +432,16 @@ def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
 # ============================================================================
 
 
+def _validate_cors_settings(settings: Settings) -> None:
+    """Refuse unsafe wildcard CORS when credentialed requests are allowed."""
+    origins = getattr(settings, "cors_origins_list", [])
+    if "*" in origins:
+        raise RuntimeError(
+            "CORS_ORIGINS cannot include '*' while credentialed CORS is enabled. "
+            "List explicit origins instead."
+        )
+
+
 def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     """
     Create the FastAPI application.
@@ -445,6 +455,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     global _agent
 
     settings = get_settings()
+    _validate_cors_settings(settings)
 
     # Initialize agent
     # When Redis is enabled (Docker), a separate worker container runs the ticker.
