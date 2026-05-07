@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -35,12 +36,18 @@ def configure_project_root(start: Path | None = None) -> Path:
     """
     Ensure ``NYMERIA_PROJECT_ROOT`` exists before settings are imported.
 
-    Source checkouts keep using the backend root. Installed wheels do not have a
-    checkout-local ``run.py``, so they use ``~/.nymeria`` for config and data.
+    Source checkouts keep using the backend root. Installed wheels and frozen
+    executables without an explicit override use ``~/.nymeria`` for config and
+    data.
     """
     env_root = os.environ.get("NYMERIA_PROJECT_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
+
+    if getattr(sys, "frozen", False):
+        runtime_root = default_user_project_root()
+        os.environ["NYMERIA_PROJECT_ROOT"] = str(runtime_root)
+        return runtime_root
 
     discovered = find_project_root(start or Path(__file__).resolve())
     if discovered:

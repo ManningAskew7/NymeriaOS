@@ -93,19 +93,22 @@ setup where provider access will be verified separately.
 | `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
 
-Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`, then uses the
-frozen executable directory for PyInstaller builds, then walks upward looking
-for Nymeria backend markers such as `run.py`, `docker-compose.yml`, and
-`nymeria/config/soul.md`. The older fixed-depth path from
+Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. PyInstaller
+builds without that override use the packaged runtime root, `~/.nymeria/`, for
+config and writable data. Non-frozen source launches walk upward looking for
+Nymeria backend markers such as `run.py`, `docker-compose.yml`, and
+`nymeria/config/soul.md`; the older fixed-depth path from
 `nymeria/config/settings.py` remains only as a compatibility fallback. Set
-`NYMERIA_PROJECT_ROOT` explicitly if a packaged deployment separates the Python
-package from the checkout or runtime config directory.
+`NYMERIA_PROJECT_ROOT` explicitly if a packaged deployment needs checkout-style
+paths or separates the Python package from the runtime config directory.
 
 The `nymeria` console script bootstraps this automatically. When it runs from a
 source checkout or editable install, it uses the checkout's `Nymeria/` backend
 root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `config.env`, `data/`, and logs while loading bundled package assets such as
 `nymeria/config/soul.md` from the installed Python package.
+The PyInstaller backend follows the same `~/.nymeria/` default unless a launcher
+sets `NYMERIA_PROJECT_ROOT` before starting the executable.
 
 Run `nymeria doctor` after `nymeria init` or after manual config edits to check
 the effective Python version, config files, data directory, LLM connectivity,
