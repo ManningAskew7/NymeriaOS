@@ -131,8 +131,9 @@ function generateTitleFromMessage(message: string, maxLength: number = 40): stri
 }
 
 function createThreadsStore() {
-  let threads = $state<Thread[]>(loadThreads());
-  let currentThreadId = $state<string | null>(loadCurrentThreadId(threads));
+  const initialThreads = loadThreads();
+  let threads = $state<Thread[]>(initialThreads);
+  let currentThreadId = $state<string | null>(loadCurrentThreadId(initialThreads));
   let threadTaskCounts = $state<Record<string, number>>({});
   let activeThreadTasks = $state<Set<string>>(new Set());
   let folders = $state<ThreadFolder[]>(loadFolders());

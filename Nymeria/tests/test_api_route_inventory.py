@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from fastapi.routing import APIRoute
@@ -239,30 +240,37 @@ def test_api_docs_and_schema_can_be_enabled(tmp_path: Path, api_client_builder):
 
 
 def test_frontend_spa_fallback_serves_browser_routes(
-    tmp_path: Path, monkeypatch, api_client_builder
+    tmp_path: Path, monkeypatch, caplog, api_client_builder
 ):
     frontend_dir = tmp_path / "frontend"
     frontend_dir.mkdir()
     (frontend_dir / "index.html").write_text("<main>Nymeria SPA</main>", encoding="utf-8")
     (frontend_dir / "wolfhead-transparent.png").write_bytes(b"fake-png")
+    (frontend_dir / "_app").mkdir()
+    (frontend_dir / "_app" / "version.json").write_text('{"version":"test"}', encoding="utf-8")
     (frontend_dir / "static").mkdir()
     (frontend_dir / "static" / "extra.txt").write_text("extra asset", encoding="utf-8")
     monkeypatch.setattr(api_module, "_frontend_static_dir", lambda: str(frontend_dir))
+    caplog.set_level(logging.WARNING, logger="nymeria.triggers.api")
     client, _agent = _client(tmp_path, api_client_builder)
 
     root = client.get("/")
     fallback = client.get("/dashboard", headers={"accept": "text/html"})
+    app_asset = client.get("/_app/version.json")
     root_asset = client.get("/wolfhead-transparent.png")
     nested_asset = client.get("/static/extra.txt")
 
     assert root.status_code == 200
     assert fallback.status_code == 200
+    assert app_asset.status_code == 200
     assert root_asset.status_code == 200
     assert nested_asset.status_code == 200
     assert root.text == "<main>Nymeria SPA</main>"
     assert fallback.text == "<main>Nymeria SPA</main>"
+    assert app_asset.json() == {"version": "test"}
     assert root_asset.content == b"fake-png"
     assert nested_asset.text == "extra asset"
+    assert "Skipping frontend asset that conflicts with an API route: /_app" not in caplog.text
 
 
 def test_frontend_spa_fallback_preserves_api_and_asset_404s(
