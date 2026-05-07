@@ -470,12 +470,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         _init_firebase(settings.fcm_credentials_json)
 
     # Create FastAPI app
+    api_docs_enabled = settings.api_docs_enabled
     app = FastAPI(
         title="Nymeria API",
         description="Personal AI Assistant REST API with SSE streaming",
         version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if api_docs_enabled else None,
+        redoc_url="/redoc" if api_docs_enabled else None,
+        openapi_url="/openapi.json" if api_docs_enabled else None,
     )
 
     async def _close_provider_http_pools() -> None:

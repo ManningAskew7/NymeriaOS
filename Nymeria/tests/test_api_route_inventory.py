@@ -218,6 +218,26 @@ def test_public_health_does_not_require_auth(tmp_path: Path, api_client_builder)
     assert response.json()["status"] == "ok"
 
 
+def test_api_docs_and_schema_are_disabled_by_default(tmp_path: Path, api_client_builder):
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
+def test_api_docs_and_schema_can_be_enabled(tmp_path: Path, api_client_builder):
+    settings = api_client_builder.settings(tmp_path, api_docs_enabled=True)
+    agent = FakeAgent(tmp_path)
+    client = api_client_builder.client(agent, settings)
+
+    assert client.get("/docs").status_code == 200
+    assert client.get("/redoc").status_code == 200
+    schema = client.get("/openapi.json")
+    assert schema.status_code == 200
+    assert schema.json()["info"]["title"] == "Nymeria API"
+
+
 def test_frontend_spa_fallback_serves_browser_routes(
     tmp_path: Path, monkeypatch, api_client_builder
 ):

@@ -479,6 +479,19 @@ class Settings(BaseSettings):
     # Server Configuration
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000)
+    nymeria_debug: bool = Field(
+        default=False,
+        description="Enable debug-only server behavior such as FastAPI documentation routes",
+    )
+    nymeria_api_docs: bool = Field(
+        default=False,
+        description="Expose FastAPI Swagger, ReDoc, and OpenAPI schema routes",
+    )
+
+    @property
+    def api_docs_enabled(self) -> bool:
+        """Return whether interactive API docs/schema routes should be exposed."""
+        return self.nymeria_debug or self.nymeria_api_docs
 
     # Log file rotation (used by all modes for the persistent file handler)
     service_log_file: str = Field(

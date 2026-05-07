@@ -115,8 +115,7 @@ nymeria api
 You should see:
 ```
 Starting Nymeria API server on 0.0.0.0:8000...
-  - Docs: http://0.0.0.0:8000/docs
-  - ReDoc: http://0.0.0.0:8000/redoc
+  - API docs: disabled (set NYMERIA_API_DOCS=true to enable)
 ```
 
 ### Backend Validation

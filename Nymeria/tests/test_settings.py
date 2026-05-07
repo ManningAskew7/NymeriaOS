@@ -36,6 +36,33 @@ def test_user_timezone_defaults_to_utc(monkeypatch):
     assert settings.user_timezone == "UTC"
 
 
+def test_api_docs_are_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("NYMERIA_DEBUG", raising=False)
+    monkeypatch.delenv("NYMERIA_API_DOCS", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.api_docs_enabled is False
+
+
+def test_api_docs_are_enabled_by_explicit_flag(monkeypatch):
+    monkeypatch.delenv("NYMERIA_DEBUG", raising=False)
+    monkeypatch.setenv("NYMERIA_API_DOCS", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.api_docs_enabled is True
+
+
+def test_api_docs_are_enabled_by_debug_flag(monkeypatch):
+    monkeypatch.setenv("NYMERIA_DEBUG", "true")
+    monkeypatch.delenv("NYMERIA_API_DOCS", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.api_docs_enabled is True
+
+
 @pytest.mark.parametrize("max_tokens", [64000, 128000, MAX_LLM_OUTPUT_TOKENS])
 def test_llm_max_tokens_accepts_large_modern_output_limits(max_tokens):
     settings = Settings(_env_file=None, llm_max_tokens=max_tokens)
