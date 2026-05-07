@@ -3,6 +3,7 @@
 import logging
 import math
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
@@ -67,6 +68,9 @@ def get_agent() -> NymeriaAgent:
 
 
 def _frontend_static_dir() -> str:
+    package_frontend = Path(__file__).resolve().parents[1] / "frontend"
+    if package_frontend.exists():
+        return str(package_frontend)
     return os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
 
 

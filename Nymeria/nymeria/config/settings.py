@@ -58,10 +58,18 @@ def _get_project_root() -> Path:
 
 
 PROJECT_ROOT = _get_project_root()
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILENAMES = (".env", "config.env", ".env.docker")
 DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost"
 DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
 ReasoningEffort = Literal["low", "medium", "high"]
+
+
+def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
+    """Return environment files loaded for a runtime project root."""
+    root = project_root or PROJECT_ROOT
+    return tuple(root / filename for filename in ENV_FILENAMES)
 
 
 class _NonEmptyEnvSource(EnvSettingsSource):
@@ -84,7 +92,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=(str(PROJECT_ROOT / ".env"), str(PROJECT_ROOT / ".env.docker")),
+        env_file=tuple(str(path) for path in get_env_file_paths(PROJECT_ROOT)),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -365,7 +373,10 @@ class Settings(BaseSettings):
     def db_path(self) -> Path:
         """Get the SQLite database path."""
         if self.sqlite_path:
-            return Path(self.sqlite_path)
+            path = Path(self.sqlite_path).expanduser()
+            if path.is_absolute():
+                return path
+            return self.project_root / path
         return self.data_dir / "nymeria.db"
 
     # User Timezone
@@ -574,13 +585,16 @@ class Settings(BaseSettings):
         to project_root/data for local development.
         """
         if self.nymeria_data_dir:
-            return Path(self.nymeria_data_dir)
+            path = Path(self.nymeria_data_dir).expanduser()
+            if path.is_absolute():
+                return path
+            return self.project_root / path
         return self.project_root / "data"
 
     @property
     def soul_path(self) -> Path:
         """Get the path to the soul.md system prompt."""
-        return PROJECT_ROOT / "nymeria" / "config" / "soul.md"
+        return PACKAGE_ROOT / "config" / "soul.md"
 
     @property
     def logs_dir(self) -> Path:
@@ -615,7 +629,7 @@ class Settings(BaseSettings):
     @property
     def bundled_skills_dir(self) -> Path:
         """Get the repo-bundled skills directory (ships with Nymeria)."""
-        return PROJECT_ROOT / "nymeria" / "skills_bundled"
+        return PACKAGE_ROOT / "skills_bundled"
 
     @property
     def cors_origins_list(self) -> List[str]:

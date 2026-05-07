@@ -1,8 +1,11 @@
 # Nymeria Configuration
 
-All configuration is done via environment variables. The runtime loads `.env`
-and `.env.docker` if present. Copy `.env.docker.example` to `.env.docker` for
-the full template, or create `.env` manually for a lighter local setup.
+All configuration is done via environment variables. Source checkouts load
+`.env`, `config.env`, and `.env.docker` from the backend root if present.
+Packaged `nymeria` installs use `~/.nymeria/config.env` by default. Copy
+`.env.docker.example` to `.env.docker` for the full local template, run
+`nymeria init` for packaged setup, or create `.env` manually for a lighter
+source-checkout setup.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
@@ -78,7 +81,7 @@ Set the API key for your chosen provider:
 | `API_PORT` | `8000` | Server port |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost` | Comma-separated allowed CORS origins. Use `*` only for temporary troubleshooting on trusted networks |
 | `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
-| `NYMERIA_PROJECT_ROOT` | auto-detected | Override project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
+| `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
 
 Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`, then uses the
 frozen executable directory for PyInstaller builds, then walks upward looking
@@ -87,6 +90,12 @@ for Nymeria backend markers such as `run.py`, `docker-compose.yml`, and
 `nymeria/config/settings.py` remains only as a compatibility fallback. Set
 `NYMERIA_PROJECT_ROOT` explicitly if a packaged deployment separates the Python
 package from the checkout or runtime config directory.
+
+The `nymeria` console script bootstraps this automatically. When it runs from a
+source checkout or editable install, it uses the checkout's `Nymeria/` backend
+root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
+`config.env`, `data/`, and logs while loading bundled package assets such as
+`nymeria/config/soul.md` from the installed Python package.
 
 ### Browser Tools
 
@@ -263,7 +272,9 @@ In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`
 
 ## Data Directories
 
-Nymeria uses the following directories under the project root:
+Nymeria uses the following directories under `settings.data_dir`. In source
+checkouts that defaults to `Nymeria/data/`; in packaged installs it defaults to
+`~/.nymeria/data/`.
 
 | Directory | Purpose |
 |-----------|---------|

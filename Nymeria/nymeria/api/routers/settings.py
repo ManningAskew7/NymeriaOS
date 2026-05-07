@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import Settings
+from ...config.settings import get_env_file_paths
 from ...config.model_capabilities import get_max_output_tokens, list_all_models
 from ...core.accounts import AuthenticatedUser
 from ..schemas.settings import (
@@ -337,9 +338,9 @@ def create_settings_router(
                 logger.warning("Failed to resolve OpenRouter max output tokens: %s", e)
 
         source_env_files = [
-            str(settings.project_root / filename)
-            for filename in (".env", ".env.docker")
-            if (settings.project_root / filename).exists()
+            str(path)
+            for path in get_env_file_paths(settings.project_root)
+            if path.exists()
         ]
 
         response = LLMRuntimeDiagnosticsResponse(

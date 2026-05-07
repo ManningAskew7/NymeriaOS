@@ -12,6 +12,20 @@ Get Nymeria running in under 10 minutes.
 
 ## Step 1: Install Dependencies
 
+For beta package installs:
+
+```bash
+pipx install nymeria --index-url <private-index-url>
+nymeria init
+nymeria api
+```
+
+`nymeria init` prompts for the provider, model, and API key, writes
+`~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the first
+bootstrap admin token.
+
+For source-checkout development:
+
 ```bash
 cd Nymeria
 pip install -r requirements.txt
@@ -43,7 +57,8 @@ For a full local config template:
 cp .env.docker.example .env.docker
 ```
 
-Or create `.env` manually for a lighter local setup. The runtime loads both `.env` and `.env.docker` if present.
+Or create `.env` manually for a lighter local setup. The runtime loads `.env`,
+`config.env`, and `.env.docker` if present.
 
 ## Step 3: Set Your API Keys
 
@@ -77,6 +92,12 @@ OPENROUTER_API_KEY=sk-or-...your-key-here...
 
 ```bash
 python run.py api
+```
+
+When installed as a package, use:
+
+```bash
+nymeria api
 ```
 
 You should see:
