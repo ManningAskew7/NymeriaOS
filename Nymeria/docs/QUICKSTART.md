@@ -173,6 +173,9 @@ Start chatting with Nymeria. Here are some things to try:
 
 ## Troubleshooting
 
+For beta install diagnostics, provider/key failures, database locks, and
+`nymeria doctor` output, see [BETA_TROUBLESHOOTING.md](./BETA_TROUBLESHOOTING.md).
+
 ### "Invalid API key" / 401 from the desktop app
 
 The legacy `NYMERIA_API_KEY` shared key was retired. Authentication now uses per-user account tokens. Read `<data_dir>/BOOTSTRAP_TOKEN.txt` (written automatically on the first API boot) for the bootstrap admin token. To mint another user's token: `python run.py users add <email> --role user --id <slug>`. Both flows are documented in `docs/accounts.md`.
