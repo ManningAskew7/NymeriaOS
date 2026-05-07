@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nymeria"
+dynamic = ["version"]
+description = "Personal AI assistant platform built on LangGraph, FastAPI, and local-first persistence."
+readme = { file = "docs/README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Manning Askew", email = "160990142+ManningAskew7@users.noreply.github.com" },
+]
+keywords = ["ai-assistant", "langgraph", "fastapi", "mcp", "automation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: End Users/Desktop",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Communications :: Chat",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "langchain>=0.3.0",
+  "langchain-core>=0.3.0",
+  "langchain-openai>=0.2.0",
+  "langchain-anthropic>=0.2.0",
+  "langgraph>=0.2.0",
+  "langgraph-checkpoint>=0.2.0",
+  "langgraph-checkpoint-sqlite>=1.0.0",
+  "aiosqlite>=0.20.0",
+  "sqlite-vec>=0.1.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "sse-starlette>=2.1.0",
+  "pydantic>=2.9.0",
+  "pydantic-settings>=2.6.0",
+  "python-dotenv>=1.0.0",
+  "httpx>=0.27.0",
+  "requests>=2.31.0",
+  "PyYAML>=6.0",
+  "python-multipart>=0.0.12",
+  "rich>=13.9.0",
+  "prompt_toolkit>=3.0.0",
+  "mcp>=1.2.0",
+  "discord.py>=2.3.0",
+  "twitchio>=3.2.1",
+  "python-telegram-bot[rate-limiter]>=22.0",
+  "cryptography>=42.0.0",
+  "google-api-python-client>=2.100.0",
+  "google-auth-oauthlib>=1.1.0",
+  "google-genai>=1.0.0",
+  "pydub>=0.25.1",
+  "openpyxl>=3.1.0",
+  "feedparser>=6.0.0",
+]
+
+[project.optional-dependencies]
+postgres = [
+  "langgraph-checkpoint-postgres>=2.0.0",
+  "psycopg[binary]>=3.2.0",
+  "psycopg-pool>=3.2.0",
+]
+redis = [
+  "redis>=5.0.0",
+]
+voice = [
+  "pydub>=0.25.1",
+]
+browser = [
+  "playwright",
+  "beautifulsoup4",
+]
+firebase = [
+  "firebase-admin>=6.0.0",
+]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-cov>=7.0.0",
+  "ruff>=0.15.0",
+]
+all = [
+  "langgraph-checkpoint-postgres>=2.0.0",
+  "psycopg[binary]>=3.2.0",
+  "psycopg-pool>=3.2.0",
+  "redis>=5.0.0",
+  "pydub>=0.25.1",
+  "playwright",
+  "beautifulsoup4",
+  "firebase-admin>=6.0.0",
+  "pytest>=8.0.0",
+  "pytest-cov>=7.0.0",
+  "ruff>=0.15.0",
+]
+
+[project.scripts]
+nymeria = "nymeria.cli_entry:main"
+
+[project.urls]
+Homepage = "https://github.com/ManningAskew7/NymeriaOS"
+Repository = "https://github.com/ManningAskew7/NymeriaOS"
+Documentation = "https://github.com/ManningAskew7/NymeriaOS/tree/main/Nymeria/docs"
+
+[tool.setuptools.dynamic]
+version = { attr = "nymeria.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nymeria", "nymeria.*"]
+
+[tool.setuptools.package-data]
+nymeria = [
+  "agents/*.md",
+  "config/*.md",
+  "frontend/**/*",
+  "skills_bundled/*/SKILL.md",
+  "triggers/**/*.md",
+  "vendor/react_agent/*.md",
+]

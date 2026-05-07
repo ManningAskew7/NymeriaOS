@@ -17,12 +17,22 @@ cd Nymeria
 pip install -r requirements.txt
 ```
 
+From a source checkout, you can also install the backend package in editable
+mode. This uses `pyproject.toml` and keeps the `nymeria` package importable
+while you work:
+
+```bash
+pip install -e .
+```
+
 SQLite is the default backend and needs no extra packages. If you want local
 development to use PostgreSQL instead, install the Postgres checkpoint extras
 after the base dependencies:
 
 ```bash
 pip install -r requirements-postgres.txt
+# or, when using the package metadata:
+pip install -e ".[postgres]"
 ```
 
 ## Step 2: Configure Environment
@@ -84,6 +94,8 @@ tests, or coverage. Docker production images intentionally omit `pytest`,
 
 ```bash
 pip install -r requirements-dev.txt
+# or, when using the package metadata:
+pip install -e ".[dev]"
 python -m ruff check nymeria tests run.py
 python -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-under=38
 ```
