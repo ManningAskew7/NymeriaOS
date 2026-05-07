@@ -140,16 +140,10 @@ def test_default_graph_excludes_capability_expansion_tools():
     tools, _ = agent._select_tools_for_graph("u1", "t1")
     names = {tool.name for tool in tools}
 
-    from nymeria.tools import (
-        CAPABILITY_EXPANSION_TOOL_NAMES,
-        LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
-        OPTIONAL_TOOLS,
-    )
+    from nymeria.tools import CAPABILITY_EXPANSION_TOOL_NAMES
 
-    assert {"web_search", "consult", "notify"}.issubset(names)
+    assert {"bash_execute", "file_read", "notify"}.issubset(names)
     assert names.isdisjoint(CAPABILITY_EXPANSION_TOOL_NAMES)
-    assert names.isdisjoint(LOCAL_SYSTEM_ACCESS_TOOL_NAMES)
-    assert LOCAL_SYSTEM_ACCESS_TOOL_NAMES.issubset(OPTIONAL_TOOLS)
 
 
 def test_build_agent_config_uses_callable_iteration_limit():

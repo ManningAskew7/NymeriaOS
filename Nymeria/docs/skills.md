@@ -14,7 +14,7 @@ A skill is a directory:
 ```
 my-skill/
 ├── SKILL.md              REQUIRED: YAML frontmatter + markdown body
-├── scripts/              optional: invoked via bash_execute when enabled
+├── scripts/              optional: invoked via the existing bash_execute tool
 ├── references/           optional: markdown files the agent reads on demand
 └── assets/               optional: path-only, never auto-read
 ```
@@ -38,9 +38,6 @@ Step 1: …
 A skill **does not register new Python tools** or Pydantic schemas. It is
 text + an advisory whitelist over Nymeria's *existing* tools. The body typically
 tells the agent to `file_read` a reference file or `bash_execute` a script.
-Those local shell/file tools are admin-only optional tools; a Skill Kit that
-needs them must declare them in `metadata.nymeria.required_tools`, and activation
-will still fail for non-admin users.
 
 In the UI, **Skill** means instructions only. **Skill Kit** means a Skill that
 also declares Nymeria tool dependencies in `metadata.nymeria.required_tools`.
@@ -124,9 +121,8 @@ Three layers:
    `SKILL.md` body is returned as a `ToolMessage`. Lives in conversation
    history only.
 3. **On demand:** `references/*.md` load only if the skill's body tells the
-   agent to `file_read` them and that tool is enabled. `scripts/*` run only if
-   the body tells the agent to `bash_execute` them and that tool is enabled.
-   `assets/` are never auto-read.
+   agent to `file_read` them. `scripts/*` run only if the body tells the agent
+   to `bash_execute` them. `assets/` are never auto-read.
 
 This is what lets a user keep dozens of skills installed without context
 bloat — the agent pays tokens only for the skills it actually activates.
@@ -300,7 +296,7 @@ installs or thread enables through `skill_manage` use `source="skill_install"`.
 - Skill bodies execute nothing themselves — they are instructions to the
   model. Actual side effects go through Nymeria's existing tools
   (`bash_execute`, `file_write`, etc.) which already honor the thread's
-  enabled-tools, disabled-tools, and admin-only gates.
+  enabled-tools and disabled-tools lists.
 - Skill Kits can only bind tools that the same user could enable through
   `tool_enable(action="enable")`; invalid, unloadable, and admin-blocked
   dependencies fail strictly with no partial writes.

@@ -146,7 +146,7 @@ def test_thread_config_rejects_invalid_core_and_duplicate_callable_names(
     assert invalid_name.status_code == 400
     assert "Invalid callable name" in invalid_name.json()["detail"]
     assert core_name.status_code == 400
-    assert "conflicts with a built-in tool name" in core_name.json()["detail"]
+    assert "conflicts with a core tool name" in core_name.json()["detail"]
     assert duplicate.status_code == 409
     assert "already used by thread existing" in duplicate.json()["detail"]
 

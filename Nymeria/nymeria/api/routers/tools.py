@@ -260,7 +260,6 @@ def create_tools_router(
             ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
             ALL_TOOLS,
             DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-            LOCAL_SYSTEM_ACCESS_TOOL_NAMES,
             OPTIONAL_TOOLS,
         )
         from ...tools.metadata import MCP_SERVER_TOOL_METADATA
@@ -275,16 +274,6 @@ def create_tools_router(
         unknown = set(tool_names) - known
         if unknown:
             raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
-
-        blocked_defaults = LOCAL_SYSTEM_ACCESS_TOOL_NAMES.intersection(tool_names)
-        if blocked_defaults:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Local shell/file tools must be enabled per-thread by an "
-                    f"admin, not set as user defaults: {sorted(blocked_defaults)}"
-                ),
-            )
 
         if user.role != "admin":
             blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(tool_names)

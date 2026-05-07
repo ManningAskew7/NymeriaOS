@@ -195,4 +195,4 @@ def test_create_agent_thread_rejects_owner_duplicate_and_core_tool_conflict(
     assert duplicate.status_code == 409
     assert "already exists" in duplicate.json()["detail"]
     assert core_conflict.status_code == 400
-    assert "conflicts with a built-in tool name" in core_conflict.json()["detail"]
+    assert "conflicts with a core tool name" in core_conflict.json()["detail"]

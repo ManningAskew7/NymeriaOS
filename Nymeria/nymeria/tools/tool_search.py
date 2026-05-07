@@ -307,7 +307,7 @@ def bind_tools_for_thread(
     """
     from ..core.agent import get_current_agent
     from ..core.thread_config import ThreadConfig, TemporaryToolEntry
-    from . import ALL_TOOLS, LOCAL_SYSTEM_ACCESS_TOOL_NAMES
+    from . import ALL_TOOLS
     from .metadata import ToolCategory, get_all_tool_metadata, SecurityLevel
 
     agent = get_current_agent()
@@ -514,7 +514,6 @@ def bind_tools_for_thread(
         default_bound = {t.name for t in ALL_TOOLS}
     else:
         default_bound = set(default_tools_pref)
-    default_bound -= LOCAL_SYSTEM_ACCESS_TOOL_NAMES
 
     newly_added: List[str] = []       # new binding written to enabled_tools/temporary_tools
     refreshed: List[str] = []         # TTL'd tool whose expires_at was pushed out
@@ -785,8 +784,8 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
     if not valid:
         return f"[Error]: No valid tools to disable. Unknown: {', '.join(invalid)}"
 
-    # Guard against accidental core-tool lockout. Disabling web_search,
-    # consult, memory, or TODO tools can cripple the thread. Require an
+    # Guard against accidental core-tool lockout. Disabling bash_execute,
+    # file_read, tool_search, etc. can cripple the thread. Require an
     # explicit force=True opt-in — but still proceed with the non-core
     # subset (partial success), so mixed batches like disable([core, opt])
     # don't have their non-core portion blocked just because a core name

@@ -254,14 +254,15 @@ def create_thread_config_router(
         if request.callable_name is not None:
             if request.callable_name:
                 validate_callable_name(request.callable_name)
-                from ...tools import builtin_tool_names
+                from ...tools import ALL_TOOLS
 
-                if request.callable_name in builtin_tool_names():
+                core_tool_names = {t.name for t in ALL_TOOLS}
+                if request.callable_name in core_tool_names:
                     raise HTTPException(
                         status_code=400,
                         detail=(
                             f"Callable name '{request.callable_name}' "
-                            "conflicts with a built-in tool name"
+                            "conflicts with a core tool name"
                         ),
                     )
                 owned = set(agent.accounts_repo.list_threads_for_user(user_id))
