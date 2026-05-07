@@ -24,6 +24,7 @@ class ToolCategory(str, Enum):
     TRIGGER = "trigger"
     EMAIL = "email"
     BROWSER = "browser"
+    IMAGE = "image"
     CALENDAR = "calendar"
     GOOGLE_DOCS = "google_docs"
     _PRV_B = "_prv_b"
@@ -116,6 +117,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.TRIGGER, ("TRIGGER_TOOLS",)),
     (ToolCategory.EMAIL, ("OUTLOOK_TOOLS", "GMAIL_AUTH_TOOLS", "OUTLOOK_ATTACHMENT_TOOLS")),
     (ToolCategory.BROWSER, ("BROWSER_TOOLS",)),
+    (ToolCategory.IMAGE, ("IMAGE_GENERATION_TOOLS",)),
     (ToolCategory.CALENDAR, ("CALENDAR_TOOLS",)),
     (ToolCategory.GOOGLE_DOCS, ("GOOGLE_DOCS_TOOLS", "GOOGLE_SHEETS_TOOLS")),
     (ToolCategory._PRV_B, ("_PRV_TOOLS_B",)),
@@ -219,7 +221,94 @@ _TOOL_CONFIG_SCHEMAS: Mapping[str, Dict[str, Any]] = {
                 "maximum": 600,
             }
         },
-    }
+    },
+    "image_generate": {
+        "type": "object",
+        "properties": {
+            "provider": {
+                "type": "string",
+                "title": "Provider",
+                "description": "Image generation provider. API keys are read from OPENAI_API_KEY or GEMINI_API_KEY.",
+                "enum": ["openai", "gemini"],
+                "default": "openai",
+            },
+            "native_context_enabled": {
+                "type": "boolean",
+                "title": "Native Image Context",
+                "description": "Let vision-capable chat models inspect generated images on the next reasoning step.",
+                "default": True,
+            },
+            "openai_model": {
+                "type": "string",
+                "title": "OpenAI Model",
+                "description": "OpenAI GPT Image model used when Provider is openai.",
+                "enum": ["gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"],
+                "default": "gpt-image-2",
+            },
+            "openai_size": {
+                "type": "string",
+                "title": "OpenAI Size",
+                "description": "Image size for OpenAI generation.",
+                "enum": [
+                    "auto",
+                    "1024x1024",
+                    "1536x1024",
+                    "1024x1536",
+                    "2048x2048",
+                    "2048x1152",
+                    "3840x2160",
+                    "2160x3840",
+                ],
+                "default": "auto",
+            },
+            "openai_quality": {
+                "type": "string",
+                "title": "OpenAI Quality",
+                "description": "Rendering quality for OpenAI generation.",
+                "enum": ["auto", "low", "medium", "high"],
+                "default": "auto",
+            },
+            "openai_output_format": {
+                "type": "string",
+                "title": "OpenAI Output Format",
+                "description": "File format for OpenAI output.",
+                "enum": ["png", "jpeg", "webp"],
+                "default": "png",
+            },
+            "openai_moderation": {
+                "type": "string",
+                "title": "OpenAI Moderation",
+                "description": "Moderation strictness for OpenAI image generation.",
+                "enum": ["auto", "low"],
+                "default": "auto",
+            },
+            "gemini_model": {
+                "type": "string",
+                "title": "Gemini Model",
+                "description": "Gemini Nano Banana model used when Provider is gemini.",
+                "enum": [
+                    "gemini-3-pro-image-preview",
+                    "gemini-3.1-flash-image-preview",
+                    "gemini-2.5-flash-image",
+                ],
+                "default": "gemini-3-pro-image-preview",
+            },
+            "gemini_aspect_ratio": {
+                "type": "string",
+                "title": "Gemini Aspect Ratio",
+                "description": "Aspect ratio for Gemini image generation.",
+                "enum": ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"],
+                "default": "1:1",
+            },
+            "gemini_image_size": {
+                "type": "string",
+                "title": "Gemini Image Size",
+                "description": "Output size for Gemini 3 Pro Image and Gemini 3.1 Flash Image. Ignored by Gemini 2.5 Flash Image.",
+                "enum": ["auto", "1K", "2K", "4K"],
+                "default": "auto",
+            },
+        },
+    },
 }
 
 _DESCRIPTION_STOP_MARKERS = (
@@ -308,6 +397,8 @@ def _infer_security_level(
         return SecurityLevel.SAFE if tool_name in _EMAIL_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
     if category == ToolCategory.BROWSER:
         return SecurityLevel.SAFE if tool_name in _BROWSER_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
+    if category == ToolCategory.IMAGE:
+        return SecurityLevel.MODERATE
     if category == ToolCategory.CALENDAR:
         return SecurityLevel.SAFE if tool_name in _CALENDAR_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
     if category == ToolCategory.GOOGLE_DOCS:

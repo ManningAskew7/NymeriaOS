@@ -26,6 +26,7 @@ from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
 from ...core.tool_reload import latest_tool_batch_queued_reload
+from ...core.generated_image_context import hydrate_generated_images_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +525,31 @@ def _copy_message_with_content(message: BaseMessage, content: Any) -> BaseMessag
     return message.copy(update={"content": content})
 
 
+def _message_content_preview(content: Any, max_chars: int = 150) -> str:
+    """Build a debug preview without dumping inline base64 image data."""
+    if not content:
+        return ""
+
+    if isinstance(content, list):
+        redacted: list[Any] = []
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "image_url"
+                and isinstance(block.get("image_url"), dict)
+            ):
+                image_url = dict(block["image_url"])
+                if isinstance(image_url.get("url"), str) and image_url["url"].startswith("data:image/"):
+                    image_url["url"] = "<inline image data redacted>"
+                redacted.append({**block, "image_url": image_url})
+            else:
+                redacted.append(block)
+        content_str = str(redacted)
+    else:
+        content_str = content if isinstance(content, str) else str(content)
+    return content_str[:max_chars].replace("\n", " ")
+
+
 def _sanitize_messages_for_anthropic(
     messages: List[BaseMessage],
     llm_config: Optional[LLMConfig],
@@ -566,7 +592,8 @@ def create_agent_node(
         Agent node function compatible with LangGraph
     """
     def _prepare_messages(state: AgentState) -> List[BaseMessage]:
-        messages = _sanitize_messages_for_anthropic(state["messages"], llm_config)
+        messages = hydrate_generated_images_for_llm(state["messages"], llm_config)
+        messages = _sanitize_messages_for_anthropic(messages, llm_config)
 
         # Summary line at INFO (always visible)
         tool_rounds = sum(1 for m in messages if isinstance(m, AIMessage) and m.tool_calls)
@@ -578,8 +605,7 @@ def create_agent_node(
                 msg_type = type(msg).__name__
                 content_preview = ""
                 if hasattr(msg, 'content') and msg.content:
-                    content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
-                    content_preview = content_str[:150].replace('\n', ' ')
+                    content_preview = _message_content_preview(msg.content)
                 tool_info = ""
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
                     tool_names = [tc.get('name', '?') for tc in msg.tool_calls]

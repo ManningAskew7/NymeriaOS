@@ -261,6 +261,28 @@
     configInputs = { ...unified.userConfig };
   }
 
+  function getConfigFields(tool: UnifiedTool | null): Record<string, Record<string, unknown>> {
+    const schema = tool?.configSchema as Record<string, unknown> | undefined;
+    if (!schema) return {};
+
+    const properties = schema.properties;
+    if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+      return properties as Record<string, Record<string, unknown>>;
+    }
+
+    return schema as Record<string, Record<string, unknown>>;
+  }
+
+  function isConfigRequired(tool: UnifiedTool, key: string, field: Record<string, unknown>): boolean {
+    const required = (tool.configSchema as Record<string, unknown> | undefined)?.required;
+    if (Array.isArray(required)) return required.includes(key);
+    return Boolean(field.required);
+  }
+
+  function configValue(key: string, field: Record<string, unknown>, fallback: unknown = ''): unknown {
+    return configInputs[key] ?? field.default ?? fallback;
+  }
+
   function resetDescription() {
     if (editingBuiltinTool) {
       descriptionInput = editingBuiltinTool.defaultDescription;
@@ -279,7 +301,7 @@
     const nextDescription = trimmed === tool.defaultDescription ? null : trimmed;
     const descriptionChanged = nextDescription !== (tool.customDescription ?? null);
 
-    const hasConfigSchema = tool.configSchema && Object.keys(tool.configSchema).length > 0;
+    const hasConfigSchema = Object.keys(getConfigFields(tool)).length > 0;
     const configChanged = hasConfigSchema &&
       JSON.stringify(configInputs) !== JSON.stringify(tool.userConfig);
 
@@ -768,7 +790,8 @@
   <!-- Edit built-in tool modal (description override + dynamic configSchema) -->
   {#if editingBuiltinTool}
     {@const tool = editingBuiltinTool}
-    {@const hasConfigSchema = tool.configSchema && Object.keys(tool.configSchema).length > 0}
+    {@const configFields = getConfigFields(tool)}
+    {@const hasConfigSchema = Object.keys(configFields).length > 0}
     <div class="modal-overlay">
       <button
         class="modal-backdrop-button"
@@ -826,12 +849,12 @@
             <div class="config-section">
               <span class="field-label">Configuration</span>
               <div class="config-form">
-                {#each Object.entries(tool.configSchema ?? {}) as [key, schema]}
+                {#each Object.entries(configFields) as [key, schema]}
                   {@const schemaObj = schema as Record<string, unknown>}
                   <div class="form-group">
                     <label for={`config-${key}`}>
                       {schemaObj.title || key}
-                      {#if schemaObj.required}
+                      {#if isConfigRequired(tool, key, schemaObj)}
                         <span class="required">*</span>
                       {/if}
                     </label>
@@ -844,7 +867,7 @@
                         <input
                           type="checkbox"
                           id={`config-${key}`}
-                          checked={configInputs[key] as boolean || false}
+                          checked={Boolean(configValue(key, schemaObj, false))}
                           onchange={(e) => updateConfigValue(key, (e.target as HTMLInputElement).checked)}
                         />
                         <span>Enabled</span>
@@ -853,16 +876,16 @@
                       <input
                         type="number"
                         id={`config-${key}`}
-                        value={configInputs[key] as number || schemaObj.default || 0}
-                        min={schemaObj.minimum as number || undefined}
-                        max={schemaObj.maximum as number || undefined}
+                        value={configValue(key, schemaObj, 0) as number}
+                        min={(schemaObj.minimum as number | undefined) ?? undefined}
+                        max={(schemaObj.maximum as number | undefined) ?? undefined}
                         step={schemaObj.type === 'integer' ? 1 : 0.1}
-                        onchange={(e) => updateConfigValue(key, parseFloat((e.target as HTMLInputElement).value))}
+                        onchange={(e) => updateConfigValue(key, Number((e.target as HTMLInputElement).value))}
                       />
                     {:else if schemaObj.enum}
                       <select
                         id={`config-${key}`}
-                        value={configInputs[key] as string || schemaObj.default || ''}
+                        value={configValue(key, schemaObj, '') as string}
                         onchange={(e) => updateConfigValue(key, (e.target as HTMLSelectElement).value)}
                       >
                         {#each (schemaObj.enum as string[]) as option}
@@ -873,7 +896,7 @@
                       <input
                         type="text"
                         id={`config-${key}`}
-                        value={configInputs[key] as string || schemaObj.default || ''}
+                        value={configValue(key, schemaObj, '') as string}
                         placeholder={schemaObj.placeholder as string || ''}
                         onchange={(e) => updateConfigValue(key, (e.target as HTMLInputElement).value)}
                       />

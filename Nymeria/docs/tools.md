@@ -90,6 +90,23 @@ Not loaded by default. Enable per-thread when the agent needs precise text edits
 |---|------|----------|----------|-------------|
 | 1 | `file_edit` | Core | MODERATE | Exact, all-or-nothing edits to existing text files |
 
+### Optional: Image Generation (1)
+
+Not loaded by default. Enable per-thread, or promote to Core in the Desktop global Tools settings. The tool writes generated images under `NYMERIA_WORKSPACE_DIR/image-generation/`, returns a workspace artifact via `[attach:/path]`, and stores only small artifact metadata in chat history. On the next reasoning step, Nymeria hydrates recent generated images into native vision input for supported chat providers: Anthropic vision models and OpenAI/OpenRouter models using `OPENAI_API_MODE=responses`. Other provider modes still see the file path and artifact.
+
+API keys follow the existing provider-key pattern: set `OPENAI_API_KEY` for OpenAI GPT Image models and `GEMINI_API_KEY` for Gemini/Nano Banana models. The Desktop edit dialog configures provider/model/output options, not secret storage.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `image_generate` | Image | MODERATE | Generate a new image from a prompt using OpenAI `gpt-image-*` or Gemini Nano Banana models, attach it to the chat, and expose it to vision-capable follow-up reasoning |
+
+Configurable options:
+
+- `provider`: `openai` or `gemini`
+- OpenAI: `openai_model`, `openai_size`, `openai_quality`, `openai_output_format`, `openai_moderation`
+- Gemini: `gemini_model`, `gemini_aspect_ratio`, `gemini_image_size`
+- `native_context_enabled`: whether supported chat models should inspect generated images natively on the next LLM call
+
 ### Optional: _PRV_A and Sheets Tools (8 + 1 attachment)
 
 Google Sheets-based tools for Acme Hardware RFQ processing. Generic `google_sheets_*` tools use the current user's Google OAuth. The dedicated `_prv_a_*` reference tools live in the `nymeria/plugins/_prv_a/` package and use the app-level `_PRV_A_SERVICE_ACCOUNT_FILE` service account with 5-minute in-memory caching, so _PRV_A lookups do not depend on whichever user is authenticated for Google Docs. Products, Acme, and Vendor tools share a batch-search helper (`plugins/_prv_a/sheet_lookup.py`); Acme and Supplier have domain-specific search logic. The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module; it's placed here as a general-purpose extraction utility.

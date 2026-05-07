@@ -178,6 +178,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **Google Calendar** | 15 | OAuth, auth reset, events CRUD, RSVP, free/busy, colors |
 | **Twitch** | 23 | Chat, moderation, stream info, polls, predictions, clips, channel management |
 | **Triggers** | 6 | Create, list, update, delete, inspect, source catalog |
+| **Image Generation** | 1 | OpenAI GPT Image and Gemini Nano Banana prompt-to-image generation with workspace artifacts |
 | **_PRV_A/Sheets** | 9 | Google Sheets CRUD, supplier lookup, product search, lifecycle status, pricing |
 | **Watchdog** | 4 | Activity feed, cross-thread dispatch, cross-thread notepad, TODO overview |
 | **Thread Spawning** | 1 | Dynamic callable thread creation with full config |

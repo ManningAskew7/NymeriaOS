@@ -91,6 +91,7 @@ from .search_mcp import (
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
+from .image_generation import image_generate, IMAGE_GENERATION_TOOLS
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -135,6 +136,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SKILL_KIT_CREATE_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
+    + IMAGE_GENERATION_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -243,6 +245,8 @@ __all__ = [
     "file_write",
     "file_edit",
     "FILE_EDIT_TOOLS",
+    "image_generate",
+    "IMAGE_GENERATION_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

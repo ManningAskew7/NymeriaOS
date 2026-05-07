@@ -834,7 +834,7 @@ export interface CustomToolTestResponse {
 // Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'calendar' | 'google_docs' | 'custom' | 'mcp_server';
+export type ToolCategory = 'core' | 'memory' | 'profile' | 'notepad' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'image' | 'calendar' | 'google_docs' | 'custom' | 'mcp_server';
 export type ToolType = 'builtin' | 'custom' | 'mcp_server';
 
 export interface ToolCategoriesResponse {

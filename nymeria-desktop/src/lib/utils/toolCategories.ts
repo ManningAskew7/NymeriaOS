@@ -50,6 +50,11 @@ export const CATEGORY_INFO: Record<string, ToolCategoryInfo> = {
     icon: 'globe',
     description: 'Playwright browser automation tools for web interaction',
   },
+  image: {
+    name: 'Image Generation',
+    icon: 'image',
+    description: 'Image generation tools for creating workspace image artifacts',
+  },
   calendar: {
     name: 'Google Calendar',
     icon: 'calendar',
@@ -85,6 +90,7 @@ export const CATEGORY_ORDER = [
   'trigger',
   'email',
   'browser',
+  'image',
   'calendar',
   'skills',
   'self_modify',
