@@ -59,7 +59,6 @@ _bot_admin_endpoint_rate_limiter = SlidingWindowRateLimiter()
 _AUTH_FAILURE_RATE_LIMIT = 10
 _AUTH_FAILURE_RATE_WINDOW_SECONDS = 60.0
 _auth_failure_rate_limiter = SlidingWindowRateLimiter()
-_FRONTEND_ROOT_ASSET_NAMES = ("favicon.png", "icon-16.png", "icon-32.png", "icon-80.png", "manifest.xml")
 _FRONTEND_RESERVED_PREFIXES = {"_app", "docs", "openapi.json", "redoc"}
 
 
@@ -72,9 +71,16 @@ def get_agent() -> NymeriaAgent:
 
 def _frontend_static_dir() -> str:
     package_frontend = Path(__file__).resolve().parents[1] / "frontend"
+    if (package_frontend / "index.html").is_file():
+        return str(package_frontend)
+
+    source_frontend = Path(__file__).resolve().parents[2] / "frontend"
+    if (source_frontend / "index.html").is_file():
+        return str(source_frontend)
+
     if package_frontend.exists():
         return str(package_frontend)
-    return os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
+    return str(source_frontend)
 
 
 def _first_path_segment(path: str) -> str:
@@ -107,42 +113,56 @@ def _request_accepts_html(request: Request) -> bool:
 
 
 def _register_frontend_routes(app: FastAPI, frontend_dir: str) -> None:
-    index_path = os.path.join(frontend_dir, "index.html")
-    if not os.path.isfile(index_path):
+    frontend_path = Path(frontend_dir)
+    index_path = frontend_path / "index.html"
+    if not index_path.is_file():
         logger.warning("Frontend directory exists but index.html is missing: %s", frontend_dir)
         return
 
     logger.info("Serving frontend from %s", frontend_dir)
 
-    # Serve SvelteKit's _app/ assets and other static files.
-    _app_dir = os.path.join(frontend_dir, "_app")
-    if os.path.isdir(_app_dir):
-        app.mount("/_app", StaticFiles(directory=_app_dir), name="frontend-assets")
+    api_prefixes = _registered_api_prefixes(app)
 
-    # Serve static assets from frontend root (icons, favicon, manifest, etc.).
-    for asset_name in _FRONTEND_ROOT_ASSET_NAMES:
-        asset_path = os.path.join(frontend_dir, asset_name)
-        if os.path.isfile(asset_path):
-            def _make_asset_handler(p: str):
+    # Serve SvelteKit's _app/ assets and other static files.
+    app_dir = frontend_path / "_app"
+    if app_dir.is_dir():
+        app.mount("/_app", StaticFiles(directory=str(app_dir)), name="frontend-assets")
+
+    # Serve static assets emitted at the frontend root (icons, logos, manifests,
+    # and any copied static/ files) without swallowing API 404s.
+    for asset_path in sorted(frontend_path.iterdir()):
+        asset_name = asset_path.name
+        if asset_name == "index.html" or asset_name.startswith("."):
+            continue
+        if _first_path_segment(asset_name) in api_prefixes:
+            logger.warning("Skipping frontend asset that conflicts with an API route: /%s", asset_name)
+            continue
+
+        if asset_path.is_dir():
+            app.mount(
+                f"/{asset_name}",
+                StaticFiles(directory=str(asset_path)),
+                name=f"frontend-{asset_name}",
+            )
+        elif asset_path.is_file():
+            def _make_asset_handler(p: Path):
                 async def handler():
-                    return FileResponse(p)
+                    return FileResponse(str(p))
                 return handler
 
             app.get(f"/{asset_name}", include_in_schema=False)(_make_asset_handler(asset_path))
-
-    api_prefixes = _registered_api_prefixes(app)
 
     # SPA entry point and browser-route fallback. These are registered after
     # all API routers so concrete API routes still win.
     @app.get("/", include_in_schema=False)
     async def serve_spa_root():
-        return FileResponse(index_path)
+        return FileResponse(str(index_path))
 
     @app.get("/{path:path}", include_in_schema=False)
     async def serve_spa_fallback(path: str, request: Request):
         if not _request_accepts_html(request) or _is_api_like_frontend_miss(path, api_prefixes):
             raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(index_path)
+        return FileResponse(str(index_path))
 
 
 # ============================================================================

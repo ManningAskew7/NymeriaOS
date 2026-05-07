@@ -244,16 +244,25 @@ def test_frontend_spa_fallback_serves_browser_routes(
     frontend_dir = tmp_path / "frontend"
     frontend_dir.mkdir()
     (frontend_dir / "index.html").write_text("<main>Nymeria SPA</main>", encoding="utf-8")
+    (frontend_dir / "wolfhead-transparent.png").write_bytes(b"fake-png")
+    (frontend_dir / "static").mkdir()
+    (frontend_dir / "static" / "extra.txt").write_text("extra asset", encoding="utf-8")
     monkeypatch.setattr(api_module, "_frontend_static_dir", lambda: str(frontend_dir))
     client, _agent = _client(tmp_path, api_client_builder)
 
     root = client.get("/")
     fallback = client.get("/dashboard", headers={"accept": "text/html"})
+    root_asset = client.get("/wolfhead-transparent.png")
+    nested_asset = client.get("/static/extra.txt")
 
     assert root.status_code == 200
     assert fallback.status_code == 200
+    assert root_asset.status_code == 200
+    assert nested_asset.status_code == 200
     assert root.text == "<main>Nymeria SPA</main>"
     assert fallback.text == "<main>Nymeria SPA</main>"
+    assert root_asset.content == b"fake-png"
+    assert nested_asset.text == "extra asset"
 
 
 def test_frontend_spa_fallback_preserves_api_and_asset_404s(
@@ -272,6 +281,35 @@ def test_frontend_spa_fallback_preserves_api_and_asset_404s(
     assert api_miss.status_code == 404
     assert asset_miss.status_code == 404
     assert json_miss.status_code == 404
+
+
+def test_frontend_static_dir_prefers_packaged_frontend_with_index(
+    tmp_path: Path, monkeypatch
+):
+    fake_api_file = tmp_path / "site-packages" / "nymeria" / "triggers" / "api.py"
+    package_frontend = fake_api_file.parents[1] / "frontend"
+    source_frontend = fake_api_file.parents[2] / "frontend"
+    package_frontend.mkdir(parents=True)
+    source_frontend.mkdir(parents=True)
+    (package_frontend / "index.html").write_text("package", encoding="utf-8")
+    (source_frontend / "index.html").write_text("source", encoding="utf-8")
+    monkeypatch.setattr(api_module, "__file__", str(fake_api_file))
+
+    assert api_module._frontend_static_dir() == str(package_frontend)
+
+
+def test_frontend_static_dir_falls_back_to_source_frontend_when_package_is_empty(
+    tmp_path: Path, monkeypatch
+):
+    fake_api_file = tmp_path / "checkout" / "nymeria" / "triggers" / "api.py"
+    package_frontend = fake_api_file.parents[1] / "frontend"
+    source_frontend = fake_api_file.parents[2] / "frontend"
+    package_frontend.mkdir(parents=True)
+    source_frontend.mkdir(parents=True)
+    (source_frontend / "index.html").write_text("source", encoding="utf-8")
+    monkeypatch.setattr(api_module, "__file__", str(fake_api_file))
+
+    assert api_module._frontend_static_dir() == str(source_frontend)
 
 
 def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, api_client_builder):
