@@ -51,6 +51,7 @@ Set the API key for your chosen provider:
 | `ANTHROPIC_API_KEY` | Anthropic | If using `anthropic` provider |
 | `ANTHROPIC_DIRECT_API_KEY` | Anthropic | Optional direct Anthropic `sk-ant-*` key. Used only when the effective Anthropic base URL is empty/direct; CLIProxy Anthropic calls continue using `ANTHROPIC_API_KEY` (`cpx-*`). |
 | `OPENAI_API_KEY` | OpenAI | If using `openai` provider |
+| `GEMINI_API_KEY` | Google Gemini | Required for Gemini image generation, Gemini TTS, and Gemini attachment extraction |
 | `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
 | `EMBEDDING_API_KEY` | OpenAI-compatible embeddings | Optional; enables semantic memory/skill search. Keep separate from CLIProxy `OPENAI_API_KEY` values. |
 | `EMBEDDING_BASE_URL` | OpenAI-compatible embeddings | Optional custom `/v1` base URL for embeddings |
