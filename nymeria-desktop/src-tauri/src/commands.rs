@@ -2,9 +2,12 @@
 
 use crate::AppState;
 use serde::Serialize;
-use std::process::Command;
+use std::process::{Child, Command};
+
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Serialize)]
@@ -125,13 +128,14 @@ pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Re
 
     let config_path = cliproxy_dir.join("config.yaml");
 
-    Command::new(&cliproxy_exe)
+    let mut command = Command::new(&cliproxy_exe);
+    command
         .arg(flag)
         .arg("-config")
         .arg(&config_path)
-        .current_dir(&cliproxy_dir)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
+        .current_dir(&cliproxy_dir);
+
+    spawn_no_window(&mut command)
         .map_err(|e| format!("Failed to start login: {}", e))?;
 
     Ok(())
@@ -174,4 +178,11 @@ fn query_cliproxy_sessions() -> Result<Vec<CLIProxySession>, String> {
     }
 
     Ok(sessions)
+}
+
+fn spawn_no_window(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command.spawn()
 }

@@ -4,14 +4,15 @@
 //! even on crash. All processes are spawned without console windows.
 
 use shared_child::SharedChild;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
@@ -21,6 +22,7 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Clone, Debug)]
@@ -195,12 +197,13 @@ impl ProcessManager {
         std::fs::create_dir_all(&self.backend_root)
             .map_err(|e| format!("Failed to create backend runtime root: {}", e))?;
 
-        let child = Command::new(&backend_exe)
+        let mut command = Command::new(&backend_exe);
+        command
             .arg("api")
             .current_dir(&self.backend_root)
-            .env("NYMERIA_PROJECT_ROOT", &self.backend_root)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+            .env("NYMERIA_PROJECT_ROOT", &self.backend_root);
+
+        let child = spawn_no_window(&mut command)
             .map_err(|e| format!("Failed to spawn backend API: {}", e))?;
 
         let shared = self.wrap_child(child)?;
@@ -214,12 +217,13 @@ impl ProcessManager {
         std::fs::create_dir_all(&self.backend_root)
             .map_err(|e| format!("Failed to create backend runtime root: {}", e))?;
 
-        let child = Command::new(&backend_exe)
+        let mut command = Command::new(&backend_exe);
+        command
             .arg("worker")
             .current_dir(&self.backend_root)
-            .env("NYMERIA_PROJECT_ROOT", &self.backend_root)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+            .env("NYMERIA_PROJECT_ROOT", &self.backend_root);
+
+        let child = spawn_no_window(&mut command)
             .map_err(|e| format!("Failed to spawn worker: {}", e))?;
 
         let shared = self.wrap_child(child)?;
@@ -246,12 +250,13 @@ impl ProcessManager {
 
         let config_path = cliproxy_dir.join("config.yaml");
 
-        let child = Command::new(&cliproxy_exe)
+        let mut command = Command::new(&cliproxy_exe);
+        command
             .arg("-config")
             .arg(&config_path)
-            .current_dir(&cliproxy_dir)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+            .current_dir(&cliproxy_dir);
+
+        let child = spawn_no_window(&mut command)
             .map_err(|e| format!("Failed to spawn CLIProxy: {}", e))?;
 
         let shared = self.wrap_child(child)?;
@@ -342,7 +347,7 @@ impl ProcessManager {
 
         // Fallback: try running via Python directly (dev mode)
         Err(format!(
-            "Backend executable not found at {}. Run build_exe.bat first.",
+            "Backend executable not found at {}. Build the PyInstaller backend first.",
             exe.display()
         ))
     }
@@ -389,4 +394,118 @@ fn default_user_project_root() -> Result<PathBuf, String> {
         .or_else(|| std::env::var_os("HOME"))
         .ok_or_else(|| "Cannot determine user profile directory".to_string())?;
     Ok(PathBuf::from(home).join(".nymeria"))
+}
+
+fn spawn_no_window(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command.spawn()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempTree {
+        path: PathBuf,
+    }
+
+    impl TempTree {
+        fn new() -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "nymeria-process-manager-test-{}-{}",
+                std::process::id(),
+                nanos
+            ));
+            fs::create_dir_all(&path).expect("create temp tree");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn touch(path: &Path) {
+        fs::create_dir_all(path.parent().expect("path has parent")).expect("create parent");
+        fs::write(path, b"").expect("write file");
+    }
+
+    #[test]
+    fn recognizes_source_checkout_root() {
+        let temp = TempTree::new();
+        touch(&temp.path.join("Nymeria").join("run.py"));
+        fs::create_dir_all(temp.path.join("nymeria-desktop")).expect("create desktop dir");
+
+        assert!(is_source_checkout_root(&temp.path));
+    }
+
+    #[test]
+    fn recognizes_bundled_backend_resource_root() {
+        let temp = TempTree::new();
+        touch(
+            &temp
+                .path
+                .join("Nymeria")
+                .join("dist")
+                .join("nymeria-backend.exe"),
+        );
+
+        assert!(has_bundled_backend(&temp.path));
+    }
+
+    #[test]
+    fn bundled_backend_path_matches_tauri_resource_target() {
+        let temp = TempTree::new();
+        let backend_exe = temp
+            .path
+            .join("Nymeria")
+            .join("dist")
+            .join("nymeria-backend.exe");
+        touch(&backend_exe);
+
+        let layout = RuntimeLayout::bundled_resource(temp.path.clone()).expect("bundled layout");
+        let manager = ProcessManager::new(layout);
+
+        assert_eq!(manager.backend_exe_path().expect("backend path"), backend_exe);
+    }
+
+    #[test]
+    fn source_backend_path_matches_pyinstaller_output() {
+        let temp = TempTree::new();
+        let backend_exe = temp
+            .path
+            .join("Nymeria")
+            .join("dist")
+            .join("nymeria-backend.exe");
+        touch(&backend_exe);
+
+        let layout = RuntimeLayout::source_checkout(temp.path.clone());
+        let manager = ProcessManager::new(layout);
+
+        assert_eq!(manager.backend_exe_path().expect("backend path"), backend_exe);
+    }
+
+    #[test]
+    fn checks_expected_tauri_resource_candidate_order() {
+        let exe_parent = PathBuf::from("C:/Program Files/Nymeria");
+
+        assert_eq!(
+            bundled_resource_candidates(&exe_parent),
+            vec![
+                exe_parent.join("resources"),
+                exe_parent.clone(),
+                exe_parent.join("_up_"),
+            ]
+        );
+    }
 }
