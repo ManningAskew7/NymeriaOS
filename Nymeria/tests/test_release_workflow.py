@@ -73,20 +73,23 @@ def test_release_workflow_builds_windows_desktop_installer() -> None:
     assert windows_job["runs-on"] == "windows-latest"
 
     commands = _run_commands(windows_job)
-    assert "npm run build" in commands
     assert any(
-        command.startswith(
-            "python -m PyInstaller nymeria-backend.spec --noconfirm --clean"
-        )
-        and "dist/nymeria-backend.exe" in command
+        step.get("uses") == "actions/setup-node@v4" for step in windows_job["steps"]
+    )
+    assert any(
+        "rustup toolchain install stable --profile minimal" in command
         for command in commands
     )
-    assert ".\\dist\\nymeria-backend.exe --help" in commands
-    assert (
-        "python scripts/verify_desktop_bundle_contract.py --require-built-backend"
-        in commands
-    )
+    assert "npm install" in commands
     assert "npm run tauri build" in commands
+    assert not any("PyInstaller" in command for command in commands)
+    assert not any("nymeria-backend.exe" in command for command in commands)
+    assert not any("verify_desktop_bundle_contract.py" in command for command in commands)
+    assert not any(
+        "Nymeria/nymeria/frontend" in command
+        or "nymeria-desktop/build" in command
+        for command in commands
+    )
 
     assert any(
         step.get("uses") == "actions/upload-artifact@v4"
@@ -97,13 +100,13 @@ def test_release_workflow_builds_windows_desktop_installer() -> None:
     )
 
 
-def test_tauri_config_bundles_pyinstaller_backend_resource() -> None:
+def test_tauri_config_does_not_bundle_backend_resource() -> None:
     with TAURI_CONFIG.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
 
-    assert config["bundle"]["resources"] == {
-        "../../Nymeria/dist/nymeria-backend.exe": "Nymeria/dist/nymeria-backend.exe"
-    }
+    resources = config["bundle"].get("resources", {})
+    assert "../../Nymeria/dist/nymeria-backend.exe" not in resources
+    assert "Nymeria/dist/nymeria-backend.exe" not in resources.values()
 
 
 def test_release_workflow_uploads_dist_files_to_github_release() -> None:
