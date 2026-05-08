@@ -219,12 +219,13 @@ def _check_sqlite_database(settings: Any) -> CheckResult:
     checkpoint_path = Path(settings.db_path)
     accounts_path = Path(settings.data_dir) / "accounts.db"
     warnings: list[str] = []
+    checkpoint_missing = False
 
     try:
         thread_count = _count_sqlite_threads(checkpoint_path)
     except FileNotFoundError:
         thread_count = None
-        warnings.append(f"checkpoint DB missing at {checkpoint_path}")
+        checkpoint_missing = True
     except Exception as exc:  # noqa: BLE001 - diagnostics must not crash.
         return CheckResult("Database", "fail", f"SQLite checkpoint check failed: {_compact_error(exc)}")
 
@@ -239,6 +240,8 @@ def _check_sqlite_database(settings: Any) -> CheckResult:
     parts = ["SQLite"]
     if thread_count is not None:
         parts.append(f"{thread_count} thread(s)")
+    elif checkpoint_missing:
+        parts.append(f"checkpoint DB not created yet at {checkpoint_path}")
     if user_count is not None:
         parts.append(f"{user_count} user(s)")
     parts.extend(warnings)
