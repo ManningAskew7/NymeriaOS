@@ -96,6 +96,27 @@ def test_collect_checks_reports_core_installation_status(monkeypatch, tmp_path: 
     assert _result(results, "Port").status == "pass"
 
 
+def test_collect_checks_allows_fresh_sqlite_checkpoint_to_be_created_later(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    with sqlite3.connect(data_dir / "accounts.db") as conn:
+        conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO users (id) VALUES ('default')")
+        conn.commit()
+    settings = FakeSettings(data_dir=data_dir)
+    _stub_static_checks(monkeypatch, tmp_path, settings)
+
+    results = doctor.collect_checks(argparse.Namespace(skip_llm_test=True))
+
+    database = _result(results, "Database")
+    assert database.status == "pass"
+    assert "checkpoint DB not created yet" in database.detail
+    assert "1 user(s)" in database.detail
+
+
 def test_collect_checks_fails_when_llm_key_is_missing(monkeypatch, tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _write_sqlite_state(data_dir)

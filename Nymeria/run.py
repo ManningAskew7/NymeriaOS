@@ -21,6 +21,7 @@ import argparse
 import logging
 import signal
 import sys
+import warnings
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -66,6 +67,26 @@ _SERVICE_TOKEN_REQUIRED_COMMANDS = {
     "twitch-bot": "the Twitch bot",
     "mcp": "the MCP thin client",
 }
+
+_LANGGRAPH_ALLOWED_OBJECTS_WARNING = (
+    r"The default value of `allowed_objects` will change in a future version\."
+)
+
+
+def _suppress_runtime_dependency_warnings() -> None:
+    """Hide known upstream warnings that otherwise appear before CLI output."""
+    try:
+        from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
+    except Exception:  # noqa: BLE001 - fallback keeps the launcher robust.
+        warning_category = Warning
+    else:
+        warning_category = LangChainPendingDeprecationWarning
+
+    warnings.filterwarnings(
+        "ignore",
+        message=_LANGGRAPH_ALLOWED_OBJECTS_WARNING,
+        category=warning_category,
+    )
 
 
 def _redis_url_for_display(redis_url: str) -> str:
@@ -657,6 +678,8 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point."""
+    _suppress_runtime_dependency_warnings()
+
     parser = argparse.ArgumentParser(
         description="Nymeria - Personal AI Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
