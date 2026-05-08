@@ -1,11 +1,12 @@
 # Nymeria Configuration
 
 All configuration is done via environment variables. Source checkouts load
-`.env`, `config.env`, and `.env.docker` from the backend root if present.
-Packaged `nymeria` installs use `~/.nymeria/config.env` by default. Copy
-`.env.docker.example` to `.env.docker` for the full local template, run
-`nymeria init` for packaged setup, or create `.env` manually for a lighter
-source-checkout setup.
+`.env`, `config.env`, and `.env.docker` from the backend root if present;
+when the same variable appears in multiple files, `.env.docker` has the
+highest dotenv-file precedence. Packaged `nymeria` installs use
+`~/.nymeria/config.env` by default. Copy `.env.docker.example` to
+`.env.docker` for the full local/Docker template, run `nymeria init` for
+packaged setup, or create `.env` manually for a lighter source-checkout setup.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
@@ -74,7 +75,7 @@ setup where provider access will be verified separately.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_BACKEND` | `sqlite` | Backend type: `sqlite`, `postgres`, or `memory` |
-| `SQLITE_PATH` | `data/nymeria.db` | SQLite database file location |
+| `SQLITE_PATH` | `<data_dir>/nymeria.db` | SQLite database file location. Relative custom paths resolve from the runtime project root |
 | `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
 | `USER_TIMEZONE` | `UTC` | IANA timezone used for time context and absolute schedule parsing. Docker also mirrors this into `TZ` so OS-level time output stays aligned. |
 
@@ -90,8 +91,8 @@ setup where provider access will be verified separately.
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled |
-| `NYMERIA_DATA_DIR` | (project)/data | Override data directory path (useful for Docker volumes) |
-| `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution, mainly for Tauri, frozen builds, or packaged entrypoints |
+| `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
+| `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
 
 Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. PyInstaller
 builds without that override use the packaged runtime root, `~/.nymeria/`, for
@@ -106,7 +107,9 @@ The `nymeria` console script bootstraps this automatically. When it runs from a
 source checkout or editable install, it uses the checkout's `Nymeria/` backend
 root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `config.env`, `data/`, and logs while loading bundled package assets such as
-`nymeria/config/soul.md` from the installed Python package.
+`nymeria/config/soul.md` from the installed Python package. `nymeria init`
+writes an explicit `NYMERIA_DATA_DIR=<root>/data` line to `config.env`, so a
+later root move should update that value or rerun `nymeria init --root ...`.
 The PyInstaller backend follows the same `~/.nymeria/` default unless a launcher
 sets `NYMERIA_PROJECT_ROOT` before starting the executable.
 
@@ -297,7 +300,8 @@ In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`
 
 Nymeria uses the following directories under `settings.data_dir`. In source
 checkouts that defaults to `Nymeria/data/`; in packaged installs it defaults to
-`~/.nymeria/data/`.
+`~/.nymeria/data/`. `nymeria init` creates this layout, writes
+`~/.nymeria/config.env`, and initializes the first admin token.
 
 | Directory | Purpose |
 |-----------|---------|
@@ -319,13 +323,17 @@ These directories and files are created automatically on first run.
 
 ## System Prompt (soul.md)
 
-Located at `nymeria/config/soul.md`. This file defines Nymeria's:
+Located at `nymeria/config/soul.md` in the source tree or installed package.
+This file defines Nymeria's:
 - Personality and tone
 - Capabilities and limitations
 - Guidelines for tool usage
 - Autonomous behavior rules
 
-Edit this file to customize how Nymeria responds. Changes take effect on agent restart.
+For source checkouts, edit this file to customize how Nymeria responds.
+Packaged installs load the bundled package copy; keep local personality edits in
+source or a custom package build until user-editable packaged prompts are added.
+Changes take effect on agent restart.
 
 ---
 
@@ -357,7 +365,7 @@ PERPLEXITY_API_KEY=pplx-...
 
 # Database (SQLite is default - no additional config needed)
 DATABASE_BACKEND=sqlite
-# SQLITE_PATH=data/nymeria.db  # Uncomment to customize path
+# SQLITE_PATH=/path/to/nymeria.db  # Uncomment to customize path
 
 # API Server
 # Authentication uses per-user account tokens; the bootstrap admin token is
@@ -508,7 +516,10 @@ The global LLM settings are intentionally not account-scoped. Two users on the s
 
 ### SQLite (Default)
 
-No additional configuration needed. Database created at `data/nymeria.db`.
+No additional configuration needed. The database is created at
+`<data_dir>/nymeria.db`, which is `Nymeria/data/nymeria.db` in a source
+checkout and `~/.nymeria/data/nymeria.db` in a packaged install unless
+`NYMERIA_DATA_DIR` or `SQLITE_PATH` overrides it.
 
 ```bash
 DATABASE_BACKEND=sqlite

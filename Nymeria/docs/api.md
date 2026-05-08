@@ -2353,13 +2353,18 @@ fall back to `Nymeria/frontend/index.html` for development bundles. Browser
 navigation to unmatched non-API paths also returns `index.html` so the SPA can
 handle refreshes and deep links.
 
+Frontend routes are registered only when `index.html` exists. API routers are
+registered first, so concrete API routes keep priority; there is no `/api/`
+prefix migration in the beta routing plan.
+
 In this backend-served browser mode, the desktop setup wizard probes same-origin
 `/health` and fills the API URL with the current page origin when the health
 JSON validates. Users still need to paste and test an account token.
 
 Root-level build assets such as icons, manifests, and images are served from
 the same frontend directory. Unmatched paths that look like API routes, missing
-static assets, or requests that do not accept `text/html` still return `404`.
+static assets, or requests that do not accept `text/html` still return `404`;
+only browser-style HTML navigations receive the SPA fallback.
 
 ---
 

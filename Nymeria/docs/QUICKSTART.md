@@ -5,14 +5,17 @@ Get Nymeria running in under 10 minutes.
 ## Prerequisites
 
 - **Python 3.11+** - Check with `python --version`
+- **pipx** - Needed for beta package installs (`python -m pip install --user pipx`)
 - **LLM API Key** - From one of:
   - [Anthropic](https://console.anthropic.com/) (recommended)
   - [OpenAI](https://platform.openai.com/)
   - [OpenRouter](https://openrouter.ai/)
 
-## Step 1: Install Dependencies
+## Step 1: Install Nymeria
 
-For beta package installs:
+### Beta Package Install
+
+Use this path when you have private beta package access:
 
 ```bash
 export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
@@ -42,7 +45,40 @@ version, config files, data directory, LLM connectivity, local databases,
 optional Redis/voice setup, bundled frontend, and API port before you start the
 server.
 
-For source-checkout development:
+Packaged installs store config and writable data under `~/.nymeria/` by
+default. After `nymeria api` starts, open `http://localhost:8000`; the backend
+serves the bundled web UI from the same origin.
+
+### Docker From A Source Checkout
+
+Use this path when you want the full local service stack:
+
+```bash
+cd nymeria-desktop
+npm install
+npm run build
+cd ../Nymeria
+cp .env.docker.example .env.docker
+# Edit .env.docker and add your LLM provider/key plus REDIS_PASSWORD and POSTGRES_PASSWORD.
+DISCORD_BOT_TOKEN=disabled docker compose --env-file .env.docker up -d --build
+```
+
+The API will be available at `http://localhost:8000`. The compose file mounts
+`nymeria-desktop/build` into the API container, so rebuild the frontend after
+frontend changes if you are using the backend-served web UI. On first boot,
+read the bootstrap account token from the shared Docker data volume or from the
+API logs. From the `Nymeria/` directory:
+
+```bash
+docker compose --env-file .env.docker exec api cat /data/BOOTSTRAP_TOKEN.txt
+docker compose --env-file .env.docker logs api
+```
+
+Paste the token into the web UI setup wizard.
+
+### Source-Checkout Development
+
+Use this path when you are changing backend code locally:
 
 ```bash
 cd Nymeria
@@ -69,7 +105,10 @@ pip install -e ".[postgres]"
 
 ## Step 2: Configure Environment
 
-For a full local config template:
+Packaged installs normally do this through `nymeria init`; source and Docker
+launches usually use dotenv files.
+
+For a full local/Docker config template:
 
 ```bash
 cp .env.docker.example .env.docker
@@ -134,6 +173,8 @@ If you are offline or intentionally testing without provider access, use
 
 ## Step 4: Start the Backend
 
+For a source checkout:
+
 ```bash
 python run.py api
 ```
@@ -164,7 +205,18 @@ python -m ruff check nymeria tests run.py
 python -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-under=38
 ```
 
-## Step 5: Connect the Desktop App
+## Step 5: Open the Web UI or Desktop App
+
+For beta package installs and source checkouts with a bundled frontend, open:
+
+```text
+http://localhost:8000
+```
+
+The backend-served web UI auto-detects the current origin as the API URL after
+`/health` succeeds.
+
+For the Windows desktop app:
 
 1. Open the Nymeria desktop app
 2. The setup wizard will guide you through:
