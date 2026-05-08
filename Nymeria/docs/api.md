@@ -2357,7 +2357,7 @@ Frontend routes are registered only when `index.html` exists. API routers are
 registered first, so concrete API routes keep priority; there is no `/api/`
 prefix migration in the beta routing plan.
 
-In this backend-served browser mode, the desktop setup wizard probes same-origin
+In this backend-served browser mode, the frontend setup wizard probes same-origin
 `/health` and fills the API URL with the current page origin when the health
 JSON validates. Users still need to paste and test an account token.
 

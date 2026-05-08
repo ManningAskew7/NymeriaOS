@@ -97,7 +97,7 @@
       case 2:
         return apiUrl.length > 0; // Backend URL
       case 3:
-        return apiKey.length > 0 && testStatus === 'success'; // API Key + verified
+        return apiKey.length > 0 && testStatus === 'success'; // Account token + verified
       case 4:
         return true; // Complete
       default:
@@ -144,7 +144,7 @@
             </li>
             <li>
               <Icon name="success" size={18} />
-              <span>The backend server URL and API key from your administrator</span>
+              <span>A backend URL and nym_... account token</span>
             </li>
           </ul>
           <div class="info-box">
