@@ -19,24 +19,18 @@ The `python-package` job builds the Python distribution artifacts:
 The `windows-desktop` job builds the Windows desktop installer:
 
 1. Installs the desktop frontend dependencies with Node 20.
-2. Builds the Svelte frontend and copies it into `Nymeria/nymeria/frontend/`.
-3. Installs the backend package and PyInstaller dependencies.
-4. Builds `Nymeria/dist/nymeria-backend.exe` with
-   `Nymeria/nymeria-backend.spec`.
-5. Runs `Nymeria/dist/nymeria-backend.exe --help` as a packaging smoke test.
-6. Runs `scripts/verify_desktop_bundle_contract.py --require-built-backend`
-   to confirm the Tauri resource mapping still matches the Rust process
-   manager's runtime lookup path.
-7. Runs `npm run tauri build` on `windows-latest`.
-8. Uploads the NSIS installer from
+2. Verifies the tag matches the synchronized backend/desktop version with
+   `python scripts/sync_versions.py --check --tag "$env:GITHUB_REF_NAME"`.
+3. Sets up Rust for the Tauri build.
+4. Runs `npm run tauri build` on `windows-latest`.
+5. Uploads the NSIS installer from
    `nymeria-desktop/src-tauri/target/release/bundle/nsis/*.exe`.
 
-The Tauri config bundles `Nymeria/dist/nymeria-backend.exe` as a resource at
-`Nymeria/dist/nymeria-backend.exe` inside the installed app. At runtime, the
-desktop process manager first supports source-checkout launches, then checks
-the installed app's `resources` directory for that bundled backend. Source
-checkouts keep using `Nymeria/.env`; installed desktop builds use the writable
-`~/.nymeria/config.env` and `~/.nymeria/data/` runtime convention.
+The Windows installer is a client-only Tauri frontend. It does not build,
+stage, or bundle `Nymeria/dist/nymeria-backend.exe`, and the release workflow
+does not invoke PyInstaller. Testers must start or point to a separately
+installed backend, then enter the backend URL and a `nym_...` account token in
+the desktop setup wizard.
 
 The GitHub Release job downloads both artifacts and attaches the `.whl`,
 `.tar.gz`, and Windows installer `.exe` files to the tag's release. Tags

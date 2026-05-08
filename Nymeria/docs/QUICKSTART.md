@@ -218,8 +218,9 @@ The backend-served web UI auto-detects the current origin as the API URL after
 
 For the Windows desktop app:
 
-1. Open the Nymeria desktop app
-2. The setup wizard will guide you through:
+1. Start or choose a separately installed backend
+2. Open the Nymeria desktop app
+3. The setup wizard will guide you through:
    - Entering the backend URL (default: `http://localhost:8000`; auto-filled
      from the current page origin when the web UI is served by the backend)
    - Pasting the bootstrap account token from `<data_dir>/BOOTSTRAP_TOKEN.txt`
