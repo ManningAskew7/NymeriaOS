@@ -1,22 +1,30 @@
 //! First-run auto-configuration: reads the bootstrap admin token from
-//! `<data_dir>/BOOTSTRAP_TOKEN.txt` (created by the agent on first launch
-//! against an empty users table), and ensures a minimal `.env` exists.
+//! `<runtime_root>/data/BOOTSTRAP_TOKEN.txt` (created by the agent on first
+//! launch against an empty users table), and ensures a minimal env file exists.
 //!
 //! The legacy `NYMERIA_API_KEY` shared key was retired in Step 3c — the
 //! backend only accepts per-user `nym_...` tokens now, so we no longer
 //! generate one.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Ensure the `.env` file exists, then return the bootstrap admin token
-/// from `data/BOOTSTRAP_TOKEN.txt` if present (empty string otherwise —
-/// the user is expected to paste a token via the Setup Wizard).
-pub fn ensure_env_file(project_root: &Path) -> Result<String, String> {
-    let env_path = project_root.join("Nymeria").join(".env");
+fn env_path_for_runtime_root(runtime_root: &Path) -> PathBuf {
+    if runtime_root.join("run.py").exists() {
+        runtime_root.join(".env")
+    } else {
+        runtime_root.join("config.env")
+    }
+}
+
+/// Ensure the env file exists, then return the bootstrap admin token from
+/// `data/BOOTSTRAP_TOKEN.txt` if present (empty string otherwise — the user is
+/// expected to paste a token via the Setup Wizard).
+pub fn ensure_env_file(runtime_root: &Path) -> Result<String, String> {
+    let env_path = env_path_for_runtime_root(runtime_root);
 
     if !env_path.exists() {
-        // Create a minimal .env so the backend has something to load.
+        // Create a minimal env file so the backend has something to load.
         // No auto-generated API key — the backend mints per-user tokens
         // out-of-band via `python run.py users add` and the bootstrap
         // admin token written to data/BOOTSTRAP_TOKEN.txt.
@@ -42,10 +50,7 @@ pub fn ensure_env_file(project_root: &Path) -> Result<String, String> {
     // The file is a multi-line note, not a raw token — the actual token
     // lives on a `Token: nym_<...>` line. Returning the whole trimmed file
     // would produce an invalid Bearer value and silently 401 every request.
-    let bootstrap_path = project_root
-        .join("Nymeria")
-        .join("data")
-        .join("BOOTSTRAP_TOKEN.txt");
+    let bootstrap_path = runtime_root.join("data").join("BOOTSTRAP_TOKEN.txt");
     if bootstrap_path.exists() {
         if let Ok(content) = fs::read_to_string(&bootstrap_path) {
             for line in content.lines() {

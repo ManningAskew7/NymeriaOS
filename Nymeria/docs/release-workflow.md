@@ -5,7 +5,7 @@ tags matching `v*` and can also be started manually from GitHub Actions.
 
 ## What The Workflow Builds
 
-The `python-package` job builds one set of Python distribution artifacts:
+The `python-package` job builds the Python distribution artifacts:
 
 1. Installs the desktop frontend dependencies with Node 20.
 2. Runs `npm run build` in `nymeria-desktop/`.
@@ -16,9 +16,27 @@ The `python-package` job builds one set of Python distribution artifacts:
 5. Builds the wheel and source distribution with `python -m build`.
 6. Runs `twine check` before uploading artifacts.
 
-The GitHub Release job downloads that artifact and attaches the `.whl` and
-`.tar.gz` files to the tag's release. Tags containing `alpha`, `beta`, or `rc`
-are marked as prereleases.
+The `windows-desktop` job builds the Windows desktop installer:
+
+1. Installs the desktop frontend dependencies with Node 20.
+2. Builds the Svelte frontend and copies it into `Nymeria/nymeria/frontend/`.
+3. Installs the backend package and PyInstaller dependencies.
+4. Builds `Nymeria/dist/nymeria-backend.exe` with
+   `Nymeria/nymeria-backend.spec`.
+5. Runs `npm run tauri build` on `windows-latest`.
+6. Uploads the NSIS installer from
+   `nymeria-desktop/src-tauri/target/release/bundle/nsis/*.exe`.
+
+The Tauri config bundles `Nymeria/dist/nymeria-backend.exe` as a resource at
+`Nymeria/dist/nymeria-backend.exe` inside the installed app. At runtime, the
+desktop process manager first supports source-checkout launches, then checks
+the installed app's `resources` directory for that bundled backend. Source
+checkouts keep using `Nymeria/.env`; installed desktop builds use the writable
+`~/.nymeria/config.env` and `~/.nymeria/data/` runtime convention.
+
+The GitHub Release job downloads both artifacts and attaches the `.whl`,
+`.tar.gz`, and Windows installer `.exe` files to the tag's release. Tags
+containing `alpha`, `beta`, or `rc` are marked as prereleases.
 
 ## Private Python Index
 
@@ -49,7 +67,7 @@ git tag v0.2.0-beta.1
 git push origin main v0.2.0-beta.1
 ```
 
-After the workflow finishes, confirm the GitHub Release has both the wheel and
-source distribution attached. If private index secrets are configured, also
-check the package appears in that index before sending installer instructions
-to beta testers.
+After the workflow finishes, confirm the GitHub Release has the wheel, source
+distribution, and Windows installer attached. If private index secrets are
+configured, also check the package appears in that index before sending
+installer instructions to beta testers.

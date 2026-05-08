@@ -5,7 +5,7 @@
 
 use shared_child::SharedChild;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -22,6 +22,33 @@ use windows_sys::Win32::System::JobObjects::{
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[derive(Clone, Debug)]
+pub struct RuntimeLayout {
+    project_root: PathBuf,
+    backend_root: PathBuf,
+}
+
+impl RuntimeLayout {
+    fn source_checkout(project_root: PathBuf) -> Self {
+        let backend_root = project_root.join("Nymeria");
+        Self {
+            project_root,
+            backend_root,
+        }
+    }
+
+    fn bundled_resource(resource_root: PathBuf) -> Result<Self, String> {
+        Ok(Self {
+            project_root: resource_root,
+            backend_root: default_user_project_root()?,
+        })
+    }
+
+    pub fn backend_root(&self) -> &PathBuf {
+        &self.backend_root
+    }
+}
 
 /// Wrapper for the Windows Job Object handle (auto-kills children on drop).
 #[cfg(windows)]
@@ -84,6 +111,7 @@ unsafe impl Sync for JobObject {}
 
 pub struct ProcessManager {
     project_root: PathBuf,
+    backend_root: PathBuf,
     api_process: Arc<Mutex<Option<Arc<SharedChild>>>>,
     worker_process: Arc<Mutex<Option<Arc<SharedChild>>>>,
     cliproxy_process: Arc<Mutex<Option<Arc<SharedChild>>>>,
@@ -92,9 +120,10 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
-    pub fn new(project_root: PathBuf) -> Self {
+    pub fn new(layout: RuntimeLayout) -> Self {
         Self {
-            project_root,
+            project_root: layout.project_root,
+            backend_root: layout.backend_root,
             api_process: Arc::new(Mutex::new(None)),
             worker_process: Arc::new(Mutex::new(None)),
             cliproxy_process: Arc::new(Mutex::new(None)),
@@ -103,9 +132,9 @@ impl ProcessManager {
         }
     }
 
-    /// Walk up from the executable's location to find the NymeriaOS root.
-    /// Looks for the `Nymeria/` and `nymeria-desktop/` directories as markers.
-    pub fn detect_project_root() -> Result<PathBuf, String> {
+    /// Walk up from the executable's location to find either a source checkout
+    /// or a bundled Tauri resource root containing the PyInstaller backend.
+    pub fn detect_runtime_layout() -> Result<RuntimeLayout, String> {
         // Check env var override first
         if let Ok(root) = std::env::var("NYMERIA_PROJECT_ROOT") {
             let path = PathBuf::from(&root);
@@ -113,11 +142,14 @@ impl ProcessManager {
             if path.join("nymeria").exists() && path.join("run.py").exists() {
                 // Points to Nymeria/ subdir — go up one level
                 if let Some(parent) = path.parent() {
-                    return Ok(parent.to_path_buf());
+                    return Ok(RuntimeLayout::source_checkout(parent.to_path_buf()));
                 }
             }
-            if path.join("Nymeria").exists() {
-                return Ok(path);
+            if is_source_checkout_root(&path) {
+                return Ok(RuntimeLayout::source_checkout(path));
+            }
+            if has_bundled_backend(&path) {
+                return RuntimeLayout::bundled_resource(path);
             }
         }
 
@@ -131,18 +163,28 @@ impl ProcessManager {
 
         // Walk up to 10 levels to find the project root
         for _ in 0..10 {
-            if dir.join("Nymeria").is_dir() && dir.join("nymeria-desktop").is_dir() {
-                return Ok(dir);
+            if is_source_checkout_root(&dir) {
+                return Ok(RuntimeLayout::source_checkout(dir));
             }
             if !dir.pop() {
                 break;
             }
         }
 
+        let exe_parent = exe
+            .parent()
+            .ok_or("Cannot get exe parent dir")?
+            .to_path_buf();
+        for candidate in bundled_resource_candidates(&exe_parent) {
+            if has_bundled_backend(&candidate) {
+                return RuntimeLayout::bundled_resource(candidate);
+            }
+        }
+
         Err(
             "Could not find NymeriaOS root. \
-             Ensure the app is located within the project tree, \
-             or set NYMERIA_PROJECT_ROOT."
+             Ensure the app is located within the project tree, bundled with \
+             Nymeria resources, or set NYMERIA_PROJECT_ROOT."
                 .to_string(),
         )
     }
@@ -150,12 +192,13 @@ impl ProcessManager {
     /// Spawn the backend API server (`nymeria-backend.exe api`).
     pub fn start_api(&self) -> Result<(), String> {
         let backend_exe = self.backend_exe_path()?;
-        let nymeria_dir = self.project_root.join("Nymeria");
+        std::fs::create_dir_all(&self.backend_root)
+            .map_err(|e| format!("Failed to create backend runtime root: {}", e))?;
 
         let child = Command::new(&backend_exe)
             .arg("api")
-            .current_dir(&nymeria_dir)
-            .env("NYMERIA_PROJECT_ROOT", &nymeria_dir)
+            .current_dir(&self.backend_root)
+            .env("NYMERIA_PROJECT_ROOT", &self.backend_root)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to spawn backend API: {}", e))?;
@@ -168,12 +211,13 @@ impl ProcessManager {
     /// Spawn the worker (ticker daemon).
     pub fn start_worker(&self) -> Result<(), String> {
         let backend_exe = self.backend_exe_path()?;
-        let nymeria_dir = self.project_root.join("Nymeria");
+        std::fs::create_dir_all(&self.backend_root)
+            .map_err(|e| format!("Failed to create backend runtime root: {}", e))?;
 
         let child = Command::new(&backend_exe)
             .arg("worker")
-            .current_dir(&nymeria_dir)
-            .env("NYMERIA_PROJECT_ROOT", &nymeria_dir)
+            .current_dir(&self.backend_root)
+            .env("NYMERIA_PROJECT_ROOT", &self.backend_root)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to spawn worker: {}", e))?;
@@ -318,4 +362,31 @@ impl ProcessManager {
             let _ = child.wait();
         }
     }
+}
+
+fn is_source_checkout_root(path: &Path) -> bool {
+    path.join("Nymeria").join("run.py").exists()
+        && path.join("nymeria-desktop").is_dir()
+}
+
+fn has_bundled_backend(path: &Path) -> bool {
+    path.join("Nymeria")
+        .join("dist")
+        .join("nymeria-backend.exe")
+        .is_file()
+}
+
+fn bundled_resource_candidates(exe_parent: &Path) -> Vec<PathBuf> {
+    vec![
+        exe_parent.join("resources"),
+        exe_parent.to_path_buf(),
+        exe_parent.join("_up_"),
+    ]
+}
+
+fn default_user_project_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .ok_or_else(|| "Cannot determine user profile directory".to_string())?;
+    Ok(PathBuf::from(home).join(".nymeria"))
 }

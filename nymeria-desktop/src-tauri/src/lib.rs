@@ -14,12 +14,12 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Detect project root — if not found, run in client-only mode
-    let (pm, api_key) = match ProcessManager::detect_project_root() {
-        Ok(project_root) => {
-            let key = auto_config::ensure_env_file(&project_root)
-                .unwrap_or_default();
-            let manager = Arc::new(ProcessManager::new(project_root));
+    // Detect source checkout or bundled backend resources — if neither is
+    // found, run in client-only mode.
+    let (pm, api_key) = match ProcessManager::detect_runtime_layout() {
+        Ok(layout) => {
+            let key = auto_config::ensure_env_file(layout.backend_root()).unwrap_or_default();
+            let manager = Arc::new(ProcessManager::new(layout));
             (Some(manager), key)
         }
         Err(_) => {
@@ -56,7 +56,8 @@ pub fn run() {
                         }
                     }
 
-                    // Wait for API to be ready (up to 60 seconds — PyInstaller can be slow on first run)
+                    // Wait for API to be ready. PyInstaller can be slow on
+                    // first run, so this intentionally allows up to 60 seconds.
                     match pm_clone.wait_for_api_ready(60) {
                         Ok(()) => {
                             let _ = app_handle.emit("backend-status", "ready");
