@@ -13,4 +13,6 @@ def test_backend_spec_bundles_runtime_package_data() -> None:
     assert "\"vendor/react_agent/*.md\"" in spec
     assert "\"google.genai\"" in spec
     assert "\"telegram.ext\"" in spec
-    assert "collect_all(\"mcp\")" in spec
+    assert "collect_data_files(\"mcp\")" in spec
+    assert "collect_submodules(\n    \"mcp\"," in spec
+    assert "_exclude_mcp_cli" in spec
