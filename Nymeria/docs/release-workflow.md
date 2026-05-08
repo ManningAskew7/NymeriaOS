@@ -28,9 +28,10 @@ The `windows-desktop` job builds the Windows desktop installer:
 
 The Windows installer is a client-only Tauri frontend. It does not build,
 stage, or bundle `Nymeria/dist/nymeria-backend.exe`, and the release workflow
-does not invoke PyInstaller. Testers must start or point to a separately
-installed backend, then enter the backend URL and a `nym_...` account token in
-the desktop setup wizard.
+does not invoke PyInstaller. The PyInstaller spec remains manual-only and is
+not a release gate. Testers must start or point to a separately installed
+backend, then enter the backend URL and a `nym_...` account token in the
+desktop setup wizard.
 
 The GitHub Release job downloads both artifacts and attaches the `.whl`,
 `.tar.gz`, and Windows installer `.exe` files to the tag's release. Tags

@@ -94,14 +94,15 @@ setup where provider access will be verified separately.
 | `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
 
-Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. PyInstaller
-builds without that override use the packaged runtime root, `~/.nymeria/`, for
-config and writable data. Non-frozen source launches walk upward looking for
-Nymeria backend markers such as `run.py`, `docker-compose.yml`, and
-`nymeria/config/soul.md`; the older fixed-depth path from
-`nymeria/config/settings.py` remains only as a compatibility fallback. Set
-`NYMERIA_PROJECT_ROOT` explicitly if a packaged deployment needs checkout-style
-paths or separates the Python package from the runtime config directory.
+Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. Source
+launches walk upward looking for Nymeria backend markers such as `run.py`,
+`docker-compose.yml`, and `nymeria/config/soul.md`; the older fixed-depth path
+from `nymeria/config/settings.py` remains only as a compatibility fallback.
+Wheel/pipx installs and manual frozen backend builds without an explicit
+override use the packaged runtime root, `~/.nymeria/`, for config and writable
+data. Set `NYMERIA_PROJECT_ROOT` explicitly if a packaged backend deployment
+needs checkout-style paths or separates the Python package from the runtime
+config directory.
 
 The `nymeria` console script bootstraps this automatically. When it runs from a
 source checkout or editable install, it uses the checkout's `Nymeria/` backend
@@ -110,8 +111,9 @@ root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `nymeria/config/soul.md` from the installed Python package. `nymeria init`
 writes an explicit `NYMERIA_DATA_DIR=<root>/data` line to `config.env`, so a
 later root move should update that value or rerun `nymeria init --root ...`.
-The PyInstaller backend follows the same `~/.nymeria/` default unless a launcher
-sets `NYMERIA_PROJECT_ROOT` before starting the executable.
+The beta Windows desktop release is client-only: it does not bundle a backend
+executable, does not read or write backend config files, and does not set
+`NYMERIA_PROJECT_ROOT` for a local backend process.
 
 Run `nymeria doctor` after `nymeria init` or after manual config edits to check
 the effective Python version, config files, data directory, LLM connectivity,

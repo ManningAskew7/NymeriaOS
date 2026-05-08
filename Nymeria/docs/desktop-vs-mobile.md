@@ -34,14 +34,14 @@ Use this policy when adding or changing cross-platform frontend code:
 | Category | Desktop | Mobile |
 |----------|---------|--------|
 | **Framework** | Tauri 2.x + SvelteKit | Capacitor 6.x + SvelteKit |
-| **Native shell** | Rust (minimal) | Android/iOS (Capacitor) |
+| **Native shell** | Rust Tauri shell | Android/iOS (Capacitor) |
 | **Adapter** | `adapter-static` (SPA) | `adapter-static` (SPA) |
 | **Svelte version** | 5.0.0 (runes) | 5.0.0 (runes) |
 | **Dev port** | 1420 | 5173 |
 | **Window sizing** | 1400x900, min 1000x600 | Full-screen mobile viewport |
 | **Layout model** | 3-panel flexbox, collapsible sidebars | 3-panel horizontal scroll-snap |
 | **Navigation** | Keyboard shortcuts (Ctrl+B, Ctrl+Shift+B) | Swipe gestures + panel dots |
-| **Backend default** | `http://localhost:8000` | Empty (user configures network address) |
+| **Default API URL** | `http://localhost:8000` | Empty (user configures network address) |
 
 ---
 
@@ -59,7 +59,9 @@ In practice:
 This matters because the apps now differ in several real ways, including:
 - mobile lifecycle handling (`@capacitor/app`, Preferences backup/restore, back button handling)
 - mobile haptics and keyboard state
-- desktop-only Tauri startup behavior and backend readiness UI
+- desktop-only Tauri startup readiness state; release builds enter
+  client-only mode immediately, while source-checkout dev can still manage a
+  local backend process
 - desktop-only Outlook mode and CLIProxy integration
 - different component organization in a few areas
 - some store and type files already diverging in content, not just comments
@@ -171,7 +173,7 @@ Desktop: 2065 lines. Mobile: 1272 lines. Same core settings categories (Connecti
 
 #### `components/common/SetupWizard.svelte`
 
-Both have 4-step onboarding (Welcome → URL → API Key → Complete). The mobile version adds larger touch targets, safe-area padding, and tests the connection on save. Otherwise the same flow.
+Both have 4-step onboarding (Welcome → URL → Account Token → Complete). The desktop default URL is `http://localhost:8000`; the backend-served browser UI can auto-fill the current origin after `/health` succeeds. Mobile keeps the URL empty because it usually connects to a LAN or remote backend. The mobile version also adds larger touch targets, safe-area padding, and tests the connection on save.
 
 #### `components/threads/ThreadList.svelte`
 
@@ -280,13 +282,13 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
 | Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
-| `components/common/StartupOverlay.svelte` | Backend startup/readiness overlay | Desktop-only Tauri startup behavior |
+| `components/common/StartupOverlay.svelte` | Tauri startup/readiness overlay | Source-checkout dev mode can display local backend startup; release client-only builds normally transition to ready immediately |
 | `components/common/ToggleSwitch.svelte` | Shared desktop switch primitive used by tool, trigger, and MCP management surfaces | Mobile still uses platform-specific switch markup pending a touch-target-focused mobile primitive |
 | `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |
 | `components/chat/AgentActivityIndicator.svelte` | Inline animated phase text for silent assistant phases (`Processing...`, `Thinking...`, `Formulating...`, `Processing results...`, `Waiting...`); visible response chunks render directly without a separate typing label or cursor | Desktop-only v1; mobile still uses its existing dots/ThinkingIndicator flow |
 | `components/tools/ToolForm.svelte` | Create/edit custom tool form | Desktop-only today |
 | `components/tools/ToolTestPanel.svelte` | Test tool with parameters | Desktop-only today |
-| `stores/backendProcess.svelte.ts` | Tracks embedded backend startup state | Desktop-only |
+| `stores/backendProcess.svelte.ts` | Tracks Tauri readiness and optional source-checkout managed backend state | Desktop-only; release client-only builds have no local backend process |
 | `stores/cliproxy.svelte.ts` | CLIProxy status and controls | Desktop-only |
 | `stores/connections.svelte.ts` | Connection-switching helpers | Desktop-only |
 | `stores/outlook.svelte.ts` | Outlook mode state | Desktop-only |
@@ -482,7 +484,8 @@ Use `100dvh` not `100vh` to account for mobile browser chrome appearing/disappea
 ### Desktop (Tauri)
 - `@tauri-apps/api` — Window management
 - `@tauri-apps/plugin-opener` — Open URLs externally
-- Rust backend: Minimal (just a `greet` demo command)
+- Rust shell: tray/window handling, client-only readiness signalling, and
+  source-checkout development commands for local backend/CLIProxy processes
 
 ### Mobile (Capacitor)
 - `@capacitor/app` — Lifecycle, back button
