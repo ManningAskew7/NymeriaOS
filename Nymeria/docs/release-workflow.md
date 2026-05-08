@@ -74,3 +74,8 @@ After the workflow finishes, confirm the GitHub Release has the wheel, source
 distribution, and Windows installer attached. If private index secrets are
 configured, also check the package appears in that index before sending
 installer instructions to beta testers.
+
+Grant tester access with
+[BETA_ACCESS_CONTROL.md](./BETA_ACCESS_CONTROL.md): invite GitHub users as
+read-only collaborators for private Release assets, issue private-index
+read/download credentials, and record revocation status outside the repository.
