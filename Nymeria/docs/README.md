@@ -46,6 +46,7 @@ python run.py cli
 - [Tools Reference](./tools.md) - Built-in tools, optional tools, custom tools, and callable threads
 - [Configuration](./configuration.md) - Environment variables and settings
 - [API Reference](./api.md) - REST API endpoints including settings, tools, TODOs, MCP servers, voice, and callable threads
+- [Beta Quickstart](./BETA_QUICKSTART.md) - Tester install, first-run setup, bundled web UI sign-in, first message, and Windows desktop notes
 - [Beta Private Python Index](./BETA_PRIVATE_INDEX.md) - Maintainer setup and tester `pipx` commands for private beta package installs
 - [Beta Troubleshooting](./BETA_TROUBLESHOOTING.md) - Install diagnostics, `nymeria doctor`, auth, provider, and SQLite troubleshooting for beta testers
 - [Release Workflow](./release-workflow.md) - Tagged beta package builds, bundled frontend artifacts, GitHub Release uploads, and private Python index publishing
