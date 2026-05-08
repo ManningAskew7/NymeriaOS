@@ -261,9 +261,27 @@ jobs:
           TWINE_USERNAME: ${{ secrets.NYMERIA_PYPI_USERNAME }}
           TWINE_PASSWORD: ${{ secrets.NYMERIA_PYPI_PASSWORD }}
         run: |
-          if [[ -z "$TWINE_REPOSITORY_URL" || -z "$TWINE_USERNAME" || -z "$TWINE_PASSWORD" ]]; then
-            echo "Private Python index publish skipped; set NYMERIA_PYPI_REPOSITORY_URL, NYMERIA_PYPI_USERNAME, and NYMERIA_PYPI_PASSWORD secrets to enable it."
+          missing=()
+          [[ -z "$TWINE_REPOSITORY_URL" ]] && missing+=(NYMERIA_PYPI_REPOSITORY_URL)
+          [[ -z "$TWINE_USERNAME" ]] && missing+=(NYMERIA_PYPI_USERNAME)
+          [[ -z "$TWINE_PASSWORD" ]] && missing+=(NYMERIA_PYPI_PASSWORD)
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "Private Python index publish skipped; missing secrets: ${missing[*]}"
+            {
+              echo "### Private Python index"
+              echo
+              echo "Skipped publishing because these repository secrets are missing:"
+              printf -- "- \`%s\`\n" "${missing[@]}"
+              echo
+              echo "Configure the secrets documented in \`Nymeria/docs/BETA_PRIVATE_INDEX.md\` to enable Twine publishing."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           python -m twine upload --non-interactive --skip-existing --repository-url "$TWINE_REPOSITORY_URL" dist/*.whl dist/*.tar.gz
+          {
+            echo "### Private Python index"
+            echo
+            echo "Published Nymeria Python distributions with Twine."
+          } >> "$GITHUB_STEP_SUMMARY"

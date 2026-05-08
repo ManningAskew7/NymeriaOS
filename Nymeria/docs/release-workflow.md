@@ -56,6 +56,9 @@ set:
 | `NYMERIA_PYPI_PASSWORD` | Registry password or API token |
 
 If any of those secrets are missing, the job logs a skip message and succeeds.
+The Twine upload URL is not the same as the Simple API URL that testers pass to
+`pipx`. See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for maintainer
+setup, tester install commands, and the GitHub Release fallback.
 
 ## Release Steps
 

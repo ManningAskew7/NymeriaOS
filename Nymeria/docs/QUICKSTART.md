@@ -15,11 +15,24 @@ Get Nymeria running in under 10 minutes.
 For beta package installs:
 
 ```bash
-pipx install nymeria --index-url <private-index-url>
+export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
+pipx install nymeria --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
 nymeria init
 nymeria doctor
 nymeria api
 ```
+
+If the private index does not proxy public PyPI dependencies, keep the private
+index as the primary source for Nymeria and add public PyPI for dependencies:
+
+```bash
+pipx install nymeria \
+  --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL" \
+  --pip-args="--extra-index-url https://pypi.org/simple"
+```
+
+See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
+upgrade commands, and the GitHub Release wheel fallback.
 
 `nymeria init` prompts for the provider, model, API key, and optional
 capability keys. It validates the provider key with a small LLM API call,
