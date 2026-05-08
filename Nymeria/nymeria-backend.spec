@@ -17,7 +17,6 @@ import importlib.util
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
-    collect_all,
     collect_data_files,
     collect_submodules,
     copy_metadata,
@@ -73,8 +72,20 @@ for package_name in (
 ):
     metadata_datas += _safe_copy_metadata(package_name)
 
-# Collect all MCP package data (templates, schemas).
-mcp_datas, mcp_binaries, mcp_hidden = collect_all("mcp")
+# Collect MCP runtime modules and package data (templates, schemas). Exclude
+# the optional MCP CLI package because it imports typer from the `mcp[cli]`
+# extra, which the Nymeria backend does not need at runtime.
+def _exclude_mcp_cli(module_name):
+    return module_name != "mcp.cli" and not module_name.startswith("mcp.cli.")
+
+
+mcp_datas = collect_data_files("mcp")
+mcp_binaries = []
+mcp_hidden = collect_submodules(
+    "mcp",
+    on_error="ignore",
+    filter=_exclude_mcp_cli,
+)
 
 
 def _hidden_if_available(*module_names):
