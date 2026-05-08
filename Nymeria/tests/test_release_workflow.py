@@ -7,6 +7,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 TAURI_CONFIG = ROOT / "nymeria-desktop" / "src-tauri" / "tauri.conf.json"
+FORBIDDEN_DESKTOP_BACKEND_BUNDLE_PATTERNS = (
+    "pyinstaller",
+    "nymeria-backend.spec",
+    "nymeria-backend.exe",
+    "verify_desktop_bundle_contract.py",
+)
 
 
 def _load_release_workflow() -> dict:
@@ -21,6 +27,12 @@ def _run_commands(job: dict) -> list[str]:
         if run:
             commands.append(" ".join(run.split()))
     return commands
+
+
+def _assert_no_desktop_backend_bundle_steps(commands: list[str]) -> None:
+    command_text = "\n".join(commands).lower()
+    for forbidden in FORBIDDEN_DESKTOP_BACKEND_BUNDLE_PATTERNS:
+        assert forbidden.lower() not in command_text
 
 
 def test_release_workflow_runs_on_version_tags() -> None:
@@ -82,9 +94,7 @@ def test_release_workflow_builds_windows_desktop_installer() -> None:
     )
     assert "npm install" in commands
     assert "npm run tauri build" in commands
-    assert not any("PyInstaller" in command for command in commands)
-    assert not any("nymeria-backend.exe" in command for command in commands)
-    assert not any("verify_desktop_bundle_contract.py" in command for command in commands)
+    _assert_no_desktop_backend_bundle_steps(commands)
     assert not any(
         "Nymeria/nymeria/frontend" in command
         or "nymeria-desktop/build" in command
@@ -104,9 +114,14 @@ def test_tauri_config_does_not_bundle_backend_resource() -> None:
     with TAURI_CONFIG.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
 
-    resources = config["bundle"].get("resources", {})
-    assert "../../Nymeria/dist/nymeria-backend.exe" not in resources
-    assert "Nymeria/dist/nymeria-backend.exe" not in resources.values()
+    resources = json.dumps(config["bundle"].get("resources", {})).lower()
+    assert "nymeria-backend.exe" not in resources
+    assert "nymeria/dist" not in resources
+
+
+def test_obsolete_desktop_bundle_contract_gate_is_removed() -> None:
+    assert not (ROOT / "scripts" / "verify_desktop_bundle_contract.py").exists()
+    assert not (ROOT / "Nymeria" / "tests" / "test_desktop_bundle_contract.py").exists()
 
 
 def test_release_workflow_uploads_dist_files_to_github_release() -> None:
