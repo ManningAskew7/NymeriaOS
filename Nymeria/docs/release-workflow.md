@@ -23,8 +23,12 @@ The `windows-desktop` job builds the Windows desktop installer:
 3. Installs the backend package and PyInstaller dependencies.
 4. Builds `Nymeria/dist/nymeria-backend.exe` with
    `Nymeria/nymeria-backend.spec`.
-5. Runs `npm run tauri build` on `windows-latest`.
-6. Uploads the NSIS installer from
+5. Runs `Nymeria/dist/nymeria-backend.exe --help` as a packaging smoke test.
+6. Runs `scripts/verify_desktop_bundle_contract.py --require-built-backend`
+   to confirm the Tauri resource mapping still matches the Rust process
+   manager's runtime lookup path.
+7. Runs `npm run tauri build` on `windows-latest`.
+8. Uploads the NSIS installer from
    `nymeria-desktop/src-tauri/target/release/bundle/nsis/*.exe`.
 
 The Tauri config bundles `Nymeria/dist/nymeria-backend.exe` as a resource at

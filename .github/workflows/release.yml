@@ -163,6 +163,13 @@ jobs:
             throw "PyInstaller did not create dist/nymeria-backend.exe"
           }
 
+      - name: Smoke test PyInstaller backend
+        working-directory: Nymeria
+        run: .\dist\nymeria-backend.exe --help
+
+      - name: Verify desktop backend bundle contract
+        run: python scripts/verify_desktop_bundle_contract.py --require-built-backend
+
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal

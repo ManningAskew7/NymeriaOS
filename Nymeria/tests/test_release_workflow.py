@@ -81,6 +81,11 @@ def test_release_workflow_builds_windows_desktop_installer() -> None:
         and "dist/nymeria-backend.exe" in command
         for command in commands
     )
+    assert ".\\dist\\nymeria-backend.exe --help" in commands
+    assert (
+        "python scripts/verify_desktop_bundle_contract.py --require-built-backend"
+        in commands
+    )
     assert "npm run tauri build" in commands
 
     assert any(
