@@ -21,6 +21,8 @@ from .core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
 from .onboarding import (
     HOSTING_CHOICES,
     HOSTING_ORDER,
+    NEXT_ACTION_CHOICES,
+    NEXT_ACTION_ORDER,
     HostingOption,
     NextAction,
     OnboardingSelection,
@@ -173,7 +175,8 @@ def run_init(args: argparse.Namespace) -> int:
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
     _print_bootstrap_token_handoff(token_path, console)
-    _print_next_action(onboarding.next_action, console)
+    next_action = _resolve_next_action(args, console, non_interactive)
+    _print_next_action(next_action, console)
     return 0
 
 
@@ -499,16 +502,62 @@ def _print_docker_hosting_handoff(console: Console) -> None:
     )
 
 
+def _resolve_next_action(
+    args: argparse.Namespace,
+    console: Console,
+    non_interactive: bool,
+) -> NextAction:
+    configured = getattr(args, "next_action", None)
+    if configured is not None:
+        return _parse_onboarding_arg(
+            NextAction,
+            configured,
+            option_name="--next-action",
+            default=DEFAULT_NEXT_ACTION,
+        )
+    if non_interactive:
+        return DEFAULT_NEXT_ACTION
+
+    console.print("\n[bold]Next Action[/bold]")
+    console.print("Choose what to do after setup.")
+    default_index = NEXT_ACTION_ORDER.index(DEFAULT_NEXT_ACTION) + 1
+    for idx, action in enumerate(NEXT_ACTION_ORDER, start=1):
+        choice = NEXT_ACTION_CHOICES[action]
+        suffix = " - default" if action is DEFAULT_NEXT_ACTION else ""
+        console.print(f"  [{idx}] {choice.label}{suffix}")
+        console.print(f"      {choice.description}")
+
+    answer = prompt(f"> [{default_index}] ").strip()
+    if not answer:
+        return DEFAULT_NEXT_ACTION
+
+    try:
+        return NEXT_ACTION_ORDER[int(answer) - 1]
+    except (ValueError, IndexError):
+        try:
+            return parse_choice(NextAction, answer, option_name="next action")
+        except ValueError:
+            default_choice = NEXT_ACTION_CHOICES[DEFAULT_NEXT_ACTION].label
+            console.print(f"[yellow]Unknown choice, using {default_choice}.[/yellow]")
+            return DEFAULT_NEXT_ACTION
+
+
 def _print_next_action(next_action: NextAction, console: Console) -> None:
     if next_action is NextAction.CLI:
-        console.print("\nEnter CLI chat with:\n  [bold]nymeria cli[/bold]\n")
+        console.print("\nEnter CLI chat with:")
+        _print_command(console, "nymeria cli")
         return
     if next_action is NextAction.START_API_OPEN_FRONTEND:
-        console.print("\nStart Nymeria with:\n  [bold]nymeria api[/bold]\n")
+        console.print(
+            "\nProcess spawning is not reliable across every package/source "
+            "environment, so start the backend in the foreground with:"
+        )
+        _print_command(console, "nymeria api")
         console.print("Then open http://localhost:8000 and paste the bootstrap token.")
         return
 
-    console.print("\nStart Nymeria with:\n  [bold]nymeria api[/bold]\n")
+    console.print("\nStart Nymeria with:")
+    _print_command(console, "nymeria api")
     console.print("Then open http://localhost:8000 and paste the bootstrap token.")
 
 

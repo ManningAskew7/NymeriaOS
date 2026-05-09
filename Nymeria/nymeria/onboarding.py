@@ -167,7 +167,7 @@ NEXT_ACTION_CHOICES = {
     NextAction.START_API_OPEN_FRONTEND: OnboardingChoice(
         value=NextAction.START_API_OPEN_FRONTEND,
         label="Start backend and open web UI",
-        description="Launch the API and open the local frontend after setup.",
+        description="Show the API start command and local frontend URL after setup.",
     ),
     NextAction.PRINT_COMMANDS: OnboardingChoice(
         value=NextAction.PRINT_COMMANDS,

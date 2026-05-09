@@ -341,6 +341,7 @@ def test_init_interactive_accepts_provider_default_model(
             provider_choice,
             "",  # accept provider default model
             api_key,
+            "",  # default next action: print commands
         ]
     )
     prompts = []
@@ -416,6 +417,7 @@ def test_init_interactive_prompts_for_hosting_before_provider(
             "n",
             "n",
             "n",
+            "",  # default next action: print commands
         ]
     )
     prompts = []
@@ -444,7 +446,52 @@ def test_init_interactive_prompts_for_hosting_before_provider(
     )
     assert "not an OS security sandbox" in output
     assert "Docker" in output
+    assert "Next Action" in output
     assert (root / "config.env").exists()
+
+
+def test_init_interactive_prompts_for_next_action(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    root = tmp_path / "runtime"
+    answers = iter(
+        [
+            "",  # default hosting: venv
+            "1",  # provider: Anthropic
+            "claude-test-model",
+            "sk-ant-test-key",
+            "n",
+            "n",
+            "n",
+            "n",
+            "3",  # next action: CLI chat handoff
+        ]
+    )
+    prompts = []
+
+    def fake_prompt(text="", **kwargs):
+        prompts.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(
+        [
+            "--root",
+            str(root),
+            "--skip-llm-test",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert prompts[-1] == "> [2] "
+    assert "Next Action" in output
+    assert "Start backend and open web UI" in output
+    assert "Print commands only - default" in output
+    assert "nymeria cli" in output
 
 
 def test_init_interactive_docker_hosting_prints_handoff_without_provider_prompt(
