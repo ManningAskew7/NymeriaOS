@@ -47,7 +47,7 @@ export async function probeConnection(
     return {
       ok: false,
       reason: 'unreachable',
-      message: 'Cannot reach this server. Check the URL and that the backend is running.',
+      message: 'Cannot reach this server or the browser blocked the response. Check the URL, confirm the backend is running, and make sure CORS allows this app origin.',
     };
   }
   if (!health.ok) {

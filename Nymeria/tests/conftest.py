@@ -24,6 +24,7 @@ class ApiTestSettings:
     context_management: str = "none"
     sliding_window_cycles: int = 20
     todo_auto_archive_days: int = 7
+    nymeria_debug: bool = False
     api_docs_enabled: bool = False
     cors_origins_list: list[str] | None = None
 
@@ -32,6 +33,8 @@ class ApiTestSettings:
             self.cors_origins_list = [
                 "http://localhost:1420",
                 "tauri://localhost",
+                "http://tauri.localhost",
+                "https://tauri.localhost",
                 "http://localhost:8000",
             ]
 

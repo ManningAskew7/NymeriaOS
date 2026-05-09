@@ -21,6 +21,8 @@ def test_cors_default_is_restricted_to_local_ui_origins():
     assert settings.cors_origins_list == [
         "http://localhost:1420",
         "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
         "http://localhost:8000",
     ]
 

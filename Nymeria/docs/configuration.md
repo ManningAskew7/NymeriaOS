@@ -90,7 +90,7 @@ setup where provider access will be verified separately.
 | `API_PORT` | `8000` | Server port |
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
-| `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled |
+| `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled |
 | `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
 
@@ -416,7 +416,7 @@ AUDIT_LOG_ENABLED=true
 # SLACK_WEBHOOK_URL=
 
 # CORS (optional - for remote frontends)
-# CORS_ORIGINS=http://localhost:1420,tauri://localhost,http://localhost:8000
+# CORS_ORIGINS=http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000
 # Add exact LAN/production frontend origins as needed. Wildcard origins are rejected.
 ```
 

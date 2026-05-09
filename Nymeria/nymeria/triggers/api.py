@@ -578,6 +578,14 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    if settings.nymeria_debug:
+        @app.middleware("http")
+        async def _log_request_origin(request: Request, call_next):
+            origin = request.headers.get("origin")
+            if origin:
+                logger.debug("HTTP Origin header for %s: %s", request.url.path, origin)
+            return await call_next(request)
+
     # Add trigger system router (event-driven automation)
     from .trigger_api import create_trigger_router
     trigger_router = create_trigger_router(

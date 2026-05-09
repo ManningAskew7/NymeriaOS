@@ -62,7 +62,13 @@ def _get_project_root() -> Path:
 PROJECT_ROOT = _get_project_root()
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILENAMES = (".env", "config.env", ".env.docker")
-DEFAULT_CORS_ORIGINS = "http://localhost:1420,tauri://localhost,http://localhost:8000"
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:1420,"
+    "tauri://localhost,"
+    "http://tauri.localhost,"
+    "https://tauri.localhost,"
+    "http://localhost:8000"
+)
 DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
 ReasoningEffort = Literal["low", "medium", "high"]
