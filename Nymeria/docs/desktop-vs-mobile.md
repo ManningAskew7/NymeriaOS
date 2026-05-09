@@ -153,7 +153,7 @@ These files share core logic but have platform-specific adaptations. When making
 
 #### `components/common/SettingsPanel.svelte`
 
-Desktop: 2065 lines. Mobile: 1272 lines. Same core settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP). Desktop also owns global Skills management and marketplace install; mobile keeps Skills control inside per-thread settings.
+Desktop: ~2100 lines plus a desktop-only Provider Setup wizard. Mobile: 1272 lines. Same core settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP). Desktop also owns global Skills management and marketplace install; mobile keeps Skills control inside per-thread settings.
 
 The first-run Setup Wizard is only for client connection. Global backend setup
 belongs here after the user has connected with an admin `nym_...` account token:
@@ -161,6 +161,13 @@ the Provider, Agent, Voice, source-checkout Proxy, and Users settings are
 admin-only UI surfaces. Non-admin users still manage their client connection and
 account state, and any server-side writes remain protected by the backend admin
 dependencies.
+
+Desktop Provider settings include a separate `ProviderSetupWizard.svelte` for
+admin users. It tests direct provider keys or already-running CLIProxy OAuth
+endpoints through `POST /settings/llm/test`, then saves deployment-wide settings
+with `PATCH /settings`. This wizard is not CLIProxy process management; installed
+desktop builds remain client-only and can only point the backend at a proxy URL
+that is already reachable from the backend.
 
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
@@ -299,6 +306,7 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
 | Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
+| `components/common/ProviderSetupWizard.svelte` | Admin provider credential setup and test flow | Desktop-only for now; configures the connected backend through settings APIs |
 | `components/common/StartupOverlay.svelte` | Tauri startup/readiness overlay | Source-checkout dev mode can display local backend startup; release client-only builds normally transition to ready immediately |
 | `components/common/ToggleSwitch.svelte` | Shared desktop switch primitive used by tool, trigger, and MCP management surfaces | Mobile still uses platform-specific switch markup pending a touch-target-focused mobile primitive |
 | `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |

@@ -689,9 +689,13 @@ class Settings(BaseSettings):
 
     def get_api_key_for_provider(self) -> Optional[str]:
         """Get the API key for the configured LLM provider."""
+        if self.llm_provider == "anthropic":
+            if self.llm_base_url:
+                return self.anthropic_api_key
+            return self.anthropic_direct_api_key or self.anthropic_api_key
+
         key_map = {
             "openai": self.openai_api_key,
-            "anthropic": self.anthropic_api_key,
             "openrouter": self.openrouter_api_key,
         }
         return key_map.get(self.llm_provider)
