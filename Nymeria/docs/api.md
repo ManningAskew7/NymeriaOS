@@ -859,6 +859,35 @@ Returns the currently active runtime provider/model, effective max tokens, sourc
 
 ---
 
+### Test LLM Provider Settings
+
+```http
+POST /settings/llm/test
+Content-Type: application/json
+Authorization: Bearer <admin-token>
+```
+
+Admin-only. Tests a provider/model/key/base-URL combination without writing it
+to config. The response never echoes the submitted API key.
+
+```json
+{
+  "llm_provider": "openai",
+  "llm_model": "gpt-5.5",
+  "api_key": "cpx-...",
+  "llm_base_url": "http://localhost:8317/v1",
+  "openai_api_mode": "responses"
+}
+```
+
+For Anthropic CLIProxy, pass the root proxy URL without `/v1`; for
+OpenAI/Codex CLIProxy, pass the OpenAI-compatible `/v1` URL. A failed provider
+probe still returns `200` with `"ok": false` and sanitized error text so setup
+UIs can display the provider failure without treating the Nymeria API request
+itself as broken.
+
+---
+
 ### Update Settings
 
 ```http

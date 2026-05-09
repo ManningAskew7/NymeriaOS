@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
@@ -175,6 +176,156 @@ def _client(
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+class FakeAsyncClient:
+    response_status = 200
+    response_body: dict | None = None
+    calls: list[dict] = []
+
+    def __init__(self, *, timeout: float):
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url: str, *, headers: dict, json: dict):
+        self.calls.append({
+            "url": url,
+            "headers": headers,
+            "json": json,
+            "timeout": self.timeout,
+        })
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            self.response_status,
+            json=self.response_body or {"ok": True},
+            request=request,
+        )
+
+
+def test_llm_provider_test_is_admin_only_and_does_not_call_provider(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    _agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = _agent.accounts_repo.issue_token("alice")
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(user_token),
+        json={
+            "llm_provider": "openai",
+            "llm_model": "gpt-test",
+            "api_key": "sk-test",
+        },
+    )
+
+    assert response.status_code == 403
+    assert FakeAsyncClient.calls == []
+
+
+def test_llm_provider_test_normalizes_openai_cliproxy_base_url(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "openai",
+            "llm_model": "gpt-test",
+            "api_key": "cpx-secret-key",
+            "llm_base_url": "http://localhost:8317",
+            "openai_api_mode": "responses",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "provider": "openai",
+        "model": "gpt-test",
+        "message": "Provider test succeeded.",
+        "openai_api_mode": "responses",
+        "status_code": None,
+        "error_type": None,
+    }
+    assert FakeAsyncClient.calls[0]["url"] == "http://localhost:8317/v1/responses"
+    assert FakeAsyncClient.calls[0]["headers"]["Authorization"] == "Bearer cpx-secret-key"
+    assert FakeAsyncClient.calls[0]["json"]["max_output_tokens"] == 16
+
+
+def test_llm_provider_test_uses_anthropic_proxy_root_and_cloak_header(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "anthropic",
+            "llm_model": "claude-test",
+            "api_key": "cpx-secret-key",
+            "llm_base_url": "http://localhost:8318",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert FakeAsyncClient.calls[0]["url"] == "http://localhost:8318/v1/messages"
+    assert FakeAsyncClient.calls[0]["headers"]["x-api-key"] == "cpx-secret-key"
+    assert FakeAsyncClient.calls[0]["headers"]["User-Agent"] == "claude-cli/2.1.113"
+
+
+def test_llm_provider_test_redacts_secret_from_failure_response(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.response_status = 401
+    FakeAsyncClient.response_body = {
+        "error": {"message": "Rejected gatekeeper key cpx-secret-key"}
+    }
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "openai",
+            "llm_model": "gpt-test",
+            "api_key": "cpx-secret-key",
+            "llm_base_url": "http://localhost:8317/v1",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["status_code"] == 401
+    assert body["error_type"] == "http_error"
+    assert "cpx-secret-key" not in body["message"]
+    assert "[redacted]" in body["message"]
 
 
 def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(

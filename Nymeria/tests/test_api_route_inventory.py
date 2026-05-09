@@ -93,6 +93,7 @@ EXPECTED_ROUTES = [
     ("/settings/global-skills", ("GET",)),
     ("/settings/global-skills", ("PUT",)),
     ("/settings/llm/runtime", ("GET",)),
+    ("/settings/llm/test", ("POST",)),
     ("/skills", ("GET",)),
     ("/skills/install", ("POST",)),
     ("/skills/marketplace/search", ("GET",)),

@@ -150,6 +150,10 @@ provider credentials are intentionally unavailable.
 Runtime settings updates choose the highest-precedence existing config file:
 `.env.docker`, then `config.env`, then `.env`. If no config file exists yet,
 source checkouts create `.env`; packaged installs create `config.env`.
+Admins can test a provider/model/key/base-URL combination before writing it with
+`POST /settings/llm/test`; the probe accepts direct providers and CLIProxy-shaped
+base URLs, but does not persist the submitted API key and does not echo secrets
+in the response.
 
 ### Browser Tools
 

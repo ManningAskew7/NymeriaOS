@@ -1,4 +1,11 @@
-import type { AvailableModel, ModelMetadata, ServerSettings, ServerSettingsUpdate } from '$lib/types';
+import type {
+  AvailableModel,
+  LLMProviderTestRequest,
+  LLMProviderTestResponse,
+  ModelMetadata,
+  ServerSettings,
+  ServerSettingsUpdate
+} from '$lib/types';
 import { ApiBase } from './base';
 
 export class SystemApi extends ApiBase {
@@ -51,6 +58,22 @@ export class SystemApi extends ApiBase {
 
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  async testLLMProviderConfig(
+    request: LLMProviderTestRequest
+  ): Promise<LLMProviderTestResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/llm/test`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to test provider'));
     }
 
     return response.json();
