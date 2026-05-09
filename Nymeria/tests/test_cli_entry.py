@@ -375,6 +375,115 @@ def test_init_noninteractive_defaults_to_print_commands(
     assert "nymeria cli" not in output
 
 
+def test_init_noninteractive_explicit_print_commands_uses_command_handoff(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--next-action",
+            "print_commands",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Start Nymeria with:" in output
+    assert "nymeria api" in output
+    assert "Enter CLI chat with:" not in output
+    assert "Process spawning is not reliable" not in output
+
+
+def test_init_noninteractive_recommended_writes_minimal_default_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    llm_calls = _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "openrouter",
+            "--model",
+            "anthropic/claude-test-model",
+            "--api-key",
+            "sk-or-test-key",
+            "--setup-style",
+            "recommended",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Recommended Defaults" in output
+    assert "Deferred Guided Setup" in output
+    assert "LLM_PROVIDER=openrouter" in config
+    assert "LLM_MODEL=anthropic/claude-test-model" in config
+    assert "OPENROUTER_API_KEY=sk-or-test-key" in config
+    assert f"NYMERIA_DATA_DIR={root / 'data'}" in config
+    assert "EMBEDDING_API_KEY=" not in config
+    assert "OPENAI_API_KEY=" not in config
+    assert "GEMINI_API_KEY=" not in config
+    assert "PERPLEXITY_API_KEY=" not in config
+    assert llm_calls == [
+        ("openrouter", "anthropic/claude-test-model", "sk-or-test-key")
+    ]
+
+
+@pytest.mark.parametrize("hosting", ["bare_metal", "venv"])
+def test_init_noninteractive_local_hosting_profiles_write_runtime_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    hosting: str,
+):
+    _stub_llm_connection(monkeypatch)
+    root = tmp_path / f"runtime-{hosting}"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--hosting",
+            hosting,
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Docker Setup" not in output
+    assert "DATABASE_BACKEND=sqlite" in config
+    assert f"NYMERIA_DATA_DIR={root / 'data'}" in config
+    assert (root / "data" / "accounts.db").exists()
+
+
 def test_init_noninteractive_run_doctor_uses_quick_check_by_default(
     monkeypatch,
     tmp_path: Path,
