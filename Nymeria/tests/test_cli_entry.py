@@ -265,6 +265,89 @@ def test_init_noninteractive_defaults_to_print_commands(
     assert "nymeria cli" not in output
 
 
+@pytest.mark.parametrize(
+    ("provider_choice", "provider_name", "api_key"),
+    [
+        ("1", "anthropic", "sk-ant-test-key"),
+        ("2", "openai", "sk-openai-test-key"),
+        ("3", "openrouter", "sk-or-test-key"),
+    ],
+)
+def test_init_interactive_accepts_provider_default_model(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    provider_choice: str,
+    provider_name: str,
+    api_key: str,
+):
+    root = tmp_path / "runtime"
+    provider = setup_wizard.PROVIDERS[provider_name]
+    answers = iter(
+        [
+            "",  # default hosting: venv
+            provider_choice,
+            "",  # accept provider default model
+            api_key,
+        ]
+    )
+    prompts = []
+
+    def fake_prompt(text="", **kwargs):
+        prompts.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(
+        [
+            "--setup-style",
+            "recommended",
+            "--root",
+            str(root),
+            "--skip-llm-test",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    output = capsys.readouterr().out
+    assert result == 0
+    assert f"LLM_PROVIDER={provider_name}" in config
+    assert f"LLM_MODEL={provider.default_model}" in config
+    assert f"{provider.env_var}={api_key}" in config
+    assert f"> [{provider.default_model}] " in prompts
+    assert "Recommended default:" in output
+    assert provider.default_model in output
+
+
+def test_init_noninteractive_still_requires_explicit_model(
+    monkeypatch,
+    tmp_path: Path,
+):
+    root = tmp_path / "runtime"
+
+    def fail_connection(*args, **kwargs):
+        raise AssertionError("LLM connection test should not run without --model")
+
+    monkeypatch.setattr(setup_wizard, "_test_llm_connection", fail_connection)
+
+    with pytest.raises(SystemExit) as exc_info:
+        setup_main(
+            [
+                "--provider",
+                "anthropic",
+                "--api-key",
+                "sk-ant-test-key",
+                "--root",
+                str(root),
+                "--non-interactive",
+            ]
+        )
+
+    assert str(exc_info.value) == "--model is required with --non-interactive"
+    assert not (root / "config.env").exists()
+
+
 def test_init_interactive_prompts_for_hosting_before_provider(
     monkeypatch,
     tmp_path: Path,

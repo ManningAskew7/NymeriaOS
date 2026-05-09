@@ -49,6 +49,7 @@ class ProviderOption:
     label: str
     env_var: str
     key_prefix: str
+    default_model: str
 
 
 @dataclass(frozen=True)
