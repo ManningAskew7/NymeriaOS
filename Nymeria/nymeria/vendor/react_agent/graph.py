@@ -280,7 +280,7 @@ def create_graph(
 
         # Custom configuration
         config = AgentConfig(
-            llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-20250514"),
+            llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-6"),
             system_prompt="You are a helpful coding assistant.",
         )
         my_tools = [search_tool, calculate_tool]

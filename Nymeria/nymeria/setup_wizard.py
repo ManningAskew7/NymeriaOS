@@ -45,21 +45,21 @@ PROVIDERS = {
         label="Anthropic (Claude)",
         env_var="ANTHROPIC_API_KEY",
         key_prefix="sk-ant-",
-        default_model="claude-sonnet-4-20250514",
+        default_model="claude-sonnet-4-6",
     ),
     "openai": ProviderOption(
         name="openai",
         label="OpenAI (GPT)",
         env_var="OPENAI_API_KEY",
         key_prefix="sk-",
-        default_model="gpt-4o",
+        default_model="gpt-5.5",
     ),
     "openrouter": ProviderOption(
         name="openrouter",
         label="OpenRouter (multi-model)",
         env_var="OPENROUTER_API_KEY",
         key_prefix="sk-or-",
-        default_model="anthropic/claude-sonnet-4",
+        default_model="anthropic/claude-sonnet-4-6",
     ),
 }
 
