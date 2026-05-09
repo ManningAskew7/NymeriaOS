@@ -6,7 +6,7 @@
 
 use shared_child::SharedChild;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Output};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,9 @@ use windows_sys::Win32::System::JobObjects::{
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+const CLIPROXY_HOST_BASE_URL: &str = "http://127.0.0.1:8318";
+const CLIPROXY_READY_TEXT: &str = "CLI Proxy API Server";
 
 #[derive(Clone, Debug)]
 pub struct RuntimeLayout {
@@ -197,48 +200,63 @@ impl ProcessManager {
         Ok(())
     }
 
-    /// Start the CLIProxy (`cliproxy.exe`).
+    /// Start the current pinned CLIProxy Docker compose deployment.
     pub fn start_cliproxy(&self) -> Result<(), String> {
-        // Don't start if already running
-        if Self::is_process_alive(&self.cliproxy_process) {
+        if self.is_cliproxy_running() {
             return Ok(());
         }
 
-        let cliproxy_dir = self.project_root.join("CLIProxyAPI-main");
-        let cliproxy_exe = cliproxy_dir.join("cliproxy.exe");
+        let cliproxy_root = self.cliproxy_root();
+        let compose_path = self.cliproxy_compose_path()?;
+        let mut command = Command::new("docker");
+        command
+            .arg("compose")
+            .arg("-f")
+            .arg(&compose_path)
+            .arg("up")
+            .arg("-d")
+            .current_dir(&cliproxy_root);
 
-        if !cliproxy_exe.exists() {
-            return Err(format!(
-                "CLIProxy not found at {}",
-                cliproxy_exe.display()
-            ));
+        let output = command
+            .output()
+            .map_err(|e| format!("Failed to run docker compose up -d: {}", e))?;
+        if !output.status.success() {
+            return Err(command_failure("docker compose up -d", output));
         }
 
-        let config_path = cliproxy_dir.join("config.yaml");
-
-        let mut command = Command::new(&cliproxy_exe);
-        command
-            .arg("-config")
-            .arg(&config_path)
-            .current_dir(&cliproxy_dir);
-
-        let child = spawn_no_window(&mut command)
-            .map_err(|e| format!("Failed to spawn CLIProxy: {}", e))?;
-
-        let shared = self.wrap_child(child)?;
-        *self.cliproxy_process.lock().unwrap() = Some(shared);
+        if !Self::wait_for_cliproxy_ready(Duration::from_secs(20)) {
+            return Err(format!(
+                "CLIProxy did not become reachable at {} after docker compose up.",
+                CLIPROXY_HOST_BASE_URL
+            ));
+        }
         Ok(())
     }
 
-    /// Stop the CLIProxy process.
+    /// Stop the current pinned CLIProxy Docker compose deployment.
     pub fn stop_cliproxy(&self) -> Result<(), String> {
-        Self::kill_process(&self.cliproxy_process);
+        let cliproxy_root = self.cliproxy_root();
+        let compose_path = self.cliproxy_compose_path()?;
+        let mut command = Command::new("docker");
+        command
+            .arg("compose")
+            .arg("-f")
+            .arg(&compose_path)
+            .arg("stop")
+            .current_dir(&cliproxy_root);
+
+        let output = command
+            .output()
+            .map_err(|e| format!("Failed to run docker compose stop: {}", e))?;
+        if !output.status.success() {
+            return Err(command_failure("docker compose stop", output));
+        }
         Ok(())
     }
 
-    /// Check if the CLIProxy process is alive.
+    /// Check if the host-reachable CLIProxy endpoint is alive.
     pub fn is_cliproxy_running(&self) -> bool {
-        Self::is_process_alive(&self.cliproxy_process)
+        Self::cliproxy_root_available()
     }
 
     /// Check if the API process is alive.
@@ -323,6 +341,53 @@ impl ProcessManager {
         Ok(command)
     }
 
+    fn cliproxy_root(&self) -> PathBuf {
+        self.project_root
+            .join("CLIProxyAPI-main")
+            .join("temp")
+            .join("latest")
+    }
+
+    fn cliproxy_compose_path(&self) -> Result<PathBuf, String> {
+        let compose_path = self.cliproxy_root().join("docker-compose.yml");
+        if !compose_path.is_file() {
+            return Err(format!(
+                "Pinned CLIProxy compose file not found at {}",
+                compose_path.display()
+            ));
+        }
+        Ok(compose_path)
+    }
+
+    fn wait_for_cliproxy_ready(timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() <= deadline {
+            if Self::cliproxy_root_available() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        false
+    }
+
+    fn cliproxy_root_available() -> bool {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return false,
+        };
+
+        match client.get(format!("{}/", CLIPROXY_HOST_BASE_URL)).send() {
+            Ok(resp) if resp.status().as_u16() < 500 => match resp.text() {
+                Ok(body) => body.contains(CLIPROXY_READY_TEXT),
+                Err(_) => false,
+            },
+            _ => false,
+        }
+    }
+
     fn is_process_alive(proc: &Arc<Mutex<Option<Arc<SharedChild>>>>) -> bool {
         let guard = proc.lock().unwrap();
         match guard.as_ref() {
@@ -354,6 +419,22 @@ fn spawn_no_window(command: &mut Command) -> std::io::Result<Child> {
     command.creation_flags(CREATE_NO_WINDOW);
 
     command.spawn()
+}
+
+fn command_failure(label: &str, output: Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+
+    if detail.is_empty() {
+        format!("{} failed with status {}", label, output.status)
+    } else {
+        format!("{} failed with status {}: {}", label, output.status, detail)
+    }
 }
 
 #[cfg(test)]

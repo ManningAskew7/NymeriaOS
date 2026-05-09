@@ -10,6 +10,9 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+const CLIPROXY_HOST_BASE_URL: &str = "http://127.0.0.1:8318";
+const CLIPROXY_CONTAINER_NAME: &str = "cli-proxy-api-latest";
+
 #[derive(Serialize)]
 pub struct AutoConfig {
     pub api_url: String,
@@ -107,33 +110,30 @@ pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus 
     CLIProxyStatus { running, sessions }
 }
 
-/// Initiate OAuth login for a provider (opens browser).
+/// Initiate OAuth login for a provider against the current pinned Docker container.
 #[tauri::command]
 pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
     let pm = state.process_manager.as_ref()
         .ok_or_else(|| "Not available in client-only mode".to_string())?;
-    let project_root = pm.project_root();
-    let cliproxy_dir = project_root.join("CLIProxyAPI-main");
-    let cliproxy_exe = cliproxy_dir.join("cliproxy.exe");
 
-    if !cliproxy_exe.exists() {
-        return Err("CLIProxy executable not found".to_string());
+    if !pm.is_cliproxy_running() {
+        pm.start_cliproxy()?;
     }
 
     let flag = match provider.as_str() {
-        "claude" => "-claude-login",
-        "openai" => "-codex-login",
+        "claude" => "--claude-login",
+        "openai" => "--codex-device-login",
         _ => return Err(format!("Unknown provider: {}", provider)),
     };
 
-    let config_path = cliproxy_dir.join("config.yaml");
-
-    let mut command = Command::new(&cliproxy_exe);
+    let mut command = Command::new("docker");
     command
+        .arg("exec")
+        .arg("-i")
+        .arg(CLIPROXY_CONTAINER_NAME)
+        .arg("./CLIProxyAPI")
         .arg(flag)
-        .arg("-config")
-        .arg(&config_path)
-        .current_dir(&cliproxy_dir);
+        .arg("--no-browser");
 
     spawn_no_window(&mut command)
         .map_err(|e| format!("Failed to start login: {}", e))?;
@@ -149,7 +149,10 @@ fn query_cliproxy_sessions() -> Result<Vec<CLIProxySession>, String> {
         .map_err(|e| format!("{}", e))?;
 
     let resp = client
-        .get("http://127.0.0.1:8317/v0/management/oauth/sessions")
+        .get(format!(
+            "{}/v0/management/oauth/sessions",
+            CLIPROXY_HOST_BASE_URL
+        ))
         .send()
         .map_err(|e| format!("{}", e))?;
 
