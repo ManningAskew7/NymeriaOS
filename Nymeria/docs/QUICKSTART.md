@@ -38,17 +38,20 @@ See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
 upgrade commands, and the GitHub Release wheel fallback.
 
 `nymeria init` prompts for the hosting/security profile, provider, model, API
-key, and optional capability keys. The model step offers a provider-specific
-default and lets you press Enter to accept it. For package installs, choose the Python
-virtual environment / pipx hosting option: it isolates Python dependencies, but
-it is not an OS security sandbox. Nymeria can still access files your user can
-access when tools are enabled. The Docker option prints source-checkout Docker
-steps and exits without writing `config.env` or `.env.docker`. The venv/pipx
-path validates the provider key with a small LLM API call, writes
-`~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the first
-bootstrap admin token. `nymeria doctor` checks the installed Python version,
-config files, data directory, LLM connectivity, local databases, optional
-Redis/voice setup, bundled frontend, and API port before you start the server.
+key, optional capability keys, and what to do next after config is written. The
+model step offers a provider-specific default and lets you press Enter to
+accept it. For package installs, choose the Python virtual environment / pipx
+hosting option: it isolates Python dependencies, but it is not an OS security
+sandbox. Nymeria can still access files your user can access when tools are
+enabled. The Docker option prints source-checkout Docker steps and exits
+without writing `config.env` or `.env.docker`. The venv/pipx path validates the
+provider key with a small LLM API call, writes `~/.nymeria/config.env`, creates
+`~/.nymeria/data/`, and creates the first bootstrap admin token. The final
+prompt can print backend commands, print the `nymeria cli` handoff, or show the
+backend/web UI start command. `nymeria doctor` checks the installed Python
+version, config files, data directory, LLM connectivity, local databases,
+optional Redis/voice setup, bundled frontend, and API port before you start the
+server.
 
 Packaged installs store config and writable data under `~/.nymeria/` by
 default. After `nymeria api` starts, open `http://localhost:8000`; the backend
