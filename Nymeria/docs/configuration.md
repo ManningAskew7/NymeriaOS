@@ -77,10 +77,10 @@ and printed next commands. It accepts `--hosting venv|bare_metal`,
 `--next-action print_commands|cli|start_api_open_frontend`. `--hosting docker`
 prints source-checkout Docker setup commands and exits without writing
 `config.env` or `.env.docker`, so Docker credentials are not silently written to
-the wrong runtime root. CLIProxy OAuth values are reserved for dedicated
-onboarding flows and are rejected by the current wizard. Add `--skip-llm-test`
-only for deliberate offline/scripted setup where provider access will be
-verified separately.
+the wrong runtime root. CLIProxy OAuth auth methods print a guarded planning
+handoff with the documented proxy commands and also exit without writing
+Nymeria config. Add `--skip-llm-test` only for deliberate offline/scripted setup
+where provider access will be verified separately.
 
 ### Database
 

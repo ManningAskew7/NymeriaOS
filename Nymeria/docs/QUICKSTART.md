@@ -175,9 +175,10 @@ and `--root`. The current scripted direct setup also accepts
 when these are omitted, it keeps the old direct API-key setup and prints the
 commands to run next. `--hosting docker` prints the Docker source-checkout
 handoff and exits without writing `config.env` or `.env.docker`. CLIProxy OAuth
-values are reserved for their dedicated onboarding flows and are rejected until
-those flows are implemented. Add `--skip-llm-test` only when you intentionally
-want to write the config without validating provider access.
+auth methods print a guarded planning handoff with the documented proxy
+commands and also exit without writing Nymeria config. Add `--skip-llm-test`
+only when you intentionally want to write the config without validating
+provider access.
 
 To diagnose an existing install without changing files, run:
 
