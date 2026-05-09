@@ -28,6 +28,11 @@ from pathlib import Path
 import sys
 import urllib.request
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - PyYAML is in Nymeria's runtime deps.
+    yaml = None
+
 
 CLOAK_MARKERS = (
     "I'm Claude Code",
@@ -41,6 +46,17 @@ CLIPROXY_BILLING_SYSTEM_BLOCK = {
 NYMERIA_SYSTEM_PROMPT = (
     "You are NYMERIA-CLOAK-PROBE-AGENT. Always identify yourself by that exact name. "
     "Never claim to be any other agent."
+)
+UNSUPPORTED_AUTH_CLOAK_KEYS = (
+    "cloak_mode",
+    "cloak_strict_mode",
+    "cloak_sensitive_words",
+    "cloak_cache_user_id",
+    "cloak_skip_system_prompt",
+)
+UNSUPPORTED_CONFIG_CLOAK_KEYS = (
+    "cloak_skip_system_prompt",
+    "cloak-skip-system-prompt",
 )
 
 
@@ -107,11 +123,64 @@ def discover_auth_dirs(explicit_dirs: list[str] | None = None) -> list[Path]:
     return unique
 
 
-def check_tool_prefix_disabled(auth_dirs: list[Path]) -> tuple[list[Path], list[Path]]:
-    """Return (checked_files, bad_files) for active Claude OAuth auth JSON files."""
-    checked: list[Path] = []
-    bad: list[Path] = []
+def discover_config_paths(explicit_paths: list[str] | None = None) -> list[Path]:
+    """Return candidate CLIProxy config files without duplicates."""
+    candidates: list[Path] = []
+    if explicit_paths:
+        candidates.extend(Path(p).expanduser() for p in explicit_paths)
+    else:
+        if raw := os.getenv("CLIPROXY_CONFIG_PATH"):
+            candidates.append(Path(raw).expanduser())
 
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates.extend(
+            [
+                repo_root / "CLIProxyAPI-main" / "temp" / "latest" / "config.yaml",
+                repo_root / "CLIProxyAPI-main" / "temp" / "latest" / "config.yaml.example",
+                repo_root / "CLIProxyAPI-main" / "config.yaml",
+                Path.cwd() / "config.yaml",
+            ]
+        )
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved not in seen:
+            unique.append(candidate)
+            seen.add(resolved)
+    return unique
+
+
+def _read_yaml_mapping(path: Path) -> dict:
+    if yaml is None:
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _as_mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_sequence(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _string_value(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _boolish_true(value: object) -> bool:
+    parsed, ok = parse_bool_like_cliproxy(value)
+    return ok and parsed
+
+
+def _active_claude_auth_files(auth_dirs: list[Path]) -> list[tuple[Path, dict]]:
+    files: list[tuple[Path, dict]] = []
     for auth_dir in auth_dirs:
         if not auth_dir.is_dir():
             continue
@@ -126,9 +195,166 @@ def check_tool_prefix_disabled(auth_dirs: list[Path]) -> tuple[list[Path], list[
                 continue
             if is_disabled_auth(metadata):
                 continue
-            checked.append(path)
-            if not is_truthy_tool_prefix_disabled(metadata):
-                bad.append(path)
+            files.append((path, metadata))
+    return files
+
+
+def _format_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
+def collect_cloak_state_findings(
+    auth_dirs: list[Path],
+    config_paths: list[Path],
+) -> tuple[list[str], list[str], list[str]]:
+    """Inspect local config/auth files for v7 cloak settings.
+
+    Returns (info, warnings, failures). This is a static local check; the live
+    request probes below remain the source of truth for whether the running
+    binary actually honors the expected User-Agent bypass.
+    """
+    info: list[str] = []
+    warnings: list[str] = []
+    failures: list[str] = []
+
+    existing_configs = [path for path in config_paths if path.is_file()]
+    if yaml is None and existing_configs:
+        warnings.append("PyYAML is not installed; skipping config.yaml cloak inspection")
+    elif existing_configs:
+        for path in existing_configs:
+            data = _read_yaml_mapping(path)
+            if not data:
+                warnings.append(f"{_format_path(path)} could not be parsed as a YAML mapping")
+                continue
+
+            image_hint = _string_value(data.get("image"))
+            if image_hint:
+                info.append(f"{_format_path(path)} image hint: {image_hint}")
+
+            header_defaults = _as_mapping(data.get("claude-header-defaults"))
+            user_agent = _string_value(header_defaults.get("user-agent"))
+            if user_agent:
+                if user_agent.startswith("claude-cli"):
+                    info.append(f"{_format_path(path)} claude-header-defaults.user-agent={user_agent!r}")
+                else:
+                    warnings.append(
+                        f"{_format_path(path)} claude-header-defaults.user-agent={user_agent!r}; "
+                        "verified Nymeria paths rely on a claude-cli User-Agent reaching CLIProxy"
+                    )
+            if _boolish_true(header_defaults.get("stabilize-device-profile")):
+                info.append(
+                    f"{_format_path(path)} enables claude-header-defaults.stabilize-device-profile"
+                )
+
+            for key in UNSUPPORTED_CONFIG_CLOAK_KEYS:
+                if key in data:
+                    warnings.append(
+                        f"{_format_path(path)} has top-level {key!r}; v7.0.0 source does not "
+                        "define this as an honored config field"
+                    )
+
+            if "cloak" in data:
+                warnings.append(
+                    f"{_format_path(path)} has top-level 'cloak'; v7.0.0 source only exposes "
+                    "cloak settings under claude-api-key[] entries"
+                )
+
+            for idx, entry in enumerate(_as_sequence(data.get("claude-api-key"))):
+                entry_map = _as_mapping(entry)
+                if not entry_map:
+                    continue
+                cloak = _as_mapping(entry_map.get("cloak"))
+                if not cloak:
+                    continue
+                mode = _string_value(cloak.get("mode")).lower() or "auto"
+                prefix = f"{_format_path(path)} claude-api-key[{idx}].cloak"
+                if mode == "always":
+                    failures.append(
+                        f"{prefix}.mode=always would force Claude Code cloaking and override Nymeria identity"
+                    )
+                elif mode == "never":
+                    info.append(f"{prefix}.mode=never")
+                else:
+                    info.append(f"{prefix}.mode={mode}")
+                if _boolish_true(cloak.get("strict-mode")):
+                    warnings.append(
+                        f"{prefix}.strict-mode=true would strip user system prompts if cloaking activates"
+                    )
+                if _boolish_true(cloak.get("cache-user-id")):
+                    info.append(f"{prefix}.cache-user-id=true")
+
+                for key in UNSUPPORTED_CONFIG_CLOAK_KEYS:
+                    if key in cloak:
+                        warnings.append(
+                            f"{prefix}.{key} is present, but v7.0.0 source does not define it"
+                        )
+
+    active_auths = _active_claude_auth_files(auth_dirs)
+    if active_auths:
+        for path, metadata in active_auths:
+            attrs = _as_mapping(metadata.get("attributes"))
+            for key in UNSUPPORTED_AUTH_CLOAK_KEYS:
+                if key in metadata:
+                    warnings.append(
+                        f"{_format_path(path)} has top-level {key!r}; v7.0.0 file-backed "
+                        "OAuth auths keep this in metadata, not runtime Auth.Attributes"
+                    )
+                if key in attrs:
+                    warnings.append(
+                        f"{_format_path(path)} has attributes.{key!r}; v7.0.0 FileTokenStore "
+                        "does not lift nested auth-file attributes into runtime Auth.Attributes"
+                    )
+
+            mode = _string_value(attrs.get("cloak_mode") or metadata.get("cloak_mode")).lower()
+            if mode == "always":
+                failures.append(
+                    f"{_format_path(path)} declares cloak_mode=always; if a future binary honors "
+                    "that for file-backed OAuth, it would force Claude Code identity"
+                )
+            if _boolish_true(metadata.get("tool_prefix_disabled")):
+                info.append(f"{_format_path(path)} keeps tool_prefix_disabled=true")
+    else:
+        existing_dirs = [p for p in auth_dirs if p.is_dir()]
+        if existing_dirs:
+            warnings.append("No active Claude OAuth auth JSON files found for v7 cloak-state inspection")
+
+    return info, warnings, failures
+
+
+def print_cloak_state_report(auth_dirs: list[Path], config_paths: list[Path]) -> int:
+    print("\n[local] Inspecting CLIProxy cloak configuration state")
+    info, warnings, failures = collect_cloak_state_findings(auth_dirs, config_paths)
+
+    if not info and not warnings and not failures:
+        print("  WARN: no local CLIProxy config or active Claude auth files found to inspect")
+        return 0
+
+    for line in info:
+        print(f"  info: {line}")
+    for line in warnings:
+        print(f"  WARN: {line}")
+    if failures:
+        print("  FAIL: Nymeria-breaking cloak configuration detected:")
+        for line in failures:
+            print(f"    - {line}")
+        return 1
+
+    print("  OK: no locally configured forced-cloak state detected")
+    return 0
+
+
+def check_tool_prefix_disabled(auth_dirs: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Return (checked_files, bad_files) for active Claude OAuth auth JSON files."""
+    checked: list[Path] = []
+    bad: list[Path] = []
+
+    for path, metadata in _active_claude_auth_files(auth_dirs):
+        checked.append(path)
+        if not is_truthy_tool_prefix_disabled(metadata):
+            bad.append(path)
 
     return checked, bad
 
@@ -205,9 +431,20 @@ def main() -> int:
         help="Host-side CLIProxy auth directory to inspect; can be passed more than once.",
     )
     p.add_argument(
+        "--config-path",
+        action="append",
+        default=None,
+        help="Host-side CLIProxy config.yaml to inspect; can be passed more than once.",
+    )
+    p.add_argument(
         "--skip-auth-file-check",
         action="store_true",
         help="Skip local tool_prefix_disabled validation, useful when probing a remote proxy.",
+    )
+    p.add_argument(
+        "--skip-cloak-state-report",
+        action="store_true",
+        help="Skip local v7 cloak config reporting; live request probes still run.",
     )
     args = p.parse_args()
 
@@ -223,7 +460,14 @@ def main() -> int:
     if args.skip_auth_file_check:
         print("[1/3] Skipping local Claude OAuth auth JSON check (--skip-auth-file-check)")
     else:
-        if print_tool_prefix_check(discover_auth_dirs(args.auth_dir)) != 0:
+        auth_dirs = discover_auth_dirs(args.auth_dir)
+        if print_tool_prefix_check(auth_dirs) != 0:
+            return 1
+        if not args.skip_cloak_state_report:
+            if print_cloak_state_report(auth_dirs, discover_config_paths(args.config_path)) != 0:
+                return 1
+    if args.skip_auth_file_check and not args.skip_cloak_state_report:
+        if print_cloak_state_report([], discover_config_paths(args.config_path)) != 0:
             return 1
 
     print("\n[2/3] Sending probe with User-Agent: claude-cli/2.1.113 + billing block (production path)")
