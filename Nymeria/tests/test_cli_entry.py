@@ -25,7 +25,12 @@ from nymeria.config import settings as settings_module
 from nymeria.setup_wizard import main as setup_main
 
 
-def _make_cliproxy_root(tmp_path: Path, *, auth_payload: dict | None = None) -> Path:
+def _make_cliproxy_root(
+    tmp_path: Path,
+    *,
+    auth_payload: dict | None = None,
+    auth_filename: str = "claude-test@example.com.json",
+) -> Path:
     root = tmp_path / "cliproxy" / "temp" / "latest"
     auth_dir = root / "auths"
     auth_dir.mkdir(parents=True)
@@ -59,7 +64,7 @@ def _make_cliproxy_root(tmp_path: Path, *, auth_payload: dict | None = None) -> 
         encoding="utf-8",
     )
     if auth_payload is not None:
-        (auth_dir / "claude-test@example.com.json").write_text(
+        (auth_dir / auth_filename).write_text(
             json.dumps(auth_payload),
             encoding="utf-8",
         )
@@ -975,22 +980,26 @@ def test_cliproxy_claude_smoke_failure_stops_before_config(
     assert not (root / "config.env").exists()
 
 
-def test_init_noninteractive_cliproxy_codex_auth_prints_planning_handoff(
+def test_init_noninteractive_cliproxy_codex_auth_requires_active_oauth(
+    monkeypatch,
     tmp_path: Path,
     capsys,
 ):
+    cliproxy_root = _make_cliproxy_root(tmp_path)
     root = tmp_path / "runtime"
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ensure_cliproxy_container_ready",
+        lambda *args, **kwargs: None,
+    )
 
     result = setup_main(
         [
-            "--provider",
-            "openai",
-            "--model",
-            "gpt-5.5",
-            "--api-key",
-            "sk-not-written",
             "--auth-method",
             "cliproxy_codex_oauth",
+            "--cliproxy-root",
+            str(cliproxy_root),
             "--root",
             str(root),
             "--non-interactive",
@@ -999,23 +1008,137 @@ def test_init_noninteractive_cliproxy_codex_auth_prints_planning_handoff(
 
     output = capsys.readouterr().out
     normalized_output = " ".join(output.split())
-    assert result == 0
-    assert "CLIProxy Codex/OpenAI OAuth Planning Gate" in output
-    assert "LLM_PROVIDER=openai" in output
-    assert "OPENAI_API_MODE=responses" in output
-    assert "LLM_BASE_URL=http://localhost:8318/v1" in output
-    assert "OPENAI_API_KEY=cpx-<your-codex-gatekeeper-key>" in output
-    assert "must end in /v1" in output
-    assert "not an upstream Anthropic or OpenAI API key" in normalized_output
-    assert (
-        "do not reuse the cpx-* gatekeeper key for embeddings or voice"
-        in normalized_output
-    )
-    assert "No config.env or .env.docker was written" in output
+    assert result == 2
+    assert "no active Codex/OpenAI OAuth auth JSON" in normalized_output
+    assert "Manual CLIProxy Codex/OpenAI OAuth steps" in output
+    assert "docker exec -it cli-proxy-api-latest" in output
     assert not (root / "config.env").exists()
 
 
-def test_init_interactive_cliproxy_auth_can_cancel_planning_gate(
+def test_init_noninteractive_cliproxy_codex_oauth_writes_verified_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    cliproxy_root = _make_cliproxy_root(
+        tmp_path,
+        auth_filename="codex-test@example.com-plus.json",
+        auth_payload={
+            "type": "codex",
+            "email": "test@example.com",
+            "access_token": "redacted",
+        },
+    )
+    root = tmp_path / "runtime"
+    verify_calls = []
+    restart_calls = []
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ensure_cliproxy_container_ready",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_restart_cliproxy_container",
+        lambda console: restart_calls.append(True),
+    )
+
+    def fake_verify(base_url, *, gatekeeper_key, model, console):
+        verify_calls.append((base_url, gatekeeper_key, model))
+
+    monkeypatch.setattr(setup_wizard, "_run_cliproxy_codex_verification", fake_verify)
+
+    result = setup_main(
+        [
+            "--auth-method",
+            "cliproxy_codex_oauth",
+            "--api-key",
+            "cpx-codex-test",
+            "--model",
+            "gpt-test-model",
+            "--embedding-api-key",
+            "cpx-not-for-embeddings",
+            "--cliproxy-root",
+            str(cliproxy_root),
+            "--cliproxy-base-url",
+            "http://localhost:8317/v1",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    proxy_config = setup_wizard._read_cliproxy_config(cliproxy_root / "config.yaml")
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "LLM_PROVIDER=openai" in config
+    assert "LLM_MODEL=gpt-test-model" in config
+    assert "OPENAI_API_MODE=responses" in config
+    assert "LLM_BASE_URL=http://localhost:8317/v1" in config
+    assert "OPENAI_API_KEY=cpx-codex-test" in config
+    assert "EMBEDDING_API_KEY=" not in config
+    assert "EMBEDDING_API_KEY was not written" in output
+    assert "Bootstrap token:" in output
+    assert proxy_config["api-keys"] == ["cpx-codex-test"]
+    assert verify_calls == [
+        (
+            "http://localhost:8317/v1",
+            "cpx-codex-test",
+            "gpt-test-model",
+        )
+    ]
+    assert restart_calls == [True]
+
+
+def test_cliproxy_codex_probe_failure_stops_before_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    cliproxy_root = _make_cliproxy_root(
+        tmp_path,
+        auth_filename="codex-test@example.com-plus.json",
+        auth_payload={"type": "codex"},
+    )
+    root = tmp_path / "runtime"
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ensure_cliproxy_container_ready",
+        lambda *args, **kwargs: None,
+    )
+
+    def fail_verify(*args, **kwargs):
+        raise setup_wizard.CLIProxySetupError("responses probe failed")
+
+    monkeypatch.setattr(setup_wizard, "_run_cliproxy_codex_verification", fail_verify)
+
+    result = setup_main(
+        [
+            "--auth-method",
+            "cliproxy_codex_oauth",
+            "--api-key",
+            "cpx-codex-test",
+            "--cliproxy-root",
+            str(cliproxy_root),
+            "--cliproxy-base-url",
+            "http://localhost:8317",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "responses probe failed" in output
+    assert "Manual CLIProxy Codex/OpenAI OAuth steps" in output
+    assert not (root / "config.env").exists()
+
+
+def test_init_interactive_cliproxy_auth_can_cancel_setup(
     monkeypatch,
     capsys,
 ):
