@@ -16,14 +16,7 @@ from rich.console import Console
 
 from ._runtime_paths import default_user_project_root, find_project_root
 from .core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
-
-
-@dataclass(frozen=True)
-class ProviderOption:
-    name: str
-    label: str
-    env_var: str
-    key_prefix: str
+from .onboarding import ProviderOption
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,21 @@ from pathlib import Path
 
 from nymeria import _runtime_paths
 from nymeria import setup_wizard
+from nymeria.onboarding import (
+    HOSTING_CHOICES,
+    HOSTING_ORDER,
+    NEXT_ACTION_ORDER,
+    PROVIDER_AUTH_METHOD_CHOICES,
+    PROVIDER_AUTH_METHOD_ORDER,
+    SETUP_STYLE_CHOICES,
+    SETUP_STYLE_ORDER,
+    HostingOption,
+    NextAction,
+    ProviderAuthMethod,
+    SetupStyle,
+    choice_values,
+    parse_choice,
+)
 from nymeria.config import settings as settings_module
 from nymeria.setup_wizard import main as setup_main
 
@@ -15,6 +30,66 @@ def _stub_llm_connection(monkeypatch):
 
     monkeypatch.setattr(setup_wizard, "_test_llm_connection", fake_connection)
     return calls
+
+
+def test_onboarding_data_model_matches_plan_values():
+    assert choice_values(HostingOption) == ("bare_metal", "venv", "docker")
+    assert choice_values(ProviderAuthMethod) == (
+        "api_key",
+        "cliproxy_claude_oauth",
+        "cliproxy_codex_oauth",
+    )
+    assert choice_values(SetupStyle) == ("recommended", "advanced")
+    assert choice_values(NextAction) == (
+        "start_api_open_frontend",
+        "print_commands",
+        "cli",
+    )
+    assert HOSTING_ORDER == (
+        HostingOption.BARE_METAL,
+        HostingOption.VENV,
+        HostingOption.DOCKER,
+    )
+    assert PROVIDER_AUTH_METHOD_ORDER == (
+        ProviderAuthMethod.API_KEY,
+        ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH,
+        ProviderAuthMethod.CLIPROXY_CODEX_OAUTH,
+    )
+    assert SETUP_STYLE_ORDER == (SetupStyle.RECOMMENDED, SetupStyle.ADVANCED)
+    assert NEXT_ACTION_ORDER == (
+        NextAction.START_API_OPEN_FRONTEND,
+        NextAction.PRINT_COMMANDS,
+        NextAction.CLI,
+    )
+
+
+def test_onboarding_choice_metadata_captures_safety_constraints():
+    venv_description = HOSTING_CHOICES[HostingOption.VENV].description
+    docker_choice = HOSTING_CHOICES[HostingOption.DOCKER]
+    claude_oauth = PROVIDER_AUTH_METHOD_CHOICES[
+        ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH
+    ]
+
+    assert "not an OS security sandbox" in venv_description
+    assert docker_choice.recommended is True
+    assert claude_oauth.advanced is True
+    assert SETUP_STYLE_CHOICES[SetupStyle.RECOMMENDED].recommended is True
+
+
+def test_onboarding_choice_parser_reports_allowed_values():
+    result = parse_choice(HostingOption, "docker", option_name="--hosting")
+
+    assert result is HostingOption.DOCKER
+
+    try:
+        parse_choice(NextAction, "invalid", option_name="--next-action")
+    except ValueError as exc:
+        assert str(exc) == (
+            "--next-action must be one of: "
+            "start_api_open_frontend, print_commands, cli"
+        )
+    else:
+        raise AssertionError("expected invalid onboarding choice to fail")
 
 
 def test_runtime_bootstrap_uses_source_checkout_when_markers_exist(
