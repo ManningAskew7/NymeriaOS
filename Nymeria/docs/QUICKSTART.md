@@ -133,7 +133,16 @@ Edit `.env`, `config.env`, or `.env.docker` and fill in the required values:
 
 ### Account token
 
-The legacy shared `NYMERIA_API_KEY` was retired in the multi-user refactor. The first time the API boots with an empty accounts DB it auto-creates a `default` admin user, prints the raw token to the API log at WARNING level, and writes it to `<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600). Paste that token into the desktop/mobile Setup Wizard, then delete the file. See `docs/accounts.md` for the full account model and the `python run.py users …` CLI for provisioning additional users.
+The legacy shared `NYMERIA_API_KEY` was retired in the multi-user refactor. The
+first time setup or API boot finds an empty accounts DB it auto-creates a
+`default` admin user and writes the raw account token to
+`<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600). `nymeria init` prints the token
+file path and a platform-specific copy command that reads the `nym_...` value
+from the file without putting the token itself in shell history. Paste that
+`nym_...` account token into the desktop/mobile Setup Wizard, not an
+Anthropic/OpenAI/OpenRouter provider API key, then delete the file. See
+`docs/accounts.md` for the full account model and the `python run.py users …`
+CLI for provisioning additional users.
 
 ### Set Your LLM Provider API Key
 

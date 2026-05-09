@@ -37,10 +37,15 @@ On first run with an empty `users` table, the agent auto-creates a default admin
 - `role`: `admin`
 
 The raw token is:
-1. Logged at WARNING level with a loud banner
+1. Announced at WARNING level with a loud banner and token-file path
 2. Written to `<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600)
 
-Paste the token into the Desktop/Mobile Setup Wizard in place of the old `NYMERIA_API_KEY`, then delete the file. The `default` user ID lines up with existing per-user file paths (`data/todos/default.json`, `data/profiles/default.json`, etc.) so no data migration is needed for the first user.
+Paste the `nym_...` token from that file into the Desktop/Mobile Setup Wizard
+in place of the old `NYMERIA_API_KEY`, then delete the file. Do not paste a
+provider API key such as an Anthropic, OpenAI, or OpenRouter key. The `default`
+user ID lines up with existing per-user file paths (`data/todos/default.json`,
+`data/profiles/default.json`, etc.) so no data migration is needed for the first
+user.
 
 ## CLI (legacy — unmaintained)
 
