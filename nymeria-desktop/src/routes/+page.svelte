@@ -38,7 +38,12 @@
       configStore.apiKey = config.api_key;
       configStore.completeSetup();
     } catch (e) {
-      console.warn('[Page] Tauri auto-config failed, checking build-time defaults:', e);
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.includes('Client-only mode')) {
+        debugLog('[Page] Tauri client-only mode, checking build-time defaults');
+      } else {
+        console.warn('[Page] Tauri auto-config failed, checking build-time defaults:', e);
+      }
       // In client-only mode, use baked-in defaults if available
       const envUrl = import.meta.env.VITE_DEFAULT_API_URL;
       const envKey = import.meta.env.VITE_DEFAULT_API_KEY;

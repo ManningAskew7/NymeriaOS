@@ -7,6 +7,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 TAURI_CONFIG = ROOT / "nymeria-desktop" / "src-tauri" / "tauri.conf.json"
+TAURI_PROCESS_MANAGER = ROOT / "nymeria-desktop" / "src-tauri" / "src" / "process_manager.rs"
 FORBIDDEN_DESKTOP_BACKEND_BUNDLE_PATTERNS = (
     "pyinstaller",
     "nymeria-backend.spec",
@@ -117,6 +118,17 @@ def test_tauri_config_does_not_bundle_backend_resource() -> None:
     resources = json.dumps(config["bundle"].get("resources", {})).lower()
     assert "nymeria-backend.exe" not in resources
     assert "nymeria/dist" not in resources
+
+
+def test_tauri_shell_does_not_discover_or_spawn_bundled_backend() -> None:
+    source = TAURI_PROCESS_MANAGER.read_text(encoding="utf-8").lower()
+
+    assert "nymeria-backend.exe" not in source
+    assert "bundled_resource" not in source
+    assert "has_bundled_backend" not in source
+    assert "pyinstaller" not in source
+    assert 'arg("run.py")' in source
+    assert 'backend_command("api")' in source
 
 
 def test_obsolete_desktop_bundle_contract_gate_is_removed() -> None:

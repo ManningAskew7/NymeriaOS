@@ -33,7 +33,7 @@
         </div>
       {/if}
       <p class="startup-hint">
-        Check that nymeria-backend.exe exists in Nymeria/dist/ and try restarting the app.
+        Check that the source checkout backend starts with python run.py api, then try restarting the app.
       </p>
     {:else}
       <h1 class="startup-title">Connecting{dots}</h1>
