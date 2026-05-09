@@ -160,6 +160,12 @@ keys with `PATCH /settings` using explicit write-only fields such as
 `perplexity_api_key`. These keys remain absent from `GET /settings`; the admin
 environment listing masks secret values.
 
+The desktop app exposes this flow in Settings > Provider > Open Wizard for admin
+accounts. The wizard can save direct provider keys or configure the backend to
+use an already-running CLIProxy OAuth endpoint. It does not start or manage
+CLIProxy in installed client-only desktop builds; the proxy URL must be
+reachable from the backend process.
+
 ### Browser Tools
 
 | Variable | Default | Description |

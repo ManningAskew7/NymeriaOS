@@ -13,6 +13,7 @@
   import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import SkillsPanel from '../skills/SkillsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
+  import ProviderSetupWizard from './ProviderSetupWizard.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
@@ -174,6 +175,7 @@
   let testMessage = $state('');
   let loadingSettings = $state(false);
   let savingSettings = $state(false);
+  let showProviderSetupWizard = $state(false);
 
   $effect(() => {
     if (!connectionAdvancedTouched) {
@@ -411,6 +413,13 @@
     } finally {
       savingSettings = false;
     }
+  }
+
+  async function handleProviderSetupSaved() {
+    await loadServerSettings();
+    serverSettingsStore.refresh();
+    testStatus = 'success';
+    testMessage = 'Provider setup saved and applied!';
   }
 
   function handleThemeChange(theme: ThemeName) {
@@ -725,6 +734,17 @@
       {#if loadingSettings}
         <p class="loading">Loading settings...</p>
       {:else}
+        <div class="provider-setup-callout">
+          <div>
+            <span class="section-title">Provider Setup</span>
+            <p class="hint">Test and save a direct provider key or configure a backend to use an existing CLIProxy OAuth endpoint.</p>
+          </div>
+          <Button variant="secondary" onclick={() => (showProviderSetupWizard = true)}>
+            <Icon name="settings" size={14} />
+            Open Wizard
+          </Button>
+        </div>
+
         <div class="field">
           <label for="llm-provider">Provider</label>
           <select id="llm-provider" bind:value={displayProvider}>
@@ -1357,6 +1377,13 @@
       {testMessage}
     </div>
   {/if}
+
+  <ProviderSetupWizard
+    isOpen={showProviderSetupWizard}
+    currentSettings={serverSettings}
+    onClose={() => (showProviderSetupWizard = false)}
+    onSaved={handleProviderSetupSaved}
+  />
 </div>
 
 <style>
@@ -1882,6 +1909,24 @@
     height: 1px;
     background: var(--glass-border);
     margin: var(--spacing-md) 0;
+  }
+
+  .provider-setup-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated-2);
+  }
+
+  .provider-setup-callout > div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
   }
 
   .connections-list {

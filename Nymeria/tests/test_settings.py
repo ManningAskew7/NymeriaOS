@@ -113,3 +113,27 @@ def test_reasoning_effort_rejects_invalid_env_value(monkeypatch):
 
     with pytest.raises(ValidationError, match="llm_reasoning_effort"):
         Settings(_env_file=None)
+
+
+def test_anthropic_direct_key_is_used_for_direct_provider_config():
+    settings = Settings(
+        _env_file=None,
+        llm_provider="anthropic",
+        llm_base_url="",
+        anthropic_api_key=None,
+        anthropic_direct_api_key="sk-ant-direct",
+    )
+
+    assert settings.get_api_key_for_provider() == "sk-ant-direct"
+
+
+def test_anthropic_proxy_config_uses_gatekeeper_key():
+    settings = Settings(
+        _env_file=None,
+        llm_provider="anthropic",
+        llm_base_url="http://cli-proxy-api:8317",
+        anthropic_api_key="cpx-gatekeeper",
+        anthropic_direct_api_key="sk-ant-direct",
+    )
+
+    assert settings.get_api_key_for_provider() == "cpx-gatekeeper"
