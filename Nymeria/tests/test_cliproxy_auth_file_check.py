@@ -82,3 +82,72 @@ def test_print_check_fails_loudly_for_bad_active_auth(
     assert "FAIL" in captured.out
     assert "tool_prefix_disabled=true" in captured.out
     assert "claude-bad.json" in captured.out
+
+
+def test_cloak_state_report_flags_forced_config_cloak(tmp_path: Path, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+claude-api-key:
+  - api-key: sk-ant-test
+    cloak:
+      mode: always
+""",
+        encoding="utf-8",
+    )
+
+    code = check_cliproxy_cloak.print_cloak_state_report([], [config_path])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "cloak.mode=always" in captured.out
+    assert "override Nymeria identity" in captured.out
+
+
+def test_cloak_state_report_warns_for_unhonored_auth_file_attributes(
+    tmp_path: Path,
+    capsys,
+):
+    auth_dir = tmp_path / "auths"
+    auth_dir.mkdir()
+    write_auth(
+        auth_dir / "claude.json",
+        {
+            "type": "claude",
+            "tool_prefix_disabled": True,
+            "attributes": {"cloak_mode": "never"},
+        },
+    )
+
+    code = check_cliproxy_cloak.print_cloak_state_report([auth_dir], [])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "attributes.'cloak_mode'" in captured.out
+    assert "does not lift nested auth-file attributes" in captured.out
+
+
+def test_cloak_state_report_fails_auth_file_forced_cloak(tmp_path: Path):
+    auth_dir = tmp_path / "auths"
+    auth_dir.mkdir()
+    auth_path = auth_dir / "claude.json"
+    write_auth(
+        auth_path,
+        {
+            "type": "claude",
+            "tool_prefix_disabled": True,
+            "cloak_mode": "always",
+        },
+    )
+
+    info, warnings, failures = check_cliproxy_cloak.collect_cloak_state_findings(
+        [auth_dir],
+        [],
+    )
+
+    assert any("tool_prefix_disabled=true" in line for line in info)
+    assert any("top-level 'cloak_mode'" in line for line in warnings)
+    assert failures == [
+        f"{auth_path} declares cloak_mode=always; if a future binary honors "
+        "that for file-backed OAuth, it would force Claude Code identity"
+    ]
