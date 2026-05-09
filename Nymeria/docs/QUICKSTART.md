@@ -38,7 +38,8 @@ See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
 upgrade commands, and the GitHub Release wheel fallback.
 
 `nymeria init` prompts for the hosting/security profile, provider, model, API
-key, and optional capability keys. For package installs, choose the Python
+key, and optional capability keys. The model step offers a provider-specific
+default and lets you press Enter to accept it. For package installs, choose the Python
 virtual environment / pipx hosting option: it isolates Python dependencies, but
 it is not an OS security sandbox. Nymeria can still access files your user can
 access when tools are enabled. The Docker option prints source-checkout Docker

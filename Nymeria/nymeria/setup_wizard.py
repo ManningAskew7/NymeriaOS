@@ -45,18 +45,21 @@ PROVIDERS = {
         label="Anthropic (Claude)",
         env_var="ANTHROPIC_API_KEY",
         key_prefix="sk-ant-",
+        default_model="claude-sonnet-4-20250514",
     ),
     "openai": ProviderOption(
         name="openai",
         label="OpenAI (GPT)",
         env_var="OPENAI_API_KEY",
         key_prefix="sk-",
+        default_model="gpt-4o",
     ),
     "openrouter": ProviderOption(
         name="openrouter",
         label="OpenRouter (multi-model)",
         env_var="OPENROUTER_API_KEY",
         key_prefix="sk-or-",
+        default_model="anthropic/claude-sonnet-4",
     ),
 }
 
@@ -420,12 +423,12 @@ def _resolve_model(
         raise SystemExit("--model is required with --non-interactive")
 
     console.print("\n[bold]Step 3/7: Model[/bold]")
-    console.print(f"Enter the model identifier to use with {provider.label}.")
-    while True:
-        model = prompt("> ").strip()
-        if model:
-            return model
-        console.print("[yellow]Model is required.[/yellow]")
+    console.print(f"Recommended default: [bold]{provider.default_model}[/bold]")
+    console.print(
+        f"Press Enter to use it, or type another {provider.label} model identifier."
+    )
+    model = prompt(f"> [{provider.default_model}] ").strip()
+    return model or provider.default_model
 
 
 def _resolve_root(

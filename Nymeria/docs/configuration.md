@@ -65,9 +65,10 @@ Set the API key for your chosen provider:
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
 venv/pipx hosting, it validates the selected provider/model/key combination
-with a small LLM API call before writing `config.env`. The venv/pipx profile
-isolates Python packages only; it is not an OS security sandbox, and Nymeria can
-still access files your user can access when tools are enabled. In
+with a small LLM API call before writing `config.env`. Interactive setup offers
+a provider-specific default model and accepts Enter to use it. The venv/pipx
+profile isolates Python packages only; it is not an OS security sandbox, and
+Nymeria can still access files your user can access when tools are enabled. In
 non-interactive mode, pass `--embedding-api-key`, `--openai-api-key`,
 `--gemini-api-key`, or `--perplexity-api-key`; keys that are not supplied are
 left out of `config.env`. Non-interactive setup defaults to direct API-key auth
