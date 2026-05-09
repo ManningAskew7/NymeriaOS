@@ -77,13 +77,14 @@ Non-interactive setup defaults to direct API-key auth and printed next commands.
 It accepts `--hosting venv|bare_metal`, `--auth-method api_key`,
 `--setup-style advanced|recommended`, and
 `--next-action print_commands|cli|start_api_open_frontend`. `--hosting docker`
-prints source-checkout Docker setup commands and exits without writing
-`config.env` or `.env.docker`, so Docker credentials are not silently written to
-the wrong runtime root. CLIProxy Claude and Codex/OpenAI OAuth auth methods are
-advanced local setup paths that use the pinned `CLIProxyAPI-main/temp/latest/`
-deployment, require active local OAuth auth files, write only a local `cpx-*`
-gatekeeper key into Nymeria config, and stop before writing config if their
-verification probes fail. Codex/OpenAI setup writes `LLM_PROVIDER=openai`,
+with direct API-key setup prints source-checkout Docker setup commands and
+exits without writing `config.env` or `.env.docker`, so Docker credentials are
+not silently written to the wrong runtime root. CLIProxy Claude and
+Codex/OpenAI OAuth auth methods are advanced local setup paths that use the
+pinned `CLIProxyAPI-main/temp/latest/` deployment, require active local OAuth
+auth files, write only a local `cpx-*` gatekeeper key into Nymeria config, and
+stop before writing config if their verification probes fail. Codex/OpenAI
+setup writes `LLM_PROVIDER=openai`,
 `OPENAI_API_MODE=responses`, `OPENAI_API_KEY=<cpx-gatekeeper-key>`, and an
 `LLM_BASE_URL` ending in `/v1`; do not use that `cpx-*` value for
 `EMBEDDING_API_KEY`. Add `--skip-llm-test` only for deliberate
@@ -513,7 +514,22 @@ Most OpenRouter models work with Nymeria's agent harness, including tool calling
 
 ### Local Proxy (e.g., CLIProxyAPI)
 
-Route requests through a local proxy to use a subscription plan (e.g., Claude Max) instead of per-API-call billing. Two approaches:
+Route requests through the pinned local CLIProxy deployment to use subscription
+OAuth where supported instead of per-API-call billing. This is an advanced path:
+follow [cliproxy.md](./cliproxy.md), keep the pinned image and Nymeria proxy
+headers/fingerprint behavior unchanged, and run the documented smoke tests
+before routing real traffic.
+
+For first-run setup from a source checkout, `nymeria init --auth-method
+cliproxy_claude_oauth` and `nymeria init --auth-method
+cliproxy_codex_oauth` can prepare the existing
+`CLIProxyAPI-main/temp/latest/` deployment and write Nymeria config only after
+verification succeeds. From an already-connected admin desktop session, use
+Settings > Provider > Open Wizard to point the backend at an already-running
+proxy endpoint; installed desktop builds do not start CLIProxy or perform OAuth
+login.
+
+Two runtime shapes are supported:
 
 #### Native Anthropic (Recommended)
 
@@ -523,7 +539,7 @@ Uses `ChatAnthropic` with native `/v1/messages` format. No format translation �
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-opus-4-7             # Must match a model in proxy's Claude registry
 LLM_BASE_URL=http://localhost:8317    # No /v1 suffix — ChatAnthropic appends /v1/messages
-ANTHROPIC_API_KEY=nymeria-local-dev-key  # Proxy auth key (matches api-keys in proxy config)
+ANTHROPIC_API_KEY=cpx-...             # Proxy gatekeeper key, not a hosted Anthropic key
 ```
 
 When `LLM_BASE_URL` is set for the `anthropic` provider, `ChatAnthropic` is configured with:
@@ -544,7 +560,17 @@ LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint (with /v1 suffix)
 EMBEDDING_API_KEY=sk-...               # Optional hosted/local embeddings key; do not use cpx-* here
 ```
 
-For GPT-5.5 through Codex OAuth, run the sidecar documented in `docs/cliproxy.md`. To route individual threads, use **Thread Settings → Model → OpenAI (Custom base URL)** and set the thread-level Base URL/API Key fields; the default OpenAI API mode is `Responses API`, with `Chat Completions` available only as a compatibility override and not recommended if thinking is enabled. To route the whole deployment, use **Settings → LLM → OpenAI (Custom base URL)** and keep `OPENAI_API_MODE=responses` in `.env.docker`. Per-thread overrides honor `provider`, `base_url`, `api_key`, and `openai_api_mode` — the API key is the CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI key.
+For GPT-5.5 through Codex OAuth, run the pinned CLIProxy deployment documented
+in `docs/cliproxy.md`. To route individual threads, use **Thread Settings →
+Model → OpenAI (Custom base URL)** and set the thread-level Base URL/API Key
+fields; the default OpenAI API mode is `Responses API`, with `Chat Completions`
+available only as a compatibility override and not recommended if thinking is
+enabled. To route the whole deployment, use **Settings → Provider → Open
+Wizard** or **Settings → LLM → OpenAI (Custom base URL)** and keep
+`OPENAI_API_MODE=responses` in the active env file. Per-thread overrides honor
+`provider`, `base_url`, `api_key`, and `openai_api_mode` — the API key is the
+CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI
+key.
 
 OpenAI-compatible providers also receive Nymeria-managed loop-local `http_async_client` pools. This bypasses LangChain's process-global async `httpx` client cache so direct OpenAI, OpenRouter, and CLIProxy/Codex models remain safe when a cached thread graph is used from both the FastAPI event loop and the sync stream-bridge loop.
 
