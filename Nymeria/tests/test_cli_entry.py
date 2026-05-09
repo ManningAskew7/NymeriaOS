@@ -400,6 +400,7 @@ def test_init_interactive_offers_quick_doctor_after_validated_llm(
     answers = iter(
         [
             "",  # default hosting: venv
+            "",  # default auth method: direct API key
             "1",  # provider: Anthropic
             "claude-test-model",
             "sk-ant-test-key",
@@ -458,6 +459,7 @@ def test_init_interactive_accepts_provider_default_model(
     answers = iter(
         [
             "",  # default hosting: venv
+            "",  # default auth method: direct API key
             provider_choice,
             "",  # accept provider default model
             api_key,
@@ -492,6 +494,59 @@ def test_init_interactive_accepts_provider_default_model(
     assert f"> [{provider.default_model}] " in prompts
     assert "Recommended default:" in output
     assert provider.default_model in output
+
+
+def test_init_interactive_defaults_to_recommended_setup(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    root = tmp_path / "runtime"
+    answers = iter(
+        [
+            "",  # default hosting: venv
+            "",  # default auth method: direct API key
+            "1",  # provider: Anthropic
+            "",  # accept provider default model
+            "sk-ant-test-key",
+            "",  # default setup style: recommended
+            "n",  # skip post-init doctor
+            "",  # default next action: print commands
+        ]
+    )
+    prompts = []
+
+    def fake_prompt(text="", **kwargs):
+        prompts.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+    monkeypatch.setattr(setup_wizard, "_default_init_root", lambda: root.resolve())
+
+    result = setup_main(
+        [
+            "--skip-llm-test",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Step 2: Provider Authentication" in output
+    assert "Direct API key - default" in output
+    assert "CLIProxy Claude OAuth - advanced" in output
+    assert "Step 6: Setup Style" in output
+    assert "Recommended Defaults" in output
+    assert "Advanced Optional Capabilities" not in output
+    assert "Advanced Data Directory" not in output
+    assert "Using data directory:" in output
+    assert "LLM_PROVIDER=anthropic" in config
+    assert "LLM_MODEL=claude-sonnet-4-6" in config
+    assert "ANTHROPIC_API_KEY=sk-ant-test-key" in config
+    assert "EMBEDDING_API_KEY=" not in config
+    assert "GEMINI_API_KEY=" not in config
+    assert "PERPLEXITY_API_KEY=" not in config
+    assert "Enable semantic memory/RAG embeddings?" not in prompts
 
 
 def test_init_noninteractive_still_requires_explicit_model(
@@ -531,9 +586,11 @@ def test_init_interactive_prompts_for_hosting_before_provider(
     answers = iter(
         [
             "",  # default hosting: venv
+            "",  # default auth method: direct API key
             "1",  # provider: Anthropic
             "claude-test-model",
             "sk-ant-test-key",
+            "2",  # setup style: advanced
             "n",
             "n",
             "n",
@@ -561,10 +618,14 @@ def test_init_interactive_prompts_for_hosting_before_provider(
     output = capsys.readouterr().out
     assert result == 0
     assert prompts[0] == "> [2] "
-    assert "Step 1/7: Hosting / Security" in output
-    assert "Step 2/7: LLM Provider" in output
-    assert output.index("Step 1/7: Hosting / Security") < output.index(
-        "Step 2/7: LLM Provider"
+    assert "Step 1: Hosting / Security" in output
+    assert "Step 2: Provider Authentication" in output
+    assert "Step 3: LLM Provider" in output
+    assert output.index("Step 1: Hosting / Security") < output.index(
+        "Step 2: Provider Authentication"
+    )
+    assert output.index("Step 2: Provider Authentication") < output.index(
+        "Step 3: LLM Provider"
     )
     assert "not an OS security sandbox" in output
     assert "Docker" in output
@@ -581,9 +642,11 @@ def test_init_interactive_prompts_for_next_action(
     answers = iter(
         [
             "",  # default hosting: venv
+            "",  # default auth method: direct API key
             "1",  # provider: Anthropic
             "claude-test-model",
             "sk-ant-test-key",
+            "2",  # setup style: advanced
             "n",
             "n",
             "n",
@@ -649,7 +712,8 @@ def test_init_interactive_docker_hosting_prints_handoff_without_provider_prompt(
     assert "Provider flags, if supplied" in output
     assert "were not" in output
     assert "written" in output
-    assert "Step 2/7: LLM Provider" not in output
+    assert "Step 2: Provider Authentication" not in output
+    assert "Step 3: LLM Provider" not in output
     assert not (root / "config.env").exists()
 
 
@@ -766,7 +830,7 @@ def test_init_interactive_cliproxy_auth_can_cancel_planning_gate(
     assert result == 1
     assert "CLIProxy OAuth Setup" in output
     assert "Setup cancelled" in output
-    assert "Step 2/7: LLM Provider" not in output
+    assert "Step 3: LLM Provider" not in output
 
 
 def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
@@ -854,6 +918,39 @@ def test_init_noninteractive_writes_optional_capability_keys(
     assert "OPENAI_API_KEY=sk-openai-test" in config
     assert "GEMINI_API_KEY=gemini-test" in config
     assert "PERPLEXITY_API_KEY=pplx-test" in config
+
+
+def test_init_noninteractive_recommended_rejects_optional_capability_keys(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--embedding-api-key",
+            "sk-embedding-test",
+            "--setup-style",
+            "recommended",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "Recommended setup writes only the primary provider credential" in output
+    assert "EMBEDDING_API_KEY" in output
+    assert not (root / "config.env").exists()
 
 
 def test_init_noninteractive_does_not_duplicate_primary_openai_key(
