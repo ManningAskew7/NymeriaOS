@@ -14,8 +14,8 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Detect source checkout or bundled backend resources — if neither is
-    // found, run in client-only mode.
+    // Detect a source checkout for development backend management. Installed
+    // builds intentionally fall through to client-only mode.
     let (pm, api_key) = match ProcessManager::detect_runtime_layout() {
         Ok(layout) => {
             let key = auto_config::ensure_env_file(layout.backend_root()).unwrap_or_default();
@@ -43,7 +43,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             if let Some(pm_clone) = pm.clone() {
-                // Self-contained mode: spawn backend processes in a background thread
+                // Source-checkout dev mode: spawn backend processes in a background thread.
                 std::thread::spawn(move || {
                     let _ = app_handle.emit("backend-status", "starting");
 
@@ -56,8 +56,8 @@ pub fn run() {
                         }
                     }
 
-                    // Wait for API to be ready. PyInstaller can be slow on
-                    // first run, so this intentionally allows up to 60 seconds.
+                    // Wait for API readiness. Dependency imports and database
+                    // initialization can still be slow in source checkout dev.
                     match pm_clone.wait_for_api_ready(60) {
                         Ok(()) => {
                             let _ = app_handle.emit("backend-status", "ready");
@@ -73,8 +73,8 @@ pub fn run() {
                     }
                 });
             } else {
-                // Client-only mode: no local backend to manage, signal ready immediately
-                let _ = app_handle.emit("backend-status", "ready");
+                // Client-only mode: no local backend to manage.
+                let _ = app_handle.emit("backend-status", "client-only");
             }
 
             Ok(())

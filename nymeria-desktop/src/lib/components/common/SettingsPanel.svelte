@@ -163,11 +163,21 @@
 
   let activeTab = $state<SettingsTab>(getInitialTab());
   let isAdmin = $derived(configStore.identity?.role === 'admin');
-  let showConnectionAdvanced = $state(!backendProcessStore.isTauri);
+  let connectionAdvancedTouched = $state(false);
+  let showConnectionAdvanced = $state(true);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
   let loadingSettings = $state(false);
   let savingSettings = $state(false);
+
+  $effect(() => {
+    if (!connectionAdvancedTouched) {
+      showConnectionAdvanced = !backendProcessStore.isManagedBackend;
+    }
+    if (activeTab === 'proxy' && backendProcessStore.isExternalBackend) {
+      activeTab = 'connection';
+    }
+  });
 
   // Load server settings when connected
   async function loadServerSettings() {
@@ -466,7 +476,7 @@
     >
       Voice
     </button>
-    {#if backendProcessStore.isTauri}
+    {#if backendProcessStore.isManagedBackend}
       <button
         class="tab"
         class:active={activeTab === 'proxy'}
@@ -582,12 +592,18 @@
 
       <div class="section-divider"></div>
 
-      {#if backendProcessStore.isTauri}
+      {#if backendProcessStore.isManagedBackend}
         <div class="auto-config-notice">
           <span class="status-dot connected"></span>
-          <span>Backend is auto-managed. Connection is configured automatically.</span>
+          <span>Local source-checkout backend is managed by the desktop shell.</span>
         </div>
-        <button class="advanced-toggle" onclick={() => (showConnectionAdvanced = !showConnectionAdvanced)}>
+        <button
+          class="advanced-toggle"
+          onclick={() => {
+            connectionAdvancedTouched = true;
+            showConnectionAdvanced = !showConnectionAdvanced;
+          }}
+        >
           {showConnectionAdvanced ? 'Hide' : 'Show'} Advanced Connection Settings
         </button>
       {/if}
@@ -643,8 +659,8 @@
     </div>
   {/if}
 
-  <!-- Proxy Tab (CLIProxy management, Tauri only) -->
-  {#if activeTab === 'proxy'}
+  <!-- Proxy Tab (CLIProxy management, source-checkout Tauri only) -->
+  {#if activeTab === 'proxy' && backendProcessStore.isManagedBackend}
     <CLIProxyPanel />
   {/if}
 

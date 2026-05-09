@@ -1,6 +1,7 @@
-//! First-run auto-configuration: reads the bootstrap admin token from
+//! Source-checkout auto-configuration: reads the bootstrap admin token from
 //! `<runtime_root>/data/BOOTSTRAP_TOKEN.txt` (created by the agent on first
 //! launch against an empty users table), and ensures a minimal env file exists.
+//! Installed beta builds are client-only and do not call this path.
 //!
 //! The legacy `NYMERIA_API_KEY` shared key was retired in Step 3c — the
 //! backend only accepts per-user `nym_...` tokens now, so we no longer

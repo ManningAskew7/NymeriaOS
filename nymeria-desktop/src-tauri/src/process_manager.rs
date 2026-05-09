@@ -1,4 +1,5 @@
-//! Child process lifecycle management for Nymeria backend, worker, and CLIProxy.
+//! Child process lifecycle management for source-checkout Nymeria backend,
+//! worker, and CLIProxy.
 //!
 //! Uses Windows Job Objects to guarantee child processes die when the parent exits,
 //! even on crash. All processes are spawned without console windows.
@@ -38,13 +39,6 @@ impl RuntimeLayout {
             project_root,
             backend_root,
         }
-    }
-
-    fn bundled_resource(resource_root: PathBuf) -> Result<Self, String> {
-        Ok(Self {
-            project_root: resource_root,
-            backend_root: default_user_project_root()?,
-        })
     }
 
     pub fn backend_root(&self) -> &PathBuf {
@@ -134,8 +128,9 @@ impl ProcessManager {
         }
     }
 
-    /// Walk up from the executable's location to find either a source checkout
-    /// or a bundled Tauri resource root containing the PyInstaller backend.
+    /// Walk up from the executable's location to find a source checkout.
+    /// Installed builds intentionally return an error so the app runs as a
+    /// client-only frontend.
     pub fn detect_runtime_layout() -> Result<RuntimeLayout, String> {
         // Check env var override first
         if let Ok(root) = std::env::var("NYMERIA_PROJECT_ROOT") {
@@ -149,9 +144,6 @@ impl ProcessManager {
             }
             if is_source_checkout_root(&path) {
                 return Ok(RuntimeLayout::source_checkout(path));
-            }
-            if has_bundled_backend(&path) {
-                return RuntimeLayout::bundled_resource(path);
             }
         }
 
@@ -173,35 +165,17 @@ impl ProcessManager {
             }
         }
 
-        let exe_parent = exe
-            .parent()
-            .ok_or("Cannot get exe parent dir")?
-            .to_path_buf();
-        for candidate in bundled_resource_candidates(&exe_parent) {
-            if has_bundled_backend(&candidate) {
-                return RuntimeLayout::bundled_resource(candidate);
-            }
-        }
-
         Err(
-            "Could not find NymeriaOS root. \
-             Ensure the app is located within the project tree, bundled with \
-             Nymeria resources, or set NYMERIA_PROJECT_ROOT."
+            "Could not find a NymeriaOS source checkout. \
+             Installed builds run in client-only mode; set NYMERIA_PROJECT_ROOT \
+             to a checkout root for development backend management."
                 .to_string(),
         )
     }
 
-    /// Spawn the backend API server (`nymeria-backend.exe api`).
+    /// Spawn the backend API server from a source checkout (`python run.py api`).
     pub fn start_api(&self) -> Result<(), String> {
-        let backend_exe = self.backend_exe_path()?;
-        std::fs::create_dir_all(&self.backend_root)
-            .map_err(|e| format!("Failed to create backend runtime root: {}", e))?;
-
-        let mut command = Command::new(&backend_exe);
-        command
-            .arg("api")
-            .current_dir(&self.backend_root)
-            .env("NYMERIA_PROJECT_ROOT", &self.backend_root);
+        let mut command = self.backend_command("api")?;
 
         let child = spawn_no_window(&mut command)
             .map_err(|e| format!("Failed to spawn backend API: {}", e))?;
@@ -213,15 +187,7 @@ impl ProcessManager {
 
     /// Spawn the worker (ticker daemon).
     pub fn start_worker(&self) -> Result<(), String> {
-        let backend_exe = self.backend_exe_path()?;
-        std::fs::create_dir_all(&self.backend_root)
-            .map_err(|e| format!("Failed to create backend runtime root: {}", e))?;
-
-        let mut command = Command::new(&backend_exe);
-        command
-            .arg("worker")
-            .current_dir(&self.backend_root)
-            .env("NYMERIA_PROJECT_ROOT", &self.backend_root);
+        let mut command = self.backend_command("worker")?;
 
         let child = spawn_no_window(&mut command)
             .map_err(|e| format!("Failed to spawn worker: {}", e))?;
@@ -339,17 +305,22 @@ impl ProcessManager {
         Ok(Arc::new(shared))
     }
 
-    fn backend_exe_path(&self) -> Result<PathBuf, String> {
-        let exe = self.project_root.join("Nymeria").join("dist").join("nymeria-backend.exe");
-        if exe.exists() {
-            return Ok(exe);
+    fn backend_command(&self, service: &str) -> Result<Command, String> {
+        let run_py = self.backend_root.join("run.py");
+        if !run_py.is_file() {
+            return Err(format!(
+                "Backend source entry point not found at {}",
+                run_py.display()
+            ));
         }
 
-        // Fallback: try running via Python directly (dev mode)
-        Err(format!(
-            "Backend executable not found at {}. Build the PyInstaller backend first.",
-            exe.display()
-        ))
+        let mut command = Command::new(python_executable());
+        command
+            .arg("run.py")
+            .arg(service)
+            .current_dir(&self.backend_root)
+            .env("NYMERIA_PROJECT_ROOT", &self.backend_root);
+        Ok(command)
     }
 
     fn is_process_alive(proc: &Arc<Mutex<Option<Arc<SharedChild>>>>) -> bool {
@@ -374,26 +345,8 @@ fn is_source_checkout_root(path: &Path) -> bool {
         && path.join("nymeria-desktop").is_dir()
 }
 
-fn has_bundled_backend(path: &Path) -> bool {
-    path.join("Nymeria")
-        .join("dist")
-        .join("nymeria-backend.exe")
-        .is_file()
-}
-
-fn bundled_resource_candidates(exe_parent: &Path) -> Vec<PathBuf> {
-    vec![
-        exe_parent.join("resources"),
-        exe_parent.to_path_buf(),
-        exe_parent.join("_up_"),
-    ]
-}
-
-fn default_user_project_root() -> Result<PathBuf, String> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| "Cannot determine user profile directory".to_string())?;
-    Ok(PathBuf::from(home).join(".nymeria"))
+fn python_executable() -> String {
+    std::env::var("NYMERIA_PYTHON").unwrap_or_else(|_| "python".to_string())
 }
 
 fn spawn_no_window(command: &mut Command) -> std::io::Result<Child> {
@@ -407,6 +360,7 @@ fn spawn_no_window(command: &mut Command) -> std::io::Result<Child> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::ffi::OsStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TempTree {
@@ -450,62 +404,50 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_bundled_backend_resource_root() {
+    fn ignores_dist_output_without_source_checkout() {
         let temp = TempTree::new();
         touch(
             &temp
                 .path
                 .join("Nymeria")
                 .join("dist")
-                .join("nymeria-backend.exe"),
+                .join("backend-placeholder.exe"),
         );
 
-        assert!(has_bundled_backend(&temp.path));
+        assert!(!is_source_checkout_root(&temp.path));
     }
 
     #[test]
-    fn bundled_backend_path_matches_tauri_resource_target() {
+    fn source_backend_command_runs_run_py_from_backend_root() {
         let temp = TempTree::new();
-        let backend_exe = temp
-            .path
-            .join("Nymeria")
-            .join("dist")
-            .join("nymeria-backend.exe");
-        touch(&backend_exe);
-
-        let layout = RuntimeLayout::bundled_resource(temp.path.clone()).expect("bundled layout");
-        let manager = ProcessManager::new(layout);
-
-        assert_eq!(manager.backend_exe_path().expect("backend path"), backend_exe);
-    }
-
-    #[test]
-    fn source_backend_path_matches_pyinstaller_output() {
-        let temp = TempTree::new();
-        let backend_exe = temp
-            .path
-            .join("Nymeria")
-            .join("dist")
-            .join("nymeria-backend.exe");
-        touch(&backend_exe);
+        touch(&temp.path.join("Nymeria").join("run.py"));
 
         let layout = RuntimeLayout::source_checkout(temp.path.clone());
         let manager = ProcessManager::new(layout);
+        let command = manager.backend_command("api").expect("backend command");
+        let args: Vec<_> = command.get_args().collect();
+        let backend_root = temp.path.join("Nymeria");
 
-        assert_eq!(manager.backend_exe_path().expect("backend path"), backend_exe);
+        assert_eq!(args, vec![OsStr::new("run.py"), OsStr::new("api")]);
+        assert_eq!(command.get_current_dir(), Some(backend_root.as_path()));
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(key, _)| key == OsStr::new("NYMERIA_PROJECT_ROOT"))
+                .and_then(|(_, value)| value),
+            Some(backend_root.as_os_str())
+        );
     }
 
     #[test]
-    fn checks_expected_tauri_resource_candidate_order() {
-        let exe_parent = PathBuf::from("C:/Program Files/Nymeria");
+    fn backend_command_requires_run_py() {
+        let temp = TempTree::new();
+        fs::create_dir_all(temp.path.join("Nymeria")).expect("create backend dir");
 
-        assert_eq!(
-            bundled_resource_candidates(&exe_parent),
-            vec![
-                exe_parent.join("resources"),
-                exe_parent.clone(),
-                exe_parent.join("_up_"),
-            ]
-        );
+        let layout = RuntimeLayout::source_checkout(temp.path.clone());
+        let manager = ProcessManager::new(layout);
+        let err = manager.backend_command("api").err().expect("missing run.py");
+
+        assert!(err.contains("Backend source entry point not found"));
     }
 }
