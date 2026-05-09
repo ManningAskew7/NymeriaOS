@@ -15,6 +15,7 @@ function createBackendProcessStore() {
   let status = $state<BackendStatus>('unknown');
   let errorMessage = $state<string | null>(null);
   let mode = $state<BackendMode>('unknown');
+  let tauriAvailable = $state(false);
 
   function applyBackendStatusResponse(response: BackendStatusResponse) {
     if (response.api === 'external' && response.worker === 'external') {
@@ -33,47 +34,55 @@ function createBackendProcessStore() {
     }
   }
 
-  // Listen for Tauri backend-status events
-  if (typeof window !== 'undefined' && '__TAURI__' in window) {
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<string>('backend-status', (event) => {
-        const payload = event.payload;
-        if (payload === 'starting') {
-          mode = 'managed';
-          status = 'starting';
-          errorMessage = null;
-        } else if (payload === 'ready') {
-          mode = 'managed';
-          status = 'ready';
-          errorMessage = null;
-        } else if (payload === 'client-only') {
-          mode = 'external';
-          status = 'ready';
-          errorMessage = null;
-        } else if (payload.startsWith('failed:')) {
-          mode = 'managed';
-          status = 'failed';
-          errorMessage = payload.substring(7);
-        }
-      });
-    });
-
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<BackendStatusResponse>('get_backend_status')
-        .then(applyBackendStatusResponse)
-        .catch(() => {
-          if (status === 'unknown') status = 'starting';
-        });
-    });
-
-    // Assume startup until the Rust shell reports whether this is source
-    // checkout-managed or installed client-only mode.
-    status = 'starting';
-  } else {
-    // Not running in Tauri — assume backend is externally managed
-    status = 'ready';
-    mode = 'external';
+  function applyBackendStatusEvent(payload: string) {
+    if (payload === 'starting') {
+      mode = 'managed';
+      status = 'starting';
+      errorMessage = null;
+    } else if (payload === 'ready') {
+      mode = 'managed';
+      status = 'ready';
+      errorMessage = null;
+    } else if (payload === 'client-only') {
+      mode = 'external';
+      status = 'ready';
+      errorMessage = null;
+    } else if (payload.startsWith('failed:')) {
+      mode = 'managed';
+      status = 'failed';
+      errorMessage = payload.substring(7);
+    }
   }
+
+  async function initializeTauriState() {
+    if (typeof window === 'undefined') {
+      status = 'ready';
+      mode = 'external';
+      return;
+    }
+
+    status = 'starting';
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const response = await invoke<BackendStatusResponse>('get_backend_status');
+      tauriAvailable = true;
+      applyBackendStatusResponse(response);
+
+      import('@tauri-apps/api/event')
+        .then(({ listen }) => listen<string>('backend-status', (event) => {
+          applyBackendStatusEvent(event.payload);
+        }))
+        .catch(() => {});
+    } catch {
+      tauriAvailable = false;
+      status = 'ready';
+      mode = 'external';
+      errorMessage = null;
+    }
+  }
+
+  void initializeTauriState();
 
   return {
     get status() {
@@ -86,13 +95,13 @@ function createBackendProcessStore() {
       return status === 'ready';
     },
     get isTauri() {
-      return typeof window !== 'undefined' && '__TAURI__' in window;
+      return tauriAvailable;
     },
     get isManagedBackend() {
       return mode === 'managed';
     },
     get isExternalBackend() {
-      return mode === 'external' || !(typeof window !== 'undefined' && '__TAURI__' in window);
+      return mode === 'external' || !tauriAvailable;
     },
   };
 }
