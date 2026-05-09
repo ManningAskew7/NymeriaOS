@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
+import shutil
 import socket
 import sys
 from dataclasses import dataclass
@@ -38,6 +40,14 @@ class LLMConnectionResult:
 class LLMConnectionError(RuntimeError):
     """Raised when first-run provider validation cannot complete."""
 
+
+@dataclass(frozen=True)
+class BootstrapTokenCopyCommand:
+    command: str
+    copies_to_clipboard: bool
+
+
+BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
 
 PROVIDERS = {
     "anthropic": ProviderOption(
@@ -162,7 +172,7 @@ def run_init(args: argparse.Namespace) -> int:
 
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
-    console.print(f"[green]Bootstrap token:[/green] {token_path}")
+    _print_bootstrap_token_handoff(token_path, console)
     _print_next_action(onboarding.next_action, console)
     return 0
 
@@ -324,7 +334,75 @@ def _repo_root_hint() -> str:
 
 
 def _print_command(console: Console, line: str) -> None:
-    console.print(f"  {line}", style="bold", markup=False)
+    console.print(f"  {line}", style="bold", markup=False, soft_wrap=True)
+
+
+def _print_bootstrap_token_handoff(token_path: Path, console: Console) -> None:
+    copy_command = _bootstrap_token_copy_command(token_path)
+
+    console.print(f"[green]Bootstrap token:[/green] {token_path}", soft_wrap=True)
+    console.print(
+        "The Desktop/Mobile Setup Wizard wants the `nym_...` account token "
+        "from this file, not your Anthropic, OpenAI, or OpenRouter provider API key."
+    )
+    console.print(
+        "This command reads the token from the file, so the raw token is not "
+        "stored in your shell history:"
+    )
+    if copy_command.copies_to_clipboard:
+        console.print("Copy the token:")
+    else:
+        console.print(
+            "No clipboard helper was found; display only the token value for manual copy:"
+        )
+    _print_command(console, copy_command.command)
+
+
+def _bootstrap_token_copy_command(token_path: Path) -> BootstrapTokenCopyCommand:
+    if sys.platform == "win32":
+        path = _powershell_single_quote(str(token_path))
+        command = (
+            'powershell -NoProfile -Command "'
+            f"(Select-String -Path {path} -Pattern '{BOOTSTRAP_TOKEN_REGEX}')"
+            ".Matches.Value | Select-Object -First 1 | Set-Clipboard"
+            '"'
+        )
+        return BootstrapTokenCopyCommand(command=command, copies_to_clipboard=True)
+
+    extract_command = _posix_token_extract_command(token_path)
+    if sys.platform == "darwin":
+        return BootstrapTokenCopyCommand(
+            command=f"{extract_command} | pbcopy",
+            copies_to_clipboard=True,
+        )
+
+    linux_clipboard_commands = (
+        ("wl-copy", "wl-copy"),
+        ("xclip", "xclip -selection clipboard"),
+        ("xsel", "xsel --clipboard --input"),
+    )
+    for executable, pipe_command in linux_clipboard_commands:
+        if shutil.which(executable):
+            return BootstrapTokenCopyCommand(
+                command=f"{extract_command} | {pipe_command}",
+                copies_to_clipboard=True,
+            )
+
+    return BootstrapTokenCopyCommand(
+        command=extract_command,
+        copies_to_clipboard=False,
+    )
+
+
+def _posix_token_extract_command(token_path: Path) -> str:
+    return (
+        f"grep -oE '{BOOTSTRAP_TOKEN_REGEX}' {shlex.quote(str(token_path))} "
+        "| head -n 1"
+    )
+
+
+def _powershell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _print_cliproxy_claude_commands(console: Console) -> None:

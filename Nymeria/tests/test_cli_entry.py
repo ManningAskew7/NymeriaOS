@@ -169,6 +169,7 @@ def test_settings_package_paths_do_not_follow_runtime_project_root(
 def test_init_noninteractive_writes_config_and_bootstrap_token(
     monkeypatch,
     tmp_path: Path,
+    capsys,
 ):
     llm_calls = _stub_llm_connection(monkeypatch)
     root = tmp_path / "runtime"
@@ -194,8 +195,59 @@ def test_init_noninteractive_writes_config_and_bootstrap_token(
     assert "ANTHROPIC_API_KEY=sk-ant-test-key" in config
     assert f"NYMERIA_DATA_DIR={root / 'data'}" in config
     assert (root / "data" / "accounts.db").exists()
-    assert (root / "data" / "BOOTSTRAP_TOKEN.txt").exists()
+    token_path = root / "data" / "BOOTSTRAP_TOKEN.txt"
+    token_file = token_path.read_text(encoding="utf-8")
+    raw_token = token_file.split("Token: ", 1)[1].splitlines()[0]
+    output = capsys.readouterr().out
+    assert token_path.exists()
+    assert "Bootstrap token:" in output
+    assert str(token_path) in output
+    assert "Desktop/Mobile Setup Wizard wants the `nym_...` account token" in output
+    assert "not your Anthropic, OpenAI, or OpenRouter provider API key" in output
+    assert "shell history" in output
+    assert raw_token not in output
     assert llm_calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
+
+
+def test_bootstrap_token_copy_command_uses_macos_clipboard(monkeypatch):
+    token_path = Path("/tmp/Nymeria Data/BOOTSTRAP_TOKEN.txt")
+
+    monkeypatch.setattr(setup_wizard.sys, "platform", "darwin")
+
+    hint = setup_wizard._bootstrap_token_copy_command(token_path)
+
+    assert hint.copies_to_clipboard is True
+    assert "pbcopy" in hint.command
+    assert "nym_[A-Za-z0-9_-]+" in hint.command
+    assert "BOOTSTRAP_TOKEN.txt" in hint.command
+
+
+def test_bootstrap_token_copy_command_uses_windows_clipboard(monkeypatch):
+    token_path = Path(r"C:\Users\Owner\.nymeria\data\BOOTSTRAP_TOKEN.txt")
+
+    monkeypatch.setattr(setup_wizard.sys, "platform", "win32")
+
+    hint = setup_wizard._bootstrap_token_copy_command(token_path)
+
+    assert hint.copies_to_clipboard is True
+    assert "Set-Clipboard" in hint.command
+    assert "Select-String" in hint.command
+    assert "nym_[A-Za-z0-9_-]+" in hint.command
+
+
+def test_bootstrap_token_copy_command_falls_back_without_linux_clipboard(monkeypatch):
+    token_path = Path("/home/owner/.nymeria/data/BOOTSTRAP_TOKEN.txt")
+
+    monkeypatch.setattr(setup_wizard.sys, "platform", "linux")
+    monkeypatch.setattr(setup_wizard.shutil, "which", lambda name: None)
+
+    hint = setup_wizard._bootstrap_token_copy_command(token_path)
+
+    assert hint.copies_to_clipboard is False
+    assert hint.command == (
+        "grep -oE 'nym_[A-Za-z0-9_-]+' "
+        "/home/owner/.nymeria/data/BOOTSTRAP_TOKEN.txt | head -n 1"
+    )
 
 
 def test_init_noninteractive_accepts_stable_onboarding_flags(
