@@ -17,6 +17,8 @@ from rich.console import Console
 from ._runtime_paths import default_user_project_root, find_project_root
 from .core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
 from .onboarding import (
+    HOSTING_CHOICES,
+    HOSTING_ORDER,
     HostingOption,
     NextAction,
     OnboardingSelection,
@@ -76,15 +78,19 @@ def run_init(args: argparse.Namespace) -> int:
     """Run the interactive or flag-driven first-run setup."""
     console = Console()
     non_interactive = bool(getattr(args, "non_interactive", False))
+
+    console.print("\n[bold]Welcome to Nymeria.[/bold] Let's get you set up.\n")
+
     try:
-        onboarding = _resolve_onboarding_selection(args)
+        onboarding = _resolve_onboarding_selection(args, console, non_interactive)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         return 2
     if not _validate_supported_onboarding(onboarding, console):
         return 2
-
-    console.print("\n[bold]Welcome to Nymeria.[/bold] Let's get you set up.\n")
+    if onboarding.hosting is HostingOption.DOCKER:
+        _print_docker_hosting_handoff(console)
+        return 0
 
     provider = _resolve_provider(args, console, non_interactive)
     model = _resolve_model(args, provider, console, non_interactive)
@@ -107,7 +113,7 @@ def run_init(args: argparse.Namespace) -> int:
         console.print(f"[green]Connected:[/green] {result.model}")
 
     if onboarding.setup_style is SetupStyle.RECOMMENDED and not non_interactive:
-        console.print("\n[bold]Step 4/6: Optional Capabilities[/bold]")
+        console.print("\n[bold]Step 5/7: Optional Capabilities[/bold]")
         console.print("Using recommended defaults; optional keys can be added later.")
         optional_env = _optional_env_from_args(args, provider=provider, api_key=api_key)
     else:
@@ -144,7 +150,7 @@ def run_init(args: argparse.Namespace) -> int:
             return 1
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    console.print("\n[bold]Step 6/6: Configuration[/bold]")
+    console.print("\n[bold]Step 7/7: Configuration[/bold]")
     _write_config(config_path, provider, model, api_key, data_dir, optional_env)
 
     repo = AccountsRepo(data_dir / "accounts.db")
@@ -158,14 +164,13 @@ def run_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_onboarding_selection(args: argparse.Namespace) -> OnboardingSelection:
+def _resolve_onboarding_selection(
+    args: argparse.Namespace,
+    console: Console,
+    non_interactive: bool,
+) -> OnboardingSelection:
     return OnboardingSelection(
-        hosting=_parse_onboarding_arg(
-            HostingOption,
-            getattr(args, "hosting", None),
-            option_name="--hosting",
-            default=DEFAULT_HOSTING,
-        ),
+        hosting=_resolve_hosting(args, console, non_interactive),
         auth_method=_parse_onboarding_arg(
             ProviderAuthMethod,
             getattr(args, "auth_method", None),
@@ -195,18 +200,54 @@ def _parse_onboarding_arg(enum_type, value, *, option_name: str, default):
     return parse_choice(enum_type, str(value), option_name=option_name)
 
 
+def _resolve_hosting(
+    args: argparse.Namespace,
+    console: Console,
+    non_interactive: bool,
+) -> HostingOption:
+    configured = getattr(args, "hosting", None)
+    if configured is not None:
+        return _parse_onboarding_arg(
+            HostingOption,
+            configured,
+            option_name="--hosting",
+            default=DEFAULT_HOSTING,
+        )
+    if non_interactive:
+        return DEFAULT_HOSTING
+
+    console.print("[bold]Step 1/7: Hosting / Security[/bold]")
+    console.print("Choose where the Nymeria backend will run.")
+    default_index = HOSTING_ORDER.index(DEFAULT_HOSTING) + 1
+    for idx, hosting in enumerate(HOSTING_ORDER, start=1):
+        choice = HOSTING_CHOICES[hosting]
+        suffix = ""
+        if hosting is DEFAULT_HOSTING:
+            suffix = " - default for package/local setup"
+        elif choice.recommended:
+            suffix = " - recommended for beta/server isolation"
+        console.print(f"  [{idx}] {choice.label}{suffix}")
+        console.print(f"      {choice.description}")
+
+    answer = prompt(f"> [{default_index}] ").strip()
+    if not answer:
+        return DEFAULT_HOSTING
+
+    try:
+        return HOSTING_ORDER[int(answer) - 1]
+    except (ValueError, IndexError):
+        try:
+            return parse_choice(HostingOption, answer, option_name="hosting choice")
+        except ValueError:
+            default_choice = HOSTING_CHOICES[DEFAULT_HOSTING].label
+            console.print(f"[yellow]Unknown choice, using {default_choice}.[/yellow]")
+            return DEFAULT_HOSTING
+
+
 def _validate_supported_onboarding(
     onboarding: OnboardingSelection,
     console: Console,
 ) -> bool:
-    if onboarding.hosting is HostingOption.DOCKER:
-        console.print(
-            "[red]--hosting docker is reserved for Docker-targeted onboarding "
-            "and is not implemented by this config.env setup path yet. Use "
-            "--hosting venv or --hosting bare_metal for the current local "
-            "setup flow.[/red]"
-        )
-        return False
     if onboarding.auth_method is not ProviderAuthMethod.API_KEY:
         console.print(
             "[red]CLIProxy OAuth onboarding is not implemented yet. Use "
@@ -215,6 +256,33 @@ def _validate_supported_onboarding(
         )
         return False
     return True
+
+
+def _print_docker_hosting_handoff(console: Console) -> None:
+    source_root = find_project_root(Path(__file__).resolve())
+    source_hint = str(source_root) if source_root else "<NymeriaOS>/Nymeria"
+
+    console.print("\n[bold]Docker Setup[/bold]")
+    console.print(
+        "Docker hosting currently uses the source-checkout compose flow. "
+        "`nymeria init` does not write Docker env files yet, so it will not "
+        "write provider credentials to config.env or .env.docker."
+    )
+    console.print("\nFrom a source checkout:")
+    console.print(f"  [bold]cd {source_hint}[/bold]")
+    console.print("  [bold]cp .env.docker.example .env.docker[/bold]")
+    console.print(
+        "  Edit .env.docker with LLM_PROVIDER, the matching provider API key, "
+        "REDIS_PASSWORD, and POSTGRES_PASSWORD."
+    )
+    console.print(
+        "  [bold]DISCORD_BOT_TOKEN=disabled docker compose "
+        "--env-file .env.docker up -d --build[/bold]"
+    )
+    console.print(
+        "\nNo config.env or .env.docker was written. Provider flags, if supplied, "
+        "were not written."
+    )
 
 
 def _print_next_action(next_action: NextAction, console: Console) -> None:
@@ -241,7 +309,7 @@ def _resolve_provider(
     if non_interactive:
         raise SystemExit("--provider is required with --non-interactive")
 
-    console.print("[bold]Step 1/6: LLM Provider[/bold]")
+    console.print("[bold]Step 2/7: LLM Provider[/bold]")
     for idx, key in enumerate(PROVIDER_ORDER, start=1):
         suffix = " - recommended" if key == "anthropic" else ""
         console.print(f"  [{idx}] {PROVIDERS[key].label}{suffix}")
@@ -265,7 +333,7 @@ def _resolve_api_key(
     if non_interactive:
         raise SystemExit("--api-key is required with --non-interactive")
 
-    console.print("\n[bold]Step 3/6: API Key[/bold]")
+    console.print("\n[bold]Step 4/7: API Key[/bold]")
     return prompt(f"Paste your {provider.label} API key: ", is_password=True).strip()
 
 
@@ -281,7 +349,7 @@ def _resolve_optional_capabilities(
     if non_interactive:
         return optional_env
 
-    console.print("\n[bold]Step 4/6: Optional Capabilities[/bold]")
+    console.print("\n[bold]Step 5/7: Optional Capabilities[/bold]")
 
     if _yes_no("Enable semantic memory/RAG embeddings?", default=False):
         embedding_key = prompt(
@@ -351,7 +419,7 @@ def _resolve_model(
     if non_interactive:
         raise SystemExit("--model is required with --non-interactive")
 
-    console.print("\n[bold]Step 2/6: Model[/bold]")
+    console.print("\n[bold]Step 3/7: Model[/bold]")
     console.print(f"Enter the model identifier to use with {provider.label}.")
     while True:
         model = prompt("> ").strip()
@@ -373,7 +441,7 @@ def _resolve_root(
     if non_interactive:
         return default_root
 
-    console.print("\n[bold]Step 5/6: Data Directory[/bold]")
+    console.print("\n[bold]Step 6/7: Data Directory[/bold]")
     console.print(f"  [1] {default_root} (default)")
     console.print("  [2] Custom path")
     answer = prompt("> ").strip() or "1"

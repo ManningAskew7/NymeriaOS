@@ -37,13 +37,17 @@ pipx install nymeria \
 See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
 upgrade commands, and the GitHub Release wheel fallback.
 
-`nymeria init` prompts for the provider, model, API key, and optional
-capability keys. It validates the provider key with a small LLM API call,
-writes `~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the
-first bootstrap admin token. `nymeria doctor` checks the installed Python
-version, config files, data directory, LLM connectivity, local databases,
-optional Redis/voice setup, bundled frontend, and API port before you start the
-server.
+`nymeria init` prompts for the hosting/security profile, provider, model, API
+key, and optional capability keys. For package installs, choose the Python
+virtual environment / pipx hosting option: it isolates Python dependencies, but
+it is not an OS security sandbox. Nymeria can still access files your user can
+access when tools are enabled. The Docker option prints source-checkout Docker
+steps and exits without writing `config.env` or `.env.docker`. The venv/pipx
+path validates the provider key with a small LLM API call, writes
+`~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the first
+bootstrap admin token. `nymeria doctor` checks the installed Python version,
+config files, data directory, LLM connectivity, local databases, optional
+Redis/voice setup, bundled frontend, and API port before you start the server.
 
 Packaged installs store config and writable data under `~/.nymeria/` by
 default. After `nymeria api` starts, open `http://localhost:8000`; the backend
@@ -75,6 +79,11 @@ docker compose --env-file .env.docker logs api
 ```
 
 Paste the token into the web UI setup wizard.
+
+`nymeria init --hosting docker` can be used as a command reminder, but it does
+not generate `.env.docker` yet. Create `.env.docker` from the example and edit
+it in the source checkout so provider credentials are written to the Docker
+runtime config, not to a packaged `config.env`.
 
 ### Source-Checkout Development
 
@@ -163,10 +172,11 @@ and `--root`. The current scripted direct setup also accepts
 `--hosting venv|bare_metal`, `--auth-method api_key`,
 `--setup-style advanced|recommended`, and `--next-action print_commands|cli|start_api_open_frontend`;
 when these are omitted, it keeps the old direct API-key setup and prints the
-commands to run next. Docker hosting and CLIProxy OAuth values are reserved for
-their dedicated onboarding flows and are rejected until those flows are
-implemented. Add `--skip-llm-test` only when you intentionally want to write
-the config without validating provider access.
+commands to run next. `--hosting docker` prints the Docker source-checkout
+handoff and exits without writing `config.env` or `.env.docker`. CLIProxy OAuth
+values are reserved for their dedicated onboarding flows and are rejected until
+those flows are implemented. Add `--skip-llm-test` only when you intentionally
+want to write the config without validating provider access.
 
 To diagnose an existing install without changing files, run:
 
