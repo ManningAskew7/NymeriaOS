@@ -125,7 +125,7 @@ services:
       MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-}
       # LLM Configuration
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
-      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-20250514}
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-6}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-1.0}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}

@@ -172,7 +172,7 @@ OPENAI_API_KEY=sk-...
 
 # LLM Settings
 LLM_PROVIDER=anthropic  # or openrouter, openai
-LLM_MODEL=claude-sonnet-4-20250514
+LLM_MODEL=claude-sonnet-4-6
 
 # Optional Integrations
 PERPLEXITY_API_KEY=pplx-...      # Web search

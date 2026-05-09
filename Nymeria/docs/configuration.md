@@ -19,7 +19,7 @@ These variables are deployment-wide server defaults, not per-user account prefer
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `LLM_PROVIDER` | Yes | `anthropic` | LLM provider: `openrouter`, `anthropic`, `openai` |
-| `LLM_MODEL` | Yes | `claude-sonnet-4-20250514` | Model identifier for the provider |
+| `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_TEMPERATURE` | No | `1.0` | Sampling temperature (0.0 - 2.0) |
 
 ### Advanced LLM Settings (Optional)
@@ -356,7 +356,7 @@ Changes take effect on agent restart.
 ```bash
 # LLM Configuration
 LLM_PROVIDER=anthropic
-LLM_MODEL=claude-sonnet-4-20250514
+LLM_MODEL=claude-sonnet-4-6
 LLM_TEMPERATURE=1.0
 ANTHROPIC_API_KEY=sk-ant-...
 
@@ -440,22 +440,22 @@ AUDIT_LOG_ENABLED=true
 
 ```bash
 LLM_PROVIDER=anthropic
-LLM_MODEL=claude-sonnet-4-20250514
+LLM_MODEL=claude-sonnet-4-6
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 Available models:
 - `claude-opus-4-7` (current flagship — see `docs/cliproxy.md` "Claude 4.7 compatibility" for the thinking/sampling-param caveats the provider already handles)
 - `claude-opus-4-6` (previous flagship)
+- `claude-sonnet-4-6` (balanced default)
 - `claude-opus-4-20250514`
-- `claude-sonnet-4-20250514` (balanced)
 - `claude-haiku-3-5-20241022` (fastest)
 
 ### OpenAI
 
 ```bash
 LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o
+LLM_MODEL=gpt-5.5
 OPENAI_API_KEY=sk-...
 EMBEDDING_API_KEY=sk-...   # Optional; used by memory/skill semantic search
 ```
@@ -464,7 +464,7 @@ EMBEDDING_API_KEY=sk-...   # Optional; used by memory/skill semantic search
 
 ```bash
 LLM_PROVIDER=openrouter
-LLM_MODEL=anthropic/claude-sonnet-4
+LLM_MODEL=anthropic/claude-sonnet-4-6
 OPENROUTER_API_KEY=sk-or-...
 ```
 
@@ -473,7 +473,8 @@ OpenRouter provides access to many models from different providers through a uni
 Nymeria defaults OpenRouter to OpenRouter's beta Responses API (`/api/v1/responses`) with `store=false`. OpenRouter's Responses API is stateless, so Nymeria sends the full checkpointed conversation history on each request instead of using `previous_response_id`. To use the older `/chat/completions` endpoint, set `OPENAI_API_MODE=chat_completions` globally or choose **Chat Completions** in the global/per-thread API Mode selector. Errors from the beta Responses endpoint are surfaced directly so the mode choice stays explicit.
 
 **Tested Compatible Models:**
-- `anthropic/claude-sonnet-4.5` - Recommended
+- `anthropic/claude-sonnet-4-6` - Recommended
+- `anthropic/claude-sonnet-4.5` - Previous recommended
 - `minimax/minimax-m2.1` - Fast responses
 - `deepseek/deepseek-v3.2` - Good performance
 - `google/gemini-3-pro-preview` - Functional

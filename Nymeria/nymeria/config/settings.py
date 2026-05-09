@@ -303,7 +303,7 @@ class Settings(BaseSettings):
         default="anthropic", description="LLM provider"
     )
     llm_model: str = Field(
-        default="claude-sonnet-4-20250514", description="Model identifier"
+        default="claude-sonnet-4-6", description="Model identifier"
     )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)
 

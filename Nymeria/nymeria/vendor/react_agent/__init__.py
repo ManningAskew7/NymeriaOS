@@ -11,7 +11,7 @@ Framework Integration:
 
     # Custom configuration
     config = AgentConfig(
-        llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-20250514"),
+        llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-6"),
         system_prompt="You are a coding assistant.",
     )
 

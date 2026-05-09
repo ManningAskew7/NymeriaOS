@@ -11,7 +11,7 @@ _NO_THREAD_CONFIG = object()
 
 class _Settings:
     llm_provider = "anthropic"
-    llm_model = "claude-sonnet-4-20250514"
+    llm_model = "claude-sonnet-4-6"
     llm_temperature = 1.0
     llm_max_tokens = None
     llm_top_p = 0.9
@@ -62,7 +62,7 @@ def test_llm_config_resolution_uses_global_defaults_without_thread_config():
     config = agent._get_llm_config_for_thread("thread-1")
 
     assert config.provider == "anthropic"
-    assert config.model == "claude-sonnet-4-20250514"
+    assert config.model == "claude-sonnet-4-6"
     assert config.temperature == 1.0
     assert config.reasoning_effort == "medium"
     assert config.base_url is None
