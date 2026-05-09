@@ -150,8 +150,8 @@ impl ProcessManager {
             }
         }
 
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("Cannot determine exe path: {}", e))?;
+        let exe =
+            std::env::current_exe().map_err(|e| format!("Cannot determine exe path: {}", e))?;
 
         let mut dir = exe
             .parent()
@@ -168,12 +168,10 @@ impl ProcessManager {
             }
         }
 
-        Err(
-            "Could not find a NymeriaOS source checkout. \
+        Err("Could not find a NymeriaOS source checkout. \
              Installed builds run in client-only mode; set NYMERIA_PROJECT_ROOT \
              to a checkout root for development backend management."
-                .to_string(),
-        )
+            .to_string())
     }
 
     /// Spawn the backend API server from a source checkout (`python run.py api`).
@@ -192,8 +190,8 @@ impl ProcessManager {
     pub fn start_worker(&self) -> Result<(), String> {
         let mut command = self.backend_command("worker")?;
 
-        let child = spawn_no_window(&mut command)
-            .map_err(|e| format!("Failed to spawn worker: {}", e))?;
+        let child =
+            spawn_no_window(&mut command).map_err(|e| format!("Failed to spawn worker: {}", e))?;
 
         let shared = self.wrap_child(child)?;
         *self.worker_process.lock().unwrap() = Some(shared);
@@ -318,8 +316,8 @@ impl ProcessManager {
             job.assign_child(&child);
         }
 
-        let shared = SharedChild::new(child)
-            .map_err(|e| format!("Failed to wrap child process: {}", e))?;
+        let shared =
+            SharedChild::new(child).map_err(|e| format!("Failed to wrap child process: {}", e))?;
         Ok(Arc::new(shared))
     }
 
@@ -406,8 +404,7 @@ impl ProcessManager {
 }
 
 fn is_source_checkout_root(path: &Path) -> bool {
-    path.join("Nymeria").join("run.py").exists()
-        && path.join("nymeria-desktop").is_dir()
+    path.join("Nymeria").join("run.py").exists() && path.join("nymeria-desktop").is_dir()
 }
 
 fn python_executable() -> String {
@@ -440,8 +437,8 @@ fn command_failure(label: &str, output: Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::ffi::OsStr;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TempTree {
@@ -527,7 +524,10 @@ mod tests {
 
         let layout = RuntimeLayout::source_checkout(temp.path.clone());
         let manager = ProcessManager::new(layout);
-        let err = manager.backend_command("api").err().expect("missing run.py");
+        let err = manager
+            .backend_command("api")
+            .err()
+            .expect("missing run.py");
 
         assert!(err.contains("Backend source entry point not found"));
     }

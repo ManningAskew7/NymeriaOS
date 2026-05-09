@@ -39,12 +39,10 @@ pub fn ensure_env_file(runtime_root: &Path) -> Result<String, String> {
                        # ANTHROPIC_API_KEY=\n";
 
         if let Some(parent) = env_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
         }
 
-        fs::write(&env_path, content)
-            .map_err(|e| format!("Failed to create .env: {}", e))?;
+        fs::write(&env_path, content).map_err(|e| format!("Failed to create .env: {}", e))?;
     }
 
     // Pick up the bootstrap admin token if the agent has written one.
