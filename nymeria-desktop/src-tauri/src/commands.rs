@@ -28,6 +28,8 @@ pub struct BackendStatus {
 #[derive(Serialize)]
 pub struct CLIProxyStatus {
     pub running: bool,
+    pub base_url: String,
+    pub detail: String,
     pub sessions: Vec<CLIProxySession>,
 }
 
@@ -95,15 +97,25 @@ pub fn stop_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// Get CLIProxy status and active OAuth sessions.
 #[tauri::command]
 pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus {
-    let running = state
-        .process_manager
-        .as_ref()
-        .map(|pm| pm.is_cliproxy_running())
-        .unwrap_or(false);
+    let Some(pm) = state.process_manager.as_ref() else {
+        return CLIProxyStatus {
+            running: false,
+            base_url: CLIPROXY_HOST_BASE_URL.to_string(),
+            detail: "Client-only mode; local CLIProxy process management is unavailable.".to_string(),
+            sessions: vec![],
+        };
+    };
+
+    let running = pm.is_cliproxy_running();
 
     if !running {
         return CLIProxyStatus {
             running: false,
+            base_url: CLIPROXY_HOST_BASE_URL.to_string(),
+            detail: format!(
+                "No CLIProxy endpoint is reachable from this desktop at {}.",
+                CLIPROXY_HOST_BASE_URL
+            ),
             sessions: vec![],
         };
     }
@@ -113,7 +125,12 @@ pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus 
         Err(_) => vec![],
     };
 
-    CLIProxyStatus { running, sessions }
+    CLIProxyStatus {
+        running,
+        base_url: CLIPROXY_HOST_BASE_URL.to_string(),
+        detail: "CLIProxy endpoint is reachable from this desktop.".to_string(),
+        sessions,
+    }
 }
 
 /// Initiate OAuth login for a provider against the current pinned Docker container.

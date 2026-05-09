@@ -41,12 +41,15 @@
       <span class="status-dot" class:running={cliproxyStore.running} class:stopped={!cliproxyStore.running}></span>
       <span class="status-text">
         {#if cliproxyStore.running}
-          Running at {LOCAL_CLIPROXY_ROOT_URL}
+          Reachable at {cliproxyStore.baseUrl}
         {:else}
-          Stopped
+          Not reachable
         {/if}
       </span>
     </div>
+    {#if cliproxyStore.detail}
+      <p class="hint">{cliproxyStore.detail}</p>
+    {/if}
     <p class="hint">Source-checkout controls for the pinned Docker deployment at <code>CLIProxyAPI-main/temp/latest</code>.</p>
   </div>
 
