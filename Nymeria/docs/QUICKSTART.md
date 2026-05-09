@@ -38,18 +38,20 @@ See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
 upgrade commands, and the GitHub Release wheel fallback.
 
 `nymeria init` prompts for the hosting/security profile, provider, model, API
-key, optional capability keys, and what to do next after config is written. The
-model step offers a provider-specific default and lets you press Enter to
-accept it. For package installs, choose the Python virtual environment / pipx
-hosting option: it isolates Python dependencies, but it is not an OS security
-sandbox. Nymeria can still access files your user can access when tools are
-enabled. The Docker option prints source-checkout Docker steps and exits
-without writing `config.env` or `.env.docker`. The venv/pipx path validates the
-provider key with a small LLM API call, writes `~/.nymeria/config.env`, creates
-`~/.nymeria/data/`, and creates the first bootstrap admin token. The final
-validation prompt can run `nymeria doctor --skip-llm-test`; because provider
-auth was already tested, the full doctor LLM call runs only when you ask for
-it. The final handoff prompt can print backend commands, print the
+key, optional advanced capability keys, the data directory, and what to do next
+after config is written. The model step offers a provider-specific default and
+lets you press Enter to accept it. For package installs, choose the Python
+virtual environment / pipx hosting option: it isolates Python dependencies, but
+it is not an OS security sandbox. Nymeria can still access files your user can
+access when tools are enabled. The Docker option prints source-checkout Docker
+steps and exits without writing `config.env` or `.env.docker`. The venv/pipx
+path validates the provider key with a small LLM API call, writes
+`~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the first
+bootstrap admin token. Advanced setup can write optional provider keys and a
+separate `NYMERIA_DATA_DIR`. The final validation prompt can run
+`nymeria doctor --skip-llm-test`; because provider auth was already tested, the
+full doctor LLM call runs only when you ask for it. The final handoff prompt
+can print backend commands, print the
 `nymeria cli` handoff, or show the backend/web UI start command.
 `nymeria doctor` checks the installed Python version, config files, data
 directory, LLM connectivity, local databases, optional Redis/voice setup,
@@ -183,7 +185,9 @@ OpenAI-backed features.
 
 For scripted setup in CI or an offline support session, `nymeria init` accepts
 `--non-interactive` plus flags such as `--provider`, `--model`, `--api-key`,
-and `--root`. The current scripted direct setup also accepts
+and `--root`. Use `--data-dir` with `--setup-style advanced` when the writable
+data directory should be separate from the runtime root. The current scripted
+direct setup also accepts
 `--hosting venv|bare_metal`, `--auth-method api_key`,
 `--setup-style advanced|recommended`, and `--next-action print_commands|cli|start_api_open_frontend`;
 when these are omitted, it keeps the old direct API-key setup and prints the
@@ -192,9 +196,10 @@ handoff and exits without writing `config.env` or `.env.docker`. CLIProxy OAuth
 auth methods print a guarded planning handoff with the documented proxy
 commands and also exit without writing Nymeria config. Add `--skip-llm-test`
 only when you intentionally want to write the config without validating
-provider access. Add `--run-doctor` for the quick post-init doctor check in
-scripted setup, or `--full-doctor` when you also want doctor to make its own
-live LLM check.
+provider access. Non-interactive `--setup-style recommended` rejects optional
+capability keys and `--data-dir`; use advanced setup for those values. Add
+`--run-doctor` for the quick post-init doctor check in scripted setup, or
+`--full-doctor` when you also want doctor to make its own live LLM check.
 
 To diagnose an existing install without changing files, run:
 

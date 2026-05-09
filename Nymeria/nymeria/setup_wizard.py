@@ -195,13 +195,24 @@ def run_init(args: argparse.Namespace) -> int:
         console.print(f"[red]{exc}[/red]")
         return 2
 
-    root = _resolve_root(args, console, non_interactive, setup_style=setup_style)
-    data_dir = root / "data"
+    root = _resolve_root(args)
+    try:
+        data_dir = _resolve_data_dir(
+            args,
+            root=root,
+            console=console,
+            non_interactive=non_interactive,
+            setup_style=setup_style,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 2
 
     try:
         _check_writable(root)
+        _check_writable(data_dir)
     except OSError as exc:
-        console.print(f"[red]Cannot write to {root}: {exc}[/red]")
+        console.print(f"[red]Cannot write setup files: {exc}[/red]")
         return 2
 
     if _port_in_use(8000):
@@ -455,18 +466,24 @@ def _run_cliproxy_claude_setup(
         _print_cliproxy_claude_manual_steps(console)
         return 2
 
-    root = _resolve_root(
-        args,
-        console,
-        non_interactive,
-        setup_style=onboarding.setup_style,
-    )
-    data_dir = root / "data"
+    root = _resolve_root(args)
+    try:
+        data_dir = _resolve_data_dir(
+            args,
+            root=root,
+            console=console,
+            non_interactive=non_interactive,
+            setup_style=onboarding.setup_style,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 2
 
     try:
         _check_writable(root)
+        _check_writable(data_dir)
     except OSError as exc:
-        console.print(f"[red]Cannot write to {root}: {exc}[/red]")
+        console.print(f"[red]Cannot write setup files: {exc}[/red]")
         return 2
 
     if _port_in_use(8000):
@@ -1441,6 +1458,12 @@ def _resolve_recommended_defaults(
     api_key: str,
     console: Console,
 ) -> dict[str, str]:
+    if getattr(args, "data_dir", None):
+        raise ValueError(
+            "Recommended setup uses the default data directory. Re-run with "
+            "--setup-style advanced to write a custom --data-dir."
+        )
+
     optional_env = _optional_env_from_args(args, provider=provider, api_key=api_key)
     if optional_env:
         env_names = ", ".join(sorted(optional_env))
@@ -1553,33 +1576,48 @@ def _resolve_model(
     return model or provider.default_model
 
 
-def _resolve_root(
-    args: argparse.Namespace,
-    console: Console,
-    non_interactive: bool,
-    *,
-    setup_style: SetupStyle,
-) -> Path:
+def _resolve_root(args: argparse.Namespace) -> Path:
     configured = getattr(args, "root", None)
     if configured:
         return Path(configured).expanduser().resolve()
 
-    default_root = _default_init_root()
+    return _default_init_root()
+
+
+def _resolve_data_dir(
+    args: argparse.Namespace,
+    *,
+    root: Path,
+    console: Console,
+    non_interactive: bool,
+    setup_style: SetupStyle,
+) -> Path:
+    configured = getattr(args, "data_dir", None)
+    if configured:
+        if setup_style is SetupStyle.RECOMMENDED:
+            raise ValueError(
+                "Custom data directories are an advanced setup option. Re-run "
+                "with --setup-style advanced to write --data-dir."
+            )
+        return Path(configured).expanduser().resolve()
+
+    default_data_dir = root / "data"
     if non_interactive:
-        return default_root
+        return default_data_dir
     if setup_style is SetupStyle.RECOMMENDED:
-        console.print(f"Using data directory: {default_root / 'data'}")
-        return default_root
+        console.print(f"Using data directory: {default_data_dir}")
+        return default_data_dir
 
     console.print("\n[bold]Advanced Data Directory[/bold]")
-    console.print(f"  [1] {default_root} (default)")
-    console.print("  [2] Custom path")
+    console.print(f"Config file will be written to: {root / 'config.env'}")
+    console.print(f"  [1] {default_data_dir} (default)")
+    console.print("  [2] Custom data directory")
     answer = prompt("> ").strip() or "1"
     if answer == "2":
-        custom = prompt("Path: ").strip()
+        custom = prompt("Data directory path: ").strip()
         if custom:
             return Path(custom).expanduser().resolve()
-    return default_root
+    return default_data_dir
 
 
 def _default_init_root() -> Path:
@@ -1814,7 +1852,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional Perplexity key for web search",
     )
-    parser.add_argument("--root", default=None, help="Runtime root for config.env and data/")
+    parser.add_argument(
+        "--root",
+        default=None,
+        help="Runtime root for config.env and the default data/ directory",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Advanced setup data directory to write as NYMERIA_DATA_DIR",
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite config.env if it exists")
     parser.add_argument(
         "--non-interactive",

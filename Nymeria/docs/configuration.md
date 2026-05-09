@@ -71,9 +71,11 @@ profile isolates Python packages only; it is not an OS security sandbox, and
 Nymeria can still access files your user can access when tools are enabled. In
 non-interactive mode, pass `--embedding-api-key`, `--openai-api-key`,
 `--gemini-api-key`, or `--perplexity-api-key`; keys that are not supplied are
-left out of `config.env`. Non-interactive setup defaults to direct API-key auth
-and printed next commands. It accepts `--hosting venv|bare_metal`,
-`--auth-method api_key`, `--setup-style advanced|recommended`, and
+left out of `config.env`. Use `--data-dir` with `--setup-style advanced` when
+`NYMERIA_DATA_DIR` should differ from the runtime root's `data/` directory.
+Non-interactive setup defaults to direct API-key auth and printed next commands.
+It accepts `--hosting venv|bare_metal`, `--auth-method api_key`,
+`--setup-style advanced|recommended`, and
 `--next-action print_commands|cli|start_api_open_frontend`. `--hosting docker`
 prints source-checkout Docker setup commands and exits without writing
 `config.env` or `.env.docker`, so Docker credentials are not silently written to
@@ -121,8 +123,10 @@ source checkout or editable install, it uses the checkout's `Nymeria/` backend
 root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `config.env`, `data/`, and logs while loading bundled package assets such as
 `nymeria/config/soul.md` from the installed Python package. `nymeria init`
-writes an explicit `NYMERIA_DATA_DIR=<root>/data` line to `config.env`, so a
-later root move should update that value or rerun `nymeria init --root ...`.
+writes an explicit `NYMERIA_DATA_DIR=<root>/data` line to `config.env` by
+default, or the custom `--data-dir` value in advanced setup, so a later root or
+data-directory move should update that value or rerun `nymeria init --root ...`
+or `nymeria init --setup-style advanced --data-dir ...`.
 The beta Windows desktop release is client-only: it does not bundle a backend
 executable, does not read or write backend config files, and does not set
 `NYMERIA_PROJECT_ROOT` for a local backend process.
