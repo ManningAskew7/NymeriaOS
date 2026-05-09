@@ -844,7 +844,7 @@ Authorization: Bearer <token>
 
 **Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `openai_api_mode`, and LLM stream retry settings; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
-Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user.
+Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
 The admin environment endpoints (`GET /settings/env` and `GET /settings/env/{key}`) omit the retired `NYMERIA_API_KEY` shared-token setting. The field can still exist in old `.env` files for validation compatibility, but account tokens are authoritative and the legacy value is not part of the configuration API.
 
@@ -893,7 +893,7 @@ itself as broken.
 ```http
 PATCH /settings
 Content-Type: application/json
-Authorization: Bearer <token>
+Authorization: Bearer <admin-token>
 ```
 
 **Request Body:** (all fields optional)
@@ -910,6 +910,13 @@ Authorization: Bearer <token>
   "llm_reasoning_effort": "medium",
   "llm_use_model_defaults": false,
   "openai_api_mode": "responses",
+  "openai_api_key": "sk-...",
+  "anthropic_api_key": "sk-ant-or-cpx-...",
+  "anthropic_direct_api_key": "sk-ant-...",
+  "openrouter_api_key": "sk-or-...",
+  "embedding_api_key": "sk-...",
+  "gemini_api_key": "AIza...",
+  "perplexity_api_key": "pplx-...",
   "llm_stream_max_retries": 2,
   "llm_stream_retry_initial_delay": 1.0,
   "llm_stream_retry_max_delay": 8.0,
@@ -930,6 +937,13 @@ Authorization: Bearer <token>
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI provider API mode. `responses` is the default; `chat_completions` is a compatibility override and is not recommended if thinking is enabled. |
+| `openai_api_key` | string | - | Write-only OpenAI or OpenAI-compatible global API key |
+| `anthropic_api_key` | string | - | Write-only Anthropic global key. For Anthropic CLIProxy this is the local `cpx-*` gatekeeper key. |
+| `anthropic_direct_api_key` | string | - | Write-only direct Anthropic key used when the effective Anthropic base URL is empty |
+| `openrouter_api_key` | string | - | Write-only OpenRouter global API key |
+| `embedding_api_key` | string | - | Write-only OpenAI-compatible embeddings key. Do not set this to a CLIProxy `cpx-*` gatekeeper key. |
+| `gemini_api_key` | string | - | Write-only Gemini key for Gemini-backed capabilities |
+| `perplexity_api_key` | string | - | Write-only Perplexity key for web search |
 | `llm_stream_max_retries` | int | 0-10 | Retries for transient LLM call/stream failures before any model output is emitted |
 | `llm_stream_retry_initial_delay` | float | 0-60 | Initial LLM retry backoff delay in seconds |
 | `llm_stream_retry_max_delay` | float | 0-300 | Maximum LLM retry backoff delay in seconds |
@@ -944,7 +958,7 @@ Authorization: Bearer <token>
 }
 ```
 
-**Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override.
+**Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override. Credential values are accepted in the request but are not returned by `GET /settings` or the update response; the admin env listing masks secret values.
 
 ---
 
