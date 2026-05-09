@@ -265,7 +265,90 @@ def test_init_noninteractive_defaults_to_print_commands(
     assert "nymeria cli" not in output
 
 
-def test_init_rejects_future_docker_hosting_without_writing_config(
+def test_init_interactive_prompts_for_hosting_before_provider(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    root = tmp_path / "runtime"
+    answers = iter(
+        [
+            "",  # default hosting: venv
+            "1",  # provider: Anthropic
+            "claude-test-model",
+            "sk-ant-test-key",
+            "n",
+            "n",
+            "n",
+            "n",
+        ]
+    )
+    prompts = []
+
+    def fake_prompt(text="", **kwargs):
+        prompts.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(
+        [
+            "--root",
+            str(root),
+            "--skip-llm-test",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert prompts[0] == "> [2] "
+    assert "Step 1/7: Hosting / Security" in output
+    assert "Step 2/7: LLM Provider" in output
+    assert output.index("Step 1/7: Hosting / Security") < output.index(
+        "Step 2/7: LLM Provider"
+    )
+    assert "not an OS security sandbox" in output
+    assert "Docker" in output
+    assert (root / "config.env").exists()
+
+
+def test_init_interactive_docker_hosting_prints_handoff_without_provider_prompt(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    root = tmp_path / "runtime"
+    answers = iter(["3"])
+    prompts = []
+
+    def fake_prompt(text="", **kwargs):
+        prompts.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(
+        [
+            "--root",
+            str(root),
+            "--skip-llm-test",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert prompts == ["> [2] "]
+    assert "Docker Setup" in output
+    assert "docker compose" in output
+    assert "--env-file .env.docker" in output
+    assert "Provider flags, if supplied" in output
+    assert "were not" in output
+    assert "written" in output
+    assert "Step 2/7: LLM Provider" not in output
+    assert not (root / "config.env").exists()
+
+
+def test_init_docker_hosting_prints_handoff_without_writing_config(
     tmp_path: Path,
     capsys,
 ):
@@ -289,8 +372,9 @@ def test_init_rejects_future_docker_hosting_without_writing_config(
     )
 
     output = capsys.readouterr().out
-    assert result == 2
-    assert "--hosting docker" in output
+    assert result == 0
+    assert "Docker Setup" in output
+    assert "No config.env or .env.docker was written" in output
     assert not (root / "config.env").exists()
 
 

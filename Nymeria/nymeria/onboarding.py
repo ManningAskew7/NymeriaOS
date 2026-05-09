@@ -96,16 +96,18 @@ HOSTING_CHOICES = {
         value=HostingOption.BARE_METAL,
         label="Bare metal",
         description=(
-            "Runs directly on your PC with your user permissions. Most power, "
-            "least isolation."
+            "Runs directly on your PC with your user permissions. It can "
+            "control your machine and access files your account can access "
+            "when tools are enabled. Most power, least isolation."
         ),
     ),
     HostingOption.VENV: OnboardingChoice(
         value=HostingOption.VENV,
         label="Python virtual environment / pipx",
         description=(
-            "Isolates Python packages, but it is not an OS security sandbox; "
-            "Nymeria can still access files your user can access."
+            "Runs as a normal user Python process with isolated Python "
+            "packages. It is not an OS security sandbox; Nymeria can still "
+            "access files your user can access when tools are enabled."
         ),
     ),
     HostingOption.DOCKER: OnboardingChoice(
@@ -113,7 +115,8 @@ HOSTING_CHOICES = {
         label="Docker",
         description=(
             "Runs backend services in containers with explicit volumes and "
-            "network boundaries."
+            "network boundaries. More setup, easier to reset, and the best "
+            "isolation of these options."
         ),
         recommended=True,
     ),
