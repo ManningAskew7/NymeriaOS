@@ -155,6 +155,13 @@ These files share core logic but have platform-specific adaptations. When making
 
 Desktop: 2065 lines. Mobile: 1272 lines. Same core settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP). Desktop also owns global Skills management and marketplace install; mobile keeps Skills control inside per-thread settings.
 
+The first-run Setup Wizard is only for client connection. Global backend setup
+belongs here after the user has connected with an admin `nym_...` account token:
+the Provider, Agent, Voice, source-checkout Proxy, and Users settings are
+admin-only UI surfaces. Non-admin users still manage their client connection and
+account state, and any server-side writes remain protected by the backend admin
+dependencies.
+
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
 | **Rendering** | Inline panel (no props) | Full-screen modal (`open` + `onClose` props) |
@@ -173,7 +180,17 @@ Desktop: 2065 lines. Mobile: 1272 lines. Same core settings categories (Connecti
 
 #### `components/common/SetupWizard.svelte`
 
-Both have 4-step onboarding (Welcome → URL → Account Token → Complete). The desktop default URL is `http://localhost:8000`; the backend-served browser UI can auto-fill the current origin after `/health` succeeds. Mobile keeps the URL empty because it usually connects to a LAN or remote backend. The mobile version also adds larger touch targets, safe-area padding, and tests the connection on save.
+Both have 4-step onboarding (Welcome → URL → Account Token → Complete). This
+wizard is a client sign-in flow only: it asks for the backend URL, accepts a
+`nym_...` account token, verifies `/me`, and shows the resolved identity before
+the app starts. Do not add provider API keys, CLIProxy setup, or backend
+bootstrap controls here.
+
+The desktop default URL is `http://localhost:8000`; the backend-served browser
+UI can auto-fill the current origin after `/health` succeeds. Mobile keeps the
+URL empty because it usually connects to a LAN or remote backend. The mobile
+version also adds larger touch targets, safe-area padding, and tests the
+connection on save.
 
 #### `components/threads/ThreadList.svelte`
 

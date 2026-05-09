@@ -22,13 +22,56 @@
   let { open, onClose, initialTab }: Props = $props();
 
   type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'voice' | 'account' | 'users';
+  type TabConfig = { id: Tab; label: string; disabled: boolean };
+  const adminServerTabs: Tab[] = ['llm', 'agent', 'voice', 'users'];
   let activeTab = $state<Tab>('connection');
   let isAdmin = $derived(configStore.identity?.role === 'admin');
+
+  function isAdminServerTab(tab: Tab): boolean {
+    return adminServerTabs.includes(tab);
+  }
+
+  function visibleTabs(): TabConfig[] {
+    const tabs: TabConfig[] = [
+      { id: 'connection', label: 'Connection', disabled: false },
+      { id: 'appearance', label: 'Theme', disabled: false },
+    ];
+
+    if (isAdmin) {
+      tabs.push(
+        { id: 'llm', label: 'Provider', disabled: !serverSettings },
+        { id: 'agent', label: 'Agent', disabled: !serverSettings }
+      );
+    }
+
+    tabs.push(
+      { id: 'tools', label: 'Tools', disabled: !serverSettings },
+      { id: 'mcp', label: 'MCP', disabled: !serverSettings }
+    );
+
+    if (isAdmin) {
+      tabs.push({ id: 'voice', label: 'Voice', disabled: !serverSettings });
+    }
+
+    tabs.push({ id: 'account', label: 'Account', disabled: false });
+
+    if (isAdmin) {
+      tabs.push({ id: 'users', label: 'Users', disabled: false });
+    }
+
+    return tabs;
+  }
 
   // When the panel re-opens with a requested tab, jump to it.
   $effect(() => {
     if (open && initialTab) {
       activeTab = initialTab as Tab;
+    }
+  });
+
+  $effect(() => {
+    if (!isAdmin && isAdminServerTab(activeTab)) {
+      activeTab = 'connection';
     }
   });
 
@@ -176,7 +219,7 @@
       const authResponse = await api.verifyAuth();
       if (authResponse.status === 401 || authResponse.status === 403) {
         testStatus = 'error';
-        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
+        testMessage = 'Invalid account token. Check that it matches a token issued by the backend.';
         return;
       }
       if (!authResponse.ok) {
@@ -261,17 +304,7 @@
     </div>
 
     <div class="tab-bar">
-      {#each [
-        { id: 'connection', label: 'Connection', disabled: false },
-        { id: 'appearance', label: 'Theme', disabled: false },
-        { id: 'llm', label: 'LLM', disabled: !serverSettings },
-        { id: 'agent', label: 'Agent', disabled: !serverSettings },
-        { id: 'tools', label: 'Tools', disabled: !serverSettings },
-        { id: 'mcp', label: 'MCP', disabled: !serverSettings },
-        { id: 'voice', label: 'Voice', disabled: !serverSettings },
-        { id: 'account', label: 'Account', disabled: false },
-        ...(isAdmin ? [{ id: 'users', label: 'Users', disabled: false }] : [])
-      ] as tab}
+      {#each visibleTabs() as tab}
         <button
           class="tab-btn"
           class:active={activeTab === tab.id}
@@ -297,12 +330,12 @@
           <p class="hint">The URL of your Nymeria API server</p>
         </div>
         <div class="setting-group">
-          <label class="setting-label">API Key</label>
+          <label class="setting-label">Account Token</label>
           <input
             type="password"
             class="setting-input"
             bind:value={apiKey}
-            placeholder="Your API key"
+            placeholder="nym_..."
           />
           <p class="hint">Per-user account token (<code>nym_...</code>) or bootstrap token from <code>BOOTSTRAP_TOKEN.txt</code></p>
         </div>
@@ -335,8 +368,8 @@
           {/each}
         </div>
 
-      <!-- LLM Tab -->
-      {:else if activeTab === 'llm'}
+      <!-- Provider Tab -->
+      {:else if activeTab === 'llm' && isAdmin}
         {#if loadingSettings}
           <div class="loading-state">Loading settings...</div>
         {:else}
@@ -565,7 +598,7 @@
         {/if}
 
       <!-- Agent Tab -->
-      {:else if activeTab === 'agent'}
+      {:else if activeTab === 'agent' && isAdmin}
         {#if loadingSettings}
           <div class="loading-state">Loading settings...</div>
         {:else}
@@ -670,7 +703,7 @@
       {:else if activeTab === 'mcp'}
         <MCPManagementPanel open={true} onClose={onClose} />
 
-      {:else if activeTab === 'voice'}
+      {:else if activeTab === 'voice' && isAdmin}
         {#if loadingSettings}
           <div class="loading-state">Loading settings...</div>
         {:else}

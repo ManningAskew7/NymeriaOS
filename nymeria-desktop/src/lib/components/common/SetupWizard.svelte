@@ -21,7 +21,6 @@
   // Status
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
-  let backendInfo = $state<{ version?: string; provider?: string } | null>(null);
   // Resolved identity from /me — surfaces in Step 3 so the user can confirm
   // they're signing in as the expected account before completing setup.
   let resolvedIdentity = $state<AccountIdentity | null>(null);
@@ -43,7 +42,6 @@
   async function testConnection() {
     testStatus = 'testing';
     testMessage = '';
-    backendInfo = null;
     resolvedIdentity = null;
 
     const result = await probeConnection(apiUrl, apiKey);
@@ -54,9 +52,8 @@
     }
 
     resolvedIdentity = result.identity;
-    backendInfo = result.provider ? { provider: result.provider } : null;
     testStatus = 'success';
-    testMessage = 'Connected successfully!';
+    testMessage = 'Connection verified.';
   }
 
   function handleNext() {
@@ -111,7 +108,7 @@
     <!-- Header -->
     <div class="wizard-header">
       <h1>Welcome to Nymeria</h1>
-      <p class="subtitle">Let's get you set up in just a few steps</p>
+      <p class="subtitle">Connect this app to your Nymeria backend</p>
     </div>
 
     <!-- Progress indicator -->
@@ -135,7 +132,7 @@
       {#if currentStep === 1}
         <!-- Step 1: Welcome -->
         <div class="step">
-          <h2>Before You Begin</h2>
+          <h2>Client Connection</h2>
           <p>Make sure you have:</p>
           <ul class="checklist">
             <li>
@@ -208,12 +205,6 @@
               </div>
             {/if}
 
-            {#if backendInfo}
-              <div class="backend-info">
-                LLM Provider: <strong>{backendInfo.provider}</strong>
-              </div>
-            {/if}
-
             {#if resolvedIdentity}
               <div class="identity-preview">
                 <Avatar identity={resolvedIdentity} size={40} state="connected" />
@@ -237,8 +228,8 @@
           <div class="success-icon">
             <Icon name="success" size={48} />
           </div>
-          <h2>You're All Set!</h2>
-          <p>Nymeria is ready to help you. Start a conversation to begin.</p>
+          <h2>Connection Ready</h2>
+          <p>This app is connected to Nymeria. Start a conversation to begin.</p>
 
           <div class="tips">
             <h3>Quick Tips:</h3>
@@ -462,12 +453,6 @@
   .test-result.error {
     background: rgba(248, 113, 113, 0.15);
     color: var(--error);
-  }
-
-  .backend-info {
-    margin-top: var(--spacing-sm);
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
   }
 
   .identity-preview {

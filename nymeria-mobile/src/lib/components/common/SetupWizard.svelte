@@ -57,9 +57,7 @@
 
       resolvedIdentity = result.identity;
       testResult = 'success';
-      testMessage = result.provider
-        ? `Connected! Provider: ${result.provider}`
-        : 'Connected!';
+      testMessage = 'Connection verified.';
     } finally {
       testing = false;
     }
@@ -104,7 +102,7 @@
           </div>
           <div class="check-item">
             <Icon name="check" size={18} />
-            <span>.env configured with API keys</span>
+            <span>A <code>nym_...</code> account token for this device</span>
           </div>
           <div class="check-item">
             <Icon name="check" size={18} />
@@ -192,8 +190,8 @@
         <div class="step-icon success-icon">
           <Icon name="success" size={48} />
         </div>
-        <h2>You're all set!</h2>
-        <p>Your mobile app is connected to Nymeria.</p>
+        <h2>Connection ready</h2>
+        <p>This app is connected to Nymeria.</p>
         <div class="tips">
           <h3>Quick tips:</h3>
           <ul>

@@ -156,9 +156,14 @@
 
   // UI state
   type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'skills' | 'voice' | 'proxy' | 'account' | 'users';
+  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
+  }
+
+  function isAdminServerTab(tab: SettingsTab): boolean {
+    return adminServerTabs.includes(tab);
   }
 
   let activeTab = $state<SettingsTab>(getInitialTab());
@@ -174,7 +179,10 @@
     if (!connectionAdvancedTouched) {
       showConnectionAdvanced = !backendProcessStore.isManagedBackend;
     }
-    if (activeTab === 'proxy' && backendProcessStore.isExternalBackend) {
+    if (
+      (!isAdmin && isAdminServerTab(activeTab))
+      || (activeTab === 'proxy' && backendProcessStore.isExternalBackend)
+    ) {
       activeTab = 'connection';
     }
   });
@@ -326,7 +334,7 @@
       const authResponse = await api.verifyAuth();
       if (authResponse.status === 401 || authResponse.status === 403) {
         testStatus = 'error';
-        testMessage = 'Invalid API key. Check that it matches a token issued by the backend.';
+        testMessage = 'Invalid account token. Check that it matches a token issued by the backend.';
         return;
       }
       if (!authResponse.ok) {
@@ -428,22 +436,24 @@
     >
       Appearance
     </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'llm'}
-      onclick={() => (activeTab = 'llm')}
-      disabled={!serverSettings}
-    >
-      LLM
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'agent'}
-      onclick={() => (activeTab = 'agent')}
-      disabled={!serverSettings}
-    >
-      Agent
-    </button>
+    {#if isAdmin}
+      <button
+        class="tab"
+        class:active={activeTab === 'llm'}
+        onclick={() => (activeTab = 'llm')}
+        disabled={!serverSettings}
+      >
+        Provider
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'agent'}
+        onclick={() => (activeTab = 'agent')}
+        disabled={!serverSettings}
+      >
+        Agent
+      </button>
+    {/if}
     <button
       class="tab"
       class:active={activeTab === 'tools'}
@@ -468,15 +478,17 @@
     >
       Skills
     </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'voice'}
-      onclick={() => (activeTab = 'voice')}
-      disabled={!serverSettings}
-    >
-      Voice
-    </button>
-    {#if backendProcessStore.isManagedBackend}
+    {#if isAdmin}
+      <button
+        class="tab"
+        class:active={activeTab === 'voice'}
+        onclick={() => (activeTab = 'voice')}
+        disabled={!serverSettings}
+      >
+        Voice
+      </button>
+    {/if}
+    {#if isAdmin && backendProcessStore.isManagedBackend}
       <button
         class="tab"
         class:active={activeTab === 'proxy'}
@@ -628,12 +640,12 @@
         </div>
 
         <div class="field">
-          <label for="api-key">API Key</label>
+          <label for="api-key">Account Token</label>
           <input
             id="api-key"
             type="password"
             bind:value={apiKey}
-            placeholder="Enter your API key"
+            placeholder="nym_..."
           />
           <p class="hint">Per-user account token (<code>nym_...</code>) minted via <code>python run.py users add</code>, or the bootstrap admin token from <code>BOOTSTRAP_TOKEN.txt</code></p>
         </div>
@@ -660,7 +672,7 @@
   {/if}
 
   <!-- Proxy Tab (CLIProxy management, source-checkout Tauri only) -->
-  {#if activeTab === 'proxy' && backendProcessStore.isManagedBackend}
+  {#if activeTab === 'proxy' && isAdmin && backendProcessStore.isManagedBackend}
     <CLIProxyPanel />
   {/if}
 
@@ -707,8 +719,8 @@
     </div>
   {/if}
 
-  <!-- LLM Tab -->
-  {#if activeTab === 'llm'}
+  <!-- Provider Tab -->
+  {#if activeTab === 'llm' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
         <p class="loading">Loading settings...</p>
@@ -1026,7 +1038,7 @@
   {/if}
 
   <!-- Agent Tab -->
-  {#if activeTab === 'agent'}
+  {#if activeTab === 'agent' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
         <p class="loading">Loading settings...</p>
@@ -1156,7 +1168,7 @@
   {/if}
 
   <!-- Voice Tab -->
-  {#if activeTab === 'voice'}
+  {#if activeTab === 'voice' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
         <p class="loading">Loading settings...</p>
