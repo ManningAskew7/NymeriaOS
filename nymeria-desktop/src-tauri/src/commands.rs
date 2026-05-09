@@ -75,7 +75,9 @@ pub fn get_backend_status(state: tauri::State<'_, AppState>) -> BackendStatus {
 /// Start the CLIProxy process.
 #[tauri::command]
 pub fn start_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.process_manager.as_ref()
+    state
+        .process_manager
+        .as_ref()
         .ok_or_else(|| "Not available in client-only mode".to_string())?
         .start_cliproxy()
 }
@@ -83,7 +85,9 @@ pub fn start_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// Stop the CLIProxy process.
 #[tauri::command]
 pub fn stop_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.process_manager.as_ref()
+    state
+        .process_manager
+        .as_ref()
         .ok_or_else(|| "Not available in client-only mode".to_string())?
         .stop_cliproxy()
 }
@@ -91,7 +95,9 @@ pub fn stop_cliproxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// Get CLIProxy status and active OAuth sessions.
 #[tauri::command]
 pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus {
-    let running = state.process_manager.as_ref()
+    let running = state
+        .process_manager
+        .as_ref()
         .map(|pm| pm.is_cliproxy_running())
         .unwrap_or(false);
 
@@ -113,7 +119,9 @@ pub fn get_cliproxy_status(state: tauri::State<'_, AppState>) -> CLIProxyStatus 
 /// Initiate OAuth login for a provider against the current pinned Docker container.
 #[tauri::command]
 pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
-    let pm = state.process_manager.as_ref()
+    let pm = state
+        .process_manager
+        .as_ref()
         .ok_or_else(|| "Not available in client-only mode".to_string())?;
 
     if !pm.is_cliproxy_running() {
@@ -135,8 +143,7 @@ pub fn cliproxy_login(state: tauri::State<'_, AppState>, provider: String) -> Re
         .arg(flag)
         .arg("--no-browser");
 
-    spawn_no_window(&mut command)
-        .map_err(|e| format!("Failed to start login: {}", e))?;
+    spawn_no_window(&mut command).map_err(|e| format!("Failed to start login: {}", e))?;
 
     Ok(())
 }
