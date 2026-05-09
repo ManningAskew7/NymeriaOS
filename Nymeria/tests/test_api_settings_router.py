@@ -70,6 +70,7 @@ class FakeSettings:
     anthropic_api_key: str | None = "anthropic-token"
     anthropic_direct_api_key: str | None = None
     openrouter_api_key: str | None = None
+    embedding_api_key: str | None = None
     perplexity_api_key: str | None = None
     perplexity_search_model: str = "sonar-pro"
     gemini_api_key: str | None = None
@@ -119,6 +120,34 @@ class FakeSettingsProvider:
             self.settings,
             llm_model=os.environ.get("LLM_MODEL", self.settings.llm_model),
             tts_provider=os.environ.get("TTS_PROVIDER", self.settings.tts_provider),
+            anthropic_api_key=os.environ.get(
+                "ANTHROPIC_API_KEY",
+                self.settings.anthropic_api_key,
+            ),
+            anthropic_direct_api_key=os.environ.get(
+                "ANTHROPIC_DIRECT_API_KEY",
+                self.settings.anthropic_direct_api_key,
+            ),
+            openai_api_key=os.environ.get(
+                "OPENAI_API_KEY",
+                self.settings.openai_api_key,
+            ),
+            openrouter_api_key=os.environ.get(
+                "OPENROUTER_API_KEY",
+                self.settings.openrouter_api_key,
+            ),
+            embedding_api_key=os.environ.get(
+                "EMBEDDING_API_KEY",
+                self.settings.embedding_api_key,
+            ),
+            gemini_api_key=os.environ.get(
+                "GEMINI_API_KEY",
+                self.settings.gemini_api_key,
+            ),
+            perplexity_api_key=os.environ.get(
+                "PERPLEXITY_API_KEY",
+                self.settings.perplexity_api_key,
+            ),
         )
 
 
@@ -395,3 +424,130 @@ def test_patch_settings_updates_existing_config_env_for_packaged_runtime(
     config = (tmp_path / "config.env").read_text(encoding="utf-8")
     assert "LLM_MODEL=new-model" in config
     assert not (tmp_path / ".env").exists()
+
+
+def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
+    tmp_path: Path,
+    monkeypatch,
+):
+    for env_var in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_DIRECT_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "EMBEDDING_API_KEY",
+        "GEMINI_API_KEY",
+        "PERPLEXITY_API_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=old-openai-key\n",
+        encoding="utf-8",
+    )
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    payload = {
+        "anthropic_api_key": "cpx-anthropic-new",
+        "anthropic_direct_api_key": "sk-ant-direct-new",
+        "openai_api_key": "sk-openai-new",
+        "openrouter_api_key": "sk-or-new",
+        "embedding_api_key": "sk-embedding-new",
+        "gemini_api_key": "sk-gemini-new",
+        "perplexity_api_key": "pplx-new",
+    }
+
+    response = client.patch("/settings", headers=_auth(token), json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["updated"]) == set(payload)
+    for secret in payload.values():
+        assert secret not in response.text
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY=cpx-anthropic-new" in env_text
+    assert "ANTHROPIC_DIRECT_API_KEY=sk-ant-direct-new" in env_text
+    assert "OPENAI_API_KEY=sk-openai-new" in env_text
+    assert "OPENROUTER_API_KEY=sk-or-new" in env_text
+    assert "EMBEDDING_API_KEY=sk-embedding-new" in env_text
+    assert "GEMINI_API_KEY=sk-gemini-new" in env_text
+    assert "PERPLEXITY_API_KEY=pplx-new" in env_text
+    assert os.environ["OPENAI_API_KEY"] == "sk-openai-new"
+    assert provider.cache_clear_count == 1
+    assert agent.settings.openai_api_key == "sk-openai-new"
+    assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_patch_settings_provider_credentials_are_admin_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = agent.accounts_repo.issue_token("alice")
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(user_token),
+        json={"openai_api_key": "sk-user-should-not-write"},
+    )
+
+    assert response.status_code == 403
+    env_path = tmp_path / ".env"
+    if env_path.exists():
+        assert "sk-user-should-not-write" not in env_path.read_text(encoding="utf-8")
+
+
+def test_get_settings_does_not_return_provider_secret_fields(
+    tmp_path: Path,
+    monkeypatch,
+):
+    secrets = {
+        "openai_api_key": "sk-get-openai",
+        "anthropic_api_key": "sk-get-anthropic",
+        "anthropic_direct_api_key": "sk-get-anthropic-direct",
+        "openrouter_api_key": "sk-get-openrouter",
+        "embedding_api_key": "sk-get-embedding",
+        "gemini_api_key": "sk-get-gemini",
+        "perplexity_api_key": "pplx-get-secret",
+    }
+    settings = FakeSettings(project_root=tmp_path, data_dir=tmp_path, **secrets)
+    client, _agent, token, _provider = _client(
+        monkeypatch,
+        tmp_path,
+        settings=settings,
+    )
+
+    response = client.get("/settings", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    for field, secret in secrets.items():
+        assert field not in body
+        assert secret not in response.text
+
+
+def test_env_settings_list_masks_embedding_api_key(
+    tmp_path: Path,
+    monkeypatch,
+):
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        embedding_api_key="sk-embedding-secret",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
+
+    response = client.get("/settings/env", headers=_auth(token))
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    embedding = next(
+        entry for entry in entries if entry["name"] == "embedding_api_key"
+    )
+    assert embedding["is_secret"] is True
+    assert embedding["is_set"] is True
+    assert embedding["value"] == "sk-e...ret"
+    assert "sk-embedding-secret" not in response.text

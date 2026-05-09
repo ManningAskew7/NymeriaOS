@@ -153,7 +153,12 @@ source checkouts create `.env`; packaged installs create `config.env`.
 Admins can test a provider/model/key/base-URL combination before writing it with
 `POST /settings/llm/test`; the probe accepts direct providers and CLIProxy-shaped
 base URLs, but does not persist the submitted API key and does not echo secrets
-in the response.
+in the response. Admins can then persist deployment-wide provider and capability
+keys with `PATCH /settings` using explicit write-only fields such as
+`openai_api_key`, `anthropic_api_key`, `anthropic_direct_api_key`,
+`openrouter_api_key`, `embedding_api_key`, `gemini_api_key`, and
+`perplexity_api_key`. These keys remain absent from `GET /settings`; the admin
+environment listing masks secret values.
 
 ### Browser Tools
 

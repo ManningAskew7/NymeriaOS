@@ -68,6 +68,15 @@ class ServerSettingsUpdate(BaseModel):
     llm_use_model_defaults: Optional[bool] = None
     llm_base_url: Optional[str] = None
     openai_api_mode: Optional[OpenAIApiMode] = None
+    # Accepted by PATCH /settings only. Secret values are intentionally absent
+    # from ServerSettingsResponse.
+    anthropic_api_key: Optional[str] = None
+    anthropic_direct_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    embedding_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    perplexity_api_key: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

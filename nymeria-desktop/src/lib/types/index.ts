@@ -771,6 +771,14 @@ export interface ServerSettingsUpdate {
   llm_use_model_defaults?: boolean;
   llm_base_url?: string | null;
   openai_api_mode?: OpenAIApiMode | null;
+  // Provider/capability credentials are write-only through PATCH /settings.
+  anthropic_api_key?: string | null;
+  anthropic_direct_api_key?: string | null;
+  openai_api_key?: string | null;
+  openrouter_api_key?: string | null;
+  embedding_api_key?: string | null;
+  gemini_api_key?: string | null;
+  perplexity_api_key?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

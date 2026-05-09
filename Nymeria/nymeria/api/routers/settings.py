@@ -139,6 +139,7 @@ def _env_categories() -> dict[str, list[str]]:
             "anthropic_api_key",
             "anthropic_direct_api_key",
             "openrouter_api_key",
+            "embedding_api_key",
             "perplexity_api_key",
             "perplexity_search_model",
             "gemini_api_key",
@@ -221,6 +222,7 @@ def _secret_keys() -> set[str]:
         "anthropic_api_key",
         "anthropic_direct_api_key",
         "openrouter_api_key",
+        "embedding_api_key",
         "perplexity_api_key",
         "gemini_api_key",
         "discord_bot_token",
@@ -653,6 +655,13 @@ def create_settings_router(
             "llm_stream_retry_max_delay",
         }
         graph_fields = llm_fields | {"tool_output_max_chars"}
+        llm_credential_fields = {
+            "anthropic_api_key",
+            "anthropic_direct_api_key",
+            "openai_api_key",
+            "openrouter_api_key",
+        }
+        graph_fields = graph_fields | llm_credential_fields
         if graph_fields & set(updates_dict.keys()):
             with agent._graph_cache_lock:
                 agent._user_graphs.clear()
