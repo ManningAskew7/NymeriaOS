@@ -818,7 +818,12 @@ Examples:
     init_parser.add_argument(
         "--root",
         default=None,
-        help="Runtime root for config.env and data/",
+        help="Runtime root for config.env and the default data/ directory",
+    )
+    init_parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Advanced setup data directory to write as NYMERIA_DATA_DIR",
     )
     init_parser.add_argument(
         "--force",

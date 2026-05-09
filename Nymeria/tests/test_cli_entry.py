@@ -637,6 +637,7 @@ def test_init_interactive_prompts_for_hosting_before_provider(
             "n",
             "n",
             "n",
+            "",  # default data directory
             "n",  # skip post-init doctor
             "",  # default next action: print commands
         ]
@@ -693,6 +694,7 @@ def test_init_interactive_prompts_for_next_action(
             "n",
             "n",
             "n",
+            "",  # default data directory
             "n",  # skip post-init doctor
             "3",  # next action: CLI chat handoff
         ]
@@ -1067,6 +1069,8 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
             "/tmp/cliproxy",
             "--cliproxy-base-url",
             "http://localhost:8317",
+            "--data-dir",
+            "/tmp/nymeria-data",
             "--non-interactive",
             "--skip-llm-test",
             "--run-doctor",
@@ -1085,6 +1089,7 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
     assert args.next_action == "print_commands"
     assert args.cliproxy_root == "/tmp/cliproxy"
     assert args.cliproxy_base_url == "http://localhost:8317"
+    assert args.data_dir == "/tmp/nymeria-data"
     assert args.run_doctor is True
     assert args.full_doctor is True
 
@@ -1126,6 +1131,89 @@ def test_init_noninteractive_writes_optional_capability_keys(
     assert "PERPLEXITY_API_KEY=pplx-test" in config
 
 
+def test_init_interactive_advanced_writes_optional_keys_and_custom_data_dir(
+    monkeypatch,
+    tmp_path: Path,
+):
+    root = tmp_path / "runtime"
+    custom_data_dir = tmp_path / "custom-data"
+    answers = iter(
+        [
+            "",  # default hosting: venv
+            "",  # default auth method: direct API key
+            "1",  # provider: Anthropic
+            "claude-test-model",
+            "sk-ant-test-key",
+            "2",  # setup style: advanced
+            "y",
+            "sk-embedding-test",
+            "y",
+            "sk-openai-test",
+            "y",
+            "gemini-test",
+            "y",
+            "pplx-test",
+            "2",  # custom data directory
+            str(custom_data_dir),
+            "n",  # skip post-init doctor
+            "",  # default next action: print commands
+        ]
+    )
+
+    def fake_prompt(text="", **kwargs):
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(
+        [
+            "--root",
+            str(root),
+            "--skip-llm-test",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert result == 0
+    assert f"NYMERIA_DATA_DIR={custom_data_dir}" in config
+    assert "EMBEDDING_API_KEY=sk-embedding-test" in config
+    assert "OPENAI_API_KEY=sk-openai-test" in config
+    assert "GEMINI_API_KEY=gemini-test" in config
+    assert "PERPLEXITY_API_KEY=pplx-test" in config
+    assert (custom_data_dir / "accounts.db").exists()
+    assert (custom_data_dir / "BOOTSTRAP_TOKEN.txt").exists()
+
+
+def test_init_noninteractive_advanced_accepts_custom_data_dir(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+    custom_data_dir = tmp_path / "custom-data"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--data-dir",
+            str(custom_data_dir),
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert result == 0
+    assert f"NYMERIA_DATA_DIR={custom_data_dir}" in config
+    assert (custom_data_dir / "accounts.db").exists()
+
+
 def test_init_noninteractive_recommended_rejects_optional_capability_keys(
     monkeypatch,
     tmp_path: Path,
@@ -1156,6 +1244,39 @@ def test_init_noninteractive_recommended_rejects_optional_capability_keys(
     assert result == 2
     assert "Recommended setup writes only the primary provider credential" in output
     assert "EMBEDDING_API_KEY" in output
+    assert not (root / "config.env").exists()
+
+
+def test_init_noninteractive_recommended_rejects_custom_data_dir(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--data-dir",
+            str(tmp_path / "custom-data"),
+            "--setup-style",
+            "recommended",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "Recommended setup uses the default data directory" in output
+    assert "--setup-style advanced" in " ".join(output.split())
     assert not (root / "config.env").exists()
 
 
