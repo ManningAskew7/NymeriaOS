@@ -23,6 +23,10 @@ from .onboarding import (
     HOSTING_ORDER,
     NEXT_ACTION_CHOICES,
     NEXT_ACTION_ORDER,
+    PROVIDER_AUTH_METHOD_CHOICES,
+    PROVIDER_AUTH_METHOD_ORDER,
+    SETUP_STYLE_CHOICES,
+    SETUP_STYLE_ORDER,
     HostingOption,
     NextAction,
     OnboardingSelection,
@@ -85,7 +89,8 @@ OPTIONAL_ENV_ORDER = (
 
 DEFAULT_HOSTING = HostingOption.VENV
 DEFAULT_AUTH_METHOD = ProviderAuthMethod.API_KEY
-DEFAULT_SETUP_STYLE = SetupStyle.ADVANCED
+DEFAULT_INTERACTIVE_SETUP_STYLE = SetupStyle.RECOMMENDED
+DEFAULT_NON_INTERACTIVE_SETUP_STYLE = SetupStyle.ADVANCED
 DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
 
 
@@ -129,20 +134,31 @@ def run_init(args: argparse.Namespace) -> int:
         console.print(f"[green]Connected:[/green] {result.model}")
         provider_auth_validated = True
 
-    if onboarding.setup_style is SetupStyle.RECOMMENDED and not non_interactive:
-        console.print("\n[bold]Step 5/7: Optional Capabilities[/bold]")
-        console.print("Using recommended defaults; optional keys can be added later.")
-        optional_env = _optional_env_from_args(args, provider=provider, api_key=api_key)
-    else:
-        optional_env = _resolve_optional_capabilities(
-            args,
-            provider=provider,
-            api_key=api_key,
-            console=console,
-            non_interactive=non_interactive,
-        )
+    setup_style = onboarding.setup_style
+    if _should_prompt_setup_style(args, non_interactive):
+        setup_style = _prompt_setup_style(console)
 
-    root = _resolve_root(args, console, non_interactive)
+    try:
+        if setup_style is SetupStyle.RECOMMENDED:
+            optional_env = _resolve_recommended_defaults(
+                args,
+                provider=provider,
+                api_key=api_key,
+                console=console,
+            )
+        else:
+            optional_env = _resolve_optional_capabilities(
+                args,
+                provider=provider,
+                api_key=api_key,
+                console=console,
+                non_interactive=non_interactive,
+            )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 2
+
+    root = _resolve_root(args, console, non_interactive, setup_style=setup_style)
     data_dir = root / "data"
 
     try:
@@ -167,7 +183,7 @@ def run_init(args: argparse.Namespace) -> int:
             return 1
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    console.print("\n[bold]Step 7/7: Configuration[/bold]")
+    console.print("\n[bold]Configuration[/bold]")
     _write_config(config_path, provider, model, api_key, data_dir, optional_env)
 
     repo = AccountsRepo(data_dir / "accounts.db")
@@ -196,20 +212,15 @@ def _resolve_onboarding_selection(
     console: Console,
     non_interactive: bool,
 ) -> OnboardingSelection:
+    hosting = _resolve_hosting(args, console, non_interactive)
+    if hosting is HostingOption.DOCKER and getattr(args, "auth_method", None) is None:
+        auth_method = DEFAULT_AUTH_METHOD
+    else:
+        auth_method = _resolve_auth_method(args, console, non_interactive)
     return OnboardingSelection(
-        hosting=_resolve_hosting(args, console, non_interactive),
-        auth_method=_parse_onboarding_arg(
-            ProviderAuthMethod,
-            getattr(args, "auth_method", None),
-            option_name="--auth-method",
-            default=DEFAULT_AUTH_METHOD,
-        ),
-        setup_style=_parse_onboarding_arg(
-            SetupStyle,
-            getattr(args, "setup_style", None),
-            option_name="--setup-style",
-            default=DEFAULT_SETUP_STYLE,
-        ),
+        hosting=hosting,
+        auth_method=auth_method,
+        setup_style=_configured_or_default_setup_style(args, non_interactive),
         next_action=_parse_onboarding_arg(
             NextAction,
             getattr(args, "next_action", None),
@@ -243,7 +254,7 @@ def _resolve_hosting(
     if non_interactive:
         return DEFAULT_HOSTING
 
-    console.print("[bold]Step 1/7: Hosting / Security[/bold]")
+    console.print("[bold]Step 1: Hosting / Security[/bold]")
     console.print("Choose where the Nymeria backend will run.")
     default_index = HOSTING_ORDER.index(DEFAULT_HOSTING) + 1
     for idx, hosting in enumerate(HOSTING_ORDER, start=1):
@@ -269,6 +280,109 @@ def _resolve_hosting(
             default_choice = HOSTING_CHOICES[DEFAULT_HOSTING].label
             console.print(f"[yellow]Unknown choice, using {default_choice}.[/yellow]")
             return DEFAULT_HOSTING
+
+
+def _resolve_auth_method(
+    args: argparse.Namespace,
+    console: Console,
+    non_interactive: bool,
+) -> ProviderAuthMethod:
+    configured = getattr(args, "auth_method", None)
+    if configured is not None:
+        return _parse_onboarding_arg(
+            ProviderAuthMethod,
+            configured,
+            option_name="--auth-method",
+            default=DEFAULT_AUTH_METHOD,
+        )
+    if non_interactive:
+        return DEFAULT_AUTH_METHOD
+
+    console.print("\n[bold]Step 2: Provider Authentication[/bold]")
+    console.print("Choose how Nymeria will authenticate to the primary LLM provider.")
+    default_index = PROVIDER_AUTH_METHOD_ORDER.index(DEFAULT_AUTH_METHOD) + 1
+    for idx, auth_method in enumerate(PROVIDER_AUTH_METHOD_ORDER, start=1):
+        choice = PROVIDER_AUTH_METHOD_CHOICES[auth_method]
+        suffix = ""
+        if auth_method is DEFAULT_AUTH_METHOD:
+            suffix = " - default"
+        elif choice.advanced:
+            suffix = " - advanced"
+        console.print(f"  [{idx}] {choice.label}{suffix}")
+        console.print(f"      {choice.description}")
+
+    answer = prompt(f"> [{default_index}] ").strip()
+    if not answer:
+        return DEFAULT_AUTH_METHOD
+
+    try:
+        return PROVIDER_AUTH_METHOD_ORDER[int(answer) - 1]
+    except (ValueError, IndexError):
+        try:
+            return parse_choice(
+                ProviderAuthMethod,
+                answer,
+                option_name="provider authentication choice",
+            )
+        except ValueError:
+            default_choice = PROVIDER_AUTH_METHOD_CHOICES[DEFAULT_AUTH_METHOD].label
+            console.print(f"[yellow]Unknown choice, using {default_choice}.[/yellow]")
+            return DEFAULT_AUTH_METHOD
+
+
+def _configured_or_default_setup_style(
+    args: argparse.Namespace,
+    non_interactive: bool,
+) -> SetupStyle:
+    default = (
+        DEFAULT_NON_INTERACTIVE_SETUP_STYLE
+        if non_interactive
+        else DEFAULT_INTERACTIVE_SETUP_STYLE
+    )
+    return _parse_onboarding_arg(
+        SetupStyle,
+        getattr(args, "setup_style", None),
+        option_name="--setup-style",
+        default=default,
+    )
+
+
+def _should_prompt_setup_style(
+    args: argparse.Namespace,
+    non_interactive: bool,
+) -> bool:
+    return not non_interactive and getattr(args, "setup_style", None) is None
+
+
+def _prompt_setup_style(console: Console) -> SetupStyle:
+    console.print("\n[bold]Step 6: Setup Style[/bold]")
+    console.print("Choose how much configuration to collect now.")
+    default_index = SETUP_STYLE_ORDER.index(DEFAULT_INTERACTIVE_SETUP_STYLE) + 1
+    for idx, setup_style in enumerate(SETUP_STYLE_ORDER, start=1):
+        choice = SETUP_STYLE_CHOICES[setup_style]
+        suffix = ""
+        if setup_style is DEFAULT_INTERACTIVE_SETUP_STYLE:
+            suffix = " - default"
+        elif choice.advanced:
+            suffix = " - advanced"
+        console.print(f"  [{idx}] {choice.label}{suffix}")
+        console.print(f"      {choice.description}")
+
+    answer = prompt(f"> [{default_index}] ").strip()
+    if not answer:
+        return DEFAULT_INTERACTIVE_SETUP_STYLE
+
+    try:
+        return SETUP_STYLE_ORDER[int(answer) - 1]
+    except (ValueError, IndexError):
+        try:
+            return parse_choice(SetupStyle, answer, option_name="setup style")
+        except ValueError:
+            default_choice = SETUP_STYLE_CHOICES[
+                DEFAULT_INTERACTIVE_SETUP_STYLE
+            ].label
+            console.print(f"[yellow]Unknown choice, using {default_choice}.[/yellow]")
+            return DEFAULT_INTERACTIVE_SETUP_STYLE
 
 
 def _run_cliproxy_planning_gate(
@@ -640,7 +754,7 @@ def _resolve_provider(
     if non_interactive:
         raise SystemExit("--provider is required with --non-interactive")
 
-    console.print("[bold]Step 2/7: LLM Provider[/bold]")
+    console.print("[bold]Step 3: LLM Provider[/bold]")
     for idx, key in enumerate(PROVIDER_ORDER, start=1):
         suffix = " - recommended" if key == "anthropic" else ""
         console.print(f"  [{idx}] {PROVIDERS[key].label}{suffix}")
@@ -664,8 +778,36 @@ def _resolve_api_key(
     if non_interactive:
         raise SystemExit("--api-key is required with --non-interactive")
 
-    console.print("\n[bold]Step 4/7: API Key[/bold]")
+    console.print("\n[bold]Step 5: API Key[/bold]")
     return prompt(f"Paste your {provider.label} API key: ", is_password=True).strip()
+
+
+def _resolve_recommended_defaults(
+    args: argparse.Namespace,
+    *,
+    provider: ProviderOption,
+    api_key: str,
+    console: Console,
+) -> dict[str, str]:
+    optional_env = _optional_env_from_args(args, provider=provider, api_key=api_key)
+    if optional_env:
+        env_names = ", ".join(sorted(optional_env))
+        raise ValueError(
+            "Recommended setup writes only the primary provider credential. "
+            f"Optional capability keys were supplied for {env_names}; re-run "
+            "with --setup-style advanced to write them."
+        )
+
+    console.print("\n[bold]Recommended Defaults[/bold]")
+    console.print(
+        "Using SQLite local storage, the default data directory, and no optional "
+        "capability keys."
+    )
+    console.print(
+        "Embeddings/RAG, OpenAI tools, Gemini, Perplexity, and custom data paths "
+        "can be configured later with advanced setup or manual config edits."
+    )
+    return {}
 
 
 def _resolve_optional_capabilities(
@@ -680,7 +822,7 @@ def _resolve_optional_capabilities(
     if non_interactive:
         return optional_env
 
-    console.print("\n[bold]Step 5/7: Optional Capabilities[/bold]")
+    console.print("\n[bold]Advanced Optional Capabilities[/bold]")
 
     if _yes_no("Enable semantic memory/RAG embeddings?", default=False):
         embedding_key = prompt(
@@ -750,7 +892,7 @@ def _resolve_model(
     if non_interactive:
         raise SystemExit("--model is required with --non-interactive")
 
-    console.print("\n[bold]Step 3/7: Model[/bold]")
+    console.print("\n[bold]Step 4: Model[/bold]")
     console.print(f"Recommended default: [bold]{provider.default_model}[/bold]")
     console.print(
         f"Press Enter to use it, or type another {provider.label} model identifier."
@@ -763,6 +905,8 @@ def _resolve_root(
     args: argparse.Namespace,
     console: Console,
     non_interactive: bool,
+    *,
+    setup_style: SetupStyle,
 ) -> Path:
     configured = getattr(args, "root", None)
     if configured:
@@ -771,8 +915,11 @@ def _resolve_root(
     default_root = _default_init_root()
     if non_interactive:
         return default_root
+    if setup_style is SetupStyle.RECOMMENDED:
+        console.print(f"Using data directory: {default_root / 'data'}")
+        return default_root
 
-    console.print("\n[bold]Step 6/7: Data Directory[/bold]")
+    console.print("\n[bold]Advanced Data Directory[/bold]")
     console.print(f"  [1] {default_root} (default)")
     console.print("  [2] Custom path")
     answer = prompt("> ").strip() or "1"
