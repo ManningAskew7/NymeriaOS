@@ -37,21 +37,34 @@ pipx install nymeria \
 See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
 upgrade commands, and the GitHub Release wheel fallback.
 
-`nymeria init` prompts for the hosting/security profile, provider, model, API
-key, optional advanced capability keys, the data directory, and what to do next
+`nymeria init` prompts for the hosting/security profile, provider auth method,
+provider, model, API key, setup style, data directory, and what to do next
 after config is written. The model step offers a provider-specific default and
-lets you press Enter to accept it. For package installs, choose the Python
-virtual environment / pipx hosting option: it isolates Python dependencies, but
-it is not an OS security sandbox. Nymeria can still access files your user can
-access when tools are enabled. The Docker option prints source-checkout Docker
-steps and exits without writing `config.env` or `.env.docker`. The venv/pipx
-path validates the provider key with a small LLM API call, writes
-`~/.nymeria/config.env`, creates `~/.nymeria/data/`, and creates the first
-bootstrap admin token. Advanced setup can write optional provider keys and a
-separate `NYMERIA_DATA_DIR`. The final validation prompt can run
-`nymeria doctor --skip-llm-test`; because provider auth was already tested, the
-full doctor LLM call runs only when you ask for it. The final handoff prompt
-can print backend commands, print the
+lets you press Enter to accept it.
+
+For package installs, choose the Python virtual environment / pipx hosting
+option. It isolates Python dependencies, but it is not an OS security sandbox:
+Nymeria can still access files your user can access when tools are enabled.
+The Docker option is a source-checkout handoff for direct API-key setup; it
+prints compose steps and exits without writing `config.env` or `.env.docker`.
+
+The normal first-run path is direct API-key authentication. It validates the
+provider key with a small LLM API call, writes `~/.nymeria/config.env`, creates
+`~/.nymeria/data/`, and creates the first bootstrap admin token. Recommended
+setup writes only the primary provider credential and defers optional
+capability keys. Advanced setup can write optional provider keys and a separate
+`NYMERIA_DATA_DIR`.
+
+CLIProxy Claude OAuth and CLIProxy Codex/OpenAI OAuth are advanced
+source-checkout paths. They use the existing pinned
+`CLIProxyAPI-main/temp/latest/` deployment, may start that Docker compose
+service, require active local OAuth auth files, and write Nymeria config only
+after the relevant proxy verification passes. Use direct API keys unless you
+specifically need this subscription-routing path.
+
+The final validation prompt can run `nymeria doctor --skip-llm-test`; because
+provider auth was already tested, the full doctor LLM call runs only when you
+ask for it. The final handoff prompt can print backend commands, print the
 `nymeria cli` handoff, or show the backend/web UI start command.
 `nymeria doctor` checks the installed Python version, config files, data
 directory, LLM connectivity, local databases, optional Redis/voice setup,
@@ -192,14 +205,22 @@ direct setup also accepts
 `--setup-style advanced|recommended`, and `--next-action print_commands|cli|start_api_open_frontend`;
 when these are omitted, it keeps the old direct API-key setup and prints the
 commands to run next. `--hosting docker` prints the Docker source-checkout
-handoff and exits without writing `config.env` or `.env.docker`. CLIProxy OAuth
-auth methods print a guarded planning handoff with the documented proxy
-commands and also exit without writing Nymeria config. Add `--skip-llm-test`
-only when you intentionally want to write the config without validating
-provider access. Non-interactive `--setup-style recommended` rejects optional
-capability keys and `--data-dir`; use advanced setup for those values. Add
-`--run-doctor` for the quick post-init doctor check in scripted setup, or
-`--full-doctor` when you also want doctor to make its own live LLM check.
+handoff and exits without writing `config.env` or `.env.docker` for direct
+API-key setup.
+
+Scripted CLIProxy setup uses `--auth-method cliproxy_claude_oauth` or
+`--auth-method cliproxy_codex_oauth`. Pass `--cliproxy-root <path>` if the
+pinned `CLIProxyAPI-main/temp/latest/` directory is not in the default source
+checkout location, and pass `--cliproxy-base-url <url>` if the host-reachable
+proxy URL is not the compose-published default. In non-interactive mode, setup
+fails with exact manual OAuth steps if no active local auth JSON is present.
+
+Add `--skip-llm-test` only when you intentionally want to write direct API-key
+config without validating provider access. Non-interactive
+`--setup-style recommended` rejects optional capability keys and `--data-dir`;
+use advanced setup for those values. Add `--run-doctor` for the quick
+post-init doctor check in scripted setup, or `--full-doctor` when you also want
+doctor to make its own live LLM check.
 
 To diagnose an existing install without changing files, run:
 
@@ -264,6 +285,14 @@ For the Windows desktop app:
    - Pasting a `nym_...` account token, such as the bootstrap token from
      `<data_dir>/BOOTSTRAP_TOKEN.txt` on a first local backend boot
    - Testing the connection
+
+After an admin token is connected, provider configuration is separate from the
+client connection wizard. Open Settings > Provider > Open Wizard to test and
+save a direct provider key or point the backend at an already-running CLIProxy
+OAuth endpoint. These settings are deployment-wide and affect all users who
+inherit the global provider. Installed desktop builds are client-only: they do
+not start a backend, start CLIProxy, run OAuth login, or write backend config
+files directly.
 
 ## You're Done!
 
