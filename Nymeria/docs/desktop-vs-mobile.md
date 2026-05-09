@@ -169,6 +169,27 @@ with `PATCH /settings`. This wizard is not CLIProxy process management; installe
 desktop builds remain client-only and can only point the backend at a proxy URL
 that is already reachable from the backend.
 
+#### Mobile Provider Setup Scope
+
+Mobile keeps the first-run Setup Wizard as a client-connection flow only:
+backend URL, `nym_...` account token, and identity verification. It does not
+collect provider API keys, bootstrap a backend, start CLIProxy, or expose the
+desktop Provider Setup wizard in this onboarding phase.
+
+Admin users on mobile may still adjust existing deployment-wide provider
+settings from Settings, such as provider, model, API mode, and base URL. Mobile
+does not collect write-only provider credentials or run the `/settings/llm/test`
+wizard because those flows handle high-value secrets, affect every user on the
+connected backend, and need more confirmation/context than the current mobile
+settings surface provides. Use desktop or backend CLI setup for initial provider
+credential entry and CLIProxy OAuth configuration.
+
+If provider credential setup is added to mobile later, it should reuse the same
+authenticated backend APIs as desktop (`POST /settings/llm/test` followed by
+`PATCH /settings`), keep all writes admin-only, mask secrets in responses, and
+be implemented as a mobile-specific full-screen flow with touch-sized controls.
+CLIProxy process management should remain out of mobile scope.
+
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
 | **Rendering** | Inline panel (no props) | Full-screen modal (`open` + `onClose` props) |
