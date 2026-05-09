@@ -89,8 +89,8 @@ def run_init(args: argparse.Namespace) -> int:
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         return 2
-    if not _validate_supported_onboarding(onboarding, console):
-        return 2
+    if onboarding.auth_method is not ProviderAuthMethod.API_KEY:
+        return _run_cliproxy_planning_gate(onboarding, console, non_interactive)
     if onboarding.hosting is HostingOption.DOCKER:
         _print_docker_hosting_handoff(console)
         return 0
@@ -247,18 +247,151 @@ def _resolve_hosting(
             return DEFAULT_HOSTING
 
 
-def _validate_supported_onboarding(
+def _run_cliproxy_planning_gate(
     onboarding: OnboardingSelection,
     console: Console,
-) -> bool:
-    if onboarding.auth_method is not ProviderAuthMethod.API_KEY:
+    non_interactive: bool,
+) -> int:
+    if not non_interactive:
+        console.print("\n[bold]CLIProxy OAuth Setup[/bold]")
         console.print(
-            "[red]CLIProxy OAuth onboarding is not implemented yet. Use "
-            "--auth-method api_key for the current direct provider setup "
-            "flow.[/red]"
+            "This is an advanced planning handoff. It prints CLIProxy setup "
+            "commands and exits without writing config.env or .env.docker."
         )
-        return False
-    return True
+        if not _yes_no("Print CLIProxy setup commands?", default=True):
+            console.print(
+                "Setup cancelled. Re-run with --auth-method api_key for direct setup."
+            )
+            return 1
+
+    _print_cliproxy_planning_handoff(onboarding, console)
+    return 0
+
+
+def _print_cliproxy_planning_handoff(
+    onboarding: OnboardingSelection,
+    console: Console,
+) -> None:
+    auth_method = onboarding.auth_method
+    is_claude = auth_method is ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH
+    method_label = "Claude OAuth" if is_claude else "Codex/OpenAI OAuth"
+    repo_hint = _repo_root_hint()
+
+    console.print(f"\n[bold]CLIProxy {method_label} Planning Gate[/bold]")
+    console.print(
+        "CLIProxy OAuth is advanced. Use Docker for the proxy whenever possible; "
+        "the known-good setup depends on the pinned CLIProxy image and the "
+        "Nymeria HTTP behavior documented in docs/cliproxy.md."
+    )
+    console.print(
+        "The key you put in Nymeria is the CLIProxy gatekeeper key from "
+        "CLIProxyAPI-main/temp/latest/config.yaml, not an upstream Anthropic "
+        "or OpenAI API key."
+    )
+
+    console.print(
+        f"\n[bold]1. Prepare the pinned CLIProxy container from {repo_hint}[/bold]"
+    )
+    for line in (
+        (
+            "cp -n CLIProxyAPI-main/temp/latest/config.yaml.example "
+            "CLIProxyAPI-main/temp/latest/config.yaml"
+        ),
+        (
+            "edit CLIProxyAPI-main/temp/latest/config.yaml and replace api-keys "
+            "with your own cpx-* gatekeeper keys"
+        ),
+        "docker compose -f CLIProxyAPI-main/temp/latest/docker-compose.yml up -d",
+    ):
+        _print_command(console, line)
+
+    if is_claude:
+        _print_cliproxy_claude_commands(console)
+    else:
+        _print_cliproxy_codex_commands(console)
+
+    console.print(
+        "\nNo config.env or .env.docker was written. Provider, model, and API-key "
+        "flags, if supplied, were not written."
+    )
+
+
+def _repo_root_hint() -> str:
+    backend_root = find_project_root(Path(__file__).resolve())
+    if backend_root and (backend_root.parent / "CLIProxyAPI-main").exists():
+        return str(backend_root.parent)
+    return "<NymeriaOS>"
+
+
+def _print_command(console: Console, line: str) -> None:
+    console.print(f"  {line}", style="bold", markup=False)
+
+
+def _print_cliproxy_claude_commands(console: Console) -> None:
+    gatekeeper = "cpx-<your-claude-gatekeeper-key>"
+    console.print("\n[bold]2. Authenticate Claude through CLIProxy[/bold]")
+    for line in (
+        "docker exec -it cli-proxy-api-latest ./CLIProxyAPI --claude-login --no-browser",
+        "open the printed URL, sign in, and let CLIProxy save auths/claude-*.json",
+        (
+            "python3 -c \"import glob,json; p=glob.glob('CLIProxyAPI-main/temp/latest/"
+            "auths/claude-*.json')[0]; d=json.load(open(p)); "
+            "d['tool_prefix_disabled']=True; json.dump(d, open(p,'w'), indent=2)\""
+        ),
+        "docker restart cli-proxy-api-latest",
+    ):
+        _print_command(console, line)
+
+    console.print("\n[bold]3. Verify before routing Nymeria traffic[/bold]")
+    for line in (
+        "python3 Nymeria/tools/check_cliproxy_cloak.py \\",
+        "  --base-url http://localhost:8318 \\",
+        f"  --api-key {gatekeeper} \\",
+        "  --auth-dir CLIProxyAPI-main/temp/latest/auths",
+    ):
+        _print_command(console, line)
+
+    console.print("\n[bold]4. Nymeria config shape after verification[/bold]")
+    for line in (
+        "LLM_PROVIDER=anthropic",
+        "LLM_BASE_URL=http://localhost:8318        # host Python/venv; root URL, no /v1",
+        "LLM_BASE_URL=http://cli-proxy-api:8317   # Docker backend; root URL, no /v1",
+        f"ANTHROPIC_API_KEY={gatekeeper}",
+    ):
+        console.print(f"  {line}")
+
+
+def _print_cliproxy_codex_commands(console: Console) -> None:
+    gatekeeper = "cpx-<your-codex-gatekeeper-key>"
+    console.print("\n[bold]2. Authenticate Codex/OpenAI through CLIProxy[/bold]")
+    for line in (
+        "docker exec -it cli-proxy-api-latest ./CLIProxyAPI --codex-device-login --no-browser",
+        "open the printed device URL, enter the code, and let CLIProxy save auths/codex-*.json",
+    ):
+        _print_command(console, line)
+
+    console.print("\n[bold]3. Verify before routing Nymeria traffic[/bold]")
+    for line in (
+        "curl -s http://localhost:8318/v1/responses \\",
+        f"  -H 'Authorization: Bearer {gatekeeper}' \\",
+        "  -H 'Content-Type: application/json' \\",
+        "  -d '{\"model\":\"gpt-5.5\",\"input\":\"Reply with ok.\",\"max_output_tokens\":16}'",
+    ):
+        _print_command(console, line)
+
+    console.print("\n[bold]4. Nymeria config shape after verification[/bold]")
+    for line in (
+        "LLM_PROVIDER=openai",
+        "OPENAI_API_MODE=responses",
+        "LLM_BASE_URL=http://localhost:8318/v1        # host Python/venv; must end in /v1",
+        "LLM_BASE_URL=http://cli-proxy-api:8317/v1   # Docker backend; must end in /v1",
+        f"OPENAI_API_KEY={gatekeeper}",
+    ):
+        console.print(f"  {line}")
+    console.print(
+        "  EMBEDDING_API_KEY should stay unset or use a real embeddings key; "
+        "do not reuse the cpx-* gatekeeper key for embeddings or voice."
+    )
 
 
 def _print_docker_hosting_handoff(console: Console) -> None:

@@ -461,7 +461,7 @@ def test_init_docker_hosting_prints_handoff_without_writing_config(
     assert not (root / "config.env").exists()
 
 
-def test_init_rejects_future_cliproxy_auth_method_without_api_key_prompt(capsys):
+def test_init_noninteractive_cliproxy_claude_auth_prints_planning_handoff(capsys):
     result = setup_main(
         [
             "--auth-method",
@@ -471,9 +471,80 @@ def test_init_rejects_future_cliproxy_auth_method_without_api_key_prompt(capsys)
     )
 
     output = capsys.readouterr().out
-    assert result == 2
-    assert "CLIProxy OAuth onboarding is not implemented yet" in output
+    assert result == 0
+    assert "CLIProxy Claude OAuth Planning Gate" in output
+    assert "CLIProxy OAuth is advanced" in output
+    assert "Docker" in output
+    assert "LLM_PROVIDER=anthropic" in output
+    assert "LLM_BASE_URL=http://localhost:8318" in output
+    assert "ANTHROPIC_API_KEY=cpx-<your-claude-gatekeeper-key>" in output
+    assert "root URL, no /v1" in output
+    assert "check_cliproxy_cloak.py" in output
+    assert "tool_prefix_disabled" in output
+    assert "gatekeeper key" in output
+    assert "No config.env or .env.docker was written" in output
+    assert "[/bold]" not in output
     assert "--provider is required" not in output
+
+
+def test_init_noninteractive_cliproxy_codex_auth_prints_planning_handoff(
+    tmp_path: Path,
+    capsys,
+):
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5.5",
+            "--api-key",
+            "sk-not-written",
+            "--auth-method",
+            "cliproxy_codex_oauth",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    normalized_output = " ".join(output.split())
+    assert result == 0
+    assert "CLIProxy Codex/OpenAI OAuth Planning Gate" in output
+    assert "LLM_PROVIDER=openai" in output
+    assert "OPENAI_API_MODE=responses" in output
+    assert "LLM_BASE_URL=http://localhost:8318/v1" in output
+    assert "OPENAI_API_KEY=cpx-<your-codex-gatekeeper-key>" in output
+    assert "must end in /v1" in output
+    assert "not an upstream Anthropic or OpenAI API key" in normalized_output
+    assert (
+        "do not reuse the cpx-* gatekeeper key for embeddings or voice"
+        in normalized_output
+    )
+    assert "No config.env or .env.docker was written" in output
+    assert not (root / "config.env").exists()
+
+
+def test_init_interactive_cliproxy_auth_can_cancel_planning_gate(
+    monkeypatch,
+    capsys,
+):
+    answers = iter(["n"])
+
+    def fake_prompt(text="", **kwargs):
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(["--hosting", "venv", "--auth-method", "cliproxy_claude_oauth"])
+
+    output = capsys.readouterr().out
+    assert result == 1
+    assert "CLIProxy OAuth Setup" in output
+    assert "Setup cancelled" in output
+    assert "Step 2/7: LLM Provider" not in output
 
 
 def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
