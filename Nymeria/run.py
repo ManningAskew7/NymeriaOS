@@ -825,6 +825,16 @@ Examples:
         action="store_true",
         help="Write config without making the provider smoke-test API call",
     )
+    init_parser.add_argument(
+        "--run-doctor",
+        action="store_true",
+        help="Run nymeria doctor after writing config",
+    )
+    init_parser.add_argument(
+        "--full-doctor",
+        action="store_true",
+        help="Run post-init doctor with its live LLM check; implies --run-doctor",
+    )
 
     # Doctor subcommand
     doctor_parser = subparsers.add_parser(

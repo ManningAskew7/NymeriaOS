@@ -127,11 +127,15 @@ The beta Windows desktop release is client-only: it does not bundle a backend
 executable, does not read or write backend config files, and does not set
 `NYMERIA_PROJECT_ROOT` for a local backend process.
 
-Run `nymeria doctor` after `nymeria init` or after manual config edits to check
-the effective Python version, config files, data directory, LLM connectivity,
-SQLite/Postgres state, optional Redis/voice setup, bundled frontend, and API
-port. Use `nymeria doctor --skip-llm-test` when diagnosing an offline system or
-when provider credentials are intentionally unavailable.
+`nymeria init` offers to run a final doctor check after writing config. When
+the setup wizard already validated provider auth, that final check defaults to
+`nymeria doctor --skip-llm-test` to avoid a duplicate live LLM call; choose the
+full doctor option only when you want the second provider check. Run
+`nymeria doctor` after manual config edits to check the effective Python
+version, config files, data directory, LLM connectivity, SQLite/Postgres state,
+optional Redis/voice setup, bundled frontend, and API port. Use
+`nymeria doctor --skip-llm-test` when diagnosing an offline system or when
+provider credentials are intentionally unavailable.
 
 Runtime settings updates choose the highest-precedence existing config file:
 `.env.docker`, then `config.env`, then `.env`. If no config file exists yet,

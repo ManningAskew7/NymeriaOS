@@ -6,9 +6,10 @@ import argparse
 import socket
 import sqlite3
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 from langchain_core.messages import HumanMessage
 from rich.console import Console
@@ -57,18 +58,38 @@ def run_doctor(args: argparse.Namespace) -> int:
 
 def collect_checks(args: argparse.Namespace) -> list[CheckResult]:
     """Collect doctor checks without rendering them."""
+    project_root_arg = getattr(args, "project_root", None)
+    project_root = (
+        Path(project_root_arg).expanduser().resolve()
+        if project_root_arg is not None
+        else PROJECT_ROOT
+    )
     results = [
         _check_python(),
-        _check_config_files(),
+        _check_config_files(project_root),
     ]
 
     try:
+        if project_root_arg is not None:
+            with _settings_for_project_root(project_root) as settings:
+                _append_settings_checks(results, settings, args)
+            return results
         settings = get_settings()
     except Exception as exc:  # noqa: BLE001 - diagnostics should report all config failures.
         results.append(CheckResult("Settings", "fail", f"could not load settings: {_compact_error(exc)}"))
         results.append(_check_frontend())
         return results
 
+    _append_settings_checks(results, settings, args)
+    return results
+
+
+def _append_settings_checks(
+    results: list[CheckResult],
+    settings: Any,
+    args: argparse.Namespace,
+) -> None:
+    """Append checks that depend on loaded settings."""
     results.extend(
         [
             _check_data_dir(settings),
@@ -80,7 +101,6 @@ def collect_checks(args: argparse.Namespace) -> list[CheckResult]:
             _check_port(settings),
         ]
     )
-    return results
 
 
 def _format_result(result: CheckResult) -> str:
@@ -109,15 +129,38 @@ def _check_python() -> CheckResult:
     return CheckResult("Python", "pass", label)
 
 
-def _check_config_files() -> CheckResult:
-    paths = get_env_file_paths(PROJECT_ROOT)
+@contextmanager
+def _settings_for_project_root(project_root: Path) -> Iterator[Any]:
+    """
+    Load settings for a specific runtime root while checks are being collected.
+
+    ``Settings.project_root`` currently reads the module-level PROJECT_ROOT, so
+    the override must remain active until all settings-backed checks finish.
+    """
+    from .config import settings as settings_module
+
+    original_project_root = settings_module.PROJECT_ROOT
+    settings_module.PROJECT_ROOT = project_root
+    settings_module.get_settings.cache_clear()
+    try:
+        env_files = tuple(
+            str(path) for path in settings_module.get_env_file_paths(project_root)
+        )
+        yield settings_module.Settings(_env_file=env_files)
+    finally:
+        settings_module.PROJECT_ROOT = original_project_root
+        settings_module.get_settings.cache_clear()
+
+
+def _check_config_files(project_root: Path) -> CheckResult:
+    paths = get_env_file_paths(project_root)
     existing = [path for path in paths if path.is_file()]
     if existing:
         return CheckResult("Config", "pass", ", ".join(str(path) for path in existing))
     return CheckResult(
         "Config",
         "warn",
-        f"no config file found in {PROJECT_ROOT}; environment variables may still apply",
+        f"no config file found in {project_root}; environment variables may still apply",
     )
 
 

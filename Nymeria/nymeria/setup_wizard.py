@@ -116,6 +116,7 @@ def run_init(args: argparse.Namespace) -> int:
             f"`{provider.key_prefix}`.[/red]"
         )
         return 2
+    provider_auth_validated = False
     if getattr(args, "skip_llm_test", False):
         console.print("[yellow]Skipping LLM connection test.[/yellow]")
     else:
@@ -126,6 +127,7 @@ def run_init(args: argparse.Namespace) -> int:
             console.print(f"[red]LLM connection failed:[/red] {exc}")
             return 2
         console.print(f"[green]Connected:[/green] {result.model}")
+        provider_auth_validated = True
 
     if onboarding.setup_style is SetupStyle.RECOMMENDED and not non_interactive:
         console.print("\n[bold]Step 5/7: Optional Capabilities[/bold]")
@@ -175,6 +177,15 @@ def run_init(args: argparse.Namespace) -> int:
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
     _print_bootstrap_token_handoff(token_path, console)
+    doctor_status = _offer_post_setup_doctor(
+        args,
+        root=root,
+        console=console,
+        non_interactive=non_interactive,
+        provider_auth_validated=provider_auth_validated,
+    )
+    if doctor_status != 0:
+        return doctor_status
     next_action = _resolve_next_action(args, console, non_interactive)
     _print_next_action(next_action, console)
     return 0
@@ -499,6 +510,63 @@ def _print_docker_hosting_handoff(console: Console) -> None:
     console.print(
         "\nNo config.env or .env.docker was written. Provider flags, if supplied, "
         "were not written."
+    )
+
+
+def _offer_post_setup_doctor(
+    args: argparse.Namespace,
+    *,
+    root: Path,
+    console: Console,
+    non_interactive: bool,
+    provider_auth_validated: bool,
+) -> int:
+    requested = bool(
+        getattr(args, "run_doctor", False) or getattr(args, "full_doctor", False)
+    )
+    if not requested:
+        if non_interactive:
+            return 0
+        console.print("\n[bold]Final Validation[/bold]")
+        if not _yes_no("Run nymeria doctor now?", default=True):
+            console.print("Skipped. You can run `nymeria doctor` later.")
+            return 0
+
+    include_llm_test = bool(getattr(args, "full_doctor", False))
+    if not include_llm_test and not non_interactive:
+        if provider_auth_validated:
+            include_llm_test = _yes_no(
+                "Provider auth was already tested. Run the full doctor LLM check again?",
+                default=False,
+            )
+        else:
+            include_llm_test = _yes_no(
+                "Include the live provider LLM check in doctor?",
+                default=False,
+            )
+
+    skip_llm_test = not include_llm_test
+    command = "nymeria doctor"
+    if skip_llm_test:
+        command += " --skip-llm-test"
+    console.print(f"\nRunning final validation: [bold]{command}[/bold]")
+    result = _run_doctor_for_root(root, skip_llm_test=skip_llm_test)
+    if result != 0:
+        console.print(
+            "[yellow]Doctor reported failed checks. Fix those before starting "
+            "the backend.[/yellow]"
+        )
+    return result
+
+
+def _run_doctor_for_root(root: Path, *, skip_llm_test: bool) -> int:
+    from .doctor import run_doctor
+
+    return run_doctor(
+        argparse.Namespace(
+            project_root=root,
+            skip_llm_test=skip_llm_test,
+        )
     )
 
 
@@ -939,6 +1007,16 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-llm-test",
         action="store_true",
         help="Write config without making the provider smoke-test API call",
+    )
+    parser.add_argument(
+        "--run-doctor",
+        action="store_true",
+        help="Run nymeria doctor after writing config",
+    )
+    parser.add_argument(
+        "--full-doctor",
+        action="store_true",
+        help="Run post-init doctor with its live LLM check; implies --run-doctor",
     )
     return run_init(parser.parse_args(argv))
 

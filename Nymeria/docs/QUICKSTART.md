@@ -47,11 +47,13 @@ enabled. The Docker option prints source-checkout Docker steps and exits
 without writing `config.env` or `.env.docker`. The venv/pipx path validates the
 provider key with a small LLM API call, writes `~/.nymeria/config.env`, creates
 `~/.nymeria/data/`, and creates the first bootstrap admin token. The final
-prompt can print backend commands, print the `nymeria cli` handoff, or show the
-backend/web UI start command. `nymeria doctor` checks the installed Python
-version, config files, data directory, LLM connectivity, local databases,
-optional Redis/voice setup, bundled frontend, and API port before you start the
-server.
+validation prompt can run `nymeria doctor --skip-llm-test`; because provider
+auth was already tested, the full doctor LLM call runs only when you ask for
+it. The final handoff prompt can print backend commands, print the
+`nymeria cli` handoff, or show the backend/web UI start command.
+`nymeria doctor` checks the installed Python version, config files, data
+directory, LLM connectivity, local databases, optional Redis/voice setup,
+bundled frontend, and API port before you start the server.
 
 Packaged installs store config and writable data under `~/.nymeria/` by
 default. After `nymeria api` starts, open `http://localhost:8000`; the backend
@@ -190,7 +192,9 @@ handoff and exits without writing `config.env` or `.env.docker`. CLIProxy OAuth
 auth methods print a guarded planning handoff with the documented proxy
 commands and also exit without writing Nymeria config. Add `--skip-llm-test`
 only when you intentionally want to write the config without validating
-provider access.
+provider access. Add `--run-doctor` for the quick post-init doctor check in
+scripted setup, or `--full-doctor` when you also want doctor to make its own
+live LLM check.
 
 To diagnose an existing install without changing files, run:
 
