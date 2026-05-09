@@ -584,6 +584,9 @@ def test_init_interactive_defaults_to_recommended_setup(
     assert "CLIProxy Claude OAuth - advanced" in output
     assert "Step 6: Setup Style" in output
     assert "Recommended Defaults" in output
+    assert "Deferred Guided Setup" in output
+    assert "frontend Settings panel" in output
+    assert "inside a normal chat" in output
     assert "Advanced Optional Capabilities" not in output
     assert "Advanced Data Directory" not in output
     assert "Using data directory:" in output
@@ -678,6 +681,7 @@ def test_init_interactive_prompts_for_hosting_before_provider(
     assert "not an OS security sandbox" in output
     assert "Docker" in output
     assert "Next Action" in output
+    assert "Deferred Guided Setup" not in output
     assert (root / "config.env").exists()
 
 

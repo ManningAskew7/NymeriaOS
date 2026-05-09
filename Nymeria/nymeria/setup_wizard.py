@@ -257,6 +257,7 @@ def run_init(args: argparse.Namespace) -> int:
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
     _print_bootstrap_token_handoff(token_path, console)
+    _print_deferred_guided_setup_handoff(setup_style, console)
     doctor_status = _offer_post_setup_doctor(
         args,
         root=root,
@@ -538,6 +539,7 @@ def _run_cliproxy_claude_setup(
         f"[green]CLIProxy:[/green] Claude OAuth verified at {cliproxy.smoke_base_url}"
     )
     _print_bootstrap_token_handoff(token_path, console)
+    _print_deferred_guided_setup_handoff(onboarding.setup_style, console)
     doctor_status = _offer_post_setup_doctor(
         args,
         root=root,
@@ -706,6 +708,7 @@ def _run_cliproxy_codex_setup(
     )
     _warn_cliproxy_codex_embedding_key(args, console)
     _print_bootstrap_token_handoff(token_path, console)
+    _print_deferred_guided_setup_handoff(onboarding.setup_style, console)
     doctor_status = _offer_post_setup_doctor(
         args,
         root=root,
@@ -1549,6 +1552,21 @@ def _print_bootstrap_token_handoff(token_path: Path, console: Console) -> None:
             "No clipboard helper was found; display only the token value for manual copy:"
         )
     _print_command(console, copy_command.command)
+
+
+def _print_deferred_guided_setup_handoff(
+    setup_style: SetupStyle,
+    console: Console,
+) -> None:
+    if setup_style is not SetupStyle.RECOMMENDED:
+        return
+
+    console.print("\n[bold]Deferred Guided Setup[/bold]")
+    console.print(
+        "After the backend is running, connect with the bootstrap admin token "
+        "and use the frontend Settings panel for deeper setup, or ask Nymeria "
+        "inside a normal chat to walk you through optional capabilities."
+    )
 
 
 def _bootstrap_token_copy_command(token_path: Path) -> BootstrapTokenCopyCommand:
