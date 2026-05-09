@@ -679,6 +679,13 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 def main() -> None:
     """Main entry point."""
     _suppress_runtime_dependency_warnings()
+    from nymeria.onboarding import (
+        HostingOption,
+        NextAction,
+        ProviderAuthMethod,
+        SetupStyle,
+        choice_values,
+    )
 
     parser = argparse.ArgumentParser(
         description="Nymeria - Personal AI Assistant",
@@ -754,6 +761,30 @@ Examples:
         help="Model identifier to write to config.env",
     )
     init_parser.add_argument("--api-key", default=None)
+    init_parser.add_argument(
+        "--hosting",
+        choices=choice_values(HostingOption),
+        default=None,
+        help="Onboarding hosting profile",
+    )
+    init_parser.add_argument(
+        "--auth-method",
+        choices=choice_values(ProviderAuthMethod),
+        default=None,
+        help="Provider authentication method",
+    )
+    init_parser.add_argument(
+        "--setup-style",
+        choices=choice_values(SetupStyle),
+        default=None,
+        help="Amount of setup detail to collect",
+    )
+    init_parser.add_argument(
+        "--next-action",
+        choices=choice_values(NextAction),
+        default=None,
+        help="Post-setup handoff action",
+    )
     init_parser.add_argument(
         "--embedding-api-key",
         default=None,

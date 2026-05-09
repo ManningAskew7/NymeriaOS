@@ -67,8 +67,13 @@ setup. It validates the selected provider/model/key combination with a small
 LLM API call before writing `config.env`. In non-interactive mode, pass
 `--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, or
 `--perplexity-api-key`; keys that are not supplied are left out of
-`config.env`. Add `--skip-llm-test` only for deliberate offline/scripted
-setup where provider access will be verified separately.
+`config.env`. Non-interactive setup defaults to direct API-key auth and printed
+next commands. It accepts `--hosting venv|bare_metal`,
+`--auth-method api_key`, `--setup-style advanced|recommended`, and
+`--next-action print_commands|cli|start_api_open_frontend`; Docker hosting and
+CLIProxy OAuth values are reserved for dedicated onboarding flows and are
+rejected by the current wizard. Add `--skip-llm-test` only for deliberate
+offline/scripted setup where provider access will be verified separately.
 
 ### Database
 
