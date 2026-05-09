@@ -33,6 +33,13 @@ not a release gate. Testers must start or point to a separately installed
 backend, then enter the backend URL and a `nym_...` account token in the
 desktop setup wizard.
 
+For a local Windows build from a checkout, install Rust and the Tauri CLI before
+running `npm run tauri build`:
+
+```powershell
+cargo install tauri-cli --locked
+```
+
 The GitHub Release job downloads both artifacts and attaches the `.whl`,
 `.tar.gz`, and Windows installer `.exe` files to the tag's release. Tags
 containing `alpha`, `beta`, or `rc` are marked as prereleases.

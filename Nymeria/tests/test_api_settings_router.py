@@ -80,6 +80,7 @@ class FakeSettings:
     postgres_uri: str | None = None
     fcm_enabled: bool = False
     fcm_credentials_json: str | None = None
+    nymeria_debug: bool = False
     api_docs_enabled: bool = False
     cors_origins_list: list[str] | None = None
 
@@ -88,6 +89,8 @@ class FakeSettings:
             self.cors_origins_list = [
                 "http://localhost:1420",
                 "tauri://localhost",
+                "http://tauri.localhost",
+                "https://tauri.localhost",
                 "http://localhost:8000",
             ]
 
