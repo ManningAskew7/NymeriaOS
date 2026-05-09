@@ -1,4 +1,7 @@
+import sys
 from pathlib import Path
+
+import pytest
 
 from nymeria import _runtime_paths
 from nymeria import setup_wizard
@@ -193,6 +196,163 @@ def test_init_noninteractive_writes_config_and_bootstrap_token(
     assert (root / "data" / "accounts.db").exists()
     assert (root / "data" / "BOOTSTRAP_TOKEN.txt").exists()
     assert llm_calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
+
+
+def test_init_noninteractive_accepts_stable_onboarding_flags(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    llm_calls = _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--hosting",
+            "bare_metal",
+            "--auth-method",
+            "api_key",
+            "--setup-style",
+            "advanced",
+            "--next-action",
+            "cli",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "LLM_PROVIDER=anthropic" in config
+    assert "ANTHROPIC_API_KEY=sk-ant-test-key" in config
+    assert "nymeria cli" in output
+    assert llm_calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
+
+
+def test_init_noninteractive_defaults_to_print_commands(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "nymeria api" in output
+    assert "nymeria cli" not in output
+
+
+def test_init_rejects_future_docker_hosting_without_writing_config(
+    tmp_path: Path,
+    capsys,
+):
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--hosting",
+            "docker",
+            "--root",
+            str(root),
+            "--non-interactive",
+            "--skip-llm-test",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "--hosting docker" in output
+    assert not (root / "config.env").exists()
+
+
+def test_init_rejects_future_cliproxy_auth_method_without_api_key_prompt(capsys):
+    result = setup_main(
+        [
+            "--auth-method",
+            "cliproxy_claude_oauth",
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "CLIProxy OAuth onboarding is not implemented yet" in output
+    assert "--provider is required" not in output
+
+
+def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
+    import run as run_module
+
+    captured = {}
+
+    def fake_run_init(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(run_module, "run_init", fake_run_init)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "init",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--hosting",
+            "venv",
+            "--auth-method",
+            "api_key",
+            "--setup-style",
+            "advanced",
+            "--next-action",
+            "print_commands",
+            "--non-interactive",
+            "--skip-llm-test",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_module.main()
+
+    args = captured["args"]
+    assert exc_info.value.code == 0
+    assert args.hosting == "venv"
+    assert args.auth_method == "api_key"
+    assert args.setup_style == "advanced"
+    assert args.next_action == "print_commands"
 
 
 def test_init_noninteractive_writes_optional_capability_keys(

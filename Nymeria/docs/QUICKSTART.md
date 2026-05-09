@@ -159,7 +159,13 @@ OpenAI-backed features.
 
 For scripted setup in CI or an offline support session, `nymeria init` accepts
 `--non-interactive` plus flags such as `--provider`, `--model`, `--api-key`,
-and `--root`. Add `--skip-llm-test` only when you intentionally want to write
+and `--root`. The current scripted direct setup also accepts
+`--hosting venv|bare_metal`, `--auth-method api_key`,
+`--setup-style advanced|recommended`, and `--next-action print_commands|cli|start_api_open_frontend`;
+when these are omitted, it keeps the old direct API-key setup and prints the
+commands to run next. Docker hosting and CLIProxy OAuth values are reserved for
+their dedicated onboarding flows and are rejected until those flows are
+implemented. Add `--skip-llm-test` only when you intentionally want to write
 the config without validating provider access.
 
 To diagnose an existing install without changing files, run:

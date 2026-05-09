@@ -16,7 +16,16 @@ from rich.console import Console
 
 from ._runtime_paths import default_user_project_root, find_project_root
 from .core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
-from .onboarding import ProviderOption
+from .onboarding import (
+    HostingOption,
+    NextAction,
+    OnboardingSelection,
+    ProviderAuthMethod,
+    ProviderOption,
+    SetupStyle,
+    choice_values,
+    parse_choice,
+)
 
 
 @dataclass(frozen=True)
@@ -57,11 +66,23 @@ OPTIONAL_ENV_ORDER = (
     "PERPLEXITY_API_KEY",
 )
 
+DEFAULT_HOSTING = HostingOption.VENV
+DEFAULT_AUTH_METHOD = ProviderAuthMethod.API_KEY
+DEFAULT_SETUP_STYLE = SetupStyle.ADVANCED
+DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
+
 
 def run_init(args: argparse.Namespace) -> int:
     """Run the interactive or flag-driven first-run setup."""
     console = Console()
     non_interactive = bool(getattr(args, "non_interactive", False))
+    try:
+        onboarding = _resolve_onboarding_selection(args)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 2
+    if not _validate_supported_onboarding(onboarding, console):
+        return 2
 
     console.print("\n[bold]Welcome to Nymeria.[/bold] Let's get you set up.\n")
 
@@ -85,13 +106,18 @@ def run_init(args: argparse.Namespace) -> int:
             return 2
         console.print(f"[green]Connected:[/green] {result.model}")
 
-    optional_env = _resolve_optional_capabilities(
-        args,
-        provider=provider,
-        api_key=api_key,
-        console=console,
-        non_interactive=non_interactive,
-    )
+    if onboarding.setup_style is SetupStyle.RECOMMENDED and not non_interactive:
+        console.print("\n[bold]Step 4/6: Optional Capabilities[/bold]")
+        console.print("Using recommended defaults; optional keys can be added later.")
+        optional_env = _optional_env_from_args(args, provider=provider, api_key=api_key)
+    else:
+        optional_env = _resolve_optional_capabilities(
+            args,
+            provider=provider,
+            api_key=api_key,
+            console=console,
+            non_interactive=non_interactive,
+        )
 
     root = _resolve_root(args, console, non_interactive)
     data_dir = root / "data"
@@ -128,9 +154,80 @@ def run_init(args: argparse.Namespace) -> int:
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
     console.print(f"[green]Bootstrap token:[/green] {token_path}")
+    _print_next_action(onboarding.next_action, console)
+    return 0
+
+
+def _resolve_onboarding_selection(args: argparse.Namespace) -> OnboardingSelection:
+    return OnboardingSelection(
+        hosting=_parse_onboarding_arg(
+            HostingOption,
+            getattr(args, "hosting", None),
+            option_name="--hosting",
+            default=DEFAULT_HOSTING,
+        ),
+        auth_method=_parse_onboarding_arg(
+            ProviderAuthMethod,
+            getattr(args, "auth_method", None),
+            option_name="--auth-method",
+            default=DEFAULT_AUTH_METHOD,
+        ),
+        setup_style=_parse_onboarding_arg(
+            SetupStyle,
+            getattr(args, "setup_style", None),
+            option_name="--setup-style",
+            default=DEFAULT_SETUP_STYLE,
+        ),
+        next_action=_parse_onboarding_arg(
+            NextAction,
+            getattr(args, "next_action", None),
+            option_name="--next-action",
+            default=DEFAULT_NEXT_ACTION,
+        ),
+    )
+
+
+def _parse_onboarding_arg(enum_type, value, *, option_name: str, default):
+    if value is None:
+        return default
+    if isinstance(value, enum_type):
+        return value
+    return parse_choice(enum_type, str(value), option_name=option_name)
+
+
+def _validate_supported_onboarding(
+    onboarding: OnboardingSelection,
+    console: Console,
+) -> bool:
+    if onboarding.hosting is HostingOption.DOCKER:
+        console.print(
+            "[red]--hosting docker is reserved for Docker-targeted onboarding "
+            "and is not implemented by this config.env setup path yet. Use "
+            "--hosting venv or --hosting bare_metal for the current local "
+            "setup flow.[/red]"
+        )
+        return False
+    if onboarding.auth_method is not ProviderAuthMethod.API_KEY:
+        console.print(
+            "[red]CLIProxy OAuth onboarding is not implemented yet. Use "
+            "--auth-method api_key for the current direct provider setup "
+            "flow.[/red]"
+        )
+        return False
+    return True
+
+
+def _print_next_action(next_action: NextAction, console: Console) -> None:
+    if next_action is NextAction.CLI:
+        console.print("\nEnter CLI chat with:\n  [bold]nymeria cli[/bold]\n")
+        return
+    if next_action is NextAction.START_API_OPEN_FRONTEND:
+        console.print("\nStart Nymeria with:\n  [bold]nymeria api[/bold]\n")
+        console.print("Then open http://localhost:8000 and paste the bootstrap token.")
+        return
+
     console.print("\nStart Nymeria with:\n  [bold]nymeria api[/bold]\n")
     console.print("Then open http://localhost:8000 and paste the bootstrap token.")
-    return 0
 
 
 def _resolve_provider(
@@ -456,6 +553,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", choices=tuple(PROVIDERS), default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--api-key", default=None)
+    parser.add_argument(
+        "--hosting",
+        choices=choice_values(HostingOption),
+        default=None,
+        help="Onboarding hosting profile",
+    )
+    parser.add_argument(
+        "--auth-method",
+        choices=choice_values(ProviderAuthMethod),
+        default=None,
+        help="Provider authentication method",
+    )
+    parser.add_argument(
+        "--setup-style",
+        choices=choice_values(SetupStyle),
+        default=None,
+        help="Amount of setup detail to collect",
+    )
+    parser.add_argument(
+        "--next-action",
+        choices=choice_values(NextAction),
+        default=None,
+        help="Post-setup handoff action",
+    )
     parser.add_argument(
         "--embedding-api-key",
         default=None,
