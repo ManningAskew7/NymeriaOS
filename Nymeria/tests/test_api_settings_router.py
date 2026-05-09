@@ -357,6 +357,34 @@ def test_llm_provider_test_redacts_secret_from_failure_response(
     assert "[redacted]" in body["message"]
 
 
+def test_llm_provider_test_does_not_persist_submitted_key(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "openai",
+            "llm_model": "gpt-test",
+            "api_key": "sk-transient-test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert not (tmp_path / ".env").exists()
+    assert os.environ.get("OPENAI_API_KEY") is None
+    assert provider.cache_clear_count == 0
+
+
 def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(
     tmp_path: Path,
     monkeypatch,
@@ -529,25 +557,32 @@ def test_get_settings_does_not_return_provider_secret_fields(
         assert secret not in response.text
 
 
-def test_env_settings_list_masks_embedding_api_key(
+def test_env_settings_list_masks_provider_and_capability_keys(
     tmp_path: Path,
     monkeypatch,
 ):
-    settings = FakeSettings(
-        project_root=tmp_path,
-        data_dir=tmp_path,
-        embedding_api_key="sk-embedding-secret",
-    )
+    secrets = {
+        "openai_api_key": "sk-env-openai-secret",
+        "anthropic_api_key": "sk-env-anthropic-secret",
+        "anthropic_direct_api_key": "sk-env-anthropic-direct-secret",
+        "openrouter_api_key": "sk-env-openrouter-secret",
+        "embedding_api_key": "sk-env-embedding-secret",
+        "gemini_api_key": "sk-env-gemini-secret",
+        "perplexity_api_key": "pplx-env-secret",
+    }
+    settings = FakeSettings(project_root=tmp_path, data_dir=tmp_path, **secrets)
     client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
 
     response = client.get("/settings/env", headers=_auth(token))
 
     assert response.status_code == 200
-    entries = response.json()["entries"]
-    embedding = next(
-        entry for entry in entries if entry["name"] == "embedding_api_key"
-    )
-    assert embedding["is_secret"] is True
-    assert embedding["is_set"] is True
-    assert embedding["value"] == "sk-e...ret"
-    assert "sk-embedding-secret" not in response.text
+    entries_by_name = {entry["name"]: entry for entry in response.json()["entries"]}
+    for field, secret in secrets.items():
+        entry = entries_by_name[field]
+        assert entry["is_secret"] is True
+        assert entry["is_set"] is True
+        assert entry["value"] != secret
+        assert entry["value"].startswith(secret[:4])
+        assert entry["value"].endswith(secret[-3:])
+        assert "..." in entry["value"]
+        assert secret not in response.text
