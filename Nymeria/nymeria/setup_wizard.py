@@ -75,6 +75,15 @@ class CLIProxyClaudeSetup:
     model: str
 
 
+@dataclass(frozen=True)
+class CLIProxyCodexSetup:
+    config_base_url: str
+    smoke_base_url: str
+    gatekeeper_key: str
+    auth_dir: Path
+    model: str
+
+
 class CLIProxySetupError(RuntimeError):
     """Raised when CLIProxy setup cannot be completed automatically."""
 
@@ -138,6 +147,13 @@ def run_init(args: argparse.Namespace) -> int:
         return 2
     if onboarding.auth_method is ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH:
         return _run_cliproxy_claude_setup(
+            args,
+            onboarding=onboarding,
+            console=console,
+            non_interactive=non_interactive,
+        )
+    if onboarding.auth_method is ProviderAuthMethod.CLIPROXY_CODEX_OAUTH:
+        return _run_cliproxy_codex_setup(
             args,
             onboarding=onboarding,
             console=console,
@@ -594,6 +610,166 @@ def _prepare_cliproxy_claude_setup(
     )
 
 
+def _run_cliproxy_codex_setup(
+    args: argparse.Namespace,
+    *,
+    onboarding: OnboardingSelection,
+    console: Console,
+    non_interactive: bool,
+) -> int:
+    if not non_interactive:
+        console.print("\n[bold]CLIProxy Codex/OpenAI OAuth Setup[/bold]")
+        console.print(
+            "This advanced path uses the existing pinned CLIProxy deployment, "
+            "adds a local cpx-* gatekeeper key when needed, verifies Codex/OpenAI "
+            "OAuth auth files, and runs a small Responses API probe before "
+            "writing Nymeria config.env."
+        )
+        if not _yes_no("Continue with CLIProxy Codex/OpenAI OAuth setup?", default=True):
+            console.print(
+                "Setup cancelled. Re-run with --auth-method api_key for direct setup."
+            )
+            return 1
+
+    try:
+        cliproxy = _prepare_cliproxy_codex_setup(
+            args,
+            onboarding=onboarding,
+            console=console,
+            non_interactive=non_interactive,
+        )
+    except CLIProxySetupError as exc:
+        console.print(
+            f"[red]CLIProxy Codex/OpenAI OAuth setup is not complete:[/red] {exc}"
+        )
+        _print_cliproxy_codex_manual_steps(console)
+        return 2
+
+    root = _resolve_root(args)
+    try:
+        data_dir = _resolve_data_dir(
+            args,
+            root=root,
+            console=console,
+            non_interactive=non_interactive,
+            setup_style=onboarding.setup_style,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 2
+
+    try:
+        _check_writable(root)
+        _check_writable(data_dir)
+    except OSError as exc:
+        console.print(f"[red]Cannot write setup files: {exc}[/red]")
+        return 2
+
+    if _port_in_use(8000):
+        console.print("[yellow]Warning:[/yellow] port 8000 is already in use.")
+
+    config_path = root / "config.env"
+    if config_path.exists() and not getattr(args, "force", False):
+        if non_interactive:
+            console.print(
+                f"[red]{config_path} already exists. Re-run with --force to overwrite.[/red]"
+            )
+            return 2
+        answer = prompt(f"{config_path} exists. Overwrite it? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            console.print("Setup cancelled.")
+            return 1
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    console.print("\n[bold]Configuration[/bold]")
+    _write_config(
+        config_path,
+        PROVIDERS["openai"],
+        cliproxy.model,
+        cliproxy.gatekeeper_key,
+        data_dir,
+        extra_env={
+            "OPENAI_API_MODE": "responses",
+            "LLM_BASE_URL": cliproxy.config_base_url,
+        },
+    )
+
+    repo = AccountsRepo(data_dir / "accounts.db")
+    repo.ensure_bootstrap_admin(data_dir)
+    token_path = data_dir / BOOTSTRAP_TOKEN_FILENAME
+
+    console.print(f"[green]Config:[/green] {config_path}")
+    console.print(f"[green]Data dir:[/green] {data_dir}")
+    console.print(
+        f"[green]CLIProxy:[/green] Codex/OpenAI OAuth verified at "
+        f"{cliproxy.config_base_url}"
+    )
+    _warn_cliproxy_codex_embedding_key(args, console)
+    _print_bootstrap_token_handoff(token_path, console)
+    doctor_status = _offer_post_setup_doctor(
+        args,
+        root=root,
+        console=console,
+        non_interactive=non_interactive,
+        provider_auth_validated=True,
+    )
+    if doctor_status != 0:
+        return doctor_status
+    next_action = _resolve_next_action(args, console, non_interactive)
+    _print_next_action(next_action, console)
+    return 0
+
+
+def _prepare_cliproxy_codex_setup(
+    args: argparse.Namespace,
+    *,
+    onboarding: OnboardingSelection,
+    console: Console,
+    non_interactive: bool,
+) -> CLIProxyCodexSetup:
+    deployment = _resolve_cliproxy_deployment(args)
+    _ensure_cliproxy_config_file(deployment)
+    smoke_base_url = _resolve_cliproxy_smoke_base_url(args, deployment)
+    config_base_url = _resolve_cliproxy_codex_config_base_url(
+        args,
+        onboarding=onboarding,
+        smoke_base_url=smoke_base_url,
+    )
+
+    _ensure_cliproxy_container_ready(deployment, smoke_base_url, console)
+    _ensure_cliproxy_codex_auth_files(
+        deployment,
+        console=console,
+        non_interactive=non_interactive,
+    )
+
+    gatekeeper_key, config_changed = _resolve_cliproxy_gatekeeper_key(
+        args,
+        deployment=deployment,
+        console=console,
+        non_interactive=non_interactive,
+    )
+    if config_changed:
+        _restart_cliproxy_container(console)
+        _ensure_cliproxy_container_ready(deployment, smoke_base_url, console)
+
+    model = (getattr(args, "model", None) or PROVIDERS["openai"].default_model).strip()
+    _run_cliproxy_codex_verification(
+        config_base_url,
+        gatekeeper_key=gatekeeper_key,
+        model=model,
+        console=console,
+    )
+
+    return CLIProxyCodexSetup(
+        config_base_url=config_base_url,
+        smoke_base_url=smoke_base_url,
+        gatekeeper_key=gatekeeper_key,
+        auth_dir=deployment.auth_dir,
+        model=model,
+    )
+
+
 def _resolve_cliproxy_deployment(args: argparse.Namespace) -> CLIProxyDeployment:
     configured_root = getattr(args, "cliproxy_root", None)
     if configured_root:
@@ -653,8 +829,8 @@ def _resolve_cliproxy_gatekeeper_key(
 
     if not gatekeeper_key.startswith("cpx-"):
         raise CLIProxySetupError(
-            "CLIProxy Claude OAuth requires a local cpx-* gatekeeper key, "
-            "not an upstream Anthropic API key."
+            "CLIProxy OAuth requires a local cpx-* gatekeeper key, not an "
+            "upstream Anthropic or OpenAI API key."
         )
 
     config = _read_cliproxy_config(deployment.config_path)
@@ -754,6 +930,20 @@ def _resolve_cliproxy_config_base_url(
     return smoke_base_url
 
 
+def _resolve_cliproxy_codex_config_base_url(
+    args: argparse.Namespace,
+    *,
+    onboarding: OnboardingSelection,
+    smoke_base_url: str,
+) -> str:
+    configured = getattr(args, "cliproxy_base_url", None)
+    if configured:
+        return _normalize_cliproxy_openai_base_url(configured)
+    if onboarding.hosting is HostingOption.DOCKER:
+        return _normalize_cliproxy_openai_base_url(CLIPROXY_DOCKER_BASE_URL)
+    return _normalize_cliproxy_openai_base_url(smoke_base_url)
+
+
 def _resolve_cliproxy_smoke_base_url(
     args: argparse.Namespace,
     deployment: CLIProxyDeployment,
@@ -771,6 +961,11 @@ def _normalize_cliproxy_claude_base_url(base_url: str) -> str:
     if not normalized:
         raise CLIProxySetupError("CLIProxy base URL cannot be empty.")
     return normalized
+
+
+def _normalize_cliproxy_openai_base_url(base_url: str) -> str:
+    root = _normalize_cliproxy_claude_base_url(base_url)
+    return f"{root}/v1"
 
 
 def _compose_host_cliproxy_base_url(compose_path: Path) -> str:
@@ -918,6 +1113,60 @@ def _ensure_cliproxy_claude_auth_files(
     return auth_files
 
 
+def _ensure_cliproxy_codex_auth_files(
+    deployment: CLIProxyDeployment,
+    *,
+    console: Console,
+    non_interactive: bool,
+) -> list[Path]:
+    deployment.auth_dir.mkdir(parents=True, exist_ok=True)
+    auth_files = _active_codex_auth_files(deployment.auth_dir)
+    if auth_files:
+        console.print(
+            f"[green]CLIProxy auth:[/green] found {len(auth_files)} active "
+            "Codex/OpenAI OAuth auth file(s)."
+        )
+        return auth_files
+
+    login_command = (
+        f"docker exec -it {CLIPROXY_CONTAINER_NAME} "
+        "./CLIProxyAPI --codex-device-login --no-browser"
+    )
+    if non_interactive:
+        raise CLIProxySetupError(
+            "no active Codex/OpenAI OAuth auth JSON was found. Run this command, "
+            f"then re-run nymeria init: {login_command}"
+        )
+
+    console.print("No active Codex/OpenAI OAuth auth JSON was found.")
+    _print_command(console, login_command)
+    if not _yes_no("Run Codex/OpenAI OAuth login now?", default=True):
+        raise CLIProxySetupError("Codex/OpenAI OAuth login was not run.")
+
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-it",
+            CLIPROXY_CONTAINER_NAME,
+            "./CLIProxyAPI",
+            "--codex-device-login",
+            "--no-browser",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CLIProxySetupError("Codex/OpenAI OAuth login command failed.")
+
+    auth_files = _active_codex_auth_files(deployment.auth_dir)
+    if not auth_files:
+        raise CLIProxySetupError(
+            f"Codex/OpenAI OAuth login did not create an active codex*.json "
+            f"file in {deployment.auth_dir}."
+        )
+    return auth_files
+
+
 def _active_claude_auth_files(auth_dir: Path) -> list[Path]:
     auth_files: list[Path] = []
     if not auth_dir.is_dir():
@@ -930,6 +1179,25 @@ def _active_claude_auth_files(auth_dir: Path) -> list[Path]:
         if not isinstance(metadata, dict):
             continue
         if str(metadata.get("type", "")).lower() != "claude":
+            continue
+        if _cliproxy_bool(metadata.get("disabled")) is True:
+            continue
+        auth_files.append(path)
+    return auth_files
+
+
+def _active_codex_auth_files(auth_dir: Path) -> list[Path]:
+    auth_files: list[Path] = []
+    if not auth_dir.is_dir():
+        return auth_files
+    for path in sorted(auth_dir.glob("codex*.json")):
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if str(metadata.get("type", "")).lower() != "codex":
             continue
         if _cliproxy_bool(metadata.get("disabled")) is True:
             continue
@@ -1036,6 +1304,115 @@ def _run_cliproxy_cloak_check(
     console.print("[green]CLIProxy smoke test passed.[/green]")
 
 
+def _run_cliproxy_codex_verification(
+    base_url: str,
+    *,
+    gatekeeper_key: str,
+    model: str,
+    console: Console,
+) -> None:
+    console.print("[bold]Checking CLIProxy OpenAI-compatible model list...[/bold]")
+    try:
+        model_ids = _fetch_cliproxy_openai_models(base_url, gatekeeper_key)
+    except CLIProxySetupError as exc:
+        console.print(
+            f"[yellow]Could not read CLIProxy /v1/models:[/yellow] {exc}"
+        )
+        model_ids = []
+
+    if model_ids:
+        if model in model_ids:
+            console.print(f"[green]CLIProxy models:[/green] found {model}")
+        else:
+            shown = ", ".join(model_ids[:8])
+            suffix = "..." if len(model_ids) > 8 else ""
+            console.print(
+                f"[yellow]CLIProxy models:[/yellow] {model} was not listed. "
+                f"Available examples: {shown}{suffix}. Continuing to the live "
+                "Responses API probe."
+            )
+
+    console.print("[bold]Running CLIProxy Codex/OpenAI Responses API probe...[/bold]")
+    _run_cliproxy_openai_responses_check(
+        base_url,
+        gatekeeper_key=gatekeeper_key,
+        model=model,
+    )
+    console.print("[green]CLIProxy Codex/OpenAI probe passed.[/green]")
+
+
+def _fetch_cliproxy_openai_models(base_url: str, gatekeeper_key: str) -> list[str]:
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                url,
+                headers={"Authorization": f"Bearer {gatekeeper_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = _http_error_detail(exc.response)
+        raise CLIProxySetupError(
+            f"HTTP {exc.response.status_code}: {detail}"
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise CLIProxySetupError(str(exc)) from exc
+
+    if not isinstance(payload, dict):
+        return []
+    raw_models = payload.get("data")
+    if not isinstance(raw_models, list):
+        return []
+
+    model_ids: list[str] = []
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        model_id = raw_model.get("id")
+        if isinstance(model_id, str) and model_id.strip():
+            model_ids.append(model_id.strip())
+    return sorted(set(model_ids))
+
+
+def _run_cliproxy_openai_responses_check(
+    base_url: str,
+    *,
+    gatekeeper_key: str,
+    model: str,
+) -> None:
+    url = f"{base_url.rstrip('/')}/responses"
+    request = {
+        "model": model,
+        "input": "Reply with ok.",
+        "max_output_tokens": 16,
+        "store": False,
+    }
+    try:
+        with httpx.Client(timeout=45.0) as client:
+            response = client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {gatekeeper_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request,
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise CLIProxySetupError(
+            "CLIProxy Responses API probe timed out before returning a result."
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        detail = _http_error_detail(exc.response)
+        raise CLIProxySetupError(
+            f"CLIProxy Responses API probe returned HTTP "
+            f"{exc.response.status_code}: {detail}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise CLIProxySetupError(str(exc)) from exc
+
+
 def _subprocess_failure(command: str, result: subprocess.CompletedProcess[str]) -> str:
     detail = (result.stderr or result.stdout or "").strip()
     if len(detail) > 600:
@@ -1052,6 +1429,25 @@ def _print_cliproxy_claude_manual_steps(console: Console) -> None:
         "cliproxy_claude_oauth`."
     )
     _print_cliproxy_claude_commands(console)
+
+
+def _print_cliproxy_codex_manual_steps(console: Console) -> None:
+    console.print("\n[bold]Manual CLIProxy Codex/OpenAI OAuth steps[/bold]")
+    console.print(
+        "Complete these steps, then re-run `nymeria init --auth-method "
+        "cliproxy_codex_oauth`."
+    )
+    _print_cliproxy_codex_commands(console)
+
+
+def _warn_cliproxy_codex_embedding_key(args: argparse.Namespace, console: Console) -> None:
+    embedding_key = getattr(args, "embedding_api_key", None)
+    if isinstance(embedding_key, str) and embedding_key.strip().startswith("cpx-"):
+        console.print(
+            "[yellow]Warning:[/yellow] EMBEDDING_API_KEY was not written. "
+            "Do not use a CLIProxy cpx-* gatekeeper key for embeddings; use a "
+            "real embeddings provider key/base URL or leave embeddings unset."
+        )
 
 
 def _run_cliproxy_planning_gate(
@@ -1830,7 +2226,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cliproxy-base-url",
         default=None,
-        help="Host-reachable CLIProxy root URL for Claude OAuth setup",
+        help=(
+            "Host-reachable CLIProxy URL for OAuth setup; Claude stores the "
+            "root URL, Codex/OpenAI stores the /v1 URL"
+        ),
     )
     parser.add_argument(
         "--embedding-api-key",

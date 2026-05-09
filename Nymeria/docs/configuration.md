@@ -79,10 +79,16 @@ It accepts `--hosting venv|bare_metal`, `--auth-method api_key`,
 `--next-action print_commands|cli|start_api_open_frontend`. `--hosting docker`
 prints source-checkout Docker setup commands and exits without writing
 `config.env` or `.env.docker`, so Docker credentials are not silently written to
-the wrong runtime root. CLIProxy OAuth auth methods print a guarded planning
-handoff with the documented proxy commands and also exit without writing
-Nymeria config. Add `--skip-llm-test` only for deliberate offline/scripted setup
-where provider access will be verified separately.
+the wrong runtime root. CLIProxy Claude and Codex/OpenAI OAuth auth methods are
+advanced local setup paths that use the pinned `CLIProxyAPI-main/temp/latest/`
+deployment, require active local OAuth auth files, write only a local `cpx-*`
+gatekeeper key into Nymeria config, and stop before writing config if their
+verification probes fail. Codex/OpenAI setup writes `LLM_PROVIDER=openai`,
+`OPENAI_API_MODE=responses`, `OPENAI_API_KEY=<cpx-gatekeeper-key>`, and an
+`LLM_BASE_URL` ending in `/v1`; do not use that `cpx-*` value for
+`EMBEDDING_API_KEY`. Add `--skip-llm-test` only for deliberate
+offline/scripted direct API-key setup where provider access will be verified
+separately.
 
 ### Database
 
