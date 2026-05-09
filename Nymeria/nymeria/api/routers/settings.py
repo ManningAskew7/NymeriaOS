@@ -15,8 +15,11 @@ from ...config import Settings
 from ...config.settings import get_env_file_paths, get_env_write_path
 from ...config.model_capabilities import get_max_output_tokens, list_all_models
 from ...core.accounts import AuthenticatedUser
+from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
+    LLMProviderTestRequest,
+    LLMProviderTestResponse,
     LLMRuntimeDiagnosticsResponse,
     OpenRouterKeyDiagnostics,
     ServerSettingsResponse,
@@ -262,6 +265,165 @@ def _clear_settings_cache(get_settings_fn: Callable[[], Any]) -> None:
         cache_clear()
 
 
+def _redact_secrets(text: str, *secrets: str | None) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _http_error_detail(response: httpx.Response, *secrets: str | None) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return _redact_secrets(text, *secrets)[:300] or response.reason_phrase
+
+    message: str | None = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            candidate = error.get("message")
+            if isinstance(candidate, str) and candidate.strip():
+                message = candidate.strip()
+        if message is None:
+            candidate = body.get("message")
+            if isinstance(candidate, str) and candidate.strip():
+                message = candidate.strip()
+
+    return _redact_secrets(message or response.reason_phrase, *secrets)[:300]
+
+
+def _normalize_openai_test_base_url(provider: str, base_url: str | None) -> str:
+    if not base_url:
+        if provider == "openrouter":
+            return "https://openrouter.ai/api/v1"
+        return "https://api.openai.com/v1"
+
+    clean = base_url.strip().rstrip("/")
+    if provider == "openai" and looks_like_cliproxy_url(clean) and not clean.endswith("/v1"):
+        return f"{clean}/v1"
+    return clean
+
+
+async def _post_llm_test_json(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> None:
+    request_headers = {
+        "Content-Type": "application/json",
+        **headers,
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, headers=request_headers, json=payload)
+        response.raise_for_status()
+
+
+async def _test_llm_provider_config(
+    request: LLMProviderTestRequest,
+) -> LLMProviderTestResponse:
+    provider = request.llm_provider
+    model = request.llm_model
+    api_key = request.api_key.get_secret_value()
+    base_url = request.llm_base_url
+    openai_api_mode = request.openai_api_mode or "responses"
+
+    if provider == "anthropic":
+        clean_base = base_url or "https://api.anthropic.com"
+        url = f"{clean_base}/v1/messages"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        if base_url:
+            headers["User-Agent"] = "claude-cli/2.1.113"
+        payload = {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "Reply with ok."}],
+        }
+        response_api_mode = None
+    else:
+        clean_base = _normalize_openai_test_base_url(provider, base_url)
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if provider == "openrouter":
+            headers.update({
+                "HTTP-Referer": "https://github.com/ManningAskew7/NymeriaOS",
+                "X-Title": "Nymeria",
+            })
+
+        if openai_api_mode == "chat_completions":
+            url = f"{clean_base}/chat/completions"
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with ok."}],
+                "max_tokens": 16,
+            }
+        else:
+            url = f"{clean_base}/responses"
+            payload = {
+                "model": model,
+                "input": "Reply with ok.",
+                "max_output_tokens": 16,
+            }
+        response_api_mode = openai_api_mode
+
+    try:
+        await _post_llm_test_json(url, headers=headers, payload=payload)
+    except httpx.TimeoutException:
+        logger.info("LLM provider test timed out: provider=%s", provider)
+        return LLMProviderTestResponse(
+            ok=False,
+            provider=provider,
+            model=model,
+            openai_api_mode=response_api_mode,
+            message="Provider did not respond before the 15s timeout.",
+            error_type="timeout",
+        )
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        logger.info(
+            "LLM provider test returned HTTP error: provider=%s status=%s",
+            provider,
+            status_code,
+        )
+        detail = _http_error_detail(exc.response, api_key, base_url)
+        return LLMProviderTestResponse(
+            ok=False,
+            provider=provider,
+            model=model,
+            openai_api_mode=response_api_mode,
+            message=f"Provider returned HTTP {status_code}: {detail}",
+            status_code=status_code,
+            error_type="http_error",
+        )
+    except httpx.HTTPError as exc:
+        logger.info(
+            "LLM provider test transport error: provider=%s error=%s",
+            provider,
+            type(exc).__name__,
+        )
+        return LLMProviderTestResponse(
+            ok=False,
+            provider=provider,
+            model=model,
+            openai_api_mode=response_api_mode,
+            message=_redact_secrets(str(exc), api_key, base_url)[:300],
+            error_type=type(exc).__name__,
+        )
+
+    return LLMProviderTestResponse(
+        ok=True,
+        provider=provider,
+        model=model,
+        openai_api_mode=response_api_mode,
+        message="Provider test succeeded.",
+    )
+
+
 def create_settings_router(
     verify_api_key: Callable[..., Any],
     require_admin_user: Callable[..., Any],
@@ -317,6 +479,14 @@ def create_settings_router(
             stt_language=settings.stt_language,
             voice_default_thread_id=settings.voice_default_thread_id,
         )
+
+    @router.post("/settings/llm/test", response_model=LLMProviderTestResponse)
+    async def test_llm_provider_config(
+        request: LLMProviderTestRequest,
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Test an arbitrary LLM provider configuration without writing it."""
+        return await _test_llm_provider_config(request)
 
     @router.get(
         "/settings/llm/runtime",

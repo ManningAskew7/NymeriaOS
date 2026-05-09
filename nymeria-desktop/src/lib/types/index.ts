@@ -799,6 +799,24 @@ export interface ServerSettingsUpdate {
   voice_default_thread_id?: string | null;
 }
 
+export interface LLMProviderTestRequest {
+  llm_provider: LLMProvider;
+  llm_model: string;
+  api_key: string;
+  llm_base_url?: string | null;
+  openai_api_mode?: OpenAIApiMode | null;
+}
+
+export interface LLMProviderTestResponse {
+  ok: boolean;
+  provider: LLMProvider;
+  model: string;
+  message: string;
+  openai_api_mode: OpenAIApiMode | null;
+  status_code: number | null;
+  error_type: string | null;
+}
+
 // Custom Tool Types
 
 export type ToolParameterType = 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object';

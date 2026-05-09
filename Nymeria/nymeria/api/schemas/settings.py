@@ -2,7 +2,11 @@
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+
+LLMProviderName = Literal["openrouter", "openai", "anthropic"]
+OpenAIApiMode = Literal["chat_completions", "responses"]
 
 
 class ServerSettingsResponse(BaseModel):
@@ -20,7 +24,7 @@ class ServerSettingsResponse(BaseModel):
     llm_extended_thinking: bool = False
     llm_use_model_defaults: bool = False
     llm_base_url: Optional[str] = None
-    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = "responses"
+    openai_api_mode: Optional[OpenAIApiMode] = "responses"
     llm_stream_max_retries: int
     llm_stream_retry_initial_delay: float
     llm_stream_retry_max_delay: float
@@ -63,7 +67,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_extended_thinking: Optional[bool] = None
     llm_use_model_defaults: Optional[bool] = None
     llm_base_url: Optional[str] = None
-    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
+    openai_api_mode: Optional[OpenAIApiMode] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
@@ -89,6 +93,46 @@ class ServerSettingsUpdate(BaseModel):
     stt_model: Optional[str] = None
     stt_language: Optional[str] = None
     voice_default_thread_id: Optional[str] = None
+
+
+class LLMProviderTestRequest(BaseModel):
+    """Request model for testing an arbitrary provider configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_provider: LLMProviderName
+    llm_model: str = Field(min_length=1)
+    api_key: SecretStr = Field(min_length=1)
+    llm_base_url: Optional[str] = None
+    openai_api_mode: Optional[OpenAIApiMode] = "responses"
+
+    @field_validator("llm_model")
+    @classmethod
+    def _strip_model(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("llm_model cannot be blank")
+        return value
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def _strip_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip().rstrip("/")
+        return value or None
+
+
+class LLMProviderTestResponse(BaseModel):
+    """Sanitized response for a provider test attempt."""
+
+    ok: bool
+    provider: LLMProviderName
+    model: str
+    message: str
+    openai_api_mode: Optional[OpenAIApiMode] = None
+    status_code: Optional[int] = None
+    error_type: Optional[str] = None
 
 
 HIDDEN_CONFIG_SETTINGS = {
