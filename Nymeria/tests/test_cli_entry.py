@@ -35,6 +35,17 @@ def _stub_llm_connection(monkeypatch):
     return calls
 
 
+def _stub_post_setup_doctor(monkeypatch):
+    calls = []
+
+    def fake_doctor(root: Path, *, skip_llm_test: bool):
+        calls.append((root, skip_llm_test))
+        return 0
+
+    monkeypatch.setattr(setup_wizard, "_run_doctor_for_root", fake_doctor)
+    return calls
+
+
 def test_onboarding_data_model_matches_plan_values():
     assert choice_values(HostingOption) == ("bare_metal", "venv", "docker")
     assert choice_values(ProviderAuthMethod) == (
@@ -317,6 +328,115 @@ def test_init_noninteractive_defaults_to_print_commands(
     assert "nymeria cli" not in output
 
 
+def test_init_noninteractive_run_doctor_uses_quick_check_by_default(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    doctor_calls = _stub_post_setup_doctor(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--root",
+            str(root),
+            "--non-interactive",
+            "--run-doctor",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert doctor_calls == [(root.resolve(), True)]
+    assert "nymeria doctor --skip-llm-test" in output
+
+
+def test_init_noninteractive_full_doctor_includes_llm_check(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    doctor_calls = _stub_post_setup_doctor(monkeypatch)
+    root = tmp_path / "runtime"
+
+    result = setup_main(
+        [
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test-model",
+            "--api-key",
+            "sk-ant-test-key",
+            "--root",
+            str(root),
+            "--non-interactive",
+            "--full-doctor",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert doctor_calls == [(root.resolve(), False)]
+    assert "nymeria doctor --skip-llm-test" not in output
+    assert "nymeria doctor" in output
+
+
+def test_init_interactive_offers_quick_doctor_after_validated_llm(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    _stub_llm_connection(monkeypatch)
+    doctor_calls = _stub_post_setup_doctor(monkeypatch)
+    root = tmp_path / "runtime"
+    answers = iter(
+        [
+            "",  # default hosting: venv
+            "1",  # provider: Anthropic
+            "claude-test-model",
+            "sk-ant-test-key",
+            "",  # run post-init doctor
+            "",  # quick doctor; do not repeat live LLM check
+            "",  # default next action: print commands
+        ]
+    )
+    prompts = []
+
+    def fake_prompt(text="", **kwargs):
+        prompts.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(setup_wizard, "prompt", fake_prompt)
+
+    result = setup_main(
+        [
+            "--setup-style",
+            "recommended",
+            "--root",
+            str(root),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert doctor_calls == [(root.resolve(), True)]
+    assert "Final Validation" in output
+    assert "nymeria doctor --skip-llm-test" in output
+    assert "Run nymeria doctor now? [Y/n] " in prompts
+    assert (
+        "Provider auth was already tested. Run the full doctor LLM check again? [y/N] "
+        in prompts
+    )
+
+
 @pytest.mark.parametrize(
     ("provider_choice", "provider_name", "api_key"),
     [
@@ -341,6 +461,7 @@ def test_init_interactive_accepts_provider_default_model(
             provider_choice,
             "",  # accept provider default model
             api_key,
+            "n",  # skip post-init doctor
             "",  # default next action: print commands
         ]
     )
@@ -417,6 +538,7 @@ def test_init_interactive_prompts_for_hosting_before_provider(
             "n",
             "n",
             "n",
+            "n",  # skip post-init doctor
             "",  # default next action: print commands
         ]
     )
@@ -466,6 +588,7 @@ def test_init_interactive_prompts_for_next_action(
             "n",
             "n",
             "n",
+            "n",  # skip post-init doctor
             "3",  # next action: CLI chat handoff
         ]
     )
@@ -678,6 +801,8 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
             "print_commands",
             "--non-interactive",
             "--skip-llm-test",
+            "--run-doctor",
+            "--full-doctor",
         ],
     )
 
@@ -690,6 +815,8 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
     assert args.auth_method == "api_key"
     assert args.setup_style == "advanced"
     assert args.next_action == "print_commands"
+    assert args.run_doctor is True
+    assert args.full_doctor is True
 
 
 def test_init_noninteractive_writes_optional_capability_keys(

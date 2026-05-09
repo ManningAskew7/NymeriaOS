@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nymeria import doctor
+from nymeria.config import settings as settings_module
 
 
 @dataclass
@@ -133,6 +134,72 @@ def test_collect_checks_fails_when_llm_key_is_missing(monkeypatch, tmp_path: Pat
     llm = _result(results, "LLM")
     assert llm.status == "fail"
     assert "no configured API key" in llm.detail
+
+
+def test_collect_checks_can_target_specific_project_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    for name in (
+        "LLM_PROVIDER",
+        "LLM_MODEL",
+        "LLM_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_DIRECT_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "NYMERIA_DATA_DIR",
+        "SQLITE_PATH",
+        "DATABASE_BACKEND",
+        "REDIS_ENABLED",
+        "REDIS_URL",
+        "API_PORT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    runtime_root = tmp_path / "runtime"
+    data_dir = runtime_root / "data"
+    runtime_root.mkdir()
+    _write_sqlite_state(data_dir)
+    (runtime_root / "config.env").write_text(
+        "\n".join(
+            [
+                "LLM_PROVIDER=anthropic",
+                "LLM_MODEL=claude-from-runtime",
+                "ANTHROPIC_API_KEY=sk-ant-runtime",
+                f"NYMERIA_DATA_DIR={data_dir}",
+                "DATABASE_BACKEND=sqlite",
+                "API_PORT=9877",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+    (frontend_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    original_project_root = settings_module.PROJECT_ROOT
+
+    monkeypatch.setattr(doctor, "_frontend_candidates", lambda: (frontend_dir,))
+    monkeypatch.setattr(doctor, "_port_in_use", lambda _host, _port: False)
+
+    def fail_if_called(_config):
+        raise AssertionError("project-root override test skips the LLM probe")
+
+    monkeypatch.setattr(doctor, "_probe_llm_connection", fail_if_called)
+
+    results = doctor.collect_checks(
+        argparse.Namespace(skip_llm_test=True, project_root=runtime_root)
+    )
+
+    assert settings_module.PROJECT_ROOT == original_project_root
+    assert _result(results, "Config").status == "pass"
+    assert str(runtime_root / "config.env") in _result(results, "Config").detail
+    assert _result(results, "Data dir").status == "pass"
+    assert _result(results, "Database").status == "pass"
+    llm = _result(results, "LLM")
+    assert llm.status == "warn"
+    assert "anthropic/claude-from-runtime connection test skipped" in llm.detail
 
 
 def test_run_doctor_returns_nonzero_for_failures(monkeypatch) -> None:
