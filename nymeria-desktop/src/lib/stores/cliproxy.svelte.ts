@@ -19,6 +19,8 @@ interface CLIProxySession {
 
 interface CLIProxyStatusResponse {
   running: boolean;
+  base_url?: string;
+  detail?: string;
   sessions: CLIProxySession[];
 }
 
@@ -28,6 +30,8 @@ function createCLIProxyStore() {
   let loading = $state(false);
   let error = $state<string | null>(null);
   let message = $state<string | null>(null);
+  let baseUrl = $state(LOCAL_CLIPROXY_ROOT_URL);
+  let detail = $state('');
   let pollIntervalId: ReturnType<typeof setInterval> | null = null;
 
   async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -40,6 +44,8 @@ function createCLIProxyStore() {
       const status = await invoke<CLIProxyStatusResponse>('get_cliproxy_status');
       running = status.running;
       sessions = status.sessions;
+      baseUrl = status.base_url || LOCAL_CLIPROXY_ROOT_URL;
+      detail = status.detail || '';
       error = null;
     } catch (e) {
       error = String(e);
@@ -161,6 +167,12 @@ function createCLIProxyStore() {
     },
     get message() {
       return message;
+    },
+    get baseUrl() {
+      return baseUrl;
+    },
+    get detail() {
+      return detail;
     },
     get needsAuth() {
       return running && sessions.length === 0;
