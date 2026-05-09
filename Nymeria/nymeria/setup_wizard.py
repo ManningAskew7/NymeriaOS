@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import secrets
 import shlex
 import shutil
 import socket
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -15,6 +19,7 @@ from typing import Any, Mapping
 import httpx
 from prompt_toolkit import prompt
 from rich.console import Console
+import yaml
 
 from ._runtime_paths import default_user_project_root, find_project_root
 from .core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
@@ -53,7 +58,32 @@ class BootstrapTokenCopyCommand:
     copies_to_clipboard: bool
 
 
+@dataclass(frozen=True)
+class CLIProxyDeployment:
+    root: Path
+    config_path: Path
+    compose_path: Path
+    auth_dir: Path
+
+
+@dataclass(frozen=True)
+class CLIProxyClaudeSetup:
+    config_base_url: str
+    smoke_base_url: str
+    gatekeeper_key: str
+    auth_dir: Path
+    model: str
+
+
+class CLIProxySetupError(RuntimeError):
+    """Raised when CLIProxy setup cannot be completed automatically."""
+
+
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
+CLIPROXY_CONTAINER_NAME = "cli-proxy-api-latest"
+CLIPROXY_RELATIVE_ROOT = Path("CLIProxyAPI-main") / "temp" / "latest"
+CLIPROXY_DEFAULT_HOST_BASE_URL = "http://localhost:8317"
+CLIPROXY_DOCKER_BASE_URL = "http://cli-proxy-api:8317"
 
 PROVIDERS = {
     "anthropic": ProviderOption(
@@ -106,6 +136,13 @@ def run_init(args: argparse.Namespace) -> int:
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         return 2
+    if onboarding.auth_method is ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH:
+        return _run_cliproxy_claude_setup(
+            args,
+            onboarding=onboarding,
+            console=console,
+            non_interactive=non_interactive,
+        )
     if onboarding.auth_method is not ProviderAuthMethod.API_KEY:
         return _run_cliproxy_planning_gate(onboarding, console, non_interactive)
     if onboarding.hosting is HostingOption.DOCKER:
@@ -383,6 +420,621 @@ def _prompt_setup_style(console: Console) -> SetupStyle:
             ].label
             console.print(f"[yellow]Unknown choice, using {default_choice}.[/yellow]")
             return DEFAULT_INTERACTIVE_SETUP_STYLE
+
+
+def _run_cliproxy_claude_setup(
+    args: argparse.Namespace,
+    *,
+    onboarding: OnboardingSelection,
+    console: Console,
+    non_interactive: bool,
+) -> int:
+    if not non_interactive:
+        console.print("\n[bold]CLIProxy Claude OAuth Setup[/bold]")
+        console.print(
+            "This advanced path uses the existing pinned CLIProxy deployment, "
+            "adds a local cpx-* gatekeeper key when needed, verifies Claude "
+            "OAuth auth files, and runs the cloak smoke test before writing "
+            "Nymeria config.env."
+        )
+        if not _yes_no("Continue with CLIProxy Claude OAuth setup?", default=True):
+            console.print(
+                "Setup cancelled. Re-run with --auth-method api_key for direct setup."
+            )
+            return 1
+
+    try:
+        cliproxy = _prepare_cliproxy_claude_setup(
+            args,
+            onboarding=onboarding,
+            console=console,
+            non_interactive=non_interactive,
+        )
+    except CLIProxySetupError as exc:
+        console.print(f"[red]CLIProxy Claude OAuth setup is not complete:[/red] {exc}")
+        _print_cliproxy_claude_manual_steps(console)
+        return 2
+
+    root = _resolve_root(
+        args,
+        console,
+        non_interactive,
+        setup_style=onboarding.setup_style,
+    )
+    data_dir = root / "data"
+
+    try:
+        _check_writable(root)
+    except OSError as exc:
+        console.print(f"[red]Cannot write to {root}: {exc}[/red]")
+        return 2
+
+    if _port_in_use(8000):
+        console.print("[yellow]Warning:[/yellow] port 8000 is already in use.")
+
+    config_path = root / "config.env"
+    if config_path.exists() and not getattr(args, "force", False):
+        if non_interactive:
+            console.print(
+                f"[red]{config_path} already exists. Re-run with --force to overwrite.[/red]"
+            )
+            return 2
+        answer = prompt(f"{config_path} exists. Overwrite it? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            console.print("Setup cancelled.")
+            return 1
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    console.print("\n[bold]Configuration[/bold]")
+    _write_config(
+        config_path,
+        PROVIDERS["anthropic"],
+        cliproxy.model,
+        cliproxy.gatekeeper_key,
+        data_dir,
+        extra_env={"LLM_BASE_URL": cliproxy.config_base_url},
+    )
+
+    repo = AccountsRepo(data_dir / "accounts.db")
+    repo.ensure_bootstrap_admin(data_dir)
+    token_path = data_dir / BOOTSTRAP_TOKEN_FILENAME
+
+    console.print(f"[green]Config:[/green] {config_path}")
+    console.print(f"[green]Data dir:[/green] {data_dir}")
+    console.print(
+        f"[green]CLIProxy:[/green] Claude OAuth verified at {cliproxy.smoke_base_url}"
+    )
+    _print_bootstrap_token_handoff(token_path, console)
+    doctor_status = _offer_post_setup_doctor(
+        args,
+        root=root,
+        console=console,
+        non_interactive=non_interactive,
+        provider_auth_validated=True,
+    )
+    if doctor_status != 0:
+        return doctor_status
+    next_action = _resolve_next_action(args, console, non_interactive)
+    _print_next_action(next_action, console)
+    return 0
+
+
+def _prepare_cliproxy_claude_setup(
+    args: argparse.Namespace,
+    *,
+    onboarding: OnboardingSelection,
+    console: Console,
+    non_interactive: bool,
+) -> CLIProxyClaudeSetup:
+    deployment = _resolve_cliproxy_deployment(args)
+    _ensure_cliproxy_config_file(deployment)
+    smoke_base_url = _resolve_cliproxy_smoke_base_url(args, deployment)
+    config_base_url = _resolve_cliproxy_config_base_url(
+        args,
+        onboarding=onboarding,
+        smoke_base_url=smoke_base_url,
+    )
+
+    _ensure_cliproxy_container_ready(deployment, smoke_base_url, console)
+    auth_files = _ensure_cliproxy_claude_auth_files(
+        deployment,
+        console=console,
+        non_interactive=non_interactive,
+    )
+    auth_changed = _ensure_tool_prefix_disabled(auth_files)
+    if auth_changed:
+        console.print(
+            "[green]CLIProxy auth:[/green] added tool_prefix_disabled=true to "
+            f"{len(auth_changed)} active Claude auth file(s)."
+        )
+
+    gatekeeper_key, config_changed = _resolve_cliproxy_gatekeeper_key(
+        args,
+        deployment=deployment,
+        console=console,
+        non_interactive=non_interactive,
+    )
+    if config_changed or auth_changed:
+        _restart_cliproxy_container(console)
+        _ensure_cliproxy_container_ready(deployment, smoke_base_url, console)
+
+    _run_cliproxy_cloak_check(
+        smoke_base_url,
+        gatekeeper_key=gatekeeper_key,
+        auth_dir=deployment.auth_dir,
+        console=console,
+    )
+
+    model = (
+        getattr(args, "model", None) or PROVIDERS["anthropic"].default_model
+    ).strip()
+    return CLIProxyClaudeSetup(
+        config_base_url=config_base_url,
+        smoke_base_url=smoke_base_url,
+        gatekeeper_key=gatekeeper_key,
+        auth_dir=deployment.auth_dir,
+        model=model,
+    )
+
+
+def _resolve_cliproxy_deployment(args: argparse.Namespace) -> CLIProxyDeployment:
+    configured_root = getattr(args, "cliproxy_root", None)
+    if configured_root:
+        root = Path(configured_root).expanduser().resolve()
+    else:
+        backend_root = find_project_root(Path(__file__).resolve())
+        if not backend_root:
+            raise CLIProxySetupError(
+                "could not locate a source checkout containing CLIProxyAPI-main."
+            )
+        root = (backend_root.parent / CLIPROXY_RELATIVE_ROOT).resolve()
+
+    compose_path = root / "docker-compose.yml"
+    auth_dir = root / "auths"
+    config_path = root / "config.yaml"
+    if not root.exists():
+        raise CLIProxySetupError(f"CLIProxy directory does not exist: {root}")
+    if not compose_path.exists():
+        raise CLIProxySetupError(f"CLIProxy compose file not found: {compose_path}")
+    return CLIProxyDeployment(
+        root=root,
+        config_path=config_path,
+        compose_path=compose_path,
+        auth_dir=auth_dir,
+    )
+
+
+def _ensure_cliproxy_config_file(deployment: CLIProxyDeployment) -> None:
+    if deployment.config_path.exists():
+        return
+    example = deployment.root / "config.yaml.example"
+    if not example.exists():
+        raise CLIProxySetupError(
+            f"CLIProxy config.yaml is missing and no example exists at {example}."
+        )
+    shutil.copyfile(example, deployment.config_path)
+
+
+def _resolve_cliproxy_gatekeeper_key(
+    args: argparse.Namespace,
+    *,
+    deployment: CLIProxyDeployment,
+    console: Console,
+    non_interactive: bool,
+) -> tuple[str, bool]:
+    configured = getattr(args, "api_key", None)
+    if configured:
+        gatekeeper_key = configured.strip()
+    elif non_interactive:
+        gatekeeper_key = _generate_cliproxy_gatekeeper_key()
+    else:
+        answer = prompt(
+            "CLIProxy gatekeeper key [generate new cpx-*]: ",
+            is_password=True,
+        ).strip()
+        gatekeeper_key = answer or _generate_cliproxy_gatekeeper_key()
+
+    if not gatekeeper_key.startswith("cpx-"):
+        raise CLIProxySetupError(
+            "CLIProxy Claude OAuth requires a local cpx-* gatekeeper key, "
+            "not an upstream Anthropic API key."
+        )
+
+    config = _read_cliproxy_config(deployment.config_path)
+    existing_keys = _configured_cliproxy_api_keys(config)
+    next_keys = _normalized_cliproxy_api_keys(existing_keys, gatekeeper_key)
+    if next_keys == existing_keys:
+        console.print(
+            f"[green]CLIProxy key:[/green] using an existing cpx-* key from "
+            f"{deployment.config_path}"
+        )
+        return gatekeeper_key, False
+
+    config["api-keys"] = next_keys
+    _write_cliproxy_config(deployment.config_path, config)
+    console.print(
+        f"[green]CLIProxy key:[/green] wrote a cpx-* gatekeeper key to "
+        f"{deployment.config_path}"
+    )
+    return gatekeeper_key, True
+
+
+def _generate_cliproxy_gatekeeper_key() -> str:
+    return f"cpx-nymeria-{secrets.token_urlsafe(24)}"
+
+
+def _read_cliproxy_config(config_path: Path) -> dict[str, Any]:
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise CLIProxySetupError(f"could not parse {config_path}: {exc}") from exc
+    except OSError as exc:
+        raise CLIProxySetupError(f"could not read {config_path}: {exc}") from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise CLIProxySetupError(f"{config_path} must contain a YAML mapping.")
+    return loaded
+
+
+def _write_cliproxy_config(config_path: Path, config: Mapping[str, Any]) -> None:
+    try:
+        config_path.write_text(
+            yaml.safe_dump(dict(config), sort_keys=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise CLIProxySetupError(f"could not write {config_path}: {exc}") from exc
+
+
+def _configured_cliproxy_api_keys(config: Mapping[str, Any]) -> list[str]:
+    raw_keys = config.get("api-keys")
+    if not isinstance(raw_keys, list):
+        return []
+    keys: list[str] = []
+    for raw_key in raw_keys:
+        if not isinstance(raw_key, str):
+            continue
+        key = raw_key.strip()
+        if key:
+            keys.append(key)
+    return keys
+
+
+def _normalized_cliproxy_api_keys(
+    existing_keys: list[str],
+    required_key: str,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for key in existing_keys:
+        if _is_placeholder_cliproxy_key(key):
+            continue
+        if key in seen:
+            continue
+        normalized.append(key)
+        seen.add(key)
+    if required_key not in seen:
+        normalized.append(required_key)
+    return normalized
+
+
+def _is_placeholder_cliproxy_key(key: str) -> bool:
+    return "<" in key or ">" in key
+
+
+def _resolve_cliproxy_config_base_url(
+    args: argparse.Namespace,
+    *,
+    onboarding: OnboardingSelection,
+    smoke_base_url: str,
+) -> str:
+    configured = getattr(args, "cliproxy_base_url", None)
+    if configured:
+        return _normalize_cliproxy_claude_base_url(configured)
+    if onboarding.hosting is HostingOption.DOCKER:
+        return CLIPROXY_DOCKER_BASE_URL
+    return smoke_base_url
+
+
+def _resolve_cliproxy_smoke_base_url(
+    args: argparse.Namespace,
+    deployment: CLIProxyDeployment,
+) -> str:
+    configured = getattr(args, "cliproxy_base_url", None)
+    if configured:
+        return _normalize_cliproxy_claude_base_url(configured)
+    return _compose_host_cliproxy_base_url(deployment.compose_path)
+
+
+def _normalize_cliproxy_claude_base_url(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+    if not normalized:
+        raise CLIProxySetupError("CLIProxy base URL cannot be empty.")
+    return normalized
+
+
+def _compose_host_cliproxy_base_url(compose_path: Path) -> str:
+    try:
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return CLIPROXY_DEFAULT_HOST_BASE_URL
+    services = compose.get("services")
+    if not isinstance(services, dict):
+        return CLIPROXY_DEFAULT_HOST_BASE_URL
+    service = services.get(CLIPROXY_CONTAINER_NAME) or services.get("cli-proxy-api")
+    if not isinstance(service, dict):
+        return CLIPROXY_DEFAULT_HOST_BASE_URL
+    ports = service.get("ports")
+    if not isinstance(ports, list):
+        return CLIPROXY_DEFAULT_HOST_BASE_URL
+    for port in ports:
+        published = _published_port_for_container_port(port, "8317")
+        if published:
+            return f"http://localhost:{published}"
+    return CLIPROXY_DEFAULT_HOST_BASE_URL
+
+
+def _published_port_for_container_port(port: object, container_port: str) -> str | None:
+    if isinstance(port, str):
+        parts = port.split(":")
+        if len(parts) == 2 and parts[1].split("/", 1)[0] == container_port:
+            return parts[0]
+        if len(parts) == 3 and parts[2].split("/", 1)[0] == container_port:
+            return parts[1]
+        if len(parts) == 1 and parts[0].split("/", 1)[0] == container_port:
+            return container_port
+    if isinstance(port, dict):
+        target = str(port.get("target", ""))
+        if target != container_port:
+            return None
+        published = str(port.get("published", "")).strip()
+        return published or container_port
+    return None
+
+
+def _ensure_cliproxy_container_ready(
+    deployment: CLIProxyDeployment,
+    base_url: str,
+    console: Console,
+) -> None:
+    if _wait_for_cliproxy_root(base_url, attempts=1, delay_seconds=0):
+        console.print(f"[green]CLIProxy:[/green] reachable at {base_url}")
+        return
+    if not shutil.which("docker"):
+        raise CLIProxySetupError(
+            "Docker is not available, and the CLIProxy HTTP endpoint is not reachable."
+        )
+
+    console.print("[yellow]CLIProxy is not reachable; starting Docker compose.[/yellow]")
+    result = subprocess.run(
+        ["docker", "compose", "-f", str(deployment.compose_path), "up", "-d"],
+        cwd=deployment.root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CLIProxySetupError(_subprocess_failure("docker compose up -d", result))
+    if not _wait_for_cliproxy_root(base_url):
+        raise CLIProxySetupError(
+            f"CLIProxy did not become reachable at {base_url} after docker compose up."
+        )
+    console.print(f"[green]CLIProxy:[/green] reachable at {base_url}")
+
+
+def _wait_for_cliproxy_root(
+    base_url: str,
+    *,
+    attempts: int = 15,
+    delay_seconds: float = 1.0,
+) -> bool:
+    for attempt in range(attempts):
+        if _cliproxy_root_available(base_url):
+            return True
+        if delay_seconds and attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return False
+
+
+def _cliproxy_root_available(base_url: str) -> bool:
+    try:
+        response = httpx.get(f"{base_url.rstrip('/')}/", timeout=3.0)
+    except (httpx.HTTPError, ValueError):
+        return False
+    return response.status_code < 500 and "CLI Proxy API Server" in response.text
+
+
+def _ensure_cliproxy_claude_auth_files(
+    deployment: CLIProxyDeployment,
+    *,
+    console: Console,
+    non_interactive: bool,
+) -> list[Path]:
+    deployment.auth_dir.mkdir(parents=True, exist_ok=True)
+    auth_files = _active_claude_auth_files(deployment.auth_dir)
+    if auth_files:
+        console.print(
+            f"[green]CLIProxy auth:[/green] found {len(auth_files)} active "
+            "Claude OAuth auth file(s)."
+        )
+        return auth_files
+
+    login_command = (
+        f"docker exec -it {CLIPROXY_CONTAINER_NAME} "
+        "./CLIProxyAPI --claude-login --no-browser"
+    )
+    if non_interactive:
+        raise CLIProxySetupError(
+            "no active Claude OAuth auth JSON was found. Run this command, then "
+            f"re-run nymeria init: {login_command}"
+        )
+
+    console.print("No active Claude OAuth auth JSON was found.")
+    _print_command(console, login_command)
+    if not _yes_no("Run Claude OAuth login now?", default=True):
+        raise CLIProxySetupError("Claude OAuth login was not run.")
+
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-it",
+            CLIPROXY_CONTAINER_NAME,
+            "./CLIProxyAPI",
+            "--claude-login",
+            "--no-browser",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CLIProxySetupError("Claude OAuth login command failed.")
+
+    auth_files = _active_claude_auth_files(deployment.auth_dir)
+    if not auth_files:
+        raise CLIProxySetupError(
+            f"Claude OAuth login did not create an active claude-*.json file in "
+            f"{deployment.auth_dir}."
+        )
+    return auth_files
+
+
+def _active_claude_auth_files(auth_dir: Path) -> list[Path]:
+    auth_files: list[Path] = []
+    if not auth_dir.is_dir():
+        return auth_files
+    for path in sorted(auth_dir.glob("claude-*.json")):
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if str(metadata.get("type", "")).lower() != "claude":
+            continue
+        if _cliproxy_bool(metadata.get("disabled")) is True:
+            continue
+        auth_files.append(path)
+    return auth_files
+
+
+def _ensure_tool_prefix_disabled(auth_files: list[Path]) -> list[Path]:
+    changed: list[Path] = []
+    for path in auth_files:
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CLIProxySetupError(f"could not read {path}: {exc}") from exc
+        if not isinstance(metadata, dict):
+            raise CLIProxySetupError(f"{path} must contain a JSON object.")
+        if _cliproxy_bool(metadata.get("tool_prefix_disabled")) is True:
+            continue
+        metadata["tool_prefix_disabled"] = True
+        try:
+            path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise CLIProxySetupError(f"could not update {path}: {exc}") from exc
+        changed.append(path)
+    return changed
+
+
+def _cliproxy_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        trimmed = value.strip().lower()
+        if trimmed in {"1", "t", "true"}:
+            return True
+        if trimmed in {"0", "f", "false"}:
+            return False
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return None
+
+
+def _restart_cliproxy_container(console: Console) -> None:
+    if not shutil.which("docker"):
+        raise CLIProxySetupError("Docker is required to restart CLIProxy.")
+    console.print("[yellow]Restarting CLIProxy to load config/auth changes.[/yellow]")
+    result = subprocess.run(
+        ["docker", "restart", CLIPROXY_CONTAINER_NAME],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CLIProxySetupError(_subprocess_failure("docker restart", result))
+
+
+def _run_cliproxy_cloak_check(
+    base_url: str,
+    *,
+    gatekeeper_key: str,
+    auth_dir: Path,
+    console: Console,
+) -> None:
+    script_path = (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "check_cliproxy_cloak.py"
+    )
+    if not script_path.exists():
+        raise CLIProxySetupError(f"smoke-test script not found: {script_path}")
+    if not auth_dir.is_dir():
+        raise CLIProxySetupError(
+            f"local CLIProxy auth directory is not accessible: {auth_dir}"
+        )
+
+    console.print("[bold]Running CLIProxy cloak smoke test...[/bold]")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            "--base-url",
+            base_url,
+            "--api-key",
+            gatekeeper_key,
+            "--auth-dir",
+            str(auth_dir),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = "\n".join(
+            line
+            for line in (result.stdout + "\n" + result.stderr).splitlines()
+            if line.strip()
+        )
+        if len(detail) > 2000:
+            detail = detail[:2000] + "\n..."
+        raise CLIProxySetupError(
+            "check_cliproxy_cloak.py failed; fix CLIProxy before writing "
+            f"Nymeria config.\n{detail}"
+        )
+    console.print("[green]CLIProxy smoke test passed.[/green]")
+
+
+def _subprocess_failure(command: str, result: subprocess.CompletedProcess[str]) -> str:
+    detail = (result.stderr or result.stdout or "").strip()
+    if len(detail) > 600:
+        detail = detail[:600] + "..."
+    if detail:
+        return f"{command} failed: {detail}"
+    return f"{command} failed with exit code {result.returncode}."
+
+
+def _print_cliproxy_claude_manual_steps(console: Console) -> None:
+    console.print("\n[bold]Manual CLIProxy Claude OAuth steps[/bold]")
+    console.print(
+        "Complete these steps, then re-run `nymeria init --auth-method "
+        "cliproxy_claude_oauth`."
+    )
+    _print_cliproxy_claude_commands(console)
 
 
 def _run_cliproxy_planning_gate(
@@ -1063,9 +1715,11 @@ def _write_config(
     api_key: str,
     data_dir: Path,
     optional_env: Mapping[str, str] | None = None,
+    extra_env: Mapping[str, str] | None = None,
 ) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     optional_env = optional_env or {}
+    extra_env = extra_env or {}
     lines = [
         "# Generated by `nymeria init`.",
         f"LLM_PROVIDER={provider.name}",
@@ -1076,6 +1730,13 @@ def _write_config(
         "API_HOST=0.0.0.0",
         "API_PORT=8000",
     ]
+    extra_lines = [
+        f"{env_var}={_env_value(value)}"
+        for env_var, value in extra_env.items()
+        if value
+    ]
+    if extra_lines:
+        lines[4:4] = extra_lines
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider.env_var:
@@ -1122,6 +1783,16 @@ def main(argv: list[str] | None = None) -> int:
         choices=choice_values(NextAction),
         default=None,
         help="Post-setup handoff action",
+    )
+    parser.add_argument(
+        "--cliproxy-root",
+        default=None,
+        help="CLIProxy temp/latest directory for OAuth setup",
+    )
+    parser.add_argument(
+        "--cliproxy-base-url",
+        default=None,
+        help="Host-reachable CLIProxy root URL for Claude OAuth setup",
     )
     parser.add_argument(
         "--embedding-api-key",

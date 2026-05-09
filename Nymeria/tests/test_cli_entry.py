@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -22,6 +23,47 @@ from nymeria.onboarding import (
 )
 from nymeria.config import settings as settings_module
 from nymeria.setup_wizard import main as setup_main
+
+
+def _make_cliproxy_root(tmp_path: Path, *, auth_payload: dict | None = None) -> Path:
+    root = tmp_path / "cliproxy" / "temp" / "latest"
+    auth_dir = root / "auths"
+    auth_dir.mkdir(parents=True)
+    (root / "config.yaml").write_text(
+        "\n".join(
+            [
+                'host: "0.0.0.0"',
+                "port: 8317",
+                'auth-dir: "/root/.cli-proxy-api"',
+                "api-keys:",
+                '  - "cpx-<placeholder>"',
+                "debug: true",
+                "commercial-mode: false",
+                "logging-to-file: false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (root / "docker-compose.yml").write_text(
+        "\n".join(
+            [
+                "services:",
+                "  cli-proxy-api-latest:",
+                "    image: pinned-test-image",
+                "    ports:",
+                '      - "8318:8317"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    if auth_payload is not None:
+        (auth_dir / "claude-test@example.com.json").write_text(
+            json.dumps(auth_payload),
+            encoding="utf-8",
+        )
+    return root
 
 
 def _stub_llm_connection(monkeypatch):
@@ -747,30 +789,188 @@ def test_init_docker_hosting_prints_handoff_without_writing_config(
     assert not (root / "config.env").exists()
 
 
-def test_init_noninteractive_cliproxy_claude_auth_prints_planning_handoff(capsys):
+def test_init_noninteractive_cliproxy_claude_auth_requires_active_oauth(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    cliproxy_root = _make_cliproxy_root(tmp_path)
+    root = tmp_path / "runtime"
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ensure_cliproxy_container_ready",
+        lambda *args, **kwargs: None,
+    )
+
     result = setup_main(
         [
             "--auth-method",
             "cliproxy_claude_oauth",
+            "--cliproxy-root",
+            str(cliproxy_root),
+            "--root",
+            str(root),
             "--non-interactive",
         ]
     )
 
     output = capsys.readouterr().out
+    assert result == 2
+    assert "no active Claude OAuth auth JSON" in output
+    assert "Manual CLIProxy Claude OAuth steps" in output
+    assert "docker exec -it cli-proxy-api-latest" in output
+    assert "No config.env or .env.docker was written" not in output
+    assert not (root / "config.env").exists()
+
+
+def test_init_noninteractive_cliproxy_claude_oauth_writes_verified_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    cliproxy_root = _make_cliproxy_root(
+        tmp_path,
+        auth_payload={
+            "type": "claude",
+            "email": "test@example.com",
+            "access_token": "redacted",
+        },
+    )
+    root = tmp_path / "runtime"
+    smoke_calls = []
+    restart_calls = []
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ensure_cliproxy_container_ready",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_restart_cliproxy_container",
+        lambda console: restart_calls.append(True),
+    )
+
+    def fake_smoke(base_url, *, gatekeeper_key, auth_dir, console):
+        smoke_calls.append((base_url, gatekeeper_key, auth_dir))
+
+    monkeypatch.setattr(setup_wizard, "_run_cliproxy_cloak_check", fake_smoke)
+
+    result = setup_main(
+        [
+            "--auth-method",
+            "cliproxy_claude_oauth",
+            "--api-key",
+            "cpx-claude-test",
+            "--model",
+            "claude-test-model",
+            "--cliproxy-root",
+            str(cliproxy_root),
+            "--cliproxy-base-url",
+            "http://localhost:8317",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    proxy_config = setup_wizard._read_cliproxy_config(cliproxy_root / "config.yaml")
+    auth_json = json.loads(
+        (cliproxy_root / "auths" / "claude-test@example.com.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    output = capsys.readouterr().out
     assert result == 0
-    assert "CLIProxy Claude OAuth Planning Gate" in output
-    assert "CLIProxy OAuth is advanced" in output
-    assert "Docker" in output
-    assert "LLM_PROVIDER=anthropic" in output
-    assert "LLM_BASE_URL=http://localhost:8318" in output
-    assert "ANTHROPIC_API_KEY=cpx-<your-claude-gatekeeper-key>" in output
-    assert "root URL, no /v1" in output
-    assert "check_cliproxy_cloak.py" in output
-    assert "tool_prefix_disabled" in output
-    assert "gatekeeper key" in output
-    assert "No config.env or .env.docker was written" in output
-    assert "[/bold]" not in output
-    assert "--provider is required" not in output
+    assert "LLM_PROVIDER=anthropic" in config
+    assert "LLM_MODEL=claude-test-model" in config
+    assert "LLM_BASE_URL=http://localhost:8317" in config
+    assert "ANTHROPIC_API_KEY=cpx-claude-test" in config
+    assert "Bootstrap token:" in output
+    assert proxy_config["api-keys"] == ["cpx-claude-test"]
+    assert auth_json["tool_prefix_disabled"] is True
+    assert smoke_calls == [
+        (
+            "http://localhost:8317",
+            "cpx-claude-test",
+            cliproxy_root / "auths",
+        )
+    ]
+    assert restart_calls == [True]
+
+
+def test_cliproxy_gatekeeper_key_can_be_generated(monkeypatch, tmp_path: Path):
+    cliproxy_root = _make_cliproxy_root(tmp_path)
+    deployment = setup_wizard.CLIProxyDeployment(
+        root=cliproxy_root,
+        config_path=cliproxy_root / "config.yaml",
+        compose_path=cliproxy_root / "docker-compose.yml",
+        auth_dir=cliproxy_root / "auths",
+    )
+
+    monkeypatch.setattr(setup_wizard.secrets, "token_urlsafe", lambda size: "fixed")
+
+    key, changed = setup_wizard._resolve_cliproxy_gatekeeper_key(
+        type("Args", (), {"api_key": None})(),
+        deployment=deployment,
+        console=setup_wizard.Console(),
+        non_interactive=True,
+    )
+
+    proxy_config = setup_wizard._read_cliproxy_config(cliproxy_root / "config.yaml")
+    assert key == "cpx-nymeria-fixed"
+    assert changed is True
+    assert proxy_config["api-keys"] == ["cpx-nymeria-fixed"]
+
+
+def test_cliproxy_claude_smoke_failure_stops_before_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    cliproxy_root = _make_cliproxy_root(
+        tmp_path,
+        auth_payload={
+            "type": "claude",
+            "tool_prefix_disabled": True,
+        },
+    )
+    root = tmp_path / "runtime"
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ensure_cliproxy_container_ready",
+        lambda *args, **kwargs: None,
+    )
+
+    def fail_smoke(*args, **kwargs):
+        raise setup_wizard.CLIProxySetupError("smoke failed")
+
+    monkeypatch.setattr(setup_wizard, "_run_cliproxy_cloak_check", fail_smoke)
+
+    result = setup_main(
+        [
+            "--auth-method",
+            "cliproxy_claude_oauth",
+            "--api-key",
+            "cpx-claude-test",
+            "--cliproxy-root",
+            str(cliproxy_root),
+            "--cliproxy-base-url",
+            "http://localhost:8317",
+            "--root",
+            str(root),
+            "--non-interactive",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "smoke failed" in output
+    assert "Manual CLIProxy Claude OAuth steps" in output
+    assert not (root / "config.env").exists()
 
 
 def test_init_noninteractive_cliproxy_codex_auth_prints_planning_handoff(
@@ -828,7 +1028,7 @@ def test_init_interactive_cliproxy_auth_can_cancel_planning_gate(
 
     output = capsys.readouterr().out
     assert result == 1
-    assert "CLIProxy OAuth Setup" in output
+    assert "CLIProxy Claude OAuth Setup" in output
     assert "Setup cancelled" in output
     assert "Step 3: LLM Provider" not in output
 
@@ -863,6 +1063,10 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
             "advanced",
             "--next-action",
             "print_commands",
+            "--cliproxy-root",
+            "/tmp/cliproxy",
+            "--cliproxy-base-url",
+            "http://localhost:8317",
             "--non-interactive",
             "--skip-llm-test",
             "--run-doctor",
@@ -879,6 +1083,8 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
     assert args.auth_method == "api_key"
     assert args.setup_style == "advanced"
     assert args.next_action == "print_commands"
+    assert args.cliproxy_root == "/tmp/cliproxy"
+    assert args.cliproxy_base_url == "http://localhost:8317"
     assert args.run_doctor is True
     assert args.full_doctor is True
 

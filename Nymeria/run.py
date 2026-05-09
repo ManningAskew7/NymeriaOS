@@ -786,6 +786,16 @@ Examples:
         help="Post-setup handoff action",
     )
     init_parser.add_argument(
+        "--cliproxy-root",
+        default=None,
+        help="CLIProxy temp/latest directory for OAuth setup",
+    )
+    init_parser.add_argument(
+        "--cliproxy-base-url",
+        default=None,
+        help="Host-reachable CLIProxy root URL for Claude OAuth setup",
+    )
+    init_parser.add_argument(
         "--embedding-api-key",
         default=None,
         help="Optional OpenAI-compatible key for RAG/memory/skill embeddings",
