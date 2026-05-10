@@ -1,0 +1,87 @@
+"""Transport protocol for CLI agent clients."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Mapping, Sequence
+from typing import Any, Protocol
+
+from ..events import NormalizedEvent
+
+Attachment = Mapping[str, Any]
+
+
+class AgentClient(Protocol):
+    """Common async-facing client interface for CLI transports."""
+
+    @property
+    def connection_label(self) -> str:
+        """Short human-readable transport label for status surfaces."""
+
+    def stream_chat(
+        self,
+        message: str,
+        thread_id: str,
+        user_id: str = "default",
+        attachments: Sequence[Attachment] | None = None,
+        **options: Any,
+    ) -> AsyncIterator[NormalizedEvent]:
+        """Stream normalized chat events for a user message."""
+
+    async def stop(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Abort in-flight work for a thread."""
+
+    async def get_history(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        include_internal: bool = False,
+        **options: Any,
+    ) -> Mapping[str, Any]:
+        """Return conversation history for a thread."""
+
+    async def list_threads(
+        self,
+        user_id: str = "default",
+    ) -> Sequence[Mapping[str, Any]]:
+        """List threads visible to a user."""
+
+    async def get_context_stats(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Return context-window usage stats for a thread."""
+
+    async def create_thread(
+        self,
+        user_id: str = "default",
+        *,
+        thread_id: str | None = None,
+        title: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Create or claim thread metadata."""
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+    ) -> Mapping[str, Any]:
+        """Update thread title/pin metadata."""
+
+    async def delete_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Delete a thread through the transport boundary."""
+
+
+__all__ = ["AgentClient", "Attachment"]
