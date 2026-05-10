@@ -254,6 +254,11 @@ def test_api_client_cli_domain_wrappers_use_desktop_api_routes(monkeypatch):
                 activity_type="tool",
                 thread_id="thread-1",
             )
+            await client.list_todos(
+                "user-1",
+                filter_status="all",
+                thread_id="thread-1",
+            )
             await client.mark_notification_read("n-1", user_id="user-1")
             await client.test_llm_provider_config(
                 {"provider": "openai", "model": "gpt-test"},
@@ -272,6 +277,7 @@ def test_api_client_cli_domain_wrappers_use_desktop_api_routes(monkeypatch):
         "GET",
         "POST",
         "POST",
+        "GET",
         "GET",
         "GET",
         "POST",
@@ -302,13 +308,20 @@ def test_api_client_cli_domain_wrappers_use_desktop_api_routes(monkeypatch):
         "activity_type": "tool",
         "thread_id": "thread-1",
     }
-    assert requests[5]["url"] == "http://api/notifications/n-1/read"
-    assert requests[6]["url"] == "http://api/settings/llm/test"
-    assert requests[6]["headers"]["X-Nymeria-Act-As"] == "admin"
-    assert requests[7]["url"] == "http://api/threads/thread-1/config"
-    assert requests[8]["url"] == "http://api/threads/thread-1/export"
-    assert requests[9]["url"] == "http://api/threads/import"
-    assert requests[9]["json"] == {"version": 1}
+    assert requests[5]["url"] == "http://api/todos"
+    assert requests[5]["params"] == {
+        "user_id": "user-1",
+        "filter_status": "all",
+        "thread_id": "thread-1",
+    }
+    assert requests[5]["headers"]["X-Nymeria-Act-As"] == "user-1"
+    assert requests[6]["url"] == "http://api/notifications/n-1/read"
+    assert requests[7]["url"] == "http://api/settings/llm/test"
+    assert requests[7]["headers"]["X-Nymeria-Act-As"] == "admin"
+    assert requests[8]["url"] == "http://api/threads/thread-1/config"
+    assert requests[9]["url"] == "http://api/threads/thread-1/export"
+    assert requests[10]["url"] == "http://api/threads/import"
+    assert requests[10]["json"] == {"version": 1}
 
 
 def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkeypatch):

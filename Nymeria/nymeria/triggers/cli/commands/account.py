@@ -1,0 +1,337 @@
+"""Account, token, and platform commands."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
+from .system import (
+    CommandClientMethodUnavailable,
+    call_client_method,
+    compact_id,
+    confirmation_granted,
+    confirmation_required_result,
+    mapping_get,
+    one_line,
+    strip_confirmation_flags,
+    unsupported_transport_result,
+)
+
+
+async def _handle_account_root(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if args:
+        return CommandResult.failed(
+            "Usage: /account current|tokens|switch|platforms",
+            error_code="usage_error",
+        )
+    return await _handle_account_current(context, [])
+
+
+async def _handle_account_current(
+    context: CommandContext,
+    _args: list[str],
+) -> CommandResult:
+    if context.legacy_state is not None:
+        state = context.legacy_state
+        return CommandResult.completed(
+            CommandMessage(
+                "\n".join(
+                    [
+                        "Current Account",
+                        f"  User ID  {state.user_id}",
+                        "  Mode     local",
+                    ]
+                ),
+                title="Account",
+            )
+        )
+
+    try:
+        me = await _get_me(context, context.user_id)
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result("/account current", method_name=exc.method_name)
+
+    return CommandResult.completed(
+        CommandMessage(_format_identity(me, selected_user_id=context.user_id), title="Account"),
+        payload={"user_id": str(mapping_get(me, "id", context.user_id))},
+    )
+
+
+async def _handle_account_switch(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if not args:
+        return CommandResult.failed(
+            "Usage: /account switch <user-id>",
+            error_code="usage_error",
+        )
+    user_id = args[0]
+
+    if context.legacy_state is not None:
+        context.legacy_state.user_id = user_id
+        context.user_id = user_id
+        return CommandResult.completed(
+            CommandMessage(f"Switched account: {user_id}", level="success"),
+            payload={"user_id": user_id},
+        )
+
+    try:
+        me = await _get_me(context, user_id)
+    except CommandClientMethodUnavailable:
+        me = {"id": user_id}
+
+    context.user_id = user_id
+    await context.dispatch({"type": "switch_user", "user_id": user_id})
+    display = str(mapping_get(me, "display_name", "")) or user_id
+    return CommandResult.completed(
+        CommandMessage(f"Switched account: {user_id} {display}", level="success"),
+        payload={"user_id": user_id},
+    )
+
+
+async def _handle_account_tokens(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if context.legacy_state is not None:
+        return CommandResult.failed(
+            "/account tokens is only available in API mode.",
+            error_code="legacy_command_unavailable",
+        )
+    if not args or args[0].casefold() in {"list", "ls"}:
+        return await _handle_tokens_list(context, args[1:] if args else [])
+    action = args[0].casefold()
+    if action in {"issue", "new", "create"}:
+        return await _handle_tokens_issue(context, args[1:])
+    if action in {"revoke", "delete", "rm"}:
+        return await _handle_tokens_revoke(context, args[1:])
+    return CommandResult.failed(
+        "Usage: /account tokens [list|issue|revoke]",
+        error_code="usage_error",
+    )
+
+
+async def _handle_tokens_list(
+    context: CommandContext,
+    _args: list[str],
+) -> CommandResult:
+    try:
+        tokens = await call_client_method(
+            context,
+            "list_my_tokens",
+            user_id=context.user_id,
+        )
+    except TypeError:
+        tokens = await call_client_method(context, "list_my_tokens", context.user_id)
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result("/account tokens", method_name=exc.method_name)
+
+    entries = _mapping_sequence(tokens)
+    if not entries:
+        return CommandResult.completed(CommandMessage("No tokens found.", level="warning"))
+
+    lines = ["API Tokens", "  Prefix    Label                 Created               Last used   Revoked"]
+    for token in entries:
+        lines.append(
+            f"  {compact_id(token.get('token_hash_prefix')):<8}  "
+            f"{one_line(token.get('label'), limit=20):<20} "
+            f"{one_line(token.get('created_at'), limit=20):<20} "
+            f"{one_line(token.get('last_used_at') or '', limit=11):<11} "
+            f"{one_line(token.get('revoked_at') or '', limit=11)}"
+        )
+    return CommandResult.completed(CommandMessage("\n".join(lines), title="Account"))
+
+
+async def _handle_tokens_issue(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    label = " ".join(args).strip() or None
+    try:
+        issued = await call_client_method(
+            context,
+            "issue_my_token",
+            label=label,
+            user_id=context.user_id,
+        )
+    except TypeError:
+        issued = await call_client_method(context, "issue_my_token", label, context.user_id)
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result("/account tokens issue", method_name=exc.method_name)
+
+    raw_token = str(mapping_get(issued, "raw_token", ""))
+    metadata = mapping_get(issued, "metadata", {})
+    prefix = mapping_get(metadata, "token_hash_prefix", "")
+    content = f"Issued token {prefix}."
+    if raw_token:
+        content += f"\nRaw token (shown once): {raw_token}"
+    return CommandResult.completed(
+        CommandMessage(content, level="success"),
+        payload={"token_hash_prefix": prefix, "raw_token_returned": bool(raw_token)},
+    )
+
+
+async def _handle_tokens_revoke(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    args, explicit_confirmation = strip_confirmation_flags(args)
+    if not args:
+        return CommandResult.failed(
+            "Usage: /account tokens revoke <hash-prefix> [--yes]",
+            error_code="usage_error",
+        )
+    prefix = args[0]
+    confirmed = await confirmation_granted(
+        context,
+        f"Revoke API token {prefix}?",
+        explicitly_confirmed=explicit_confirmation,
+    )
+    if not confirmed:
+        return confirmation_required_result("/account tokens revoke")
+
+    try:
+        result = await call_client_method(
+            context,
+            "revoke_my_token",
+            prefix,
+            user_id=context.user_id,
+        )
+    except TypeError:
+        result = await call_client_method(context, "revoke_my_token", prefix, context.user_id)
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result("/account tokens revoke", method_name=exc.method_name)
+
+    revoked = bool(mapping_get(result, "revoked", True))
+    level = "success" if revoked else "warning"
+    return CommandResult.completed(
+        CommandMessage(f"Revoked token {prefix}.", level=level),
+        payload={"token_hash_prefix": prefix, "revoked": revoked},
+    )
+
+
+async def _handle_account_platforms(
+    context: CommandContext,
+    _args: list[str],
+) -> CommandResult:
+    if context.legacy_state is not None:
+        return CommandResult.failed(
+            "/account platforms is only available in API mode.",
+            error_code="legacy_command_unavailable",
+        )
+
+    try:
+        platforms = await call_client_method(
+            context,
+            "list_my_platforms",
+            user_id=context.user_id,
+        )
+    except TypeError:
+        platforms = await call_client_method(context, "list_my_platforms", context.user_id)
+    except CommandClientMethodUnavailable:
+        try:
+            platforms = await call_client_method(context, "list_user_platforms", context.user_id)
+        except CommandClientMethodUnavailable as exc:
+            return unsupported_transport_result(
+                "/account platforms",
+                method_name=exc.method_name,
+            )
+
+    entries = _mapping_sequence(platforms)
+    if not entries:
+        return CommandResult.completed(
+            CommandMessage("No linked platforms.", level="warning")
+        )
+
+    lines = ["Linked Platforms", "  Provider      Provider user ID         Created"]
+    for platform in entries:
+        lines.append(
+            f"  {one_line(platform.get('provider'), limit=12):<12}  "
+            f"{one_line(platform.get('provider_user_id'), limit=24):<24} "
+            f"{one_line(platform.get('created_at'), limit=24)}"
+        )
+    return CommandResult.completed(CommandMessage("\n".join(lines), title="Account"))
+
+
+async def _get_me(context: CommandContext, user_id: str | None) -> Mapping[str, Any]:
+    try:
+        data = await call_client_method(context, "get_me", act_as=user_id)
+    except TypeError:
+        data = await call_client_method(context, "get_me", user_id)
+    return data if isinstance(data, Mapping) else {"id": user_id or context.user_id}
+
+
+def _format_identity(identity: Mapping[str, Any], *, selected_user_id: str) -> str:
+    rows = [
+        ("Selected user", selected_user_id),
+        ("ID", identity.get("id", "")),
+        ("Email", identity.get("email", "")),
+        ("Display name", identity.get("display_name", "")),
+        ("Role", identity.get("role", "")),
+    ]
+    width = max(len(label) for label, _value in rows)
+    lines = ["Current Account"]
+    for label, value in rows:
+        lines.append(f"  {label:<{width}}  {value}")
+    return "\n".join(lines)
+
+
+def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def register(registry: CommandRegistry) -> None:
+    """Register account commands."""
+    registry.register(Command(
+        name="account",
+        aliases=["acct"],
+        description="Inspect account, tokens, and linked platforms",
+        usage="/account current",
+        handler=_handle_account_root,
+        handler_mode="context",
+        category="Personal",
+        subcommands={
+            "current": Command(
+                name="current",
+                aliases=["me"],
+                description="Show current account",
+                usage="current",
+                handler=_handle_account_current,
+                handler_mode="context",
+                category="Personal",
+            ),
+            "switch": Command(
+                name="switch",
+                aliases=["su"],
+                description="Switch API act-as user",
+                usage="switch <user-id>",
+                handler=_handle_account_switch,
+                handler_mode="context",
+                category="Personal",
+            ),
+            "tokens": Command(
+                name="tokens",
+                description="List, issue, or revoke API tokens",
+                usage="tokens [list|issue|revoke]",
+                handler=_handle_account_tokens,
+                handler_mode="context",
+                category="Personal",
+            ),
+            "platforms": Command(
+                name="platforms",
+                aliases=["links"],
+                description="List linked chat platforms",
+                usage="platforms",
+                handler=_handle_account_platforms,
+                handler_mode="context",
+                category="Personal",
+            ),
+        },
+    ))
