@@ -119,6 +119,8 @@ class CLIApp:
                     thread_label=self.state.get_thread_title(),
                 ),
                 on_turn_complete=on_turn_complete,
+                command_registry=self.registry,
+                history_path=self.state.settings.data_dir / "cli_history",
             )
             await shell.run_async()
 

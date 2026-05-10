@@ -2,21 +2,70 @@
 
 from __future__ import annotations
 
+import mimetypes
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
+from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.widgets import TextArea
+
+from ..attachment_helpers import build_attachment
 
 if TYPE_CHECKING:
+    from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.document import Document
     from prompt_toolkit.completion import CompleteEvent
     from .state import CLIState
-    from .commands import CommandRegistry
+    from .commands import Command, CommandRegistry
+
+
+SubmitHandler = Callable[["ComposerSubmission"], bool | None]
+ErrorHandler = Callable[[str], None]
+StopHandler = Callable[[], bool | None]
+StateGetter = Callable[[], bool]
+CountGetter = Callable[[], int]
+
+_BRACKETED_PASTE_START = "\x1b[200~"
+_BRACKETED_PASTE_END = "\x1b[201~"
+_ATTACHMENT_TOKEN_RE = re.compile(r"(?<!\S)@(?P<path>\S+)")
+
+
+@dataclass(frozen=True, slots=True)
+class ComposerSubmission:
+    """Parsed full-screen composer input."""
+
+    message: str
+    attachments: tuple[dict[str, Any], ...] = ()
+    raw_text: str = ""
+    attachment_errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedAttachmentToken:
+    """A file attachment token found in composer text."""
+
+    token: str
+    path: Path
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class ComposerPromptState:
+    """Small render-state object for the composer prompt."""
+
+    busy: bool = False
+    queued_count: int = 0
+    attachment_errors: tuple[str, ...] = field(default_factory=tuple)
 
 
 class CommandCompleter(Completer):
@@ -24,6 +73,7 @@ class CommandCompleter(Completer):
 
     def __init__(self, registry: "CommandRegistry") -> None:
         self._registry = registry
+        self._metadata = _command_completion_metadata(registry)
 
     def get_completions(
         self, document: "Document", complete_event: "CompleteEvent"
@@ -41,6 +91,7 @@ class CommandCompleter(Completer):
                     yield Completion(
                         candidate,
                         start_position=-len(text),
+                        display_meta=self._metadata.get(candidate, ""),
                     )
         else:
             for candidate in candidates:
@@ -48,7 +99,191 @@ class CommandCompleter(Completer):
                     yield Completion(
                         candidate,
                         start_position=-len(text),
+                        display_meta=self._metadata.get(candidate, ""),
                     )
+
+
+class ComposerCompleter(Completer):
+    """Complete slash commands and @file attachment paths in the composer."""
+
+    def __init__(
+        self,
+        registry: "CommandRegistry | None" = None,
+        *,
+        cwd: Path | None = None,
+    ) -> None:
+        self.command_completer = CommandCompleter(registry) if registry else None
+        self.cwd = cwd or Path.cwd()
+        self.path_completer = PathCompleter(
+            get_paths=lambda: [str(self.cwd)],
+            expanduser=True,
+        )
+
+    def get_completions(
+        self, document: "Document", complete_event: "CompleteEvent"
+    ):
+        text = document.text_before_cursor.lstrip()
+        if text.startswith("/") and self.command_completer is not None:
+            yield from self.command_completer.get_completions(document, complete_event)
+            return
+
+        token = _token_before_cursor(document.text_before_cursor)
+        if not token.startswith("@"):
+            return
+
+        from prompt_toolkit.document import Document
+
+        path_fragment = token[1:]
+        path_document = Document(path_fragment, cursor_position=len(path_fragment))
+        for completion in self.path_completer.get_completions(
+            path_document,
+            complete_event,
+        ):
+            yield Completion(
+                completion.text,
+                start_position=completion.start_position,
+                display=completion.display,
+                display_meta="attach file",
+            )
+
+
+class ComposerController:
+    """Bottom composer widget plus input behavior for the full-screen shell."""
+
+    def __init__(
+        self,
+        *,
+        command_registry: "CommandRegistry | None" = None,
+        history_path: Path | None = None,
+        cwd: Path | None = None,
+        on_submit: SubmitHandler | None = None,
+        on_error: ErrorHandler | None = None,
+        on_stop: StopHandler | None = None,
+        is_busy: StateGetter | None = None,
+        queued_count: CountGetter | None = None,
+    ) -> None:
+        self.cwd = cwd or Path.cwd()
+        self.on_submit = on_submit
+        self.on_error = on_error
+        self.on_stop = on_stop
+        self.is_busy = is_busy or (lambda: False)
+        self.queued_count = queued_count or (lambda: 0)
+        self.last_attachment_errors: tuple[str, ...] = ()
+        self.key_bindings = self._build_key_bindings()
+        self.text_area = TextArea(
+            height=Dimension(min=1, max=6),
+            prompt=self.prompt_fragments,
+            multiline=False,
+            wrap_lines=True,
+            history=_history(history_path),
+            auto_suggest=AutoSuggestFromHistory(),
+            completer=ComposerCompleter(command_registry, cwd=self.cwd),
+            complete_while_typing=False,
+            accept_handler=self.handle_enter,
+            name="nymeria-composer",
+        )
+
+    @property
+    def prompt_state(self) -> ComposerPromptState:
+        return ComposerPromptState(
+            busy=self.is_busy(),
+            queued_count=self.queued_count(),
+            attachment_errors=self.last_attachment_errors,
+        )
+
+    def prompt_fragments(self):
+        state = self.prompt_state
+        if state.attachment_errors:
+            return [("class:composer.error", "! ")]
+        if state.queued_count:
+            return [("class:composer.queued", f"queued {state.queued_count} > ")]
+        if state.busy:
+            return [("class:composer.busy", "busy > ")]
+        return [("class:composer", "> ")]
+
+    def submit_buffer(self, buffer: "Buffer") -> bool:
+        submission = parse_composer_submission(buffer.text, cwd=self.cwd)
+        self.last_attachment_errors = submission.attachment_errors
+        if submission.attachment_errors:
+            self._emit_error(submission.attachment_errors[0])
+            return False
+        if not submission.message.strip() and not submission.attachments:
+            buffer.reset()
+            return True
+
+        accepted = True
+        if self.on_submit is not None:
+            accepted = self.on_submit(submission) is not False
+        if not accepted:
+            return False
+
+        buffer.append_to_history()
+        buffer.reset()
+        self.last_attachment_errors = ()
+        return True
+
+    def handle_enter(self, buffer: "Buffer") -> bool:
+        """Submit on Enter or insert a fallback newline after a trailing backslash."""
+
+        if _ends_with_unescaped_backslash(buffer.document.text_before_cursor):
+            cursor = buffer.cursor_position
+            before = buffer.text[:cursor]
+            after = buffer.text[cursor:]
+            slash_index = len(before.rstrip()) - 1
+            replacement = f"{before[:slash_index]}\n"
+            buffer.text = f"{replacement}{after}"
+            buffer.cursor_position = len(replacement)
+            return True
+        return self.submit_buffer(buffer)
+
+    def insert_newline(self, buffer: "Buffer") -> None:
+        cursor = buffer.cursor_position
+        buffer.text = f"{buffer.text[:cursor]}\n{buffer.text[cursor:]}"
+        buffer.cursor_position = cursor + 1
+
+    def stop_or_clear(self, buffer: "Buffer") -> bool:
+        if self.is_busy():
+            if self.on_stop is None:
+                return False
+            return self.on_stop() is not False
+        buffer.reset()
+        return True
+
+    def open_external_editor(self, buffer: "Buffer") -> None:
+        buffer.open_in_editor(validate_and_handle=False)
+
+    def _build_key_bindings(self) -> KeyBindings:
+        bindings = KeyBindings()
+
+        @bindings.add("enter", eager=True)
+        def _submit(event):
+            self.handle_enter(event.current_buffer)
+
+        @bindings.add("c-j", eager=True)
+        def _ctrl_enter_newline(event):
+            self.insert_newline(event.current_buffer)
+
+        @bindings.add("escape", "enter", eager=True)
+        def _modified_enter_newline(event):
+            self.insert_newline(event.current_buffer)
+
+        @bindings.add("c-c", eager=True)
+        def _stop_or_clear(event):
+            self.stop_or_clear(event.current_buffer)
+
+        @bindings.add("c-r")
+        def _history_search(event):
+            event.current_buffer.start_history_lines_completion()
+
+        @bindings.add("c-x", "c-e")
+        def _open_editor(event):
+            self.open_external_editor(event.current_buffer)
+
+        return bindings
+
+    def _emit_error(self, message: str) -> None:
+        if self.on_error is not None:
+            self.on_error(message)
 
 
 def create_session(
@@ -74,6 +309,31 @@ def create_session(
     )
 
 
+def create_full_screen_composer(
+    *,
+    command_registry: "CommandRegistry | None" = None,
+    history_path: Path | None = None,
+    cwd: Path | None = None,
+    on_submit: SubmitHandler | None = None,
+    on_error: ErrorHandler | None = None,
+    on_stop: StopHandler | None = None,
+    is_busy: StateGetter | None = None,
+    queued_count: CountGetter | None = None,
+) -> ComposerController:
+    """Create the full-screen composer controller."""
+
+    return ComposerController(
+        command_registry=command_registry,
+        history_path=history_path,
+        cwd=cwd,
+        on_submit=on_submit,
+        on_error=on_error,
+        on_stop=on_stop,
+        is_busy=is_busy,
+        queued_count=queued_count,
+    )
+
+
 def get_prompt(state: "CLIState") -> HTML:
     """Build the dynamic prompt string."""
     thread_label = state.get_thread_title()
@@ -82,3 +342,164 @@ def get_prompt(state: "CLIState") -> HTML:
         f" <style fg='ansibrightblack'>[{thread_label}]</style>"
         f" <style fg='ansicyan' bg=''>&gt;</style> "
     )
+
+
+def sanitize_composer_text(text: str) -> str:
+    """Normalize pasted composer text before parsing or sending."""
+
+    return (
+        str(text or "")
+        .replace(_BRACKETED_PASTE_START, "")
+        .replace(_BRACKETED_PASTE_END, "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\x00", "")
+    )
+
+
+def parse_composer_submission(text: str, *, cwd: Path | None = None) -> ComposerSubmission:
+    """Parse composer text into message text and optional @file attachments."""
+
+    raw_text = sanitize_composer_text(text)
+    cleaned_text = raw_text.strip()
+    if cleaned_text.startswith("/"):
+        return ComposerSubmission(message=cleaned_text, raw_text=raw_text)
+
+    root = cwd or Path.cwd()
+    tokens = _attachment_tokens(raw_text, root)
+    if not tokens:
+        return ComposerSubmission(message=cleaned_text, raw_text=raw_text)
+
+    attachments: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for token in tokens:
+        attachment, error = _build_path_attachment(token.path)
+        if error:
+            errors.append(error)
+            continue
+        if attachment is not None:
+            attachments.append(attachment)
+
+    message = _remove_attachment_tokens(raw_text, tokens).strip()
+    if not message and attachments:
+        message = "[attachment]" if len(attachments) == 1 else "[attachments]"
+
+    return ComposerSubmission(
+        message=message,
+        attachments=tuple(attachments),
+        raw_text=raw_text,
+        attachment_errors=tuple(errors),
+    )
+
+
+def _history(history_path: Path | None) -> History:
+    if history_path is None:
+        return InMemoryHistory()
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    return FileHistory(str(history_path))
+
+
+def _command_completion_metadata(registry: "CommandRegistry") -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for command in registry.get_all_commands():
+        _add_command_metadata(metadata, command, f"/{command.name}")
+        for alias in command.aliases:
+            _add_command_metadata(metadata, command, alias)
+        for sub_name, subcommand in command.subcommands.items():
+            _add_command_metadata(metadata, subcommand, f"/{command.name} {sub_name}")
+            for alias in subcommand.aliases:
+                _add_command_metadata(metadata, subcommand, f"/{command.name} {alias}")
+    return metadata
+
+
+def _add_command_metadata(
+    metadata: dict[str, str],
+    command: "Command",
+    candidate: str,
+) -> None:
+    description = command.description
+    if description:
+        metadata[candidate] = description
+
+
+def _token_before_cursor(text: str) -> str:
+    if not text:
+        return ""
+    token_start = max(text.rfind(" "), text.rfind("\n"), text.rfind("\t")) + 1
+    return text[token_start:]
+
+
+def _ends_with_unescaped_backslash(text: str) -> bool:
+    stripped = text.rstrip()
+    if not stripped.endswith("\\"):
+        return False
+    slash_count = 0
+    for char in reversed(stripped):
+        if char != "\\":
+            break
+        slash_count += 1
+    return slash_count % 2 == 1
+
+
+def _attachment_tokens(text: str, cwd: Path) -> list[ParsedAttachmentToken]:
+    tokens: list[ParsedAttachmentToken] = []
+    for match in _ATTACHMENT_TOKEN_RE.finditer(text):
+        path_text = match.group("path").strip()
+        if not path_text:
+            continue
+        path = Path(path_text).expanduser()
+        if not path.is_absolute():
+            path = cwd / path
+        tokens.append(
+            ParsedAttachmentToken(
+                token=match.group(0),
+                path=path,
+                start=match.start(),
+                end=match.end(),
+            )
+        )
+    return tokens
+
+
+def _remove_attachment_tokens(
+    text: str,
+    tokens: Sequence[ParsedAttachmentToken],
+) -> str:
+    if not tokens:
+        return text
+
+    parts: list[str] = []
+    cursor = 0
+    for token in tokens:
+        parts.append(text[cursor:token.start])
+        cursor = token.end
+    parts.append(text[cursor:])
+    return re.sub(r"[ \t]{2,}", " ", "".join(parts))
+
+
+def _build_path_attachment(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    if not path.exists():
+        return None, f"Attachment not found: {path}"
+    if not path.is_file():
+        return None, f"Attachment is not a file: {path}"
+
+    mime_type, _encoding = mimetypes.guess_type(path.name)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return None, f"Could not read attachment {path}: {exc}"
+    return build_attachment(raw, mime_type, path.name)
+
+
+__all__ = [
+    "CommandCompleter",
+    "ComposerCompleter",
+    "ComposerController",
+    "ComposerPromptState",
+    "ComposerSubmission",
+    "create_full_screen_composer",
+    "create_session",
+    "get_prompt",
+    "parse_composer_submission",
+    "sanitize_composer_text",
+]
