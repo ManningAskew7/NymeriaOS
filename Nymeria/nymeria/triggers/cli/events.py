@@ -1,0 +1,569 @@
+"""Normalized stream events for CLI transports and renderers."""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator, Mapping
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any, Literal, TypeAlias
+
+
+KnownEventType: TypeAlias = Literal[
+    "thinking",
+    "tool_call_delta",
+    "tool_call",
+    "tool_result",
+    "response",
+    "workspace_artifact",
+    "tool_reload",
+    "queued",
+    "compacting",
+    "compacted",
+    "context_attached",
+    "iteration_limit",
+    "error",
+    "done",
+]
+NormalizedEventType: TypeAlias = KnownEventType | Literal["diagnostic"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CLIStreamEvent:
+    """Base normalized CLI stream event.
+
+    ``raw`` preserves the source payload for diagnostics, but it is excluded
+    from equality so API/local events can compare equal after normalization.
+    """
+
+    type: NormalizedEventType
+    thread_id: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict, compare=False)
+
+    def as_dict(
+        self,
+        *,
+        include_raw: bool = False,
+        omit_empty: bool = False,
+    ) -> dict[str, Any]:
+        """Return a dictionary representation for renderer/test adapters."""
+
+        data = asdict(self)
+        if not include_raw:
+            data.pop("raw", None)
+        if omit_empty:
+            data = {
+                key: value
+                for key, value in data.items()
+                if value not in (None, "", {}, [], ())
+            }
+        return data
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ThinkingEvent(CLIStreamEvent):
+    type: Literal["thinking"] = "thinking"
+    content: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolCallDeltaEvent(CLIStreamEvent):
+    type: Literal["tool_call_delta"] = "tool_call_delta"
+    content: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolCallEvent(CLIStreamEvent):
+    type: Literal["tool_call"] = "tool_call"
+    id: str = ""
+    name: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolResultEvent(CLIStreamEvent):
+    type: Literal["tool_result"] = "tool_result"
+    id: str = ""
+    name: str = ""
+    result: Any = ""
+    status: str = "success"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ResponseEvent(CLIStreamEvent):
+    type: Literal["response"] = "response"
+    content: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WorkspaceArtifactEvent(CLIStreamEvent):
+    type: Literal["workspace_artifact"] = "workspace_artifact"
+    tool_call_id: str = ""
+    tool_name: str = ""
+    path: str = ""
+    artifact: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolReloadEvent(CLIStreamEvent):
+    type: Literal["tool_reload"] = "tool_reload"
+    tools: tuple[str, ...] = ()
+    ttl: str = ""
+    ttl_seconds: int | None = None
+    source: str = ""
+    skill_name: str | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class QueuedEvent(CLIStreamEvent):
+    type: Literal["queued"] = "queued"
+    message: str = ""
+    holder: str = ""
+    held_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CompactingEvent(CLIStreamEvent):
+    type: Literal["compacting"] = "compacting"
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CompactedEvent(CLIStreamEvent):
+    type: Literal["compacted"] = "compacted"
+    summary: str = ""
+    messages_removed: int = 0
+    auto_resumed: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextAttachedEvent(CLIStreamEvent):
+    type: Literal["context_attached"] = "context_attached"
+    summary: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IterationLimitEvent(CLIStreamEvent):
+    type: Literal["iteration_limit"] = "iteration_limit"
+    content: str = ""
+    scope: str = ""
+    reason: str = ""
+    max_iterations: int | None = None
+    tool_call_count: int | None = None
+    agent_name: str = ""
+    repeated_tool_name: str = ""
+    repeated_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ErrorEvent(CLIStreamEvent):
+    type: Literal["error"] = "error"
+    content: str = ""
+    code: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DoneEvent(CLIStreamEvent):
+    type: Literal["done"] = "done"
+    context_stats: dict[str, Any] = field(default_factory=dict)
+    model: str = ""
+    title: str = ""
+    title_source: str = ""
+    status: str = ""
+    tool_call_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DiagnosticEvent(CLIStreamEvent):
+    type: Literal["diagnostic"] = "diagnostic"
+    source_type: str = ""
+    message: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+NormalizedEvent: TypeAlias = (
+    ThinkingEvent
+    | ToolCallDeltaEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | ResponseEvent
+    | WorkspaceArtifactEvent
+    | ToolReloadEvent
+    | QueuedEvent
+    | CompactingEvent
+    | CompactedEvent
+    | ContextAttachedEvent
+    | IterationLimitEvent
+    | ErrorEvent
+    | DoneEvent
+    | DiagnosticEvent
+)
+
+
+def normalize_stream_event(
+    event: Any,
+    *,
+    default_thread_id: str | None = None,
+) -> NormalizedEvent:
+    """Normalize one API SSE or local ``astream()`` event.
+
+    Local ``astream()`` chunks often do not include ``thread_id`` because the
+    caller already knows it. Pass ``default_thread_id`` to make those chunks
+    compare equal to API events where the router injects ``thread_id``.
+    """
+
+    if isinstance(event, CLIStreamEvent):
+        if default_thread_id and event.thread_id is None:
+            return replace(event, thread_id=default_thread_id)
+        return event
+
+    if not isinstance(event, Mapping):
+        return DiagnosticEvent(
+            source_type="malformed",
+            message="Malformed stream event: expected a mapping.",
+            payload={"value": repr(event)},
+        )
+
+    raw = _copy_mapping(event)
+    payload = _event_payload(event)
+    event_type = _text(_first(payload, "type"), default="")
+    thread_id = (
+        _optional_text(
+            _first(payload, "thread_id", "threadId", default=None),
+        )
+        or default_thread_id
+    )
+
+    if event_type == "thinking":
+        return ThinkingEvent(
+            thread_id=thread_id,
+            content=_text(_first(payload, "content", "message"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "tool_call_delta":
+        return ToolCallDeltaEvent(
+            thread_id=thread_id,
+            content=_text(_first(payload, "content", "message"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "tool_call":
+        return ToolCallEvent(
+            thread_id=thread_id,
+            id=_text(_first(payload, "id", "tool_call_id", "toolCallId"), default=""),
+            name=_text(_first(payload, "name", "tool_name", "toolName"), default=""),
+            args=_as_dict(_first(payload, "args", "arguments"), default={}),
+            raw=raw,
+        )
+
+    if event_type == "tool_result":
+        return ToolResultEvent(
+            thread_id=thread_id,
+            id=_text(_first(payload, "id", "tool_call_id", "toolCallId"), default=""),
+            name=_text(_first(payload, "name", "tool_name", "toolName"), default=""),
+            result=_first(payload, "result", "content", default=""),
+            status=_text(_first(payload, "status"), default="success"),
+            raw=raw,
+        )
+
+    if event_type == "response":
+        return ResponseEvent(
+            thread_id=thread_id,
+            content=_text(_first(payload, "content", "message"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "workspace_artifact":
+        artifact = _workspace_artifact_payload(payload)
+        return WorkspaceArtifactEvent(
+            thread_id=thread_id,
+            tool_call_id=_text(
+                _first(payload, "tool_call_id", "toolCallId"),
+                default="",
+            ),
+            tool_name=_text(_first(payload, "tool_name", "toolName"), default=""),
+            path=_text(_first(payload, "path", default=artifact.get("path")), default=""),
+            artifact=artifact,
+            raw=raw,
+        )
+
+    if event_type == "tool_reload":
+        return ToolReloadEvent(
+            thread_id=thread_id,
+            tools=_tuple_of_text(_first(payload, "tools"), default=()),
+            ttl=_text(_first(payload, "ttl"), default=""),
+            ttl_seconds=_optional_int(_first(payload, "ttl_seconds", "ttlSeconds")),
+            source=_text(_first(payload, "source"), default=""),
+            skill_name=_optional_text(_first(payload, "skill_name", "skillName")),
+            reason=_text(_first(payload, "reason"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "queued":
+        return QueuedEvent(
+            thread_id=thread_id,
+            message=_text(_first(payload, "content", "message"), default=""),
+            holder=_text(_first(payload, "holder"), default=""),
+            held_seconds=_optional_float(
+                _first(payload, "held_seconds", "heldSeconds"),
+            ),
+            raw=raw,
+        )
+
+    if event_type == "compacting":
+        return CompactingEvent(
+            thread_id=thread_id,
+            message=_text(_first(payload, "message", "content"), default=""),
+            raw=raw,
+        )
+
+    if event_type in {"compact_result", "compacted"}:
+        result = _as_dict(_first(payload, "result"), default={})
+        compacted_payload = result or payload
+        return CompactedEvent(
+            thread_id=thread_id,
+            summary=_text(_first(compacted_payload, "summary"), default=""),
+            messages_removed=_int(
+                _first(compacted_payload, "messages_removed", "messagesRemoved"),
+                default=0,
+            ),
+            auto_resumed=_bool(
+                _first(compacted_payload, "auto_resumed", "autoResumed"),
+                default=False,
+            ),
+            raw=raw,
+        )
+
+    if event_type == "context_attached":
+        return ContextAttachedEvent(
+            thread_id=thread_id,
+            summary=_text(_first(payload, "summary", "content"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "iteration_limit":
+        return IterationLimitEvent(
+            thread_id=thread_id,
+            content=_text(_first(payload, "content", "message"), default=""),
+            scope=_text(_first(payload, "scope"), default=""),
+            reason=_text(_first(payload, "reason"), default=""),
+            max_iterations=_optional_int(
+                _first(payload, "max_iterations", "maxIterations"),
+            ),
+            tool_call_count=_optional_int(
+                _first(payload, "tool_call_count", "toolCallCount"),
+            ),
+            agent_name=_text(_first(payload, "agent_name", "agentName"), default=""),
+            repeated_tool_name=_text(
+                _first(payload, "repeated_tool_name", "repeatedToolName"),
+                default="",
+            ),
+            repeated_count=_optional_int(
+                _first(payload, "repeated_count", "repeatedCount"),
+            ),
+            raw=raw,
+        )
+
+    if event_type == "error":
+        return ErrorEvent(
+            thread_id=thread_id,
+            content=_text(
+                _first(payload, "content", "message", "error"),
+                default="Unknown error",
+            ),
+            code=_text(_first(payload, "code"), default=""),
+            details=_as_dict(_first(payload, "details"), default={}),
+            raw=raw,
+        )
+
+    if event_type == "done":
+        return DoneEvent(
+            thread_id=thread_id,
+            context_stats=_as_dict(
+                _first(payload, "context_stats", "contextStats"),
+                default={},
+            ),
+            model=_text(_first(payload, "model"), default=""),
+            title=_text(_first(payload, "title"), default=""),
+            title_source=_text(
+                _first(payload, "title_source", "titleSource"),
+                default="",
+            ),
+            status=_text(_first(payload, "status"), default=""),
+            tool_call_count=_optional_int(
+                _first(payload, "tool_call_count", "toolCallCount"),
+            ),
+            raw=raw,
+        )
+
+    return DiagnosticEvent(
+        thread_id=thread_id,
+        source_type=event_type or "unknown",
+        message=(
+            f"Unknown stream event type: {event_type}"
+            if event_type
+            else "Malformed stream event: missing type."
+        ),
+        payload=_copy_mapping(payload),
+        raw=raw,
+    )
+
+
+def normalize_stream_events(
+    events: Iterable[Any],
+    *,
+    default_thread_id: str | None = None,
+) -> Iterator[NormalizedEvent]:
+    """Yield normalized events from a synchronous stream."""
+
+    for event in events:
+        yield normalize_stream_event(event, default_thread_id=default_thread_id)
+
+
+async def normalize_async_stream_events(
+    events: AsyncIterable[Any],
+    *,
+    default_thread_id: str | None = None,
+) -> AsyncIterator[NormalizedEvent]:
+    """Yield normalized events from an asynchronous stream."""
+
+    async for event in events:
+        yield normalize_stream_event(event, default_thread_id=default_thread_id)
+
+
+def _event_payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    nested = event.get("data")
+    if not isinstance(nested, Mapping):
+        return event
+
+    payload: dict[str, Any] = dict(nested)
+    for key in ("type", "thread_id", "threadId"):
+        if key in event:
+            payload.setdefault(key, event[key])
+    return payload
+
+
+def _workspace_artifact_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    artifact = _as_dict(_first(payload, "artifact"), default={})
+    for key in ("path", "name", "mime_type", "mimeType", "size_bytes", "sizeBytes"):
+        if key in payload and payload[key] is not None:
+            artifact.setdefault(key, copy.deepcopy(payload[key]))
+    return artifact
+
+
+def _first(
+    payload: Mapping[str, Any],
+    *keys: str,
+    default: Any = None,
+) -> Any:
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return default
+
+
+def _text(value: Any, *, default: str = "") -> str:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _optional_text(value: Any) -> str | None:
+    text = _text(value, default="")
+    return text or None
+
+
+def _int(value: Any, *, default: int = 0) -> int:
+    parsed = _optional_int(value)
+    return default if parsed is None else parsed
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _as_dict(value: Any, *, default: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return copy.deepcopy(default)
+    return _copy_mapping(value)
+
+
+def _copy_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return copy.deepcopy(dict(value))
+    except Exception:  # noqa: BLE001 - stream diagnostics must not crash.
+        return dict(value)
+
+
+def _tuple_of_text(value: Any, *, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Iterable):
+        return tuple(_text(item, default="") for item in value)
+    return default
+
+
+__all__ = [
+    "CLIStreamEvent",
+    "KnownEventType",
+    "NormalizedEvent",
+    "NormalizedEventType",
+    "ThinkingEvent",
+    "ToolCallDeltaEvent",
+    "ToolCallEvent",
+    "ToolResultEvent",
+    "ResponseEvent",
+    "WorkspaceArtifactEvent",
+    "ToolReloadEvent",
+    "QueuedEvent",
+    "CompactingEvent",
+    "CompactedEvent",
+    "ContextAttachedEvent",
+    "IterationLimitEvent",
+    "ErrorEvent",
+    "DoneEvent",
+    "DiagnosticEvent",
+    "normalize_async_stream_events",
+    "normalize_stream_event",
+    "normalize_stream_events",
+]
