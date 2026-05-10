@@ -4,6 +4,8 @@ import asyncio
 
 from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, simple_response_events
 
+from nymeria.triggers.cli.commands import CommandRegistry
+from nymeria.triggers.cli.commands import system as system_commands
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
@@ -66,8 +68,8 @@ def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> No
     assert client.chat_requests[0].message == "hello"
     assert client.chat_requests[0].thread_id == "thread-1"
     assert client.chat_requests[0].user_id == "alice"
-    assert "You: hello" in shell.transcript.text
-    assert "Nymeria: Hello there." in shell.transcript.text
+    assert "You\n  hello" in shell.transcript.text
+    assert "Nymeria\n  Hello there." in shell.transcript.text
     assert "Ready" in shell._status_text()
 
 
@@ -97,8 +99,9 @@ def test_full_screen_shell_consumes_current_thread_autonomous_events() -> None:
     run(shell._consume_autonomous_stream())
 
     assert client.autonomous_requests[0]["user_id"] == "alice"
+    assert "Nymeria · autonomous" in shell.transcript.text
     assert "Autonomous TODO started: Run a CLI smoke test" in shell.transcript.text
-    assert "Nymeria: Smoke test passed." in shell.transcript.text
+    assert "  Smoke test passed." in shell.transcript.text
     assert "Ignore me" not in shell.transcript.text
 
 
@@ -127,8 +130,52 @@ def test_full_screen_transcript_renders_tool_rows_in_event_order() -> None:
     text = render_transcript(state, width=100)
 
     assert text.splitlines() == [
-        "You: use a tool",
-        "Thought",
-        "> search_memory project status -> Found 2 matching notes.",
-        "Nymeria: I found the notes.",
+        "You",
+        "  use a tool",
+        "",
+        "Nymeria",
+        "  Thought  /details thinking -1",
+        "  > search_memory ok 0ms query=\"project status\" -> Found 2 matching notes.",
+        "  I found the notes.",
     ]
+
+
+def test_full_screen_verbose_command_only_changes_rendering() -> None:
+    shell = make_shell()
+    registry = CommandRegistry()
+    system_commands.register(registry)
+    shell.command_registry = registry
+    shell.state = start_turn(shell.state, "use a tool", now=0.0)
+    for event in [
+        {"type": "thinking", "content": "private detail"},
+        {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "search_memory",
+            "args": {"query": "project status"},
+        },
+        {
+            "type": "tool_result",
+            "id": "call-1",
+            "name": "search_memory",
+            "result": "Found 2 matching notes.",
+        },
+        {"type": "response", "content": "I found the notes."},
+        {"type": "done", "tool_call_count": 1},
+    ]:
+        shell.state = reduce_stream_event(shell.state, event, now=1.0)
+    shell._refresh_transcript()
+    initial_state = shell.state
+
+    status = run(shell._run_command("/verbose status"))
+    on = run(shell._run_command("/verbose on"))
+    verbose_text = shell.transcript.text
+    off = run(shell._run_command("/verbose off"))
+
+    assert status.ok is True
+    assert on.ok is True
+    assert off.ok is True
+    assert "private detail" in verbose_text
+    assert "private detail" not in shell.transcript.text
+    assert shell.state == initial_state
+    assert shell._transcript_verbose is False

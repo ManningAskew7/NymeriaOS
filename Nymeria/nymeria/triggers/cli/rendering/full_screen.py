@@ -11,13 +11,15 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Hashable
 
 from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, TextArea
@@ -59,7 +61,9 @@ from .status_bar import (
     StatusNotice,
 )
 from .transcript import (
+    TranscriptLine,
     TranscriptRenderer,
+    TranscriptRenderOptions,
     render_transcript as render_transcript_snapshot,
 )
 
@@ -103,6 +107,8 @@ class FullScreenPromptToolkitShell:
         self.indicator = ActivityIndicator()
         self.status_bar_renderer = StatusBarRenderer(indicator=self.indicator)
         self.transcript_renderer = TranscriptRenderer()
+        self.transcript_lexer = TranscriptLexer()
+        self._transcript_verbose = False
         self._busy = False
         self._status_notice: StatusNotice | None = None
         self._pending_submissions: deque[ComposerSubmission] = deque()
@@ -122,6 +128,7 @@ class FullScreenPromptToolkitShell:
         self.transcript = TextArea(
             text="",
             read_only=True,
+            lexer=self.transcript_lexer,
             scrollbar=True,
             wrap_lines=True,
             focusable=False,
@@ -396,6 +403,7 @@ class FullScreenPromptToolkitShell:
             metadata={
                 "ui_state": self.state,
                 "capabilities": self.capabilities,
+                "transcript_verbose": self._transcript_verbose,
             },
         )
         result = await self.command_registry.dispatch_async(context, raw_input)
@@ -438,6 +446,9 @@ class FullScreenPromptToolkitShell:
                 model=str(action.get("model") or self.config.model),
             )
             self._invalidate()
+        elif action_type == "set_transcript_verbose":
+            self._transcript_verbose = bool(action.get("enabled"))
+            self._refresh_transcript()
         elif action_type == "switch_user":
             user_id = str(action.get("user_id") or self.config.user_id)
             self.config = replace(self.config, user_id=user_id)
@@ -455,9 +466,10 @@ class FullScreenPromptToolkitShell:
         result: CommandResult,
         messages: Sequence[Any],
     ) -> None:
+        suppress_transcript = bool(result.payload.get("suppress_transcript"))
         if result.status == "clear":
             self._clear_transcript()
-        else:
+        elif not suppress_transcript:
             self._append_command_messages(messages)
 
         if messages:
@@ -663,10 +675,16 @@ class FullScreenPromptToolkitShell:
 
     def _refresh_transcript(self) -> None:
         width = _render_width(self.capabilities)
-        self.transcript.text = self.transcript_renderer.render(
+        result = self.transcript_renderer.render_result(
             self.state,
             width=width,
+            options=_transcript_options(
+                self.capabilities,
+                verbose=self._transcript_verbose,
+            ),
         )
+        self.transcript_lexer.set_lines(result.lines)
+        self.transcript.text = result.text
         self.transcript.buffer.cursor_position = len(self.transcript.text)
         self._invalidate()
 
@@ -694,6 +712,32 @@ class FullScreenPromptToolkitShell:
             width=width,
             now=time.monotonic(),
         )
+
+
+class TranscriptLexer(Lexer):
+    """prompt_toolkit lexer backed by transcript line kinds."""
+
+    def __init__(self) -> None:
+        self._styles: tuple[str, ...] = ()
+
+    def set_lines(self, lines: Sequence[TranscriptLine]) -> None:
+        self._styles = tuple(_line_style(line) for line in lines)
+
+    def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
+        styles = self._styles
+
+        def get_line(lineno: int) -> StyleAndTextTuples:
+            style = styles[lineno] if 0 <= lineno < len(styles) else ""
+            try:
+                text = document.lines[lineno]
+            except IndexError:
+                text = ""
+            return [(style, text)]
+
+        return get_line
+
+    def invalidation_hash(self) -> Hashable:
+        return hash(self._styles)
 
 
 def render_transcript(state: CLIUIState, *, width: int | None = None) -> str:
@@ -786,6 +830,35 @@ def _first_status_line(text: str) -> str:
     return line[0] if line else "Command completed."
 
 
+def _transcript_options(
+    capabilities: Any,
+    *,
+    verbose: bool,
+) -> TranscriptRenderOptions:
+    return TranscriptRenderOptions(
+        verbose=verbose,
+        ascii_only=not bool(getattr(capabilities, "unicode_enabled", False)),
+    )
+
+
+def _line_style(line: TranscriptLine) -> str:
+    return {
+        "user_header": "class:transcript.user.header",
+        "user_text": "class:transcript.user.text",
+        "assistant_header": "class:transcript.assistant.header",
+        "autonomous_header": "class:transcript.autonomous.header",
+        "thinking": "class:transcript.thinking",
+        "preamble": "class:transcript.preamble",
+        "tool": "class:transcript.tool",
+        "tool_detail": "class:transcript.tool.detail",
+        "final": "class:transcript.final",
+        "system": "class:transcript.system",
+        "error": "class:transcript.error",
+        "artifact": "class:transcript.artifact",
+        "diagnostic": "class:transcript.diagnostic",
+    }.get(line.kind, "")
+
+
 def _render_width(capabilities: Any) -> int:
     return _positive_width(getattr(capabilities, "width", DEFAULT_TRANSCRIPT_WIDTH))
 
@@ -822,6 +895,19 @@ def _style(capabilities: Any) -> Style:
             "composer.busy": "ansiyellow",
             "composer.queued": "ansiyellow",
             "composer.error": "ansired",
+            "transcript.user.header": "ansicyan bold",
+            "transcript.user.text": "",
+            "transcript.assistant.header": "ansigreen bold",
+            "transcript.autonomous.header": "ansimagenta bold",
+            "transcript.thinking": "ansibrightblack",
+            "transcript.preamble": "ansibrightblack",
+            "transcript.tool": "ansiyellow",
+            "transcript.tool.detail": "ansibrightblack",
+            "transcript.final": "",
+            "transcript.system": "ansibrightblack",
+            "transcript.error": "ansired",
+            "transcript.artifact": "ansicyan",
+            "transcript.diagnostic": "ansibrightblack",
         }
     )
 
