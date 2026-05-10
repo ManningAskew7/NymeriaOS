@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, replace
+from typing import Any
+
+import httpx
+import pytest
+
+from nymeria.triggers.cli.app import CLIRuntimeConfig
+from nymeria.triggers.cli.events import DoneEvent, ErrorEvent, ResponseEvent
+from nymeria.triggers.cli.transport.api import (
+    APIAgentClient,
+    APITransportStartupError,
+    resolve_api_connection_config,
+    select_agent_client,
+)
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+@dataclass(slots=True)
+class FakeLocalClient:
+    connection_label: str = "local agent"
+
+
+class FakeAPIClient:
+    instances: list["FakeAPIClient"] = []
+    health_result = True
+    me_result: dict[str, Any] | Exception = {"id": "default", "role": "user"}
+    stream_exception: Exception | None = None
+
+    def __init__(self, *, base_url: str = "http://api", api_key: str = "secret") -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.closed = False
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.stream_events = [
+            {"type": "response", "content": "hi"},
+            {"type": "done", "tool_call_count": 0},
+        ]
+        self.threads = [{"thread_id": "thread-a", "title": "Thread A"}]
+        self.history = {"thread_id": "thread-a", "messages": []}
+        self.context = {"thread_id": "thread-a", "total_tokens": 12}
+        self.__class__.instances.append(self)
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.instances.clear()
+        cls.health_result = True
+        cls.me_result = {"id": "default", "role": "user"}
+        cls.stream_exception = None
+
+    async def chat_stream(self, **kwargs: Any):
+        self.calls.append(("chat_stream", kwargs))
+        if self.stream_exception is not None:
+            raise self.stream_exception
+        for event in self.stream_events:
+            yield event
+
+    async def stop(self, thread_id: str, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("stop", {"thread_id": thread_id, "user_id": user_id}))
+        return {"ok": True, "thread_id": thread_id, "user_id": user_id}
+
+    async def get_history(
+        self,
+        thread_id: str,
+        include_internal: bool = False,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "get_history",
+                {
+                    "thread_id": thread_id,
+                    "include_internal": include_internal,
+                    "user_id": user_id,
+                },
+            )
+        )
+        return self.history
+
+    async def list_threads(self, user_id: str) -> list[dict[str, Any]]:
+        self.calls.append(("list_threads", {"user_id": user_id}))
+        return self.threads
+
+    async def get_context_stats(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("get_context_stats", {"thread_id": thread_id, "user_id": user_id})
+        )
+        return self.context
+
+    async def claim_thread(self, thread_id: str, user_id: str) -> dict[str, Any]:
+        self.calls.append(("claim_thread", {"thread_id": thread_id, "user_id": user_id}))
+        return {"thread_id": thread_id, "owner": user_id}
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: str,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "update_thread_metadata",
+                {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "title": title,
+                    "pinned": pinned,
+                },
+            )
+        )
+        return {"thread_id": thread_id, "title": title, "pinned": pinned}
+
+    async def delete_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("delete_thread", {"thread_id": thread_id, "user_id": user_id}))
+        return {"ok": True, "thread_id": thread_id}
+
+    async def health(self) -> bool:
+        self.calls.append(("health", {}))
+        return self.health_result
+
+    async def get_me(self, act_as: str | None = None) -> dict[str, Any]:
+        self.calls.append(("get_me", {"act_as": act_as}))
+        if isinstance(self.me_result, Exception):
+            raise self.me_result
+        return self.me_result
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def runtime_config(**overrides: Any) -> CLIRuntimeConfig:
+    return replace(CLIRuntimeConfig(), **overrides)
+
+
+def http_status_error(status_code: int, detail: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "http://api/me")
+    response = httpx.Response(status_code, json={"detail": detail}, request=request)
+    return httpx.HTTPStatusError(detail, request=request, response=response)
+
+
+def test_resolve_api_connection_prefers_cli_flags_over_environment() -> None:
+    config = resolve_api_connection_config(
+        runtime_config(api_url=" http://cli ", api_key=" cli-token "),
+        environ={
+            "NYMERIA_API_URL": "http://env",
+            "NYMERIA_SERVICE_TOKEN": "env-token",
+        },
+    )
+
+    assert config.api_url == "http://cli"
+    assert config.api_key == "cli-token"
+    assert config.explicit_api_url is True
+    assert config.explicit_api_key is True
+
+
+def test_api_transport_stream_chat_normalizes_sse_events_and_options() -> None:
+    api = FakeAPIClient(base_url="http://api", api_key="secret")
+    client = APIAgentClient(api, default_user_id="alice")
+
+    async def collect():
+        return [
+            event
+            async for event in client.stream_chat(
+                "hello",
+                "thread-a",
+                attachments=[{"file_name": "note.txt"}],
+                force_unsupported_attachments=True,
+                is_self_invoke=True,
+                trigger_override="manual-test",
+            )
+        ]
+
+    events = run(collect())
+
+    assert events == [
+        ResponseEvent(thread_id="thread-a", content="hi"),
+        DoneEvent(thread_id="thread-a", tool_call_count=0),
+    ]
+    assert client.connection_label == "api http://api"
+    assert api.calls == [
+        (
+            "chat_stream",
+            {
+                "message": "hello",
+                "thread_id": "thread-a",
+                "user_id": "alice",
+                "attachments": [{"file_name": "note.txt"}],
+                "is_self_invoke": True,
+                "trigger_override": "manual-test",
+                "force_unsupported_attachments": True,
+            },
+        )
+    ]
+
+
+def test_api_transport_thread_operations_delegate_to_api_client() -> None:
+    api = FakeAPIClient(base_url="http://api", api_key="secret")
+    client = APIAgentClient(api, default_user_id="alice")
+
+    async def query():
+        stop = await client.stop("thread-a")
+        history = await client.get_history("thread-a", include_internal=True)
+        threads = await client.list_threads()
+        context = await client.get_context_stats("thread-a")
+        created = await client.create_thread(title="Draft")
+        updated = await client.update_thread_metadata(
+            "thread-a",
+            title="Renamed",
+            pinned=True,
+        )
+        deleted = await client.delete_thread("thread-a")
+        return stop, history, threads, context, created, updated, deleted
+
+    stop, history, threads, context, created, updated, deleted = run(query())
+
+    assert stop["user_id"] == "alice"
+    assert history == api.history
+    assert threads == api.threads
+    assert context == api.context
+    assert created["title"] == "Draft"
+    assert updated == {"thread_id": "thread-a", "title": "Renamed", "pinned": True}
+    assert deleted == {"ok": True, "thread_id": "thread-a"}
+    assert [name for name, _ in api.calls] == [
+        "stop",
+        "get_history",
+        "list_threads",
+        "get_context_stats",
+        "claim_thread",
+        "update_thread_metadata",
+        "update_thread_metadata",
+        "delete_thread",
+    ]
+
+
+def test_api_transport_stream_auth_error_becomes_error_event() -> None:
+    api = FakeAPIClient(base_url="http://api", api_key="bad")
+    api.stream_exception = http_status_error(401, "Invalid API key")
+    client = APIAgentClient(api, default_user_id="alice")
+
+    async def collect():
+        return [event async for event in client.stream_chat("hello", "thread-a")]
+
+    events = run(collect())
+
+    assert events == [
+        ErrorEvent(
+            thread_id="thread-a",
+            content="API authentication failed: Invalid API key",
+            code="api_auth_error",
+            details={
+                "api_url": "http://api",
+                "error_type": "HTTPStatusError",
+                "status_code": 401,
+                "detail": "Invalid API key",
+            },
+        )
+    ]
+
+
+def test_select_agent_client_api_mode_uses_healthy_api_transport() -> None:
+    FakeAPIClient.reset()
+    config = runtime_config(
+        transport="api",
+        api_url="http://api",
+        api_key="secret",
+        user_id="alice",
+    )
+
+    selected = run(select_agent_client(config, api_client_factory=FakeAPIClient))
+
+    assert isinstance(selected, APIAgentClient)
+    assert selected.connection_label == "api http://api"
+    api = FakeAPIClient.instances[0]
+    assert api.calls == [("health", {}), ("get_me", {"act_as": "alice"})]
+    assert api.closed is False
+
+
+def test_select_agent_client_auto_falls_back_to_local_when_api_is_unhealthy() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.health_result = False
+    local = FakeLocalClient()
+    config = runtime_config(
+        transport="auto",
+        api_url="http://api",
+        api_key="secret",
+        user_id="alice",
+    )
+
+    selected = run(
+        select_agent_client(
+            config,
+            local_client=local,
+            api_client_factory=FakeAPIClient,
+        )
+    )
+
+    assert selected is local
+    api = FakeAPIClient.instances[0]
+    assert api.calls == [("health", {})]
+    assert api.closed is True
+
+
+def test_select_agent_client_api_auth_failure_is_structured() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(403, "Act-As requires admin")
+    config = runtime_config(
+        transport="api",
+        api_url="http://api",
+        api_key="bad",
+        user_id="alice",
+    )
+
+    with pytest.raises(APITransportStartupError) as exc_info:
+        run(select_agent_client(config, api_client_factory=FakeAPIClient))
+
+    error = exc_info.value
+    assert error.code == "api_auth_error"
+    assert error.status_code == 403
+    assert error.as_event(thread_id="thread-a") == ErrorEvent(
+        thread_id="thread-a",
+        content="API authentication failed: Act-As requires admin",
+        code="api_auth_error",
+        details={
+            "api_url": "http://api",
+            "error_type": "HTTPStatusError",
+            "status_code": 403,
+            "detail": "Act-As requires admin",
+        },
+    )
+    assert FakeAPIClient.instances[0].closed is True
+
+
+def test_select_agent_client_auto_without_configured_api_key_keeps_local_fallback() -> None:
+    FakeAPIClient.reset()
+    local = FakeLocalClient()
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="auto"),
+            local_client=local,
+            api_client_factory=FakeAPIClient,
+            environ={},
+        )
+    )
+
+    assert selected is local
+    assert FakeAPIClient.instances == []
