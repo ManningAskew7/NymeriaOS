@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from rich.cells import cell_len
 
+from nymeria.triggers.cli.rendering.markdown import render_markdown_lines
 from nymeria.triggers.cli.rendering.tool_rows import (
     ToolRowRenderOptions,
     format_tool_row,
@@ -12,6 +13,7 @@ from nymeria.triggers.cli.rendering.transcript import (
     TranscriptRenderOptions,
     TranscriptRenderer,
     max_line_width,
+    render_transcript_lines,
     render_transcript,
 )
 from nymeria.triggers.cli.state import (
@@ -79,15 +81,82 @@ def test_transcript_snapshot_renders_desktop_like_steps() -> None:
     text = render_transcript(_tool_artifact_state(), width=100)
     lines = text.splitlines()
 
-    assert lines[0] == "You: inspect the project"
-    assert lines[1] == "Thought"
-    assert lines[2].startswith("> filesystem_read ")
-    assert "-> line line" in lines[2]
-    assert "[artifact: cli-tui-ref" in lines[2]
-    assert lines[3].startswith("  artifact: /opt/NymeriaOS/")
-    assert lines[4] == "Nymeria: I found the task."
-    assert lines[5] == ""
-    assert lines[6].strip() == "- It needs a transcript renderer."
+    assert lines[0] == "You"
+    assert lines[1] == "  inspect the project"
+    assert lines[2] == ""
+    assert lines[3] == "Nymeria"
+    assert lines[4] == "  Thought  /details thinking -1"
+    assert lines[5].startswith("  > filesystem_read ok 2.0s ")
+    assert "-> line line" in lines[5]
+    assert "[artifact: cli-tui-" in lines[5]
+    assert lines[6] == "  I found the task."
+    assert lines[7] == ""
+    assert lines[8].strip() == "- It needs a transcript renderer."
+
+
+def test_transcript_classifies_preamble_and_final_response_steps() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+    state = start_turn(state, "what is my sunday briefing?", now=0.1)
+    state = _apply(
+        state,
+        [
+            {"type": "thinking", "content": "Plan quietly."},
+            {"type": "response", "content": "I'll check the main sources first."},
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "web_search",
+                "args": {"query": "AI news"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-1",
+                "name": "web_search",
+                "result": "3 results",
+            },
+            {"type": "response", "content": "I have news; checking tasks."},
+            {
+                "type": "tool_call",
+                "id": "call-2",
+                "name": "nym_todo",
+                "args": {"action": "list"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-2",
+                "name": "nym_todo",
+                "result": "4 pending",
+            },
+            {
+                "type": "response",
+                "content": (
+                    "# Sunday briefing, 10 May\n\n"
+                    "## URGENT\nGoogle Cloud billing is suspended."
+                ),
+            },
+            {"type": "done", "tool_call_count": 2},
+        ],
+        start=1.0,
+    )
+
+    records = render_transcript_lines(state, width=100)
+    preamble = [line.text.strip() for line in records if line.kind == "preamble"]
+    final = [line.text.strip() for line in records if line.kind == "final"]
+    tools = [line.text.strip() for line in records if line.kind == "tool"]
+
+    assert preamble == [
+        "I'll check the main sources first.",
+        "I have news; checking tasks.",
+    ]
+    assert tools[0].startswith("> web_search ok 1.0s query=\"AI news\" -> 3 results")
+    assert tools[1].startswith("> nym_todo ok 1.0s action=list -> 4 pending")
+    assert final[:5] == [
+        "Sunday briefing, 10 May",
+        "-----------------------",
+        "URGENT",
+        "------",
+        "Google Cloud billing is suspended.",
+    ]
 
 
 def test_transcript_lines_are_bounded_at_common_widths() -> None:
@@ -99,6 +168,25 @@ def test_transcript_lines_are_bounded_at_common_widths() -> None:
         assert max_line_width(text) <= width
         for line in text.splitlines():
             assert cell_len(line) <= width
+
+
+def test_terminal_markdown_is_left_aligned_and_ascii_safe() -> None:
+    lines = render_markdown_lines(
+        "# Heading\n\n- `tool_call` stays readable\n> quoted\n\n```python\nx = 1\n```",
+        width=40,
+        ascii_only=True,
+    )
+
+    assert lines == [
+        "Heading",
+        "-------",
+        "",
+        "- tool_call stays readable",
+        "> quoted",
+        "",
+        "    x = 1",
+    ]
+    assert all(cell_len(line) <= 40 for line in lines)
 
 
 def test_long_tool_result_is_previewed_not_dumped() -> None:
@@ -140,6 +228,20 @@ def test_streaming_thinking_content_is_only_visible_when_configured() -> None:
     assert "private reasoning" not in complete_text
 
 
+def test_verbose_transcript_expands_bounded_hidden_details() -> None:
+    text = render_transcript(
+        _tool_artifact_state(),
+        width=100,
+        options=TranscriptRenderOptions(verbose=True),
+    )
+
+    assert "I should inspect files." in text
+    assert "args:" in text
+    assert "result:" in text
+    assert "... truncated ..." in text
+    assert max_line_width(text) <= 100
+
+
 def test_tool_row_can_include_duration_when_enabled() -> None:
     state = _tool_artifact_state()
     tool = state.active_tool_calls["call-1"]
@@ -179,3 +281,97 @@ def test_transcript_renderer_reuses_unchanged_message_blocks() -> None:
 
     assert first_count == 2
     assert renderer.rendered_message_count == 3
+
+
+def test_autonomous_output_has_distinct_header() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+    state = _apply(
+        state,
+        [
+            {
+                "type": "task_started",
+                "thread_id": "thread-1",
+                "task_id": "task-1",
+                "todo_id": "todo-1",
+                "source": "scheduler",
+                "prompt": "Work on TODO todo-1: Run a CLI smoke test",
+            },
+            {"type": "response", "thread_id": "thread-1", "content": "Smoke"},
+            {
+                "type": "task_completed",
+                "thread_id": "thread-1",
+                "task_id": "task-1",
+                "todo_id": "todo-1",
+                "content": "Smoke test passed.",
+            },
+        ],
+        start=1.0,
+    )
+
+    text = render_transcript(state, width=100)
+
+    assert "Nymeria - autonomous - scheduler" in text
+    assert "Autonomous TODO started: Run a CLI smoke test" in text
+    assert "  Smoke test passed." in text
+
+
+def test_compacted_context_notice_renders_as_system_turn() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+    state = _apply(
+        state,
+        [
+            {
+                "type": "compacted",
+                "summary": "Earlier context was summarized.",
+                "messages_removed": 12,
+            }
+        ],
+        start=1.0,
+    )
+
+    assert render_transcript(state, width=100).splitlines() == [
+        "System",
+        "  Context compacted. Earlier context was summarized. Removed 12 messages.",
+    ]
+
+
+def test_tool_error_cancelled_and_running_states_are_compact() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+    state = start_turn(state, "tools", now=0.1)
+    running_state = _apply(
+        state,
+        [{"type": "tool_call", "id": "running", "name": "slow", "args": {}}],
+        start=1.0,
+    )
+    running_rows = [
+        line.text.strip()
+        for line in render_transcript_lines(running_state, width=80)
+        if line.kind == "tool"
+    ]
+
+    assert running_rows == ["> slow running"]
+
+    state = _apply(
+        running_state,
+        [
+            {"type": "tool_call", "id": "error", "name": "bad", "args": {}},
+            {
+                "type": "tool_result",
+                "id": "error",
+                "name": "bad",
+                "status": "error",
+                "result": "failed",
+            },
+            {"type": "error", "content": "Cancelled.", "code": "cancelled"},
+        ],
+        start=1.0,
+    )
+
+    tool_rows = [
+        line.text.strip()
+        for line in render_transcript_lines(state, width=80)
+        if line.kind == "tool"
+    ]
+
+    assert any(row.startswith("> slow cancelled") for row in tool_rows)
+    assert any(row.startswith("> bad error") and "-> failed" in row for row in tool_rows)

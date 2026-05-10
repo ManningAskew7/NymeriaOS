@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,7 +20,7 @@ DEFAULT_RESULT_LIMIT = 120
 class ToolRowRenderOptions:
     """Controls for compact tool row rendering."""
 
-    show_duration: bool = False
+    show_duration: bool = True
     args_limit: int = DEFAULT_ARGS_LIMIT
     result_limit: int = DEFAULT_RESULT_LIMIT
     include_artifacts: bool = True
@@ -48,15 +49,16 @@ def format_tool_row(
     )
 
     status_label = _status_label(tool)
-    suffixes: list[str] = []
+    prefix_parts = [f"> {name}"]
     if status_label:
-        suffixes.append(status_label)
+        prefix_parts.append(status_label)
 
     if selected_options.show_duration and tool.status != "running":
         duration = format_duration(tool.started_at, tool.ended_at)
         if duration:
-            suffixes.append(duration)
+            prefix_parts.append(duration)
 
+    suffixes: list[str] = []
     if selected_options.include_artifacts:
         artifacts = format_artifacts_preview(tool.artifacts)
         if artifacts:
@@ -64,7 +66,7 @@ def format_tool_row(
                 truncate_cell_width(artifacts, max(10, selected_width // 4))
             )
 
-    prefix = f"> {name}"
+    prefix = " ".join(prefix_parts)
     suffix = " ".join(suffixes)
     suffix_width = cell_len(suffix) + (1 if suffix else 0)
     if result_preview:
@@ -107,13 +109,9 @@ def format_args_preview(
         return ""
 
     selected_limit = coerce_width(limit)
-    if len(args) == 1:
-        value = next(iter(args.values()))
-        return truncate_cell_width(_stringify(value), selected_limit)
-
     parts: list[str] = []
     for key, value in args.items():
-        rendered_value = truncate_cell_width(_stringify(value), 40)
+        rendered_value = truncate_cell_width(_stringify_argument(value), 40)
         parts.append(f"{key}={rendered_value}")
     return truncate_cell_width(", ".join(parts), selected_limit)
 
@@ -187,9 +185,23 @@ def format_size(size_bytes: int) -> str:
 
 
 def _status_label(tool: ToolCallStep) -> str:
-    if tool.status in {"success", "pending"}:
-        return ""
-    return f"({tool.status})"
+    labels = {
+        "success": "ok",
+        "pending": "pending",
+        "running": "running",
+        "error": "error",
+        "cancelled": "cancelled",
+    }
+    return labels.get(tool.status, tool.status or "")
+
+
+def _stringify_argument(value: Any) -> str:
+    if isinstance(value, str):
+        collapsed = collapse_inline(value)
+        if re.fullmatch(r"[A-Za-z0-9_./:-]+", collapsed):
+            return collapsed
+        return json.dumps(collapsed, ensure_ascii=True)
+    return _stringify(value)
 
 
 def _stringify(value: Any) -> str:

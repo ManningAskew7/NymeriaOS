@@ -633,6 +633,34 @@ async def _handle_redraw_context(
     return CommandResult.completed("Redrawn.")
 
 
+async def _handle_verbose_context(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if len(args) > 1 or (args and args[0] not in {"on", "off", "status"}):
+        return CommandResult.failed(
+            "Usage: /verbose on|off|status",
+            error_code="usage_error",
+        )
+
+    enabled = bool(context.metadata.get("transcript_verbose", False))
+    mode = args[0] if args else "status"
+    if mode == "status":
+        return CommandResult.completed(
+            f"Transcript verbosity is {'on' if enabled else 'off'}.",
+            payload={"suppress_transcript": True},
+        )
+
+    next_enabled = mode == "on"
+    await context.dispatch(
+        {"type": "set_transcript_verbose", "enabled": next_enabled}
+    )
+    return CommandResult.completed(
+        f"Transcript verbosity is {'on' if next_enabled else 'off'}.",
+        payload={"suppress_transcript": True},
+    )
+
+
 def register(registry: CommandRegistry) -> None:
     """Register all system commands."""
     registry.register(Command(
@@ -695,6 +723,15 @@ def register(registry: CommandRegistry) -> None:
         description="Redraw the CLI",
         usage="/redraw",
         handler=_handle_redraw_context,
+        handler_mode="context",
+        category="System",
+    ))
+    registry.register(Command(
+        name="verbose",
+        aliases=[],
+        description="Toggle full-screen transcript verbosity",
+        usage="/verbose on|off|status",
+        handler=_handle_verbose_context,
         handler_mode="context",
         category="System",
     ))
