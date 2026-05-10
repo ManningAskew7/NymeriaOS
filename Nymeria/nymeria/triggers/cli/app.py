@@ -65,13 +65,25 @@ class CLIApp:
 
     def _register_all_commands(self) -> None:
         """Import and register all command modules."""
-        from .commands import system, context, threads, model, tools, todos, memory
+        from .commands import (
+            context,
+            mcp,
+            memory,
+            model,
+            skills,
+            system,
+            threads,
+            todos,
+            tools,
+        )
 
         system.register(self.registry)
         context.register(self.registry)
         threads.register(self.registry)
         model.register(self.registry)
         tools.register(self.registry)
+        skills.register(self.registry)
+        mcp.register(self.registry)
         todos.register(self.registry)
         memory.register(self.registry)
 
