@@ -23,6 +23,14 @@ from prompt_toolkit.widgets import Frame, TextArea
 
 from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
 from ..commands import CommandContext, CommandResult, ListCommandOutputSink
+from ..lifecycle import (
+    ExitSignalHandlers,
+    LifecycleStopResult,
+    TurnLifecycleController,
+    cancel_task,
+    signal_name,
+    stream_error_event_from_exception,
+)
 from ..state import (
     AssistantMessage,
     CLIUIState,
@@ -95,9 +103,16 @@ class FullScreenPromptToolkitShell:
         self._busy = False
         self._status_notice: StatusNotice | None = None
         self._pending_submissions: deque[ComposerSubmission] = deque()
-        self._stop_requested = False
         self._current_turn_task: asyncio.Task[bool] | None = None
         self._application: Application[None] | None = None
+        self._lifecycle = TurnLifecycleController(
+            client=self.client,
+            state_getter=lambda: self.state,
+            state_setter=self._replace_state,
+            thread_id_getter=lambda: self.config.thread_id,
+            user_id_getter=lambda: self.config.user_id,
+            is_active=lambda: self._busy,
+        )
 
         self.transcript = TextArea(
             text="",
@@ -152,9 +167,10 @@ class FullScreenPromptToolkitShell:
 
         app = self._application or self.build_application()
         try:
-            await app.run_async()
+            with ExitSignalHandlers(lambda signum: self._schedule_signal_exit(app, signum)):
+                await app.run_async()
         finally:
-            await self._cancel_current_turn()
+            await self.shutdown_active_turn(reason="shutdown")
             close = getattr(self.client, "close", None)
             if callable(close):
                 await close()
@@ -175,7 +191,7 @@ class FullScreenPromptToolkitShell:
             return False
 
         self._busy = True
-        self._stop_requested = False
+        self._lifecycle.begin_turn()
         self._status_notice = None
         started_message = text
         self.state = start_turn(
@@ -211,6 +227,7 @@ class FullScreenPromptToolkitShell:
                 publisher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await publisher
+            self._lifecycle.finish_turn()
             self._refresh_transcript()
 
         if self.on_turn_complete is not None:
@@ -231,6 +248,14 @@ class FullScreenPromptToolkitShell:
                 attachments=attachments,
             ):
                 await queue.put(event)
+        except Exception as exc:  # noqa: BLE001 - stream errors must render in UI.
+            await queue.put(
+                stream_error_event_from_exception(
+                    exc,
+                    thread_id=self.config.thread_id,
+                    explicit_stop_requested=self._lifecycle.stop_requested,
+                )
+            )
         finally:
             await queue.put(_STREAM_DONE)
 
@@ -425,24 +450,38 @@ class FullScreenPromptToolkitShell:
     async def stop_current_turn(self) -> bool:
         """Request backend/local cancellation without clearing current input."""
 
-        if not self._busy:
-            self._set_status_notice("No active turn")
-            return False
-        if self._stop_requested:
-            self._set_status_notice("Stop already requested")
-            return False
-
-        self._stop_requested = True
         self._set_status_notice("Stopping active turn...")
-        try:
-            await self.client.stop(self.config.thread_id, self.config.user_id)
-        except Exception as exc:  # noqa: BLE001 - transport errors surface in UI.
-            self._set_status_notice(f"Stop failed: {exc}", level="error")
-            self._stop_requested = False
+        result = await self._lifecycle.request_stop(reason="user")
+        if result.status == "no_active_turn":
+            self._set_status_notice(result.message)
+            return False
+        if result.status == "already_stopping":
+            self._set_status_notice(result.message)
+            return False
+        if result.status == "failed":
+            self._set_status_notice(f"Stop failed: {result.message}", level="error")
             return False
 
-        self._set_status_notice("Stop requested")
+        self._set_status_notice(result.message)
         return True
+
+    async def shutdown_active_turn(
+        self,
+        *,
+        reason: str = "shutdown",
+    ) -> LifecycleStopResult | None:
+        """Stop backend work and cancel the local stream task during shutdown."""
+
+        result: LifecycleStopResult | None = None
+        if self._busy:
+            result = await self._lifecycle.request_stop(reason=reason)
+            if result.status == "failed":
+                self._set_status_notice(
+                    f"Stop failed during shutdown: {result.message}",
+                    level="error",
+                )
+        await self._cancel_current_turn()
+        return result
 
     def _set_status_notice(
         self,
@@ -480,12 +519,29 @@ class FullScreenPromptToolkitShell:
         return bindings
 
     async def _cancel_current_turn(self) -> None:
-        task = self._current_turn_task
-        if task is None or task.done():
+        await cancel_task(self._current_turn_task)
+
+    def _schedule_signal_exit(self, app: Application[None], signum: int) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            with contextlib.suppress(Exception):
+                app.exit()
             return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        loop.create_task(
+            self._exit_from_signal(app, signum),
+            name=f"NymeriaCLIExit{signal_name(signum)}",
+        )
+
+    async def _exit_from_signal(self, app: Application[None], signum: int) -> None:
+        self._set_status_notice(f"Exiting on {signal_name(signum)}")
+        await self.shutdown_active_turn(reason=f"signal:{signal_name(signum)}")
+        with contextlib.suppress(Exception):
+            app.exit()
+
+    def _replace_state(self, state: CLIUIState) -> None:
+        self.state = state
+        self._refresh_transcript()
 
     def _refresh_transcript(self) -> None:
         width = _render_width(self.capabilities)
