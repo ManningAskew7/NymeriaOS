@@ -66,7 +66,11 @@ class CLIApp:
     def _register_all_commands(self) -> None:
         """Import and register all command modules."""
         from .commands import (
+            account,
+            activity,
+            artifacts,
             context,
+            doctor,
             mcp,
             memory,
             model,
@@ -75,6 +79,7 @@ class CLIApp:
             threads,
             todos,
             tools,
+            triggers,
         )
 
         system.register(self.registry)
@@ -86,6 +91,11 @@ class CLIApp:
         mcp.register(self.registry)
         todos.register(self.registry)
         memory.register(self.registry)
+        account.register(self.registry)
+        triggers.register(self.registry)
+        activity.register(self.registry)
+        artifacts.register(self.registry)
+        doctor.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop."""

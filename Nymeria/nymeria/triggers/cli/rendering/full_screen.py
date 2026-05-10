@@ -279,6 +279,10 @@ class FullScreenPromptToolkitShell:
             dispatch_state=self._dispatch_command_action,
             thread_id=self.config.thread_id,
             user_id=self.config.user_id,
+            metadata={
+                "ui_state": self.state,
+                "capabilities": self.capabilities,
+            },
         )
         result = await self.command_registry.dispatch_async(context, raw_input)
         self._apply_command_result(result, output.messages)
@@ -320,6 +324,15 @@ class FullScreenPromptToolkitShell:
                 model=str(action.get("model") or self.config.model),
             )
             self._invalidate()
+        elif action_type == "switch_user":
+            user_id = str(action.get("user_id") or self.config.user_id)
+            self.config = replace(self.config, user_id=user_id)
+            self.state = create_initial_state(
+                thread_id=self.config.thread_id,
+                user_id=user_id,
+                now=time.monotonic(),
+            )
+            self._refresh_transcript()
 
     def _apply_command_result(
         self,

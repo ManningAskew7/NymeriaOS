@@ -1142,9 +1142,23 @@ class NymeriaAPIClient:
 
     # ── TODOs ─────────────────────────────────────────────────────────────
 
-    async def list_todos(self, user_id: str) -> List[dict]:
+    async def list_todos(
+        self,
+        user_id: str,
+        *,
+        filter_status: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> List[dict]:
         """List all TODOs for a user."""
-        data = await self._get("/todos", params={"user_id": user_id}, act_as=user_id)
+        data = await self._get(
+            "/todos",
+            params=_clean_params(
+                user_id=user_id,
+                filter_status=filter_status,
+                thread_id=thread_id,
+            ),
+            act_as=user_id,
+        )
         return data.get("items", [])
 
     async def list_users_with_todos(self) -> List[str]:
