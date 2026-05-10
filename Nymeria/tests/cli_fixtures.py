@@ -358,6 +358,7 @@ class FakeAgentClient:
         history: Mapping[str, Any] | None = None,
         threads: Sequence[Mapping[str, Any]] | None = None,
         context_stats: Mapping[str, Any] | None = None,
+        autonomous_events: Sequence[StreamItem] | None = None,
         clock: FakeClock | None = None,
         real_sleep: bool = False,
         connection_label: str = "local agent",
@@ -370,6 +371,11 @@ class FakeAgentClient:
         self.history = copy.deepcopy(dict(history or {}))
         self.threads = copy.deepcopy(list(threads or []))
         self.context_stats = copy.deepcopy(dict(context_stats or {}))
+        self.autonomous_requests: list[dict[str, Any]] = []
+        self._autonomous_events = [
+            _clone_item(item)
+            for item in (autonomous_events or [])
+        ]
 
         if isinstance(streams, Mapping):
             self._streams_by_message = {
@@ -413,6 +419,22 @@ class FakeAgentClient:
         script = self._streams_by_message.get(message, self._default_stream)
         async for event in async_event_stream(
             script,
+            clock=self.clock,
+            real_sleep=self.real_sleep,
+        ):
+            yield event
+
+    async def stream_autonomous(
+        self,
+        user_id: str = "default",
+        *,
+        client_id: str | None = None,
+    ) -> AsyncIterator[EventDict]:
+        self.autonomous_requests.append(
+            {"user_id": user_id, "client_id": client_id}
+        )
+        async for event in async_event_stream(
+            self._autonomous_events,
             clock=self.clock,
             real_sleep=self.real_sleep,
         ):
@@ -480,4 +502,3 @@ def cli_output_capture() -> CapturedRenderOutput:
 @pytest.fixture
 def cli_agent_client() -> FakeAgentClient:
     return FakeAgentClient()
-

@@ -37,6 +37,7 @@ SystemMessageKind: TypeAlias = Literal[
     "iteration_limit",
     "error",
     "tool_reload",
+    "autonomous",
     "diagnostic",
 ]
 

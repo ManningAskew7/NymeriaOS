@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import getpass
 import time
 import uuid
 from collections import deque
@@ -12,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import HSplit, Layout, Window
@@ -21,6 +22,7 @@ from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, TextArea
 
+from ..events import normalize_stream_event
 from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
 from ..commands import CommandContext, CommandResult, ListCommandOutputSink
 from ..lifecycle import (
@@ -44,6 +46,7 @@ from ..state import (
     start_turn,
 )
 from ..transport.base import AgentClient, Attachment
+from ..transport.disconnected import is_disconnected_client
 from .indicator import (
     FRAME_INTERVAL_SECONDS,
     ActivityIndicator,
@@ -104,6 +107,8 @@ class FullScreenPromptToolkitShell:
         self._status_notice: StatusNotice | None = None
         self._pending_submissions: deque[ComposerSubmission] = deque()
         self._current_turn_task: asyncio.Task[bool] | None = None
+        self._autonomous_listener_task: asyncio.Task[None] | None = None
+        self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._application: Application[None] | None = None
         self._lifecycle = TurnLifecycleController(
             client=self.client,
@@ -166,14 +171,27 @@ class FullScreenPromptToolkitShell:
         """Run the full-screen shell until the user exits."""
 
         app = self._application or self.build_application()
+        self._autonomous_listener_task = self._start_autonomous_listener()
         try:
             with ExitSignalHandlers(lambda signum: self._schedule_signal_exit(app, signum)):
                 await app.run_async()
         finally:
             await self.shutdown_active_turn(reason="shutdown")
+            await cancel_task(self._autonomous_listener_task)
             close = getattr(self.client, "close", None)
             if callable(close):
                 await close()
+
+    def set_status_notice(
+        self,
+        message: str,
+        *,
+        level: NoticeLevel = "info",
+        ttl_seconds: float | None = None,
+    ) -> None:
+        """Set a status notice from the app wrapper."""
+
+        self._set_status_notice(message, level=level, ttl_seconds=ttl_seconds)
 
     async def run_chat_turn(
         self,
@@ -259,6 +277,72 @@ class FullScreenPromptToolkitShell:
         finally:
             await queue.put(_STREAM_DONE)
 
+    def _start_autonomous_listener(self) -> asyncio.Task[None] | None:
+        stream = getattr(self.client, "stream_autonomous", None)
+        if not callable(stream):
+            return None
+        if not str(getattr(self.client, "connection_label", "")).startswith("api "):
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        return loop.create_task(
+            self._run_autonomous_listener(),
+            name="NymeriaCLIFullScreenAutonomousStream",
+        )
+
+    async def _run_autonomous_listener(self) -> None:
+        reconnect_delay = 1.0
+        max_delay = 30.0
+        while True:
+            try:
+                await self._consume_autonomous_stream()
+                reconnect_delay = 1.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - background listener is best-effort.
+                self._set_status_notice(
+                    f"Autonomous stream disconnected: {exc or exc.__class__.__name__}",
+                    level="warning",
+                    ttl_seconds=5,
+                )
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, max_delay)
+
+    async def _consume_autonomous_stream(self) -> None:
+        stream = getattr(self.client, "stream_autonomous", None)
+        if not callable(stream):
+            return
+        async for event in stream(
+            self.config.user_id,
+            client_id=self._autonomous_client_id,
+        ):
+            self._apply_autonomous_event(event)
+
+    def _apply_autonomous_event(self, event: Any) -> bool:
+        normalized = normalize_stream_event(event)
+        event_type = getattr(normalized, "type", "")
+        event_thread_id = getattr(normalized, "thread_id", None)
+        if event_thread_id != self.config.thread_id:
+            if event_thread_id is None and event_type == "error":
+                message = str(getattr(normalized, "content", "") or "Autonomous stream error.")
+                self._set_status_notice(
+                    _first_status_line(message),
+                    level="warning",
+                    ttl_seconds=5,
+                )
+            return False
+        if event_type == "diagnostic":
+            return False
+        self.state = reduce_stream_event(
+            self.state,
+            normalized,
+            now=time.monotonic(),
+        )
+        self._refresh_transcript()
+        return True
+
     def _accept_composer_text(self, buffer: Any) -> bool:
         """Compatibility accept hook for tests and staged refactor callers."""
 
@@ -302,6 +386,11 @@ class FullScreenPromptToolkitShell:
             client=self.client,
             output=output,
             dispatch_state=self._dispatch_command_action,
+            prompt_handler=lambda prompt: self._prompt_for_input(prompt),
+            secret_prompt_handler=lambda prompt: self._prompt_for_input(
+                prompt,
+                secret=True,
+            ),
             thread_id=self.config.thread_id,
             user_id=self.config.user_id,
             metadata={
@@ -358,6 +447,8 @@ class FullScreenPromptToolkitShell:
                 now=time.monotonic(),
             )
             self._refresh_transcript()
+        elif action_type == "replace_client":
+            await self._replace_active_client(action)
 
     def _apply_command_result(
         self,
@@ -464,6 +555,33 @@ class FullScreenPromptToolkitShell:
 
         self._set_status_notice(result.message)
         return True
+
+    async def _replace_active_client(self, action: Mapping[str, Any]) -> None:
+        next_client = action.get("client")
+        if next_client is None:
+            return
+        old_client = self.client
+        await cancel_task(self._autonomous_listener_task)
+        self._autonomous_listener_task = None
+        self.client = next_client
+        self._lifecycle.client = next_client
+        user_id = str(action.get("user_id") or self.config.user_id)
+        self.config = replace(self.config, user_id=user_id)
+        if old_client is not next_client:
+            close = getattr(old_client, "close", None)
+            if callable(close):
+                await close()
+        if not is_disconnected_client(next_client):
+            self._autonomous_listener_task = self._start_autonomous_listener()
+        self._invalidate()
+
+    async def _prompt_for_input(self, prompt: str, *, secret: bool = False) -> str:
+        def read() -> str:
+            if secret:
+                return getpass.getpass(prompt)
+            return input(prompt)
+
+        return await run_in_terminal(read, render_cli_done=False, in_executor=True)
 
     async def shutdown_active_turn(
         self,

@@ -19,6 +19,7 @@ from .base import (
     CommandStatus,
     ConfirmationHandler,
     ListCommandOutputSink,
+    PromptHandler,
     StateDispatcher,
 )
 from .registry import (
@@ -46,6 +47,7 @@ __all__ = [
     "CommandStatus",
     "ConfirmationHandler",
     "ListCommandOutputSink",
+    "PromptHandler",
     "RichConsoleCommandOutputSink",
     "StateDispatcher",
 ]

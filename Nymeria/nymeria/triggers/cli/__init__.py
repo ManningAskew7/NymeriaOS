@@ -18,7 +18,7 @@ class CLITrigger:
 
     def __init__(
         self,
-        agent: "NymeriaAgent",
+        agent: "NymeriaAgent | None",
         thread_id: Optional[str] = None,
         runtime_config: "CLIRuntimeConfig | None" = None,
     ):
@@ -50,7 +50,7 @@ def run_cli(
         thread_id: Optional thread ID for the conversation.
         runtime_config: Parsed launch options for future CLI transports/renderers.
     """
-    if agent is None:
+    if agent is None and getattr(runtime_config, "transport", "api") == "local":
         from ...core.agent import NymeriaAgent
         from ...tools import ALL_TOOLS
 

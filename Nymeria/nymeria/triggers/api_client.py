@@ -7,6 +7,7 @@ All state lives in the API container — this is just a typed wrapper
 around ``httpx.AsyncClient``.
 """
 
+import asyncio
 import json as _json
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Generous timeout for LLM calls that can take 30s+
 _CHAT_TIMEOUT = httpx.Timeout(connect=10, read=300, write=10, pool=10)
+_SSE_TIMEOUT = httpx.Timeout(connect=10, read=None, write=10, pool=10)
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 
 
@@ -49,17 +51,26 @@ class NymeriaAPIClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"}
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        self._clients: Dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 
     async def close(self) -> None:
-        """Close the underlying HTTP connection pool."""
-        await self._client.aclose()
+        """Close any loop-local HTTP connection pools."""
+
+        clients = list(self._clients.values())
+        self._clients.clear()
+        for client in clients:
+            try:
+                await client.aclose()
+            except RuntimeError as exc:
+                if "Event loop is closed" not in str(exc):
+                    raise
 
     async def aclose(self) -> None:
         """Alias for callers that use httpx-style async close naming."""
         await self.close()
 
     async def __aenter__(self) -> "NymeriaAPIClient":
+        self._client_for_loop()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -67,6 +78,16 @@ class NymeriaAPIClient:
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+    def _client_for_loop(self) -> httpx.AsyncClient:
+        """Return the HTTP client bound to the current event loop."""
+
+        loop = asyncio.get_running_loop()
+        client = self._clients.get(loop)
+        if client is None:
+            client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+            self._clients[loop] = client
+        return client
 
     def _headers_for(self, act_as: Optional[str]) -> Dict[str, str]:
         if not act_as:
@@ -83,7 +104,7 @@ class NymeriaAPIClient:
         act_as: Optional[str] = None,
         timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
     ) -> Any:
-        resp = await self._client.request(
+        resp = await self._client_for_loop().request(
             method,
             self._url(path),
             headers=self._headers_for(act_as),
@@ -190,12 +211,45 @@ class NymeriaAPIClient:
             body["attachments"] = attachments
         if force_unsupported_attachments:
             body["force_unsupported_attachments"] = True
-        async with self._client.stream(
+        async with self._client_for_loop().stream(
             "POST",
             self._url("/chat"),
             headers=self._headers_for(user_id),
             json=body,
             timeout=_CHAT_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                raw = line[6:]
+                if raw.startswith(":"):
+                    continue
+                try:
+                    yield _json.loads(raw)
+                except _json.JSONDecodeError:
+                    continue
+
+    async def autonomous_stream(
+        self,
+        user_id: str = "default",
+        *,
+        client_id: Optional[str] = None,
+        act_as: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream autonomous task events via SSE (GET /autonomous/stream)."""
+
+        params = _clean_params(user_id=user_id, client_id=client_id)
+        headers = {
+            **self._headers_for(act_as),
+            "Accept": "text/event-stream",
+        }
+        async with self._client_for_loop().stream(
+            "GET",
+            self._url("/autonomous/stream"),
+            headers=headers,
+            params=params,
+            timeout=_SSE_TIMEOUT,
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -1269,7 +1323,7 @@ class NymeriaAPIClient:
         """
         _MAX_SIZE = 50 * 1024 * 1024  # Telegram bot limit
         try:
-            resp = await self._client.get(
+            resp = await self._client_for_loop().get(
                 self._url("/workspace/download"),
                 headers=self._headers_for(user_id),
                 params={"path": file_path},

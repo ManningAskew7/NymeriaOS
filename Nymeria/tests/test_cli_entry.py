@@ -1337,11 +1337,12 @@ def test_run_cli_parser_accepts_tui_contract_defaults():
     runtime_config = run_module.build_cli_runtime_config(args)
 
     assert args.thread is None
-    assert runtime_config.transport == "auto"
+    assert runtime_config.transport == "api"
     assert runtime_config.renderer == "auto"
     assert runtime_config.api_url is None
     assert runtime_config.api_key is None
     assert runtime_config.user_id == "default"
+    assert runtime_config.user_id_explicit is False
     assert runtime_config.alt_screen is True
     assert runtime_config.animation is True
     assert runtime_config.ascii_only is False
@@ -1394,10 +1395,29 @@ def test_run_cli_parser_carries_explicit_tui_contract_flags():
     assert runtime_config.api_url == "http://localhost:8000"
     assert runtime_config.api_key == "nym_test"
     assert runtime_config.user_id == "owner"
+    assert runtime_config.user_id_explicit is True
     assert runtime_config.alt_screen is False
     assert runtime_config.animation is False
     assert runtime_config.ascii_only is True
     assert runtime_config.color == "never"
+
+
+def test_run_cli_default_starts_without_local_agent(monkeypatch):
+    import run as run_module
+    import nymeria.triggers.cli as cli_module
+
+    captured = {}
+
+    def fake_start_cli(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "run_cli", fake_start_cli)
+
+    args = run_module.build_parser().parse_args(["cli"])
+    run_module.run_cli(args)
+
+    assert captured["agent"] is None
+    assert captured["runtime_config"].transport == "api"
 
 
 def test_init_noninteractive_writes_optional_capability_keys(

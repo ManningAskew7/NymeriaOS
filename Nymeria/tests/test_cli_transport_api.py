@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from nymeria.triggers.cli.app import CLIRuntimeConfig
+from nymeria.triggers.cli.credentials import CLIConnectionProfile
 from nymeria.triggers.cli.events import DoneEvent, ErrorEvent, ResponseEvent
 from nymeria.triggers.cli.transport.api import (
     APIAgentClient,
@@ -15,6 +16,7 @@ from nymeria.triggers.cli.transport.api import (
     resolve_api_connection_config,
     select_agent_client,
 )
+from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
 
 
 def run(coro):
@@ -41,6 +43,11 @@ class FakeAPIClient:
             {"type": "response", "content": "hi"},
             {"type": "done", "tool_call_count": 0},
         ]
+        self.autonomous_events = [
+            {"type": "task_started", "thread_id": "thread-a", "task_id": "todo-1"},
+            {"type": "response", "thread_id": "thread-a", "content": "done"},
+            {"type": "task_completed", "thread_id": "thread-a", "task_id": "todo-1"},
+        ]
         self.threads = [{"thread_id": "thread-a", "title": "Thread A"}]
         self.history = {"thread_id": "thread-a", "messages": []}
         self.context = {"thread_id": "thread-a", "total_tokens": 12}
@@ -58,6 +65,11 @@ class FakeAPIClient:
         if self.stream_exception is not None:
             raise self.stream_exception
         for event in self.stream_events:
+            yield event
+
+    async def autonomous_stream(self, **kwargs: Any):
+        self.calls.append(("autonomous_stream", kwargs))
+        for event in self.autonomous_events:
             yield event
 
     async def stop(self, thread_id: str, user_id: str | None = None) -> dict[str, Any]:
@@ -168,6 +180,25 @@ def test_resolve_api_connection_prefers_cli_flags_over_environment() -> None:
     assert config.explicit_api_key is True
 
 
+def test_resolve_api_connection_uses_saved_profile_before_default() -> None:
+    config = resolve_api_connection_config(
+        runtime_config(),
+        environ={},
+        saved_profile=CLIConnectionProfile(
+            api_url="http://saved",
+            api_key="saved-token",
+            user_id="alice",
+        ),
+    )
+
+    assert config.api_url == "http://saved"
+    assert config.api_key == "saved-token"
+    assert config.user_id == "alice"
+    assert config.api_url_source == "saved"
+    assert config.api_key_source == "saved"
+    assert config.user_id_source == "saved"
+
+
 def test_api_transport_stream_chat_normalizes_sse_events_and_options() -> None:
     api = FakeAPIClient(base_url="http://api", api_key="secret")
     client = APIAgentClient(api, default_user_id="alice")
@@ -204,6 +235,39 @@ def test_api_transport_stream_chat_normalizes_sse_events_and_options() -> None:
                 "trigger_override": "manual-test",
                 "force_unsupported_attachments": True,
             },
+        )
+    ]
+
+
+def test_api_transport_stream_autonomous_normalizes_sse_events() -> None:
+    api = FakeAPIClient(base_url="http://api", api_key="secret")
+    client = APIAgentClient(api, default_user_id="alice")
+
+    async def collect():
+        return [
+            event
+            async for event in client.stream_autonomous(
+                user_id="default",
+                client_id="cli-test",
+            )
+        ]
+
+    events = run(collect())
+
+    assert [event.type for event in events] == [
+        "task_started",
+        "response",
+        "task_completed",
+    ]
+    assert [event.thread_id for event in events] == [
+        "thread-a",
+        "thread-a",
+        "thread-a",
+    ]
+    assert api.calls == [
+        (
+            "autonomous_stream",
+            {"user_id": "alice", "act_as": "alice", "client_id": "cli-test"},
         )
     ]
 
@@ -290,7 +354,7 @@ def test_select_agent_client_api_mode_uses_healthy_api_transport() -> None:
     assert api.closed is False
 
 
-def test_select_agent_client_auto_falls_back_to_local_when_api_is_unhealthy() -> None:
+def test_select_agent_client_auto_does_not_fall_back_to_local_when_api_is_unhealthy() -> None:
     FakeAPIClient.reset()
     FakeAPIClient.health_result = False
     local = FakeLocalClient()
@@ -301,15 +365,16 @@ def test_select_agent_client_auto_falls_back_to_local_when_api_is_unhealthy() ->
         user_id="alice",
     )
 
-    selected = run(
-        select_agent_client(
-            config,
-            local_client=local,
-            api_client_factory=FakeAPIClient,
+    with pytest.raises(APITransportStartupError) as exc_info:
+        run(
+            select_agent_client(
+                config,
+                local_client=local,
+                api_client_factory=FakeAPIClient,
+            )
         )
-    )
 
-    assert selected is local
+    assert exc_info.value.code == "api_unavailable"
     api = FakeAPIClient.instances[0]
     assert api.calls == [("health", {})]
     assert api.closed is True
@@ -345,7 +410,7 @@ def test_select_agent_client_api_auth_failure_is_structured() -> None:
     assert FakeAPIClient.instances[0].closed is True
 
 
-def test_select_agent_client_auto_without_configured_api_key_keeps_local_fallback() -> None:
+def test_select_agent_client_auto_without_configured_api_key_returns_disconnected() -> None:
     FakeAPIClient.reset()
     local = FakeLocalClient()
 
@@ -358,5 +423,28 @@ def test_select_agent_client_auto_without_configured_api_key_keeps_local_fallbac
         )
     )
 
-    assert selected is local
+    assert isinstance(selected, DisconnectedAgentClient)
+    assert selected.connection_label == "disconnected"
     assert FakeAPIClient.instances == []
+
+
+def test_select_agent_client_saved_profile_failure_returns_disconnected() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.health_result = False
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={},
+            saved_profile=CLIConnectionProfile(
+                api_url="http://saved",
+                api_key="saved-token",
+                user_id="alice",
+            ),
+        )
+    )
+
+    assert isinstance(selected, DisconnectedAgentClient)
+    assert "Saved CLI connection" in selected.startup_error
+    assert selected.default_user_id == "alice"

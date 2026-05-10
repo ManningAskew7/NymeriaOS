@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import sys
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional, Protocol, TYPE_CHECKING
 
 from .capabilities import TerminalCapabilities, detect_terminal_capabilities
@@ -20,6 +21,7 @@ from .rendering.plain import PlainRenderer, strip_ansi
 from .rendering.rich_repl import RichReplRenderer
 from .state import CLIState
 from .transport.base import AgentClient
+from .transport.disconnected import DISCONNECTED_MESSAGE, is_disconnected_client
 from .transport.in_process import InProcessAgentClient
 
 if TYPE_CHECKING:
@@ -36,11 +38,12 @@ ColorMode = Literal["auto", "always", "never"]
 class CLIRuntimeConfig:
     """Launch-time CLI options shared by future transport and renderer tasks."""
 
-    transport: TransportMode = "auto"
+    transport: TransportMode = "api"
     renderer: RendererMode = "auto"
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     user_id: str = "default"
+    user_id_explicit: bool = False
     alt_screen: bool = True
     animation: bool = True
     ascii_only: bool = False
@@ -90,7 +93,7 @@ class CLIApp:
 
     def __init__(
         self,
-        agent: "NymeriaAgent",
+        agent: "NymeriaAgent | None",
         thread_id: Optional[str] = None,
         user_id: str = "default",
         runtime_config: CLIRuntimeConfig | None = None,
@@ -112,6 +115,7 @@ class CLIApp:
             account,
             activity,
             artifacts,
+            connection,
             context,
             doctor,
             mcp,
@@ -126,6 +130,7 @@ class CLIApp:
         )
 
         system.register(self.registry)
+        connection.register(self.registry)
         context.register(self.registry)
         threads.register(self.registry)
         model.register(self.registry)
@@ -180,6 +185,8 @@ class CLIApp:
                 command_registry=self.registry,
                 history_path=self.state.settings.data_dir / "cli_history",
             )
+            if is_disconnected_client(client):
+                shell.set_status_notice(DISCONNECTED_MESSAGE, level="warning")
             await shell.run_async()
 
         asyncio.run(launch())
@@ -214,6 +221,7 @@ class CLIApp:
 
         if capabilities.renderer != "plain":
             render_welcome(self.state)
+        self._render_disconnected_notice(self._client, capabilities)
 
         # patch_stdout intercepts background-thread writes (ticker, watchdog)
         # and redraws the prompt after they finish.
@@ -236,16 +244,27 @@ class CLIApp:
             asyncio.run(self._close_selected_client())
 
     async def _select_agent_client(self) -> AgentClient:
-        from .transport.api import select_agent_client
+        from .transport.api import APITransportStartupError, DEFAULT_API_URL, select_agent_client
 
-        self._local_client = InProcessAgentClient(
-            self.state.agent,
-            default_user_id=self.state.user_id,
-        )
-        return await select_agent_client(
+        local_client = None
+        if self.runtime_config.transport == "local":
+            if self.state.agent is None:
+                raise APITransportStartupError(
+                    "Local transport requested without a NymeriaAgent.",
+                    code="local_transport_unavailable",
+                    api_url=DEFAULT_API_URL,
+                )
+            self._local_client = InProcessAgentClient(
+                self.state.agent,
+                default_user_id=self.state.user_id,
+            )
+            local_client = self._local_client
+        selected = await select_agent_client(
             self.runtime_config,
-            local_client=self._local_client,
+            local_client=local_client,
         )
+        self._apply_selected_client_user(selected)
+        return selected
 
     async def _close_selected_client(self) -> None:
         client = self._client
@@ -292,7 +311,12 @@ class CLIApp:
 
                 # Dispatch /commands
                 if stripped.startswith("/"):
-                    self._dispatch_command(stripped, capabilities, renderer)
+                    self._dispatch_command(
+                        stripped,
+                        capabilities,
+                        renderer,
+                        session=session if use_prompt_toolkit else None,
+                    )
                     continue
 
                 # Legacy bare commands (no / prefix)
@@ -327,6 +351,7 @@ class CLIApp:
         raw_input: str,
         capabilities: TerminalCapabilities,
         renderer: _ReplRenderer,
+        session: Any | None = None,
     ) -> None:
         """Dispatch one slash command through the v2 command context."""
 
@@ -334,6 +359,15 @@ class CLIApp:
             client=self._client,
             output=self._command_output_sink(capabilities),
             dispatch_state=self._dispatch_repl_action,
+            prompt_handler=lambda prompt: self._prompt_for_input(
+                prompt,
+                session=session,
+            ),
+            secret_prompt_handler=lambda prompt: self._prompt_for_input(
+                prompt,
+                secret=True,
+                session=session,
+            ),
             thread_id=self.state.thread_id,
             user_id=self.state.user_id,
             registry=self.registry,
@@ -362,6 +396,13 @@ class CLIApp:
             self.state.user_id = user_id
             if self._local_client is not None:
                 self._local_client.default_user_id = user_id
+            self.runtime_config = replace(
+                self.runtime_config,
+                user_id=user_id,
+                user_id_explicit=True,
+            )
+        elif action_type == "replace_client":
+            await self._replace_repl_client(action)
         elif action_type in {"set_thread_label", "set_model", "thread_config_updated"}:
             return
         elif action_type == "clear_transcript":
@@ -467,3 +508,63 @@ class CLIApp:
             title=title,
             title_source="auto",
         )
+
+    async def _replace_repl_client(self, action: Any) -> None:
+        next_client = action.get("client") if isinstance(action, dict) else None
+        if next_client is None:
+            return
+        old_client = self._client
+        self._client = next_client
+        self._apply_selected_client_user(next_client, action.get("user_id"))
+        if old_client is not None and old_client is not next_client:
+            close = getattr(old_client, "close", None)
+            if callable(close):
+                await close()
+
+    def _apply_selected_client_user(
+        self,
+        client: Any,
+        user_id: Any | None = None,
+    ) -> None:
+        selected_user_id = str(
+            user_id
+            or getattr(client, "default_user_id", None)
+            or self.state.user_id
+            or "default"
+        )
+        self.state.user_id = selected_user_id
+        if self._local_client is not None:
+            self._local_client.default_user_id = selected_user_id
+        self.runtime_config = replace(
+            self.runtime_config,
+            user_id=selected_user_id,
+            user_id_explicit=True,
+        )
+
+    def _prompt_for_input(
+        self,
+        prompt: str,
+        *,
+        secret: bool = False,
+        session: Any | None = None,
+    ) -> str:
+        if session is not None:
+            return session.prompt(prompt, is_password=secret)
+        if secret:
+            return getpass.getpass(prompt)
+        return self.state.console.input(prompt)
+
+    def _render_disconnected_notice(
+        self,
+        client: AgentClient | None,
+        capabilities: TerminalCapabilities,
+    ) -> None:
+        if not is_disconnected_client(client):
+            return
+        startup_error = str(getattr(client, "startup_error", "") or "")
+        message = startup_error or DISCONNECTED_MESSAGE
+        if capabilities.renderer == "plain":
+            sys.stderr.write(f"{strip_ansi(message)}\n")
+            sys.stderr.flush()
+            return
+        self.state.console.print(f"[yellow]{message}[/yellow]")

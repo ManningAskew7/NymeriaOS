@@ -73,6 +73,14 @@ _LANGGRAPH_ALLOWED_OBJECTS_WARNING = (
 )
 
 
+class _StoreUserIdAction(argparse.Action):
+    """Track whether --user-id was explicitly supplied."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "user_id_explicit", True)
+
+
 def _suppress_runtime_dependency_warnings() -> None:
     """Hide known upstream warnings that otherwise appear before CLI output."""
     try:
@@ -234,6 +242,7 @@ def build_cli_runtime_config(args: argparse.Namespace):
         api_url=args.api_url,
         api_key=args.api_key,
         user_id=args.user_id,
+        user_id_explicit=bool(getattr(args, "user_id_explicit", False)),
         alt_screen=args.alt_screen,
         animation=args.animation,
         ascii_only=args.ascii_only,
@@ -248,14 +257,16 @@ def run_cli(args: argparse.Namespace) -> None:
     # Fatal issues still surface via stream error events rendered by the CLI.
     logging.getLogger("nymeria").setLevel(logging.CRITICAL)
 
-    from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
     from nymeria.triggers.cli import run_cli as start_cli
 
-    # Create agent with all tools
-    agent = NymeriaAgent(tools=list(ALL_TOOLS))
-    agent.sync_agent_tools()
     runtime_config = build_cli_runtime_config(args)
+    agent = None
+    if runtime_config.transport == "local":
+        from nymeria import NymeriaAgent
+        from nymeria.tools import ALL_TOOLS
+
+        agent = NymeriaAgent(tools=list(ALL_TOOLS))
+        agent.sync_agent_tools()
 
     # Start CLI
     start_cli(agent=agent, thread_id=args.thread, runtime_config=runtime_config)
@@ -745,10 +756,10 @@ Examples:
     cli_parser.add_argument(
         "--transport",
         choices=("api", "local", "auto"),
-        default="auto",
+        default="api",
         help=(
             "Transport mode for CLI chat and command requests "
-            "(default: auto; API when configured, local fallback)"
+            "(default: api; use --transport local for embedded agent mode)"
         ),
     )
     cli_parser.add_argument(
@@ -767,9 +778,11 @@ Examples:
         default=None,
         help="Nymeria API key for API transport mode",
     )
+    cli_parser.set_defaults(user_id_explicit=False)
     cli_parser.add_argument(
         "--user-id",
         default="default",
+        action=_StoreUserIdAction,
         help="User ID for CLI requests (default: default)",
     )
     cli_parser.add_argument(
@@ -1039,7 +1052,10 @@ def main() -> None:
 
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
-    if args.command in ("cli", "api", "mcp", "worker", "discord-bot", "telegram-bot", "twitch-bot", "watchdog", "service"):
+    if args.command == "cli":
+        if getattr(args, "transport", "api") == "local":
+            validate_config(suppress_service_token_warning=service_token_required)
+    elif args.command in ("api", "mcp", "worker", "discord-bot", "telegram-bot", "twitch-bot", "watchdog", "service"):
         validate_config(suppress_service_token_warning=service_token_required)
     elif args.command == "users":
         # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
