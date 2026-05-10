@@ -10,6 +10,7 @@ around ``httpx.AsyncClient``.
 import json as _json
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -18,6 +19,19 @@ logger = logging.getLogger(__name__)
 # Generous timeout for LLM calls that can take 30s+
 _CHAT_TIMEOUT = httpx.Timeout(connect=10, read=300, write=10, pool=10)
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
+
+
+def _path_param(value: Any) -> str:
+    """URL-encode a path segment without preserving slashes."""
+
+    return quote(str(value), safe="")
+
+
+def _clean_params(**values: Any) -> Optional[Dict[str, Any]]:
+    """Drop None query parameters while preserving falsey values."""
+
+    params = {key: value for key, value in values.items() if value is not None}
+    return params or None
 
 
 class NymeriaAPIClient:
@@ -68,7 +82,7 @@ class NymeriaAPIClient:
         params: Optional[dict] = None,
         act_as: Optional[str] = None,
         timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
-    ) -> dict:
+    ) -> Any:
         resp = await self._client.request(
             method,
             self._url(path),
@@ -78,12 +92,14 @@ class NymeriaAPIClient:
             timeout=timeout,
         )
         resp.raise_for_status()
+        if getattr(resp, "status_code", None) == 204:
+            return {}
         return resp.json()
 
-    async def _get(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
+    async def _get(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request("GET", path, params=params, act_as=act_as)
 
-    async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
+    async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request(
             "POST",
             path,
@@ -93,15 +109,15 @@ class NymeriaAPIClient:
             timeout=_CHAT_TIMEOUT,
         )
 
-    async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
+    async def _put(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request(
             "PUT", path, json_body=json, params=params, act_as=act_as
         )
 
-    async def _patch(self, path: str, json: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
+    async def _patch(self, path: str, json: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request("PATCH", path, json_body=json, act_as=act_as)
 
-    async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> dict:
+    async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request("DELETE", path, params=params, act_as=act_as)
 
     # ── Chat ──────────────────────────────────────────────────────────────
@@ -276,13 +292,318 @@ class NymeriaAPIClient:
                 return None
             raise
 
+    async def delete_thread_config(
+        self, thread_id: str, user_id: Optional[str] = None
+    ) -> dict:
+        """Reset a thread to global defaults by deleting its saved config."""
+        return await self._delete(
+            f"/threads/{_path_param(thread_id)}/config",
+            act_as=user_id,
+        )
+
+    async def get_agent_templates(self, user_id: Optional[str] = None) -> dict:
+        """List callable-thread templates."""
+        return await self._get("/agents/templates", act_as=user_id)
+
+    async def list_agent_threads(self, user_id: Optional[str] = None) -> List[dict]:
+        """List callable threads visible to the authenticated user."""
+        data = await self._get("/agents/threads", act_as=user_id)
+        return data.get("threads", [])
+
+    async def create_agent_thread(
+        self,
+        request: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Create a callable agent thread."""
+        return await self._post("/agents/threads", json=request, act_as=user_id)
+
+    async def list_thread_teams(self, user_id: Optional[str] = None) -> List[dict]:
+        """List callable visibility teams for a user's threads."""
+        data = await self._get("/thread-teams", act_as=user_id)
+        if isinstance(data, dict):
+            return data.get("teams", [])
+        return data
+
+    async def create_thread_team(
+        self,
+        name: str,
+        thread_ids: List[str],
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Create a callable thread team."""
+        return await self._post(
+            "/thread-teams",
+            json={"name": name, "thread_ids": thread_ids},
+            act_as=user_id,
+        )
+
+    async def update_thread_team(
+        self,
+        team_id: str,
+        *,
+        name: Optional[str] = None,
+        thread_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Update a callable thread team's name and/or membership."""
+        body = _clean_params(name=name, thread_ids=thread_ids) or {}
+        return await self._patch(
+            f"/thread-teams/{_path_param(team_id)}",
+            json=body,
+            act_as=user_id,
+        )
+
+    async def delete_thread_team(
+        self, team_id: str, user_id: Optional[str] = None
+    ) -> dict:
+        """Delete a callable thread team."""
+        return await self._delete(f"/thread-teams/{_path_param(team_id)}", act_as=user_id)
+
+    async def export_thread(
+        self, thread_id: str, user_id: Optional[str] = None
+    ) -> dict:
+        """Export a share document for a thread."""
+        return await self._get(f"/threads/{_path_param(thread_id)}/export", act_as=user_id)
+
+    async def import_thread(
+        self, document: Dict[str, Any], user_id: Optional[str] = None
+    ) -> dict:
+        """Import a thread share document."""
+        return await self._post("/threads/import", json=document, act_as=user_id)
+
+    # ── Accounts ──────────────────────────────────────────────────────────
+
+    async def update_me(
+        self,
+        display_name: str,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Update the authenticated user's display name."""
+        return await self._patch(
+            "/me",
+            json={"display_name": display_name},
+            act_as=user_id,
+        )
+
+    async def list_my_tokens(self, user_id: Optional[str] = None) -> List[dict]:
+        """List API tokens owned by the authenticated user."""
+        data = await self._get("/me/tokens", act_as=user_id)
+        return data if isinstance(data, list) else data.get("tokens", [])
+
+    async def issue_my_token(
+        self,
+        label: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Issue a new API token for the authenticated user."""
+        return await self._post("/me/tokens", json={"label": label}, act_as=user_id)
+
+    async def revoke_my_token(
+        self,
+        token_hash_prefix: str,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Revoke one of the authenticated user's API tokens."""
+        return await self._delete(
+            f"/me/tokens/{_path_param(token_hash_prefix)}",
+            act_as=user_id,
+        )
+
+    async def list_admin_users(self) -> List[dict]:
+        """List all user accounts. Admin-only."""
+        data = await self._get("/admin/users")
+        return data if isinstance(data, list) else data.get("users", [])
+
+    async def create_admin_user(self, request: Dict[str, Any]) -> dict:
+        """Create a user account and issue an initial token. Admin-only."""
+        return await self._post("/admin/users", json=request)
+
+    async def get_admin_user(self, user_id: str) -> dict:
+        """Get one user account with admin details."""
+        return await self._get(f"/admin/users/{_path_param(user_id)}")
+
+    async def update_admin_user(self, user_id: str, patch: Dict[str, Any]) -> dict:
+        """Update an account's profile, role, or disabled state. Admin-only."""
+        return await self._patch(f"/admin/users/{_path_param(user_id)}", json=patch)
+
+    async def delete_admin_user(self, user_id: str) -> dict:
+        """Delete a user account. Admin-only."""
+        return await self._delete(f"/admin/users/{_path_param(user_id)}")
+
+    async def list_user_tokens(self, user_id: str) -> List[dict]:
+        """List a user's tokens. Admin-only."""
+        data = await self._get(f"/admin/users/{_path_param(user_id)}/tokens")
+        return data if isinstance(data, list) else data.get("tokens", [])
+
+    async def issue_user_token(
+        self, user_id: str, label: Optional[str] = None
+    ) -> dict:
+        """Issue a token for another user. Admin-only."""
+        return await self._post(
+            f"/admin/users/{_path_param(user_id)}/tokens",
+            json={"label": label},
+        )
+
+    async def rotate_user_tokens(
+        self, user_id: str, label: Optional[str] = None
+    ) -> dict:
+        """Revoke all active tokens for a user and issue a replacement."""
+        return await self._post(
+            f"/admin/users/{_path_param(user_id)}/tokens/rotate",
+            json={"label": label},
+        )
+
+    async def revoke_user_token(self, user_id: str, token_hash_prefix: str) -> dict:
+        """Revoke a user's token by hash prefix. Admin-only."""
+        return await self._delete(
+            f"/admin/users/{_path_param(user_id)}/tokens/{_path_param(token_hash_prefix)}"
+        )
+
+    async def list_user_platforms(self, user_id: str) -> List[dict]:
+        """List linked platform identities for a user. Admin-only."""
+        data = await self._get(f"/admin/users/{_path_param(user_id)}/platforms")
+        return data if isinstance(data, list) else data.get("platforms", [])
+
+    async def link_user_platform(
+        self,
+        user_id: str,
+        provider: str,
+        provider_user_id: str,
+    ) -> dict:
+        """Link a platform identity to a user. Admin-only."""
+        return await self._post(
+            f"/admin/users/{_path_param(user_id)}/platforms",
+            json={"provider": provider, "provider_user_id": provider_user_id},
+        )
+
+    async def unlink_user_platform(
+        self,
+        user_id: str,
+        provider: str,
+        provider_user_id: str,
+    ) -> dict:
+        """Unlink a platform identity from a user. Admin-only."""
+        return await self._delete(
+            "/admin/users/"
+            f"{_path_param(user_id)}/platforms/"
+            f"{_path_param(provider)}/{_path_param(provider_user_id)}"
+        )
+
+    async def list_my_platforms(self, user_id: Optional[str] = None) -> List[dict]:
+        """List the authenticated user's linked platform identities."""
+        data = await self._get("/me/platforms", act_as=user_id)
+        return data if isinstance(data, list) else data.get("platforms", [])
+
+    async def request_self_platform_link_code(
+        self,
+        provider: str,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Issue a self-service platform-link code."""
+        return await self._post(
+            "/me/platform-link-codes",
+            json={"provider": provider},
+            act_as=user_id,
+        )
+
+    async def issue_chatapp_bind_code(
+        self,
+        thread_id: str,
+        provider: str,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Issue a chat-app bind code for a thread."""
+        return await self._post(
+            f"/threads/{_path_param(thread_id)}/chatapp/bind-code",
+            json={"provider": provider},
+            act_as=user_id,
+        )
+
+    async def list_thread_bindings(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+    ) -> List[dict]:
+        """List chat-app bindings for a thread."""
+        data = await self._get(
+            f"/threads/{_path_param(thread_id)}/chatapp/bindings",
+            act_as=user_id,
+        )
+        return data if isinstance(data, list) else data.get("bindings", [])
+
+    async def unbind_thread_chatapp(
+        self,
+        thread_id: str,
+        binding_id: int,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Remove a chat-app binding from a thread."""
+        return await self._delete(
+            f"/threads/{_path_param(thread_id)}/chatapp/bindings/{binding_id}",
+            act_as=user_id,
+        )
+
+    async def list_my_telegram_bots(
+        self, user_id: Optional[str] = None
+    ) -> List[dict]:
+        """List Telegram bots registered by the authenticated user."""
+        data = await self._get("/me/telegram-bots", act_as=user_id)
+        return data if isinstance(data, list) else data.get("bots", [])
+
+    async def get_my_telegram_bot(
+        self, bot_id: int, user_id: Optional[str] = None
+    ) -> dict:
+        """Get one registered Telegram bot."""
+        return await self._get(f"/me/telegram-bots/{bot_id}", act_as=user_id)
+
+    async def register_my_telegram_bot(
+        self, bot_token: str, user_id: Optional[str] = None
+    ) -> dict:
+        """Register a user-owned Telegram bot."""
+        return await self._post(
+            "/me/telegram-bots",
+            json={"bot_token": bot_token},
+            act_as=user_id,
+        )
+
+    async def remove_my_telegram_bot(
+        self, bot_id: int, user_id: Optional[str] = None
+    ) -> dict:
+        """Remove a user-owned Telegram bot."""
+        return await self._delete(f"/me/telegram-bots/{bot_id}", act_as=user_id)
+
     # ── Settings ──────────────────────────────────────────────────────────
 
-    async def get_settings(self) -> dict:
+    async def get_settings(self, user_id: Optional[str] = None) -> dict:
         """Get server settings."""
-        return await self._get("/settings")
+        return await self._get("/settings", act_as=user_id)
+
+    async def test_llm_provider_config(
+        self,
+        request: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Test an LLM provider configuration without saving it."""
+        return await self._post("/settings/llm/test", json=request, act_as=user_id)
+
+    async def get_llm_runtime_diagnostics(
+        self, user_id: Optional[str] = None
+    ) -> dict:
+        """Get runtime LLM/provider diagnostics."""
+        return await self._get("/settings/llm/runtime", act_as=user_id)
 
     # ── Tools ─────────────────────────────────────────────────────────────
+
+    async def get_tools(self) -> List[dict]:
+        """List all visible tool definitions."""
+        data = await self._get("/tools")
+        return data.get("tools", [])
+
+    async def get_optional_tools(self, user_id: str = "default") -> List[dict]:
+        """List tools available for per-thread enabling."""
+        data = await self._get("/tools/optional", act_as=user_id)
+        return data.get("tools", [])
 
     async def get_default_tools(self, user_id: str = "default") -> dict:
         """Get default tool set for a user.
@@ -292,14 +613,508 @@ class NymeriaAPIClient:
         """
         return await self._get("/tools/defaults", params={"user_id": user_id}, act_as=user_id)
 
+    async def set_default_tools(
+        self, tool_names: List[str], user_id: str = "default"
+    ) -> dict:
+        """Replace the user's default tool set for new threads."""
+        return await self._put(
+            "/tools/defaults",
+            json={"tool_names": tool_names},
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def reset_default_tools(self, user_id: str = "default") -> dict:
+        """Reset the user's default tool set to core defaults."""
+        return await self._delete(
+            "/tools/defaults",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
     async def list_all_tools(self, user_id: str = "default") -> List[dict]:
         """List all tools (built-in + optional + MCP) with enabled state."""
         data = await self._get(f"/users/{user_id}/tools", act_as=user_id)
         return data.get("tools", [])
 
+    async def get_tool_preferences(self, user_id: str = "default") -> dict:
+        """Get user tool preferences."""
+        return await self._get(
+            f"/users/{_path_param(user_id)}/tools/preferences",
+            act_as=user_id,
+        )
+
+    async def set_tool_config(
+        self,
+        user_id: str,
+        tool_name: str,
+        config: Dict[str, Any],
+    ) -> dict:
+        """Set a user-scoped tool configuration."""
+        return await self._put(
+            f"/users/{_path_param(user_id)}/tools/{_path_param(tool_name)}/config",
+            json={"config": config},
+            act_as=user_id,
+        )
+
+    async def reset_tool_preferences(self, user_id: str = "default") -> dict:
+        """Reset all user tool preferences."""
+        return await self._post(
+            f"/users/{_path_param(user_id)}/tools/reset",
+            act_as=user_id,
+        )
+
+    async def get_unified_tools(self, user_id: str = "default") -> dict:
+        """List built-in, MCP, and custom tools in the unified shape."""
+        return await self._get(
+            f"/users/{_path_param(user_id)}/tools/unified",
+            act_as=user_id,
+        )
+
+    async def set_unified_tool_enabled(
+        self,
+        tool_id: str,
+        enabled: bool,
+        user_id: str = "default",
+    ) -> dict:
+        """Enable or disable a unified tool for a user."""
+        return await self._put(
+            f"/users/{_path_param(user_id)}/tools/unified/"
+            f"{_path_param(tool_id)}/enable",
+            json={"enabled": enabled},
+            act_as=user_id,
+        )
+
+    async def set_unified_tool_description(
+        self,
+        tool_id: str,
+        description: Optional[str],
+        user_id: str = "default",
+    ) -> dict:
+        """Set or clear a user custom description for a unified tool."""
+        return await self._put(
+            f"/users/{_path_param(user_id)}/tools/unified/"
+            f"{_path_param(tool_id)}/description",
+            json={"description": description},
+            act_as=user_id,
+        )
+
+    async def set_unified_tool_config(
+        self,
+        tool_id: str,
+        config: Dict[str, Any],
+        user_id: str = "default",
+    ) -> dict:
+        """Set or clear user config for a unified tool."""
+        return await self._put(
+            f"/users/{_path_param(user_id)}/tools/unified/"
+            f"{_path_param(tool_id)}/config",
+            json={"config": config},
+            act_as=user_id,
+        )
+
+    async def create_unified_tool(self, request: Dict[str, Any]) -> dict:
+        """Create a custom tool through the unified API. Admin-only."""
+        return await self._post("/tools/unified", json=request)
+
+    async def update_unified_tool(
+        self, tool_id: str, request: Dict[str, Any]
+    ) -> dict:
+        """Update a custom tool through the unified API. Admin-only."""
+        return await self._put(f"/tools/unified/{_path_param(tool_id)}", json=request)
+
+    async def delete_unified_tool(self, tool_id: str) -> dict:
+        """Delete a custom tool through the unified API. Admin-only."""
+        return await self._delete(f"/tools/unified/{_path_param(tool_id)}")
+
+    async def list_custom_tools(self) -> dict:
+        """List custom tools. Admin-only."""
+        return await self._get("/tools/custom")
+
+    async def create_custom_tool(self, request: Dict[str, Any]) -> dict:
+        """Create a custom tool. Admin-only."""
+        return await self._post("/tools/custom", json=request)
+
+    async def get_custom_tool(self, tool_id: str) -> dict:
+        """Get one custom tool. Admin-only."""
+        return await self._get(f"/tools/custom/{_path_param(tool_id)}")
+
+    async def update_custom_tool(
+        self, tool_id: str, request: Dict[str, Any]
+    ) -> dict:
+        """Update a custom tool. Admin-only."""
+        return await self._put(f"/tools/custom/{_path_param(tool_id)}", json=request)
+
+    async def delete_custom_tool(self, tool_id: str) -> dict:
+        """Delete a custom tool. Admin-only."""
+        return await self._delete(f"/tools/custom/{_path_param(tool_id)}")
+
+    async def test_custom_tool(
+        self, tool_id: str, params: Dict[str, Any]
+    ) -> dict:
+        """Test a custom tool with sample parameters. Admin-only."""
+        return await self._post(
+            f"/tools/custom/{_path_param(tool_id)}/test",
+            json={"params": params},
+        )
+
+    async def export_custom_tools(self) -> dict:
+        """Export all custom tools. Admin-only."""
+        return await self._get("/tools/custom/export")
+
+    async def import_custom_tools(self, tools: List[Dict[str, Any]]) -> dict:
+        """Import custom tool definitions. Admin-only."""
+        return await self._post("/tools/custom/import", json={"tools": tools})
+
     async def get_tool_categories(self) -> dict:
         """Get tool categories summary."""
         return await self._get("/tools/categories")
+
+    # ── Skills ────────────────────────────────────────────────────────────
+
+    async def list_skills(
+        self,
+        user_id: str = "default",
+        scope: Optional[str] = None,
+    ) -> List[dict]:
+        """List installed skills visible to a user."""
+        data = await self._get(
+            "/skills",
+            params=_clean_params(user_id=user_id, scope=scope),
+            act_as=user_id,
+        )
+        return data.get("skills", [])
+
+    async def get_skill(self, name: str, user_id: str = "default") -> dict:
+        """Get full metadata and body for an installed skill."""
+        return await self._get(
+            f"/skills/{_path_param(name)}",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def install_skill(
+        self,
+        request: Dict[str, Any],
+        user_id: str = "default",
+    ) -> dict:
+        """Install a skill from a marketplace."""
+        data = await self._post(
+            "/skills/install",
+            json=request,
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+        return data.get("skill", data)
+
+    async def uninstall_skill(
+        self,
+        name: str,
+        scope: str = "user",
+        user_id: str = "default",
+    ) -> dict:
+        """Uninstall a user or global skill."""
+        return await self._delete(
+            f"/skills/{_path_param(name)}",
+            params={"scope": scope, "user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def search_skills_marketplace(
+        self,
+        source: str = "anthropic",
+        query: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[dict]:
+        """Search a configured skills marketplace."""
+        data = await self._get(
+            "/skills/marketplace/search",
+            params=_clean_params(source=source, q=query),
+            act_as=user_id,
+        )
+        return data.get("results", [])
+
+    async def get_thread_active_skills(
+        self,
+        thread_id: str,
+        user_id: str = "default",
+    ) -> dict:
+        """Get the resolved active skill set for a thread."""
+        return await self._get(
+            f"/threads/{_path_param(thread_id)}/skills",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def get_thread_callable_tools(
+        self,
+        thread_id: str,
+        user_id: str = "default",
+    ) -> dict:
+        """Get callable threads available as tools to a thread."""
+        return await self._get(
+            f"/threads/{_path_param(thread_id)}/callable-tools",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def get_global_skills(self, user_id: str = "default") -> List[str]:
+        """Get skills enabled by default for a user."""
+        data = await self._get(
+            "/settings/global-skills",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+        return data.get("enabled_global_skills", [])
+
+    async def set_global_skills(
+        self,
+        skill_names: List[str],
+        user_id: str = "default",
+    ) -> List[str]:
+        """Replace skills enabled by default for a user."""
+        data = await self._put(
+            "/settings/global-skills",
+            json={"skill_names": skill_names},
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+        return data.get("enabled_global_skills", [])
+
+    # ── MCP Servers ───────────────────────────────────────────────────────
+
+    async def list_mcp_servers(self) -> dict:
+        """List MCP server definitions. Admin-only."""
+        return await self._get("/mcp-servers")
+
+    async def get_mcp_server(self, server_id: str) -> dict:
+        """Get one MCP server definition. Admin-only."""
+        return await self._get(f"/mcp-servers/{_path_param(server_id)}")
+
+    async def create_mcp_server(
+        self,
+        request: Dict[str, Any],
+        *,
+        thread_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Create an MCP server and optionally enable it for a thread."""
+        return await self._post(
+            "/mcp-servers",
+            json=request,
+            params=_clean_params(thread_id=thread_id),
+            act_as=user_id,
+        )
+
+    async def update_mcp_server(
+        self, server_id: str, request: Dict[str, Any]
+    ) -> dict:
+        """Update an MCP server definition. Admin-only."""
+        return await self._put(
+            f"/mcp-servers/{_path_param(server_id)}",
+            json=request,
+        )
+
+    async def delete_mcp_server(self, server_id: str) -> dict:
+        """Delete an MCP server definition. Admin-only."""
+        return await self._delete(f"/mcp-servers/{_path_param(server_id)}")
+
+    async def discover_mcp_server_tools(self, server_id: str) -> dict:
+        """Force MCP tool discovery for a server. Admin-only."""
+        return await self._post(f"/mcp-servers/{_path_param(server_id)}/discover")
+
+    async def test_mcp_server(self, server_id: str) -> dict:
+        """Test MCP server connectivity. Admin-only."""
+        return await self._post(f"/mcp-servers/{_path_param(server_id)}/test")
+
+    async def preview_mcp_server_install(self, request: Dict[str, Any]) -> dict:
+        """Preview an MCP install source without executing it."""
+        return await self._post("/mcp-servers/install/preview", json=request)
+
+    async def install_mcp_server(self, request: Dict[str, Any]) -> dict:
+        """Install an MCP server from a source string or preview token."""
+        return await self._post("/mcp-servers/install", json=request)
+
+    async def retry_mcp_server_install(
+        self,
+        server_id: str,
+        request: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        """Retry setup/discovery for a draft or failed MCP server."""
+        return await self._post(
+            f"/mcp-servers/{_path_param(server_id)}/retry",
+            json=request or {},
+        )
+
+    # ── Triggers ──────────────────────────────────────────────────────────
+
+    async def list_triggers(
+        self,
+        user_id: str = "default",
+        *,
+        enabled_only: bool = False,
+        thread_id: Optional[str] = None,
+    ) -> List[dict]:
+        """List event triggers for a user."""
+        data = await self._get(
+            "/triggers",
+            params=_clean_params(
+                user_id=user_id,
+                enabled_only=enabled_only,
+                thread_id=thread_id,
+            ),
+            act_as=user_id,
+        )
+        return data if isinstance(data, list) else data.get("triggers", [])
+
+    async def create_trigger(
+        self,
+        request: Dict[str, Any],
+        user_id: str = "default",
+    ) -> dict:
+        """Create an event trigger."""
+        return await self._post(
+            "/triggers",
+            json=request,
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def get_trigger(self, trigger_id: str, user_id: str = "default") -> dict:
+        """Get one event trigger."""
+        return await self._get(
+            f"/triggers/{_path_param(trigger_id)}",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def update_trigger(
+        self,
+        trigger_id: str,
+        request: Dict[str, Any],
+        user_id: str = "default",
+    ) -> dict:
+        """Update an event trigger."""
+        return await self._patch(
+            f"/triggers/{_path_param(trigger_id)}",
+            json=request,
+            act_as=user_id,
+        )
+
+    async def delete_trigger(
+        self, trigger_id: str, user_id: str = "default"
+    ) -> dict:
+        """Delete an event trigger."""
+        return await self._delete(
+            f"/triggers/{_path_param(trigger_id)}",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def get_trigger_sources(self) -> dict:
+        """List available trigger source types."""
+        data = await self._get("/triggers/sources/list")
+        return data.get("sources", data)
+
+    async def reload_trigger_sources(self) -> dict:
+        """Reload trigger source plugins."""
+        return await self._post("/triggers/sources/reload")
+
+    async def test_trigger(
+        self, trigger_id: str, user_id: str = "default"
+    ) -> dict:
+        """Dry-run a trigger against its sample event."""
+        return await self._post(
+            f"/triggers/{_path_param(trigger_id)}/test",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def get_trigger_executions(
+        self,
+        trigger_id: str,
+        user_id: str = "default",
+        limit: int = 50,
+    ) -> List[dict]:
+        """Get execution history for one trigger."""
+        data = await self._get(
+            f"/triggers/{_path_param(trigger_id)}/executions",
+            params={"user_id": user_id, "limit": limit},
+            act_as=user_id,
+        )
+        return data if isinstance(data, list) else data.get("executions", [])
+
+    async def get_recent_trigger_executions(
+        self,
+        user_id: str = "default",
+        limit: int = 50,
+    ) -> List[dict]:
+        """Get recent trigger executions for a user."""
+        data = await self._get(
+            "/triggers/executions/recent",
+            params={"user_id": user_id, "limit": limit},
+            act_as=user_id,
+        )
+        return data if isinstance(data, list) else data.get("executions", [])
+
+    async def fire_trigger(
+        self,
+        trigger_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        secret: Optional[str] = None,
+        user_id: str = "default",
+    ) -> dict:
+        """Fire a webhook trigger as an authenticated API caller."""
+        return await self._post(
+            f"/triggers/fire/{_path_param(trigger_id)}",
+            json=payload or {},
+            params=_clean_params(secret=secret, user_id=user_id),
+            act_as=user_id,
+        )
+
+    # ── Activity and Notifications ────────────────────────────────────────
+
+    async def get_activity(
+        self,
+        user_id: str = "default",
+        *,
+        limit: int = 50,
+        activity_type: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> dict:
+        """Get recent activity entries."""
+        return await self._get(
+            "/activity",
+            params=_clean_params(
+                user_id=user_id,
+                limit=limit,
+                activity_type=activity_type,
+                thread_id=thread_id,
+            ),
+            act_as=user_id,
+        )
+
+    async def get_notifications(self, user_id: str = "default") -> dict:
+        """Get notifications and unread count for a user."""
+        return await self._get("/notifications", act_as=user_id)
+
+    async def mark_notification_read(
+        self,
+        notification_id: str,
+        user_id: str = "default",
+    ) -> dict:
+        """Mark one notification as read."""
+        return await self._post(
+            f"/notifications/{_path_param(notification_id)}/read",
+            act_as=user_id,
+        )
+
+    async def mark_all_notifications_read(
+        self, user_id: str = "default"
+    ) -> dict:
+        """Mark all notifications as read for a user."""
+        return await self._post("/notifications/read-all", act_as=user_id)
 
     # ── Memories ──────────────────────────────────────────────────────────
 
@@ -408,14 +1223,18 @@ class NymeriaAPIClient:
         """Get a single env var's unmasked value."""
         return await self._get(f"/settings/env/{key}", act_as=user_id)
 
-    async def list_models(self) -> List[dict]:
+    async def list_models(self, user_id: Optional[str] = None) -> List[dict]:
         """List known models from the model capabilities cache."""
-        return await self._get("/models")
+        return await self._get("/models", act_as=user_id)
 
-    async def list_available_models(self, provider: Optional[str] = None) -> List[dict]:
+    async def list_available_models(
+        self,
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[dict]:
         """Fetch available models from the LLM provider."""
         params = {"provider": provider} if provider else None
-        return await self._get("/models/available", params=params)
+        return await self._get("/models/available", params=params, act_as=user_id)
 
     # ── System ────────────────────────────────────────────────────────────
 
@@ -426,7 +1245,9 @@ class NymeriaAPIClient:
     # ── Workspace ────────────────────────────────────────────────────────
 
     async def download_workspace_file(
-        self, file_path: str
+        self,
+        file_path: str,
+        user_id: Optional[str] = None,
     ) -> Optional[tuple]:
         """Download a file from the workspace.
 
@@ -436,8 +1257,9 @@ class NymeriaAPIClient:
         try:
             resp = await self._client.get(
                 self._url("/workspace/download"),
-                headers=self._headers,
+                headers=self._headers_for(user_id),
                 params={"path": file_path},
+                timeout=_DEFAULT_TIMEOUT,
             )
             resp.raise_for_status()
             if len(resp.content) > _MAX_SIZE:
@@ -452,6 +1274,14 @@ class NymeriaAPIClient:
         except Exception as e:
             logger.warning("Failed to download workspace file %s: %s", file_path, e)
             return None
+
+    async def download_workspace_artifact(
+        self,
+        path: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[tuple]:
+        """Alias for artifact-oriented callers."""
+        return await self.download_workspace_file(path, user_id=user_id)
 
     # ── Health ────────────────────────────────────────────────────────────
 
