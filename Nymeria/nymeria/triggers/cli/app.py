@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Literal, Optional, TYPE_CHECKING
 
 from ...core.stream_bridge import iter_agent_astream
+from .capabilities import TerminalCapabilities, detect_terminal_capabilities
 from .state import CLIState
 from .commands import CommandRegistry
 from .rendering.welcome import render_welcome
 from .rendering.stream import StreamRenderer
+from .transport.in_process import InProcessAgentClient
 
 if TYPE_CHECKING:
     from ...core.agent import NymeriaAgent
@@ -74,6 +77,55 @@ class CLIApp:
 
     def run(self) -> None:
         """Main REPL loop."""
+        capabilities = detect_terminal_capabilities(self.runtime_config)
+        if capabilities.renderer == "full":
+            self._run_full_screen(capabilities)
+            return
+
+        self._run_legacy_repl()
+
+    def _run_full_screen(self, capabilities: TerminalCapabilities) -> None:
+        """Run the retained full-screen TUI shell."""
+        from .rendering.full_screen import (
+            FullScreenPromptToolkitShell,
+            FullScreenShellConfig,
+        )
+        from .transport.api import APITransportStartupError, select_agent_client
+
+        async def launch() -> None:
+            local_client = InProcessAgentClient(
+                self.state.agent,
+                default_user_id=self.state.user_id,
+            )
+            try:
+                client = await select_agent_client(
+                    self.runtime_config,
+                    local_client=local_client,
+                )
+            except APITransportStartupError as exc:
+                self.state.console.print(f"[red]Error: {exc.message}[/red]")
+                return
+
+            on_turn_complete = (
+                self._maybe_auto_title if client is local_client else None
+            )
+            shell = FullScreenPromptToolkitShell(
+                client=client,
+                capabilities=capabilities,
+                config=FullScreenShellConfig(
+                    thread_id=self.state.thread_id,
+                    user_id=self.state.user_id,
+                    model=self.state.get_effective_model(),
+                    thread_label=self.state.get_thread_title(),
+                ),
+                on_turn_complete=on_turn_complete,
+            )
+            await shell.run_async()
+
+        asyncio.run(launch())
+
+    def _run_legacy_repl(self) -> None:
+        """Run the original prompt_toolkit/Rich REPL."""
         # Try to use prompt_toolkit; fall back to basic input if unavailable
         try:
             from .input import create_session
