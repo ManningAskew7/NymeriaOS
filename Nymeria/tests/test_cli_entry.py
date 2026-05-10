@@ -1330,6 +1330,76 @@ def test_run_init_parser_accepts_onboarding_flags(monkeypatch):
     assert args.full_doctor is True
 
 
+def test_run_cli_parser_accepts_tui_contract_defaults():
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(["cli"])
+    runtime_config = run_module.build_cli_runtime_config(args)
+
+    assert args.thread is None
+    assert runtime_config.transport == "auto"
+    assert runtime_config.renderer == "auto"
+    assert runtime_config.api_url is None
+    assert runtime_config.api_key is None
+    assert runtime_config.user_id == "default"
+    assert runtime_config.alt_screen is True
+    assert runtime_config.animation is True
+    assert runtime_config.ascii_only is False
+    assert runtime_config.color == "auto"
+
+
+@pytest.mark.parametrize(
+    ("thread_flag", "thread_id"),
+    [
+        ("--thread", "alpha"),
+        ("--thread-id", "beta"),
+        ("-t", "gamma"),
+    ],
+)
+def test_run_cli_parser_thread_aliases(thread_flag: str, thread_id: str):
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(["cli", thread_flag, thread_id])
+
+    assert args.thread == thread_id
+
+
+def test_run_cli_parser_carries_explicit_tui_contract_flags():
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(
+        [
+            "cli",
+            "--transport",
+            "api",
+            "--renderer",
+            "plain",
+            "--api-url",
+            "http://localhost:8000",
+            "--api-key",
+            "nym_test",
+            "--user-id",
+            "owner",
+            "--no-alt-screen",
+            "--no-animation",
+            "--ascii",
+            "--color",
+            "never",
+        ]
+    )
+    runtime_config = run_module.build_cli_runtime_config(args)
+
+    assert runtime_config.transport == "api"
+    assert runtime_config.renderer == "plain"
+    assert runtime_config.api_url == "http://localhost:8000"
+    assert runtime_config.api_key == "nym_test"
+    assert runtime_config.user_id == "owner"
+    assert runtime_config.alt_screen is False
+    assert runtime_config.animation is False
+    assert runtime_config.ascii_only is True
+    assert runtime_config.color == "never"
+
+
 def test_init_noninteractive_writes_optional_capability_keys(
     monkeypatch,
     tmp_path: Path,
