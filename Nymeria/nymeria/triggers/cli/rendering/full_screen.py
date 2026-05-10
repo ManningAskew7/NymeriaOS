@@ -5,19 +5,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import StyleAndTextTuples
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, TextArea
 
+from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
 from ..state import (
     AssistantMessage,
     CLIUIState,
@@ -71,6 +74,8 @@ class FullScreenPromptToolkitShell:
         config: FullScreenShellConfig,
         initial_state: CLIUIState | None = None,
         on_turn_complete: Callable[[str], None] | None = None,
+        command_registry: Any | None = None,
+        history_path: Path | None = None,
     ) -> None:
         self.client = client
         self.capabilities = capabilities
@@ -84,6 +89,8 @@ class FullScreenPromptToolkitShell:
         self.transcript_renderer = TranscriptRenderer()
         self._busy = False
         self._status_notice = ""
+        self._pending_submissions: deque[ComposerSubmission] = deque()
+        self._stop_requested = False
         self._current_turn_task: asyncio.Task[bool] | None = None
         self._application: Application[None] | None = None
 
@@ -94,13 +101,16 @@ class FullScreenPromptToolkitShell:
             wrap_lines=True,
             focusable=False,
         )
-        self.composer = TextArea(
-            height=1,
-            prompt="> ",
-            multiline=False,
-            wrap_lines=False,
-            accept_handler=self._accept_composer_text,
+        self.composer_controller: ComposerController = create_full_screen_composer(
+            command_registry=command_registry,
+            history_path=history_path,
+            on_submit=self._handle_composer_submission,
+            on_error=self._handle_composer_error,
+            on_stop=self._request_stop_from_composer,
+            is_busy=lambda: self._busy,
+            queued_count=lambda: len(self._pending_submissions),
         )
+        self.composer = self.composer_controller.text_area
         self.status_bar = Window(
             FormattedTextControl(self._status_fragments),
             height=1,
@@ -120,7 +130,9 @@ class FullScreenPromptToolkitShell:
         )
         app: Application[None] = Application(
             layout=Layout(body, focused_element=self.composer),
-            key_bindings=self._key_bindings(),
+            key_bindings=merge_key_bindings(
+                [self._key_bindings(), self.composer_controller.key_bindings]
+            ),
             full_screen=bool(getattr(self.capabilities, "alt_screen_enabled", True)),
             mouse_support=bool(getattr(self.capabilities, "mouse_enabled", False)),
             color_depth=_color_depth(self.capabilities),
@@ -159,6 +171,7 @@ class FullScreenPromptToolkitShell:
             return False
 
         self._busy = True
+        self._stop_requested = False
         self._status_notice = ""
         started_message = text
         self.state = start_turn(
@@ -218,15 +231,82 @@ class FullScreenPromptToolkitShell:
             await queue.put(_STREAM_DONE)
 
     def _accept_composer_text(self, buffer: Any) -> bool:
-        text = buffer.text.strip()
-        buffer.reset()
-        if not text:
-            return True
+        """Compatibility accept hook for tests and staged refactor callers."""
+
+        return self.composer_controller.submit_buffer(buffer)
+
+    def _handle_composer_submission(self, submission: ComposerSubmission) -> bool:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            return False
+
+        if self._current_turn_task is not None and not self._current_turn_task.done():
+            self._pending_submissions.append(submission)
+            self._status_notice = _queued_notice(len(self._pending_submissions))
+            self._invalidate()
             return True
-        self._current_turn_task = loop.create_task(self.run_chat_turn(text))
+
+        self._current_turn_task = loop.create_task(
+            self._run_submission_chain(submission),
+            name="NymeriaCLIFullScreenComposer",
+        )
+        return True
+
+    async def _run_submission_chain(self, submission: ComposerSubmission) -> bool:
+        current: ComposerSubmission | None = submission
+        ran_turn = False
+        while current is not None:
+            ran_turn = await self.run_chat_turn(
+                current.message,
+                attachments=current.attachments,
+            )
+            current = self._pending_submissions.popleft() if self._pending_submissions else None
+            if current is not None:
+                self._status_notice = _queued_notice(len(self._pending_submissions))
+                self._invalidate()
+        if self._status_notice.startswith("Queued message"):
+            self._status_notice = ""
+            self._invalidate()
+        return ran_turn
+
+    def _handle_composer_error(self, message: str) -> None:
+        self._status_notice = message
+        self._invalidate()
+
+    def _request_stop_from_composer(self) -> bool:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        loop.create_task(self.stop_current_turn(), name="NymeriaCLIStopTurn")
+        return True
+
+    async def stop_current_turn(self) -> bool:
+        """Request backend/local cancellation without clearing current input."""
+
+        if not self._busy:
+            self._status_notice = "No active turn"
+            self._invalidate()
+            return False
+        if self._stop_requested:
+            self._status_notice = "Stop already requested"
+            self._invalidate()
+            return False
+
+        self._stop_requested = True
+        self._status_notice = "Stopping active turn..."
+        self._invalidate()
+        try:
+            await self.client.stop(self.config.thread_id, self.config.user_id)
+        except Exception as exc:  # noqa: BLE001 - transport errors surface in UI.
+            self._status_notice = f"Stop failed: {exc}"
+            self._stop_requested = False
+            self._invalidate()
+            return False
+
+        self._status_notice = "Stop requested"
+        self._invalidate()
         return True
 
     def _key_bindings(self) -> KeyBindings:
@@ -300,6 +380,8 @@ class FullScreenPromptToolkitShell:
             parts.append(model)
         if context:
             parts.append(context)
+        if self._pending_submissions:
+            parts.append(f"queued {len(self._pending_submissions)}")
         return truncate_text(" | ".join(parts), width)
 
 
@@ -390,6 +472,12 @@ def _context_label(state: CLIUIState) -> str:
     return ""
 
 
+def _queued_notice(count: int) -> str:
+    if count == 1:
+        return "Queued message (1)"
+    return f"Queued messages ({count})"
+
+
 def _render_width(capabilities: Any) -> int:
     return _positive_width(getattr(capabilities, "width", DEFAULT_TRANSCRIPT_WIDTH))
 
@@ -422,6 +510,10 @@ def _style(capabilities: Any) -> Style:
         {
             "frame.label": "ansicyan bold",
             "status": "reverse",
+            "composer": "ansicyan",
+            "composer.busy": "ansiyellow",
+            "composer.queued": "ansiyellow",
+            "composer.error": "ansired",
         }
     )
 
