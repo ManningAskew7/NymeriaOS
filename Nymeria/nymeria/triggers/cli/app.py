@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Literal, Optional, TYPE_CHECKING
 
 from ...core.stream_bridge import iter_agent_astream
 from .state import CLIState
@@ -13,6 +14,26 @@ from .rendering.stream import StreamRenderer
 
 if TYPE_CHECKING:
     from ...core.agent import NymeriaAgent
+
+
+TransportMode = Literal["api", "local", "auto"]
+RendererMode = Literal["full", "rich", "plain", "auto"]
+ColorMode = Literal["auto", "always", "never"]
+
+
+@dataclass(frozen=True, slots=True)
+class CLIRuntimeConfig:
+    """Launch-time CLI options shared by future transport and renderer tasks."""
+
+    transport: TransportMode = "auto"
+    renderer: RendererMode = "auto"
+    api_url: Optional[str] = None
+    api_key: Optional[str] = None
+    user_id: str = "default"
+    alt_screen: bool = True
+    animation: bool = True
+    ascii_only: bool = False
+    color: ColorMode = "auto"
 
 
 class CLIApp:
@@ -27,8 +48,14 @@ class CLIApp:
         agent: "NymeriaAgent",
         thread_id: Optional[str] = None,
         user_id: str = "default",
+        runtime_config: CLIRuntimeConfig | None = None,
     ) -> None:
-        self.state = CLIState(agent, thread_id=thread_id, user_id=user_id)
+        self.runtime_config = runtime_config or CLIRuntimeConfig(user_id=user_id)
+        self.state = CLIState(
+            agent,
+            thread_id=thread_id,
+            user_id=self.runtime_config.user_id,
+        )
         self.registry = CommandRegistry()
         self.renderer = StreamRenderer(self.state)
         self._register_all_commands()

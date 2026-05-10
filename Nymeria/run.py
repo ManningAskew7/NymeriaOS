@@ -224,6 +224,23 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
     )
 
 
+def build_cli_runtime_config(args: argparse.Namespace):
+    """Build the CLI runtime config from parsed launch flags."""
+    from nymeria.triggers.cli.app import CLIRuntimeConfig
+
+    return CLIRuntimeConfig(
+        transport=args.transport,
+        renderer=args.renderer,
+        api_url=args.api_url,
+        api_key=args.api_key,
+        user_id=args.user_id,
+        alt_screen=args.alt_screen,
+        animation=args.animation,
+        ascii_only=args.ascii_only,
+        color=args.color,
+    )
+
+
 def run_cli(args: argparse.Namespace) -> None:
     """Run the CLI interface."""
     # Suppress logging for clean CLI experience — errors like missing API keys
@@ -238,9 +255,10 @@ def run_cli(args: argparse.Namespace) -> None:
     # Create agent with all tools
     agent = NymeriaAgent(tools=list(ALL_TOOLS))
     agent.sync_agent_tools()
+    runtime_config = build_cli_runtime_config(args)
 
     # Start CLI
-    start_cli(agent=agent, thread_id=args.thread)
+    start_cli(agent=agent, thread_id=args.thread, runtime_config=runtime_config)
 
 
 def run_api(args: argparse.Namespace) -> None:
@@ -676,9 +694,8 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
     print("Gateway stopped")
 
 
-def main() -> None:
-    """Main entry point."""
-    _suppress_runtime_dependency_warnings()
+def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level launcher parser."""
     from nymeria.onboarding import (
         HostingOption,
         NextAction,
@@ -694,6 +711,7 @@ def main() -> None:
 Examples:
     python run.py cli                # Start CLI interface
     python run.py cli -t mythread    # Start CLI with specific thread ID
+    python run.py cli --thread-id mythread
     python run.py api                # Start API server (default port 8000)
     python run.py api -p 8080        # Start API on port 8080
     python run.py doctor             # Diagnose local configuration
@@ -718,9 +736,70 @@ Examples:
     cli_parser = subparsers.add_parser("cli", help="Start CLI interface")
     cli_parser.add_argument(
         "--thread",
+        "--thread-id",
         "-t",
+        dest="thread",
         default=None,
         help="Thread ID for conversation persistence",
+    )
+    cli_parser.add_argument(
+        "--transport",
+        choices=("api", "local", "auto"),
+        default="auto",
+        help=(
+            "Transport mode for the CLI runtime contract "
+            "(default: auto; current implementation still uses local REPL)"
+        ),
+    )
+    cli_parser.add_argument(
+        "--renderer",
+        choices=("full", "rich", "plain", "auto"),
+        default="auto",
+        help=(
+            "Renderer mode for the CLI runtime contract "
+            "(default: auto; current implementation still uses the existing REPL)"
+        ),
+    )
+    cli_parser.add_argument(
+        "--api-url",
+        default=None,
+        help="Nymeria API URL for future API transport mode",
+    )
+    cli_parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Nymeria API key for future API transport mode",
+    )
+    cli_parser.add_argument(
+        "--user-id",
+        default="default",
+        help="User ID for CLI requests (default: default)",
+    )
+    cli_parser.add_argument(
+        "--no-alt-screen",
+        dest="alt_screen",
+        action="store_false",
+        default=True,
+        help="Disable alternate-screen mode for future full-screen renderer",
+    )
+    cli_parser.add_argument(
+        "--no-animation",
+        dest="animation",
+        action="store_false",
+        default=True,
+        help="Disable spinner/status animation in future CLI renderers",
+    )
+    cli_parser.add_argument(
+        "--ascii",
+        dest="ascii_only",
+        action="store_true",
+        help="Prefer ASCII-only CLI output in future renderers",
+    )
+    cli_parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Color output policy for future CLI renderers (default: auto)",
     )
 
     # API subcommand
@@ -941,6 +1020,13 @@ Examples:
     from nymeria.cli import users as users_cli
     users_cli.build_parser(subparsers)
 
+    return parser
+
+
+def main() -> None:
+    """Main entry point."""
+    _suppress_runtime_dependency_warnings()
+    parser = build_parser()
     args = parser.parse_args()
     service_token_required = _service_token_requirement(args) is not None
 
@@ -987,6 +1073,8 @@ Examples:
     elif args.command == "service":
         run_service(args)
     elif args.command == "users":
+        from nymeria.cli import users as users_cli
+
         sys.exit(users_cli.dispatch(args))
     else:
         parser.print_help()
