@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from collections.abc import Iterable, Sequence
 from typing import Any, TextIO
@@ -23,6 +24,7 @@ from ..state import (
 from .indicator import activity_state_from_ui_state
 
 ANSI_ESCAPE_PREFIX = "\x1b"
+ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DEFAULT_PREVIEW_LIMIT = 120
 
 
@@ -328,7 +330,7 @@ def strip_ansi(text: str) -> str:
 
     if ANSI_ESCAPE_PREFIX not in text:
         return text
-    return text.replace(ANSI_ESCAPE_PREFIX, "")
+    return ANSI_ESCAPE_RE.sub("", text)
 
 
 def _assistant_response_lengths(state: CLIUIState) -> dict[str, int]:
