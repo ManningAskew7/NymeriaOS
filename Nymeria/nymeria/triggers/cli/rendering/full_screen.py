@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 from collections import deque
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, TextArea
 
 from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
+from ..commands import CommandContext, CommandResult, ListCommandOutputSink
 from ..state import (
     AssistantMessage,
     CLIUIState,
@@ -82,6 +84,7 @@ class FullScreenPromptToolkitShell:
         self.capabilities = capabilities
         self.config = config
         self.on_turn_complete = on_turn_complete
+        self.command_registry = command_registry
         self.state = initial_state or create_initial_state(
             thread_id=config.thread_id,
             user_id=config.user_id,
@@ -237,6 +240,10 @@ class FullScreenPromptToolkitShell:
         return self.composer_controller.submit_buffer(buffer)
 
     def _handle_composer_submission(self, submission: ComposerSubmission) -> bool:
+        message = submission.message.strip()
+        if message.startswith("/") and self.command_registry is not None:
+            return self._handle_command_submission(message)
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -252,6 +259,95 @@ class FullScreenPromptToolkitShell:
             name="NymeriaCLIFullScreenComposer",
         )
         return True
+
+    def _handle_command_submission(self, raw_input: str) -> bool:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        loop.create_task(
+            self._run_command(raw_input),
+            name="NymeriaCLIFullScreenCommand",
+        )
+        return True
+
+    async def _run_command(self, raw_input: str) -> CommandResult:
+        output = ListCommandOutputSink()
+        context = CommandContext(
+            client=self.client,
+            output=output,
+            dispatch_state=self._dispatch_command_action,
+            thread_id=self.config.thread_id,
+            user_id=self.config.user_id,
+        )
+        result = await self.command_registry.dispatch_async(context, raw_input)
+        self._apply_command_result(result, output.messages)
+        return result
+
+    async def _dispatch_command_action(self, action: Any) -> None:
+        if isinstance(action, Mapping) and action.get("type") == "clear_transcript":
+            self._clear_transcript()
+
+    def _apply_command_result(
+        self,
+        result: CommandResult,
+        messages: Sequence[Any],
+    ) -> None:
+        if result.status == "clear":
+            self._clear_transcript()
+        else:
+            self._append_command_messages(messages)
+
+        if messages:
+            level = getattr(messages[-1], "level", "info")
+            self._set_status_notice(
+                _first_status_line(getattr(messages[-1], "content", "")),
+                level="error" if level == "error" else "info",
+            )
+        elif result.status == "clear":
+            self._set_status_notice("Cleared.")
+
+        if result.status == "exit" and self._application is not None:
+            self._application.exit()
+
+    def _append_command_messages(self, messages: Sequence[Any]) -> None:
+        if not messages:
+            return
+        timestamp = time.monotonic()
+        additions: list[SystemMessage] = []
+        for message in messages:
+            content = str(getattr(message, "content", "") or "").strip()
+            if not content:
+                continue
+            level = str(getattr(message, "level", "info"))
+            additions.append(
+                SystemMessage(
+                    id=f"command-{uuid.uuid4().hex[:8]}",
+                    kind="error" if level == "error" else "diagnostic",
+                    content=content,
+                    timestamp=timestamp,
+                    details={
+                        "level": level,
+                        "title": str(getattr(message, "title", "") or ""),
+                    },
+                )
+            )
+        if not additions:
+            return
+        self.state = replace(
+            self.state,
+            messages=self.state.messages + tuple(additions),
+            updated_at=timestamp,
+        )
+        self._refresh_transcript()
+
+    def _clear_transcript(self) -> None:
+        self.state = create_initial_state(
+            thread_id=self.config.thread_id,
+            user_id=self.config.user_id,
+            now=time.monotonic(),
+        )
+        self._refresh_transcript()
 
     async def _run_submission_chain(self, submission: ComposerSubmission) -> bool:
         current: ComposerSubmission | None = submission
@@ -463,6 +559,11 @@ def _queued_notice(count: int) -> str:
     if count == 1:
         return "Queued message (1)"
     return f"Queued messages ({count})"
+
+
+def _first_status_line(text: str) -> str:
+    line = str(text or "").strip().splitlines()
+    return line[0] if line else "Command completed."
 
 
 def _render_width(capabilities: Any) -> int:
