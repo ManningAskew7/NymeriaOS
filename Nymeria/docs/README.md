@@ -40,9 +40,22 @@ python run.py cli
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
+## CLI Modes
+
+The interactive CLI supports three renderer modes and two transport families:
+
+```bash
+python run.py cli --renderer auto --transport auto
+python run.py cli --renderer full --transport api --api-url http://localhost:8000 --api-key <token>
+python run.py cli --renderer plain --transport local
+```
+
+`--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. `--transport auto` uses the REST/SSE API when API credentials are configured and otherwise falls back to the local in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
+
 ## Documentation
 
 - [Architecture Overview](./architecture.md) - How Nymeria works internally
+- [UI Knowledge Base](./ui-knowledgebase.md) - User-facing desktop, mobile, bot, Outlook, CLI, and API behavior reference
 - [Tools Reference](./tools.md) - Built-in tools, optional tools, custom tools, and callable threads
 - [Configuration](./configuration.md) - Environment variables and settings
 - [API Reference](./api.md) - REST API endpoints including settings, tools, TODOs, MCP servers, voice, and callable threads
