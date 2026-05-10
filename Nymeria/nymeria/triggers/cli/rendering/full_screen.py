@@ -285,8 +285,41 @@ class FullScreenPromptToolkitShell:
         return result
 
     async def _dispatch_command_action(self, action: Any) -> None:
-        if isinstance(action, Mapping) and action.get("type") == "clear_transcript":
+        if not isinstance(action, Mapping):
+            return
+        action_type = action.get("type")
+        if action_type == "clear_transcript":
             self._clear_transcript()
+        elif action_type == "redraw":
+            self._refresh_transcript()
+        elif action_type == "switch_thread":
+            thread_id = str(action.get("thread_id") or self.config.thread_id)
+            thread_label = str(action.get("thread_label") or thread_id)
+            model = str(action.get("model") or self.config.model)
+            self.config = replace(
+                self.config,
+                thread_id=thread_id,
+                thread_label=thread_label,
+                model=model,
+            )
+            self.state = create_initial_state(
+                thread_id=thread_id,
+                user_id=self.config.user_id,
+                now=time.monotonic(),
+            )
+            self._refresh_transcript()
+        elif action_type == "set_thread_label":
+            self.config = replace(
+                self.config,
+                thread_label=str(action.get("thread_label") or self.config.thread_label),
+            )
+            self._invalidate()
+        elif action_type == "set_model":
+            self.config = replace(
+                self.config,
+                model=str(action.get("model") or self.config.model),
+            )
+            self._invalidate()
 
     def _apply_command_result(
         self,
