@@ -245,7 +245,7 @@ def run_cli(args: argparse.Namespace) -> None:
     """Run the CLI interface."""
     # Suppress logging for clean CLI experience — errors like missing API keys
     # (e.g. RAG embedding) are expected in local dev and shouldn't clutter the REPL.
-    # Fatal issues still surface via stream error events rendered by StreamRenderer.
+    # Fatal issues still surface via stream error events rendered by the CLI.
     logging.getLogger("nymeria").setLevel(logging.CRITICAL)
 
     from nymeria import NymeriaAgent
@@ -747,28 +747,25 @@ Examples:
         choices=("api", "local", "auto"),
         default="auto",
         help=(
-            "Transport mode for the CLI runtime contract "
-            "(default: auto; current implementation still uses local REPL)"
+            "Transport mode for CLI chat and command requests "
+            "(default: auto; API when configured, local fallback)"
         ),
     )
     cli_parser.add_argument(
         "--renderer",
         choices=("full", "rich", "plain", "auto"),
         default="auto",
-        help=(
-            "Renderer mode for the CLI runtime contract "
-            "(default: auto; current implementation still uses the existing REPL)"
-        ),
+        help="Renderer mode for CLI terminal output (default: auto)",
     )
     cli_parser.add_argument(
         "--api-url",
         default=None,
-        help="Nymeria API URL for future API transport mode",
+        help="Nymeria API URL for API transport mode",
     )
     cli_parser.add_argument(
         "--api-key",
         default=None,
-        help="Nymeria API key for future API transport mode",
+        help="Nymeria API key for API transport mode",
     )
     cli_parser.add_argument(
         "--user-id",
@@ -780,20 +777,20 @@ Examples:
         dest="alt_screen",
         action="store_false",
         default=True,
-        help="Disable alternate-screen mode for future full-screen renderer",
+        help="Disable alternate-screen mode for full-screen renderer",
     )
     cli_parser.add_argument(
         "--no-animation",
         dest="animation",
         action="store_false",
         default=True,
-        help="Disable spinner/status animation in future CLI renderers",
+        help="Disable spinner/status animation in CLI renderers",
     )
     cli_parser.add_argument(
         "--ascii",
         dest="ascii_only",
         action="store_true",
-        help="Prefer ASCII-only CLI output in future renderers",
+        help="Prefer ASCII-only CLI output in renderers",
     )
     cli_parser.add_argument(
         "--color",
