@@ -13,6 +13,8 @@ from nymeria.triggers.cli.events import (
     IterationLimitEvent,
     QueuedEvent,
     ResponseEvent,
+    TaskCompletedEvent,
+    TaskStartedEvent,
     ThinkingEvent,
     ToolCallDeltaEvent,
     ToolCallEvent,
@@ -168,6 +170,39 @@ def test_normalizes_all_known_stream_event_types() -> None:
                 agent_name="Researcher",
                 repeated_tool_name="lookup",
                 repeated_count=5,
+            ),
+        ),
+        (
+            {
+                "type": "task_started",
+                "task_id": "todo-1",
+                "prompt": "Work on TODO todo-1: Check status",
+                "todo_id": "todo-1",
+                "source": "scheduler",
+            },
+            TaskStartedEvent(
+                thread_id="thread-a",
+                task_id="todo-1",
+                prompt="Work on TODO todo-1: Check status",
+                todo_id="todo-1",
+                source="scheduler",
+            ),
+        ),
+        (
+            {
+                "type": "task_completed",
+                "task_id": "todo-1",
+                "content": "Done.",
+                "todo_id": "todo-1",
+                "error": False,
+                "notify": True,
+            },
+            TaskCompletedEvent(
+                thread_id="thread-a",
+                task_id="todo-1",
+                content="Done.",
+                todo_id="todo-1",
+                notify=True,
             ),
         ),
         (

@@ -107,6 +107,17 @@ class InProcessAgentClient:
         finally:
             cancel_event.set()
 
+    async def stream_autonomous(
+        self,
+        user_id: str = "default",
+        *,
+        client_id: str | None = None,
+    ) -> AsyncIterator[NormalizedEvent]:
+        """Local transport has no separate autonomous SSE subscription."""
+
+        if False:
+            yield ErrorEvent(thread_id=None, content=user_id or client_id or "")
+
     async def stop(
         self,
         thread_id: str,

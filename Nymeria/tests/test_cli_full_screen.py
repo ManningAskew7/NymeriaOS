@@ -71,6 +71,37 @@ def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> No
     assert "Ready" in shell._status_text()
 
 
+def test_full_screen_shell_consumes_current_thread_autonomous_events() -> None:
+    client = FakeAgentClient(
+        autonomous_events=[
+            {"type": "task_started", "thread_id": "other", "prompt": "Ignore me"},
+            {
+                "type": "task_started",
+                "thread_id": "thread-1",
+                "task_id": "todo-1",
+                "todo_id": "todo-1",
+                "prompt": "Work on TODO todo-1: Run a CLI smoke test",
+            },
+            {"type": "response", "thread_id": "thread-1", "content": "Smoke"},
+            {
+                "type": "task_completed",
+                "thread_id": "thread-1",
+                "task_id": "todo-1",
+                "todo_id": "todo-1",
+                "content": "Smoke test passed.",
+            },
+        ],
+    )
+    shell = make_shell(client=client)
+
+    run(shell._consume_autonomous_stream())
+
+    assert client.autonomous_requests[0]["user_id"] == "alice"
+    assert "Autonomous TODO started: Run a CLI smoke test" in shell.transcript.text
+    assert "Nymeria: Smoke test passed." in shell.transcript.text
+    assert "Ignore me" not in shell.transcript.text
+
+
 def test_full_screen_transcript_renders_tool_rows_in_event_order() -> None:
     state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
     state = start_turn(state, "use a tool", now=0.1)

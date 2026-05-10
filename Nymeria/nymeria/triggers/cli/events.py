@@ -21,6 +21,8 @@ KnownEventType: TypeAlias = Literal[
     "compacted",
     "context_attached",
     "iteration_limit",
+    "task_started",
+    "task_completed",
     "error",
     "done",
 ]
@@ -156,6 +158,26 @@ class IterationLimitEvent(CLIStreamEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TaskStartedEvent(CLIStreamEvent):
+    type: Literal["task_started"] = "task_started"
+    task_id: str = ""
+    prompt: str = ""
+    todo_id: str = ""
+    source: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TaskCompletedEvent(CLIStreamEvent):
+    type: Literal["task_completed"] = "task_completed"
+    task_id: str = ""
+    content: str = ""
+    todo_id: str = ""
+    error: bool = False
+    error_message: str = ""
+    notify: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ErrorEvent(CLIStreamEvent):
     type: Literal["error"] = "error"
     content: str = ""
@@ -195,6 +217,8 @@ NormalizedEvent: TypeAlias = (
     | CompactedEvent
     | ContextAttachedEvent
     | IterationLimitEvent
+    | TaskStartedEvent
+    | TaskCompletedEvent
     | ErrorEvent
     | DoneEvent
     | DiagnosticEvent
@@ -363,6 +387,31 @@ def normalize_stream_event(
             repeated_count=_optional_int(
                 _first(payload, "repeated_count", "repeatedCount"),
             ),
+            raw=raw,
+        )
+
+    if event_type == "task_started":
+        return TaskStartedEvent(
+            thread_id=thread_id,
+            task_id=_text(_first(payload, "task_id", "taskId"), default=""),
+            prompt=_text(_first(payload, "prompt", "message", "content"), default=""),
+            todo_id=_text(_first(payload, "todo_id", "todoId"), default=""),
+            source=_text(_first(payload, "source"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "task_completed":
+        return TaskCompletedEvent(
+            thread_id=thread_id,
+            task_id=_text(_first(payload, "task_id", "taskId"), default=""),
+            content=_text(_first(payload, "content", "message"), default=""),
+            todo_id=_text(_first(payload, "todo_id", "todoId"), default=""),
+            error=_bool(_first(payload, "error"), default=False),
+            error_message=_text(
+                _first(payload, "error_message", "errorMessage"),
+                default="",
+            ),
+            notify=_bool(_first(payload, "notify"), default=False),
             raw=raw,
         )
 
@@ -560,6 +609,8 @@ __all__ = [
     "CompactedEvent",
     "ContextAttachedEvent",
     "IterationLimitEvent",
+    "TaskStartedEvent",
+    "TaskCompletedEvent",
     "ErrorEvent",
     "DoneEvent",
     "DiagnosticEvent",

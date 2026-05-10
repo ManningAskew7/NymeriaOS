@@ -27,6 +27,14 @@ class AgentClient(Protocol):
     ) -> AsyncIterator[NormalizedEvent]:
         """Stream normalized chat events for a user message."""
 
+    def stream_autonomous(
+        self,
+        user_id: str = "default",
+        *,
+        client_id: str | None = None,
+    ) -> AsyncIterator[NormalizedEvent]:
+        """Stream normalized autonomous/background events when supported."""
+
     async def stop(
         self,
         thread_id: str,

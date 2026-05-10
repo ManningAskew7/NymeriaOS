@@ -104,6 +104,8 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
             ("/compact", "Trigger manual compaction"),
         ],
         "System": [
+            ("/login [api-url], /connect", "Connect to a Nymeria API"),
+            ("/logout", "Disconnect and remove saved CLI token"),
             ("/help, /h", "Show this help"),
             ("/settings", "Show global settings"),
             ("/history", "Show conversation history"),
@@ -243,7 +245,8 @@ def unsupported_transport_result(
 
     suffix = f" Missing client method: {method_name}." if method_name else ""
     return CommandResult.failed(
-        f"{command} is not available with the current transport.{suffix}",
+        f"{command} is not available with the current transport. "
+        f"Run /login to connect to a Nymeria API if needed.{suffix}",
         error_code="unsupported_transport",
         payload={"method": method_name} if method_name else None,
     )

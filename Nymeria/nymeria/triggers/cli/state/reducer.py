@@ -21,6 +21,8 @@ from ..events import (
     NormalizedEvent,
     QueuedEvent,
     ResponseEvent,
+    TaskCompletedEvent,
+    TaskStartedEvent,
     ThinkingEvent,
     ToolCallDeltaEvent,
     ToolCallEvent,
@@ -173,6 +175,10 @@ def reduce_stream_event(
         return _reduce_context_attached(state, normalized, timestamp)
     if isinstance(normalized, IterationLimitEvent):
         return _reduce_iteration_limit(state, normalized, timestamp)
+    if isinstance(normalized, TaskStartedEvent):
+        return _reduce_task_started(state, normalized, timestamp)
+    if isinstance(normalized, TaskCompletedEvent):
+        return _reduce_task_completed(state, normalized, timestamp)
     if isinstance(normalized, ToolReloadEvent):
         return _reduce_tool_reload(state, normalized, timestamp)
     if isinstance(normalized, ErrorEvent):
@@ -445,6 +451,85 @@ def _reduce_iteration_limit(
         state,
         messages=state.messages + (notice,),
         updated_at=timestamp,
+    )
+
+
+def _reduce_task_started(
+    state: CLIUIState,
+    event: TaskStartedEvent,
+    timestamp: float,
+) -> CLIUIState:
+    notice = SystemMessage(
+        id=_new_id("system"),
+        kind="autonomous",
+        content=_autonomous_started_content(event),
+        timestamp=timestamp,
+        details={
+            "task_id": event.task_id,
+            "todo_id": event.todo_id,
+            "source": event.source,
+        },
+    )
+    assistant = AssistantMessage(
+        id=_new_id("assistant"),
+        timestamp=timestamp,
+        activity_phase="processing",
+        activity_updated_at=timestamp,
+    )
+    return replace(
+        state,
+        messages=state.messages + (notice, assistant),
+        current_assistant_id=assistant.id,
+        turn_status="streaming",
+        is_queued=False,
+        queue=None,
+        active_tool_calls={},
+        tool_call_delta_buffer="",
+        updated_at=timestamp,
+    )
+
+
+def _reduce_task_completed(
+    state: CLIUIState,
+    event: TaskCompletedEvent,
+    timestamp: float,
+) -> CLIUIState:
+    state = _ensure_streaming_assistant(state, timestamp, phase="typing")
+    content = event.content or (
+        f"Task failed: {event.error_message}" if event.error_message else ""
+    )
+    if content:
+        state = _update_last_assistant(
+            state,
+            lambda message: _with_completion_content(message, content, timestamp),
+            timestamp,
+        )
+
+    message_status: MessageStatus = "error" if event.error else "complete"
+    state = _update_running_tools(state, "error" if event.error else "success", timestamp)
+    errors = state.errors
+    if event.error:
+        errors = errors + (
+            ErrorNotice(
+                content=event.error_message or event.content or "Autonomous task failed.",
+                code="autonomous_task_error",
+                details={
+                    "task_id": event.task_id,
+                    "todo_id": event.todo_id,
+                },
+                timestamp=timestamp,
+            ),
+        )
+    return _update_last_assistant(
+        state,
+        lambda message: _finalize_assistant(message, message_status),
+        timestamp,
+        turn_status="error" if event.error else "complete",
+        is_queued=False,
+        queue=None,
+        active_tool_calls={},
+        tool_call_delta_buffer="",
+        errors=errors,
     )
 
 
@@ -803,6 +888,21 @@ def _with_error_response(
     return replace(next_message, status=status)
 
 
+def _with_completion_content(
+    message: AssistantMessage,
+    content: str,
+    timestamp: float,
+) -> AssistantMessage:
+    existing = select_response_content(message)
+    if not existing:
+        return _with_appended_response(message, content, timestamp)
+    if content.startswith(existing):
+        suffix = content[len(existing) :]
+        if suffix:
+            return _with_appended_response(message, suffix, timestamp)
+    return message
+
+
 def _finalize_assistant(
     message: AssistantMessage,
     status: MessageStatus,
@@ -893,6 +993,27 @@ def _normalize_tool_status(status: str) -> ToolCallStatus:
     if status in {"failed", "failure"}:
         return "error"
     return "success"
+
+
+def _autonomous_started_content(event: TaskStartedEvent) -> str:
+    label = "Autonomous TODO started" if event.todo_id else "Autonomous task started"
+    prompt = _summarize_autonomous_prompt(event.prompt, event.todo_id)
+    return f"{label}: {prompt}" if prompt else f"{label}."
+
+
+def _summarize_autonomous_prompt(prompt: str, todo_id: str) -> str:
+    text = " ".join(str(prompt or "").split())
+    if not text:
+        return ""
+    if todo_id:
+        prefix = f"Work on TODO {todo_id}:"
+        if text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    if text.startswith("Work on TODO "):
+        _head, separator, tail = text.partition(":")
+        if separator and tail.strip():
+            return tail.strip()
+    return text
 
 
 def _artifact_from_event(event: WorkspaceArtifactEvent) -> WorkspaceArtifact:

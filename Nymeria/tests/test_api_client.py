@@ -130,6 +130,23 @@ def test_api_client_reuses_one_httpx_client_for_json_requests(monkeypatch):
     assert fake.requests[2]["headers"]["X-Nymeria-Act-As"] == "user-1"
 
 
+def test_api_client_uses_loop_local_httpx_clients(monkeypatch):
+    _patch_async_client(monkeypatch)
+
+    client = NymeriaAPIClient(base_url="http://api/", api_key="secret")
+
+    async def request_once() -> None:
+        assert await client.get_settings() == {"ok": True, "method": "GET"}
+
+    asyncio.run(request_once())
+    asyncio.run(request_once())
+    asyncio.run(client.close())
+
+    assert len(FakeAsyncClient.instances) == 2
+    assert all(fake.closed for fake in FakeAsyncClient.instances)
+    assert [fake.close_count for fake in FakeAsyncClient.instances] == [1, 1]
+
+
 def test_api_client_reuses_client_for_streaming_and_workspace_download(monkeypatch):
     _patch_async_client(monkeypatch)
 

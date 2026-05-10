@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from ....triggers.api_client import NymeriaAPIClient
+from ..credentials import CLIConnectionProfile, load_cli_config
 from ..events import ErrorEvent, NormalizedEvent, normalize_stream_event
 from .base import AgentClient, Attachment
+from .disconnected import DisconnectedAgentClient
 
 TransportMode = Literal["api", "local", "auto"]
 
@@ -25,6 +27,7 @@ class CLITransportRuntimeConfig(Protocol):
     api_url: str | None
     api_key: str | None
     user_id: str
+    user_id_explicit: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,8 +36,12 @@ class APIConnectionConfig:
 
     api_url: str = DEFAULT_API_URL
     api_key: str | None = None
+    user_id: str = "default"
     explicit_api_url: bool = False
     explicit_api_key: bool = False
+    api_url_source: str = "default"
+    api_key_source: str = ""
+    user_id_source: str = "default"
 
     @property
     def has_api_key(self) -> bool:
@@ -43,6 +50,10 @@ class APIConnectionConfig:
     @property
     def explicitly_configured(self) -> bool:
         return self.explicit_api_url or self.explicit_api_key
+
+    @property
+    def from_saved_profile(self) -> bool:
+        return self.api_key_source == "saved" or self.api_url_source == "saved"
 
 
 @dataclass(slots=True)
@@ -135,6 +146,30 @@ class APIAgentClient:
                 api_url=self.base_url,
                 thread_id=thread_id,
                 default_code="api_transport_error",
+            )
+
+    async def stream_autonomous(
+        self,
+        user_id: str = "default",
+        *,
+        client_id: str | None = None,
+    ) -> AsyncIterator[NormalizedEvent]:
+        """Stream API autonomous SSE events as normalized CLI events."""
+
+        selected_user_id = self._selected_user_id(user_id)
+        try:
+            async for raw_event in self.api.autonomous_stream(
+                user_id=selected_user_id,
+                act_as=selected_user_id,
+                client_id=client_id,
+            ):
+                yield normalize_stream_event(raw_event)
+        except Exception as exc:  # noqa: BLE001 - background stream reports status.
+            yield _error_event_from_exception(
+                exc,
+                api_url=self.base_url,
+                thread_id=None,
+                default_code="api_autonomous_stream_error",
             )
 
     async def stop(
@@ -232,10 +267,13 @@ def resolve_api_connection_config(
     runtime_config: CLITransportRuntimeConfig | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    saved_profile: CLIConnectionProfile | None = None,
 ) -> APIConnectionConfig:
-    """Resolve API URL/key from CLI flags and environment variables."""
+    """Resolve API URL/key from CLI flags, env, saved profile, then defaults."""
 
     env = os.environ if environ is None else environ
+    if saved_profile is None and environ is None:
+        saved_profile = load_cli_config().active
 
     cli_url = _clean_optional(getattr(runtime_config, "api_url", None))
     cli_key = _clean_optional(getattr(runtime_config, "api_key", None))
@@ -245,12 +283,43 @@ def resolve_api_connection_config(
         or _clean_optional(env.get("NYMERIA_SERVICE_TOKEN"))
         or _clean_optional(env.get("NYMERIA_API_KEY"))
     )
+    saved_url = _clean_optional(saved_profile.api_url if saved_profile else None)
+    saved_key = _clean_optional(saved_profile.api_key if saved_profile else None)
+
+    api_url, api_url_source = _select_value(
+        (cli_url, "flag"),
+        (env_url, "env"),
+        (saved_url, "saved"),
+        (DEFAULT_API_URL, "default"),
+    )
+    api_key, api_key_source = _select_value(
+        (cli_key, "flag"),
+        (env_key, "env"),
+        (saved_key, "saved"),
+    )
+
+    runtime_user_id = getattr(runtime_config, "user_id", "default") or "default"
+    user_id_explicit = bool(getattr(runtime_config, "user_id_explicit", False))
+    saved_user_id = _clean_optional(saved_profile.user_id if saved_profile else None)
+    if user_id_explicit:
+        user_id = runtime_user_id
+        user_id_source = "flag"
+    elif saved_user_id:
+        user_id = saved_user_id
+        user_id_source = "saved"
+    else:
+        user_id = runtime_user_id
+        user_id_source = "default"
 
     return APIConnectionConfig(
-        api_url=(cli_url or env_url or DEFAULT_API_URL).rstrip("/"),
-        api_key=cli_key or env_key,
+        api_url=api_url.rstrip("/"),
+        api_key=api_key,
+        user_id=user_id,
         explicit_api_url=bool(cli_url or env_url),
         explicit_api_key=bool(cli_key or env_key),
+        api_url_source=api_url_source,
+        api_key_source=api_key_source,
+        user_id_source=user_id_source,
     )
 
 
@@ -259,13 +328,18 @@ def create_api_agent_client(
     *,
     api_client_factory: Callable[..., Any] = NymeriaAPIClient,
     environ: Mapping[str, str] | None = None,
+    saved_profile: CLIConnectionProfile | None = None,
 ) -> APIAgentClient:
     """Create an API transport from resolved runtime configuration."""
 
-    config = resolve_api_connection_config(runtime_config, environ=environ)
+    config = resolve_api_connection_config(
+        runtime_config,
+        environ=environ,
+        saved_profile=saved_profile,
+    )
     if not config.has_api_key:
         raise APITransportStartupError(
-            "API transport requires an API token. Pass --api-key or set NYMERIA_SERVICE_TOKEN.",
+            "API transport requires an API token. Run /login or pass --api-key.",
             code="api_auth_missing",
             api_url=config.api_url,
         )
@@ -274,8 +348,49 @@ def create_api_agent_client(
     return APIAgentClient(
         api,
         base_url=config.api_url,
-        default_user_id=getattr(runtime_config, "user_id", "default") or "default",
+        default_user_id=config.user_id,
     )
+
+
+async def validate_api_agent_client(
+    config: APIConnectionConfig,
+    *,
+    api_client_factory: Callable[..., Any] = NymeriaAPIClient,
+) -> APIAgentClient:
+    """Create and validate an API client with health and identity checks."""
+
+    if not config.has_api_key:
+        raise APITransportStartupError(
+            "API transport requires an API token. Run /login or pass --api-key.",
+            code="api_auth_missing",
+            api_url=config.api_url,
+        )
+
+    api = api_client_factory(base_url=config.api_url, api_key=config.api_key)
+    api_client = APIAgentClient(
+        api,
+        base_url=config.api_url,
+        default_user_id=config.user_id,
+    )
+
+    try:
+        healthy = await api.health()
+        if not healthy:
+            raise APITransportStartupError(
+                f"Nymeria API at {config.api_url} did not pass its health check.",
+                code="api_unavailable",
+                api_url=config.api_url,
+            )
+
+        await api.get_me(act_as=config.user_id or None)
+    except APITransportStartupError:
+        await _close_api_client(api)
+        raise
+    except Exception as exc:  # noqa: BLE001 - startup must surface structured errors.
+        await _close_api_client(api)
+        raise _startup_error_from_exception(exc, api_url=config.api_url) from exc
+
+    return api_client
 
 
 async def select_agent_client(
@@ -284,8 +399,9 @@ async def select_agent_client(
     local_client: AgentClient | None = None,
     api_client_factory: Callable[..., Any] = NymeriaAPIClient,
     environ: Mapping[str, str] | None = None,
+    saved_profile: CLIConnectionProfile | None = None,
 ) -> AgentClient:
-    """Select API or local transport according to ``--transport`` policy."""
+    """Select API, disconnected, or explicit local transport."""
 
     mode = getattr(runtime_config, "transport", "auto")
     if mode == "local":
@@ -297,46 +413,29 @@ async def select_agent_client(
             )
         return local_client
 
-    config = resolve_api_connection_config(runtime_config, environ=environ)
-    if not config.has_api_key:
-        if mode == "auto" and local_client is not None and not config.explicit_api_url:
-            return local_client
-        raise APITransportStartupError(
-            "API transport requires an API token. Pass --api-key or set NYMERIA_SERVICE_TOKEN.",
-            code="api_auth_missing",
-            api_url=config.api_url,
-        )
-
-    api = api_client_factory(base_url=config.api_url, api_key=config.api_key)
-    api_client = APIAgentClient(
-        api,
-        base_url=config.api_url,
-        default_user_id=getattr(runtime_config, "user_id", "default") or "default",
+    config = resolve_api_connection_config(
+        runtime_config,
+        environ=environ,
+        saved_profile=saved_profile,
     )
+    if not config.has_api_key:
+        return DisconnectedAgentClient(default_user_id=config.user_id)
 
     try:
-        healthy = await api.health()
-        if not healthy:
-            if mode == "auto" and local_client is not None:
-                await _close_api_client(api)
-                return local_client
-            raise APITransportStartupError(
-                f"Nymeria API at {config.api_url} did not pass its health check.",
-                code="api_unavailable",
-                api_url=config.api_url,
-            )
-
-        await api.get_me(act_as=getattr(runtime_config, "user_id", None) or None)
+        return await validate_api_agent_client(
+            config,
+            api_client_factory=api_client_factory,
+        )
     except APITransportStartupError:
-        await _close_api_client(api)
+        if config.from_saved_profile and not config.explicitly_configured:
+            return DisconnectedAgentClient(
+                default_user_id=config.user_id,
+                startup_error=(
+                    "Saved CLI connection could not be validated. "
+                    "Run /login to reconnect."
+                ),
+            )
         raise
-    except Exception as exc:  # noqa: BLE001 - startup must surface structured errors.
-        await _close_api_client(api)
-        if mode == "auto" and local_client is not None and not _is_auth_error(exc):
-            return local_client
-        raise _startup_error_from_exception(exc, api_url=config.api_url) from exc
-
-    return api_client
 
 
 def _attachment_dicts(
@@ -352,6 +451,13 @@ def _clean_optional(value: Any) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _select_value(*candidates: tuple[str | None, str]) -> tuple[str, str]:
+    for value, source in candidates:
+        if value:
+            return value, source
+    return "", ""
 
 
 async def _close_api_client(api: Any) -> None:

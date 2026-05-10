@@ -251,6 +251,61 @@ def test_workspace_artifact_attaches_to_matching_tool_call() -> None:
     assert assistant.steps[0].artifacts[0].mime_type == "text/plain"
 
 
+def test_autonomous_task_events_create_and_complete_assistant_turn() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+
+    state = _apply(
+        state,
+        [
+            {
+                "type": "task_started",
+                "thread_id": "thread-1",
+                "task_id": "todo-1",
+                "todo_id": "todo-1",
+                "prompt": "Work on TODO todo-1: Check the smoke test",
+            },
+            {"type": "response", "thread_id": "thread-1", "content": "Smoke"},
+            {
+                "type": "task_completed",
+                "thread_id": "thread-1",
+                "task_id": "todo-1",
+                "todo_id": "todo-1",
+                "content": "Smoke test passed.",
+            },
+        ],
+        start=1.0,
+    )
+
+    assert isinstance(state.messages[0], SystemMessage)
+    assert state.messages[0].kind == "autonomous"
+    assert "Check the smoke test" in state.messages[0].content
+    assistant = select_last_assistant_message(state)
+    assert isinstance(assistant, AssistantMessage)
+    assert assistant.status == "complete"
+    assert select_response_content(assistant) == "Smoke test passed."
+    assert state.turn_status == "complete"
+
+
+def test_autonomous_task_completed_without_chunks_renders_completion_content() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "task_completed",
+            "thread_id": "thread-1",
+            "task_id": "todo-1",
+            "content": "Finished from aggregate content.",
+        },
+        now=1.0,
+    )
+
+    assistant = select_last_assistant_message(state)
+    assert isinstance(assistant, AssistantMessage)
+    assert assistant.status == "complete"
+    assert select_response_content(assistant) == "Finished from aggregate content."
+
+
 def test_fixture_streams_can_be_reduced_after_normalization() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "use fixture", now=0.1)

@@ -45,12 +45,27 @@ python run.py cli
 The interactive CLI supports three renderer modes and two transport families:
 
 ```bash
-python run.py cli --renderer auto --transport auto
+python run.py cli --renderer auto
 python run.py cli --renderer full --transport api --api-url http://localhost:8000 --api-key <token>
 python run.py cli --renderer plain --transport local
 ```
 
-`--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. `--transport auto` uses the REST/SSE API when API credentials are configured and otherwise falls back to the local in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
+`--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. The default transport is API/thin-client mode: the CLI loads `~/.nymeria/cli.json` when present, otherwise starts disconnected and lets you run `/login`. Use `--transport local` only when you intentionally want an embedded in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
+
+For host-side use while the backend runs in Docker, install the console script
+outside the container and start it from any terminal:
+
+```bash
+cd /opt/NymeriaOS/Nymeria
+python3 -m venv ../.venv
+../.venv/bin/python -m pip install --no-deps -e .
+ln -sf /opt/NymeriaOS/.venv/bin/nymeria ~/.local/bin/nymeria
+nymeria cli
+```
+
+Then run `/login http://<backend-host>:8000` and paste a user API token. The CLI
+stores only its own connection profile in `~/.nymeria/cli.json`; it does not
+start the backend or write backend environment files.
 
 ## Documentation
 

@@ -15,6 +15,7 @@ CommandReturn: TypeAlias = Any
 CommandHandler: TypeAlias = Callable[[Any, list[str]], Any]
 StateDispatcher: TypeAlias = Callable[[Any], Any | Awaitable[Any]]
 ConfirmationHandler: TypeAlias = Callable[[str], bool | Awaitable[bool]]
+PromptHandler: TypeAlias = Callable[[str], str | Awaitable[str]]
 
 
 class CommandOutputSink(Protocol):
@@ -117,6 +118,8 @@ class CommandContext:
     output: CommandOutputSink | None = None
     dispatch_state: StateDispatcher | None = None
     confirm_handler: ConfirmationHandler | None = None
+    prompt_handler: PromptHandler | None = None
+    secret_prompt_handler: PromptHandler | None = None
     thread_id: str | None = None
     user_id: str = "default"
     registry: Any | None = None
@@ -162,6 +165,17 @@ class CommandContext:
         if inspect.isawaitable(result):
             return bool(await result)
         return bool(result)
+
+    async def prompt(self, prompt: str, *, secret: bool = False) -> str:
+        """Ask for user input through the active renderer."""
+
+        handler = self.secret_prompt_handler if secret else self.prompt_handler
+        if handler is None:
+            return ""
+        result = handler(prompt)
+        if inspect.isawaitable(result):
+            return str(await result)
+        return str(result)
 
 
 @dataclass(slots=True)
@@ -265,5 +279,6 @@ __all__ = [
     "CommandStatus",
     "ConfirmationHandler",
     "ListCommandOutputSink",
+    "PromptHandler",
     "StateDispatcher",
 ]
