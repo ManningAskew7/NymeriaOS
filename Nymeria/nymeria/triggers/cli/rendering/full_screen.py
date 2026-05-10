@@ -41,6 +41,10 @@ from .indicator import (
     truncate_text,
 )
 from .plain import tool_result_summary, truncate_plain
+from .transcript import (
+    TranscriptRenderer,
+    render_transcript as render_transcript_snapshot,
+)
 
 DEFAULT_TRANSCRIPT_WIDTH = 100
 _STREAM_DONE = object()
@@ -77,6 +81,7 @@ class FullScreenPromptToolkitShell:
             user_id=config.user_id,
         )
         self.indicator = ActivityIndicator()
+        self.transcript_renderer = TranscriptRenderer()
         self._busy = False
         self._status_notice = ""
         self._current_turn_task: asyncio.Task[bool] | None = None
@@ -248,7 +253,10 @@ class FullScreenPromptToolkitShell:
 
     def _refresh_transcript(self) -> None:
         width = _render_width(self.capabilities)
-        self.transcript.text = render_transcript(self.state, width=width)
+        self.transcript.text = self.transcript_renderer.render(
+            self.state,
+            width=width,
+        )
         self.transcript.buffer.cursor_position = len(self.transcript.text)
         self._invalidate()
 
@@ -297,6 +305,12 @@ class FullScreenPromptToolkitShell:
 
 def render_transcript(state: CLIUIState, *, width: int | None = None) -> str:
     """Render reducer state into a simple full-screen transcript snapshot."""
+
+    return render_transcript_snapshot(state, width=width)
+
+
+def _legacy_render_transcript(state: CLIUIState, *, width: int | None = None) -> str:
+    """Legacy formatter retained for compatibility during staged refactor."""
 
     render_width = _positive_width(width)
     lines: list[str] = []
