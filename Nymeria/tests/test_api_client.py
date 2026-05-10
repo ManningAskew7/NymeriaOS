@@ -17,11 +17,13 @@ class FakeResponse:
         lines: list[str] | None = None,
         content: bytes = b"",
         headers: dict[str, str] | None = None,
+        status_code: int = 200,
     ) -> None:
         self._json_data = json_data if json_data is not None else {"ok": True}
         self._lines = lines or []
         self.content = content
         self.headers = headers or {}
+        self.status_code = status_code
         self.raised = False
 
     def raise_for_status(self) -> None:
@@ -176,3 +178,193 @@ def test_api_client_async_context_manager_closes_client(monkeypatch):
     assert len(FakeAsyncClient.instances) == 1
     assert FakeAsyncClient.instances[0].closed is True
     assert FakeAsyncClient.instances[0].close_count == 1
+
+
+def test_api_client_account_wrappers_preserve_paths_headers_and_bodies(monkeypatch):
+    _patch_async_client(monkeypatch)
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="secret")
+        try:
+            await client.update_me("Alex", user_id="user-1")
+            await client.list_my_tokens(user_id="user-1")
+            await client.issue_my_token(label="cli", user_id="user-1")
+            await client.revoke_my_token("abc/123", user_id="user-1")
+            await client.list_user_platforms("user-1")
+            await client.link_user_platform("user-1", "telegram", "42")
+            await client.unlink_user_platform("user-1", "telegram", "42")
+            await client.list_my_platforms(user_id="user-1")
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+    requests = FakeAsyncClient.instances[0].requests
+    assert [request["method"] for request in requests] == [
+        "PATCH",
+        "GET",
+        "POST",
+        "DELETE",
+        "GET",
+        "POST",
+        "DELETE",
+        "GET",
+    ]
+    assert requests[0]["url"] == "http://api/me"
+    assert requests[0]["json"] == {"display_name": "Alex"}
+    assert requests[0]["headers"]["X-Nymeria-Act-As"] == "user-1"
+    assert requests[3]["url"] == "http://api/me/tokens/abc%2F123"
+    assert requests[5]["url"] == "http://api/admin/users/user-1/platforms"
+    assert requests[5]["json"] == {
+        "provider": "telegram",
+        "provider_user_id": "42",
+    }
+    assert (
+        requests[6]["url"]
+        == "http://api/admin/users/user-1/platforms/telegram/42"
+    )
+    assert requests[7]["url"] == "http://api/me/platforms"
+    assert requests[7]["headers"]["X-Nymeria-Act-As"] == "user-1"
+
+
+def test_api_client_cli_domain_wrappers_use_desktop_api_routes(monkeypatch):
+    _patch_async_client(monkeypatch)
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="secret")
+        try:
+            await client.list_skills("user-1", scope="user")
+            await client.install_skill(
+                {"source": "anthropic", "name": "python", "scope": "user"},
+                user_id="user-1",
+            )
+            await client.create_mcp_server(
+                {"id": "srv", "name": "Server"},
+                thread_id="thread-1",
+                user_id="user-1",
+            )
+            await client.list_triggers(
+                "user-1",
+                enabled_only=True,
+                thread_id="thread-1",
+            )
+            await client.get_activity(
+                "user-1",
+                limit=10,
+                activity_type="tool",
+                thread_id="thread-1",
+            )
+            await client.mark_notification_read("n-1", user_id="user-1")
+            await client.test_llm_provider_config(
+                {"provider": "openai", "model": "gpt-test"},
+                user_id="admin",
+            )
+            await client.delete_thread_config("thread-1", user_id="user-1")
+            await client.export_thread("thread-1", user_id="user-1")
+            await client.import_thread({"version": 1}, user_id="user-1")
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+    requests = FakeAsyncClient.instances[0].requests
+    assert [request["method"] for request in requests] == [
+        "GET",
+        "POST",
+        "POST",
+        "GET",
+        "GET",
+        "POST",
+        "POST",
+        "DELETE",
+        "GET",
+        "POST",
+    ]
+    assert requests[0]["url"] == "http://api/skills"
+    assert requests[0]["params"] == {"user_id": "user-1", "scope": "user"}
+    assert requests[0]["headers"]["X-Nymeria-Act-As"] == "user-1"
+    assert requests[1]["url"] == "http://api/skills/install"
+    assert requests[1]["json"]["name"] == "python"
+    assert requests[1]["timeout"] is api_client._CHAT_TIMEOUT
+    assert requests[2]["url"] == "http://api/mcp-servers"
+    assert requests[2]["params"] == {"thread_id": "thread-1"}
+    assert requests[2]["headers"]["X-Nymeria-Act-As"] == "user-1"
+    assert requests[3]["url"] == "http://api/triggers"
+    assert requests[3]["params"] == {
+        "user_id": "user-1",
+        "enabled_only": True,
+        "thread_id": "thread-1",
+    }
+    assert requests[4]["url"] == "http://api/activity"
+    assert requests[4]["params"] == {
+        "user_id": "user-1",
+        "limit": 10,
+        "activity_type": "tool",
+        "thread_id": "thread-1",
+    }
+    assert requests[5]["url"] == "http://api/notifications/n-1/read"
+    assert requests[6]["url"] == "http://api/settings/llm/test"
+    assert requests[6]["headers"]["X-Nymeria-Act-As"] == "admin"
+    assert requests[7]["url"] == "http://api/threads/thread-1/config"
+    assert requests[8]["url"] == "http://api/threads/thread-1/export"
+    assert requests[9]["url"] == "http://api/threads/import"
+    assert requests[9]["json"] == {"version": 1}
+
+
+def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkeypatch):
+    _patch_async_client(monkeypatch)
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="secret")
+        try:
+            await client.get_tools()
+            await client.get_optional_tools("user-1")
+            await client.get_unified_tools("user-1")
+            await client.set_unified_tool_enabled("bash", False, "user-1")
+            await client.set_unified_tool_description("bash", "Safer shell", "user-1")
+            await client.set_unified_tool_config("bash", {"timeout": 10}, "user-1")
+            await client.set_default_tools(["bash"], "user-1")
+            await client.reset_default_tools("user-1")
+            await client.test_custom_tool("weather/tool", {"city": "SF"})
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+    requests = FakeAsyncClient.instances[0].requests
+    assert [request["method"] for request in requests] == [
+        "GET",
+        "GET",
+        "GET",
+        "PUT",
+        "PUT",
+        "PUT",
+        "PUT",
+        "DELETE",
+        "POST",
+    ]
+    assert requests[0]["url"] == "http://api/tools"
+    assert requests[1]["url"] == "http://api/tools/optional"
+    assert requests[1]["headers"]["X-Nymeria-Act-As"] == "user-1"
+    assert requests[2]["url"] == "http://api/users/user-1/tools/unified"
+    assert (
+        requests[3]["url"]
+        == "http://api/users/user-1/tools/unified/bash/enable"
+    )
+    assert requests[3]["json"] == {"enabled": False}
+    assert (
+        requests[4]["url"]
+        == "http://api/users/user-1/tools/unified/bash/description"
+    )
+    assert requests[4]["json"] == {"description": "Safer shell"}
+    assert (
+        requests[5]["url"]
+        == "http://api/users/user-1/tools/unified/bash/config"
+    )
+    assert requests[5]["json"] == {"config": {"timeout": 10}}
+    assert requests[6]["url"] == "http://api/tools/defaults"
+    assert requests[6]["params"] == {"user_id": "user-1"}
+    assert requests[6]["json"] == {"tool_names": ["bash"]}
+    assert requests[7]["url"] == "http://api/tools/defaults"
+    assert requests[8]["url"] == "http://api/tools/custom/weather%2Ftool/test"
+    assert requests[8]["json"] == {"params": {"city": "SF"}}
