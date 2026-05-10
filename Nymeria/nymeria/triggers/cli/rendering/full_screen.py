@@ -31,19 +31,20 @@ from ..state import (
     UserMessage,
     create_initial_state,
     reduce_stream_event,
-    select_activity_phase,
-    select_context_usage,
     start_turn,
 )
 from ..transport.base import AgentClient, Attachment
 from .indicator import (
     FRAME_INTERVAL_SECONDS,
     ActivityIndicator,
-    PHASE_LABELS,
-    render_activity_indicator,
-    truncate_text,
 )
 from .plain import tool_result_summary, truncate_plain
+from .status_bar import (
+    NoticeLevel,
+    StatusBarContext,
+    StatusBarRenderer,
+    StatusNotice,
+)
 from .transcript import (
     TranscriptRenderer,
     render_transcript as render_transcript_snapshot,
@@ -86,9 +87,10 @@ class FullScreenPromptToolkitShell:
             user_id=config.user_id,
         )
         self.indicator = ActivityIndicator()
+        self.status_bar_renderer = StatusBarRenderer(indicator=self.indicator)
         self.transcript_renderer = TranscriptRenderer()
         self._busy = False
-        self._status_notice = ""
+        self._status_notice: StatusNotice | None = None
         self._pending_submissions: deque[ComposerSubmission] = deque()
         self._stop_requested = False
         self._current_turn_task: asyncio.Task[bool] | None = None
@@ -166,13 +168,12 @@ class FullScreenPromptToolkitShell:
         if not text:
             return False
         if self._busy:
-            self._status_notice = "Turn already in progress"
-            self._invalidate()
+            self._set_status_notice("Turn already in progress", level="warning")
             return False
 
         self._busy = True
         self._stop_requested = False
-        self._status_notice = ""
+        self._status_notice = None
         started_message = text
         self.state = start_turn(
             self.state,
@@ -243,8 +244,7 @@ class FullScreenPromptToolkitShell:
 
         if self._current_turn_task is not None and not self._current_turn_task.done():
             self._pending_submissions.append(submission)
-            self._status_notice = _queued_notice(len(self._pending_submissions))
-            self._invalidate()
+            self._set_status_notice(_queued_notice(len(self._pending_submissions)))
             return True
 
         self._current_turn_task = loop.create_task(
@@ -263,16 +263,14 @@ class FullScreenPromptToolkitShell:
             )
             current = self._pending_submissions.popleft() if self._pending_submissions else None
             if current is not None:
-                self._status_notice = _queued_notice(len(self._pending_submissions))
-                self._invalidate()
-        if self._status_notice.startswith("Queued message"):
-            self._status_notice = ""
+                self._set_status_notice(_queued_notice(len(self._pending_submissions)))
+        if self._is_queued_status_notice():
+            self._status_notice = None
             self._invalidate()
         return ran_turn
 
     def _handle_composer_error(self, message: str) -> None:
-        self._status_notice = message
-        self._invalidate()
+        self._set_status_notice(message, level="warning")
 
     def _request_stop_from_composer(self) -> bool:
         try:
@@ -286,28 +284,44 @@ class FullScreenPromptToolkitShell:
         """Request backend/local cancellation without clearing current input."""
 
         if not self._busy:
-            self._status_notice = "No active turn"
-            self._invalidate()
+            self._set_status_notice("No active turn")
             return False
         if self._stop_requested:
-            self._status_notice = "Stop already requested"
-            self._invalidate()
+            self._set_status_notice("Stop already requested")
             return False
 
         self._stop_requested = True
-        self._status_notice = "Stopping active turn..."
-        self._invalidate()
+        self._set_status_notice("Stopping active turn...")
         try:
             await self.client.stop(self.config.thread_id, self.config.user_id)
         except Exception as exc:  # noqa: BLE001 - transport errors surface in UI.
-            self._status_notice = f"Stop failed: {exc}"
+            self._set_status_notice(f"Stop failed: {exc}", level="error")
             self._stop_requested = False
-            self._invalidate()
             return False
 
-        self._status_notice = "Stop requested"
-        self._invalidate()
+        self._set_status_notice("Stop requested")
         return True
+
+    def _set_status_notice(
+        self,
+        message: str,
+        *,
+        level: NoticeLevel = "info",
+        ttl_seconds: float | None = None,
+    ) -> None:
+        self._status_notice = StatusNotice(
+            message=message,
+            level=level,
+            created_at=time.monotonic(),
+            ttl_seconds=ttl_seconds,
+        )
+        self._invalidate()
+
+    def _is_queued_status_notice(self) -> bool:
+        return bool(
+            self._status_notice
+            and self._status_notice.message.startswith("Queued message")
+        )
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
@@ -349,40 +363,21 @@ class FullScreenPromptToolkitShell:
 
     def _status_text(self) -> str:
         width = _render_width(self.capabilities)
-        activity = render_activity_indicator(
+        return self.status_bar_renderer.render_text(
             self.state,
             capabilities=self.capabilities,
-            indicator=self.indicator,
-            width=max(20, min(42, width // 2)),
+            context=StatusBarContext(
+                connection_label=self.client.connection_label,
+                thread_label=self.config.thread_label or self.config.thread_id,
+                model=self.config.model,
+                cwd=Path.cwd(),
+                queued_count=len(self._pending_submissions),
+                notice=self._status_notice,
+                busy=self._busy,
+            ),
+            width=width,
             now=time.monotonic(),
         )
-        if activity is not None:
-            phase = activity.text
-        elif self._busy:
-            phase = "Processing..."
-        else:
-            selected_phase = select_activity_phase(self.state, now=time.monotonic())
-            phase = PHASE_LABELS.get(selected_phase, "Ready") if selected_phase else "Ready"
-
-        if self._status_notice:
-            phase = self._status_notice
-
-        context = _context_label(self.state)
-        model = self.state.active_model or self.config.model
-        thread = self.config.thread_label or self.config.thread_id
-        parts = [
-            "Nymeria",
-            phase,
-            self.client.connection_label,
-            f"thread {thread}",
-        ]
-        if model:
-            parts.append(model)
-        if context:
-            parts.append(context)
-        if self._pending_submissions:
-            parts.append(f"queued {len(self._pending_submissions)}")
-        return truncate_text(" | ".join(parts), width)
 
 
 def render_transcript(state: CLIUIState, *, width: int | None = None) -> str:
@@ -462,14 +457,6 @@ def _wrapped_prefixed_lines(prefix: str, content: str, width: int) -> list[str]:
         f"{first_prefix if index == 0 else continuation_prefix}{line}"
         for index, line in enumerate(output)
     ]
-
-
-def _context_label(state: CLIUIState) -> str:
-    usage = select_context_usage(state)
-    percent = usage.get("percent_used")
-    if isinstance(percent, (int, float)):
-        return f"ctx {percent:.0f}%"
-    return ""
 
 
 def _queued_notice(count: int) -> str:
