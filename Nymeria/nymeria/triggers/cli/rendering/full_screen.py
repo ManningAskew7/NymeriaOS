@@ -143,6 +143,12 @@ class FullScreenPromptToolkitShell:
             queued_count=lambda: len(self._pending_submissions),
         )
         self.composer = self.composer_controller.text_area
+        self.transcript_frame = Frame(self.transcript, title="Nymeria")
+        self.composer_frame = Frame(
+            self.composer,
+            title="Message",
+            style="class:composer.frame",
+        )
         self.status_bar = Window(
             FormattedTextControl(self._status_fragments),
             height=1,
@@ -155,9 +161,9 @@ class FullScreenPromptToolkitShell:
 
         body = HSplit(
             [
-                Frame(self.transcript, title="Nymeria"),
-                self.composer,
+                self.transcript_frame,
                 self.status_bar,
+                self.composer_frame,
             ]
         )
         app: Application[None] = Application(
@@ -886,15 +892,17 @@ def _color_depth(capabilities: Any) -> ColorDepth:
 
 def _style(capabilities: Any) -> Style:
     if not bool(getattr(capabilities, "color_enabled", False)):
-        return Style.from_dict({"status": "reverse"})
+        return Style.from_dict({"status": ""})
     return Style.from_dict(
         {
             "frame.label": "ansicyan bold",
-            "status": "reverse",
+            "frame.border": "ansibrightblack",
+            "status": "ansibrightblack",
             "composer": "ansicyan",
             "composer.busy": "ansiyellow",
             "composer.queued": "ansiyellow",
             "composer.error": "ansired",
+            "composer.frame": "",
             "transcript.user.header": "ansicyan bold",
             "transcript.user.text": "",
             "transcript.assistant.header": "ansigreen bold",

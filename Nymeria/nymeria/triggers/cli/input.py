@@ -194,12 +194,12 @@ class ComposerController:
     def prompt_fragments(self):
         state = self.prompt_state
         if state.attachment_errors:
-            return [("class:composer.error", "! ")]
+            return [("class:composer.error", "Error: ")]
         if state.queued_count:
-            return [("class:composer.queued", f"queued {state.queued_count} > ")]
+            return [("class:composer.queued", f"Queued {state.queued_count}: ")]
         if state.busy:
-            return [("class:composer.busy", "busy > ")]
-        return [("class:composer", "> ")]
+            return [("class:composer.busy", "Busy: ")]
+        return [("class:composer", "You: ")]
 
     def submit_buffer(self, buffer: "Buffer") -> bool:
         submission = parse_composer_submission(buffer.text, cwd=self.cwd)

@@ -9,6 +9,7 @@ from nymeria.triggers.cli.commands import system as system_commands
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
+    _style,
     render_transcript,
 )
 from nymeria.triggers.cli.state import create_initial_state, reduce_stream_event, start_turn
@@ -56,6 +57,32 @@ def test_full_screen_application_respects_no_alt_screen_capability() -> None:
 
     assert app.full_screen is False
     assert app.mouse_support() is False
+
+
+def test_full_screen_layout_keeps_status_above_framed_composer() -> None:
+    shell = make_shell()
+
+    app = shell.build_application()
+    children = app.layout.container.children
+
+    assert children[0] is shell.transcript_frame.container
+    assert children[1] is shell.status_bar
+    assert children[2] is shell.composer_frame.container
+    assert shell.composer_frame.title == "Message"
+
+
+def test_status_style_uses_default_background() -> None:
+    color_attrs = _style(FakeTerminalCapabilities()).get_attrs_for_style_str(
+        "class:status"
+    )
+    plain_attrs = _style(
+        FakeTerminalCapabilities(supports_color=False)
+    ).get_attrs_for_style_str("class:status")
+
+    assert color_attrs.reverse is False
+    assert color_attrs.bgcolor == ""
+    assert plain_attrs.reverse is False
+    assert plain_attrs.bgcolor == ""
 
 
 def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> None:
