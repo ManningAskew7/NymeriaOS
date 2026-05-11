@@ -68,6 +68,7 @@ from .transcript import (
 )
 
 DEFAULT_TRANSCRIPT_WIDTH = 100
+TRANSCRIPT_VIEWPORT_CHROME_WIDTH = 4
 _STREAM_DONE = object()
 
 
@@ -680,7 +681,7 @@ class FullScreenPromptToolkitShell:
         self._refresh_transcript()
 
     def _refresh_transcript(self) -> None:
-        width = _render_width(self.capabilities)
+        width = _transcript_render_width(self.capabilities)
         result = self.transcript_renderer.render_result(
             self.state,
             width=width,
@@ -867,6 +868,10 @@ def _line_style(line: TranscriptLine) -> str:
 
 def _render_width(capabilities: Any) -> int:
     return _positive_width(getattr(capabilities, "width", DEFAULT_TRANSCRIPT_WIDTH))
+
+
+def _transcript_render_width(capabilities: Any) -> int:
+    return max(20, _render_width(capabilities) - TRANSCRIPT_VIEWPORT_CHROME_WIDTH)
 
 
 def _positive_width(width: int | None) -> int:

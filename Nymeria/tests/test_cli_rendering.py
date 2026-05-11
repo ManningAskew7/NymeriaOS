@@ -10,6 +10,7 @@ from nymeria.triggers.cli.capabilities import detect_terminal_capabilities
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
+    _transcript_render_width,
 )
 from nymeria.triggers.cli.rendering.plain import PlainRenderer
 from nymeria.triggers.cli.rendering.transcript import max_line_width
@@ -153,13 +154,32 @@ def test_full_screen_resize_recomputes_transcript_and_status_widths() -> None:
     shell._refresh_transcript()
     narrow_status = shell._status_text()
 
-    assert max_line_width(shell.transcript.text) <= 40
+    assert max_line_width(shell.transcript.text) <= _transcript_render_width(
+        shell.capabilities
+    )
     assert len(narrow_status) <= 40
     assert narrow_status.endswith("...")
 
     shell.capabilities = shell.capabilities.with_overrides(width=120)
     shell._refresh_transcript()
 
-    assert max_line_width(shell.transcript.text) <= 120
+    assert max_line_width(shell.transcript.text) <= _transcript_render_width(
+        shell.capabilities
+    )
     assert len(shell._status_text()) <= 120
     assert "thread A long thread title" in shell._status_text()
+
+
+def test_full_screen_transcript_width_accounts_for_frame_and_scrollbar() -> None:
+    shell = make_shell(width=100)
+    shell.state = start_turn(shell.state, "hey", now=0.0)
+    shell.state = reduce_stream_event(
+        shell.state,
+        {"type": "response", "content": "hello", "thread_id": "thread-1"},
+        now=1.0,
+    )
+
+    shell._refresh_transcript()
+
+    assert _transcript_render_width(shell.capabilities) == 96
+    assert max_line_width(shell.transcript.text) <= 96
