@@ -85,13 +85,16 @@ def test_transcript_snapshot_renders_desktop_like_steps() -> None:
     assert lines[1] == "  inspect the project"
     assert lines[2] == ""
     assert lines[3].startswith("---- Nymeria ")
-    assert lines[4] == "  Thought: I should inspect files."
-    assert lines[5].startswith("  - filesystem_read ok 2.0s ")
-    assert "-> line line" in lines[5]
-    assert "[artifact: cli-tui-" in lines[5]
-    assert lines[6] == "  I found the task."
-    assert lines[7] == ""
-    assert lines[8].strip() == "- It needs a transcript renderer."
+    assert lines[4] == "  | I should inspect files."
+    assert lines[6].startswith("  - filesystem_read ok 2.0s ")
+    assert "-> line line" in lines[6]
+    assert "[artifact: cli-tui-" in lines[6]
+    assert lines[8] == "  ................................"
+    assert lines[10] == "  I found the task."
+    assert lines[11] == ""
+    assert lines[12].strip() == "- It needs a transcript renderer."
+    assert lines[13] == ""
+    assert lines[14] == "  ................................"
 
 
 def test_transcript_classifies_preamble_and_final_response_steps() -> None:
@@ -141,6 +144,9 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
 
     records = render_transcript_lines(state, width=100)
     preamble = [line.text.strip() for line in records if line.kind == "preamble"]
+    dividers = [
+        line.text.strip() for line in records if line.kind == "assistant_divider"
+    ]
     final = [line.text.strip() for line in records if line.kind == "final"]
     tools = [line.text.strip() for line in records if line.kind == "tool"]
 
@@ -148,6 +154,7 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
         "I'll check the main sources first.",
         "I have news; checking tasks.",
     ]
+    assert dividers == ["................................"] * 3
     assert tools[0].startswith("- web_search ok 1.0s query=\"AI news\" -> 3 results")
     assert tools[1].startswith("- nym_todo ok 1.0s action=list -> 4 pending")
     assert final[:5] == [
@@ -157,6 +164,53 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
         "------",
         "Google Cloud billing is suspended.",
     ]
+
+
+def test_transcript_does_not_divide_adjacent_tool_rows() -> None:
+    state = create_initial_state(thread_id="thread-1", user_id="alice", now=0.0)
+    state = start_turn(state, "check twice", now=0.1)
+    state = _apply(
+        state,
+        [
+            {"type": "thinking", "content": "Need both sources."},
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "search_memory",
+                "args": {"query": "alpha"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-1",
+                "name": "search_memory",
+                "result": "alpha result",
+            },
+            {
+                "type": "tool_call",
+                "id": "call-2",
+                "name": "search_memory",
+                "args": {"query": "beta"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-2",
+                "name": "search_memory",
+                "result": "beta result",
+            },
+            {"type": "response", "content": "Done."},
+            {"type": "done", "tool_call_count": 2},
+        ],
+        start=1.0,
+    )
+
+    records = render_transcript_lines(state, width=80)
+    dividers = [line for line in records if line.kind == "assistant_divider"]
+    tool_indexes = [
+        index for index, line in enumerate(records) if line.kind == "tool"
+    ]
+
+    assert len(dividers) == 2
+    assert tool_indexes[1] == tool_indexes[0] + 1
 
 
 def test_transcript_lines_are_bounded_at_common_widths() -> None:
@@ -294,12 +348,16 @@ def test_standard_transcript_shows_thinking_as_one_line_preview() -> None:
     default_text = render_transcript(state, width=80)
     default_lines = default_text.splitlines()
 
-    assert "  Thinking: private reasoning with a second line that stays collapsed" in default_lines
+    assert "  | private reasoning with a second line that stays collapsed" in default_lines
+    assert "Thinking:" not in default_text
+    assert not default_text.endswith("................................")
 
     complete = reduce_stream_event(state, {"type": "done"}, now=2.0)
     complete_text = render_transcript(complete, width=80)
 
-    assert "Thought: private reasoning with a second line that stays collapsed" in complete_text
+    assert "Thought:" not in complete_text
+    assert "  | private reasoning with a second line that stays collapsed" in complete_text
+    assert complete_text.endswith("  ................................")
     assert all(line.count("private reasoning") <= 1 for line in default_lines)
 
 
@@ -314,7 +372,8 @@ def test_standard_thinking_preview_is_bounded_to_width() -> None:
 
     text = render_transcript(state, width=44)
 
-    assert "  Thinking: word word word" in text
+    assert "  | word word word" in text
+    assert "Thinking:" not in text
     assert max_line_width(text) <= 44
 
 
@@ -325,7 +384,7 @@ def test_verbose_transcript_expands_hidden_details() -> None:
         options=TranscriptRenderOptions(verbose=True),
     )
 
-    assert "I should inspect files." in text
+    assert "| I should inspect files." in text
     assert "args:" in text
     assert "result:" in text
     assert "... truncated ..." in text
@@ -349,6 +408,8 @@ def test_verbose_transcript_renders_full_thinking_text() -> None:
     )
 
     assert "tail-visible" in text
+    assert "Thought:" not in text
+    assert "Thinking:" not in text
     assert "... truncated ..." not in text
     assert max_line_width(text) <= 80
 

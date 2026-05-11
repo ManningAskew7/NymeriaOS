@@ -24,6 +24,7 @@ from ..state import (
     select_response_content,
     start_turn,
 )
+from .markdown import collapse_inline
 from .plain import (
     truncate_plain,
 )
@@ -246,9 +247,36 @@ class RichReplRenderer:
 
     def _render_assistant_message(self, message: AssistantMessage) -> None:
         self._render_separator("Nymeria", style="bold green")
-        for step in message.steps:
+        last_tool_index = _last_tool_index(message.steps)
+        previous_block: str | None = None
+        rendered_body = False
+        for index, step in enumerate(message.steps):
             if isinstance(step, ThinkingStep):
-                self.console.print(Text("  Thinking...", style="dim"))
+                block_kind = "thinking"
+            elif isinstance(step, ToolCallStep):
+                block_kind = "tool"
+            elif isinstance(step, ResponseStep) and step.content.strip():
+                block_kind = "preamble" if index < last_tool_index else "final"
+            else:
+                continue
+
+            if previous_block is not None and previous_block != block_kind:
+                self.console.print()
+                if _needs_assistant_divider(
+                    block_kind,
+                    previous_block=previous_block,
+                ):
+                    self._render_assistant_divider()
+                    self.console.print()
+            if isinstance(step, ThinkingStep):
+                content = collapse_inline(step.content) if step.content else "..."
+                marker = "| " if self._ascii_only() else "\u2502 "
+                self.console.print(
+                    Text(
+                        f"  {marker}{truncate_plain(content, max(1, self.width - 4))}",
+                        style="bright_cyan italic",
+                    )
+                )
             elif isinstance(step, ToolCallStep):
                 self.console.print(
                     render_tool_row(
@@ -257,8 +285,13 @@ class RichReplRenderer:
                         ascii_only=self._ascii_only(),
                     )
                 )
-            elif isinstance(step, ResponseStep) and step.content.strip():
+            elif isinstance(step, ResponseStep):
                 self.console.print(Markdown(step.content.strip()))
+            previous_block = block_kind
+            rendered_body = True
+        if message.status == "complete" and rendered_body:
+            self.console.print()
+            self._render_assistant_divider()
 
     def _render_system_message(self, message: SystemMessage) -> None:
         self._render_separator("System", style="dim")
@@ -295,6 +328,11 @@ class RichReplRenderer:
             )
         )
 
+    def _render_assistant_divider(self) -> None:
+        divider_width = min(max(1, self.width - 2), 32)
+        glyph = "." if self._ascii_only() else "\u00b7"
+        self.console.print(Text(f"  {glyph * divider_width}", style="bright_black"))
+
     def _ascii_only(self) -> bool:
         return not bool(getattr(self.capabilities, "unicode_enabled", False))
 
@@ -315,6 +353,21 @@ def render_tool_row(
     )
     style = "red" if tool.status == "error" else "yellow"
     return Text(f"  {row}", style=style)
+
+
+def _last_tool_index(steps: Sequence[Any]) -> int:
+    for index in range(len(steps) - 1, -1, -1):
+        if isinstance(steps[index], ToolCallStep):
+            return index
+    return -1
+
+
+def _needs_assistant_divider(
+    block_kind: str,
+    *,
+    previous_block: str,
+) -> bool:
+    return previous_block == "tool" and block_kind != "tool"
 
 
 def _make_console(
