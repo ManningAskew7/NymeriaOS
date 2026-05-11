@@ -32,6 +32,8 @@ from .tool_rows import ToolRowRenderOptions, format_artifact_line, format_tool_r
 
 DEFAULT_TRANSCRIPT_WIDTH = 80
 INDENT = "  "
+THINKING_MARKER_ASCII = "| "
+THINKING_MARKER_UNICODE = "\u2502 "
 VERBOSE_ARGS_LIMIT = 900
 VERBOSE_RESULT_LIMIT = 900
 VERBOSE_PAYLOAD_LINE_LIMIT = 24
@@ -45,6 +47,7 @@ TranscriptLineKind = Literal[
     "autonomous_header",
     "thinking",
     "preamble",
+    "assistant_divider",
     "tool",
     "tool_detail",
     "final",
@@ -342,34 +345,44 @@ def _assistant_lines(
         )
     ]
     last_tool_index = _last_tool_index(message.steps)
+    previous_block: Literal["thinking", "preamble", "tool", "final"] | None = None
 
     for index, step in enumerate(message.steps):
         if isinstance(step, ThinkingStep):
-            records.extend(
-                _thinking_lines(
-                    step,
-                    message,
-                    width,
-                    options,
-                    active=_is_active_thinking(message, index),
-                )
-            )
+            block_kind: Literal["thinking", "preamble", "tool", "final"] = "thinking"
+            step_records = _thinking_lines(step, width, options)
         elif isinstance(step, ToolCallStep):
-            records.extend(_tool_lines(step, width, options))
+            block_kind = "tool"
+            step_records = _tool_lines(step, width, options)
         elif isinstance(step, ResponseStep):
-            records.extend(
-                _response_lines(
-                    step,
-                    width,
-                    options,
-                    kind="preamble" if index < last_tool_index else "final",
-                )
+            block_kind = "preamble" if index < last_tool_index else "final"
+            step_records = _response_lines(
+                step,
+                width,
+                options,
+                kind=block_kind,
             )
+        else:
+            continue
+
+        if not step_records:
+            continue
+        _append_assistant_block(
+            records,
+            step_records,
+            block_kind=block_kind,
+            previous_block=previous_block,
+            width=width,
+            options=options,
+        )
+        previous_block = block_kind
 
     if message.tool_reload_info is not None:
         tools = ", ".join(message.tool_reload_info.tools)
         text = f"Tools reloaded: {tools}" if tools else "Tools reloaded."
         records.extend(_indented_plain_block(text, kind="system", width=width))
+    if message.status == "complete" and _has_assistant_body(records):
+        _append_assistant_end_divider(records, width, options)
     return records
 
 
@@ -388,35 +401,38 @@ def _assistant_header_label(
 
 def _thinking_lines(
     step: ThinkingStep,
-    message: AssistantMessage,
     width: int,
     options: TranscriptRenderOptions,
-    *,
-    active: bool,
 ) -> list[TranscriptLine]:
-    label = "Thinking" if active else "Thought"
     if not step.content:
-        return [_indented_record(f"{label}...", "thinking", width)]
+        return [_thinking_record("...", width, options)]
 
     if not options.verbose:
         preview = collapse_inline(step.content)
-        return [_indented_record(f"{label}: {preview}", "thinking", width)]
+        return [_thinking_record(preview, width, options)]
 
-    records = [_indented_record(f"{label}:", "thinking", width)]
-    if step.content:
-        body_width = max(1, width - len(INDENT) * 2)
+    prefix_width = cell_len(_thinking_marker(options))
+    body_width = max(1, width - len(INDENT) - prefix_width)
+    return [
+        _thinking_record(line, width, options)
         for line in render_markdown_lines(
             step.content,
             width=body_width,
             ascii_only=options.ascii_only,
-        ):
-            records.append(
-                TranscriptLine(
-                    truncate_cell_width(f"{INDENT * 2}{line}", width),
-                    "thinking",
-                )
-            )
-    return records
+        )
+    ]
+
+
+def _thinking_record(
+    text: str,
+    width: int,
+    options: TranscriptRenderOptions,
+) -> TranscriptLine:
+    return _indented_record(f"{_thinking_marker(options)}{text}", "thinking", width)
+
+
+def _thinking_marker(options: TranscriptRenderOptions) -> str:
+    return THINKING_MARKER_ASCII if options.ascii_only else THINKING_MARKER_UNICODE
 
 
 def _tool_lines(
@@ -484,6 +500,71 @@ def _response_lines(
         ascii_only=options.ascii_only,
     )
     return [_indented_record(line, kind, width) for line in rendered]
+
+
+def _append_assistant_block(
+    records: list[TranscriptLine],
+    incoming: list[TranscriptLine],
+    *,
+    block_kind: Literal["thinking", "preamble", "tool", "final"],
+    previous_block: Literal["thinking", "preamble", "tool", "final"] | None,
+    width: int,
+    options: TranscriptRenderOptions,
+) -> None:
+    if previous_block is not None and previous_block != block_kind:
+        if records and records[-1].kind != "blank":
+            records.append(TranscriptLine("", "blank"))
+        if _needs_assistant_divider(
+            block_kind,
+            previous_block=previous_block,
+        ):
+            records.append(_assistant_divider_record(width, options))
+            records.append(TranscriptLine("", "blank"))
+    records.extend(incoming)
+
+
+def _needs_assistant_divider(
+    block_kind: Literal["thinking", "preamble", "tool", "final"],
+    *,
+    previous_block: Literal["thinking", "preamble", "tool", "final"],
+) -> bool:
+    return previous_block == "tool" and block_kind != "tool"
+
+
+def _assistant_divider_record(
+    width: int,
+    options: TranscriptRenderOptions,
+) -> TranscriptLine:
+    body_width = max(1, width - len(INDENT))
+    divider_width = min(body_width, 32)
+    glyph = "." if options.ascii_only else "\u00b7"
+    return TranscriptLine(
+        truncate_cell_width(f"{INDENT}{glyph * divider_width}", width),
+        "assistant_divider",
+    )
+
+
+def _append_assistant_end_divider(
+    records: list[TranscriptLine],
+    width: int,
+    options: TranscriptRenderOptions,
+) -> None:
+    if records and records[-1].kind != "blank":
+        records.append(TranscriptLine("", "blank"))
+    if records and records[-1].kind == "blank":
+        records.append(_assistant_divider_record(width, options))
+
+
+def _has_assistant_body(records: list[TranscriptLine]) -> bool:
+    return any(
+        record.kind not in {
+            "assistant_header",
+            "autonomous_header",
+            "blank",
+            "assistant_divider",
+        }
+        for record in records
+    )
 
 
 def _system_lines(
@@ -648,15 +729,6 @@ def _last_tool_index(steps: tuple[MessageStep, ...]) -> int:
         if isinstance(steps[index], ToolCallStep):
             return index
     return -1
-
-
-def _is_active_thinking(message: AssistantMessage, step_index: int) -> bool:
-    if message.status != "streaming" or message.activity_phase != "thinking":
-        return False
-    for later in message.steps[step_index + 1 :]:
-        if not isinstance(later, ThinkingStep):
-            return False
-    return True
 
 
 def _autonomous_label(

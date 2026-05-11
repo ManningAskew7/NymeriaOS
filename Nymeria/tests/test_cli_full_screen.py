@@ -91,10 +91,15 @@ def test_transcript_styles_keep_preamble_readable_and_thinking_lighter() -> None
     preamble_attrs = style.get_attrs_for_style_str("class:transcript.preamble")
     final_attrs = style.get_attrs_for_style_str("class:transcript.final")
     thinking_attrs = style.get_attrs_for_style_str("class:transcript.thinking")
+    divider_attrs = style.get_attrs_for_style_str(
+        "class:transcript.assistant.divider"
+    )
 
     assert preamble_attrs.color == final_attrs.color
     assert preamble_attrs.bgcolor == final_attrs.bgcolor
-    assert thinking_attrs.color == "c0c0c0"
+    assert thinking_attrs.color == "8fd7ff"
+    assert thinking_attrs.italic is True
+    assert divider_attrs.color == "707070"
 
 
 def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> None:
@@ -259,9 +264,15 @@ def test_full_screen_transcript_renders_tool_rows_in_event_order() -> None:
         "  use a tool",
         "",
         "---- Nymeria ---------------------------------------------------------------------------------------",
-        "  Thought: checking",
+        "  | checking",
+        "",
         "  - search_memory ok 0ms query=\"project status\" -> Found 2 matching notes.",
+        "",
+        "  ................................",
+        "",
         "  I found the notes.",
+        "",
+        "  ................................",
     ]
 
 
@@ -300,7 +311,8 @@ def test_full_screen_verbose_command_only_changes_rendering() -> None:
     assert status.ok is True
     assert on.ok is True
     assert off.ok is True
-    assert "\n  Thought:\n    private detail" in verbose_text
-    assert "  Thought: private detail" in shell.transcript.text
+    assert "\n  │ private detail\n" in verbose_text
+    assert "Thought:" not in verbose_text
+    assert "  │ private detail" in shell.transcript.text
     assert shell.state == initial_state
     assert shell._transcript_verbose is False
