@@ -163,6 +163,27 @@ def test_ctrl_c_stops_busy_turn_without_clearing_draft() -> None:
     assert buffer.text == "draft while busy"
 
 
+def test_full_screen_prompt_fragments_use_composer_labels() -> None:
+    ready = ComposerController()
+    busy = ComposerController(is_busy=lambda: True)
+    queued = ComposerController(queued_count=lambda: 2)
+    error = ComposerController()
+    error.last_attachment_errors = ("Attachment not found",)
+
+    prompts = [
+        ready.prompt_fragments(),
+        busy.prompt_fragments(),
+        queued.prompt_fragments(),
+        error.prompt_fragments(),
+    ]
+
+    assert ready.prompt_fragments() == [("class:composer", "You: ")]
+    assert busy.prompt_fragments() == [("class:composer.busy", "Busy: ")]
+    assert queued.prompt_fragments() == [("class:composer.queued", "Queued 2: ")]
+    assert error.prompt_fragments() == [("class:composer.error", "Error: ")]
+    assert all(">" not in text for fragments in prompts for _, text in fragments)
+
+
 def make_shell(client: FakeAgentClient) -> FullScreenPromptToolkitShell:
     return FullScreenPromptToolkitShell(
         client=client,
