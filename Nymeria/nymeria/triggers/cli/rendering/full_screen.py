@@ -886,6 +886,8 @@ def _transcript_activity_text(
     busy: bool = False,
     now: float | None = None,
 ) -> str:
+    if activity_state_from_ui_state(state, now=now) is None:
+        return ""
     text = renderer.activity_segment(
         state,
         capabilities=capabilities,

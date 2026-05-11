@@ -168,6 +168,36 @@ def test_full_screen_transcript_header_matches_waiting_detail() -> None:
     assert "private" not in header
 
 
+def test_full_screen_transcript_header_hides_activity_while_typing() -> None:
+    shell = make_shell()
+    shell._busy = True
+    shell.state = start_turn(shell.state, "answer", now=0.1)
+    shell.state = reduce_stream_event(
+        shell.state,
+        {"type": "thinking", "content": "working"},
+        now=1.0,
+    )
+    shell._refresh_transcript(now=1.1)
+    thinking_header = next(
+        line for line in shell.transcript.text.splitlines() if "Nymeria" in line
+    )
+
+    shell.state = reduce_stream_event(
+        shell.state,
+        {"type": "response", "content": "Here is the answer."},
+        now=1.2,
+    )
+    shell._refresh_transcript(now=1.2)
+    typing_header = next(
+        line for line in shell.transcript.text.splitlines() if "Nymeria" in line
+    )
+
+    assert "Thinking..." in thinking_header
+    assert "Processing..." not in typing_header
+    assert "Thinking..." not in typing_header
+    assert "Here is the answer." in shell.transcript.text
+
+
 def test_full_screen_shell_consumes_current_thread_autonomous_events() -> None:
     client = FakeAgentClient(
         autonomous_events=[
