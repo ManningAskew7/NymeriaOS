@@ -85,7 +85,7 @@ def test_transcript_snapshot_renders_desktop_like_steps() -> None:
     assert lines[1] == "  inspect the project"
     assert lines[2] == ""
     assert lines[3].startswith("---- Nymeria ")
-    assert lines[4] == "  Thought  /details thinking -1"
+    assert lines[4] == "  Thought: I should inspect files."
     assert lines[5].startswith("  - filesystem_read ok 2.0s ")
     assert "-> line line" in lines[5]
     assert "[artifact: cli-tui-" in lines[5]
@@ -209,38 +209,46 @@ def test_long_tool_result_is_previewed_not_dumped() -> None:
     assert max_line_width(text) <= 80
 
 
-def test_streaming_thinking_content_is_only_visible_when_configured() -> None:
+def test_standard_transcript_shows_thinking_as_one_line_preview() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "think", now=0.1)
     state = reduce_stream_event(
         state,
-        {"type": "thinking", "content": "private reasoning"},
+        {
+            "type": "thinking",
+            "content": "private reasoning\nwith a second line that stays collapsed",
+        },
         now=1.0,
     )
 
     default_text = render_transcript(state, width=80)
-    visible_text = render_transcript(
-        state,
-        width=80,
-        options=TranscriptRenderOptions(show_streaming_thinking=True),
-    )
+    default_lines = default_text.splitlines()
 
-    assert "Thinking..." in default_text
-    assert "private reasoning" not in default_text
-    assert "private reasoning" in visible_text
+    assert "  Thinking: private reasoning with a second line that stays collapsed" in default_lines
 
     complete = reduce_stream_event(state, {"type": "done"}, now=2.0)
-    complete_text = render_transcript(
-        complete,
-        width=80,
-        options=TranscriptRenderOptions(show_streaming_thinking=True),
+    complete_text = render_transcript(complete, width=80)
+
+    assert "Thought: private reasoning with a second line that stays collapsed" in complete_text
+    assert all(line.count("private reasoning") <= 1 for line in default_lines)
+
+
+def test_standard_thinking_preview_is_bounded_to_width() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=0.1)
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "word " * 80},
+        now=1.0,
     )
 
-    assert "Thought" in complete_text
-    assert "private reasoning" not in complete_text
+    text = render_transcript(state, width=44)
+
+    assert "  Thinking: word word word" in text
+    assert max_line_width(text) <= 44
 
 
-def test_verbose_transcript_expands_bounded_hidden_details() -> None:
+def test_verbose_transcript_expands_hidden_details() -> None:
     text = render_transcript(
         _tool_artifact_state(),
         width=100,
@@ -252,6 +260,27 @@ def test_verbose_transcript_expands_bounded_hidden_details() -> None:
     assert "result:" in text
     assert "... truncated ..." in text
     assert max_line_width(text) <= 100
+
+
+def test_verbose_transcript_renders_full_thinking_text() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=0.1)
+    thinking = f"{'reasoning ' * 120}tail-visible"
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": thinking},
+        now=1.0,
+    )
+
+    text = render_transcript(
+        state,
+        width=80,
+        options=TranscriptRenderOptions(verbose=True),
+    )
+
+    assert "tail-visible" in text
+    assert "... truncated ..." not in text
+    assert max_line_width(text) <= 80
 
 
 def test_tool_row_can_include_duration_when_enabled() -> None:
