@@ -22,6 +22,7 @@ from ..state import (
     WorkspaceArtifact,
 )
 from .markdown import (
+    collapse_inline,
     coerce_width,
     render_markdown_lines,
     truncate_cell_width,
@@ -33,7 +34,6 @@ DEFAULT_TRANSCRIPT_WIDTH = 80
 INDENT = "  "
 VERBOSE_ARGS_LIMIT = 900
 VERBOSE_RESULT_LIMIT = 900
-VERBOSE_THINKING_LIMIT = 900
 VERBOSE_PAYLOAD_LINE_LIMIT = 24
 EPOCH_TIMESTAMP_FLOOR = 1_000_000_000
 
@@ -380,17 +380,19 @@ def _thinking_lines(
     *,
     active: bool,
 ) -> list[TranscriptLine]:
-    label = "Thinking..." if active else "Thought  /details thinking -1"
-    records = [_indented_record(label, "thinking", width)]
-    show_content = (
-        (active and options.show_streaming_thinking)
-        or options.verbose
-    )
-    if show_content and step.content:
-        content = _bounded_text(step.content, VERBOSE_THINKING_LIMIT)
+    label = "Thinking" if active else "Thought"
+    if not step.content:
+        return [_indented_record(f"{label}...", "thinking", width)]
+
+    if not options.verbose:
+        preview = collapse_inline(step.content)
+        return [_indented_record(f"{label}: {preview}", "thinking", width)]
+
+    records = [_indented_record(f"{label}:", "thinking", width)]
+    if step.content:
         body_width = max(1, width - len(INDENT) * 2)
         for line in render_markdown_lines(
-            content,
+            step.content,
             width=body_width,
             ascii_only=options.ascii_only,
         ):
