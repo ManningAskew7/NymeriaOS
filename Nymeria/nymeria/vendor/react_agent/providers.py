@@ -23,7 +23,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
-from .cliproxy import looks_like_cliproxy_url
+from .cliproxy import (
+    CLIPROXY_ANTHROPIC_BETA_HEADER,
+    CLIPROXY_CLAUDE_USER_AGENT,
+    looks_like_cliproxy_url,
+)
 from .config import LLMConfig
 
 try:
@@ -1810,15 +1814,22 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
         "max_retries": 0,
     }
 
+    is_cliproxy_base_url = bool(
+        config.base_url and looks_like_cliproxy_url(config.base_url)
+    )
+
     if config.base_url:
         kwargs["anthropic_api_url"] = config.base_url
-        # When routed through CLIProxy (v6.9.36+), the cloak gate is the *client's*
-        # incoming User-Agent. Sending claude-cli/* skips system-prompt injection,
-        # fake user_id, and sensitive-word obfuscation — keeping Nymeria's identity
-        # intact while still receiving Claude Max subscription tier. Without this,
-        # responses come back as "I'm Claude Code, Anthropic's official CLI…".
-        # See Nymeria/docs/cliproxy.md → "Cloak gate" for the full explanation.
-        kwargs["default_headers"] = {"User-Agent": "claude-cli/2.1.113"}
+        if is_cliproxy_base_url:
+            # CLIProxy v6.9.36+ gates full cloaking on the client's incoming
+            # User-Agent, and its own Anthropic-Beta default can redact visible
+            # thinking. Override both only on CLIProxy routes so direct Anthropic
+            # calls keep SDK defaults.
+            # See Nymeria/docs/cliproxy.md for the full constraints.
+            kwargs["default_headers"] = {
+                "User-Agent": CLIPROXY_CLAUDE_USER_AGENT,
+                "Anthropic-Beta": CLIPROXY_ANTHROPIC_BETA_HEADER,
+            }
 
     # Determine model family for API compatibility
     model_name = (config.model or "").lower()

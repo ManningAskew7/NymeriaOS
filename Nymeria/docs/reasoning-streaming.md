@@ -2,7 +2,7 @@
 
 How live-streaming reasoning tokens flow from the LLM provider to the frontend thinking dropdown, across three provider families (Anthropic native, OpenAI-compatible chat-completions, and the Responses API).
 
-**Status:** working for Anthropic, OpenAI-compatible chat-completions providers, OpenAI Responses, and OpenRouter Responses beta as of 2026-04-27. Responses mode is the recommended path for CLIProxy Codex OAuth and OpenRouter threads that need native reasoning/tool-context continuation.
+**Status:** working for Anthropic, Anthropic via CLIProxy, OpenAI-compatible chat-completions providers, OpenAI Responses, and OpenRouter Responses beta as of 2026-05-11. Responses mode is the recommended path for CLIProxy Codex OAuth and OpenRouter threads that need native reasoning/tool-context continuation.
 
 ## TL;DR
 
@@ -13,11 +13,19 @@ How live-streaming reasoning tokens flow from the LLM provider to the frontend t
 - A single Responses `reasoning` block may contain several `summary_text` sections. History keeps those sections inside one frontend `thinking` step so a single model reasoning item does not render as several separate Thought blocks before the same tool call.
 - During live streaming, the backend tracks whether reasoning already streamed for the current LLM call. If it did, the final `on_chat_model_end` Responses reasoning block is not replayed as another `thinking` event; that final block remains available for checkpoint/history rehydration.
 - The **agent node** strips malformed Anthropic replay blocks shaped like `{"type": "thinking", "signature": "..."}` before the next provider call. Anthropic requires either a `thinking` or `redacted_thinking` field on replay, and summarized thinking can leave a signature-only block in checkpoint history.
+- For **Anthropic via CLIProxy**, Nymeria sends an explicit Claude OAuth `Anthropic-Beta` header that excludes `redact-thinking-2026-02-12`. If that redaction beta reaches Anthropic, the stream may contain only `signature_delta` for the thinking block, which means no live `thinking` SSE event can be emitted.
 - For **CLIProxy's GPT-5.5 sidecar**, the proxy itself already does the hard translation: it turns upstream Codex Responses-API `response.reasoning_summary_text.delta` events into `choices[0].delta.reasoning_content` strings on the chat-completions wire. We just have to not drop them client-side.
 - For **native OpenAI/OpenRouter Responses mode**, Nymeria replays the checkpointed Responses content blocks on each request instead of using `previous_response_id`. That keeps LangGraph's checkpoint authoritative for compaction, system prompt changes, injected context, and per-thread tool changes while still preserving prior reasoning/tool blocks in provider-native shape.
 - If an OpenRouter model leaks Qwen/DeepSeek-style `<think>...</think>` markup through a normal text block instead of a provider-native reasoning block, Nymeria strips that text from live display, history, and later stateless replay. Leaked inline thinking is not converted into durable `thinking` history. When a provider emits an empty reasoning block, the live sanitizer may briefly hold following text while it checks for leaked inline thinking; `[ASTREAM DIAG] inline_thinking_*` logs show whether visible pre-tool preamble was held and released before or at model end.
 
 If CLIProxy gets wiped, the only thing that needs rebuilding is the sidecar container and its auth tokens (see [docs/cliproxy.md](cliproxy.md)). The Python/Svelte code in this repository requires no change — the fix is committed and automatic for any OpenAI-compatible endpoint that emits reasoning in either convention.
+
+For Anthropic-over-CLIProxy thinking, the persistence rule is different but
+simple: the safe beta header comes from Nymeria, not from the proxy container.
+Restarting or rebuilding CLIProxy does not reset it. Rebuilding Nymeria from an
+old checkout would reset it, so keep the 2026-05-11 provider-header change in
+the Nymeria image/checkout and verify with `tools/check_cliproxy_cloak.py
+--check-thinking` after proxy upgrades.
 
 ## Wire formats by provider
 
@@ -35,6 +43,8 @@ chunk.content = [
 Matched by `core/agent.py` at the `on_chat_model_stream` branch: `block_type == "thinking"` → yield `{"type": "thinking", ...}`.
 
 Before replaying checkpointed history to Anthropic, `vendor/react_agent/nodes.py` removes only invalid signature-only thinking blocks: `{"type": "thinking", "signature": "..."}`. Those blocks can appear after summarized thinking, but Anthropic rejects them on the next request with `messages.N.content.0.thinking.thinking: Field required`. Blocks that include `thinking` (including an empty string) or `redacted_thinking` are preserved.
+
+When this path is routed through CLIProxy, `_create_anthropic_llm()` adds two CLIProxy-only headers: `User-Agent: claude-cli/2.1.113` to bypass identity cloaking, and a non-redacting `Anthropic-Beta` list to preserve visible `thinking_delta`. The excluded beta is `redact-thinking-2026-02-12`; it produces signature-only thinking blocks that are valid for replay but not displayable in the frontend.
 
 ### OpenAI-compatible chat-completions (`/v1/chat/completions`)
 
@@ -139,7 +149,7 @@ All under `/opt/NymeriaOS/Nymeria/`:
 | `nymeria/vendor/react_agent/providers.py`, `ChatOpenAIWithReasoning` | Top-level `ChatOpenAI` subclass overriding `_convert_chunk_to_generation_chunk`, `_get_request_payload`, `_stream`, `_astream`, `_stream_responses`, and `_astream_responses`. It normalises `delta.reasoning_content` (CLIProxy / DeepSeek / Qwen), `delta.reasoning` (OpenRouter), and displayable `delta.reasoning_details` text into `message.additional_kwargs["reasoning_content"]`. It also preserves raw OpenRouter `reasoning_details` in `message.additional_kwargs["reasoning_details"]`, replays them on later OpenRouter chat-completions requests as assistant-message `reasoning_details`, fills OpenRouter-required Responses history ids/statuses, strips leaked inline `<think>` text before OpenRouter replay, and rescues OpenRouter-specific Responses stream events such as `response.reasoning.delta` and `response.reasoning_text.delta` into typed `reasoning` content blocks. Responses streaming goes through a compatibility wrapper around LangChain's private converter; if that private symbol is renamed or removed, Nymeria falls back to a limited local converter for standard text deltas and plaintext reasoning summary deltas instead of breaking the stream outright. |
 | `nymeria/vendor/react_agent/providers.py`, `_create_openai_llm` | Uses `ChatOpenAIWithReasoning` instead of vanilla `ChatOpenAI`. Covers direct OpenAI, the CLIProxy GPT-5.5 sidecar, and any OpenAI-compatible endpoint that sets `provider=openai`. CLIProxy-looking OpenAI base URLs are normalized to include `/v1` before `ChatOpenAI` is constructed; without that, Responses mode hits `POST /responses` and returns `404 page not found`. When `llm_config.openai_api_mode="responses"`, it sets `use_responses_api=True`, `output_version="responses/v1"`, and `store=False`; it intentionally does not set `use_previous_response_id`, so the next request replays checkpointed Responses items without relying on provider-side response retention. When built inside a running event loop, it also passes a Nymeria-managed loop-local `http_async_client` to avoid LangChain's process-global async `httpx` client cache. |
 | `nymeria/vendor/react_agent/providers.py`, `_create_openrouter_llm` | Same subclass, used for all OpenRouter traffic. Defaults to OpenRouter Responses beta with `use_responses_api=True`, `output_version="responses/v1"`, `store=False`, and full-history replay. `openai_api_mode="chat_completions"` keeps the older Chat Completions behavior, including `extra_body.reasoning` and assistant-message `reasoning_details` replay. Like direct OpenAI, OpenRouter receives a loop-local async HTTP pool when constructed on an event loop. |
-| `nymeria/vendor/react_agent/providers.py`, `_create_anthropic_llm` | Uses `ChatAnthropic` with an Anthropic-specific wrapper. Direct Anthropic and Anthropic CLIProxy both receive loop-local async SDK clients; CLIProxy-looking Anthropic base URLs additionally get the `context_management` adapter and `User-Agent: claude-cli/2.1.113` cloak-bypass header. |
+| `nymeria/vendor/react_agent/providers.py`, `_create_anthropic_llm` | Uses `ChatAnthropic` with an Anthropic-specific wrapper. Direct Anthropic and Anthropic CLIProxy both receive loop-local async SDK clients; CLIProxy-looking Anthropic base URLs additionally get the `context_management` adapter, `User-Agent: claude-cli/2.1.113` cloak-bypass header, and explicit non-redacting `Anthropic-Beta` header. |
 | `nymeria/core/agent.py`, `_get_async_graph_for_user()` | Async graph cache keys include the owning event-loop id. This prevents FastAPI-loop chat and sync bridge-loop callable/autonomous invocations from sharing a cached graph whose provider client was built on another loop. |
 | `nymeria/vendor/react_agent/nodes.py`, `create_agent_node()` | Builds the ReAct agent node with separate sync and async implementations. The async implementation consumes `llm_with_tools.astream()` and merges `AIMessageChunk`s back into the final `AIMessage`, so `graph.astream_events()` can surface provider-token `on_chat_model_stream` events for regular chat, scheduled TODOs, triggers, callable threads, spawned threads, and the CLI. |
 | `nymeria/vendor/react_agent/nodes.py`, `_sanitize_messages_for_anthropic()` | Replay-time guard for Anthropic history. Drops malformed signature-only `thinking` blocks before calling the provider while leaving stored checkpoints unchanged. |
@@ -155,7 +165,7 @@ All under `/opt/NymeriaOS/Nymeria/`:
 | Provider / model | Endpoint langchain uses | Wire format | Works with our code? |
 | --- | --- | --- | --- |
 | Anthropic direct | `/v1/messages` | typed blocks in `content` | ✅ yes (existing Anthropic path) |
-| Anthropic via pinned CLIProxy | `/v1/messages` | typed blocks in `content` | ✅ yes |
+| Anthropic via pinned CLIProxy | `/v1/messages` | typed blocks in `content`; visible thinking requires `Anthropic-Beta` without `redact-thinking-2026-02-12` | ✅ yes |
 | CLIProxy GPT-5.5 sidecar with `openai_api_mode="chat_completions"` | `/v1/chat/completions` | `delta.reasoning_content` (plaintext summary, translated from upstream) | ✅ yes, via subclass; not recommended if thinking is enabled |
 | CLIProxy GPT-5.5 sidecar with default `openai_api_mode="responses"` | `/v1/responses` | typed `reasoning` summary blocks + `resp_*` id | ✅ yes, with checkpoint replay |
 | OpenRouter with default `openai_api_mode="responses"` | `/api/v1/responses` | typed `reasoning` summaries; OpenRouter may also stream `response.reasoning.delta` / `response.reasoning_text.delta` or finalize Claude reasoning in `reasoning.content[].text` | ✅ yes, with stateless full-history replay, OpenRouter history normalization, and inline `<think>` leak stripping |
@@ -177,6 +187,20 @@ If the GPT-5.5 CLIProxy sidecar gets wiped and you're rebuilding from scratch, t
 Given those four, reasoning streaming works immediately — no Python or Svelte change is ever needed after a sidecar rebuild.
 
 ## Debugging
+
+### Is Anthropic CLIProxy redacting thinking?
+
+Run the CLIProxy smoke test with the optional thinking probe:
+
+```bash
+python3 Nymeria/tools/check_cliproxy_cloak.py \
+  --base-url http://localhost:8318 \
+  --api-key cpx-<your-claude-gatekeeper-key> \
+  --auth-dir CLIProxyAPI-main/temp/latest/auths \
+  --check-thinking
+```
+
+Expected: the thinking probe reports at least one `thinking_delta`. If it reports only `signature_delta`, check that `_create_anthropic_llm()` is sending the explicit `Anthropic-Beta` header documented in [cliproxy.md](cliproxy.md#thinking-beta-override--the-visible-reasoning-detail), and verify the CLIProxy request log does not include `redact-thinking-2026-02-12`.
 
 ### Is CLIProxy emitting reasoning at all?
 

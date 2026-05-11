@@ -12,6 +12,11 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 
 from nymeria.vendor.react_agent import providers
+from nymeria.vendor.react_agent.cliproxy import (
+    CLIPROXY_ANTHROPIC_BETA_HEADER,
+    CLIPROXY_CLAUDE_USER_AGENT,
+    CLIPROXY_REDACT_THINKING_BETA,
+)
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
     ChatOpenAIWithReasoning,
@@ -301,6 +306,9 @@ def test_anthropic_non_cliproxy_base_url_does_not_use_context_management_adapter
     assert isinstance(llm, ChatAnthropic)
     assert type(llm) is not ChatAnthropic
     assert type(llm).__name__ == "NymeriaChatAnthropic"
+    default_headers = llm._client_params.get("default_headers") or {}
+    assert default_headers.get("User-Agent") != CLIPROXY_CLAUDE_USER_AGENT
+    assert "Anthropic-Beta" not in default_headers
 
 
 def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch):
@@ -397,7 +405,15 @@ def test_anthropic_async_client_preserves_cliproxy_http_settings(monkeypatch):
 
     assert async_client.max_retries == 0
     assert async_client.timeout == 123
-    assert async_client.default_headers["User-Agent"] == "claude-cli/2.1.113"
+    assert async_client.default_headers["User-Agent"] == CLIPROXY_CLAUDE_USER_AGENT
+    assert (
+        async_client.default_headers["Anthropic-Beta"]
+        == CLIPROXY_ANTHROPIC_BETA_HEADER
+    )
+    assert (
+        CLIPROXY_REDACT_THINKING_BETA
+        not in async_client.default_headers["Anthropic-Beta"]
+    )
     assert str(async_client.base_url).rstrip("/") == (
         "http://cli-proxy-api-latest:8317"
     )
