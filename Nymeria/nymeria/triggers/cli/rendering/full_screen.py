@@ -45,6 +45,7 @@ from ..state import (
     UserMessage,
     create_initial_state,
     reduce_stream_event,
+    select_activity_phase,
     start_turn,
 )
 from ..transport.base import AgentClient, Attachment
@@ -52,6 +53,7 @@ from ..transport.disconnected import is_disconnected_client
 from .indicator import (
     FRAME_INTERVAL_SECONDS,
     ActivityIndicator,
+    PHASE_LABELS,
 )
 from .plain import tool_result_summary, truncate_plain
 from .status_bar import (
@@ -115,6 +117,8 @@ class FullScreenPromptToolkitShell:
         self._pending_submissions: deque[ComposerSubmission] = deque()
         self._current_turn_task: asyncio.Task[bool] | None = None
         self._autonomous_listener_task: asyncio.Task[None] | None = None
+        self._transcript_activity_refresh_task: asyncio.Task[None] | None = None
+        self._last_transcript_activity_label = ""
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._application: Application[None] | None = None
         self._lifecycle = TurnLifecycleController(
@@ -186,11 +190,16 @@ class FullScreenPromptToolkitShell:
 
         app = self._application or self.build_application()
         self._autonomous_listener_task = self._start_autonomous_listener()
+        self._transcript_activity_refresh_task = asyncio.create_task(
+            self._refresh_live_transcript_activity(),
+            name="NymeriaCLITranscriptActivityRefresh",
+        )
         try:
             with ExitSignalHandlers(lambda signum: self._schedule_signal_exit(app, signum)):
                 await app.run_async()
         finally:
             await self.shutdown_active_turn(reason="shutdown")
+            await cancel_task(self._transcript_activity_refresh_task)
             await cancel_task(self._autonomous_listener_task)
             close = getattr(self.client, "close", None)
             if callable(close):
@@ -676,11 +685,21 @@ class FullScreenPromptToolkitShell:
         with contextlib.suppress(Exception):
             app.exit()
 
+    async def _refresh_live_transcript_activity(self) -> None:
+        while True:
+            await asyncio.sleep(FRAME_INTERVAL_SECONDS)
+            now = time.monotonic()
+            label = _transcript_activity_label(self.state, now=now)
+            if label != self._last_transcript_activity_label:
+                self._refresh_transcript(now=now)
+
     def _replace_state(self, state: CLIUIState) -> None:
         self.state = state
         self._refresh_transcript()
 
-    def _refresh_transcript(self) -> None:
+    def _refresh_transcript(self, *, now: float | None = None) -> None:
+        current_time = time.monotonic() if now is None else now
+        activity_label = _transcript_activity_label(self.state, now=current_time)
         width = _transcript_render_width(self.capabilities)
         result = self.transcript_renderer.render_result(
             self.state,
@@ -688,8 +707,10 @@ class FullScreenPromptToolkitShell:
             options=_transcript_options(
                 self.capabilities,
                 verbose=self._transcript_verbose,
+                assistant_activity_label=activity_label,
             ),
         )
+        self._last_transcript_activity_label = activity_label
         self.transcript_lexer.set_lines(result.lines)
         self.transcript.text = result.text
         self.transcript.buffer.cursor_position = len(self.transcript.text)
@@ -841,11 +862,20 @@ def _transcript_options(
     capabilities: Any,
     *,
     verbose: bool,
+    assistant_activity_label: str = "",
 ) -> TranscriptRenderOptions:
     return TranscriptRenderOptions(
         verbose=verbose,
         ascii_only=not bool(getattr(capabilities, "unicode_enabled", False)),
+        assistant_activity_label=assistant_activity_label,
     )
+
+
+def _transcript_activity_label(state: CLIUIState, *, now: float | None = None) -> str:
+    phase = select_activity_phase(state, now=now)
+    if phase is None or phase == "typing":
+        return ""
+    return PHASE_LABELS[phase]
 
 
 def _line_style(line: TranscriptLine) -> str:
