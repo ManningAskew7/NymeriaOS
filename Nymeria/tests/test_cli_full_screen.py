@@ -126,7 +126,7 @@ def test_full_screen_transcript_header_shows_live_activity_phase() -> None:
 
     shell._refresh_transcript(now=now)
 
-    assert "──── Nymeria · Thinking... " in shell.transcript.text
+    assert "──── Nymeria · ⠋ Thinking... 0.0s " in shell.transcript.text
     assert "Thinking..." in shell._status_text()
 
 
@@ -143,8 +143,29 @@ def test_full_screen_transcript_header_updates_to_formulating() -> None:
     thinking_text = shell.transcript.text
     shell._refresh_transcript(now=2.01)
 
-    assert "──── Nymeria · Thinking... " in thinking_text
-    assert "──── Nymeria · Formulating... " in shell.transcript.text
+    assert "Thinking... 1.4s " in thinking_text
+    assert "Formulating... 1.9s " in shell.transcript.text
+
+
+def test_full_screen_transcript_header_matches_waiting_detail() -> None:
+    shell = make_shell()
+    shell.state = start_turn(shell.state, "tool", now=0.1)
+    shell.state = reduce_stream_event(
+        shell.state,
+        {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "search_memory",
+            "args": {"query": "private"},
+        },
+        now=1.1,
+    )
+
+    shell._refresh_transcript(now=1.2)
+    header = next(line for line in shell.transcript.text.splitlines() if "Nymeria" in line)
+
+    assert "Waiting... 1.1s search_memory " in header
+    assert "private" not in header
 
 
 def test_full_screen_shell_consumes_current_thread_autonomous_events() -> None:

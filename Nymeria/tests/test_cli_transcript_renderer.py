@@ -201,7 +201,7 @@ def test_transcript_uses_unicode_separators_and_tool_symbols_when_enabled() -> N
     assert "  \u2713 filesystem_read ok 2.0s " in text
 
 
-def test_streaming_assistant_header_shows_activity_label() -> None:
+def test_streaming_assistant_header_shows_activity_text() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "think", now=0.1)
 
@@ -210,11 +210,11 @@ def test_streaming_assistant_header_shows_activity_label() -> None:
         width=80,
         options=TranscriptRenderOptions(
             ascii_only=False,
-            assistant_activity_label="Thinking...",
+            assistant_activity_label="\u280b Thinking... 0.0s",
         ),
     )
 
-    assert "\n\u2500\u2500\u2500\u2500 Nymeria \u00b7 Thinking... " in text
+    assert "\n\u2500\u2500\u2500\u2500 Nymeria \u00b7 \u280b Thinking... 0.0s " in text
     assert max_line_width(text) <= 80
 
 
@@ -233,12 +233,12 @@ def test_completed_assistant_header_ignores_activity_label() -> None:
         width=80,
         options=TranscriptRenderOptions(
             ascii_only=False,
-            assistant_activity_label="Thinking...",
+            assistant_activity_label="\u280b Thinking... 0.0s",
         ),
     )
 
     assert "\n\u2500\u2500\u2500\u2500 Nymeria " in text
-    assert "Nymeria \u00b7 Thinking..." not in text
+    assert "Nymeria \u00b7 \u280b Thinking..." not in text
 
 
 def test_ascii_assistant_header_uses_plain_activity_separator() -> None:
@@ -248,10 +248,10 @@ def test_ascii_assistant_header_uses_plain_activity_separator() -> None:
     text = render_transcript(
         state,
         width=80,
-        options=TranscriptRenderOptions(assistant_activity_label="Thinking..."),
+        options=TranscriptRenderOptions(assistant_activity_label="| Thinking... 0.0s"),
     )
 
-    assert "\n---- Nymeria - Thinking... " in text
+    assert "\n---- Nymeria - | Thinking... 0.0s " in text
 
 
 def test_activity_header_is_bounded_at_narrow_width() -> None:
@@ -263,11 +263,11 @@ def test_activity_header_is_bounded_at_narrow_width() -> None:
         width=30,
         options=TranscriptRenderOptions(
             ascii_only=False,
-            assistant_activity_label="Processing results...",
+            assistant_activity_label="\u280b Processing results... 1.2s",
         ),
     )
 
-    assert "Processing" in text
+    assert "Processi..." in text
     assert max_line_width(text) <= 30
 
 
