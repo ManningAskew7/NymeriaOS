@@ -25,11 +25,10 @@ from ..state import (
     start_turn,
 )
 from .plain import (
-    format_args_preview,
-    result_preview_text,
-    tool_result_summary,
     truncate_plain,
 )
+from .tool_rows import ToolRowRenderOptions, format_tool_row
+from .transcript import format_turn_separator
 
 
 class RichReplRenderer:
@@ -195,7 +194,13 @@ class RichReplRenderer:
             if tool.id in self._rendered_tool_results:
                 continue
             self.flush_response()
-            self.console.print(render_tool_row(tool, width=self.width))
+            self.console.print(
+                render_tool_row(
+                    tool,
+                    width=self.width,
+                    ascii_only=self._ascii_only(),
+                )
+            )
             self._rendered_tool_results.add(tool.id)
             printed = True
         return printed
@@ -235,19 +240,28 @@ class RichReplRenderer:
         return printed
 
     def _render_user_message(self, message: UserMessage) -> None:
-        content = truncate_plain(message.content, self.width)
-        self.console.print(Text(f"You: {content}", style="bold cyan"))
+        self._render_separator("You", style="bold cyan")
+        content = truncate_plain(message.content, max(1, self.width - 2))
+        self.console.print(Text(f"  {content}", style="cyan"))
 
     def _render_assistant_message(self, message: AssistantMessage) -> None:
+        self._render_separator("Nymeria", style="bold green")
         for step in message.steps:
             if isinstance(step, ThinkingStep):
-                self.console.print(Text("Thinking...", style="dim"))
+                self.console.print(Text("  Thinking...", style="dim"))
             elif isinstance(step, ToolCallStep):
-                self.console.print(render_tool_row(step, width=self.width))
+                self.console.print(
+                    render_tool_row(
+                        step,
+                        width=self.width,
+                        ascii_only=self._ascii_only(),
+                    )
+                )
             elif isinstance(step, ResponseStep) and step.content.strip():
                 self.console.print(Markdown(step.content.strip()))
 
     def _render_system_message(self, message: SystemMessage) -> None:
+        self._render_separator("System", style="dim")
         if message.kind == "compaction_notice":
             text = "Context compacted."
             if message.context_summary:
@@ -269,33 +283,38 @@ class RichReplRenderer:
             )
         )
 
+    def _render_separator(self, label: str, *, style: str) -> None:
+        self.console.print(
+            Text(
+                format_turn_separator(
+                    label,
+                    width=self.width,
+                    ascii_only=self._ascii_only(),
+                ),
+                style=style,
+            )
+        )
 
-def render_tool_row(tool: ToolCallStep, *, width: int | None = None) -> Text:
+    def _ascii_only(self) -> bool:
+        return not bool(getattr(self.capabilities, "unicode_enabled", False))
+
+
+def render_tool_row(
+    tool: ToolCallStep,
+    *,
+    width: int | None = None,
+    ascii_only: bool = False,
+) -> Text:
     """Return a Rich compact tool row."""
 
     width = _positive_width(width)
-    name = tool.name or "tool"
-    args_preview = format_args_preview(tool.arguments)
-    result_preview = result_preview_text(tool.result)
-
-    row = Text("  > ", style="yellow")
-    row.append(name, style="yellow")
-    if args_preview:
-        row.append(f" {args_preview}", style="dim")
-    if result_preview:
-        row.append(" -> ", style="dim")
-        row.append(
-            result_preview,
-            style="red" if tool.status == "error" else "dim",
-        )
-    if tool.status in {"error", "cancelled", "running"}:
-        status_style = "red" if tool.status == "error" else "dim"
-        row.append(f" ({tool.status})", style=status_style)
-
-    plain = row.plain
-    if len(plain) <= width:
-        return row
-    return Text(tool_result_summary(tool, width=width))
+    row = format_tool_row(
+        tool,
+        width=max(1, width - 2),
+        options=ToolRowRenderOptions(show_duration=True, ascii_only=ascii_only),
+    )
+    style = "red" if tool.status == "error" else "yellow"
+    return Text(f"  {row}", style=style)
 
 
 def _make_console(

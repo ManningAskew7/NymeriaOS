@@ -54,8 +54,10 @@ def test_rich_renderer_renders_transcript_from_reducer_state() -> None:
 
     renderer.render_state()
 
-    assert "You: use a tool" in output.stdout_text
-    assert "> search_memory project status -> Found 2 matching notes." in (
+    assert "──── You " in output.stdout_text
+    assert "  use a tool" in output.stdout_text
+    assert "──── Nymeria " in output.stdout_text
+    assert "✓ search_memory ok 1.0s query=\"project status\" -> Found 2 matching notes." in (
         output.stdout_text
     )
     assert "I found the notes." in output.stdout_text
@@ -91,7 +93,7 @@ def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:
         now=1.0,
     )
 
-    assert "> search_memory project status -> Found 2 matching notes." in (
+    assert "✓ search_memory ok 0ms query=\"project status\" -> Found 2 matching notes." in (
         output.stdout_text
     )
     assert "Done with markdown." in output.stdout_text

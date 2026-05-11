@@ -288,7 +288,11 @@ def _user_lines(
 ) -> list[TranscriptLine]:
     records = [
         TranscriptLine(
-            _header_text("You", message.timestamp),
+            format_turn_separator(
+                _header_text("You", message.timestamp),
+                width=width,
+                ascii_only=options.ascii_only,
+            ),
             "user_header",
         )
     ]
@@ -326,7 +330,16 @@ def _assistant_lines(
     header_kind: TranscriptLineKind = (
         "autonomous_header" if assistant_label else "assistant_header"
     )
-    records = [TranscriptLine(_header_text(label, message.timestamp), header_kind)]
+    records = [
+        TranscriptLine(
+            format_turn_separator(
+                _header_text(label, message.timestamp),
+                width=width,
+                ascii_only=options.ascii_only,
+            ),
+            header_kind,
+        )
+    ]
     last_tool_index = _last_tool_index(message.steps)
 
     for index, step in enumerate(message.steps):
@@ -396,10 +409,14 @@ def _tool_lines(
     options: TranscriptRenderOptions,
 ) -> list[TranscriptLine]:
     body_width = max(1, width - len(INDENT))
+    tool_row_options = replace(
+        options.tool_row_options,
+        ascii_only=options.ascii_only,
+    )
     row = format_tool_row(
         step,
         width=body_width,
-        options=options.tool_row_options,
+        options=tool_row_options,
     )
     records = [_indented_record(row, "tool", width)]
     if not options.verbose:
@@ -460,7 +477,14 @@ def _system_lines(
 ) -> list[TranscriptLine]:
     if message.kind == "autonomous":
         records = [
-            TranscriptLine(_header_text(_autonomous_label(message, options), message.timestamp), "autonomous_header")
+            TranscriptLine(
+                format_turn_separator(
+                    _header_text(_autonomous_label(message, options), message.timestamp),
+                    width=width,
+                    ascii_only=options.ascii_only,
+                ),
+                "autonomous_header",
+            )
         ]
         if message.content:
             records.extend(
@@ -470,7 +494,16 @@ def _system_lines(
 
     text = _system_text(message)
     kind: TranscriptLineKind = "error" if message.kind == "error" else "system"
-    records = [TranscriptLine(_header_text("System", message.timestamp), kind)]
+    records = [
+        TranscriptLine(
+            format_turn_separator(
+                _header_text("System", message.timestamp),
+                width=width,
+                ascii_only=options.ascii_only,
+            ),
+            kind,
+        )
+    ]
     records.extend(_indented_plain_block(text, kind=kind, width=width))
     return records
 
@@ -628,6 +661,27 @@ def _header_text(label: str, timestamp: float) -> str:
     return label
 
 
+def format_turn_separator(
+    label: str,
+    *,
+    width: int | None = None,
+    ascii_only: bool = True,
+) -> str:
+    """Return a bounded horizontal rule with an embedded turn label."""
+
+    selected_width = coerce_width(width, default=DEFAULT_TRANSCRIPT_WIDTH)
+    rule = "-" if ascii_only else "\u2500"
+    normalized_label = " ".join(str(label or "Message").split())
+    max_label_width = max(1, selected_width - 7)
+    bounded_label = truncate_cell_width(normalized_label, max_label_width)
+    prefix = f"{rule * min(4, selected_width)} "
+    separator = f"{prefix}{bounded_label} "
+    remaining_width = selected_width - cell_len(separator)
+    if remaining_width > 0:
+        separator = f"{separator}{rule * remaining_width}"
+    return truncate_cell_width(separator, selected_width)
+
+
 def _message_signature(
     message: TranscriptMessage,
     options: TranscriptRenderOptions,
@@ -641,6 +695,7 @@ def _message_signature(
             message.status,
             message.context_summary,
             options.verbose,
+            options.ascii_only,
             assistant_label,
         )
     if isinstance(message, SystemMessage):
@@ -723,6 +778,7 @@ __all__ = [
     "TranscriptRenderOptions",
     "TranscriptRenderResult",
     "TranscriptRenderer",
+    "format_turn_separator",
     "max_line_width",
     "render_message",
     "render_message_lines",

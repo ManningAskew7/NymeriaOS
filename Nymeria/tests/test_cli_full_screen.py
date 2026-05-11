@@ -95,8 +95,10 @@ def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> No
     assert client.chat_requests[0].message == "hello"
     assert client.chat_requests[0].thread_id == "thread-1"
     assert client.chat_requests[0].user_id == "alice"
-    assert "You\n  hello" in shell.transcript.text
-    assert "Nymeria\n  Hello there." in shell.transcript.text
+    assert "──── You " in shell.transcript.text
+    assert "\n  hello" in shell.transcript.text
+    assert "──── Nymeria " in shell.transcript.text
+    assert "\n  Hello there." in shell.transcript.text
     assert "Ready" in shell._status_text()
 
 
@@ -157,12 +159,12 @@ def test_full_screen_transcript_renders_tool_rows_in_event_order() -> None:
     text = render_transcript(state, width=100)
 
     assert text.splitlines() == [
-        "You",
+        "---- You -------------------------------------------------------------------------------------------",
         "  use a tool",
         "",
-        "Nymeria",
+        "---- Nymeria ---------------------------------------------------------------------------------------",
         "  Thought  /details thinking -1",
-        "  > search_memory ok 0ms query=\"project status\" -> Found 2 matching notes.",
+        "  - search_memory ok 0ms query=\"project status\" -> Found 2 matching notes.",
         "  I found the notes.",
     ]
 
