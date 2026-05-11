@@ -18,6 +18,7 @@ Usage:
     python tools/check_cliproxy_cloak.py
     python tools/check_cliproxy_cloak.py --base-url http://cli-proxy-api:8317 --api-key cpx-...
     python tools/check_cliproxy_cloak.py --auth-dir CLIProxyAPI-main/temp/latest/auths
+    python tools/check_cliproxy_cloak.py --check-thinking --model claude-opus-4-6
 """
 from __future__ import annotations
 
@@ -39,6 +40,17 @@ CLOAK_MARKERS = (
     "Claude Code, Anthropic's official CLI",
     "official CLI for Claude",
 )
+CLIPROXY_CLAUDE_USER_AGENT = "claude-cli/2.1.113"
+SAFE_CLAUDE_OAUTH_BETA_HEADER = ",".join(
+    (
+        "claude-code-20250219",
+        "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27",
+        "prompt-caching-scope-2026-01-05",
+    )
+)
+REDACT_THINKING_BETA = "redact-thinking-2026-02-12"
 CLIPROXY_BILLING_SYSTEM_BLOCK = {
     "type": "text",
     "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
@@ -392,6 +404,7 @@ def probe(
     user_agent: str,
     *,
     use_billing_block: bool,
+    anthropic_beta: str | None = None,
 ) -> dict:
     system = [
         CLIPROXY_BILLING_SYSTEM_BLOCK,
@@ -404,6 +417,69 @@ def probe(
         "system": system,
         "messages": [{"role": "user", "content": "Who are you? One short sentence."}],
     }).encode()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "User-Agent": user_agent,
+    }
+    if anthropic_beta:
+        headers["Anthropic-Beta"] = anthropic_beta
+
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/v1/messages",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def _uses_adaptive_thinking(model: str) -> bool:
+    model_name = (model or "").lower()
+    return (
+        "opus-4-6" in model_name
+        or "sonnet-4-6" in model_name
+        or "opus-4-7" in model_name
+        or "sonnet-4-7" in model_name
+    )
+
+
+def _thinking_probe_body(model: str) -> dict:
+    body = {
+        "model": model,
+        "max_tokens": 1600,
+        "stream": True,
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Use visible extended thinking briefly, then answer only with "
+                    "the number: what is 17 times 23?"
+                ),
+            }
+        ],
+    }
+    if _uses_adaptive_thinking(model):
+        body["thinking"] = {"type": "adaptive"}
+        body["output_config"] = {"effort": "medium"}
+    else:
+        body["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+        body["temperature"] = 1
+    return body
+
+
+def probe_visible_thinking(
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> tuple[int, int, int, str]:
+    """Stream a tiny thinking request and count thinking/signature/text deltas."""
+    if REDACT_THINKING_BETA in SAFE_CLAUDE_OAUTH_BETA_HEADER:
+        raise RuntimeError("safe beta header contains redact-thinking beta")
+
+    body = json.dumps(_thinking_probe_body(model)).encode()
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}/v1/messages",
         data=body,
@@ -411,12 +487,43 @@ def probe(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
-            "User-Agent": user_agent,
+            "User-Agent": CLIPROXY_CLAUDE_USER_AGENT,
+            "Anthropic-Beta": SAFE_CLAUDE_OAUTH_BETA_HEADER,
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+
+    thinking_chunks = 0
+    signature_chunks = 0
+    text_chunks = 0
+    thinking_preview: list[str] = []
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                event = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+
+            delta = event.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            delta_type = delta.get("type")
+            if delta_type == "thinking_delta":
+                thinking_chunks += 1
+                if len("".join(thinking_preview)) < 240:
+                    thinking_preview.append(str(delta.get("thinking", "")))
+            elif delta_type == "signature_delta":
+                signature_chunks += 1
+            elif delta_type == "text_delta":
+                text_chunks += 1
+
+    return thinking_chunks, signature_chunks, text_chunks, "".join(thinking_preview)
 
 
 def main() -> int:
@@ -446,6 +553,14 @@ def main() -> int:
         action="store_true",
         help="Skip local v7 cloak config reporting; live request probes still run.",
     )
+    p.add_argument(
+        "--check-thinking",
+        action="store_true",
+        help=(
+            "Also stream an extended-thinking probe and fail unless visible "
+            "thinking_delta chunks are present."
+        ),
+    )
     args = p.parse_args()
 
     if not args.api_key:
@@ -457,8 +572,12 @@ def main() -> int:
         base = base[:-3]
 
     print(f"Probing {base} with model {args.model}\n")
+    total_steps = 4 if args.check_thinking else 3
     if args.skip_auth_file_check:
-        print("[1/3] Skipping local Claude OAuth auth JSON check (--skip-auth-file-check)")
+        print(
+            f"[1/{total_steps}] Skipping local Claude OAuth auth JSON check "
+            "(--skip-auth-file-check)"
+        )
     else:
         auth_dirs = discover_auth_dirs(args.auth_dir)
         if print_tool_prefix_check(auth_dirs) != 0:
@@ -470,14 +589,19 @@ def main() -> int:
         if print_cloak_state_report([], discover_config_paths(args.config_path)) != 0:
             return 1
 
-    print("\n[2/3] Sending probe with User-Agent: claude-cli/2.1.113 + billing block (production path)")
+    print(
+        f"\n[2/{total_steps}] Sending probe with "
+        f"User-Agent: {CLIPROXY_CLAUDE_USER_AGENT} + safe Anthropic-Beta "
+        "+ billing block (production path)"
+    )
     try:
         good = probe(
             base,
             args.api_key,
             args.model,
-            "claude-cli/2.1.113",
+            CLIPROXY_CLAUDE_USER_AGENT,
             use_billing_block=True,
+            anthropic_beta=SAFE_CLAUDE_OAUTH_BETA_HEADER,
         )
     except Exception as e:
         print(f"  FAIL: probe request errored: {e}", file=sys.stderr)
@@ -509,7 +633,43 @@ def main() -> int:
 
     print("  ✓ Clean: no full cloak, Nymeria identity preserved, subscription tier")
 
-    print("\n[3/3] Control probe with User-Agent: python-requests/0 and no billing block (cloak-expected path)")
+    if args.check_thinking:
+        print(
+            f"\n[3/{total_steps}] Streaming extended-thinking probe with "
+            "safe Anthropic-Beta header"
+        )
+        print(
+            f"  beta: {SAFE_CLAUDE_OAUTH_BETA_HEADER}"
+        )
+        try:
+            thinking_chunks, signature_chunks, text_chunks, preview = (
+                probe_visible_thinking(base, args.api_key, args.model)
+            )
+        except Exception as e:
+            print(f"  FAIL: thinking probe errored: {e}", file=sys.stderr)
+            return 1
+
+        print(
+            "  chunks: "
+            f"thinking_delta={thinking_chunks} "
+            f"signature_delta={signature_chunks} "
+            f"text_delta={text_chunks}"
+        )
+        if preview:
+            print(f"  preview: {preview[:180]!r}")
+        if thinking_chunks < 1:
+            print("  ✗ No visible thinking_delta chunks received.")
+            print(
+                f"    Confirm CLIProxy did not add {REDACT_THINKING_BETA!r} "
+                "to the upstream Anthropic-Beta header."
+            )
+            return 1
+        print("  ✓ Visible thinking_delta chunks received")
+
+    print(
+        f"\n[{total_steps}/{total_steps}] Control probe with "
+        "User-Agent: python-requests/0 and no billing block (cloak-expected path)"
+    )
     try:
         bad = probe(
             base,

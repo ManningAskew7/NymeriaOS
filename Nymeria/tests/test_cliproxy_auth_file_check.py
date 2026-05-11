@@ -53,6 +53,16 @@ def test_truthy_tool_prefix_values_match_cliproxy_parser(tmp_path: Path):
     assert bad_files == []
 
 
+def test_safe_beta_header_does_not_redact_visible_thinking():
+    assert (
+        check_cliproxy_cloak.REDACT_THINKING_BETA
+        not in check_cliproxy_cloak.SAFE_CLAUDE_OAUTH_BETA_HEADER
+    )
+    assert "interleaved-thinking-2025-05-14" in (
+        check_cliproxy_cloak.SAFE_CLAUDE_OAUTH_BETA_HEADER
+    )
+
+
 def test_disabled_and_non_claude_auth_files_are_ignored(tmp_path: Path):
     auth_dir = tmp_path / "auths"
     auth_dir.mkdir()

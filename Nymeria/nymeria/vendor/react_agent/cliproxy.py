@@ -7,6 +7,16 @@ This module centralises the hostname/port heuristics so they stay in sync.
 from urllib.parse import urlparse
 
 CLIPROXY_PORTS: frozenset[int] = frozenset({8317, 8318})
+CLIPROXY_CLAUDE_USER_AGENT = "claude-cli/2.1.113"
+CLIPROXY_REDACT_THINKING_BETA = "redact-thinking-2026-02-12"
+CLIPROXY_ANTHROPIC_BETA_VALUES: tuple[str, ...] = (
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+)
+CLIPROXY_ANTHROPIC_BETA_HEADER = ",".join(CLIPROXY_ANTHROPIC_BETA_VALUES)
 
 CLIPROXY_BILLING_SYSTEM_BLOCK: dict[str, str] = {
     "type": "text",
