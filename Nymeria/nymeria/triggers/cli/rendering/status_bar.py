@@ -147,7 +147,7 @@ class StatusBarRenderer:
         segments = [
             StatusSegment(text="Nymeria", priority=0, min_width=3, removable=False),
             StatusSegment(
-                text=self._activity_segment(
+                text=self.activity_segment(
                     state,
                     capabilities=capabilities,
                     now=now,
@@ -194,21 +194,22 @@ class StatusBarRenderer:
             segments.append(StatusSegment(text=cwd, priority=3, min_width=8))
         return segments
 
-    def _activity_segment(
+    def activity_segment(
         self,
         state: CLIUIState,
         *,
         capabilities: Any,
-        now: float,
+        now: float | None = None,
         busy: bool = False,
     ) -> str:
-        activity = activity_state_from_ui_state(state, now=now)
+        current_time = time.monotonic() if now is None else now
+        activity = activity_state_from_ui_state(state, now=current_time)
         if activity is None:
             return PHASE_LABELS["processing"] if busy else "Ready"
 
-        frame = self.indicator.tick(now, capabilities=capabilities)
+        frame = self.indicator.tick(current_time, capabilities=capabilities)
         label = PHASE_LABELS[activity.phase]
-        duration = format_duration(now - activity.started_at)
+        duration = format_duration(current_time - activity.started_at)
         detail = normalize_detail(activity.detail)
         return " ".join(part for part in (frame, label, duration, detail) if part)
 

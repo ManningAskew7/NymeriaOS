@@ -45,7 +45,6 @@ from ..state import (
     UserMessage,
     create_initial_state,
     reduce_stream_event,
-    select_activity_phase,
     start_turn,
 )
 from ..transport.base import AgentClient, Attachment
@@ -53,7 +52,7 @@ from ..transport.disconnected import is_disconnected_client
 from .indicator import (
     FRAME_INTERVAL_SECONDS,
     ActivityIndicator,
-    PHASE_LABELS,
+    activity_state_from_ui_state,
 )
 from .plain import tool_result_summary, truncate_plain
 from .status_bar import (
@@ -118,7 +117,7 @@ class FullScreenPromptToolkitShell:
         self._current_turn_task: asyncio.Task[bool] | None = None
         self._autonomous_listener_task: asyncio.Task[None] | None = None
         self._transcript_activity_refresh_task: asyncio.Task[None] | None = None
-        self._last_transcript_activity_label = ""
+        self._last_transcript_activity_text = ""
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._application: Application[None] | None = None
         self._lifecycle = TurnLifecycleController(
@@ -689,8 +688,10 @@ class FullScreenPromptToolkitShell:
         while True:
             await asyncio.sleep(FRAME_INTERVAL_SECONDS)
             now = time.monotonic()
-            label = _transcript_activity_label(self.state, now=now)
-            if label != self._last_transcript_activity_label:
+            if (
+                activity_state_from_ui_state(self.state, now=now) is not None
+                or self._last_transcript_activity_text
+            ):
                 self._refresh_transcript(now=now)
 
     def _replace_state(self, state: CLIUIState) -> None:
@@ -699,7 +700,13 @@ class FullScreenPromptToolkitShell:
 
     def _refresh_transcript(self, *, now: float | None = None) -> None:
         current_time = time.monotonic() if now is None else now
-        activity_label = _transcript_activity_label(self.state, now=current_time)
+        activity_text = _transcript_activity_text(
+            self.status_bar_renderer,
+            self.state,
+            capabilities=self.capabilities,
+            busy=self._busy,
+            now=current_time,
+        )
         width = _transcript_render_width(self.capabilities)
         result = self.transcript_renderer.render_result(
             self.state,
@@ -707,10 +714,10 @@ class FullScreenPromptToolkitShell:
             options=_transcript_options(
                 self.capabilities,
                 verbose=self._transcript_verbose,
-                assistant_activity_label=activity_label,
+                assistant_activity_label=activity_text,
             ),
         )
-        self._last_transcript_activity_label = activity_label
+        self._last_transcript_activity_text = activity_text
         self.transcript_lexer.set_lines(result.lines)
         self.transcript.text = result.text
         self.transcript.buffer.cursor_position = len(self.transcript.text)
@@ -871,11 +878,23 @@ def _transcript_options(
     )
 
 
-def _transcript_activity_label(state: CLIUIState, *, now: float | None = None) -> str:
-    phase = select_activity_phase(state, now=now)
-    if phase is None or phase == "typing":
+def _transcript_activity_text(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    *,
+    capabilities: Any,
+    busy: bool = False,
+    now: float | None = None,
+) -> str:
+    text = renderer.activity_segment(
+        state,
+        capabilities=capabilities,
+        now=now,
+        busy=busy,
+    )
+    if text == "Ready":
         return ""
-    return PHASE_LABELS[phase]
+    return text
 
 
 def _line_style(line: TranscriptLine) -> str:
