@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, simple_response_events
 
@@ -111,6 +112,39 @@ def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> No
     assert "──── Nymeria " in shell.transcript.text
     assert "\n  Hello there." in shell.transcript.text
     assert "Ready" in shell._status_text()
+
+
+def test_full_screen_transcript_header_shows_live_activity_phase() -> None:
+    shell = make_shell()
+    now = time.monotonic()
+    shell.state = start_turn(shell.state, "think", now=now)
+    shell.state = reduce_stream_event(
+        shell.state,
+        {"type": "thinking", "content": "working"},
+        now=now,
+    )
+
+    shell._refresh_transcript(now=now)
+
+    assert "──── Nymeria · Thinking... " in shell.transcript.text
+    assert "Thinking..." in shell._status_text()
+
+
+def test_full_screen_transcript_header_updates_to_formulating() -> None:
+    shell = make_shell()
+    shell.state = start_turn(shell.state, "think", now=0.1)
+    shell.state = reduce_stream_event(
+        shell.state,
+        {"type": "thinking", "content": "working"},
+        now=1.0,
+    )
+
+    shell._refresh_transcript(now=1.5)
+    thinking_text = shell.transcript.text
+    shell._refresh_transcript(now=2.01)
+
+    assert "──── Nymeria · Thinking... " in thinking_text
+    assert "──── Nymeria · Formulating... " in shell.transcript.text
 
 
 def test_full_screen_shell_consumes_current_thread_autonomous_events() -> None:

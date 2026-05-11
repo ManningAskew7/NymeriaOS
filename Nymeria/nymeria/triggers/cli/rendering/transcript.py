@@ -79,6 +79,7 @@ class TranscriptRenderOptions:
     verbose: bool = False
     ascii_only: bool = True
     include_artifacts: bool = True
+    assistant_activity_label: str = ""
     tool_row_options: ToolRowRenderOptions = field(
         default_factory=lambda: ToolRowRenderOptions(show_duration=True)
     )
@@ -326,7 +327,7 @@ def _assistant_lines(
     *,
     assistant_label: str = "",
 ) -> list[TranscriptLine]:
-    label = assistant_label or "Nymeria"
+    label = _assistant_header_label(message, options, assistant_label)
     header_kind: TranscriptLineKind = (
         "autonomous_header" if assistant_label else "assistant_header"
     )
@@ -370,6 +371,19 @@ def _assistant_lines(
         text = f"Tools reloaded: {tools}" if tools else "Tools reloaded."
         records.extend(_indented_plain_block(text, kind="system", width=width))
     return records
+
+
+def _assistant_header_label(
+    message: AssistantMessage,
+    options: TranscriptRenderOptions,
+    assistant_label: str,
+) -> str:
+    label = assistant_label or "Nymeria"
+    activity = " ".join(str(options.assistant_activity_label or "").split())
+    if assistant_label or message.status != "streaming" or not activity:
+        return label
+    separator = " - " if options.ascii_only else " \u00b7 "
+    return f"{label}{separator}{activity}"
 
 
 def _thinking_lines(

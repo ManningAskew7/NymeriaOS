@@ -201,6 +201,76 @@ def test_transcript_uses_unicode_separators_and_tool_symbols_when_enabled() -> N
     assert "  \u2713 filesystem_read ok 2.0s " in text
 
 
+def test_streaming_assistant_header_shows_activity_label() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=0.1)
+
+    text = render_transcript(
+        state,
+        width=80,
+        options=TranscriptRenderOptions(
+            ascii_only=False,
+            assistant_activity_label="Thinking...",
+        ),
+    )
+
+    assert "\n\u2500\u2500\u2500\u2500 Nymeria \u00b7 Thinking... " in text
+    assert max_line_width(text) <= 80
+
+
+def test_completed_assistant_header_ignores_activity_label() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=0.1)
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": "Done."},
+        now=1.0,
+    )
+    state = reduce_stream_event(state, {"type": "done"}, now=1.1)
+
+    text = render_transcript(
+        state,
+        width=80,
+        options=TranscriptRenderOptions(
+            ascii_only=False,
+            assistant_activity_label="Thinking...",
+        ),
+    )
+
+    assert "\n\u2500\u2500\u2500\u2500 Nymeria " in text
+    assert "Nymeria \u00b7 Thinking..." not in text
+
+
+def test_ascii_assistant_header_uses_plain_activity_separator() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=0.1)
+
+    text = render_transcript(
+        state,
+        width=80,
+        options=TranscriptRenderOptions(assistant_activity_label="Thinking..."),
+    )
+
+    assert "\n---- Nymeria - Thinking... " in text
+
+
+def test_activity_header_is_bounded_at_narrow_width() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=0.1)
+
+    text = render_transcript(
+        state,
+        width=30,
+        options=TranscriptRenderOptions(
+            ascii_only=False,
+            assistant_activity_label="Processing results...",
+        ),
+    )
+
+    assert "Processing" in text
+    assert max_line_width(text) <= 30
+
+
 def test_long_tool_result_is_previewed_not_dumped() -> None:
     text = render_transcript(_tool_artifact_state(), width=80)
 
