@@ -269,7 +269,8 @@ def test_full_screen_shell_clear_command_resets_transcript() -> None:
     shell = make_shell_with_registry(CommandRegistry())
     shell.state = start_turn(shell.state, "hello", now=1.0)
     shell._refresh_transcript()
-    assert "You\n  hello" in shell.transcript.text
+    assert "──── You " in shell.transcript.text
+    assert "\n  hello" in shell.transcript.text
 
     result = run(shell._run_command("/clear"))
 
