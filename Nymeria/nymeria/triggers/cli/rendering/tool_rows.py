@@ -24,6 +24,7 @@ class ToolRowRenderOptions:
     args_limit: int = DEFAULT_ARGS_LIMIT
     result_limit: int = DEFAULT_RESULT_LIMIT
     include_artifacts: bool = True
+    ascii_only: bool = True
 
 
 def format_tool_row(
@@ -49,7 +50,8 @@ def format_tool_row(
     )
 
     status_label = _status_label(tool)
-    prefix_parts = [f"> {name}"]
+    marker = _status_marker(tool, ascii_only=selected_options.ascii_only)
+    prefix_parts = [f"{marker} {name}"]
     if status_label:
         prefix_parts.append(status_label)
 
@@ -193,6 +195,26 @@ def _status_label(tool: ToolCallStep) -> str:
         "cancelled": "cancelled",
     }
     return labels.get(tool.status, tool.status or "")
+
+
+def _status_marker(tool: ToolCallStep, *, ascii_only: bool) -> str:
+    if ascii_only:
+        markers = {
+            "success": "-",
+            "pending": "-",
+            "running": "-",
+            "error": "x",
+            "cancelled": "!",
+        }
+    else:
+        markers = {
+            "success": "\u2713",
+            "pending": "\u25cb",
+            "running": "\u25cb",
+            "error": "\u00d7",
+            "cancelled": "!",
+        }
+    return markers.get(tool.status, "-" if ascii_only else "\u25cb")
 
 
 def _stringify_argument(value: Any) -> str:

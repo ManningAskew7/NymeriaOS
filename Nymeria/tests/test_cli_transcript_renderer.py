@@ -81,12 +81,12 @@ def test_transcript_snapshot_renders_desktop_like_steps() -> None:
     text = render_transcript(_tool_artifact_state(), width=100)
     lines = text.splitlines()
 
-    assert lines[0] == "You"
+    assert lines[0].startswith("---- You ")
     assert lines[1] == "  inspect the project"
     assert lines[2] == ""
-    assert lines[3] == "Nymeria"
+    assert lines[3].startswith("---- Nymeria ")
     assert lines[4] == "  Thought  /details thinking -1"
-    assert lines[5].startswith("  > filesystem_read ok 2.0s ")
+    assert lines[5].startswith("  - filesystem_read ok 2.0s ")
     assert "-> line line" in lines[5]
     assert "[artifact: cli-tui-" in lines[5]
     assert lines[6] == "  I found the task."
@@ -148,8 +148,8 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
         "I'll check the main sources first.",
         "I have news; checking tasks.",
     ]
-    assert tools[0].startswith("> web_search ok 1.0s query=\"AI news\" -> 3 results")
-    assert tools[1].startswith("> nym_todo ok 1.0s action=list -> 4 pending")
+    assert tools[0].startswith("- web_search ok 1.0s query=\"AI news\" -> 3 results")
+    assert tools[1].startswith("- nym_todo ok 1.0s action=list -> 4 pending")
     assert final[:5] == [
         "Sunday briefing, 10 May",
         "-----------------------",
@@ -187,6 +187,18 @@ def test_terminal_markdown_is_left_aligned_and_ascii_safe() -> None:
         "    x = 1",
     ]
     assert all(cell_len(line) <= 40 for line in lines)
+
+
+def test_transcript_uses_unicode_separators_and_tool_symbols_when_enabled() -> None:
+    text = render_transcript(
+        _tool_artifact_state(),
+        width=100,
+        options=TranscriptRenderOptions(ascii_only=False),
+    )
+
+    assert text.splitlines()[0].startswith("\u2500\u2500\u2500\u2500 You ")
+    assert "\n\u2500\u2500\u2500\u2500 Nymeria " in text
+    assert "  \u2713 filesystem_read ok 2.0s " in text
 
 
 def test_long_tool_result_is_previewed_not_dumped() -> None:
@@ -330,7 +342,7 @@ def test_compacted_context_notice_renders_as_system_turn() -> None:
     )
 
     assert render_transcript(state, width=100).splitlines() == [
-        "System",
+        "---- System ----------------------------------------------------------------------------------------",
         "  Context compacted. Earlier context was summarized. Removed 12 messages.",
     ]
 
@@ -349,7 +361,7 @@ def test_tool_error_cancelled_and_running_states_are_compact() -> None:
         if line.kind == "tool"
     ]
 
-    assert running_rows == ["> slow running"]
+    assert running_rows == ["- slow running"]
 
     state = _apply(
         running_state,
@@ -373,5 +385,5 @@ def test_tool_error_cancelled_and_running_states_are_compact() -> None:
         if line.kind == "tool"
     ]
 
-    assert any(row.startswith("> slow cancelled") for row in tool_rows)
-    assert any(row.startswith("> bad error") and "-> failed" in row for row in tool_rows)
+    assert any(row.startswith("! slow cancelled") for row in tool_rows)
+    assert any(row.startswith("x bad error") and "-> failed" in row for row in tool_rows)
