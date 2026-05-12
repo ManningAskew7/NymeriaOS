@@ -381,8 +381,12 @@ data: {"type": "dispatched", "thread_id": "caller123", "target_thread_id": "targ
 
 Subsequent stream events keep `thread_id` set to the caller thread for client
 rendering and include `dispatched_to` metadata for the target. Clients use this
-metadata to show a `Response from <thread>` reference line. The target thread
-owns the persisted checkpoint history.
+metadata to show a `Response from <thread>` reference line inside the same
+assistant turn, not as a separate system message. The rest of the stream remains
+normal: `thinking`, pre-tool `response` preamble, `tool_call`, `tool_result`,
+post-tool `response`, artifacts, errors, and `done` all flow through the same
+rendering pipeline as a non-dispatched chat turn. The target thread owns the
+persisted checkpoint history.
 
 ---
 
