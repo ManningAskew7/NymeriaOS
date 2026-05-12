@@ -383,6 +383,29 @@ class InProcessAgentClient:
             "checkpoints": checkpoint_counts,
         }
 
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        from_message_index: int | None = None,
+    ) -> Mapping[str, Any]:
+        """Create a local branch by cloning checkpoints and thread config."""
+
+        from ....core.thread_branch import branch_thread
+
+        selected_user_id = user_id or self.default_user_id
+        return await asyncio.to_thread(
+            branch_thread,
+            agent=self.agent,
+            settings=_settings_for_agent(self.agent),
+            user_id=selected_user_id,
+            source_thread_id=thread_id,
+            title=title,
+            from_message_index=from_message_index,
+        )
+
 
 def _astream_kwargs(
     *,

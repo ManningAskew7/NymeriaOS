@@ -22,6 +22,8 @@ from ...core.thread_classification import (
 from ...core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ...tools import ALL_TOOLS
 from ..schemas.threads import (
+    ThreadBranchRequest,
+    ThreadBranchResponse,
     ThreadHistoryResponse,
     ThreadMetadataMigrateRequest,
     ThreadMetadataUpdateRequest,
@@ -556,6 +558,68 @@ def create_threads_router(
             )
 
         return meta.model_dump(mode="json")
+
+    @router.post(
+        "/threads/{thread_id}/branch",
+        response_model=ThreadBranchResponse,
+    )
+    async def branch_thread_endpoint(
+        http_request: Request,
+        thread_id: str,
+        request: ThreadBranchRequest,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Create a new thread from the current thread's checkpoint history.
+
+        The branch inherits the source thread's persisted LangGraph checkpoints
+        and per-thread config. Callable branches receive a deduplicated callable
+        name so they do not collide with the source thread's tool registration.
+        """
+        require_thread_access_fn(user, thread_id)
+        agent = get_agent_fn()
+        settings = get_settings_fn()
+
+        if _is_thread_processing(agent, thread_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot branch while the source thread is processing",
+            )
+
+        from ...core.thread_branch import ThreadBranchError, branch_thread
+
+        try:
+            result = await run_in_threadpool(
+                branch_thread,
+                agent=agent,
+                settings=settings,
+                user_id=user_id,
+                source_thread_id=thread_id,
+                title=request.title,
+                from_message_index=request.from_message_index,
+            )
+        except ThreadBranchError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            logger.error("Thread %s branch failed: %s", thread_id, e, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        publish_sync_event_fn(
+            event_type="thread_created",
+            thread_id=result["thread_id"],
+            user_id=user_id,
+            data={
+                "title": result["title"],
+                "title_source": result["metadata"].get("title_source", "user"),
+                "platform": result["metadata"].get("platform", "desktop"),
+                "source_thread_id": thread_id,
+            },
+            origin_client_id=client_id,
+        )
+
+        return result
 
     @router.post("/threads/metadata/migrate")
     async def migrate_thread_metadata(

@@ -78,6 +78,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
             ("/threads delete <id>", "Delete a thread"),
             ("/threads info", "Current thread details"),
             ("/threads rename <title>", "Rename current thread"),
+            ("/branch [title], /fork", "Create a branched thread"),
         ],
         "Model": [
             ("/model", "Show effective model"),

@@ -1092,6 +1092,57 @@ Updates the thread's server-side metadata. If the thread is callable, renaming a
 
 ---
 
+### Branch Thread
+
+```http
+POST /threads/{thread_id}/branch
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Creates a new owned thread by copying the source thread's checkpoint history
+and saved per-thread config (instructions, model/provider overrides, enabled
+or disabled tools, skills, and related thread settings). If the source thread
+is callable, the branch receives a deduplicated callable name so it does not
+collide with the source tool registration.
+
+**Request Body:** (all fields optional)
+```json
+{
+  "title": "Alternate approach",
+  "from_message_index": 6
+}
+```
+
+`from_message_index` is 1-based and selects the latest checkpoint at or before
+that raw checkpoint message count. Omit it to copy the current full checkpoint
+history. The endpoint returns `409` if the source thread is actively
+processing.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "source_thread_id": "abc123",
+  "thread_id": "branch-1a2b3c4d5e6f",
+  "title": "Alternate approach",
+  "requested_title": "Alternate approach",
+  "from_message_index": 6,
+  "source_checkpoint_id": "1f14c493-...",
+  "config_cloned": true,
+  "callable_name": null,
+  "checkpoints": {
+    "checkpoints_copied": 12,
+    "writes_copied": 4,
+    "checkpoint_writes_copied": 0,
+    "checkpoint_blobs_copied": 0
+  },
+  "metadata": {}
+}
+```
+
+---
+
 ### Stop Thread
 
 ```http

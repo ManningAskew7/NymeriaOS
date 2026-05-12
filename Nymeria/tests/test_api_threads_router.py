@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from nymeria.core.accounts import AccountsRepo
-from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
+from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, ThreadLLMConfig
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.tools import ALL_TOOLS
 from nymeria.triggers import api as api_module
@@ -313,6 +313,125 @@ def test_thread_metadata_rename_callable_validates_conflicts_and_publishes_event
                 "pinned": True,
             },
             "origin_client_id": "desktop-1",
+        }
+    ]
+
+
+def test_thread_branch_clones_checkpoints_config_and_metadata(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    events: list[dict[str, Any]] = []
+
+    def capture_sync_event(**kwargs):
+        events.append(kwargs)
+
+    monkeypatch.setattr(api_module, "publish_sync_event", capture_sync_event)
+    client, agent = _client(tmp_path, api_client_builder)
+    settings = api_client_builder.settings(tmp_path)
+    token = _create_user(agent, "owner")
+    source = "source-thread"
+    agent.accounts_repo.claim_thread(source, "owner")
+    agent.thread_metadata_manager.upsert_thread(
+        "owner",
+        source,
+        title="Source Thread",
+        title_source="user",
+    )
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=source,
+            instructions="Keep answers short.",
+            enabled_tools=["web_search"],
+            disabled_tools=["bash_execute"],
+            llm_config=ThreadLLMConfig(model="claude-test"),
+        )
+    )
+
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute(
+            "CREATE TABLE checkpoints ("
+            "thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+            "parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
+        )
+        conn.execute(
+            "CREATE TABLE writes ("
+            "thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+            "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+        )
+        conn.executemany(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (source, "", "0001", None, "json", b"old", b"{}"),
+                (source, "", "0002", "0001", "json", b"new", b"{}"),
+                ("other-thread", "", "9999", None, "json", b"other", b"{}"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO writes "
+            "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source, "", "0002", "task", 0, "messages", "json", b"write"),
+        )
+        conn.commit()
+
+    response = client.post(
+        f"/threads/{source}/branch",
+        headers={
+            **api_client_builder.auth(token),
+            "X-Nymeria-Client-Id": "cli-1",
+        },
+        json={"title": "Experimental Path"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    branch_id = body["thread_id"]
+    assert branch_id.startswith("branch-")
+    assert body["source_thread_id"] == source
+    assert body["title"] == "Experimental Path"
+    assert body["config_cloned"] is True
+    assert body["checkpoints"]["checkpoints_copied"] == 2
+    assert body["checkpoints"]["writes_copied"] == 1
+    assert agent.accounts_repo.get_thread_owner(branch_id) == "owner"
+
+    cloned_config = agent.thread_config_manager.get_config(branch_id)
+    assert cloned_config is not None
+    assert cloned_config.thread_id == branch_id
+    assert cloned_config.instructions == "Keep answers short."
+    assert cloned_config.enabled_tools == ["web_search"]
+    assert cloned_config.disabled_tools == ["bash_execute"]
+    assert cloned_config.llm_config is not None
+    assert cloned_config.llm_config.model == "claude-test"
+
+    with sqlite3.connect(settings.db_path) as conn:
+        rows = conn.execute(
+            "SELECT checkpoint_id, parent_checkpoint_id, checkpoint "
+            "FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id",
+            (branch_id,),
+        ).fetchall()
+        write_rows = conn.execute(
+            "SELECT checkpoint_id, value FROM writes WHERE thread_id = ?",
+            (branch_id,),
+        ).fetchall()
+    assert rows == [("0001", None, b"old"), ("0002", "0001", b"new")]
+    assert write_rows == [("0002", b"write")]
+    assert events == [
+        {
+            "event_type": "thread_created",
+            "thread_id": branch_id,
+            "user_id": "owner",
+            "data": {
+                "title": "Experimental Path",
+                "title_source": "user",
+                "platform": "desktop",
+                "source_thread_id": source,
+            },
+            "origin_client_id": "cli-1",
         }
     ]
 
