@@ -27,6 +27,20 @@ old checkout would reset it, so keep the 2026-05-11 provider-header change in
 the Nymeria image/checkout and verify with `tools/check_cliproxy_cloak.py
 --check-thinking` after proxy upgrades.
 
+## Toggling reasoning from the CLI
+
+Use the `/reasoning` command (alias `/thinking`) instead of manually patching two settings:
+
+```
+/reasoning on          # enable extended thinking (per-thread or global)
+/reasoning off         # disable
+/reasoning high        # enable + set effort to high
+/reasoning low         # enable + set effort to low
+/reasoning             # show current state (global, override, effective)
+```
+
+The status bar shows `thinking: <effort>` when reasoning is active.
+
 ## Wire formats by provider
 
 ### Anthropic (`/v1/messages`)
