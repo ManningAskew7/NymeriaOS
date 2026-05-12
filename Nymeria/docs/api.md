@@ -901,6 +901,7 @@ Authorization: Bearer <admin-token>
 {
   "llm_provider": "openrouter",
   "llm_model": "anthropic/claude-sonnet-4",
+  "llm_fallback_models": ["anthropic:claude-haiku-4-5-20251001"],
   "llm_temperature": 0.7,
   "llm_max_tokens": 4096,
   "llm_top_p": 0.95,
@@ -928,6 +929,7 @@ Authorization: Bearer <admin-token>
 |-------|------|-------|-------------|
 | `llm_provider` | string | - | Provider: `anthropic`, `openai`, `openrouter` |
 | `llm_model` | string | - | Model identifier |
+| `llm_fallback_models` | string[] / comma string on PATCH | - | Ordered backend model fallback chain. PATCH accepts a comma-separated string; entries may be `model-id` or `provider:model-id`. |
 | `llm_temperature` | float | 0.0-2.0 | Sampling temperature |
 | `llm_max_tokens` | int | 1-1000000 | Max output tokens |
 | `llm_top_p` | float | 0.0-1.0 | Nucleus sampling threshold |

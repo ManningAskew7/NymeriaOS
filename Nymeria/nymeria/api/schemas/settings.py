@@ -15,6 +15,7 @@ class ServerSettingsResponse(BaseModel):
     llm_provider: str
     llm_model: str
     llm_fast_model: Optional[str] = None
+    llm_fallback_models: list[str] = Field(default_factory=list)
     llm_temperature: float
     llm_max_tokens: Optional[int] = None
     llm_top_p: Optional[float] = None
@@ -59,6 +60,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_fast_model: Optional[str] = None
+    llm_fallback_models: Optional[str] = None
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
     llm_top_p: Optional[float] = None

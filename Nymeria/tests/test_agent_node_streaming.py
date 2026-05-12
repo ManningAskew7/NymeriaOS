@@ -16,9 +16,11 @@ from langgraph.graph.message import add_messages
 from nymeria.vendor.react_agent.config import (
     AgentConfig,
     CheckpointerConfig,
+    LLMFallbackConfig,
     LLMConfig,
 )
 from nymeria.vendor.react_agent.graph import create_graph
+from nymeria.vendor.react_agent import nodes as nodes_module
 from nymeria.vendor.react_agent.nodes import create_tools_node
 
 
@@ -98,6 +100,45 @@ class _NonRetryableBeforeChunkModel(BaseChatModel):
         if False:
             yield ChatGenerationChunk(message=AIMessageChunk(content=""))
         raise ValueError("context_length_exceeded: prompt is too long")
+
+
+class _AlwaysFailBeforeChunkModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "always-fail-before-chunk-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        raise _TransientStreamError("server_error: primary failed")
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if False:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""))
+        raise _TransientStreamError("server_error: primary failed")
+
+
+class _FallbackStreamingModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "fallback-streaming-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="fallback"))]
+        )
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content="fallback"))
+        if run_manager:
+            await run_manager.on_llm_new_token("fallback", chunk=chunk)
+        yield chunk
 
 
 async def _async_only_tool(value: str) -> str:
@@ -276,6 +317,68 @@ def test_async_graph_does_not_retry_non_retryable_stream_error():
     asyncio.run(collect_until_error())
 
     assert model.calls == 1
+
+
+def test_async_graph_uses_configured_fallback_after_primary_failure(monkeypatch):
+    primary = _AlwaysFailBeforeChunkModel()
+    fallback = _FallbackStreamingModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                custom_llm=primary,
+                stream_max_retries=0,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+                fallbacks=[
+                    LLMFallbackConfig(
+                        provider="custom",
+                        model="fallback-model",
+                    )
+                ],
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    created_models = []
+
+    def fake_create_llm_with_tools(config, tools):
+        created_models.append(config.model)
+        return fallback
+
+    monkeypatch.setattr(
+        nodes_module,
+        "create_llm_with_tools",
+        fake_create_llm_with_tools,
+    )
+
+    async def collect():
+        stream_chunks = []
+        end_outputs = []
+        async for event in graph.astream_events(
+            {"messages": [HumanMessage(content="hi")]},
+            config={"configurable": {"thread_id": "fallback-test"}},
+            version="v2",
+        ):
+            if event.get("event") == "on_chat_model_stream":
+                content = getattr(event["data"]["chunk"], "content", "")
+                if content:
+                    stream_chunks.append(content)
+            elif event.get("event") == "on_chat_model_end":
+                output = event["data"].get("output")
+                end_outputs.append(getattr(output, "content", None))
+        return stream_chunks, end_outputs
+
+    stream_chunks, end_outputs = asyncio.run(collect())
+
+    assert primary.calls == 1
+    assert fallback.calls == 1
+    assert created_models == ["fallback-model"]
+    assert stream_chunks == ["fallback"]
+    assert end_outputs[-1] == "fallback"
 
 
 def test_async_graph_invokes_async_only_tools():

@@ -23,6 +23,7 @@ SAFE_SETTINGS_PATCH_FIELDS = {
     "context_management",
     "llm_base_url",
     "llm_extended_thinking",
+    "llm_fallback_models",
     "llm_fast_model",
     "llm_frequency_penalty",
     "llm_max_tokens",
@@ -84,6 +85,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
             ("/model", "Show effective model"),
             ("/model set <model-id>", "Set per-thread model override"),
             ("/provider [list|set|test|switch]", "Manage LLM providers"),
+            ("/fallback [list|add|remove|clear|set]", "Manage model fallbacks"),
             ("/fast [prompt]", "Toggle or use the fast model for one turn"),
             ("/reasoning [on|off|low|medium|high]", "Toggle extended thinking"),
         ],
@@ -197,6 +199,7 @@ def _handle_settings(state: "CLIState", args: List[str]) -> None:
         f"  Provider        {s.llm_provider}",
         f"  Model           {s.llm_model}",
         f"  Fast model      {s.llm_fast_model or 'auto'}",
+        f"  Fallbacks       {getattr(s, 'llm_fallback_models', '') or 'none'}",
         f"  Temperature     {s.llm_temperature}",
         f"  Extended think  {s.llm_extended_thinking}",
         f"  Context mgmt    {s.context_management}",
@@ -404,6 +407,7 @@ def format_settings_view(settings: Mapping[str, Any]) -> str:
         ("Provider", settings.get("llm_provider", "")),
         ("Model", settings.get("llm_model", "")),
         ("Fast model", settings.get("llm_fast_model", "") or "auto"),
+        ("Fallbacks", _fallback_label(settings.get("llm_fallback_models", ""))),
         ("Temperature", settings.get("llm_temperature", "")),
         ("Max tokens", settings.get("llm_max_tokens", "")),
         ("Extended thinking", format_bool(settings.get("llm_extended_thinking", ""))),
@@ -432,6 +436,14 @@ def _aligned_rows(
         rendered = "" if value is None else str(value)
         lines.append(f"  {label:<{width}}  {rendered}")
     return lines
+
+
+def _fallback_label(value: Any) -> str:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return " -> ".join(items) if items else "none"
+    text = str(value or "").strip()
+    return text or "none"
 
 
 def _percent(value: Any) -> str:

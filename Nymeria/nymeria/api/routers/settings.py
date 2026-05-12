@@ -35,6 +35,7 @@ def _env_mapping() -> dict[str, str]:
         "llm_provider": "LLM_PROVIDER",
         "llm_model": "LLM_MODEL",
         "llm_fast_model": "LLM_FAST_MODEL",
+        "llm_fallback_models": "LLM_FALLBACK_MODELS",
         "llm_temperature": "LLM_TEMPERATURE",
         "llm_max_tokens": "LLM_MAX_TOKENS",
         "llm_top_p": "LLM_TOP_P",
@@ -121,6 +122,7 @@ def _env_categories() -> dict[str, list[str]]:
             "llm_provider",
             "llm_model",
             "llm_fast_model",
+            "llm_fallback_models",
             "llm_temperature",
             "llm_max_tokens",
             "llm_top_p",
@@ -242,6 +244,27 @@ def _secret_keys() -> set[str]:
         "stt_api_key",
         "fcm_credentials_json",
     }
+
+
+def _fallback_model_list(value: Any) -> list[str]:
+    """Return a normalized fallback model list for settings responses."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        raw_items = [value]
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        model = str(item or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        models.append(model)
+    return models
 
 
 def _mask_value(val: str) -> str:
@@ -447,6 +470,7 @@ def create_settings_router(
             llm_provider=settings.llm_provider,
             llm_model=settings.llm_model,
             llm_fast_model=settings.llm_fast_model,
+            llm_fallback_models=_fallback_model_list(settings.llm_fallback_models),
             llm_temperature=settings.llm_temperature,
             llm_max_tokens=settings.llm_max_tokens,
             llm_top_p=settings.llm_top_p,
@@ -643,6 +667,7 @@ def create_settings_router(
             "llm_provider",
             "llm_model",
             "llm_fast_model",
+            "llm_fallback_models",
             "llm_temperature",
             "llm_max_tokens",
             "llm_top_p",

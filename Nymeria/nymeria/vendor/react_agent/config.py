@@ -11,6 +11,17 @@ from typing import Optional, Literal
 
 
 @dataclass
+class LLMFallbackConfig:
+    """One fallback model candidate for transient provider failures."""
+
+    model: str
+    provider: Optional[Literal["openrouter", "openai", "anthropic", "custom"]] = None
+    api_key: Optional[str] = field(default=None, repr=False)
+    base_url: Optional[str] = None
+    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
+
+
+@dataclass
 class LLMConfig:
     """LLM provider configuration."""
 
@@ -42,6 +53,7 @@ class LLMConfig:
     stream_max_retries: int = 2
     stream_retry_initial_delay: float = 1.0
     stream_retry_max_delay: float = 8.0
+    fallbacks: list[LLMFallbackConfig] = field(default_factory=list)
 
     # For custom providers
     custom_llm: Optional[object] = field(default=None, repr=False)

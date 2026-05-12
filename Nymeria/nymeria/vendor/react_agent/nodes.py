@@ -234,24 +234,150 @@ def _llm_max_retries(llm_config: Optional[LLMConfig]) -> int:
     return max(0, int(getattr(llm_config, "stream_max_retries", 2) or 0))
 
 
-def _invoke_llm_with_retries(
-    invoke: Callable[[], AIMessage],
+def _llm_fallbacks(llm_config: Optional[LLMConfig]) -> list[Any]:
+    if llm_config is None:
+        return []
+    fallbacks = getattr(llm_config, "fallbacks", None) or []
+    return list(fallbacks)
+
+
+def _llm_candidate_count(llm_config: Optional[LLMConfig]) -> int:
+    return 1 + len(_llm_fallbacks(llm_config))
+
+
+def _llm_candidate_label(llm_config: Optional[LLMConfig], candidate_index: int) -> str:
+    if candidate_index == 0:
+        model = getattr(llm_config, "model", None) if llm_config is not None else None
+        return str(model or "primary")
+
+    fallbacks = _llm_fallbacks(llm_config)
+    try:
+        fallback = fallbacks[candidate_index - 1]
+    except IndexError:
+        return f"fallback #{candidate_index}"
+
+    if isinstance(fallback, str):
+        return fallback
+    model = str(getattr(fallback, "model", "") or "").strip()
+    provider = str(getattr(fallback, "provider", "") or "").strip()
+    if provider and model:
+        return f"{provider}:{model}"
+    return model or f"fallback #{candidate_index}"
+
+
+def _llm_config_for_fallback(
+    llm_config: LLMConfig,
+    fallback: Any,
+) -> LLMConfig:
+    if isinstance(fallback, str):
+        model = fallback
+        provider = llm_config.provider
+        api_key = llm_config.api_key
+        base_url = llm_config.base_url
+        openai_api_mode = llm_config.openai_api_mode
+    else:
+        provider = getattr(fallback, "provider", None) or llm_config.provider
+        model = getattr(fallback, "model", "")
+        api_key = getattr(fallback, "api_key", None)
+        base_url = getattr(fallback, "base_url", None)
+        openai_api_mode = (
+            getattr(fallback, "openai_api_mode", None)
+            or llm_config.openai_api_mode
+        )
+        if provider == llm_config.provider:
+            if api_key is None:
+                api_key = llm_config.api_key
+            if base_url is None:
+                base_url = llm_config.base_url
+
+    return replace(
+        llm_config,
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        openai_api_mode=openai_api_mode,
+        fallbacks=[],
+        custom_llm=None,
+    )
+
+
+def _llm_candidate(
+    primary_llm: BaseChatModel,
+    *,
+    candidate_index: int,
     llm_config: Optional[LLMConfig],
+    tools: Optional[List[BaseTool]],
+    cache: dict[int, BaseChatModel],
+) -> BaseChatModel:
+    cached = cache.get(candidate_index)
+    if cached is not None:
+        return cached
+    if candidate_index == 0 or llm_config is None:
+        cache[candidate_index] = primary_llm
+        return primary_llm
+
+    fallback = _llm_fallbacks(llm_config)[candidate_index - 1]
+    fallback_config = _llm_config_for_fallback(llm_config, fallback)
+    llm = create_llm_with_tools(fallback_config, list(tools or []))
+    cache[candidate_index] = llm
+    return llm
+
+
+def _invoke_llm_with_retries(
+    invoke: Callable[[BaseChatModel], AIMessage],
+    llm_config: Optional[LLMConfig],
+    primary_llm: BaseChatModel,
+    tools: Optional[List[BaseTool]],
 ) -> AIMessage:
     max_retries = _llm_max_retries(llm_config)
+    candidate_count = _llm_candidate_count(llm_config)
+    candidate_index = 0
+    retry_attempt = 0
+    retryable_failures = 0
+    candidate_cache = {0: primary_llm}
 
-    for attempt in range(max_retries + 1):
+    while True:
         try:
-            return invoke()
+            candidate = _llm_candidate(
+                primary_llm,
+                candidate_index=candidate_index,
+                llm_config=llm_config,
+                tools=tools,
+                cache=candidate_cache,
+            )
+            return invoke(candidate)
         except Exception as exc:
-            if attempt >= max_retries or not _is_retryable_llm_error(exc):
+            if not _is_retryable_llm_error(exc):
                 raise
 
-            retry_index = attempt + 1
-            delay = _llm_retry_delay(llm_config, retry_index)
+            retryable_failures += 1
+            if candidate_index + 1 < candidate_count:
+                next_index = candidate_index + 1
+                delay = _llm_retry_delay(llm_config, retryable_failures)
+                logger.warning(
+                    "[LLM FALLBACK] transient sync call failure on %s; "
+                    "switching to %s in %.2fs: %s",
+                    _llm_candidate_label(llm_config, candidate_index),
+                    _llm_candidate_label(llm_config, next_index),
+                    delay,
+                    exc,
+                )
+                if delay > 0:
+                    time.sleep(delay)
+                candidate_index = next_index
+                continue
+
+            if retry_attempt >= max_retries:
+                raise
+
+            retry_attempt += 1
+            delay = _llm_retry_delay(llm_config, retry_attempt)
             logger.warning(
-                "[LLM RETRY] transient sync call failure; retry %d/%d in %.2fs: %s",
-                retry_index,
+                "[LLM RETRY] transient sync call failure on %s; "
+                "retry %d/%d in %.2fs: %s",
+                _llm_candidate_label(llm_config, candidate_index),
+                retry_attempt,
                 max_retries,
                 delay,
                 exc,
@@ -580,6 +706,7 @@ def create_agent_node(
     llm_with_tools: BaseChatModel,
     system_prompt: str,
     llm_config: Optional[LLMConfig] = None,
+    tools: Optional[List[BaseTool]] = None,
 ) -> Callable[[AgentState], dict]:
     """
     Factory function to create an agent node with custom LLM and prompt.
@@ -661,8 +788,10 @@ def create_agent_node(
         # Sync graph callers use the normal invoke path. User-facing live
         # streaming runs through the async node below.
         response = _invoke_llm_with_retries(
-            lambda: llm_with_tools.invoke(messages_with_system),
+            lambda candidate: candidate.invoke(messages_with_system),
             llm_config,
+            llm_with_tools,
+            tools,
         )
         return _finish_response(response)
 
@@ -689,11 +818,22 @@ def create_agent_node(
         tool_call_chunk_events = 0
 
         max_retries = _llm_max_retries(llm_config)
-        attempt = 0
+        candidate_count = _llm_candidate_count(llm_config)
+        candidate_index = 0
+        retry_attempt = 0
+        retryable_failures = 0
+        candidate_cache = {0: llm_with_tools}
         while True:
             chunks_this_attempt = 0
             try:
-                async for chunk in llm_with_tools.astream(messages_with_system):
+                candidate = _llm_candidate(
+                    llm_with_tools,
+                    candidate_index=candidate_index,
+                    llm_config=llm_config,
+                    tools=tools,
+                    cache=candidate_cache,
+                )
+                async for chunk in candidate.astream(messages_with_system):
                     chunks_this_attempt += 1
                     stream_chunks += 1
                     if first_chunk_ms is None:
@@ -741,26 +881,50 @@ def create_agent_node(
                     # Defensive fallback for custom models that implement astream() but
                     # produce no chunks.
                     logger.warning("[LLM STREAM] async astream yielded zero chunks; falling back to ainvoke()")
-                    response = await llm_with_tools.ainvoke(messages_with_system)
+                    response = await candidate.ainvoke(messages_with_system)
                 else:
                     response = message_chunk_to_message(merged_chunk)
                 break
             except Exception as exc:
                 if chunks_this_attempt > 0:
                     logger.warning(
-                        "[LLM RETRY] stream failed after %d chunk(s); not retrying to avoid duplicated output: %s",
+                        "[LLM RETRY] stream failed after %d chunk(s) on %s; "
+                        "not retrying to avoid duplicated output: %s",
                         chunks_this_attempt,
+                        _llm_candidate_label(llm_config, candidate_index),
                         exc,
                     )
                     raise
-                if attempt >= max_retries or not _is_retryable_llm_error(exc):
+                if not _is_retryable_llm_error(exc):
                     raise
 
-                attempt += 1
-                delay = _llm_retry_delay(llm_config, attempt)
+                retryable_failures += 1
+                if candidate_index + 1 < candidate_count:
+                    next_index = candidate_index + 1
+                    delay = _llm_retry_delay(llm_config, retryable_failures)
+                    logger.warning(
+                        "[LLM FALLBACK] transient stream failure before chunks on %s; "
+                        "switching to %s in %.2fs: %s",
+                        _llm_candidate_label(llm_config, candidate_index),
+                        _llm_candidate_label(llm_config, next_index),
+                        delay,
+                        exc,
+                    )
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    candidate_index = next_index
+                    continue
+
+                if retry_attempt >= max_retries:
+                    raise
+
+                retry_attempt += 1
+                delay = _llm_retry_delay(llm_config, retry_attempt)
                 logger.warning(
-                    "[LLM RETRY] transient stream failure before chunks; retry %d/%d in %.2fs: %s",
-                    attempt,
+                    "[LLM RETRY] transient stream failure before chunks on %s; "
+                    "retry %d/%d in %.2fs: %s",
+                    _llm_candidate_label(llm_config, candidate_index),
+                    retry_attempt,
                     max_retries,
                     delay,
                     exc,
@@ -1083,6 +1247,7 @@ class NodeFactory:
             self.llm_with_tools,
             self.config.system_prompt,
             self.config.llm,
+            self.tools,
         )
 
     def create_tools_node(self) -> ToolNode:

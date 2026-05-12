@@ -71,6 +71,7 @@ DEFAULT_CORS_ORIGINS = (
 )
 DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
+DEFAULT_LLM_FALLBACK_MODELS = "anthropic:claude-haiku-4-5-20251001"
 ReasoningEffort = Literal["low", "medium", "high"]
 
 
@@ -308,6 +309,14 @@ class Settings(BaseSettings):
     llm_fast_model: Optional[str] = Field(
         default=None,
         description="Fast/cheap model used by the CLI /fast shortcut",
+    )
+    llm_fallback_models: Optional[str] = Field(
+        default=DEFAULT_LLM_FALLBACK_MODELS,
+        description=(
+            "Comma-separated ordered fallback model chain. Entries may be "
+            "model IDs for the active provider or provider:model for "
+            "anthropic/openai/openrouter."
+        ),
     )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)
 

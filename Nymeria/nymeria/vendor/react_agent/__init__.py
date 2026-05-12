@@ -26,6 +26,7 @@ Framework Integration:
 # Configuration
 from .config import (
     AgentConfig,
+    LLMFallbackConfig,
     LLMConfig,
     CheckpointerConfig,
     default_config,
@@ -65,6 +66,7 @@ from .graph import (
 __all__ = [
     # Configuration
     "AgentConfig",
+    "LLMFallbackConfig",
     "LLMConfig",
     "CheckpointerConfig",
     "default_config",

@@ -589,6 +589,7 @@ class CLIApp:
             conversation,
             doctor,
             export,
+            fallback,
             fast,
             reasoning,
             mcp,
@@ -622,6 +623,7 @@ class CLIApp:
         doctor.register(self.registry)
         theme.register(self.registry)
         export.register(self.registry)
+        fallback.register(self.registry)
         fast.register(self.registry)
         provider.register(self.registry)
         clipboard.register(self.registry)

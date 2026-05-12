@@ -21,6 +21,7 @@ These variables are deployment-wide server defaults, not per-user account prefer
 | `LLM_PROVIDER` | Yes | `anthropic` | LLM provider: `openrouter`, `anthropic`, `openai` |
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model used by CLI `/fast`; when unset, `/fast` picks a provider-aware default |
+| `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend when the primary model fails with a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for `anthropic`, `openai`, or `openrouter`. CLI shortcut: `/fallback`. |
 | `LLM_TEMPERATURE` | No | `1.0` | Sampling temperature (0.0 - 2.0) |
 
 ### Advanced LLM Settings (Optional)
@@ -46,6 +47,13 @@ These settings give power users fine-grained control over LLM behavior. All are 
 **Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
 
 **Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. Nymeria does not automatically fall back from Responses API to Chat Completions if a provider rejects the request; switch `OPENAI_API_MODE=chat_completions` explicitly when you need the older endpoint. OpenRouter Responses reasoning is displayed only when the provider emits plaintext reasoning fields; malformed inline `<think>` text that arrives as normal answer text is stripped from display and replay.
+
+`LLM_FALLBACK_MODELS` is backend-owned, so it applies to every chat surface:
+desktop, mobile, CLI, bots, triggers, scheduled TODOs, and callable-thread
+invocations. Fallbacks are only attempted for retryable failures such as 429s,
+5xx responses, timeouts, or transport errors before the model has emitted any
+response chunks; after streaming starts, Nymeria does not switch models because
+that would duplicate visible output.
 
 ### API Keys
 

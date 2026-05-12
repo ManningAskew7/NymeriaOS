@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.thread_config import ThreadConfig, ThreadLLMConfig
 
@@ -12,6 +13,7 @@ _NO_THREAD_CONFIG = object()
 class _Settings:
     llm_provider = "anthropic"
     llm_model = "claude-sonnet-4-6"
+    llm_fallback_models = DEFAULT_LLM_FALLBACK_MODELS
     llm_temperature = 1.0
     llm_max_tokens = None
     llm_top_p = 0.9
@@ -68,6 +70,9 @@ def test_llm_config_resolution_uses_global_defaults_without_thread_config():
     assert config.base_url is None
     assert config.api_key == "anthropic-direct-key"
     assert config.openai_api_mode == "responses"
+    assert len(config.fallbacks) == 1
+    assert config.fallbacks[0].provider == "anthropic"
+    assert config.fallbacks[0].model == "claude-haiku-4-5-20251001"
 
 
 def test_llm_config_resolution_preserves_falsey_thread_overrides():
@@ -118,6 +123,20 @@ def test_empty_string_thread_overrides_inherit_except_base_url_direct_api():
     assert config.reasoning_effort == "high"
     assert config.base_url is None
     assert config.api_key == "openai-key"
+
+
+def test_llm_config_resolution_builds_global_fallback_chain():
+    agent = _make_agent(
+        llm_fallback_models="anthropic:claude-haiku-4-5-20251001",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert [fallback.model for fallback in config.fallbacks] == [
+        "claude-haiku-4-5-20251001",
+    ]
+    assert [fallback.provider for fallback in config.fallbacks] == ["anthropic"]
+    assert config.fallbacks[0].api_key == "anthropic-direct-key"
 
 
 def test_model_defaults_clear_sampling_parameters_after_thread_resolution():
