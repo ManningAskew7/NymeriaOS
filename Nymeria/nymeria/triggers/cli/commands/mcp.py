@@ -87,6 +87,7 @@ async def _handle_mcp_add(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/mcp add", method_name=exc.method_name)
 
+    await context.dispatch({"type": "mcp_updated"})
     return _format_mcp_install_result(result, command="/mcp add")
 
 
@@ -115,6 +116,7 @@ async def _handle_mcp_remove(
         return unsupported_transport_result("/mcp remove", method_name=exc.method_name)
 
     deleted = mapping_get(result, "deleted", server_id)
+    await context.dispatch({"type": "mcp_updated"})
     return CommandResult.completed(
         CommandMessage(f"Removed MCP server: {deleted}", level="success"),
         payload={"server_id": str(deleted)},
@@ -144,6 +146,7 @@ async def _handle_mcp_discover(
     if count is None:
         discovered = mapping_get(result, "discovered_tools", [])
         count = len(discovered) if isinstance(discovered, Sequence) else 0
+    await context.dispatch({"type": "mcp_updated"})
     return CommandResult.completed(
         CommandMessage(
             f"Discovered {count} MCP tool{'s' if count != 1 else ''} for {server_id}.",
@@ -210,6 +213,7 @@ async def _handle_mcp_retry(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/mcp retry", method_name=exc.method_name)
 
+    await context.dispatch({"type": "mcp_updated"})
     return _format_mcp_install_result(result, command="/mcp retry")
 
 

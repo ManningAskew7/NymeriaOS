@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from cli_fixtures import FakeTerminalCapabilities
+from rich.cells import cell_len
 
 from nymeria.triggers.cli.rendering.status_bar import (
     StatusBarContext,
@@ -67,13 +68,13 @@ def test_activity_status_uses_desktop_label_duration_and_safe_detail() -> None:
     text = renderer.render_text(
         state,
         capabilities=caps,
-        context=StatusBarContext(connection_label="api http://localhost:8000"),
+        context=StatusBarContext(connection_label="api ok 24ms"),
         now=1.6,
     )
 
     assert "Thinking..." in text
     assert "0.6s" in text
-    assert "api http://localhost:8000" in text
+    assert "api ok 24ms" in text
     assert "do not show raw thinking" not in text
 
 
@@ -200,6 +201,76 @@ def test_long_thread_titles_truncate_instead_of_overflowing_width() -> None:
     assert len(text) <= 70
     assert "thread" in text
     assert text.endswith("...")
+
+
+def test_status_bar_fitting_uses_terminal_cell_width_for_unicode() -> None:
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=42)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "private"},
+        now=1.1,
+    )
+
+    text = renderer.render_text(
+        state,
+        capabilities=caps,
+        context=StatusBarContext(
+            connection_label="api ok 24ms",
+            thread_label="測試" * 20,
+            model="provider/model-with-a-long-name",
+            notice=StatusNotice(
+                message="Queued follow-up ⠋",
+                created_at=1.0,
+                ttl_seconds=10.0,
+            ),
+            cwd="/opt/NymeriaOS",
+        ),
+        width=42,
+        now=1.2,
+    )
+
+    assert "\n" not in text
+    assert cell_len(text) <= 42
+
+
+def test_status_bar_fragments_keep_text_fitted_and_semantic_styles() -> None:
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=60)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "think", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "private"},
+        now=1.1,
+    )
+
+    rendered = renderer.render(
+        state,
+        capabilities=caps,
+        context=StatusBarContext(
+            connection_label="api ok 24ms",
+            thread_label="Fixture thread",
+            notice=StatusNotice(
+                message="Queued follow-up",
+                level="warning",
+                created_at=1.0,
+                ttl_seconds=10.0,
+            ),
+        ),
+        width=60,
+        now=1.2,
+    )
+    fragment_text = "".join(text for _style, text in rendered.fragments)
+    fragment_styles = {style for style, _text in rendered.fragments}
+
+    assert fragment_text == rendered.text
+    assert cell_len(fragment_text) <= 60
+    assert "class:status.spinner" in fragment_styles
+    assert "class:status.separator" in fragment_styles
+    assert "class:status.notice.warning" in fragment_styles
 
 
 def test_context_usage_and_duration_format_helpers() -> None:

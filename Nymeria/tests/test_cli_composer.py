@@ -10,16 +10,26 @@ from cli_fixtures import (
     simple_response_events,
 )
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import to_formatted_text
 
 from nymeria.triggers.cli.commands import Command, CommandRegistry
+from nymeria.triggers.cli.app import (
+    CLIApp,
+    _RichReplPromptToolkitShell,
+    _RichReplRuntime,
+)
 from nymeria.triggers.cli.input import (
     CommandCompleter,
     ComposerCompleter,
     ComposerController,
     ComposerSubmission,
+    create_session,
+    get_prompt,
     parse_composer_submission,
     sanitize_composer_text,
 )
+from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
+from nymeria.triggers.cli.state import CLIState
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
@@ -182,6 +192,120 @@ def test_full_screen_prompt_fragments_use_composer_labels() -> None:
     assert queued.prompt_fragments() == [("class:composer.queued", "Queued 2: ")]
     assert error.prompt_fragments() == [("class:composer.error", "Error: ")]
     assert all(">" not in text for fragments in prompts for _, text in fragments)
+
+
+def test_rich_repl_prompt_uses_chat_label_without_command_chevron() -> None:
+    state = CLIState(None, thread_id="thread-1")
+
+    ready_text = "".join(text for _, text in to_formatted_text(get_prompt(state)))
+    busy_text = "".join(
+        text for _, text in to_formatted_text(get_prompt(state, busy=True))
+    )
+
+    assert ready_text == "You: "
+    assert busy_text == "Busy: "
+    assert ">" not in ready_text + busy_text
+
+
+def test_rich_repl_session_can_erase_live_status_prompt(tmp_path: Path) -> None:
+    session = create_session(
+        tmp_path,
+        CommandRegistry(),
+        erase_when_done=True,
+    )
+
+    assert session.app.erase_when_done is True
+
+
+def test_rich_repl_application_keeps_status_above_multiline_chat_input(
+    tmp_path: Path,
+) -> None:
+    capabilities = FakeTerminalCapabilities(width=100)
+    cli_app = CLIApp(None, thread_id="thread-1")
+    renderer = RichReplRenderer(capabilities=capabilities, width=100)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+    shell = _RichReplPromptToolkitShell(
+        cli_app=cli_app,
+        runtime=runtime,
+        renderer=renderer,
+        capabilities=capabilities,
+        history_path=tmp_path / "cli_history",
+    )
+
+    app = shell.build_application()
+    children = app.layout.container.children
+
+    assert app.full_screen is False
+    assert children[0].content.text() == runtime.status_fragments()
+    assert children[1] is shell.composer_controller.text_area.window
+    assert shell.composer_controller.text_area.buffer.multiline()
+    assert shell.composer_controller.prompt_fragments() == [
+        ("class:composer", "You: ")
+    ]
+    runtime.set_busy(True)
+    assert shell.composer_controller.prompt_fragments() == [
+        ("class:composer.busy", "Busy: ")
+    ]
+    assert all(
+        ">" not in text
+        for fragments in (
+            shell.composer_controller.prompt_fragments(),
+            runtime.status_fragments(),
+        )
+        for _, text in fragments
+    )
+
+
+def test_rich_repl_queued_submissions_run_in_order() -> None:
+    async def exercise() -> FakeAgentClient:
+        client = FakeAgentClient(
+            streams={
+                "first": [
+                    DelayedEvent(
+                        0.01,
+                        {"type": "response", "content": "One", "thread_id": "thread-1"},
+                    ),
+                    {"type": "done", "thread_id": "thread-1", "tool_call_count": 0},
+                ],
+                "second": simple_response_events(("Two",)),
+            },
+            real_sleep=True,
+        )
+        capabilities = FakeTerminalCapabilities(width=100)
+        cli_app = CLIApp(None, thread_id="thread-1", user_id="alice")
+        cli_app._client = client
+        renderer = RichReplRenderer(capabilities=capabilities, width=100)
+        runtime = _RichReplRuntime(
+            app=cli_app,
+            renderer=renderer,
+            capabilities=capabilities,
+        )
+
+        await cli_app._submit_rich_submission_async(
+            ComposerSubmission("first"),
+            renderer,
+            runtime=runtime,
+        )
+        await asyncio.sleep(0)
+        assert runtime.busy is True
+        await cli_app._submit_rich_submission_async(
+            ComposerSubmission("second"),
+            renderer,
+            runtime=runtime,
+        )
+        assert runtime.queued_count == 1
+
+        assert runtime.current_turn_task is not None
+        await runtime.current_turn_task
+        return client
+
+    client = run(exercise())
+
+    assert [request.message for request in client.chat_requests] == ["first", "second"]
 
 
 def make_shell(client: FakeAgentClient) -> FullScreenPromptToolkitShell:

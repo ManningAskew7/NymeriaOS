@@ -1,0 +1,259 @@
+"""Local CLI color theme loading and persistence."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+THEME_CONFIG_ENV = "NYMERIA_CLI_CONFIG"
+
+SUPPORTED_THEME_SLOTS: tuple[str, ...] = (
+    "status_fg",
+    "status_bg",
+    "status_accent",
+    "spinner",
+    "prompt",
+    "prompt_busy",
+    "prompt_error",
+    "user_header",
+    "user_text",
+    "assistant_header",
+    "separator",
+    "thinking",
+    "tool",
+    "error",
+    "artifact",
+    "diagnostic",
+)
+
+DEFAULT_THEME_VALUES: dict[str, str] = {
+    "status_fg": "#E5E7EB",
+    "status_bg": "#111827",
+    "status_accent": "#7DD3FC",
+    "spinner": "#FACC15",
+    "prompt": "#67E8F9",
+    "prompt_busy": "#FBBF24",
+    "prompt_error": "#F87171",
+    "user_header": "#67E8F9",
+    "user_text": "#E5E7EB",
+    "assistant_header": "#86EFAC",
+    "separator": "#94A3B8",
+    "thinking": "#93C5FD",
+    "tool": "#FBBF24",
+    "error": "#F87171",
+    "artifact": "#22D3EE",
+    "diagnostic": "#CBD5E1",
+}
+
+HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+class ThemeConfigError(ValueError):
+    """Raised when a theme command receives invalid input."""
+
+
+@dataclass(frozen=True, slots=True)
+class CLITheme:
+    """Resolved default theme plus persisted slot overrides."""
+
+    overrides: Mapping[str, str] = field(default_factory=dict)
+
+    def color(self, slot: str) -> str:
+        """Return the resolved hex color for a supported slot."""
+
+        normalized = normalize_theme_slot(slot)
+        return self.overrides.get(normalized, DEFAULT_THEME_VALUES[normalized])
+
+    def resolved(self) -> dict[str, str]:
+        """Return all supported slots with overrides applied."""
+
+        return {slot: self.color(slot) for slot in SUPPORTED_THEME_SLOTS}
+
+    def changed(self) -> dict[str, str]:
+        """Return only persisted overrides."""
+
+        return dict(self.overrides)
+
+    def with_override(self, slot: str, value: str) -> "CLITheme":
+        """Return a theme with one changed slot."""
+
+        normalized_slot = normalize_theme_slot(slot)
+        normalized_value = normalize_hex_color(value)
+        next_overrides = dict(self.overrides)
+        if normalized_value == DEFAULT_THEME_VALUES[normalized_slot]:
+            next_overrides.pop(normalized_slot, None)
+        else:
+            next_overrides[normalized_slot] = normalized_value
+        return CLITheme(overrides=next_overrides)
+
+    def without_override(self, slot: str | None = None) -> "CLITheme":
+        """Return a theme with one override, or all overrides, removed."""
+
+        if slot is None:
+            return CLITheme()
+        normalized = normalize_theme_slot(slot)
+        next_overrides = dict(self.overrides)
+        next_overrides.pop(normalized, None)
+        return CLITheme(overrides=next_overrides)
+
+
+DEFAULT_CLI_THEME = CLITheme()
+
+
+def normalize_theme_slot(slot: str) -> str:
+    """Validate and normalize a theme slot name."""
+
+    normalized = str(slot or "").strip().casefold()
+    if normalized not in DEFAULT_THEME_VALUES:
+        raise ThemeConfigError(
+            f"Unknown theme slot: {slot}. Supported slots: {', '.join(SUPPORTED_THEME_SLOTS)}"
+        )
+    return normalized
+
+
+def normalize_hex_color(value: str) -> str:
+    """Validate and normalize ``#RRGGBB`` colors."""
+
+    text = str(value or "").strip()
+    if not HEX_COLOR_PATTERN.fullmatch(text):
+        raise ThemeConfigError(f"Invalid color {value!r}. Use #RRGGBB.")
+    return text.upper()
+
+
+def cli_theme_config_path() -> Path:
+    """Return the local CLI config path."""
+
+    configured = os.environ.get(THEME_CONFIG_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".nymeria" / "cli.json"
+
+
+def load_cli_theme(path: str | os.PathLike[str] | None = None) -> CLITheme:
+    """Load a CLI theme from disk, ignoring malformed stored overrides."""
+
+    config_path = Path(path).expanduser() if path is not None else cli_theme_config_path()
+    if not config_path.exists():
+        return DEFAULT_CLI_THEME
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_CLI_THEME
+    if not isinstance(raw, Mapping):
+        return DEFAULT_CLI_THEME
+
+    raw_theme = raw.get("theme", {})
+    if not isinstance(raw_theme, Mapping):
+        return DEFAULT_CLI_THEME
+
+    overrides: dict[str, str] = {}
+    for slot, value in raw_theme.items():
+        try:
+            normalized_slot = normalize_theme_slot(str(slot))
+            normalized_value = normalize_hex_color(str(value))
+        except ThemeConfigError:
+            continue
+        if normalized_value != DEFAULT_THEME_VALUES[normalized_slot]:
+            overrides[normalized_slot] = normalized_value
+    return CLITheme(overrides=overrides)
+
+
+def save_cli_theme(
+    theme: CLITheme,
+    path: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Persist only explicit theme overrides and return the written path."""
+
+    config_path = Path(path).expanduser() if path is not None else cli_theme_config_path()
+    data: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        if isinstance(raw, Mapping):
+            data.update(dict(raw))
+
+    overrides = dict(sorted(theme.changed().items()))
+    if overrides:
+        data["theme"] = overrides
+    else:
+        data.pop("theme", None)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def format_theme_show(theme: CLITheme) -> str:
+    """Return a compact display table for ``/theme show``."""
+
+    rows = ["CLI Theme"]
+    for slot in SUPPORTED_THEME_SLOTS:
+        marker = "custom" if slot in theme.overrides else "default"
+        rows.append(f"  {slot:<17} {theme.color(slot)}  {marker}")
+    return "\n".join(rows)
+
+
+def rich_style(
+    theme: CLITheme,
+    slot: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+) -> str:
+    """Build a Rich style string for a theme slot."""
+
+    parts: list[str] = []
+    if bold:
+        parts.append("bold")
+    if italic:
+        parts.append("italic")
+    parts.append(theme.color(slot))
+    return " ".join(parts)
+
+
+def ptk_style(
+    theme: CLITheme,
+    slot: str,
+    *,
+    bg_slot: str | None = None,
+    bold: bool = False,
+    italic: bool = False,
+) -> str:
+    """Build a prompt_toolkit style string for a theme slot."""
+
+    parts = [theme.color(slot)]
+    if bg_slot:
+        parts.append(f"bg:{theme.color(bg_slot)}")
+    if bold:
+        parts.append("bold")
+    if italic:
+        parts.append("italic")
+    return " ".join(parts)
+
+
+__all__ = [
+    "CLITheme",
+    "DEFAULT_CLI_THEME",
+    "DEFAULT_THEME_VALUES",
+    "SUPPORTED_THEME_SLOTS",
+    "THEME_CONFIG_ENV",
+    "ThemeConfigError",
+    "cli_theme_config_path",
+    "format_theme_show",
+    "load_cli_theme",
+    "normalize_hex_color",
+    "normalize_theme_slot",
+    "ptk_style",
+    "rich_style",
+    "save_cli_theme",
+]

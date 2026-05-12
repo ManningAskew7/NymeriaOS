@@ -8,13 +8,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from rich.cells import cell_len
+
 from ..state import CLIUIState, select_context_usage
+from .markdown import truncate_cell_width
 from .indicator import (
     ActivityIndicator,
     PHASE_LABELS,
     activity_state_from_ui_state,
     normalize_detail,
-    truncate_text,
+    spinner_frames,
 )
 
 NoticeLevel = Literal["info", "warning", "error"]
@@ -51,6 +54,7 @@ class StatusSegment:
     """One logical status bar segment before fitting to terminal width."""
 
     text: str
+    style_class: str = "status"
     priority: int = 1
     min_width: int = 4
     removable: bool = True
@@ -63,6 +67,7 @@ class StatusBarRender:
     text: str
     width: int
     segments: tuple[str, ...]
+    fragments: tuple[tuple[str, str], ...] = ()
 
 
 class StatusBarRenderer:
@@ -99,11 +104,13 @@ class StatusBarRenderer:
             context=selected_context,
             now=current_time,
         )
-        fitted = fit_status_segments(segments, render_width)
+        fitted_segments = _fit_status_segment_records(segments, render_width)
+        fitted = [segment.text for segment in fitted_segments]
         return StatusBarRender(
             text=STATUS_SEPARATOR.join(fitted),
             width=render_width,
             segments=tuple(fitted),
+            fragments=tuple(_status_fragments(fitted_segments, capabilities)),
         )
 
     def render_text(
@@ -125,6 +132,27 @@ class StatusBarRenderer:
             now=now,
         ).text
 
+    def render_fragments(
+        self,
+        state: CLIUIState,
+        *,
+        capabilities: Any,
+        context: StatusBarContext | None = None,
+        width: int | None = None,
+        now: float | None = None,
+    ) -> list[tuple[str, str]]:
+        """Return prompt_toolkit fragments for styled live status controls."""
+
+        return list(
+            self.render(
+                state,
+                capabilities=capabilities,
+                context=context,
+                width=width,
+                now=now,
+            ).fragments
+        )
+
     def _segments(
         self,
         state: CLIUIState,
@@ -145,7 +173,13 @@ class StatusBarRenderer:
         cwd = cwd_label(context.cwd)
 
         segments = [
-            StatusSegment(text="Nymeria", priority=0, min_width=3, removable=False),
+            StatusSegment(
+                text="Nymeria",
+                style_class="status.accent",
+                priority=0,
+                min_width=3,
+                removable=False,
+            ),
             StatusSegment(
                 text=self.activity_segment(
                     state,
@@ -153,6 +187,7 @@ class StatusBarRenderer:
                     now=now,
                     busy=context.busy,
                 ),
+                style_class="status.activity",
                 priority=0,
                 min_width=8,
                 removable=False,
@@ -162,6 +197,12 @@ class StatusBarRenderer:
             segments.append(
                 StatusSegment(
                     text=notice,
+                    style_class=_notice_style_class(
+                        context.notice,
+                        state,
+                        now=now,
+                        default_ttl_seconds=self.default_notice_ttl_seconds,
+                    ),
                     priority=0,
                     min_width=8,
                     removable=False,
@@ -300,6 +341,18 @@ def fit_status_segments(
 ) -> list[str]:
     """Drop low-priority segments, then truncate survivors to fit one line."""
 
+    return [
+        segment.text
+        for segment in _fit_status_segment_records(segments, width)
+    ]
+
+
+def _fit_status_segment_records(
+    segments: list[StatusSegment] | tuple[StatusSegment, ...],
+    width: int,
+) -> list[StatusSegment]:
+    """Drop low-priority segment records, then truncate survivors to fit one line."""
+
     render_width = _positive_width(width)
     active = [segment for segment in segments if normalize_detail(segment.text)]
     if not active:
@@ -313,7 +366,10 @@ def fit_status_segments(
             break
         remove_index = max(
             removable_indexes,
-            key=lambda index: (active[index].priority, len(active[index].text)),
+            key=lambda index: (
+                active[index].priority,
+                _cell_width(active[index].text),
+            ),
         )
         active.pop(remove_index)
 
@@ -321,26 +377,34 @@ def fit_status_segments(
         shrinkable_indexes = [
             index
             for index, segment in enumerate(active)
-            if len(segment.text) > max(1, segment.min_width)
+            if _cell_width(segment.text) > max(1, segment.min_width)
         ]
         if not shrinkable_indexes:
             break
         shrink_index = max(
             shrinkable_indexes,
-            key=lambda index: len(active[index].text) - active[index].min_width,
+            key=lambda index: _cell_width(active[index].text) - active[index].min_width,
         )
         overflow = _joined_length(active) - render_width
         segment = active[shrink_index]
-        target_width = max(segment.min_width, len(segment.text) - overflow)
+        target_width = max(segment.min_width, _cell_width(segment.text) - overflow)
         active[shrink_index] = replace(
             segment,
-            text=truncate_text(segment.text, target_width),
+            text=truncate_cell_width(segment.text, target_width),
         )
 
     text = STATUS_SEPARATOR.join(segment.text for segment in active)
-    if len(text) <= render_width:
-        return [segment.text for segment in active]
-    return [truncate_text(text, render_width)]
+    if _cell_width(text) <= render_width:
+        return active
+    return [
+        StatusSegment(
+            text=truncate_cell_width(text, render_width),
+            style_class="status",
+            priority=0,
+            min_width=1,
+            removable=False,
+        )
+    ]
 
 
 def _notice_is_active(
@@ -368,12 +432,79 @@ def _notice_text(notice: StatusNotice) -> str:
     return message
 
 
+def _notice_style_class(
+    explicit_notice: StatusNotice | None,
+    state: CLIUIState,
+    *,
+    now: float,
+    default_ttl_seconds: float,
+) -> str:
+    if explicit_notice is not None and _notice_is_active(
+        explicit_notice,
+        now=now,
+        default_ttl_seconds=default_ttl_seconds,
+    ):
+        if explicit_notice.level == "error":
+            return "status.notice.error"
+        if explicit_notice.level == "warning":
+            return "status.notice.warning"
+        return "status.accent"
+    if state.errors:
+        return "status.notice.error"
+    return "status.accent"
+
+
+def _status_fragments(
+    segments: list[StatusSegment] | tuple[StatusSegment, ...],
+    capabilities: Any,
+) -> list[tuple[str, str]]:
+    fragments: list[tuple[str, str]] = []
+    for index, segment in enumerate(segments):
+        if index:
+            fragments.append(("class:status.separator", STATUS_SEPARATOR))
+        fragments.extend(_segment_fragments(segment, capabilities))
+    return fragments or [("class:status", "")]
+
+
+def _segment_fragments(
+    segment: StatusSegment,
+    capabilities: Any,
+) -> list[tuple[str, str]]:
+    if segment.style_class != "status.activity":
+        return [(f"class:{segment.style_class}", segment.text)]
+    return _activity_fragments(segment.text, capabilities)
+
+
+def _activity_fragments(text: str, capabilities: Any) -> list[tuple[str, str]]:
+    if not text:
+        return []
+    frames = {frame for frame in spinner_frames(capabilities) if frame}
+    for frame in frames:
+        prefix = f"{frame} "
+        if text == frame:
+            return [("class:status.spinner", text)]
+        if text.startswith(prefix):
+            return [
+                ("class:status.spinner", frame),
+                ("class:status", " "),
+                ("class:status.accent", text[len(prefix):]),
+            ]
+    return [("class:status.accent", text)]
+
+
 def _joined_length(segments: list[StatusSegment]) -> int:
     if not segments:
         return 0
-    return sum(len(segment.text) for segment in segments) + (
-        len(STATUS_SEPARATOR) * (len(segments) - 1)
+    return sum(_cell_width(segment.text) for segment in segments) + (
+        _cell_width(STATUS_SEPARATOR) * (len(segments) - 1)
     )
+
+
+def _cell_width(text: str) -> int:
+    try:
+        return cell_len(str(text or ""))
+    except Exception:  # noqa: BLE001 - status rendering must be defensive.
+        return len(str(text or ""))
 
 
 def _first_number(payload: dict[str, Any], *keys: str) -> float | None:

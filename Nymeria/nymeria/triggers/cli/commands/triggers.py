@@ -80,6 +80,7 @@ async def _handle_triggers_create(
         return unsupported_transport_result("/triggers create", method_name=exc.method_name)
 
     trigger_id = str(mapping_get(created, "id", ""))
+    await context.dispatch({"type": "triggers_updated"})
     return CommandResult.completed(
         CommandMessage(
             f"Created trigger: {compact_id(trigger_id)} {mapping_get(created, 'name', '')}",
@@ -122,6 +123,7 @@ async def _handle_triggers_edit(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers edit", method_name=exc.method_name)
 
+    await context.dispatch({"type": "triggers_updated"})
     return CommandResult.completed(
         CommandMessage(
             f"Updated trigger: {compact_id(mapping_get(updated, 'id', trigger_id))}",
@@ -173,6 +175,7 @@ async def _set_trigger_enabled(
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers enable", method_name=exc.method_name)
+    await context.dispatch({"type": "triggers_updated"})
     return CommandResult.completed(
         CommandMessage(
             f"{'Enabled' if enabled else 'Disabled'} trigger: "
@@ -266,6 +269,7 @@ async def _handle_triggers_delete(
         await call_client_method(context, "delete_trigger", trigger_id, context.user_id)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers delete", method_name=exc.method_name)
+    await context.dispatch({"type": "triggers_updated"})
     return CommandResult.completed(
         CommandMessage(f"Deleted trigger: {compact_id(trigger_id)}", level="success"),
         payload={"trigger_id": trigger_id},

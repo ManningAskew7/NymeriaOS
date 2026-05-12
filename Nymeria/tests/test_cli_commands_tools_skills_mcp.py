@@ -351,6 +351,8 @@ def test_tools_commands_use_api_client_methods() -> None:
     assert actions == [
         {"type": "thread_config_updated", "thread_id": "thread-1"},
         {"type": "thread_config_updated", "thread_id": "thread-1"},
+        {"type": "tools_updated"},
+        {"type": "tools_updated"},
     ]
     assert any("Default tools saved" in message.content for message in sink.messages)
 
@@ -403,8 +405,10 @@ def test_skills_commands_use_api_client_methods() -> None:
         {"skill_names": ["skill-creator", "trigger-management"], "user_id": "alice"},
     ) in client.calls
     assert actions == [
+        {"type": "skills_updated"},
         {"type": "thread_config_updated", "thread_id": "thread-1"},
         {"type": "thread_config_updated", "thread_id": "thread-1"},
+        {"type": "skills_updated"},
     ]
     assert any("Skill body content" in message.content for message in sink.messages)
 
