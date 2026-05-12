@@ -12,6 +12,7 @@ from nymeria.triggers.cli.commands import (
     ListCommandOutputSink,
 )
 from nymeria.triggers.cli.commands import context as context_commands
+from nymeria.triggers.cli.commands import fast
 from nymeria.triggers.cli.commands import model, system, threads
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
@@ -48,6 +49,7 @@ class CoreFakeClient:
         self.settings = {
             "llm_provider": "openai",
             "llm_model": "gpt-global",
+            "llm_fast_model": "gpt-fast",
             "llm_temperature": 0.2,
             "llm_max_tokens": 1024,
             "llm_extended_thinking": False,
@@ -259,6 +261,7 @@ def make_registry() -> CommandRegistry:
     context_commands.register(registry)
     threads.register(registry)
     model.register(registry)
+    fast.register(registry)
     return registry
 
 
@@ -420,6 +423,74 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
     assert ("stop", {"thread_id": "thread-1", "user_id": "alice"}) in client.calls
     assert any("gpt-new" in message.content for message in sink.messages)
     assert any("hi there" in message.content for message in sink.messages)
+
+
+def test_fast_command_toggles_models_and_sets_fast_model() -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    actions: list[Any] = []
+    ctx = make_context(client, actions=actions)
+
+    on_result = run(registry.dispatch_async(ctx, "/fast on"))
+    off_result = run(registry.dispatch_async(ctx, "/fast off"))
+    set_result = run(registry.dispatch_async(ctx, "/fast set gpt-tiny"))
+
+    assert on_result.ok is True
+    assert off_result.ok is True
+    assert set_result.ok is True
+    assert (
+        "update_thread_config",
+        {
+            "thread_id": "thread-1",
+            "user_id": "alice",
+            "llm_config": {"model": "gpt-fast"},
+        },
+    ) in client.calls
+    assert (
+        "update_thread_config",
+        {
+            "thread_id": "thread-1",
+            "user_id": "alice",
+            "llm_config": {"model": "gpt-global"},
+        },
+    ) in client.calls
+    assert ("update_settings", {"user_id": "alice", "llm_fast_model": "gpt-tiny"}) in (
+        client.calls
+    )
+    assert actions[:2] == [
+        {"type": "set_model", "model": "gpt-fast", "fast_mode": True},
+        {"type": "set_model", "model": "gpt-global", "fast_mode": False},
+    ]
+
+
+def test_fast_prompt_returns_one_turn_payload_without_persistent_toggle() -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    actions: list[Any] = []
+    ctx = make_context(client, actions=actions)
+
+    result = run(registry.dispatch_async(ctx, "/fast summarize this briefly"))
+
+    assert result.ok is True
+    assert result.payload["fast_prompt"] == "summarize this briefly"
+    assert result.payload["fast_model"] == "gpt-fast"
+    assert not any(name == "update_thread_config" for name, _payload in client.calls)
+    assert actions == []
+
+
+def test_fast_prompt_allows_control_words_inside_prompt() -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    actions: list[Any] = []
+    ctx = make_context(client, actions=actions)
+
+    result = run(registry.dispatch_async(ctx, "/fast on the topic of status reports"))
+
+    assert result.ok is True
+    assert result.payload["fast_prompt"] == "on the topic of status reports"
+    assert result.payload["fast_model"] == "gpt-fast"
+    assert not any(name == "update_thread_config" for name, _payload in client.calls)
+    assert actions == []
 
 
 def test_settings_patch_rejects_secret_or_unknown_fields() -> None:

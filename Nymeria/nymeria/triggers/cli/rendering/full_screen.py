@@ -27,6 +27,8 @@ from prompt_toolkit.widgets import Frame, TextArea
 from ..autonomous import AutonomousStreamMonitor
 from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
 from ..commands import CommandContext, CommandResult, ListCommandOutputSink
+from ..commands.fast import fast_prompt_payload
+from ..commands.system import call_client_method, mapping_get
 from ..lifecycle import (
     ExitSignalHandlers,
     LifecycleStopResult,
@@ -83,6 +85,7 @@ class FullScreenShellConfig:
     model: str = ""
     thread_label: str = ""
     reasoning_label: str = ""
+    fast_mode_active: bool = False
 
 
 class FullScreenPromptToolkitShell:
@@ -290,6 +293,107 @@ class FullScreenPromptToolkitShell:
             self.on_turn_complete(started_message)
         return True
 
+    async def run_fast_chat_turn(self, message: str, model: str) -> bool:
+        """Run one chat turn with a temporary per-thread fast model override."""
+
+        try:
+            restore = await self._set_temporary_thread_model(model)
+        except Exception as exc:  # noqa: BLE001 - command feedback should be visible.
+            self._set_status_notice(
+                f"Could not start fast turn: {exc or exc.__class__.__name__}",
+                level="error",
+            )
+            return False
+
+        previous_fast_active = self.config.fast_mode_active
+        previous_model = self.config.model
+        self.config = replace(self.config, model=model, fast_mode_active=True)
+        self.state = replace(self.state, active_model=model)
+        self._invalidate()
+        try:
+            return await self.run_chat_turn(message)
+        finally:
+            try:
+                await self._restore_temporary_thread_model(restore)
+            except Exception as exc:  # noqa: BLE001 - restore failures must be visible.
+                self._set_status_notice(
+                    "Fast turn ended, but model restore failed: "
+                    f"{exc or exc.__class__.__name__}",
+                    level="error",
+                )
+                return False
+            restored_model = str(restore["effective_model"] or previous_model)
+            self.config = replace(
+                self.config,
+                model=restored_model,
+                fast_mode_active=previous_fast_active,
+            )
+            self.state = replace(self.state, active_model=restored_model)
+            self._invalidate()
+
+    async def _set_temporary_thread_model(self, model: str) -> dict[str, Any]:
+        context = CommandContext(
+            client=self.client,
+            thread_id=self.config.thread_id,
+            user_id=self.config.user_id,
+        )
+        config = await call_client_method(
+            context,
+            "get_thread_config",
+            self.config.thread_id,
+            user_id=self.config.user_id,
+        )
+        settings = await call_client_method(
+            context,
+            "get_settings",
+            user_id=self.config.user_id,
+        )
+        llm_config = mapping_get(config, "llm_config", None)
+        llm_config_present = isinstance(llm_config, Mapping)
+        model_present = llm_config_present and "model" in llm_config
+        previous_model = llm_config.get("model") if model_present else None
+        default_model = str(mapping_get(settings, "llm_model", "") or "")
+        effective_model = str(previous_model or default_model)
+
+        await call_client_method(
+            context,
+            "update_thread_config",
+            self.config.thread_id,
+            user_id=self.config.user_id,
+            llm_config={"model": model},
+        )
+        return {
+            "llm_config_present": llm_config_present,
+            "model_present": model_present,
+            "previous_model": previous_model,
+            "effective_model": effective_model,
+        }
+
+    async def _restore_temporary_thread_model(self, restore: Mapping[str, Any]) -> None:
+        context = CommandContext(
+            client=self.client,
+            thread_id=self.config.thread_id,
+            user_id=self.config.user_id,
+        )
+        if not bool(restore.get("llm_config_present", False)):
+            await call_client_method(
+                context,
+                "update_thread_config",
+                self.config.thread_id,
+                user_id=self.config.user_id,
+                clear_llm_config=True,
+            )
+            return
+
+        model_value = restore.get("previous_model") if restore.get("model_present") else None
+        await call_client_method(
+            context,
+            "update_thread_config",
+            self.config.thread_id,
+            user_id=self.config.user_id,
+            llm_config={"model": model_value},
+        )
+
     async def _publish_stream_events(
         self,
         queue: asyncio.Queue[Any],
@@ -400,6 +504,11 @@ class FullScreenPromptToolkitShell:
         )
         result = await self.command_registry.dispatch_async(context, raw_input)
         self._apply_command_result(result, output.messages)
+        fast_prompt = fast_prompt_payload(result)
+        if fast_prompt is not None:
+            prompt, model = fast_prompt
+            self._set_status_notice(f"Fast turn ({model})")
+            await self.run_fast_chat_turn(prompt, model)
         return result
 
     async def _dispatch_command_action(self, action: Any) -> None:
@@ -436,6 +545,13 @@ class FullScreenPromptToolkitShell:
             self.config = replace(
                 self.config,
                 model=str(action.get("model") or self.config.model),
+                fast_mode_active=bool(action.get("fast_mode", False)),
+            )
+            self._invalidate()
+        elif action_type == "set_fast_mode":
+            self.config = replace(
+                self.config,
+                fast_mode_active=bool(action.get("active", False)),
             )
             self._invalidate()
         elif action_type == "set_reasoning":
@@ -734,6 +850,7 @@ class FullScreenPromptToolkitShell:
                     thread_label=self.config.thread_label or self.config.thread_id,
                     model=self.config.model,
                     reasoning_label=self.config.reasoning_label,
+                    fast_mode_active=self.config.fast_mode_active,
                     cwd=Path.cwd(),
                     queued_count=len(self._pending_submissions),
                     notice=self._status_notice,
@@ -754,6 +871,7 @@ class FullScreenPromptToolkitShell:
                 thread_label=self.config.thread_label or self.config.thread_id,
                 model=self.config.model,
                 reasoning_label=self.config.reasoning_label,
+                fast_mode_active=self.config.fast_mode_active,
                 cwd=Path.cwd(),
                 queued_count=len(self._pending_submissions),
                 notice=self._status_notice,

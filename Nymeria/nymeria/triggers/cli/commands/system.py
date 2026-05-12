@@ -23,6 +23,7 @@ SAFE_SETTINGS_PATCH_FIELDS = {
     "context_management",
     "llm_base_url",
     "llm_extended_thinking",
+    "llm_fast_model",
     "llm_frequency_penalty",
     "llm_max_tokens",
     "llm_model",
@@ -81,6 +82,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
         "Model": [
             ("/model", "Show effective model"),
             ("/model set <model-id>", "Set per-thread model override"),
+            ("/fast [prompt]", "Toggle or use the fast model for one turn"),
             ("/reasoning [on|off|low|medium|high]", "Toggle extended thinking"),
         ],
         "Tools": [
@@ -192,6 +194,7 @@ def _handle_settings(state: "CLIState", args: List[str]) -> None:
     lines = [
         f"  Provider        {s.llm_provider}",
         f"  Model           {s.llm_model}",
+        f"  Fast model      {s.llm_fast_model or 'auto'}",
         f"  Temperature     {s.llm_temperature}",
         f"  Extended think  {s.llm_extended_thinking}",
         f"  Context mgmt    {s.context_management}",
@@ -398,6 +401,7 @@ def format_settings_view(settings: Mapping[str, Any]) -> str:
     rows = [
         ("Provider", settings.get("llm_provider", "")),
         ("Model", settings.get("llm_model", "")),
+        ("Fast model", settings.get("llm_fast_model", "") or "auto"),
         ("Temperature", settings.get("llm_temperature", "")),
         ("Max tokens", settings.get("llm_max_tokens", "")),
         ("Extended thinking", format_bool(settings.get("llm_extended_thinking", ""))),

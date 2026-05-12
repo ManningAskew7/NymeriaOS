@@ -223,6 +223,7 @@ class _RichReplRuntime:
             thread_label=self._thread_label(),
             model=self._model_label(),
             reasoning_label=self.app._repl_reasoning_label,
+            fast_mode_active=self.app._repl_fast_active,
             cwd=Path.cwd(),
             queued_count=len(self._pending_submissions),
             notice=self._status_notice,
@@ -569,6 +570,7 @@ class CLIApp:
         self._repl_thread_label: str | None = None
         self._repl_model_label: str | None = None
         self._repl_reasoning_label: str = ""
+        self._repl_fast_active = False
         self._header_snapshot: CLIHeaderSnapshot | None = None
         self._header_refresh_pending = False
         self._startup_history_thread_id: str | None = None
@@ -587,6 +589,7 @@ class CLIApp:
             conversation,
             doctor,
             export,
+            fast,
             reasoning,
             mcp,
             memory,
@@ -618,6 +621,7 @@ class CLIApp:
         doctor.register(self.registry)
         theme.register(self.registry)
         export.register(self.registry)
+        fast.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)
         reasoning.register(self.registry)
@@ -1303,6 +1307,18 @@ class CLIApp:
         result = asyncio.run(self.registry.dispatch_async(context, raw_input))
         self._apply_repl_command_result(result, capabilities)
 
+        fast_prompt = _fast_prompt_from_result(result)
+        if fast_prompt is not None:
+            prompt, model = fast_prompt
+            self._send_temporary_model_message(
+                prompt,
+                model,
+                renderer,
+                capabilities=capabilities,
+                runtime=None,
+            )
+            return
+
         retry_message = result.payload.get("retry_message")
         if retry_message and isinstance(retry_message, str):
             self._send_message(retry_message, renderer)
@@ -1364,6 +1380,28 @@ class CLIApp:
         if runtime is not None:
             await self._refresh_and_render_pending_header_async(runtime)
 
+        fast_prompt = _fast_prompt_from_result(result)
+        if fast_prompt is not None:
+            prompt, model = fast_prompt
+            if runtime is not None:
+                runtime.set_status_notice(f"Fast turn ({model})")
+                await self._send_temporary_model_message_async(
+                    prompt,
+                    model,
+                    renderer,
+                    capabilities=capabilities,
+                    runtime=runtime,
+                )
+            else:
+                self._send_temporary_model_message(
+                    prompt,
+                    model,
+                    renderer,
+                    capabilities=capabilities,
+                    runtime=None,
+                )
+            return
+
         retry_message = result.payload.get("retry_message")
         if retry_message and isinstance(retry_message, str):
             if runtime is not None:
@@ -1423,6 +1461,10 @@ class CLIApp:
             refresh_header = True
         elif action_type == "set_model":
             self._repl_model_label = str(action.get("model") or "")
+            self._repl_fast_active = bool(action.get("fast_mode", False))
+            refresh_header = True
+        elif action_type == "set_fast_mode":
+            self._repl_fast_active = bool(action.get("active", False))
             refresh_header = True
         elif action_type == "set_reasoning":
             enabled = bool(action.get("enabled"))
@@ -1685,6 +1727,162 @@ class CLIApp:
             runtime.clear_queued_notice_if_idle()
             runtime.current_turn_task = None
         return ran_turn
+
+    def _send_temporary_model_message(
+        self,
+        message: str,
+        model: str,
+        renderer: _ReplRenderer,
+        *,
+        capabilities: TerminalCapabilities,
+        runtime: _RichReplRuntime | None = None,
+    ) -> None:
+        previous_fast_active = self._repl_fast_active
+        try:
+            restore = asyncio.run(self._set_temporary_thread_model(model))
+        except Exception as exc:  # noqa: BLE001 - command feedback should be visible.
+            self._render_startup_error(
+                f"Could not start fast turn: {exc or exc.__class__.__name__}",
+                capabilities,
+            )
+            return
+
+        self._repl_fast_active = True
+        self._repl_model_label = model
+        _set_renderer_active_model(renderer, model)
+        self._mark_header_refresh_pending()
+        self._refresh_and_render_pending_header(capabilities)
+        try:
+            self._send_message(message, renderer, runtime=runtime)
+        finally:
+            try:
+                asyncio.run(self._restore_temporary_thread_model(restore))
+            except Exception as exc:  # noqa: BLE001 - restore failures must be surfaced.
+                self._render_startup_error(
+                    f"Fast turn ended, but model restore failed: "
+                    f"{exc or exc.__class__.__name__}",
+                    capabilities,
+                )
+                return
+            self._repl_fast_active = previous_fast_active
+            self._repl_model_label = restore["effective_model"]
+            _set_renderer_active_model(renderer, restore["effective_model"])
+            self._mark_header_refresh_pending()
+            self._refresh_and_render_pending_header(capabilities)
+
+    async def _send_temporary_model_message_async(
+        self,
+        message: str,
+        model: str,
+        renderer: _ReplRenderer,
+        *,
+        capabilities: TerminalCapabilities,
+        runtime: _RichReplRuntime,
+    ) -> bool:
+        previous_fast_active = self._repl_fast_active
+        try:
+            restore = await self._set_temporary_thread_model(model)
+        except Exception as exc:  # noqa: BLE001 - keep the prompt alive.
+            runtime.set_status_notice(
+                f"Could not start fast turn: {exc or exc.__class__.__name__}",
+                level="error",
+            )
+            return False
+
+        self._repl_fast_active = True
+        self._repl_model_label = model
+        _set_renderer_active_model(renderer, model)
+        runtime.invalidate()
+        try:
+            return await self._send_message_async(message, renderer, runtime=runtime)
+        finally:
+            try:
+                await self._restore_temporary_thread_model(restore)
+            except Exception as exc:  # noqa: BLE001 - restore failures must be visible.
+                runtime.set_status_notice(
+                    "Fast turn ended, but model restore failed: "
+                    f"{exc or exc.__class__.__name__}",
+                    level="error",
+                )
+                return False
+            self._repl_fast_active = previous_fast_active
+            self._repl_model_label = restore["effective_model"]
+            _set_renderer_active_model(renderer, restore["effective_model"])
+            self._mark_header_refresh_pending()
+            await self._refresh_and_render_pending_header_async(runtime)
+
+    async def _set_temporary_thread_model(self, model: str) -> dict[str, Any]:
+        from .commands.system import call_client_method, mapping_get
+
+        if self._client is None:
+            raise RuntimeError("CLI agent client has not been selected")
+        context = CommandContext(
+            client=self._client,
+            thread_id=self.state.thread_id,
+            user_id=self.state.user_id,
+            registry=self.registry,
+        )
+        config = await call_client_method(
+            context,
+            "get_thread_config",
+            self.state.thread_id,
+            user_id=self.state.user_id,
+        )
+        settings = await call_client_method(
+            context,
+            "get_settings",
+            user_id=self.state.user_id,
+        )
+        llm_config = mapping_get(config, "llm_config", None)
+        llm_config_present = isinstance(llm_config, Mapping)
+        model_present = llm_config_present and "model" in llm_config
+        previous_model = llm_config.get("model") if model_present else None
+        default_model = str(mapping_get(settings, "llm_model", "") or "")
+        effective_model = str(previous_model or default_model)
+
+        await call_client_method(
+            context,
+            "update_thread_config",
+            self.state.thread_id,
+            user_id=self.state.user_id,
+            llm_config={"model": model},
+        )
+        return {
+            "llm_config_present": llm_config_present,
+            "model_present": model_present,
+            "previous_model": previous_model,
+            "effective_model": effective_model,
+        }
+
+    async def _restore_temporary_thread_model(self, restore: Mapping[str, Any]) -> None:
+        from .commands.system import call_client_method
+
+        if self._client is None:
+            return
+        context = CommandContext(
+            client=self._client,
+            thread_id=self.state.thread_id,
+            user_id=self.state.user_id,
+            registry=self.registry,
+        )
+        if not bool(restore.get("llm_config_present", False)):
+            await call_client_method(
+                context,
+                "update_thread_config",
+                self.state.thread_id,
+                user_id=self.state.user_id,
+                clear_llm_config=True,
+            )
+            return
+
+        model_value = restore.get("previous_model") if restore.get("model_present") else None
+        await call_client_method(
+            context,
+            "update_thread_config",
+            self.state.thread_id,
+            user_id=self.state.user_id,
+            llm_config={"model": model_value},
+        )
 
     def _send_message(
         self,
@@ -2031,3 +2229,17 @@ def _queued_notice(count: int) -> str:
     if count == 1:
         return "Queued message (1)"
     return f"Queued messages ({count})"
+
+
+def _fast_prompt_from_result(result: Any) -> tuple[str, str] | None:
+    from .commands.fast import fast_prompt_payload
+
+    return fast_prompt_payload(result)
+
+
+def _set_renderer_active_model(renderer: Any, model: str) -> None:
+    state = getattr(renderer, "state", None)
+    if state is None or not hasattr(state, "active_model"):
+        return
+    with suppress(Exception):
+        renderer.state = replace(state, active_model=str(model or ""))

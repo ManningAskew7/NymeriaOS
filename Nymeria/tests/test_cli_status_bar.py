@@ -48,10 +48,11 @@ def test_ready_status_bar_includes_operational_context() -> None:
         now=2.0,
     )
 
-    assert text == (
+    assert text.startswith(
         "Nymeria | Ready | local agent | claude-test-model | "
-        "thread Fixture thread | ctx 41% | cwd /opt/NymeriaOS"
+        "thread Fixture thread | ctx 410/1.0k ["
     )
+    assert text.endswith("] 41% | cwd /opt/NymeriaOS")
 
 
 def test_activity_status_uses_desktop_label_duration_and_safe_detail() -> None:
@@ -76,6 +77,26 @@ def test_activity_status_uses_desktop_label_duration_and_safe_detail() -> None:
     assert "0.6s" in text
     assert "api ok 24ms" in text
     assert "do not show raw thinking" not in text
+
+
+def test_status_bar_shows_fast_mode_indicator() -> None:
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=120)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+
+    text = renderer.render_text(
+        state,
+        capabilities=caps,
+        context=StatusBarContext(
+            connection_label="api ok 24ms",
+            model="gpt-fast",
+            fast_mode_active=True,
+        ),
+        now=0.0,
+    )
+
+    assert "gpt-fast" in text
+    assert "FAST" in text
 
 
 def test_quiet_activity_status_becomes_formulating() -> None:
@@ -285,7 +306,9 @@ def test_context_usage_and_duration_format_helpers() -> None:
         now=1.1,
     )
 
-    assert context_usage_label(state) == "ctx 25%"
+    label = context_usage_label(state)
+    assert label.startswith("ctx 25/100 [")
+    assert label.endswith("] 25%")
     assert format_duration(4.24) == "4.2s"
     assert format_duration(12.6) == "13s"
     assert format_duration(65.0) == "1m05s"
