@@ -313,10 +313,10 @@ def _run_export(args: argparse.Namespace) -> int:
     import asyncio
 
     from nymeria.triggers.cli.transport.api import (
-        APIConnectionConfig,
         DEFAULT_API_URL,
         APIAgentClient,
     )
+    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.cli.commands.export import _handle_export
     from nymeria.triggers.cli.commands.base import CommandContext, ListCommandOutputSink
 
@@ -328,14 +328,9 @@ def _run_export(args: argparse.Namespace) -> int:
     api_key = args.api_key
     user_id = args.user_id or "default"
 
-    config = APIConnectionConfig(
-        api_url=api_url,
-        api_key=api_key,
-        user_id=user_id,
-    )
-
     async def do_export() -> int:
-        client = APIAgentClient(config)
+        api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+        client = APIAgentClient(api, base_url=api_url, default_user_id=user_id)
         sink = ListCommandOutputSink()
         context = CommandContext(
             client=client,
