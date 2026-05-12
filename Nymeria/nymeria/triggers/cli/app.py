@@ -581,6 +581,7 @@ class CLIApp:
             clipboard,
             connection,
             context,
+            conversation,
             doctor,
             export,
             mcp,
@@ -613,6 +614,7 @@ class CLIApp:
         theme.register(self.registry)
         export.register(self.registry)
         clipboard.register(self.registry)
+        conversation.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
@@ -1288,6 +1290,10 @@ class CLIApp:
         result = asyncio.run(self.registry.dispatch_async(context, raw_input))
         self._apply_repl_command_result(result, capabilities)
 
+        retry_message = result.payload.get("retry_message")
+        if retry_message and isinstance(retry_message, str):
+            self._send_message(retry_message, renderer)
+
     async def _dispatch_command_async(
         self,
         raw_input: str,
@@ -1344,6 +1350,13 @@ class CLIApp:
             await self._render_command_messages_above_prompt(output_sink.messages, runtime)
         if runtime is not None:
             await self._refresh_and_render_pending_header_async(runtime)
+
+        retry_message = result.payload.get("retry_message")
+        if retry_message and isinstance(retry_message, str):
+            if runtime is not None:
+                await self._send_message_async(retry_message, renderer, runtime=runtime)
+            else:
+                self._send_message(retry_message, renderer)
 
     def _command_output_sink(self, capabilities: TerminalCapabilities):
         if capabilities.renderer == "plain":
@@ -1435,6 +1448,9 @@ class CLIApp:
                 await runtime.render_above_prompt(self.state.console.clear)
             else:
                 self.state.console.clear()
+            refresh_header = True
+        elif action_type == "undo_last_exchange":
+            self._undo_last_exchange_from_renderer()
             refresh_header = True
         elif action_type == "redraw":
             runtime = self._active_rich_runtime
@@ -1775,6 +1791,30 @@ class CLIApp:
                 now=time.monotonic(),
             )
         )
+
+    def _undo_last_exchange_from_renderer(self) -> None:
+        """Remove the last user+assistant message pair from the renderer state."""
+        from .state.model import AssistantMessage, UserMessage
+
+        renderer = self._active_repl_renderer
+        if renderer is None or not hasattr(renderer, "state") or not hasattr(renderer, "reset_state"):
+            return
+        ui_state = renderer.state
+        messages = list(ui_state.messages)
+        found_assistant = False
+        cut_index = len(messages)
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if isinstance(msg, AssistantMessage) and not found_assistant:
+                found_assistant = True
+                cut_index = i
+            elif isinstance(msg, UserMessage) and found_assistant:
+                cut_index = i
+                break
+        if cut_index < len(messages):
+            new_state = replace(ui_state, messages=tuple(messages[:cut_index]))
+            renderer.reset_state(new_state)
+
 
     def _stop_current_turn(self) -> None:
         if self._client is None:
