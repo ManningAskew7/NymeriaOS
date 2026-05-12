@@ -253,6 +253,8 @@ def build_cli_runtime_config(args: argparse.Namespace):
         list_threads_on_startup=(
             args.thread is None and bool(positional_ref) and positional_ref.casefold() == "list"
         ),
+        oneshot_message=getattr(args, "message", None),
+        oneshot_format=getattr(args, "output_format", "plain") or "plain",
     )
 
 
@@ -803,6 +805,22 @@ Examples:
         default="default",
         action=_StoreUserIdAction,
         help="User ID for CLI requests (default: default)",
+    )
+    cli_parser.add_argument(
+        "--message",
+        "-m",
+        default=None,
+        help=(
+            "Send a single message, stream the response to stdout, and exit. "
+            "Use '-' to read from stdin."
+        ),
+    )
+    cli_parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("plain", "json"),
+        default="plain",
+        help="Output format for oneshot mode (default: plain)",
     )
     cli_parser.add_argument(
         "--no-alt-screen",
