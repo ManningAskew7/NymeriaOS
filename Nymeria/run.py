@@ -742,6 +742,14 @@ def run_mcp(args: argparse.Namespace) -> None:
         run_stdio(api_url=api_url)
 
 
+def run_completion(args: argparse.Namespace) -> None:
+    """Generate and print a shell completion script."""
+    from nymeria.triggers.cli.completion import generate
+
+    parser = build_parser()
+    print(generate(args.shell, parser))
+
+
 def run_gateway_foreground(args: argparse.Namespace) -> None:
     """
     Run the gateway server in foreground mode for debugging.
@@ -1164,6 +1172,18 @@ Examples:
     from nymeria.cli import users as users_cli
     users_cli.build_parser(subparsers)
 
+    # Completion subcommand
+    from nymeria.triggers.cli.completion import SUPPORTED_SHELLS
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Generate shell completion scripts",
+    )
+    completion_parser.add_argument(
+        "shell",
+        choices=SUPPORTED_SHELLS,
+        help="Target shell (bash, zsh, or fish)",
+    )
+
     return parser
 
 
@@ -1223,6 +1243,8 @@ def main() -> None:
         from nymeria.cli import users as users_cli
 
         sys.exit(users_cli.dispatch(args))
+    elif args.command == "completion":
+        run_completion(args)
     else:
         parser.print_help()
         sys.exit(1)
