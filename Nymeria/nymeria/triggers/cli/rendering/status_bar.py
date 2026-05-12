@@ -48,6 +48,7 @@ class StatusBarContext:
     queued_count: int = 0
     notice: StatusNotice | None = None
     busy: bool = False
+    compact_threshold: float | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -170,7 +171,9 @@ class StatusBarRenderer:
         )
         thread = context.thread_label or state.thread_id or ""
         model = state.active_model or context.model
-        context_usage = context_usage_label(state)
+        context_usage = context_usage_label(
+            state, compact_threshold=context.compact_threshold,
+        )
         cwd = cwd_label(context.cwd)
 
         segments = [
@@ -315,15 +318,29 @@ def _fmt_tokens(n: float) -> str:
     return f"{n:.0f}"
 
 
-def _ctx_bar(percent: float, width: int = 10) -> str:
-    """Return a hermes-style filled/empty block bar."""
+def _ctx_bar(
+    percent: float,
+    width: int = 10,
+    *,
+    compact_threshold: float | None = None,
+) -> str:
+    """Return a hermes-style filled/empty block bar with optional compact marker."""
 
     clamped = max(0.0, min(100.0, percent))
     filled = round((clamped / 100) * width)
-    return "█" * filled + "░" * (width - filled)
+    bar = list("█" * filled + "░" * (width - filled))
+    if compact_threshold is not None and 0 < compact_threshold < 1:
+        marker_pos = round(compact_threshold * width)
+        if 0 < marker_pos < width and bar[marker_pos] != "█":
+            bar[marker_pos] = "▏"
+    return "".join(bar)
 
 
-def context_usage_label(state: CLIUIState) -> str:
+def context_usage_label(
+    state: CLIUIState,
+    *,
+    compact_threshold: float | None = None,
+) -> str:
     """Return compact context usage with graphical bar when stats are available."""
 
     usage = select_context_usage(state)
@@ -332,10 +349,12 @@ def context_usage_label(state: CLIUIState) -> str:
     limit = _first_number(usage, "max_tokens", "context_limit", "context_window", "limit")
 
     if used is not None and limit and isinstance(percent, (int, float)):
-        return f"ctx {_fmt_tokens(used)}/{_fmt_tokens(limit)} [{_ctx_bar(percent)}] {percent:.0f}%"
+        bar = _ctx_bar(percent, compact_threshold=compact_threshold)
+        return f"ctx {_fmt_tokens(used)}/{_fmt_tokens(limit)} [{bar}] {percent:.0f}%"
 
     if isinstance(percent, (int, float)):
-        return f"ctx [{_ctx_bar(percent)}] {percent:.0f}%"
+        bar = _ctx_bar(percent, compact_threshold=compact_threshold)
+        return f"ctx [{bar}] {percent:.0f}%"
 
     if used is not None:
         return f"ctx {_fmt_tokens(used)}"

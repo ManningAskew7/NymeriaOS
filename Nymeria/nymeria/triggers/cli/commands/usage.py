@@ -21,10 +21,20 @@ def _fmt_tokens(n: int | float) -> str:
     return f"{int(n):,}"
 
 
-def _ctx_bar(percent: float, width: int = 20) -> str:
+def _ctx_bar(
+    percent: float,
+    width: int = 20,
+    *,
+    compact_threshold: float | None = None,
+) -> str:
     clamped = max(0.0, min(100.0, percent))
     filled = round((clamped / 100) * width)
-    return "█" * filled + "░" * (width - filled)
+    bar = list("█" * filled + "░" * (width - filled))
+    if compact_threshold is not None and 0 < compact_threshold < 1:
+        marker_pos = round(compact_threshold * width)
+        if 0 < marker_pos < width and bar[marker_pos] != "█":
+            bar[marker_pos] = "▏"
+    return "".join(bar)
 
 
 def _estimate_cost(
@@ -77,10 +87,25 @@ async def _show_thread_usage(context: CommandContext) -> CommandResult:
     if not isinstance(stats, Mapping):
         return CommandResult.failed("Could not retrieve usage statistics.")
 
+    compact_threshold = _get_compact_threshold(context)
+
     return CommandResult.completed(
-        CommandMessage(_format_thread_usage(stats), title="Usage"),
+        CommandMessage(
+            _format_thread_usage(stats, compact_threshold=compact_threshold),
+            title="Usage",
+        ),
         payload=dict(stats),
     )
+
+
+def _get_compact_threshold(context: CommandContext) -> float | None:
+    legacy = context.legacy_state
+    if legacy is not None:
+        try:
+            return float(legacy.settings.compact_threshold)
+        except Exception:  # noqa: BLE001
+            pass
+    return None
 
 
 async def _show_session_usage(context: CommandContext) -> CommandResult:
@@ -138,7 +163,11 @@ async def _show_session_usage(context: CommandContext) -> CommandResult:
     )
 
 
-def _format_thread_usage(stats: Mapping[str, Any]) -> str:
+def _format_thread_usage(
+    stats: Mapping[str, Any],
+    *,
+    compact_threshold: float | None = None,
+) -> str:
     model = stats.get("model", "")
     input_tokens = _int_or(stats, "input_tokens", 0)
     output_tokens = _int_or(stats, "output_tokens", 0)
@@ -148,7 +177,7 @@ def _format_thread_usage(stats: Mapping[str, Any]) -> str:
     cumulative = _int_or(stats, "cumulative_tokens", 0)
     compactions = _int_or(stats, "compaction_count", 0)
 
-    bar = _ctx_bar(usage_pct) if context_limit else ""
+    bar = _ctx_bar(usage_pct, compact_threshold=compact_threshold) if context_limit else ""
     limit_label = _fmt_tokens(context_limit) if context_limit else "?"
     pct_label = f"{usage_pct}%" if context_limit else "?"
 
@@ -159,7 +188,10 @@ def _format_thread_usage(stats: Mapping[str, Any]) -> str:
         f"  Context         {_fmt_tokens(total_tokens)} / {limit_label}"
     )
     if bar:
-        lines.append(f"                  [{bar}] {pct_label}")
+        compact_note = ""
+        if compact_threshold is not None and 0 < compact_threshold < 1:
+            compact_note = f"  (▏ = auto-compact at {compact_threshold:.0%})"
+        lines.append(f"                  [{bar}] {pct_label}{compact_note}")
     lines.append(f"    Input         {_fmt_tokens(input_tokens)}")
     lines.append(f"    Output        {_fmt_tokens(output_tokens)}")
     if cumulative and cumulative != total_tokens:
