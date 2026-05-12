@@ -425,6 +425,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Session export/import** — `python run.py cli --export <thread-id> --format json|md|jsonl` (non-interactive export); `/export` and `/import` slash commands in the REPL
 - **Shell completions** — `python run.py completion bash|zsh|fish` generates tab-completion scripts (covers all subcommands, flags, and known choices)
 - **Clipboard copy** — `/copy` copies the last assistant response to clipboard; `/copy N` copies the Nth most recent; `/copy code` extracts only fenced code blocks
+- **Undo / retry** — `/undo` removes the last user+assistant exchange from thread state; `/retry` re-sends the last user message for a new response (or `/retry <new prompt>` to replace it). Requires `POST /threads/{id}/rewind` backend endpoint.
 
 ### Configuration
 - 100+ environment variables across LLM, API, database, messaging, autonomous, context, voice, logging

@@ -106,6 +106,11 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
         "Session": [
             ("/export [json|md|jsonl]", "Export thread to file"),
             ("/import <file>", "Import thread from JSON file"),
+            ("/copy [N | code]", "Copy response to clipboard"),
+        ],
+        "Conversation": [
+            ("/retry [new prompt]", "Re-send last message for a new response"),
+            ("/undo [--yes]", "Remove last user+assistant exchange"),
         ],
         "System": [
             ("/login [api-url], /connect", "Connect to a Nymeria API"),

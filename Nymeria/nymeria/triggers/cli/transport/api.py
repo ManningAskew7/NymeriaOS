@@ -289,6 +289,18 @@ class APIAgentClient:
             user_id=self._selected_user_id(user_id),
         )
 
+    async def rewind_thread(
+        self,
+        thread_id: str,
+        steps: int = 1,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        return await self.api.rewind_thread(
+            thread_id,
+            steps=steps,
+            user_id=self._selected_user_id(user_id),
+        )
+
     def _selected_user_id(self, user_id: str | None) -> str:
         if user_id and (user_id != "default" or self.default_user_id == "default"):
             return user_id
