@@ -24,7 +24,7 @@ from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, TextArea
 
-from ..events import normalize_stream_event
+from ..autonomous import AutonomousStreamMonitor
 from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
 from ..commands import CommandContext, CommandResult, ListCommandOutputSink
 from ..lifecycle import (
@@ -47,6 +47,7 @@ from ..state import (
     reduce_stream_event,
     start_turn,
 )
+from ..theme import CLITheme, DEFAULT_CLI_THEME, ptk_style
 from ..transport.base import AgentClient, Attachment
 from ..transport.disconnected import is_disconnected_client
 from .indicator import (
@@ -96,10 +97,12 @@ class FullScreenPromptToolkitShell:
         on_turn_complete: Callable[[str], None] | None = None,
         command_registry: Any | None = None,
         history_path: Path | None = None,
+        theme: CLITheme | None = None,
     ) -> None:
         self.client = client
         self.capabilities = capabilities
         self.config = config
+        self.theme = theme or DEFAULT_CLI_THEME
         self.on_turn_complete = on_turn_complete
         self.command_registry = command_registry
         self.state = initial_state or create_initial_state(
@@ -119,6 +122,18 @@ class FullScreenPromptToolkitShell:
         self._transcript_activity_refresh_task: asyncio.Task[None] | None = None
         self._last_transcript_activity_text = ""
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
+        self._autonomous_monitor = AutonomousStreamMonitor(
+            client_getter=lambda: self.client,
+            user_id_getter=lambda: self.config.user_id,
+            thread_id_getter=lambda: self.config.thread_id,
+            client_id=self._autonomous_client_id,
+            apply_event=self._apply_autonomous_event,
+            set_notice=lambda message, level, ttl_seconds: self._set_status_notice(
+                message,
+                level=level if level in {"info", "warning", "error"} else "info",
+                ttl_seconds=ttl_seconds,
+            ),
+        )
         self._application: Application[None] | None = None
         self._lifecycle = TurnLifecycleController(
             client=self.client,
@@ -179,7 +194,7 @@ class FullScreenPromptToolkitShell:
             mouse_support=bool(getattr(self.capabilities, "mouse_enabled", False)),
             color_depth=_color_depth(self.capabilities),
             refresh_interval=FRAME_INTERVAL_SECONDS,
-            style=_style(self.capabilities),
+            style=_style(self.capabilities, theme=self.theme),
         )
         self._application = app
         return app
@@ -300,10 +315,7 @@ class FullScreenPromptToolkitShell:
             await queue.put(_STREAM_DONE)
 
     def _start_autonomous_listener(self) -> asyncio.Task[None] | None:
-        stream = getattr(self.client, "stream_autonomous", None)
-        if not callable(stream):
-            return None
-        if not str(getattr(self.client, "connection_label", "")).startswith("api "):
+        if not self._autonomous_monitor.can_start():
             return None
         try:
             loop = asyncio.get_running_loop()
@@ -315,51 +327,15 @@ class FullScreenPromptToolkitShell:
         )
 
     async def _run_autonomous_listener(self) -> None:
-        reconnect_delay = 1.0
-        max_delay = 30.0
-        while True:
-            try:
-                await self._consume_autonomous_stream()
-                reconnect_delay = 1.0
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - background listener is best-effort.
-                self._set_status_notice(
-                    f"Autonomous stream disconnected: {exc or exc.__class__.__name__}",
-                    level="warning",
-                    ttl_seconds=5,
-                )
-            await asyncio.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, max_delay)
+        await self._autonomous_monitor.run_forever()
 
     async def _consume_autonomous_stream(self) -> None:
-        stream = getattr(self.client, "stream_autonomous", None)
-        if not callable(stream):
-            return
-        async for event in stream(
-            self.config.user_id,
-            client_id=self._autonomous_client_id,
-        ):
-            self._apply_autonomous_event(event)
+        await self._autonomous_monitor.consume_once()
 
     def _apply_autonomous_event(self, event: Any) -> bool:
-        normalized = normalize_stream_event(event)
-        event_type = getattr(normalized, "type", "")
-        event_thread_id = getattr(normalized, "thread_id", None)
-        if event_thread_id != self.config.thread_id:
-            if event_thread_id is None and event_type == "error":
-                message = str(getattr(normalized, "content", "") or "Autonomous stream error.")
-                self._set_status_notice(
-                    _first_status_line(message),
-                    level="warning",
-                    ttl_seconds=5,
-                )
-            return False
-        if event_type == "diagnostic":
-            return False
         self.state = reduce_stream_event(
             self.state,
-            normalized,
+            event,
             now=time.monotonic(),
         )
         self._refresh_transcript()
@@ -475,6 +451,16 @@ class FullScreenPromptToolkitShell:
             self._refresh_transcript()
         elif action_type == "replace_client":
             await self._replace_active_client(action)
+        elif action_type == "theme_updated":
+            theme = action.get("theme")
+            if isinstance(theme, CLITheme):
+                self.theme = theme
+                if self._application is not None:
+                    self._application.style = _style(
+                        self.capabilities,
+                        theme=self.theme,
+                    )
+                self._refresh_transcript()
 
     def _apply_command_result(
         self,
@@ -728,7 +714,24 @@ class FullScreenPromptToolkitShell:
             self._application.invalidate()
 
     def _status_fragments(self) -> StyleAndTextTuples:
-        return [("class:status", self._status_text())]
+        width = _render_width(self.capabilities)
+        return list(
+            self.status_bar_renderer.render_fragments(
+                self.state,
+                capabilities=self.capabilities,
+                context=StatusBarContext(
+                    connection_label=self.client.connection_label,
+                    thread_label=self.config.thread_label or self.config.thread_id,
+                    model=self.config.model,
+                    cwd=Path.cwd(),
+                    queued_count=len(self._pending_submissions),
+                    notice=self._status_notice,
+                    busy=self._busy,
+                ),
+                width=width,
+                now=time.monotonic(),
+            )
+        )
 
     def _status_text(self) -> str:
         width = _render_width(self.capabilities)
@@ -947,35 +950,51 @@ def _color_depth(capabilities: Any) -> ColorDepth:
     return ColorDepth.DEPTH_4_BIT
 
 
-def _style(capabilities: Any) -> Style:
+def _style(capabilities: Any, *, theme: CLITheme | None = None) -> Style:
     if not bool(getattr(capabilities, "color_enabled", False)):
-        return Style.from_dict({"status": ""})
-    return Style.from_dict(
-        {
-            "frame.label": "ansicyan bold",
-            "frame.border": "ansibrightblack",
-            "status": "ansibrightblack",
-            "composer": "ansicyan",
-            "composer.busy": "ansiyellow",
-            "composer.queued": "ansiyellow",
-            "composer.error": "ansired",
-            "composer.frame": "",
-            "transcript.user.header": "ansicyan bold",
-            "transcript.user.text": "",
-            "transcript.assistant.header": "ansigreen bold",
-            "transcript.autonomous.header": "ansimagenta bold",
-            "transcript.thinking": "#8fd7ff italic",
-            "transcript.preamble": "",
-            "transcript.assistant.divider": "#707070",
-            "transcript.tool": "ansiyellow",
-            "transcript.tool.detail": "ansibrightblack",
-            "transcript.final": "",
-            "transcript.system": "ansibrightblack",
-            "transcript.error": "ansired",
-            "transcript.artifact": "ansicyan",
-            "transcript.diagnostic": "ansibrightblack",
-        }
-    )
+        return Style.from_dict({key: "" for key in _style_dict(DEFAULT_CLI_THEME)})
+    selected_theme = theme or DEFAULT_CLI_THEME
+    return Style.from_dict(_style_dict(selected_theme))
+
+
+def _style_dict(theme: CLITheme) -> dict[str, str]:
+    return {
+        "frame.label": ptk_style(theme, "prompt", bold=True),
+        "frame.border": ptk_style(theme, "separator"),
+        "status": ptk_style(theme, "status_fg", bg_slot="status_bg"),
+        "status.separator": ptk_style(theme, "separator", bg_slot="status_bg"),
+        "status.accent": ptk_style(theme, "status_accent", bg_slot="status_bg"),
+        "status.spinner": ptk_style(theme, "spinner", bg_slot="status_bg"),
+        "status.notice.warning": ptk_style(
+            theme,
+            "prompt_busy",
+            bg_slot="status_bg",
+        ),
+        "status.notice.error": ptk_style(theme, "error", bg_slot="status_bg"),
+        "composer": ptk_style(theme, "prompt", bold=True),
+        "composer.busy": ptk_style(theme, "prompt_busy", bold=True),
+        "composer.queued": ptk_style(theme, "prompt_busy", bold=True),
+        "composer.error": ptk_style(theme, "prompt_error", bold=True),
+        "composer.frame": "",
+        "transcript.user.header": ptk_style(theme, "user_header", bold=True),
+        "transcript.user.text": ptk_style(theme, "user_text"),
+        "transcript.assistant.header": ptk_style(
+            theme,
+            "assistant_header",
+            bold=True,
+        ),
+        "transcript.autonomous.header": ptk_style(theme, "artifact", bold=True),
+        "transcript.thinking": ptk_style(theme, "thinking", italic=True),
+        "transcript.preamble": "",
+        "transcript.assistant.divider": ptk_style(theme, "separator"),
+        "transcript.tool": ptk_style(theme, "tool"),
+        "transcript.tool.detail": ptk_style(theme, "diagnostic"),
+        "transcript.final": "",
+        "transcript.system": ptk_style(theme, "diagnostic"),
+        "transcript.error": ptk_style(theme, "error"),
+        "transcript.artifact": ptk_style(theme, "artifact"),
+        "transcript.diagnostic": ptk_style(theme, "diagnostic"),
+    }
 
 
 __all__ = [

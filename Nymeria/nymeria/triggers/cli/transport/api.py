@@ -299,7 +299,9 @@ def resolve_api_connection_config(
     )
 
     runtime_user_id = getattr(runtime_config, "user_id", "default") or "default"
-    user_id_explicit = bool(getattr(runtime_config, "user_id_explicit", False))
+    user_id_explicit = bool(getattr(runtime_config, "user_id_explicit", False)) or (
+        runtime_user_id != "default"
+    )
     saved_user_id = _clean_optional(saved_profile.user_id if saved_profile else None)
     if user_id_explicit:
         user_id = runtime_user_id

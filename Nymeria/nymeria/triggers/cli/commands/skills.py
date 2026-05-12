@@ -148,6 +148,7 @@ async def _handle_skills_install(
         return unsupported_transport_result("/skills install", method_name=exc.method_name)
 
     installed_name = str(mapping_get(skill, "name", name))
+    await context.dispatch({"type": "skills_updated"})
     return CommandResult.completed(
         CommandMessage(f"Installed skill: {installed_name}", level="success"),
         payload={"skill": installed_name, "scope": scope, "source": source},
@@ -215,6 +216,7 @@ async def _set_skill_state(
             )
         saved_names = _string_list(saved)
         action = "Enabled globally" if enabled else "Disabled globally"
+        await context.dispatch({"type": "skills_updated"})
         return CommandResult.completed(
             CommandMessage(f"{action}: {name}", level="success"),
             payload={"skill": name, "enabled_global_skills": tuple(saved_names)},

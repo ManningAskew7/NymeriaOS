@@ -477,6 +477,8 @@ async def _handle_pin_context(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/thread pin", method_name=exc.method_name)
 
+    if thread_id == context.thread_id:
+        await context.dispatch({"type": "thread_metadata_updated"})
     return CommandResult.completed(
         CommandMessage(
             f"{'Pinned' if pinned else 'Unpinned'} {compact_id(thread_id)}.",
@@ -590,6 +592,7 @@ async def _handle_compact_context(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/thread compact", method_name=exc.method_name)
 
+    await context.dispatch({"type": "thread_context_updated"})
     return _compact_result(result)
 
 

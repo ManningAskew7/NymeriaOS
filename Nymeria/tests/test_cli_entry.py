@@ -1338,7 +1338,7 @@ def test_run_cli_parser_accepts_tui_contract_defaults():
 
     assert args.thread is None
     assert runtime_config.transport == "api"
-    assert runtime_config.renderer == "auto"
+    assert runtime_config.renderer == "rich"
     assert runtime_config.api_url is None
     assert runtime_config.api_key is None
     assert runtime_config.user_id == "default"

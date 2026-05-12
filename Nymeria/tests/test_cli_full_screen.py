@@ -14,6 +14,7 @@ from nymeria.triggers.cli.rendering.full_screen import (
     render_transcript,
 )
 from nymeria.triggers.cli.state import create_initial_state, reduce_stream_event, start_turn
+from nymeria.triggers.cli.theme import DEFAULT_THEME_VALUES
 
 
 def run(coro):
@@ -72,7 +73,7 @@ def test_full_screen_layout_keeps_status_above_framed_composer() -> None:
     assert shell.composer_frame.title == "Message"
 
 
-def test_status_style_uses_default_background() -> None:
+def test_status_style_uses_high_contrast_theme_background() -> None:
     color_attrs = _style(FakeTerminalCapabilities()).get_attrs_for_style_str(
         "class:status"
     )
@@ -81,7 +82,8 @@ def test_status_style_uses_default_background() -> None:
     ).get_attrs_for_style_str("class:status")
 
     assert color_attrs.reverse is False
-    assert color_attrs.bgcolor == ""
+    assert color_attrs.color == DEFAULT_THEME_VALUES["status_fg"].lstrip("#")
+    assert color_attrs.bgcolor == DEFAULT_THEME_VALUES["status_bg"].lstrip("#")
     assert plain_attrs.reverse is False
     assert plain_attrs.bgcolor == ""
 
@@ -97,9 +99,9 @@ def test_transcript_styles_keep_preamble_readable_and_thinking_lighter() -> None
 
     assert preamble_attrs.color == final_attrs.color
     assert preamble_attrs.bgcolor == final_attrs.bgcolor
-    assert thinking_attrs.color == "8fd7ff"
+    assert thinking_attrs.color == DEFAULT_THEME_VALUES["thinking"].lstrip("#")
     assert thinking_attrs.italic is True
-    assert divider_attrs.color == "707070"
+    assert divider_attrs.color == DEFAULT_THEME_VALUES["separator"].lstrip("#")
 
 
 def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> None:

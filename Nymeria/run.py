@@ -765,8 +765,8 @@ Examples:
     cli_parser.add_argument(
         "--renderer",
         choices=("full", "rich", "plain", "auto"),
-        default="auto",
-        help="Renderer mode for CLI terminal output (default: auto)",
+        default="rich",
+        help="Renderer mode for CLI terminal output (default: rich)",
     )
     cli_parser.add_argument(
         "--api-url",

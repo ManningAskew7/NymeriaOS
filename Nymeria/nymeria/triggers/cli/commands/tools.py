@@ -352,6 +352,7 @@ async def _handle_tools_defaults_context(
                 method_name=exc.method_name,
             )
         defaults = _string_list(mapping_get(result, "default_tools", []))
+        await context.dispatch({"type": "tools_updated"})
         suffix = f" ({len(defaults)} tools)" if defaults else ""
         return CommandResult.completed(
             CommandMessage(f"Default tools reset{suffix}.", level="success"),
@@ -417,6 +418,7 @@ async def _set_default_tools(
         )
 
     defaults = _string_list(mapping_get(result, "default_tools", tool_names))
+    await context.dispatch({"type": "tools_updated"})
     return CommandResult.completed(
         CommandMessage(
             f"Default tools saved ({len(defaults)} tools).",

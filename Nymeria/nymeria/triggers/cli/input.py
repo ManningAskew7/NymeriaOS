@@ -19,6 +19,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import TextArea
 
 from ..attachment_helpers import build_attachment
+from .theme import CLITheme, DEFAULT_CLI_THEME
 
 if TYPE_CHECKING:
     from prompt_toolkit.buffer import Buffer
@@ -161,6 +162,9 @@ class ComposerController:
         on_stop: StopHandler | None = None,
         is_busy: StateGetter | None = None,
         queued_count: CountGetter | None = None,
+        multiline: bool = False,
+        show_queued_prompt: bool = True,
+        max_height: int = 6,
     ) -> None:
         self.cwd = cwd or Path.cwd()
         self.on_submit = on_submit
@@ -168,12 +172,13 @@ class ComposerController:
         self.on_stop = on_stop
         self.is_busy = is_busy or (lambda: False)
         self.queued_count = queued_count or (lambda: 0)
+        self.show_queued_prompt = show_queued_prompt
         self.last_attachment_errors: tuple[str, ...] = ()
         self.key_bindings = self._build_key_bindings()
         self.text_area = TextArea(
-            height=Dimension(min=1, max=6),
+            height=Dimension(min=1, max=max(1, max_height), preferred=1),
             prompt=self.prompt_fragments,
-            multiline=False,
+            multiline=multiline,
             wrap_lines=True,
             history=_history(history_path),
             auto_suggest=AutoSuggestFromHistory(),
@@ -195,7 +200,7 @@ class ComposerController:
         state = self.prompt_state
         if state.attachment_errors:
             return [("class:composer.error", "Error: ")]
-        if state.queued_count:
+        if self.show_queued_prompt and state.queued_count:
             return [("class:composer.queued", f"Queued {state.queued_count}: ")]
         if state.busy:
             return [("class:composer.busy", "Busy: ")]
@@ -287,7 +292,10 @@ class ComposerController:
 
 
 def create_session(
-    data_dir: Path, registry: "CommandRegistry"
+    data_dir: Path,
+    registry: "CommandRegistry",
+    *,
+    erase_when_done: bool = False,
 ) -> PromptSession:
     """Create a PromptSession with history, autocomplete, and keybindings."""
     history_path = data_dir / "cli_history"
@@ -303,9 +311,10 @@ def create_session(
     return PromptSession(
         history=FileHistory(str(history_path)),
         auto_suggest=AutoSuggestFromHistory(),
-        completer=CommandCompleter(registry),
+        completer=ComposerCompleter(registry, cwd=Path.cwd()),
         key_bindings=bindings,
         complete_while_typing=False,
+        erase_when_done=erase_when_done,
     )
 
 
@@ -334,13 +343,46 @@ def create_full_screen_composer(
     )
 
 
-def get_prompt(state: "CLIState") -> HTML:
+def create_rich_repl_composer(
+    *,
+    command_registry: "CommandRegistry | None" = None,
+    history_path: Path | None = None,
+    cwd: Path | None = None,
+    on_submit: SubmitHandler | None = None,
+    on_error: ErrorHandler | None = None,
+    on_stop: StopHandler | None = None,
+    is_busy: StateGetter | None = None,
+    queued_count: CountGetter | None = None,
+) -> ComposerController:
+    """Create the scrollback-native Rich REPL composer controller."""
+
+    return ComposerController(
+        command_registry=command_registry,
+        history_path=history_path,
+        cwd=cwd,
+        on_submit=on_submit,
+        on_error=on_error,
+        on_stop=on_stop,
+        is_busy=is_busy,
+        queued_count=queued_count,
+        multiline=True,
+        show_queued_prompt=False,
+        max_height=6,
+    )
+
+
+def get_prompt(
+    state: "CLIState",
+    *,
+    busy: bool = False,
+    theme: CLITheme | None = None,
+) -> HTML:
     """Build the dynamic prompt string."""
-    thread_label = state.get_thread_title()
+    selected_theme = theme or DEFAULT_CLI_THEME
+    label = "Busy" if busy else "You"
+    color = selected_theme.color("prompt_busy" if busy else "prompt")
     return HTML(
-        f"<style fg='ansicyan' bg=''>nymeria</style>"
-        f" <style fg='ansibrightblack'>[{thread_label}]</style>"
-        f" <style fg='ansicyan' bg=''>&gt;</style> "
+        f"<style fg='{color}' bg=''><b>{label}:</b></style> "
     )
 
 
@@ -498,6 +540,7 @@ __all__ = [
     "ComposerPromptState",
     "ComposerSubmission",
     "create_full_screen_composer",
+    "create_rich_repl_composer",
     "create_session",
     "get_prompt",
     "parse_composer_submission",
