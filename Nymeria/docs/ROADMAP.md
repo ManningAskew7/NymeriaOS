@@ -132,6 +132,7 @@ Follow-up work on top of the Phase 1 paste-install feature:
 - MCP server management endpoints are now part of the API surface.
 - Voice endpoints (`/voice/chat`, `/voice/tts`, `/voice/stt`) and device registration are now first-class runtime features.
 - A `twitch-bot` runtime exists alongside CLI, API, worker, MCP, and Discord modes.
+- CLI session export/import: `/export [json|md|jsonl]`, `/import <file>`, and `--export` CLI flag for non-interactive use.
 
 ## Related Documents
 
