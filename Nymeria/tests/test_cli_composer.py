@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from cli_fixtures import (
     DelayedEvent,
@@ -10,7 +11,10 @@ from cli_fixtures import (
     simple_response_events,
 )
 from prompt_toolkit.document import Document
+from prompt_toolkit.filters import is_done
 from prompt_toolkit.formatted_text import to_formatted_text
+from prompt_toolkit.layout import ConditionalContainer, Window
+from rich.cells import cell_len
 
 from nymeria.triggers.cli.commands import Command, CommandRegistry
 from nymeria.triggers.cli.app import (
@@ -240,8 +244,39 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
     children = app.layout.container.children
 
     assert app.full_screen is False
-    assert children[0].content.text() == runtime.status_fragments()
-    assert children[1] is shell.composer_controller.text_area.window
+    footer_spacer = children[0]
+    assert isinstance(footer_spacer, Window)
+    assert footer_spacer.height.weight == 1
+    assert footer_spacer.height.preferred == 0
+    assert not footer_spacer.dont_extend_height()
+    assert footer_spacer.char == " "
+
+    transcript_gap = children[1]
+    assert isinstance(transcript_gap, ConditionalContainer)
+    assert isinstance(transcript_gap.content, Window)
+    assert transcript_gap.content.height.min == 1
+    assert transcript_gap.content.height.max == 1
+    assert transcript_gap.content.dont_extend_height()
+    assert transcript_gap.content.char == " "
+    assert transcript_gap.filter.filters[1].filter is is_done
+
+    status_container = children[2]
+    assert isinstance(status_container, ConditionalContainer)
+    assert status_container.filter.filters[1].filter is is_done
+
+    status_bar = status_container.content
+    assert isinstance(status_bar, Window)
+    assert status_bar.height.min == 1
+    assert status_bar.height.max == 1
+    assert status_bar.height.preferred == 1
+    assert status_bar.dont_extend_height()
+    assert not status_bar.wrap_lines()
+    assert status_bar.char == " "
+    assert status_bar.style == "class:status"
+    assert status_bar.content.text() == runtime.status_fragments()
+    assert children[3] is shell.composer_controller.text_area.window
+    assert shell.composer_controller.text_area.window.dont_extend_height()
+    assert not shell.composer_controller.text_area.window.height.preferred_specified
     assert shell.composer_controller.text_area.buffer.multiline()
     assert shell.composer_controller.prompt_fragments() == [
         ("class:composer", "You: ")
@@ -258,6 +293,58 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
         )
         for _, text in fragments
     )
+
+
+def test_rich_repl_status_fragments_refit_to_live_application_width() -> None:
+    class FakeOutput:
+        def __init__(self, columns: int) -> None:
+            self.columns = columns
+
+        def get_size(self) -> SimpleNamespace:
+            return SimpleNamespace(columns=self.columns)
+
+    capabilities = FakeTerminalCapabilities(width=100)
+    cli_app = CLIApp(None, thread_id="thread-1")
+    cli_app._repl_thread_label = "Resize status thread"
+    cli_app._repl_model_label = "provider/model-with-extra-context"
+    renderer = RichReplRenderer(capabilities=capabilities, width=100)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+    fake_output = FakeOutput(columns=46)
+    runtime.application = SimpleNamespace(output=fake_output)
+
+    narrow_text = "".join(text for _style, text in runtime.status_fragments())
+    fake_output.columns = 100
+    wide_text = "".join(text for _style, text in runtime.status_fragments())
+
+    assert cell_len(narrow_text) <= 46
+    assert "provider/model-with-extra-context" not in narrow_text
+    assert cell_len(wide_text) <= 100
+    assert "provider/model-with-extra-context" in wide_text
+
+
+def test_rich_repl_footer_height_gate_stays_visible_after_first_known_height() -> None:
+    class FakeRenderer:
+        height_is_known = False
+
+    capabilities = FakeTerminalCapabilities(width=100)
+    cli_app = CLIApp(None, thread_id="thread-1")
+    renderer = RichReplRenderer(capabilities=capabilities, width=100)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+    runtime.application = SimpleNamespace(renderer=FakeRenderer())
+
+    assert runtime.footer_height_is_known() is False
+    runtime.application.renderer.height_is_known = True
+    assert runtime.footer_height_is_known() is True
+    runtime.application.renderer.height_is_known = False
+    assert runtime.footer_height_is_known() is True
 
 
 def test_rich_repl_queued_submissions_run_in_order() -> None:
