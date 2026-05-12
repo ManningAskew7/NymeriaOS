@@ -340,6 +340,7 @@ Make sure you've set the API key for your chosen provider in your environment fi
 - Customize Nymeria's personality in `nymeria/config/soul.md`
 - Explore other entry points like `python run.py cli`, `python run.py worker`, or `python run.py mcp`
 - Run as foreground gateway: `python run.py service`
+- Enable tab completion: `python run.py completion bash >> ~/.bashrc && source ~/.bashrc` (also supports `zsh` and `fish`)
 
 ## Getting Help
 
