@@ -90,9 +90,13 @@ def select_context_usage(state: CLIUIState) -> dict[str, Any]:
 
     stats = dict(state.context_stats)
     used = _first_number(stats, "used_tokens", "total_tokens", "input_tokens")
-    maximum = _first_number(stats, "max_tokens", "context_window", "limit")
+    maximum = _first_number(stats, "max_tokens", "context_limit", "context_window", "limit")
     if used is not None and maximum:
         stats["percent_used"] = min(100.0, max(0.0, (used / maximum) * 100))
+    elif "percent_used" not in stats:
+        backend_pct = _first_number(stats, "usage_percentage")
+        if backend_pct is not None:
+            stats["percent_used"] = backend_pct
     return stats
 
 
