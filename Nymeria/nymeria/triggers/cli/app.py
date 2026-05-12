@@ -227,6 +227,7 @@ class _RichReplRuntime:
             queued_count=len(self._pending_submissions),
             notice=self._status_notice,
             busy=self._busy,
+            compact_threshold=self.app._compact_threshold(),
         )
 
     def prompt_kwargs(self) -> dict[str, Any]:
@@ -1015,6 +1016,12 @@ class CLIApp:
         if resume_ref:
             return await self._resolve_startup_thread_ref(resume_ref)
         return None
+
+    def _compact_threshold(self) -> float | None:
+        try:
+            return float(self.state.settings.compact_threshold)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _status_connection_label(self) -> str:
         return concise_connection_label(self._header_snapshot, self._client)
