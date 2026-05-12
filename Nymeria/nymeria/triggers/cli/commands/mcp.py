@@ -59,8 +59,12 @@ async def _handle_mcp_add(
     args: list[str],
 ) -> CommandResult:
     confirmed_args, explicit_confirmation = strip_confirmation_flags(args)
-    name, confirmed_args = _consume_option(confirmed_args, "--name")
-    thread_id, confirmed_args = _consume_option(confirmed_args, "--thread")
+    name, confirmed_args, error = _consume_option(confirmed_args, "--name")
+    if error:
+        return CommandResult.failed(error, error_code="usage_error")
+    thread_id, confirmed_args, error = _consume_option(confirmed_args, "--thread")
+    if error:
+        return CommandResult.failed(error, error_code="usage_error")
     no_auto_enable, confirmed_args = _consume_flag(confirmed_args, "--no-auto-enable")
 
     source = " ".join(confirmed_args).strip()
@@ -401,23 +405,27 @@ def _string_list(value: Any) -> list[str]:
 def _consume_option(
     args: Sequence[str],
     option: str,
-) -> tuple[str | None, list[str]]:
+) -> tuple[str | None, list[str], str]:
     remaining: list[str] = []
     selected: str | None = None
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg == option and index + 1 < len(args):
+        if arg == option:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                return selected, list(args), f"{option} requires a value."
             selected = args[index + 1]
             index += 2
             continue
         if arg.startswith(f"{option}="):
-            selected = arg.split("=", 1)[1]
+            selected = arg.split("=", 1)[1].strip()
+            if not selected:
+                return selected, list(args), f"{option} requires a value."
             index += 1
             continue
         remaining.append(arg)
         index += 1
-    return selected, remaining
+    return selected, remaining, ""
 
 
 def _consume_flag(args: Sequence[str], flag: str) -> tuple[bool, list[str]]:

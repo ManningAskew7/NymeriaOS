@@ -319,7 +319,17 @@ def test_tools_commands_use_api_client_methods() -> None:
     assert run(registry.dispatch_async(ctx, "/tools enable web_search")).ok is True
     assert run(registry.dispatch_async(ctx, "/tools disable filesystem")).ok is True
     assert run(registry.dispatch_async(ctx, "/tools optional")).ok is True
+    sink.messages.clear()
+    assert run(registry.dispatch_async(ctx, "/tools core")).ok is True
+    core_output = sink.messages[-1].content
+    assert "filesystem" in core_output
+    assert "web_search" not in core_output
+    sink.messages.clear()
     assert run(registry.dispatch_async(ctx, "/tools defaults")).ok is True
+    defaults_output = sink.messages[-1].content
+    assert "filesystem" in defaults_output
+    assert "custom.weather" not in defaults_output
+    sink.messages.clear()
     assert run(registry.dispatch_async(ctx, "/tools defaults add web_search")).ok is True
     assert run(registry.dispatch_async(ctx, "/tools defaults remove filesystem")).ok is True
     assert run(
@@ -356,6 +366,23 @@ def test_tools_commands_use_api_client_methods() -> None:
         {"type": "tools_updated"},
     ]
     assert any("Default tools saved" in message.content for message in sink.messages)
+
+
+def test_tools_default_alias_lists_only_configured_core_toolset() -> None:
+    client = CapabilityFakeClient()
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink)
+
+    result = run(registry.dispatch_async(ctx, "/tools default"))
+
+    assert result.ok is True
+    assert result.payload["default_tools"] == ("filesystem",)
+    output = sink.messages[-1].content
+    assert "Default Core Toolset" in output
+    assert "filesystem" in output
+    assert "web_search" not in output
+    assert "custom.weather" not in output
 
 
 def test_tools_list_emits_json_payload(capsys: Any) -> None:
@@ -436,6 +463,31 @@ def test_skills_commands_use_api_client_methods() -> None:
         {"type": "skills_updated"},
     ]
     assert any("Skill body content" in message.content for message in sink.messages)
+
+
+def test_skills_and_mcp_reject_missing_option_values() -> None:
+    client = CapabilityFakeClient()
+    registry = make_registry()
+    ctx = make_context(client)
+
+    skill_search = run(registry.dispatch_async(ctx, "/skills search --source"))
+    skill_install = run(
+        registry.dispatch_async(ctx, "/skills install skill-creator --scope")
+    )
+    mcp_name = run(registry.dispatch_async(ctx, "/mcp add uvx --name"))
+    mcp_thread = run(registry.dispatch_async(ctx, "/mcp add uvx --thread"))
+
+    assert skill_search.ok is False
+    assert skill_search.error_code == "usage_error"
+    assert skill_install.ok is False
+    assert skill_install.error_code == "usage_error"
+    assert mcp_name.ok is False
+    assert mcp_name.error_code == "usage_error"
+    assert mcp_thread.ok is False
+    assert mcp_thread.error_code == "usage_error"
+    assert not any(name == "search_skills_marketplace" for name, _payload in client.calls)
+    assert not any(name == "install_skill" for name, _payload in client.calls)
+    assert not any(name == "install_mcp_server" for name, _payload in client.calls)
 
 
 def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -> None:

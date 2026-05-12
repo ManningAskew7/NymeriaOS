@@ -456,9 +456,13 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
     ).ok is True
     assert run(registry.dispatch_async(ctx, "/history --internal 5")).ok is True
     assert run(registry.dispatch_async(ctx, "/context")).ok is True
+    assert run(registry.dispatch_async(ctx, "/usage session")).ok is True
+    session_extra = run(registry.dispatch_async(ctx, "/usage session extra"))
     assert run(registry.dispatch_async(ctx, "/thread compact")).ok is True
     assert run(registry.dispatch_async(ctx, "/thread stop")).ok is True
 
+    assert session_extra.ok is False
+    assert session_extra.error_code == "usage_error"
     call_names = [name for name, _payload in client.calls]
     assert "update_thread_config" in call_names
     assert "list_available_models" in call_names

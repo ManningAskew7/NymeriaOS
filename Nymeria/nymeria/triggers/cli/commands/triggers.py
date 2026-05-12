@@ -37,15 +37,16 @@ async def _handle_triggers_list(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    enabled_only = "--enabled" in args
-    thread_id = _thread_filter(args, context.thread_id)
+    parsed = _parse_list_args(args, context.thread_id)
+    if isinstance(parsed, CommandResult):
+        return parsed
     try:
         triggers = await call_client_method(
             context,
             "list_triggers",
             context.user_id,
-            enabled_only=enabled_only,
-            thread_id=thread_id,
+            enabled_only=parsed["enabled_only"],
+            thread_id=parsed["thread_id"],
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers list", method_name=exc.method_name)
@@ -190,13 +191,17 @@ async def _handle_triggers_history(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    limit = _limit_arg(args, default=20)
+    parsed = _parse_history_args(args, default_limit=20)
+    if isinstance(parsed, CommandResult):
+        return parsed
     try:
-        if args and not args[0].isdigit() and not args[0].startswith("--limit"):
+        limit = parsed["limit"]
+        trigger_id = parsed["trigger_id"]
+        if trigger_id:
             executions = await call_client_method(
                 context,
                 "get_trigger_executions",
-                args[0],
+                trigger_id,
                 context.user_id,
                 limit,
             )
@@ -420,23 +425,97 @@ def _format_executions(executions: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
-def _thread_filter(args: Sequence[str], current_thread_id: str | None) -> str | None:
-    for index, arg in enumerate(args):
-        if arg == "--thread" and index + 1 < len(args):
-            value = args[index + 1]
-            return current_thread_id if value.casefold() in {"current", "."} else value
-        if arg in {"--current-thread", "--thread-current"}:
-            return current_thread_id
-    return None
+def _parse_list_args(
+    args: Sequence[str],
+    current_thread_id: str | None,
+) -> dict[str, Any] | CommandResult:
+    parsed: dict[str, Any] = {"enabled_only": False, "thread_id": None}
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        normalized = arg.casefold()
+        if normalized == "--enabled":
+            parsed["enabled_only"] = True
+        elif normalized == "--thread":
+            value, index_or_error = _next(args, index, "--thread")
+            if isinstance(index_or_error, CommandResult):
+                return index_or_error
+            if value.startswith("--"):
+                return CommandResult.failed(
+                    "--thread requires a value.",
+                    error_code="usage_error",
+                )
+            parsed["thread_id"] = _selected_thread(value, current_thread_id)
+            index = index_or_error
+        elif normalized.startswith("--thread="):
+            value = arg.split("=", 1)[1].strip()
+            if not value:
+                return CommandResult.failed(
+                    "--thread requires a value.",
+                    error_code="usage_error",
+                )
+            parsed["thread_id"] = _selected_thread(value, current_thread_id)
+        elif normalized in {"--current-thread", "--thread-current"}:
+            parsed["thread_id"] = current_thread_id
+        else:
+            return CommandResult.failed(
+                "Usage: /triggers list [--enabled] [--thread current|<id>]",
+                error_code="usage_error",
+            )
+        index += 1
+    return parsed
 
 
-def _limit_arg(args: Sequence[str], *, default: int) -> int:
-    for arg in args:
-        if arg.isdigit():
-            return _positive_int(arg, default=default)
-        if arg.startswith("--limit="):
-            return _positive_int(arg.split("=", 1)[1], default=default)
-    return default
+def _parse_history_args(
+    args: Sequence[str],
+    *,
+    default_limit: int,
+) -> dict[str, Any] | CommandResult:
+    trigger_id: str | None = None
+    limit = default_limit
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        normalized = arg.casefold()
+        if normalized == "--limit":
+            value, index_or_error = _next(args, index, "--limit")
+            if isinstance(index_or_error, CommandResult):
+                return index_or_error
+            if value.startswith("--"):
+                return CommandResult.failed(
+                    "--limit requires a value.",
+                    error_code="usage_error",
+                )
+            limit = _positive_int(value, default=default_limit)
+            index = index_or_error
+        elif normalized.startswith("--limit="):
+            value = arg.split("=", 1)[1].strip()
+            if not value:
+                return CommandResult.failed(
+                    "--limit requires a value.",
+                    error_code="usage_error",
+                )
+            limit = _positive_int(value, default=default_limit)
+        elif normalized.startswith("--"):
+            return CommandResult.failed(
+                f"Unknown option: {arg}",
+                error_code="usage_error",
+            )
+        elif arg.isdigit():
+            limit = _positive_int(arg, default=default_limit)
+        elif trigger_id is None:
+            trigger_id = arg
+        else:
+            return CommandResult.failed(
+                "Usage: /triggers history [trigger-id] [limit]",
+                error_code="usage_error",
+            )
+        index += 1
+    return {"trigger_id": trigger_id, "limit": limit}
+
+
+def _selected_thread(value: str, current_thread_id: str | None) -> str | None:
+    return current_thread_id if value.casefold() in {"current", "."} else value
 
 
 def _json_object(value: str, label: str) -> dict[str, Any] | CommandResult:

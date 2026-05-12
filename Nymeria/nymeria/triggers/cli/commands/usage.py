@@ -59,7 +59,7 @@ async def _handle_usage(
     args: list[str],
 ) -> CommandResult:
     if args and args[0].casefold() == "session":
-        return await _show_session_usage(context)
+        return await _show_session_usage(context, args[1:])
     if args:
         return CommandResult.failed(
             "Usage: /usage [session]",
@@ -107,7 +107,16 @@ def _get_compact_threshold(context: CommandContext) -> float | None:
     return None
 
 
-async def _show_session_usage(context: CommandContext) -> CommandResult:
+async def _show_session_usage(
+    context: CommandContext,
+    args: list[str] | None = None,
+) -> CommandResult:
+    if args:
+        return CommandResult.failed(
+            "Usage: /usage session",
+            error_code="usage_error",
+        )
+
     ui_state = context.metadata.get("ui_state")
     session = getattr(ui_state, "session_usage", None) if ui_state else None
     if session is None:
