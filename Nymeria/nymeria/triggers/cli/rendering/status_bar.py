@@ -324,16 +324,19 @@ def _ctx_bar(
     *,
     compact_threshold: float | None = None,
 ) -> str:
-    """Return a hermes-style filled/empty block bar with optional compact marker."""
+    """Return a filled/empty block bar scaled to the compact threshold.
 
-    clamped = max(0.0, min(100.0, percent))
-    filled = round((clamped / 100) * width)
-    bar = list("█" * filled + "░" * (width - filled))
+    When *compact_threshold* is set the bar represents 0 → threshold so a
+    full bar means auto-compact is about to fire.  Without a threshold the
+    bar spans 0–100 % of the raw context window.
+    """
+
     if compact_threshold is not None and 0 < compact_threshold < 1:
-        marker_pos = round(compact_threshold * width)
-        if 0 < marker_pos < width and bar[marker_pos] != "█":
-            bar[marker_pos] = "▏"
-    return "".join(bar)
+        scaled = min(100.0, max(0.0, percent / (compact_threshold * 100) * 100))
+    else:
+        scaled = max(0.0, min(100.0, percent))
+    filled = round((scaled / 100) * width)
+    return "█" * filled + "░" * (width - filled)
 
 
 def context_usage_label(
@@ -350,7 +353,8 @@ def context_usage_label(
 
     if used is not None and limit and isinstance(percent, (int, float)):
         bar = _ctx_bar(percent, compact_threshold=compact_threshold)
-        return f"ctx {_fmt_tokens(used)}/{_fmt_tokens(limit)} [{bar}] {percent:.0f}%"
+        cap = _bar_cap_label(limit, compact_threshold)
+        return f"ctx {_fmt_tokens(used)}/{cap} [{bar}] {percent:.0f}%"
 
     if isinstance(percent, (int, float)):
         bar = _ctx_bar(percent, compact_threshold=compact_threshold)
@@ -359,6 +363,14 @@ def context_usage_label(
     if used is not None:
         return f"ctx {_fmt_tokens(used)}"
     return ""
+
+
+def _bar_cap_label(limit: float, compact_threshold: float | None) -> str:
+    """Label for the bar's right edge: the compact point or the full limit."""
+
+    if compact_threshold is not None and 0 < compact_threshold < 1:
+        return _fmt_tokens(limit * compact_threshold)
+    return _fmt_tokens(limit)
 
 
 def cwd_label(cwd: str | Path | None = None) -> str:
