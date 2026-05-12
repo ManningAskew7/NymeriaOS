@@ -78,6 +78,7 @@ class RichReplRenderer:
         self._thinking_preview_rendered: set[tuple[str, int]] = set()
         self._rendered_tool_results: set[str] = set()
         self._rendered_system_ids: set[str] = set()
+        self._rendered_dispatch_ids: set[str] = set()
         self._rendered_assistant_headers: set[str] = set()
         self._rendered_turn_end_ids: set[str] = set()
         self._rendered_error_count = len(self.state.errors)
@@ -103,6 +104,7 @@ class RichReplRenderer:
         self._thinking_preview_rendered = set()
         self._rendered_tool_results = set()
         self._rendered_system_ids = set()
+        self._rendered_dispatch_ids = set()
         self._rendered_assistant_headers = set()
         self._rendered_turn_end_ids = set()
         self._rendered_error_count = len(self.state.errors)
@@ -233,6 +235,7 @@ class RichReplRenderer:
         previous: CLIUIState,
         current: CLIUIState,
     ) -> None:
+        self._render_dispatch_references(current)
         self._render_thinking_delta(current)
         self._flush_pending_thinking_previews(current)
         self._collect_response_delta(current)
@@ -248,6 +251,25 @@ class RichReplRenderer:
         if current.turn_status in {"complete", "error"}:
             self.flush_response()
             self._render_turn_end(current)
+
+    def _render_dispatch_references(self, state: CLIUIState) -> None:
+        for message in state.messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+            if message.id in self._rendered_dispatch_ids:
+                continue
+            text = _dispatch_reference_text(message)
+            if not text:
+                continue
+            self._ensure_assistant_header(state, message)
+            self.console.print(
+                Text(
+                    f"  {truncate_cell_width(text, max(1, self.width - 2))}",
+                    style=_style_for_line_kind("assistant_header", self.theme),
+                )
+            )
+            self._rendered_dispatch_ids.add(message.id)
+            self._last_rendered_block = "dispatch"
 
     def _collect_response_delta(self, state: CLIUIState) -> None:
         message = select_last_assistant_message(state)
@@ -706,6 +728,11 @@ class RichReplRenderer:
             for message in state.messages
             if isinstance(message, SystemMessage)
         }
+        self._rendered_dispatch_ids = {
+            message.id
+            for message in state.messages
+            if isinstance(message, AssistantMessage) and message.dispatch_info
+        }
         self._rendered_assistant_headers = {
             message.id
             for message in state.messages
@@ -879,6 +906,19 @@ def _assistant_label_for_message(
         parts.append(source)
     separator = " - " if ascii_only else " \u00b7 "
     return separator.join(parts)
+
+
+def _dispatch_reference_text(message: AssistantMessage) -> str:
+    content = str(message.dispatch_info.get("content") or "").strip()
+    if content:
+        return content
+    title = str(message.dispatch_info.get("title") or "").strip()
+    thread_id = str(message.dispatch_info.get("thread_id") or "").strip()
+    if title:
+        return f"Response from {title}"
+    if thread_id:
+        return f"Response from {thread_id}"
+    return ""
 
 
 def _clean_stream_delta(delta: str) -> str:
