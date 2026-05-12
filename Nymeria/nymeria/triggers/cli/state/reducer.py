@@ -15,6 +15,7 @@ from ..events import (
     CompactedEvent,
     ContextAttachedEvent,
     DiagnosticEvent,
+    DispatchedEvent,
     DoneEvent,
     ErrorEvent,
     IterationLimitEvent,
@@ -182,6 +183,8 @@ def reduce_stream_event(
         return _reduce_task_completed(state, normalized, timestamp)
     if isinstance(normalized, ToolReloadEvent):
         return _reduce_tool_reload(state, normalized, timestamp)
+    if isinstance(normalized, DispatchedEvent):
+        return _reduce_dispatched(state, normalized, timestamp)
     if isinstance(normalized, ErrorEvent):
         return _reduce_error(state, normalized, timestamp)
     if isinstance(normalized, DoneEvent):
@@ -571,6 +574,38 @@ def _reduce_tool_reload(
     return replace(state, messages=state.messages + (notice,), updated_at=timestamp)
 
 
+def _reduce_dispatched(
+    state: CLIUIState,
+    event: DispatchedEvent,
+    timestamp: float,
+) -> CLIUIState:
+    title = event.title or event.target_thread_id or "thread"
+    short_id = event.target_thread_id[:8] if event.target_thread_id else ""
+    suffix = f" ({short_id})" if short_id and short_id != title else ""
+    notice = SystemMessage(
+        id=_new_id("system"),
+        kind="dispatch_notice",
+        content=f"Dispatched to {title}{suffix}",
+        timestamp=timestamp,
+        details={
+            "thread_id": event.target_thread_id,
+            "title": event.title,
+            "original_thread_id": event.original_thread_id,
+            "matched_ref": event.matched_ref,
+        },
+    )
+    messages = list(state.messages)
+    if messages and isinstance(messages[-1], AssistantMessage):
+        messages.insert(len(messages) - 1, notice)
+    else:
+        messages.append(notice)
+    return replace(
+        state,
+        messages=tuple(messages),
+        updated_at=timestamp,
+    )
+
+
 def _reduce_error(
     state: CLIUIState,
     event: ErrorEvent,
@@ -612,15 +647,26 @@ def _reduce_done(
     if event.status == "cancelled":
         state = _update_running_tools(state, "cancelled", timestamp)
 
+    is_dispatched = bool(event.dispatched_to)
     context_stats = (
-        copy.deepcopy(event.context_stats) if event.context_stats else state.context_stats
+        state.context_stats
+        if is_dispatched
+        else copy.deepcopy(event.context_stats)
+        if event.context_stats
+        else state.context_stats
     )
-    active_model = event.model or state.active_model
+    active_model = state.active_model if is_dispatched else event.model or state.active_model
     turn_status = "error" if state.turn_status == "error" else "complete"
     message_status: MessageStatus = "error" if state.turn_status == "error" else "complete"
 
-    session_usage = _accumulate_session_usage(
-        state.session_usage, context_stats, active_model,
+    session_usage = (
+        state.session_usage
+        if is_dispatched
+        else _accumulate_session_usage(
+            state.session_usage,
+            context_stats,
+            active_model,
+        )
     )
 
     state = _update_last_assistant(

@@ -2,6 +2,7 @@ import { configStore } from '$lib/stores/config.svelte';
 import type {
   AttachmentValidationResult,
   ChatResponse,
+  DispatchInfo,
   FileAttachment,
   SSEEvent,
   SSEEventType
@@ -212,6 +213,7 @@ export class ChatApi extends AccountsApi {
     const eventType = data.type as SSEEventType;
     // Extract thread_id from every event - backend sends it with all events
     const threadId = data.thread_id as string | undefined;
+    const dispatchedTo = this.normalizeDispatchInfo(data.dispatched_to, data);
 
     // Handle events with explicit type field (Nymeria API format)
     if (eventType) {
@@ -230,6 +232,19 @@ export class ChatApi extends AccountsApi {
             data: {
               content: (data.content as string) || '',
               isComplete: false
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'dispatched':
+          return {
+            type: 'dispatched',
+            data: dispatchedTo || {
+              threadId: (data.target_thread_id as string) || '',
+              title: (data.title as string) || 'thread',
+              originalThreadId: data.original_thread_id as string | undefined,
+              matchedRef: data.matched_ref as string | undefined,
             },
             timestamp: new Date(),
             threadId
@@ -319,6 +334,9 @@ export class ChatApi extends AccountsApi {
               threadId: threadId || '',
               contextStats,
               model: data.model as string | undefined,
+              title: data.title as string | undefined,
+              title_source: data.title_source as string | undefined,
+              dispatchedTo,
             },
             timestamp: new Date(),
             threadId
@@ -454,6 +472,40 @@ export class ChatApi extends AccountsApi {
     }
 
     return null;
+  }
+
+  private normalizeDispatchInfo(
+    value: unknown,
+    eventData?: Record<string, unknown>
+  ): DispatchInfo | undefined {
+    const payload = (value && typeof value === 'object')
+      ? value as Record<string, unknown>
+      : {};
+    const threadId = (
+      payload.thread_id ||
+      payload.threadId ||
+      eventData?.target_thread_id ||
+      eventData?.targetThreadId
+    ) as string | undefined;
+    if (!threadId) return undefined;
+    return {
+      threadId,
+      title: (
+        payload.title ||
+        eventData?.title ||
+        threadId
+      ) as string,
+      originalThreadId: (
+        payload.original_thread_id ||
+        payload.originalThreadId ||
+        eventData?.original_thread_id ||
+        eventData?.originalThreadId
+      ) as string | undefined,
+      matchedRef: (
+        eventData?.matched_ref ||
+        eventData?.matchedRef
+      ) as string | undefined,
+    };
   }
 
   async chatSync(message: string, threadId?: string): Promise<ChatResponse> {

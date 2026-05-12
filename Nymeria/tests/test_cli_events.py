@@ -8,6 +8,7 @@ from nymeria.triggers.cli.events import (
     CompactedEvent,
     ContextAttachedEvent,
     DiagnosticEvent,
+    DispatchedEvent,
     DoneEvent,
     ErrorEvent,
     IterationLimitEvent,
@@ -110,6 +111,22 @@ def test_normalizes_all_known_stream_event_types() -> None:
                 source="tool_search",
                 skill_name="planning",
                 reason="user_enabled",
+            ),
+        ),
+        (
+            {
+                "type": "dispatched",
+                "target_thread_id": "thread-b",
+                "title": "Research",
+                "original_thread_id": "thread-a",
+                "matched_ref": "Research",
+            },
+            DispatchedEvent(
+                thread_id="thread-a",
+                target_thread_id="thread-b",
+                title="Research",
+                original_thread_id="thread-a",
+                matched_ref="Research",
             ),
         ),
         (
@@ -227,6 +244,7 @@ def test_normalizes_all_known_stream_event_types() -> None:
                 "title": "Project status",
                 "title_source": "auto",
                 "tool_call_count": 1,
+                "dispatched_to": {"thread_id": "thread-b", "title": "Research"},
             },
             DoneEvent(
                 thread_id="thread-a",
@@ -235,6 +253,7 @@ def test_normalizes_all_known_stream_event_types() -> None:
                 title="Project status",
                 title_source="auto",
                 tool_call_count=1,
+                dispatched_to={"thread_id": "thread-b", "title": "Research"},
             ),
         ),
     ]

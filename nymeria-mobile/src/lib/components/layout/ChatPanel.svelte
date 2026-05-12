@@ -16,7 +16,7 @@
   import { api } from '$lib/services/api.svelte';
   import { isTodoTool } from '$lib/utils/todoTools';
   import { untrack } from 'svelte';
-  import type { FileAttachment, SSEEvent } from '$lib/types';
+  import type { DispatchInfo, FileAttachment, SSEEvent } from '$lib/types';
 
   let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Chat');
   let showThreadSettings = $state(false);
@@ -227,6 +227,10 @@
         chatStore.addResponseStep((event.data as { content: string }).content);
         break;
 
+      case 'dispatched':
+        chatStore.setLastAssistantDispatchInfo(event.data as DispatchInfo);
+        break;
+
       case 'tool_call': {
         const tc = event.data as { id: string; name: string; arguments: Record<string, unknown> };
         chatStore.addToolCallStep(tc.id, tc.name, tc.arguments);
@@ -252,15 +256,26 @@
         break;
 
       case 'done': {
-        const doneData = event.data as { threadId: string; contextStats?: unknown; model?: string };
-        if (doneData.contextStats) {
+        const doneData = event.data as {
+          threadId: string;
+          contextStats?: unknown;
+          model?: string;
+          title?: string;
+          dispatchedTo?: DispatchInfo;
+        };
+        if (!doneData.dispatchedTo && doneData.contextStats) {
           chatStore.setContextStats(doneData.contextStats as import('$lib/types').ContextStats);
         }
-        if (doneData.model) {
+        if (!doneData.dispatchedTo && doneData.model) {
           chatStore.setActiveModel(doneData.model);
         }
         // Ensure thread exists in sidebar
-        if (event.threadId) {
+        if (doneData.dispatchedTo?.threadId) {
+          threadsStore.setThreadFromApi(
+            doneData.dispatchedTo.threadId,
+            doneData.title || doneData.dispatchedTo.title || doneData.dispatchedTo.threadId
+          );
+        } else if (event.threadId) {
           threadsStore.setThreadFromApi(event.threadId, currentTitle);
         }
         break;

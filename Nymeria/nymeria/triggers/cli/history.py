@@ -274,6 +274,7 @@ def _system_kind(message: Mapping[str, Any]) -> Any:
     if kind in {
         "compaction_notice",
         "context_attached",
+        "dispatch_notice",
         "iteration_limit",
         "error",
         "tool_reload",

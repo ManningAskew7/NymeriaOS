@@ -34,6 +34,7 @@ ToolCallStatus: TypeAlias = Literal[
 SystemMessageKind: TypeAlias = Literal[
     "compaction_notice",
     "context_attached",
+    "dispatch_notice",
     "iteration_limit",
     "error",
     "tool_reload",

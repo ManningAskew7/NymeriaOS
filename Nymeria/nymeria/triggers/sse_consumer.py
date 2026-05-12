@@ -108,6 +108,12 @@ async def dispatch_event(
     if etype == "thinking" or etype == "tool_call_delta":
         await handler.on_thinking()
 
+    elif etype == "dispatched":
+        dispatched_to = event.get("dispatched_to")
+        target = dispatched_to if isinstance(dispatched_to, dict) else {}
+        title = str(event.get("title") or target.get("title") or "thread")
+        await handler.on_response_chunk(f"[routed to {title}]\n\n")
+
     elif etype == "response":
         content = event.get("content", "")
         if content:
