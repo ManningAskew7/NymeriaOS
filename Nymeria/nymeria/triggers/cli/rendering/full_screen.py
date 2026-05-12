@@ -82,6 +82,7 @@ class FullScreenShellConfig:
     user_id: str = "default"
     model: str = ""
     thread_label: str = ""
+    reasoning_label: str = ""
 
 
 class FullScreenPromptToolkitShell:
@@ -437,6 +438,15 @@ class FullScreenPromptToolkitShell:
                 model=str(action.get("model") or self.config.model),
             )
             self._invalidate()
+        elif action_type == "set_reasoning":
+            enabled = bool(action.get("enabled"))
+            effort = str(action.get("effort") or "")
+            if enabled:
+                label = f"thinking: {effort}" if effort else "thinking"
+            else:
+                label = ""
+            self.config = replace(self.config, reasoning_label=label)
+            self._invalidate()
         elif action_type == "set_transcript_verbose":
             self._transcript_verbose = bool(action.get("enabled"))
             self._refresh_transcript()
@@ -723,6 +733,7 @@ class FullScreenPromptToolkitShell:
                     connection_label=self.client.connection_label,
                     thread_label=self.config.thread_label or self.config.thread_id,
                     model=self.config.model,
+                    reasoning_label=self.config.reasoning_label,
                     cwd=Path.cwd(),
                     queued_count=len(self._pending_submissions),
                     notice=self._status_notice,
@@ -742,6 +753,7 @@ class FullScreenPromptToolkitShell:
                 connection_label=self.client.connection_label,
                 thread_label=self.config.thread_label or self.config.thread_id,
                 model=self.config.model,
+                reasoning_label=self.config.reasoning_label,
                 cwd=Path.cwd(),
                 queued_count=len(self._pending_submissions),
                 notice=self._status_notice,

@@ -222,6 +222,7 @@ class _RichReplRuntime:
             connection_label=self.app._status_connection_label(),
             thread_label=self._thread_label(),
             model=self._model_label(),
+            reasoning_label=self.app._repl_reasoning_label,
             cwd=Path.cwd(),
             queued_count=len(self._pending_submissions),
             notice=self._status_notice,
@@ -566,6 +567,7 @@ class CLIApp:
         self._active_capabilities: TerminalCapabilities | None = None
         self._repl_thread_label: str | None = None
         self._repl_model_label: str | None = None
+        self._repl_reasoning_label: str = ""
         self._header_snapshot: CLIHeaderSnapshot | None = None
         self._header_refresh_pending = False
         self._startup_history_thread_id: str | None = None
@@ -584,6 +586,7 @@ class CLIApp:
             conversation,
             doctor,
             export,
+            reasoning,
             mcp,
             memory,
             model,
@@ -615,6 +618,7 @@ class CLIApp:
         export.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)
+        reasoning.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
@@ -1410,6 +1414,14 @@ class CLIApp:
             refresh_header = True
         elif action_type == "set_model":
             self._repl_model_label = str(action.get("model") or "")
+            refresh_header = True
+        elif action_type == "set_reasoning":
+            enabled = bool(action.get("enabled"))
+            effort = str(action.get("effort") or "")
+            if enabled:
+                self._repl_reasoning_label = f"thinking: {effort}" if effort else "thinking"
+            else:
+                self._repl_reasoning_label = ""
             refresh_header = True
         elif action_type == "thread_config_updated":
             refresh_header = True
