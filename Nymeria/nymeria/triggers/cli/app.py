@@ -62,6 +62,8 @@ class CLIRuntimeConfig:
     color: ColorMode = "auto"
     startup_thread_ref: str | None = None
     list_threads_on_startup: bool = False
+    oneshot_message: str | None = None
+    oneshot_format: str = "plain"
 
 
 class _ReplRenderer(Protocol):
@@ -607,13 +609,55 @@ class CLIApp:
         theme.register(self.registry)
 
     def run(self) -> None:
-        """Main REPL loop."""
+        """Main REPL loop, or oneshot mode if a message was provided."""
+        if self.runtime_config.oneshot_message is not None:
+            sys.exit(0 if self.run_oneshot() else 1)
+
         capabilities = detect_terminal_capabilities(self.runtime_config)
         if capabilities.renderer == "full":
             self._run_full_screen(capabilities)
             return
 
         self._run_repl(capabilities)
+
+    def run_oneshot(self) -> bool:
+        """Send a single message, stream the response to stdout, and return success."""
+        from .rendering.oneshot import OneshotRenderer
+
+        message = self.runtime_config.oneshot_message or ""
+        if message == "-":
+            message = sys.stdin.read()
+        if not message.strip():
+            sys.stderr.write("Error: empty message\n")
+            return False
+
+        output_format = self.runtime_config.oneshot_format
+        if output_format not in ("plain", "json"):
+            output_format = "plain"
+
+        renderer = OneshotRenderer(
+            output_format=output_format,
+            verbose=True,
+        )
+
+        async def _run() -> bool:
+            try:
+                client = await self._select_agent_client()
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(f"Error: {exc}\n")
+                return False
+            self._client = client
+            try:
+                events = client.stream_chat(
+                    message.strip(),
+                    self.state.thread_id,
+                    self.state.user_id,
+                )
+                return await renderer.consume(events)
+            finally:
+                await self._close_selected_client()
+
+        return asyncio.run(_run())
 
     def _run_full_screen(self, capabilities: TerminalCapabilities) -> None:
         """Run the retained full-screen TUI shell."""
