@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from typing import Any
 
 from cli_fixtures import FakeTerminalCapabilities
@@ -13,7 +14,7 @@ from nymeria.triggers.cli.commands import (
 )
 from nymeria.triggers.cli.commands import context as context_commands
 from nymeria.triggers.cli.commands import fast
-from nymeria.triggers.cli.commands import model, system, threads
+from nymeria.triggers.cli.commands import model, system, threads, usage
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
@@ -262,6 +263,7 @@ def make_registry() -> CommandRegistry:
     threads.register(registry)
     model.register(registry)
     fast.register(registry)
+    usage.register(registry)
     return registry
 
 
@@ -423,6 +425,34 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
     assert ("stop", {"thread_id": "thread-1", "user_id": "alice"}) in client.calls
     assert any("gpt-new" in message.content for message in sink.messages)
     assert any("hi there" in message.content for message in sink.messages)
+
+
+def test_core_commands_emit_json_payloads(capsys: Any) -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    ctx = make_context(client)
+
+    assert run(registry.dispatch_async(ctx, "/thread list --json")).ok is True
+    threads_payload = json.loads(capsys.readouterr().out)
+    assert isinstance(threads_payload, list)
+    assert {thread["thread_id"] for thread in threads_payload} == {
+        "thread-1",
+        "thread-2",
+    }
+
+    assert run(registry.dispatch_async(ctx, "/settings --json")).ok is True
+    settings_payload = json.loads(capsys.readouterr().out)
+    assert settings_payload["llm_model"] == "gpt-global"
+
+    assert run(registry.dispatch_async(ctx, "/context --json")).ok is True
+    context_payload = json.loads(capsys.readouterr().out)
+    assert context_payload["thread_id"] == "thread-1"
+    assert context_payload["total_tokens"] == 120
+
+    assert run(registry.dispatch_async(ctx, "/usage --json")).ok is True
+    usage_payload = json.loads(capsys.readouterr().out)
+    assert usage_payload["model"] == "gpt-thread"
+    assert usage_payload["total_tokens"] == 120
 
 
 def test_fast_command_toggles_models_and_sets_fast_model() -> None:

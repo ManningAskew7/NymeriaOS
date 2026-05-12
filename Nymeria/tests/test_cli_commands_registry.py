@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -110,6 +111,37 @@ def test_async_context_handler_receives_client_and_helpers() -> None:
     assert sink.messages == [
         CommandMessage("ran hello world", level="success")
     ]
+
+
+def test_json_flag_strips_args_and_emits_result_payload(capsys: Any) -> None:
+    registry = CommandRegistry(include_builtins=False)
+    sink = ListCommandOutputSink()
+
+    async def handler(ctx: CommandContext, args: list[str]) -> CommandResult:
+        assert ctx.metadata["json_output"] is True
+        assert args == ["alpha"]
+        return CommandResult.completed(
+            "human text",
+            json_payload={"args": args, "mode": "json"},
+        )
+
+    registry.register(
+        Command(
+            name="echo",
+            description="Echo test command",
+            handler=handler,
+            handler_mode="context",
+        )
+    )
+    context = CommandContext(output=sink)
+
+    result = run(registry.dispatch_async(context, "/echo --json alpha"))
+
+    captured = capsys.readouterr()
+    assert result.ok is True
+    assert json.loads(captured.out) == {"args": ["alpha"], "mode": "json"}
+    assert captured.err == ""
+    assert sink.messages == []
 
 
 def test_unknown_command_returns_structured_error() -> None:

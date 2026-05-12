@@ -93,6 +93,7 @@ async def _show_thread_usage(context: CommandContext) -> CommandResult:
             title="Usage",
         ),
         payload=dict(stats),
+        json_payload=_thread_usage_payload(stats, compact_threshold=compact_threshold),
     )
 
 
@@ -112,6 +113,7 @@ async def _show_session_usage(context: CommandContext) -> CommandResult:
     if session is None:
         return CommandResult.completed(
             CommandMessage("No session usage data yet.", level="warning"),
+            json_payload=_empty_session_usage_payload(),
         )
 
     total_input = getattr(session, "total_input", 0)
@@ -122,6 +124,7 @@ async def _show_session_usage(context: CommandContext) -> CommandResult:
     if total_input == 0 and total_output == 0:
         return CommandResult.completed(
             CommandMessage("No session usage data yet.", level="warning"),
+            json_payload=_empty_session_usage_payload(turn_count=turn_count),
         )
 
     total = total_input + total_output
@@ -135,6 +138,7 @@ async def _show_session_usage(context: CommandContext) -> CommandResult:
 
     total_cost = 0.0
     has_cost = False
+    per_model_payload: dict[str, dict[str, int | float]] = {}
     if per_model:
         lines.append("")
         lines.append("  Per model")
@@ -145,19 +149,33 @@ async def _show_session_usage(context: CommandContext) -> CommandResult:
             if cost is not None:
                 total_cost += cost
                 has_cost = True
+            per_model_payload[model_name] = {
+                "input_tokens": m_in,
+                "output_tokens": m_out,
+                "total_tokens": m_total,
+            }
+            if cost is not None:
+                per_model_payload[model_name]["estimated_cost"] = cost
             lines.append(f"    {model_name:<30} {_fmt_tokens(m_total)}{cost_label}")
 
     if has_cost:
         lines.append("")
         lines.append(f"  Est. cost       ~${total_cost:.4f}")
 
+    session_payload: dict[str, Any] = {
+        "total_input": total_input,
+        "total_output": total_output,
+        "total_tokens": total,
+        "turn_count": turn_count,
+        "per_model": per_model_payload,
+    }
+    if has_cost:
+        session_payload["estimated_cost"] = total_cost
+
     return CommandResult.completed(
         CommandMessage("\n".join(lines), title="Session Usage"),
-        payload={
-            "total_input": total_input,
-            "total_output": total_output,
-            "turn_count": turn_count,
-        },
+        payload=session_payload,
+        json_payload=session_payload,
     )
 
 
@@ -209,6 +227,33 @@ def _format_thread_usage(
         lines.append(f"  Last compacted  {last}")
 
     return "\n".join(lines)
+
+
+def _thread_usage_payload(
+    stats: Mapping[str, Any],
+    *,
+    compact_threshold: float | None = None,
+) -> dict[str, Any]:
+    payload = dict(stats)
+    model = str(stats.get("model", ""))
+    input_tokens = _int_or(stats, "input_tokens", 0)
+    output_tokens = _int_or(stats, "output_tokens", 0)
+    cost = _estimate_cost(input_tokens, output_tokens, model)
+    if cost is not None:
+        payload["estimated_cost"] = cost
+    if compact_threshold is not None:
+        payload["compact_threshold"] = compact_threshold
+    return payload
+
+
+def _empty_session_usage_payload(*, turn_count: int = 0) -> dict[str, Any]:
+    return {
+        "total_input": 0,
+        "total_output": 0,
+        "total_tokens": 0,
+        "turn_count": turn_count,
+        "per_model": {},
+    }
 
 
 def _int_or(data: Mapping[str, Any], key: str, default: int) -> int:

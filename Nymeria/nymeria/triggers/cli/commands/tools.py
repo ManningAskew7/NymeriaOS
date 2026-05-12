@@ -170,9 +170,13 @@ async def _handle_tools_list_context(
         return unsupported_transport_result("/tools list", method_name=exc.method_name)
 
     if not tools:
-        return CommandResult.completed(CommandMessage("No tools found.", level="warning"))
+        return CommandResult.completed(
+            CommandMessage("No tools found.", level="warning"),
+            json_payload=[],
+        )
     return CommandResult.completed(
-        CommandMessage(_format_tools_table(tools, config), title="Tools")
+        CommandMessage(_format_tools_table(tools, config), title="Tools"),
+        json_payload=_tools_json_entries(tools, config),
     )
 
 
@@ -554,6 +558,44 @@ def _format_tools_table(
         status = "disabled" if name in disabled else "enabled"
         lines.append(f"  {compact_id(name, width=30):<30} {'thread':<13} {status:<10}")
     return "\n".join(lines)
+
+
+def _tools_json_entries(
+    tools: Sequence[Mapping[str, Any]],
+    config: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    enabled = set(_string_list(config.get("enabled_tools")))
+    disabled = set(_string_list(config.get("disabled_tools")))
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for tool in sorted(tools, key=lambda item: _tool_name(item)):
+        name = _tool_name(tool)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        kind = str(
+            tool.get("tool_type")
+            or tool.get("category")
+            or tool.get("implementation_type")
+            or ""
+        )
+        if name in disabled:
+            status = "disabled"
+        elif name in enabled:
+            status = "enabled"
+        elif tool.get("enabled") is False:
+            status = "available"
+        else:
+            status = str(tool.get("enabled_reason") or "enabled")
+        entry = dict(tool)
+        entry.update({"name": name, "kind": kind, "status": status})
+        entries.append(entry)
+
+    for name in sorted((enabled | disabled) - seen):
+        status = "disabled" if name in disabled else "enabled"
+        entries.append({"name": name, "kind": "thread", "status": status})
+    return entries
 
 
 def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:

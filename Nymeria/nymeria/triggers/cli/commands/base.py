@@ -17,12 +17,21 @@ StateDispatcher: TypeAlias = Callable[[Any], Any | Awaitable[Any]]
 ConfirmationHandler: TypeAlias = Callable[[str], bool | Awaitable[bool]]
 PromptHandler: TypeAlias = Callable[[str], str | Awaitable[str]]
 
+_JSON_UNSET = object()
+
 
 class CommandOutputSink(Protocol):
     """Receives structured command output from handlers."""
 
     def emit(self, message: "CommandMessage") -> None:
         """Emit one command message."""
+
+
+class CommandResultOutputSink(CommandOutputSink, Protocol):
+    """Receives a complete command result for machine-readable renderers."""
+
+    def emit_result(self, result: "CommandResult") -> None:
+        """Emit one complete command result."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,10 +54,15 @@ class CommandResult:
     command_path: tuple[str, ...] = ()
     error_code: str = ""
     payload: Mapping[str, Any] = field(default_factory=dict)
+    json_payload: Any = field(default=_JSON_UNSET, repr=False, compare=False)
 
     @property
     def ok(self) -> bool:
         return self.status not in {"error", "unhandled"}
+
+    @property
+    def has_json_payload(self) -> bool:
+        return self.json_payload is not _JSON_UNSET
 
     @classmethod
     def completed(
@@ -56,12 +70,14 @@ class CommandResult:
         *messages: CommandMessage | str,
         command_path: tuple[str, ...] = (),
         payload: Mapping[str, Any] | None = None,
+        json_payload: Any = _JSON_UNSET,
     ) -> "CommandResult":
         return cls(
             status="ok",
             messages=_coerce_messages(messages),
             command_path=command_path,
             payload=dict(payload or {}),
+            json_payload=json_payload,
         )
 
     @classmethod
@@ -72,6 +88,7 @@ class CommandResult:
         command_path: tuple[str, ...] = (),
         error_code: str = "command_error",
         payload: Mapping[str, Any] | None = None,
+        json_payload: Any = _JSON_UNSET,
     ) -> "CommandResult":
         return cls(
             status="error",
@@ -79,6 +96,7 @@ class CommandResult:
             command_path=command_path,
             error_code=error_code,
             payload=dict(payload or {}),
+            json_payload=json_payload,
         )
 
     @classmethod
@@ -275,6 +293,7 @@ __all__ = [
     "CommandOutputSink",
     "CommandPaletteEntry",
     "CommandResult",
+    "CommandResultOutputSink",
     "CommandReturn",
     "CommandStatus",
     "ConfirmationHandler",
