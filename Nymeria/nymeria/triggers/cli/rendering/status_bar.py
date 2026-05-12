@@ -43,6 +43,7 @@ class StatusBarContext:
     connection_label: str = ""
     thread_label: str = ""
     model: str = ""
+    reasoning_label: str = ""
     cwd: str | Path | None = None
     queued_count: int = 0
     notice: StatusNotice | None = None
@@ -212,6 +213,15 @@ class StatusBarRenderer:
             segments.append(StatusSegment(text=context.connection_label, priority=1))
         if model:
             segments.append(StatusSegment(text=str(model), priority=2, min_width=8))
+        if context.reasoning_label:
+            segments.append(
+                StatusSegment(
+                    text=context.reasoning_label,
+                    style_class="status.accent",
+                    priority=1,
+                    min_width=6,
+                )
+            )
         if thread:
             segments.append(
                 StatusSegment(

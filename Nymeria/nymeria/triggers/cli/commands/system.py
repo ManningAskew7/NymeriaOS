@@ -81,6 +81,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
         "Model": [
             ("/model", "Show effective model"),
             ("/model set <model-id>", "Set per-thread model override"),
+            ("/reasoning [on|off|low|medium|high]", "Toggle extended thinking"),
         ],
         "Tools": [
             ("/tools", "List tools for current thread"),
