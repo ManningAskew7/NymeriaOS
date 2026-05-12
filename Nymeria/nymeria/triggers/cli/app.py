@@ -597,6 +597,7 @@ class CLIApp:
             todos,
             tools,
             triggers,
+            usage,
         )
 
         system.register(self.registry)
@@ -619,6 +620,7 @@ class CLIApp:
         clipboard.register(self.registry)
         conversation.register(self.registry)
         reasoning.register(self.registry)
+        usage.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""

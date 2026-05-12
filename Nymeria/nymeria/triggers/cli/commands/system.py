@@ -102,6 +102,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
         ],
         "Context": [
             ("/context", "Show context window stats"),
+            ("/usage [session]", "Token usage and cost statistics"),
             ("/compact", "Trigger manual compaction"),
         ],
         "Session": [

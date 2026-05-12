@@ -194,6 +194,16 @@ class DiagnosticNotice:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SessionTokenUsage:
+    """Session-wide cumulative token usage for /usage reporting."""
+
+    total_input: int = 0
+    total_output: int = 0
+    turn_count: int = 0
+    per_model: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CLIUIState:
     """Immutable reducer state for renderers and command surfaces."""
 
@@ -216,6 +226,7 @@ class CLIUIState:
     diagnostics: tuple[DiagnosticNotice, ...] = ()
     tool_call_delta_buffer: str = ""
     tool_call_count: int | None = None
+    session_usage: SessionTokenUsage = field(default_factory=SessionTokenUsage)
     updated_at: float = 0.0
 
 
@@ -230,6 +241,7 @@ __all__ = [
     "MessageStep",
     "QueueState",
     "ResponseStep",
+    "SessionTokenUsage",
     "SystemMessage",
     "SystemMessageKind",
     "ThinkingStep",

@@ -42,6 +42,7 @@ from .model import (
     MessageStep,
     QueueState,
     ResponseStep,
+    SessionTokenUsage,
     SystemMessage,
     ThinkingStep,
     ToolCallStatus,
@@ -618,6 +619,10 @@ def _reduce_done(
     turn_status = "error" if state.turn_status == "error" else "complete"
     message_status: MessageStatus = "error" if state.turn_status == "error" else "complete"
 
+    session_usage = _accumulate_session_usage(
+        state.session_usage, context_stats, active_model,
+    )
+
     state = _update_last_assistant(
         state,
         lambda message: _finalize_assistant(message, message_status),
@@ -630,6 +635,7 @@ def _reduce_done(
         context_stats=context_stats,
         active_model=active_model,
         tool_call_count=event.tool_call_count,
+        session_usage=session_usage,
     )
     return state
 
@@ -1045,6 +1051,39 @@ def _merge_artifact(
             return tuple(result)
     result.append(incoming)
     return tuple(result)
+
+
+def _accumulate_session_usage(
+    current: SessionTokenUsage,
+    context_stats: dict[str, Any],
+    model: str,
+) -> SessionTokenUsage:
+    input_tokens = _safe_int(context_stats.get("input_tokens"))
+    output_tokens = _safe_int(context_stats.get("output_tokens"))
+    if input_tokens == 0 and output_tokens == 0:
+        return current
+
+    per_model = dict(current.per_model)
+    model_key = model or "unknown"
+    prev_in, prev_out = per_model.get(model_key, (0, 0))
+    per_model[model_key] = (prev_in + input_tokens, prev_out + output_tokens)
+
+    return SessionTokenUsage(
+        total_input=current.total_input + input_tokens,
+        total_output=current.total_output + output_tokens,
+        turn_count=current.turn_count + 1,
+        per_model=per_model,
+    )
+
+
+def _safe_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return 0
 
 
 def _normalize(event: Any, *, default_thread_id: str | None) -> NormalizedEvent:

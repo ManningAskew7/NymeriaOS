@@ -232,7 +232,12 @@ class StatusBarRenderer:
                 )
             )
         if context_usage:
-            segments.append(StatusSegment(text=context_usage, priority=1, min_width=6))
+            ctx_usage = select_context_usage(state)
+            ctx_pct = ctx_usage.get("percent_used")
+            ctx_style = _context_style_class(ctx_pct)
+            segments.append(StatusSegment(
+                text=context_usage, style_class=ctx_style, priority=1, min_width=6,
+            ))
         if context.queued_count > 0:
             segments.append(
                 StatusSegment(
@@ -300,17 +305,40 @@ def select_status_notice(
     return _notice_text(notice)
 
 
+def _fmt_tokens(n: float) -> str:
+    """Format token count compactly: 1.2M, 45.2k, or 800."""
+
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return f"{n:.0f}"
+
+
+def _ctx_bar(percent: float, width: int = 10) -> str:
+    """Return a hermes-style filled/empty block bar."""
+
+    clamped = max(0.0, min(100.0, percent))
+    filled = round((clamped / 100) * width)
+    return "█" * filled + "░" * (width - filled)
+
+
 def context_usage_label(state: CLIUIState) -> str:
-    """Return compact context usage text when token stats are available."""
+    """Return compact context usage with graphical bar when stats are available."""
 
     usage = select_context_usage(state)
     percent = usage.get("percent_used")
-    if isinstance(percent, (int, float)):
-        return f"ctx {percent:.0f}%"
-
     used = _first_number(usage, "used_tokens", "total_tokens", "input_tokens")
+    limit = _first_number(usage, "max_tokens", "context_limit", "context_window", "limit")
+
+    if used is not None and limit and isinstance(percent, (int, float)):
+        return f"ctx {_fmt_tokens(used)}/{_fmt_tokens(limit)} [{_ctx_bar(percent)}] {percent:.0f}%"
+
+    if isinstance(percent, (int, float)):
+        return f"ctx [{_ctx_bar(percent)}] {percent:.0f}%"
+
     if used is not None:
-        return f"ctx {used:.0f}"
+        return f"ctx {_fmt_tokens(used)}"
     return ""
 
 
@@ -415,6 +443,18 @@ def _fit_status_segment_records(
             removable=False,
         )
     ]
+
+
+def _context_style_class(percent: float | int | None) -> str:
+    """Return style class for context usage based on fill level."""
+
+    if not isinstance(percent, (int, float)):
+        return "status"
+    if percent >= 95:
+        return "status.notice.error"
+    if percent >= 80:
+        return "status.notice.warning"
+    return "status"
 
 
 def _notice_is_active(
