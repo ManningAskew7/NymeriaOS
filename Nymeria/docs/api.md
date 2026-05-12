@@ -379,8 +379,9 @@ data: {"type": "dispatched", "thread_id": "caller123", "target_thread_id": "targ
 ```
 
 Subsequent stream events keep `thread_id` set to the caller thread for client
-rendering and include `dispatched_to` metadata for the target. The target
-thread owns the persisted checkpoint history.
+rendering and include `dispatched_to` metadata for the target. Clients use this
+metadata to show a `Response from <thread>` reference line. The target thread
+owns the persisted checkpoint history.
 
 ---
 

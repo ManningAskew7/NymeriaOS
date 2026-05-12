@@ -365,7 +365,7 @@
       {#if message.dispatchInfo}
         <div class="dispatch-badge">
           <Icon name="info" size={14} />
-          <span>Routed to {message.dispatchInfo.title || message.dispatchInfo.threadId}</span>
+          <span>Response from {message.dispatchInfo.title || message.dispatchInfo.threadId}</span>
         </div>
       {/if}
 
