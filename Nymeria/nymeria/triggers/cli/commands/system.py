@@ -581,7 +581,8 @@ async def _handle_settings_view_context(
     if not isinstance(settings, Mapping):
         return CommandResult.failed("Settings response was not a mapping.")
     return CommandResult.completed(
-        CommandMessage(format_settings_view(settings), title="Settings")
+        CommandMessage(format_settings_view(settings), title="Settings"),
+        json_payload=dict(settings),
     )
 
 

@@ -99,7 +99,8 @@ async def _handle_context_command(
     if not isinstance(stats, Mapping):
         return CommandResult.failed("Context response was not a mapping.")
     return CommandResult.completed(
-        CommandMessage(_format_context_stats(stats), title="Context")
+        CommandMessage(_format_context_stats(stats), title="Context"),
+        json_payload=dict(stats),
     )
 
 

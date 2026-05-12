@@ -308,10 +308,16 @@ async def _handle_list_context(
     teams = await _list_thread_teams_or_empty(context)
 
     if not threads:
-        return CommandResult.completed(CommandMessage("No threads found.", level="warning"))
+        return CommandResult.completed(
+            CommandMessage("No threads found.", level="warning"),
+            json_payload=[],
+        )
 
     lines = _format_thread_list(threads, context.thread_id, teams=teams)
-    return CommandResult.completed(CommandMessage("\n".join(lines), title="Threads"))
+    return CommandResult.completed(
+        CommandMessage("\n".join(lines), title="Threads"),
+        json_payload=list(threads),
+    )
 
 
 async def _handle_switch_context(

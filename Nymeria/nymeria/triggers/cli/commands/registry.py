@@ -198,6 +198,11 @@ class CommandRegistry:
         if invocation is None:
             return CommandResult.unhandled()
 
+        args, json_requested = _strip_json_flag(invocation.args)
+        if json_requested:
+            invocation = replace(invocation, args=args)
+            context = _with_json_output(context)
+
         match = self.resolve(invocation)
         if match is None:
             return self._emit_result(
@@ -350,6 +355,10 @@ class CommandRegistry:
     ) -> CommandResult:
         if context.output is None:
             return result
+        emit_result = getattr(context.output, "emit_result", None)
+        if callable(emit_result):
+            emit_result(result)
+            return result
         for message in result.messages:
             context.output.emit(message)
         return result
@@ -412,6 +421,19 @@ def _unknown_command_result(command_name: str) -> CommandResult:
         error_code="unknown_command",
         payload={"command": command_name},
     )
+
+
+def _strip_json_flag(args: tuple[str, ...]) -> tuple[tuple[str, ...], bool]:
+    remaining = tuple(arg for arg in args if str(arg).casefold() != "--json")
+    return remaining, len(remaining) != len(args)
+
+
+def _with_json_output(context: CommandContext) -> CommandContext:
+    from .json_sink import JsonCommandOutputSink
+
+    metadata = dict(context.metadata)
+    metadata["json_output"] = True
+    return replace(context, output=JsonCommandOutputSink(), metadata=metadata)
 
 
 def _coerce_result(raw_result: Any, *, command_path: tuple[str, ...]) -> CommandResult:

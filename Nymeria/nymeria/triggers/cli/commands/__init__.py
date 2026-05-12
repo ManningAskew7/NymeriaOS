@@ -15,6 +15,7 @@ from .base import (
     CommandOutputSink,
     CommandPaletteEntry,
     CommandResult,
+    CommandResultOutputSink,
     CommandReturn,
     CommandStatus,
     ConfirmationHandler,
@@ -27,6 +28,7 @@ from .registry import (
     CommandRegistry,
     RichConsoleCommandOutputSink,
 )
+from .json_sink import JsonCommandOutputSink
 
 __all__ = [
     "Command",
@@ -43,11 +45,13 @@ __all__ = [
     "CommandParseError",
     "CommandRegistry",
     "CommandResult",
+    "CommandResultOutputSink",
     "CommandReturn",
     "CommandStatus",
     "ConfirmationHandler",
     "ListCommandOutputSink",
     "PromptHandler",
+    "JsonCommandOutputSink",
     "RichConsoleCommandOutputSink",
     "StateDispatcher",
 ]

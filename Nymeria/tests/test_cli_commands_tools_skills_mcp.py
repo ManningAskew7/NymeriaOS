@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from typing import Any
 
 from nymeria.triggers.cli.commands import (
@@ -355,6 +356,30 @@ def test_tools_commands_use_api_client_methods() -> None:
         {"type": "tools_updated"},
     ]
     assert any("Default tools saved" in message.content for message in sink.messages)
+
+
+def test_tools_list_emits_json_payload(capsys: Any) -> None:
+    client = CapabilityFakeClient()
+    registry = make_registry()
+    ctx = make_context(client)
+
+    result = run(registry.dispatch_async(ctx, "/tools list --json"))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result.ok is True
+    assert isinstance(payload, list)
+    assert any(
+        tool["name"] == "filesystem"
+        and tool["kind"] == "builtin"
+        and tool["status"] == "default_thread_tools"
+        for tool in payload
+    )
+    assert any(
+        tool["name"] == "memory"
+        and tool["kind"] == "thread"
+        and tool["status"] == "enabled"
+        for tool in payload
+    )
 
 
 def test_skills_commands_use_api_client_methods() -> None:
