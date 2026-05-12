@@ -137,9 +137,64 @@ class HeaderFakeClient:
         thread_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return [
-            {"id": "one", "enabled": True, "thread_id": "thread-123456"},
-            {"id": "two", "enabled": False, "thread_id": "thread-123456"},
-            {"id": "three", "enabled": True, "thread_id": "other"},
+            {
+                "id": "one",
+                "name": "Morning brief",
+                "enabled": True,
+                "thread_id": "thread-123456",
+            },
+            {
+                "id": "two",
+                "name": "Disabled",
+                "enabled": False,
+                "thread_id": "thread-123456",
+            },
+            {
+                "id": "three",
+                "name": "Other thread",
+                "enabled": True,
+                "thread_id": "other",
+            },
+        ]
+
+    async def list_todos(
+        self,
+        user_id: str = "default",
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "todo-1",
+                "task": "Review purchase order",
+                "status": "pending",
+                "thread_id": "thread-123456",
+            },
+            {
+                "id": "todo-2",
+                "task": "Email supplier",
+                "status": "in_progress",
+                "thread_id": "thread-123456",
+            },
+            {
+                "id": "todo-3",
+                "task": "File notes",
+                "status": "pending",
+                "thread_id": "thread-123456",
+            },
+            {
+                "id": "todo-4",
+                "task": "Done item",
+                "status": "done",
+                "thread_id": "thread-123456",
+            },
+            {
+                "id": "todo-5",
+                "task": "Other item",
+                "status": "pending",
+                "thread_id": "other",
+            },
         ]
 
 
@@ -181,7 +236,10 @@ def test_header_snapshot_builds_full_dashboard_data() -> None:
     assert snapshot.callable_tool_count == 2
     assert snapshot.skill_count == 1
     assert snapshot.skill_kit_count == 1
+    assert snapshot.todo_count == 3
+    assert snapshot.todo_labels == ("Review purchase order", "Email supplier")
     assert snapshot.trigger_count == 1
+    assert snapshot.trigger_labels == ("Morning brief",)
     assert "instructions" in snapshot.flags
     assert "system prompt" in snapshot.flags
     assert "TODOs" in snapshot.flags
@@ -349,7 +407,10 @@ def test_rich_header_render_contains_dashboard_fields_and_fits_width() -> None:
         callable_tool_count=2,
         skill_count=4,
         skill_kit_count=1,
+        todo_count=3,
+        todo_labels=("Review PO", "Email"),
         trigger_count=1,
+        trigger_labels=("Morning brief",),
         flags=("instructions", "system prompt", "TODOs", "profile"),
         backend_url="http://api.test",
         health=HeaderHealthSnapshot(
@@ -380,6 +441,8 @@ def test_rich_header_render_contains_dashboard_fields_and_fits_width() -> None:
     assert "tools 8" in output
     assert "mcp 3" in output
     assert "kits 1" in output
+    assert "Todos: Review PO, Email, +1 more" in output
+    assert "Triggers: Morning brief" in output
     assert "instructions" in output
     assert "system prompt" in output
     assert all(cell_len(line) <= 79 for line in output.splitlines())

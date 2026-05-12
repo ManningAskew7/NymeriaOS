@@ -66,7 +66,10 @@ class CLIHeaderSnapshot:
     callable_tool_count: int = 0
     skill_count: int = 0
     skill_kit_count: int = 0
+    todo_count: int = 0
+    todo_labels: tuple[str, ...] = ()
     trigger_count: int = 0
+    trigger_labels: tuple[str, ...] = ()
     flags: tuple[str, ...] = ()
     backend_url: str = ""
     health: HeaderHealthSnapshot = field(default_factory=HeaderHealthSnapshot)
@@ -149,6 +152,13 @@ async def build_header_snapshot(
             enabled_only=True,
             thread_id=thread_id,
         ),
+        "todos": _optional_client_call(
+            client,
+            "list_todos",
+            user_id,
+            timeout_seconds=timeout_seconds,
+            thread_id=thread_id,
+        ),
         "health": build_health_snapshot(
             client,
             runtime_config=runtime_config,
@@ -180,6 +190,7 @@ async def build_header_snapshot(
         local_data.get("callable_tools", {}),
     )
     triggers = _sequence_or(results["triggers"], local_data.get("triggers", ()))
+    todos = _sequence_or(results["todos"], local_data.get("todos", ()))
     health = results["health"]
     if not isinstance(health, HeaderHealthSnapshot):
         health = HeaderHealthSnapshot(status="unknown")
@@ -195,14 +206,8 @@ async def build_header_snapshot(
     )
     tool_count, mcp_tool_count = _tool_counts(default_tools, thread_config)
     skill_count, skill_kit_count = _skill_counts(active_skills)
-    trigger_count = len(
-        [
-            item
-            for item in triggers
-            if _mapping_get(item, "enabled", True)
-            and (not thread_id or _mapping_get(item, "thread_id", thread_id) == thread_id)
-        ]
-    )
+    active_todos = _current_thread_active_todos(todos, thread_id)
+    enabled_triggers = _current_thread_enabled_triggers(triggers, thread_id)
 
     backend_url = health.backend_url or _backend_url(client, runtime_config)
     return CLIHeaderSnapshot(
@@ -237,7 +242,10 @@ async def build_header_snapshot(
         callable_tool_count=_callable_tool_count(callable_tools),
         skill_count=skill_count,
         skill_kit_count=skill_kit_count,
-        trigger_count=trigger_count,
+        todo_count=len(active_todos),
+        todo_labels=_item_labels(active_todos, "task"),
+        trigger_count=len(enabled_triggers),
+        trigger_labels=_item_labels(enabled_triggers, "name"),
         flags=_config_flags(thread_config),
         backend_url=backend_url,
         health=health if health.backend_url else _with_backend_url(health, backend_url),
@@ -411,6 +419,19 @@ def _local_header_data(state: Any, *, thread_id: str, user_id: str) -> dict[str,
         ]
     except Exception:
         data["triggers"] = []
+    try:
+        manager = getattr(agent, "todo_manager", None)
+        if manager is None:
+            from ...core.todo_manager import TodoManager
+
+            manager = TodoManager(getattr(state, "settings").data_dir)
+        todo_list = manager.get_todos(user_id)
+        data["todos"] = [
+            _model_dump(todo)
+            for todo in todo_list.get_active_todos_for_thread(thread_id)
+        ]
+    except Exception:
+        data["todos"] = []
     return data
 
 
@@ -641,6 +662,61 @@ def _callable_tool_count(callable_tools: Mapping[str, Any]) -> int:
     if isinstance(count, int):
         return max(0, count)
     return len(_mapping_sequence(callable_tools.get("callable_threads")))
+
+
+def _current_thread_active_todos(
+    todos: Sequence[Any],
+    thread_id: str,
+) -> list[Mapping[str, Any]]:
+    selected = []
+    for item in todos:
+        if not isinstance(item, Mapping):
+            continue
+        status = str(_mapping_get(item, "status", "") or "").casefold()
+        if status == "done":
+            continue
+        if thread_id and str(_mapping_get(item, "thread_id", "") or "") != thread_id:
+            continue
+        selected.append(item)
+    return selected
+
+
+def _current_thread_enabled_triggers(
+    triggers: Sequence[Any],
+    thread_id: str,
+) -> list[Mapping[str, Any]]:
+    selected = []
+    for item in triggers:
+        if not isinstance(item, Mapping):
+            continue
+        if not _mapping_get(item, "enabled", True):
+            continue
+        if thread_id and str(_mapping_get(item, "thread_id", "") or "") != thread_id:
+            continue
+        selected.append(item)
+    return selected
+
+
+def _item_labels(
+    items: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    limit: int = 2,
+) -> tuple[str, ...]:
+    labels: list[str] = []
+    for item in items:
+        label = str(
+            _mapping_get(item, key)
+            or _mapping_get(item, "title")
+            or _mapping_get(item, "id")
+            or ""
+        ).strip()
+        if not label:
+            continue
+        labels.append(label)
+        if len(labels) >= limit:
+            break
+    return tuple(labels)
 
 
 def _config_flags(thread_config: Mapping[str, Any]) -> tuple[str, ...]:

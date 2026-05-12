@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Any
+from typing import Any, Mapping
 
 from ..events import DoneEvent, ErrorEvent, NormalizedEvent
 from .base import Attachment
@@ -46,6 +46,63 @@ class DisconnectedAgentClient:
             details={"connection_label": self.connection_label},
         )
         yield DoneEvent(thread_id=thread_id, status="error")
+
+    async def stream_autonomous(
+        self,
+        user_id: str = "default",
+        *,
+        client_id: str | None = None,
+    ) -> AsyncIterator[NormalizedEvent]:
+        """Disconnected mode has no autonomous event source."""
+
+        if False:
+            yield ErrorEvent(thread_id=None, content=user_id or client_id or "")
+
+    async def get_history(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        include_internal: bool = False,
+        **options: Any,
+    ) -> Mapping[str, Any]:
+        """Return an empty history while disconnected."""
+
+        del user_id, include_internal, options
+        return {"thread_id": thread_id, "messages": []}
+
+    async def list_threads(self, user_id: str = "default") -> Sequence[Mapping[str, Any]]:
+        """Return no backend threads while disconnected."""
+
+        del user_id
+        return []
+
+    async def list_thread_teams(
+        self,
+        user_id: str = "default",
+    ) -> Sequence[Mapping[str, Any]]:
+        del user_id
+        return []
+
+    async def list_todos(
+        self,
+        user_id: str = "default",
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        del user_id, filter_status, thread_id
+        return []
+
+    async def list_triggers(
+        self,
+        user_id: str = "default",
+        *,
+        enabled_only: bool = False,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        del user_id, enabled_only, thread_id
+        return []
 
 
 def is_disconnected_client(client: Any) -> bool:

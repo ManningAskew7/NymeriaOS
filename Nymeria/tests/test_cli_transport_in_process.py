@@ -71,6 +71,70 @@ class FakeThreadMetadataManager:
 class FakeThreadConfig:
     callable: bool = False
     callable_name: str = ""
+    callable_team_id: str = ""
+    callable_team_name: str = ""
+
+
+@dataclass(slots=True)
+class FakeTodoStatus:
+    value: str
+
+
+@dataclass(slots=True)
+class FakeTodo:
+    id: str
+    task: str
+    status: Any
+    thread_id: str | None = None
+    created_at: str = "2026-05-10T12:00:00Z"
+
+    def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "task": self.task,
+            "status": getattr(self.status, "value", self.status),
+            "thread_id": self.thread_id,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass(slots=True)
+class FakeTodoList:
+    items: list[FakeTodo] = field(default_factory=list)
+
+    def get_active_todos(self) -> list[FakeTodo]:
+        return [
+            item
+            for item in self.items
+            if getattr(item.status, "value", item.status) != "done"
+        ]
+
+
+class FakeTodoManager:
+    def __init__(self) -> None:
+        self.lists: dict[str, FakeTodoList] = {}
+
+    def get_todos(self, user_id: str = "default") -> FakeTodoList:
+        return self.lists.setdefault(user_id, FakeTodoList())
+
+
+@dataclass(slots=True)
+class FakeTrigger:
+    id: str
+    name: str
+    enabled: bool = True
+    thread_id: str = ""
+
+    def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+        return asdict(self)
+
+
+class FakeTriggerManager:
+    def __init__(self) -> None:
+        self.triggers: dict[str, list[FakeTrigger]] = {}
+
+    def get_triggers(self, user_id: str = "default") -> list[FakeTrigger]:
+        return self.triggers.setdefault(user_id, [])
 
 
 class FakeThreadConfigManager:
@@ -100,6 +164,8 @@ class FakeAgent:
         self.settings = settings or FakeSettings()
         self.thread_metadata_manager = FakeThreadMetadataManager()
         self.thread_config_manager = FakeThreadConfigManager()
+        self.todo_manager = FakeTodoManager()
+        self.trigger_manager = FakeTriggerManager()
         self.astream_calls: list[dict[str, Any]] = []
         self.abort_calls: list[str] = []
         self.history_calls: list[dict[str, Any]] = []
@@ -285,6 +351,50 @@ def test_list_threads_merges_checkpoints_and_metadata(tmp_path: Path) -> None:
     assert by_id["meta-thread"]["title"] == "Metadata thread"
     assert by_id["callable-thread"]["title"] == "Helper"
     assert by_id["callable-thread"]["callable"] is True
+
+
+def test_local_transport_lists_teams_todos_and_triggers() -> None:
+    agent = FakeAgent()
+    store = agent.thread_metadata_manager.get_store("alice")
+    store.threads["team-thread"] = FakeThreadMetadata(thread_id="team-thread")
+    store.threads["plain-thread"] = FakeThreadMetadata(thread_id="plain-thread")
+    agent.thread_config_manager.configs["team-thread"] = FakeThreadConfig(
+        callable=True,
+        callable_name="Helper",
+        callable_team_id="ops",
+        callable_team_name="Ops",
+    )
+    agent.todo_manager.get_todos("alice").items.extend(
+        [
+            FakeTodo("todo-1", "Active", "pending", "team-thread"),
+            FakeTodo("todo-2", "Done", "done", "team-thread"),
+            FakeTodo("todo-3", "Other", "pending", "plain-thread"),
+        ]
+    )
+    agent.trigger_manager.get_triggers("alice").extend(
+        [
+            FakeTrigger("trigger-1", "Enabled", True, "team-thread"),
+            FakeTrigger("trigger-2", "Disabled", False, "team-thread"),
+            FakeTrigger("trigger-3", "Other", True, "plain-thread"),
+        ]
+    )
+    client = InProcessAgentClient(agent)
+
+    async def query():
+        teams = await client.list_thread_teams("alice")
+        todos = await client.list_todos("alice", thread_id="team-thread")
+        triggers = await client.list_triggers(
+            "alice",
+            enabled_only=True,
+            thread_id="team-thread",
+        )
+        return teams, todos, triggers
+
+    teams, todos, triggers = run(query())
+
+    assert teams == [{"id": "ops", "name": "Ops", "thread_ids": ["team-thread"]}]
+    assert [todo["id"] for todo in todos] == ["todo-1"]
+    assert [trigger["id"] for trigger in triggers] == ["trigger-1"]
 
 
 def test_thread_metadata_operations_stay_behind_client_boundary() -> None:

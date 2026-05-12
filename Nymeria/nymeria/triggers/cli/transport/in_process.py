@@ -193,6 +193,94 @@ class InProcessAgentClient:
 
         return threads
 
+    async def list_thread_teams(
+        self,
+        user_id: str = "default",
+    ) -> Sequence[Mapping[str, Any]]:
+        """Return callable team groupings visible to ``user_id``."""
+
+        user_id = user_id or self.default_user_id
+        teams: dict[str, dict[str, Any]] = {}
+        for thread in await self.list_threads(user_id):
+            thread_id = str(thread.get("thread_id") or thread.get("id") or "")
+            if not thread_id:
+                continue
+            manager = getattr(self.agent, "thread_config_manager", None)
+            config = manager.get_config(thread_id) if manager is not None else None
+            team_id = str(getattr(config, "callable_team_id", "") or "")
+            if not team_id:
+                continue
+            team_name = str(getattr(config, "callable_team_name", "") or team_id)
+            team = teams.setdefault(
+                team_id,
+                {"id": team_id, "name": team_name, "thread_ids": []},
+            )
+            team["name"] = team_name
+            team["thread_ids"].append(thread_id)
+        return sorted(teams.values(), key=lambda item: str(item["name"]).casefold())
+
+    async def list_todos(
+        self,
+        user_id: str = "default",
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Return local TODOs with API-compatible filtering."""
+
+        from ....core.todo_constants import STATUS_ORDER
+
+        user_id = user_id or self.default_user_id
+        todo_manager = getattr(self.agent, "todo_manager", None)
+        if todo_manager is None:
+            from ....core.todo_manager import TodoManager
+
+            todo_manager = TodoManager(_settings_for_agent(self.agent).data_dir)
+        todo_list = todo_manager.get_todos(user_id)
+        if filter_status == "all":
+            items = list(todo_list.items)
+        elif filter_status:
+            items = [
+                item
+                for item in todo_list.items
+                if str(getattr(item.status, "value", item.status)) == filter_status
+            ]
+        else:
+            items = list(todo_list.get_active_todos())
+        if thread_id:
+            items = [item for item in items if getattr(item, "thread_id", None) == thread_id]
+        items.sort(
+            key=lambda item: (
+                STATUS_ORDER.get(getattr(item, "status", ""), 3),
+                getattr(item, "created_at", ""),
+            )
+        )
+        return [_model_dump(item) for item in items]
+
+    async def list_triggers(
+        self,
+        user_id: str = "default",
+        *,
+        enabled_only: bool = False,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Return local triggers with API-compatible filtering."""
+
+        user_id = user_id or self.default_user_id
+        manager = getattr(self.agent, "trigger_manager", None)
+        if manager is None:
+            from ....core.trigger_manager import TriggerManager
+
+            manager = TriggerManager(_settings_for_agent(self.agent).data_dir)
+        triggers = manager.get_triggers(user_id)
+        if enabled_only:
+            triggers = [trigger for trigger in triggers if bool(trigger.enabled)]
+        if thread_id:
+            triggers = [
+                trigger for trigger in triggers if str(trigger.thread_id or "") == thread_id
+            ]
+        return [_model_dump(trigger) for trigger in triggers]
+
     async def get_context_stats(
         self,
         thread_id: str,
