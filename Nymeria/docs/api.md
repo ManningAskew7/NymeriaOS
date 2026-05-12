@@ -339,10 +339,11 @@ subscribers using the same `client_id` can suppress their own echoes.
 Messages can start with a thread mention to route the turn to another thread:
 `@ThreadName prompt`, `@thread-id-prefix prompt`, or `@"Thread With Spaces" prompt`.
 The backend resolves the mention against threads visible to the authenticated
-user, strips the mention before invoking the agent, and persists the user
-message plus assistant response only in the target thread. If the mention does
-not match any thread, the message is treated as normal chat. If it matches
-multiple threads, `/chat` emits an `error` event with
+user by metadata title, callable name, or ID prefix, strips the mention before
+invoking the agent, and persists the user message plus assistant response only
+in the target thread. If the mention does not match any thread, the message is
+treated as normal chat. If it matches multiple threads, `/chat` emits an `error`
+event with
 `code: "mention_ambiguous"` and candidate thread IDs.
 
 **Autonomous caller contract:** Trusted workers and thin clients start internal

@@ -152,6 +152,7 @@ def create_chat_router(
                 user_id=user_id,
                 thread_metadata_manager=agent.thread_metadata_manager,
                 accounts_repo=agent.accounts_repo,
+                thread_config_manager=agent.thread_config_manager,
             )
             if isinstance(mention_resolution, MentionAmbiguity):
 
@@ -583,6 +584,7 @@ def create_chat_router(
                 user_id=user_id,
                 thread_metadata_manager=agent.thread_metadata_manager,
                 accounts_repo=agent.accounts_repo,
+                thread_config_manager=agent.thread_config_manager,
             )
             if isinstance(mention_resolution, MentionAmbiguity):
                 error = _mention_ambiguity_error(

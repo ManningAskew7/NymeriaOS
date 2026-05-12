@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +13,7 @@ class MentionCandidate:
 
     thread_id: str
     title: str
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ def resolve_thread_mention(
     user_id: str,
     thread_metadata_manager: Any,
     accounts_repo: Any,
+    thread_config_manager: Any | None = None,
 ) -> MentionResolution:
     """Resolve a leading ``@thread`` prefix to a user-visible thread.
 
@@ -60,6 +62,7 @@ def resolve_thread_mention(
         user_id=user_id,
         thread_metadata_manager=thread_metadata_manager,
         accounts_repo=accounts_repo,
+        thread_config_manager=thread_config_manager,
     )
     if not candidates:
         return None
@@ -98,6 +101,7 @@ def _visible_threads(
     user_id: str,
     thread_metadata_manager: Any,
     accounts_repo: Any,
+    thread_config_manager: Any | None,
 ) -> tuple[MentionCandidate, ...]:
     try:
         owned_ids = set(accounts_repo.list_threads_for_user(user_id))
@@ -117,9 +121,39 @@ def _visible_threads(
     candidates: list[MentionCandidate] = []
     for thread_id in sorted(thread_ids):
         meta = metadata.get(thread_id)
-        title = str(getattr(meta, "title", "") or thread_id)
-        candidates.append(MentionCandidate(thread_id=thread_id, title=title))
+        metadata_title = str(getattr(meta, "title", "") or "").strip()
+        callable_name = _callable_name(thread_config_manager, thread_id)
+        title = callable_name or metadata_title or thread_id
+        aliases = _aliases(title, metadata_title, callable_name)
+        candidates.append(
+            MentionCandidate(thread_id=thread_id, title=title, aliases=aliases)
+        )
     return tuple(candidates)
+
+
+def _callable_name(thread_config_manager: Any | None, thread_id: str) -> str:
+    if thread_config_manager is None:
+        return ""
+    try:
+        config = thread_config_manager.get_config(thread_id)
+    except Exception:  # noqa: BLE001 - mention resolution must be best effort.
+        return ""
+    if not config or not getattr(config, "callable", False):
+        return ""
+    return str(getattr(config, "callable_name", "") or "").strip()
+
+
+def _aliases(*values: str) -> tuple[str, ...]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        alias = str(value or "").strip()
+        key = alias.casefold()
+        if not alias or key in seen:
+            continue
+        aliases.append(alias)
+        seen.add(key)
+    return tuple(aliases)
 
 
 def _resolve_against_candidates(
@@ -130,19 +164,17 @@ def _resolve_against_candidates(
     candidate_tuple = tuple(candidates)
     reference_key = reference.casefold()
 
-    exact_title = [
-        candidate
-        for candidate in candidate_tuple
-        if candidate.title.casefold() == reference_key
-    ]
+    exact_title = _matching_candidates(
+        candidate_tuple,
+        lambda alias: alias.casefold() == reference_key,
+    )
     if exact_title:
         return _target_or_ambiguity(reference, prompt, exact_title)
 
-    title_substring = [
-        candidate
-        for candidate in candidate_tuple
-        if reference_key in candidate.title.casefold()
-    ]
+    title_substring = _matching_candidates(
+        candidate_tuple,
+        lambda alias: reference_key in alias.casefold(),
+    )
     if title_substring:
         return _target_or_ambiguity(reference, prompt, title_substring)
 
@@ -155,6 +187,23 @@ def _resolve_against_candidates(
         return _target_or_ambiguity(reference, prompt, id_prefix)
 
     return None
+
+
+def _matching_candidates(
+    candidates: Iterable[MentionCandidate],
+    matches: Callable[[str], bool],
+) -> list[MentionCandidate]:
+    selected: list[MentionCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        aliases = candidate.aliases or (candidate.title,)
+        if not any(matches(alias) for alias in aliases):
+            continue
+        if candidate.thread_id in seen:
+            continue
+        selected.append(candidate)
+        seen.add(candidate.thread_id)
+    return selected
 
 
 def _target_or_ambiguity(
