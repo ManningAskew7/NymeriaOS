@@ -59,6 +59,10 @@ python run.py cli -m "What time is it in Sydney?"
 python run.py cli -m "Summarize this file" --format json
 echo "Explain this" | python run.py cli -m - -r my-thread
 python run.py cli -c -m "continue where we left off"  # Oneshot into most recent thread
+
+# Export a thread to file (json, md, or jsonl)
+python run.py cli --export <thread-id> --format json -o export.json
+python run.py cli --export <thread-id> --format md
 ```
 
 `--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. `--message`/`-m` runs in non-interactive oneshot mode: sends the message, streams the response to stdout, and exits 0/1. Use `--format json` for newline-delimited JSON events, or pipe stdin with `-m -`. The default transport is API/thin-client mode: the CLI loads `~/.nymeria/cli.json` when present, otherwise starts disconnected and lets you run `/login`. Use `--transport local` only when you intentionally want an embedded in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
