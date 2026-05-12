@@ -7,6 +7,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any, TextIO
 
 from rich.console import Console
+from rich.cells import cell_len
 from rich.text import Text
 
 from ..state import (
@@ -36,6 +37,8 @@ from .transcript import (
     render_message_lines,
     render_transcript_lines,
 )
+
+THINKING_PREVIEW_MIN_CELLS = 12
 
 
 class RichReplRenderer:
@@ -72,7 +75,7 @@ class RichReplRenderer:
         self._response_buffer = ""
         self._response_lengths = _assistant_response_lengths(self.state)
         self._thinking_lengths = _assistant_thinking_lengths(self.state)
-        self._thinking_preview_rendered: set[str] = set()
+        self._thinking_preview_rendered: set[tuple[str, int]] = set()
         self._rendered_tool_results: set[str] = set()
         self._rendered_system_ids: set[str] = set()
         self._rendered_assistant_headers: set[str] = set()
@@ -130,7 +133,11 @@ class RichReplRenderer:
         )
         self._response_lengths = _assistant_response_lengths(self.state)
         self._thinking_lengths = _assistant_thinking_lengths(self.state)
-        self._thinking_preview_rendered.discard(self.state.messages[-1].id)
+        self._thinking_preview_rendered = {
+            key
+            for key in self._thinking_preview_rendered
+            if key[0] != self.state.messages[-1].id
+        }
         self._last_rendered_block = None
         self._response_stream_active = False
         self._stream_line_buffer = ""
@@ -146,7 +153,7 @@ class RichReplRenderer:
             AssistantMessage,
         ):
             assistant = self.state.messages[-1]
-            self._render_separator(
+            self._render_assistant_header_frame(
                 "Nymeria",
                 style=_style_for_line_kind("assistant_header", self.theme),
             )
@@ -227,6 +234,7 @@ class RichReplRenderer:
         current: CLIUIState,
     ) -> None:
         self._render_thinking_delta(current)
+        self._flush_pending_thinking_previews(current)
         self._collect_response_delta(current)
 
         printed_non_response = False
@@ -364,11 +372,39 @@ class RichReplRenderer:
                     self._ensure_assistant_header(state, message)
                     if self.transcript_verbose:
                         self._render_thinking_text(delta, preview=False)
-                    elif message.id not in self._thinking_preview_rendered:
+                    elif key not in self._thinking_preview_rendered and (
+                        _thinking_preview_is_ready(
+                            step.content,
+                            width=max(1, self.width - 4),
+                        )
+                    ):
                         self._render_thinking_text(step.content, preview=True)
-                        self._thinking_preview_rendered.add(message.id)
+                        self._thinking_preview_rendered.add(key)
                     self._thinking_lengths[key] = len(step.content)
                 thinking_index += 1
+
+    def _flush_pending_thinking_previews(self, state: CLIUIState) -> None:
+        if self.transcript_verbose:
+            return
+        for message in state.messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+            thinking_index = 0
+            for step_index, step in enumerate(message.steps):
+                if not isinstance(step, ThinkingStep):
+                    continue
+                key = (message.id, thinking_index)
+                thinking_index += 1
+                if key in self._thinking_preview_rendered:
+                    continue
+                if not str(step.content or "").strip():
+                    continue
+                step_is_closed = step_index < len(message.steps) - 1
+                if not step_is_closed and message.status not in {"complete", "error"}:
+                    continue
+                self._ensure_assistant_header(state, message)
+                self._render_thinking_text(step.content, preview=True)
+                self._thinking_preview_rendered.add(key)
 
     def _render_thinking_text(self, content: str, *, preview: bool) -> None:
         if not str(content or "").strip():
@@ -555,10 +591,14 @@ class RichReplRenderer:
         )
         if self._last_rendered_block is not None:
             self.console.print()
-        self._render_separator(label, style=style)
+        self._render_assistant_header_frame(label, style=style)
         self._rendered_assistant_headers.add(message.id)
-        self._last_rendered_block = None
         self._turn_seen_tool = False
+
+    def _render_assistant_header_frame(self, label: str, *, style: str) -> None:
+        self._render_separator(label, style=style)
+        self._render_assistant_divider()
+        self._last_rendered_block = "assistant_divider"
 
     def _render_assistant_divider(self) -> None:
         divider_width = min(max(1, self.width - 2), 32)
@@ -655,15 +695,7 @@ class RichReplRenderer:
         self._response_buffer = ""
         self._response_lengths = _assistant_response_lengths(state)
         self._thinking_lengths = _assistant_thinking_lengths(state)
-        self._thinking_preview_rendered = {
-            message.id
-            for message in state.messages
-            if isinstance(message, AssistantMessage)
-            and any(
-                isinstance(step, ThinkingStep) and bool(step.content)
-                for step in message.steps
-            )
-        }
+        self._thinking_preview_rendered = set(_assistant_thinking_lengths(state))
         self._rendered_tool_results = {
             step.id
             for step in _tool_steps(state)
@@ -869,6 +901,14 @@ def _thinking_preview_text(content: str, *, width: int) -> str:
     if text.endswith("..."):
         return truncate_cell_width(text, width)
     return truncate_cell_width(f"{text}...", width)
+
+
+def _thinking_preview_is_ready(content: str, *, width: int) -> bool:
+    text = collapse_inline(content)
+    if not text:
+        return False
+    target_width = max(THINKING_PREVIEW_MIN_CELLS, width - 3)
+    return cell_len(text) >= target_width
 
 
 def _style_for_line_kind(kind: str, theme: CLITheme | None = None) -> str:

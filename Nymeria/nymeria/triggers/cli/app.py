@@ -113,6 +113,7 @@ class _RichReplRuntime:
         self.render_lock = threading.RLock()
         self.application: Any | None = None
         self.composer_controller: Any | None = None
+        self._footer_height_was_known = False
         self._busy = False
         self._status_notice: StatusNotice | None = None
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
@@ -248,6 +249,16 @@ class _RichReplRuntime:
                 return max(1, int(app.output.get_size().columns))
         return max(1, int(getattr(self.capabilities, "width", 80) or 80))
 
+    def footer_height_is_known(self) -> bool:
+        """Keep the Rich footer visible after prompt_toolkit has placed it once."""
+
+        app = self.application
+        if app is not None:
+            with suppress(Exception):
+                if app.renderer.height_is_known:
+                    self._footer_height_was_known = True
+        return self._footer_height_was_known
+
     def start_autonomous_listener(self) -> None:
         if self._autonomous_task is not None and not self._autonomous_task.done():
             return
@@ -370,8 +381,9 @@ class _RichReplPromptToolkitShell:
 
     def build_application(self) -> Any:
         from prompt_toolkit.application import Application
+        from prompt_toolkit.filters import Condition, is_done
         from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
-        from prompt_toolkit.layout import HSplit, Layout, Window
+        from prompt_toolkit.layout import ConditionalContainer, Dimension, HSplit, Layout, Window
         from prompt_toolkit.layout.controls import FormattedTextControl
 
         from .input import create_rich_repl_composer
@@ -386,13 +398,28 @@ class _RichReplPromptToolkitShell:
             is_busy=lambda: self.runtime.busy,
             queued_count=lambda: self.runtime.queued_count,
         )
-        status_bar = Window(
-            FormattedTextControl(self.runtime.status_fragments),
-            height=1,
-            style="class:status",
-            wrap_lines=False,
+        footer_visible = Condition(self.runtime.footer_height_is_known) & ~is_done
+        transcript_gap = ConditionalContainer(
+            Window(
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                char=" ",
+            ),
+            filter=footer_visible,
         )
-        body = HSplit([status_bar, controller.text_area])
+        status_bar = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: self.runtime.status_fragments()),
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                style="class:status",
+                wrap_lines=False,
+                char=" ",
+            ),
+            filter=footer_visible,
+        )
+        footer_spacer = Window(height=Dimension(weight=1), char=" ")
+        body = HSplit([footer_spacer, transcript_gap, status_bar, controller.text_area])
         bindings = KeyBindings()
 
         @bindings.add("c-d")

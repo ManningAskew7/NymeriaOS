@@ -205,7 +205,14 @@ def test_rich_renderer_prints_response_delta_before_turn_done() -> None:
 
     assert "Streaming now." in output.stdout_text
     assert "  Streaming now.\n" in output.stdout_text
-    assert "································" not in output.stdout_text
+    lines = output.stdout_text.splitlines()
+    header_index = next(index for index, line in enumerate(lines) if "──── Nymeria " in line)
+    opening_divider_index = next(
+        index for index, line in enumerate(lines) if "································" in line
+    )
+    response_index = next(index for index, line in enumerate(lines) if "Streaming now." in line)
+    assert header_index < opening_divider_index < response_index
+    assert output.stdout_text.count("································") == 1
 
 
 def test_rich_renderer_streams_response_lines_without_cutting_text() -> None:
@@ -237,7 +244,7 @@ def test_rich_renderer_streams_response_lines_without_cutting_text() -> None:
     assert "\nNymeria |" not in output.stdout_text
 
 
-def test_rich_renderer_standard_mode_limits_thinking_to_one_preview() -> None:
+def test_rich_renderer_standard_mode_shows_one_preview_per_thinking_step() -> None:
     output = CapturedRenderOutput()
     renderer = RichReplRenderer(
         capabilities=FakeTerminalCapabilities(no_color=True),
@@ -250,6 +257,7 @@ def test_rich_renderer_standard_mode_limits_thinking_to_one_preview() -> None:
     renderer.render_events(
         [
             {"type": "thinking", "content": "first private thought"},
+            {"type": "thinking", "content": " continued private detail"},
             {
                 "type": "tool_call",
                 "id": "call-1",
@@ -269,9 +277,58 @@ def test_rich_renderer_standard_mode_limits_thinking_to_one_preview() -> None:
         now=1.0,
     )
 
-    assert "│ first private thought" in output.stdout_text
-    assert "second private thought" not in output.stdout_text
+    assert "│ first private thought continued private detail" in output.stdout_text
+    assert "│ second private thought" in output.stdout_text
+    assert sum(1 for line in output.stdout_text.splitlines() if "│ " in line) == 2
     assert "Visible answer." in output.stdout_text
+
+
+def test_rich_renderer_standard_thinking_preview_waits_until_width_or_step_boundary() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=120,
+    )
+    renderer.start_turn("hello", thread_id="thread-1", now=0.0)
+
+    renderer.render_event(
+        {
+            "type": "thinking",
+            "content": "The user is saying hello. Let me check my",
+        },
+        now=1.0,
+    )
+
+    assert "Let me check my..." not in output.stdout_text
+
+    renderer.render_events(
+        [
+            {
+                "type": "thinking",
+                "content": " memory and thread context before replying.",
+            },
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "memory_read",
+                "args": {"scope": "global"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-1",
+                "name": "memory_read",
+                "result": "Stored memories.",
+            },
+        ],
+        now=2.0,
+    )
+
+    assert "Let me check my..." not in output.stdout_text
+    assert "Let me check my memory and thread context before replying..." in (
+        output.stdout_text
+    )
 
 
 def test_rich_renderer_renders_autonomous_turns_with_distinct_header() -> None:

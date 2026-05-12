@@ -175,8 +175,14 @@ class ComposerController:
         self.show_queued_prompt = show_queued_prompt
         self.last_attachment_errors: tuple[str, ...] = ()
         self.key_bindings = self._build_key_bindings()
+        input_height = (
+            Dimension(min=1, max=max(1, max_height))
+            if multiline
+            else Dimension(min=1, max=max(1, max_height), preferred=1)
+        )
         self.text_area = TextArea(
-            height=Dimension(min=1, max=max(1, max_height), preferred=1),
+            height=input_height,
+            dont_extend_height=multiline,
             prompt=self.prompt_fragments,
             multiline=multiline,
             wrap_lines=True,
