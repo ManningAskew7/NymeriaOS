@@ -62,6 +62,8 @@ class CLIRuntimeConfig:
     color: ColorMode = "auto"
     startup_thread_ref: str | None = None
     list_threads_on_startup: bool = False
+    continue_last: bool = False
+    resume_ref: str | None = None
     oneshot_message: str | None = None
     oneshot_format: str = "plain"
 
@@ -648,6 +650,11 @@ class CLIApp:
                 return False
             self._client = client
             try:
+                if self._session_resume_requested():
+                    resolved = await self._resolve_session_resume_flags()
+                    if resolved is None:
+                        return False
+                    self.state.switch_thread(resolved["thread_id"])
                 events = client.stream_chat(
                     message.strip(),
                     self.state.thread_id,
@@ -836,6 +843,25 @@ class CLIApp:
             await self._render_startup_thread_list_async(capabilities)
             return True
 
+        if self.runtime_config.continue_last:
+            resolved = await self._resolve_most_recent_thread()
+            if resolved is None:
+                return True
+            self.state.switch_thread(resolved["thread_id"])
+            self._repl_thread_label = resolved["title"]
+            self._startup_history_thread_id = resolved["thread_id"]
+            return False
+
+        resume_ref = str(self.runtime_config.resume_ref or "").strip()
+        if resume_ref:
+            resolved = await self._resolve_startup_thread_ref(resume_ref)
+            if resolved is None:
+                return True
+            self.state.switch_thread(resolved["thread_id"])
+            self._repl_thread_label = resolved["title"]
+            self._startup_history_thread_id = resolved["thread_id"]
+            return False
+
         ref = str(self.runtime_config.startup_thread_ref or "").strip()
         if not ref:
             return False
@@ -914,6 +940,68 @@ class CLIApp:
             message,
             self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
         )
+        return None
+
+    async def _resolve_most_recent_thread(self) -> dict[str, str] | None:
+        """Find the most recently updated thread for ``--continue``."""
+        from .commands.system import CommandClientMethodUnavailable, call_client_method
+        from .commands.system import normalize_thread_id, thread_title
+
+        context = CommandContext(
+            client=self._client,
+            output=ListCommandOutputSink(),
+            thread_id=self.state.thread_id,
+            user_id=self.state.user_id,
+            registry=self.registry,
+        )
+        try:
+            raw_threads = await call_client_method(context, "list_threads", self.state.user_id)
+        except CommandClientMethodUnavailable as exc:
+            self._render_startup_error(
+                f"Cannot continue: missing client method {exc.method_name}.",
+                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - startup selection should explain and exit.
+            self._render_startup_error(
+                f"Cannot continue: {exc or exc.__class__.__name__}",
+                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+            )
+            return None
+
+        if not isinstance(raw_threads, Sequence) or isinstance(raw_threads, (str, bytes)):
+            raw_threads = []
+        threads = [thread for thread in raw_threads if isinstance(thread, Mapping)]
+        if not threads:
+            self._render_startup_error(
+                "No threads found to continue.",
+                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+            )
+            return None
+
+        most_recent = max(
+            threads,
+            key=lambda t: str(t.get("updated_at") or t.get("created_at") or ""),
+        )
+        tid = normalize_thread_id(most_recent)
+        if not tid:
+            self._render_startup_error(
+                "No threads found to continue.",
+                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+            )
+            return None
+        return {"thread_id": tid, "title": thread_title(most_recent)}
+
+    def _session_resume_requested(self) -> bool:
+        return self.runtime_config.continue_last or bool(self.runtime_config.resume_ref)
+
+    async def _resolve_session_resume_flags(self) -> dict[str, str] | None:
+        """Resolve ``--continue`` or ``--resume`` to a thread, if either was set."""
+        if self.runtime_config.continue_last:
+            return await self._resolve_most_recent_thread()
+        resume_ref = str(self.runtime_config.resume_ref or "").strip()
+        if resume_ref:
+            return await self._resolve_startup_thread_ref(resume_ref)
         return None
 
     def _status_connection_label(self) -> str:

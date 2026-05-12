@@ -421,6 +421,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Foreground gateway** — `python run.py service` (GatewayServer with graceful shutdown)
 - **Interactive CLI** — `python run.py cli`
 - **Non-interactive CLI** — `python run.py cli -m "prompt"` (oneshot mode with plain or JSON output)
+- **Session resume** — `python run.py cli -c` (continue most recent thread), `python run.py cli -r <ref>` (resume by ID/title)
 
 ### Configuration
 - 100+ environment variables across LLM, API, database, messaging, autonomous, context, voice, logging

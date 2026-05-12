@@ -253,6 +253,8 @@ def build_cli_runtime_config(args: argparse.Namespace):
         list_threads_on_startup=(
             args.thread is None and bool(positional_ref) and positional_ref.casefold() == "list"
         ),
+        continue_last=bool(getattr(args, "continue_last", False)),
+        resume_ref=getattr(args, "resume_ref", None),
         oneshot_message=getattr(args, "message", None),
         oneshot_format=getattr(args, "output_format", "plain") or "plain",
     )
@@ -736,6 +738,9 @@ Examples:
     python run.py cli                # Start CLI interface
     python run.py cli -t mythread    # Start CLI with specific thread ID
     python run.py cli --thread-id mythread
+    python run.py cli -c             # Resume most recent thread
+    python run.py cli -r mythread    # Resume thread by ID or title
+    python run.py cli -c -m "hello"  # Send oneshot message to most recent thread
     python run.py api                # Start API server (default port 8000)
     python run.py api -p 8080        # Start API on port 8080
     python run.py doctor             # Diagnose local configuration
@@ -773,6 +778,22 @@ Examples:
         dest="thread",
         default=None,
         help="Thread title or thread ID/prefix to open",
+    )
+    cli_parser.add_argument(
+        "--continue",
+        "-c",
+        dest="continue_last",
+        action="store_true",
+        default=False,
+        help="Resume the most recently updated thread",
+    )
+    cli_parser.add_argument(
+        "--resume",
+        "-r",
+        dest="resume_ref",
+        default=None,
+        metavar="ID_OR_TITLE",
+        help="Resume a specific thread by ID prefix or title substring",
     )
     cli_parser.add_argument(
         "--transport",
