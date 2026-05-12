@@ -578,6 +578,7 @@ class CLIApp:
             account,
             activity,
             artifacts,
+            clipboard,
             connection,
             context,
             doctor,
@@ -611,6 +612,7 @@ class CLIApp:
         doctor.register(self.registry)
         theme.register(self.registry)
         export.register(self.registry)
+        clipboard.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
