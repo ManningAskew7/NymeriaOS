@@ -49,10 +49,16 @@ python run.py cli --renderer auto
 python run.py cli --renderer full --transport api --api-url http://localhost:8000 --api-key <token>
 python run.py cli --renderer plain --transport local
 
+# Resume existing threads
+python run.py cli -c                              # Continue most recent thread
+python run.py cli -r "Project Review"             # Resume by title substring
+python run.py cli -r abc123                       # Resume by ID prefix
+
 # Non-interactive oneshot mode (for scripting, pipes, cron)
 python run.py cli -m "What time is it in Sydney?"
 python run.py cli -m "Summarize this file" --format json
 echo "Explain this" | python run.py cli -m - -t my-thread
+python run.py cli -c -m "continue where we left off"  # Oneshot into most recent thread
 ```
 
 `--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. `--message`/`-m` runs in non-interactive oneshot mode: sends the message, streams the response to stdout, and exits 0/1. Use `--format json` for newline-delimited JSON events, or pipe stdin with `-m -`. The default transport is API/thin-client mode: the CLI loads `~/.nymeria/cli.json` when present, otherwise starts disconnected and lets you run `/login`. Use `--transport local` only when you intentionally want an embedded in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
