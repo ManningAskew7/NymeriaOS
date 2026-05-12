@@ -78,7 +78,9 @@ async def _handle_skills_search(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    source, remaining = _consume_option(args, "--source", default="anthropic")
+    source, remaining, error = _consume_option(args, "--source", default="anthropic")
+    if error:
+        return CommandResult.failed(error, error_code="usage_error")
     query = " ".join(remaining).strip() or None
 
     try:
@@ -121,8 +123,12 @@ async def _handle_skills_install(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    scope, args = _consume_option(args, "--scope", default="user")
-    source, args = _consume_option(args, "--source", default="anthropic")
+    scope, args, error = _consume_option(args, "--scope", default="user")
+    if error:
+        return CommandResult.failed(error, error_code="usage_error")
+    source, args, error = _consume_option(args, "--source", default="anthropic")
+    if error:
+        return CommandResult.failed(error, error_code="usage_error")
     if not args:
         return CommandResult.failed(
             "Usage: /skills install <name> [--source source] [--scope user|global]",
@@ -382,23 +388,27 @@ def _consume_option(
     option: str,
     *,
     default: str,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], str]:
     remaining: list[str] = []
     selected = default
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg == option and index + 1 < len(args):
+        if arg == option:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                return selected, list(args), f"{option} requires a value."
             selected = args[index + 1]
             index += 2
             continue
         if arg.startswith(f"{option}="):
-            selected = arg.split("=", 1)[1]
+            selected = arg.split("=", 1)[1].strip()
+            if not selected:
+                return selected, list(args), f"{option} requires a value."
             index += 1
             continue
         remaining.append(arg)
         index += 1
-    return selected, remaining
+    return selected, remaining, ""
 
 
 def _consume_flag(args: Sequence[str], flag: str) -> tuple[bool, list[str]]:

@@ -222,6 +222,54 @@ def test_builtin_help_exit_and_clear_are_context_commands() -> None:
     assert "/legacy-help" in registry.get_completions()
 
 
+def test_help_deduplicates_default_subcommands_and_wraps_long_rows() -> None:
+    registry = CommandRegistry()
+    registry.register(
+        Command(
+            name="tools",
+            description="List/manage tools",
+            usage="/tools list",
+            handler=lambda _state, _args: None,
+            category="Tools",
+            subcommands={
+                "list": Command(
+                    name="list",
+                    description="List tools",
+                    usage="list",
+                    handler=lambda _state, _args: None,
+                    category="Tools",
+                ),
+                "test": Command(
+                    name="test",
+                    description="Test a custom tool",
+                    usage="test <custom-tool-id> [json-or-key=value...]",
+                    handler=lambda _state, _args: None,
+                    category="Tools",
+                ),
+            },
+        )
+    )
+    sink = ListCommandOutputSink()
+    context = CommandContext(
+        output=sink,
+        metadata={"capabilities": SimpleNamespace(width=60)},
+    )
+
+    result = run(registry.dispatch_async(context, "/help tools"))
+
+    assert result.status == "ok"
+    content = sink.messages[0].content
+    assert content.count("/tools list") == 1
+    assert "List/manage tools" not in content
+    assert "Tools" in content
+    lines = content.splitlines()
+    long_usage_index = next(
+        index for index, line in enumerate(lines) if "/tools test" in line
+    )
+    assert lines[long_usage_index].strip().startswith("/tools test")
+    assert lines[long_usage_index + 1].strip() == "Test a custom tool"
+
+
 def test_completion_items_and_palette_entries_include_descriptions() -> None:
     registry = CommandRegistry(include_builtins=False)
     registry.register(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import shlex
+import textwrap
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
@@ -21,6 +22,20 @@ from .base import (
 )
 
 _PROTECTED_BUILTINS = {"help", "exit", "clear"}
+_HELP_CATEGORY_ORDER = {
+    "System": 0,
+    "Threads": 10,
+    "Model": 20,
+    "Context": 30,
+    "Tools": 40,
+    "Skills": 50,
+    "MCP": 60,
+    "Personal": 70,
+    "Automation": 75,
+    "Conversation": 80,
+    "Session": 90,
+    "Other": 100,
+}
 
 
 class CommandParseError(ValueError):
@@ -379,20 +394,164 @@ def _handle_help(context: CommandContext, args: list[str]) -> CommandResult:
             or query in entry.description.casefold()
             or query in entry.category.casefold()
         ]
+    entries = _dedupe_help_entries(entries)
 
     if not entries:
         message = f"No commands match '{' '.join(args)}'."
         return CommandResult.completed(CommandMessage(message, level="warning"))
 
-    lines = ["Commands"]
-    for entry in entries:
-        label = entry.usage or entry.text
-        description = entry.description
-        if description:
-            lines.append(f"  {label:<28} {description}")
-        else:
-            lines.append(f"  {label}")
+    lines = _format_help_entries(
+        entries,
+        width=_help_output_width(context),
+        query=" ".join(args).strip(),
+    )
     return CommandResult.completed(CommandMessage("\n".join(lines), title="Commands"))
+
+
+def _dedupe_help_entries(
+    entries: Iterable[CommandPaletteEntry],
+) -> list[CommandPaletteEntry]:
+    entry_list = list(entries)
+    deduped: dict[str, CommandPaletteEntry] = {}
+    for entry in entry_list:
+        if _is_default_subcommand_help_entry(entry, entry_list):
+            continue
+        label = _help_label(entry)
+        if not label:
+            continue
+        key = " ".join(label.casefold().split())
+        current = deduped.get(key)
+        if current is None or _help_entry_rank(entry) > _help_entry_rank(current):
+            deduped[key] = entry
+    return sorted(deduped.values(), key=_help_sort_key)
+
+
+def _is_default_subcommand_help_entry(
+    entry: CommandPaletteEntry,
+    entries: Iterable[CommandPaletteEntry],
+) -> bool:
+    if len(entry.command_path) != 1:
+        return False
+    root = entry.command_path[0]
+    parts = _help_label(entry).lstrip("/").split()
+    if len(parts) < 2 or parts[0].casefold() != root.casefold():
+        return False
+    default_subcommand = parts[1].casefold()
+    return any(
+        len(other.command_path) == 2
+        and other.command_path[0].casefold() == root.casefold()
+        and other.command_path[1].casefold() == default_subcommand
+        for other in entries
+    )
+
+
+def _help_entry_rank(entry: CommandPaletteEntry) -> tuple[int, int, int]:
+    return (
+        len(entry.command_path),
+        1 if entry.description else 0,
+        len(entry.description or ""),
+    )
+
+
+def _help_sort_key(entry: CommandPaletteEntry) -> tuple[int, str, str]:
+    category = _help_category(entry)
+    return (
+        _HELP_CATEGORY_ORDER.get(category, _HELP_CATEGORY_ORDER["Other"]),
+        category.casefold(),
+        _help_label(entry).casefold(),
+    )
+
+
+def _format_help_entries(
+    entries: list[CommandPaletteEntry],
+    *,
+    width: int,
+    query: str,
+) -> list[str]:
+    title = "Commands"
+    if query:
+        title = f"Commands matching '{query}'"
+
+    lines = [title, "  Tip: /help <query> filters this list."]
+    label_width = _help_label_width(entries, width=width)
+    current_category = ""
+    for entry in entries:
+        category = _help_category(entry)
+        if category != current_category:
+            lines.append("")
+            lines.append(category)
+            current_category = category
+        lines.extend(
+            _format_help_row(
+                _help_label(entry),
+                entry.description,
+                label_width=label_width,
+                width=width,
+            )
+        )
+    return lines
+
+
+def _format_help_row(
+    label: str,
+    description: str,
+    *,
+    label_width: int,
+    width: int,
+) -> list[str]:
+    indent = "  "
+    if not description:
+        return [f"{indent}{label}"]
+
+    description_prefix = f"{indent}{'':<{label_width}}  "
+    description_width = max(20, width - len(description_prefix))
+    wrapped_description = textwrap.wrap(
+        description,
+        width=description_width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [description]
+
+    if len(label) > label_width:
+        lines = [f"{indent}{label}"]
+        lines.extend(f"{description_prefix}{line}" for line in wrapped_description)
+        return lines
+
+    first, *rest = wrapped_description
+    lines = [f"{indent}{label:<{label_width}}  {first}"]
+    lines.extend(f"{description_prefix}{line}" for line in rest)
+    return lines
+
+
+def _help_label_width(
+    entries: Iterable[CommandPaletteEntry],
+    *,
+    width: int,
+) -> int:
+    max_label_width = max((len(_help_label(entry)) for entry in entries), default=0)
+    terminal_budget = max(24, width - 38)
+    return max(24, min(max_label_width, 64, terminal_budget))
+
+
+def _help_output_width(context: CommandContext) -> int:
+    capabilities = context.metadata.get("capabilities")
+    width = getattr(capabilities, "width", None)
+    if isinstance(width, int) and width > 0:
+        return width
+    legacy_state = context.legacy_state
+    console = getattr(legacy_state, "console", None)
+    console_width = getattr(console, "width", None)
+    if isinstance(console_width, int) and console_width > 0:
+        return console_width
+    return 88
+
+
+def _help_label(entry: CommandPaletteEntry) -> str:
+    return (entry.usage or entry.text or "").strip()
+
+
+def _help_category(entry: CommandPaletteEntry) -> str:
+    return (entry.category or "Other").strip() or "Other"
 
 
 def _handle_exit(context: CommandContext, _args: list[str]) -> CommandResult:

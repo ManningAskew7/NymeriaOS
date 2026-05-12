@@ -566,3 +566,34 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
         {"path": "/workspace/report.txt", "user_id": "bob"},
     ) in client.calls
     assert any("Tool Details: file_write" in msg.content for msg in sink.messages)
+
+
+def test_trigger_list_and_history_reject_bad_filters_and_parse_limit_options() -> None:
+    client = PersonalFakeClient()
+    registry = make_registry()
+    ctx = make_context(client, confirm=True)
+
+    unknown_filter = run(registry.dispatch_async(ctx, "/triggers list --bogus"))
+    missing_thread = run(registry.dispatch_async(ctx, "/triggers list --thread"))
+    recent_history = run(registry.dispatch_async(ctx, "/triggers history --limit 5"))
+    trigger_history = run(
+        registry.dispatch_async(ctx, "/triggers history trig-1 --limit=7")
+    )
+    missing_limit = run(registry.dispatch_async(ctx, "/triggers history --limit"))
+
+    assert unknown_filter.ok is False
+    assert unknown_filter.error_code == "usage_error"
+    assert missing_thread.ok is False
+    assert missing_thread.error_code == "usage_error"
+    assert recent_history.ok is True
+    assert trigger_history.ok is True
+    assert missing_limit.ok is False
+    assert missing_limit.error_code == "usage_error"
+    assert (
+        "get_recent_trigger_executions",
+        {"user_id": "alice", "limit": 5},
+    ) in client.calls
+    assert (
+        "get_trigger_executions",
+        {"trigger_id": "trig-1", "user_id": "alice", "limit": 7},
+    ) in client.calls

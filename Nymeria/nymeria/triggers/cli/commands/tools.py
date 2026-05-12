@@ -149,7 +149,7 @@ async def _handle_tools_root_context(
         return CommandResult.completed()
     if args:
         return CommandResult.failed(
-            "Usage: /tools list|enable|disable|defaults|test",
+            "Usage: /tools list|enable|disable|optional|core|defaults|test",
             error_code="usage_error",
         )
     return await _handle_tools_list_context(context, [])
@@ -211,6 +211,20 @@ async def _handle_tools_optional_context(
             f"{one_line(tool.get('description', ''), limit=80)}"
         )
     return CommandResult.completed(CommandMessage("\n".join(lines), title="Tools"))
+
+
+async def _handle_tools_core_context(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if context.legacy_state is not None:
+        return CommandResult.failed(
+            "/tools core is only available in the new command layer.",
+            error_code="legacy_command_unavailable",
+        )
+    if args:
+        return CommandResult.failed("Usage: /tools core", error_code="usage_error")
+    return await _show_default_tools(context, command="/tools core")
 
 
 async def _handle_tools_enable_context(
@@ -302,7 +316,7 @@ async def _handle_tools_defaults_context(
         )
 
     if not args or args[0].casefold() in {"list", "show"}:
-        return await _show_default_tools(context)
+        return await _show_default_tools(context, command="/tools defaults")
 
     action = args[0].casefold()
     names = [arg for arg in args[1:] if arg.strip()]
@@ -369,7 +383,11 @@ async def _handle_tools_defaults_context(
     )
 
 
-async def _show_default_tools(context: CommandContext) -> CommandResult:
+async def _show_default_tools(
+    context: CommandContext,
+    *,
+    command: str,
+) -> CommandResult:
     try:
         data = await call_client_method(
             context,
@@ -379,22 +397,40 @@ async def _show_default_tools(context: CommandContext) -> CommandResult:
     except TypeError:
         data = await call_client_method(context, "get_default_tools", context.user_id)
     except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/tools defaults", method_name=exc.method_name)
+        return unsupported_transport_result(command, method_name=exc.method_name)
 
-    default_names = set(_string_list(mapping_get(data, "default_tools", [])))
+    default_names = _string_list(mapping_get(data, "default_tools", []))
+    default_set = set(default_names)
     available = _mapping_sequence(mapping_get(data, "available_tools", []))
-    if not available and default_names:
-        available = [{"name": name, "is_default": True} for name in sorted(default_names)]
+    by_name = {_tool_name(tool): tool for tool in available if _tool_name(tool)}
 
-    lines = ["Default Tools", "  Name                           Kind          Status"]
+    lines = ["Default Core Toolset", "  Name                           Kind          Description"]
+    for name in sorted(default_names):
+        tool = by_name.get(name, {})
+        kind = str(tool.get("category") or tool.get("tool_type") or "")
+        description = one_line(tool.get("description", ""), limit=80)
+        lines.append(
+            f"  {compact_id(name, width=30):<30} "
+            f"{compact_id(kind, width=12):<13} "
+            f"{description}"
+        )
     for tool in sorted(available, key=lambda item: _tool_name(item)):
         name = _tool_name(tool)
-        status = "default" if (tool.get("is_default") or name in default_names) else "available"
+        if not name or name in default_set or not bool(tool.get("is_default")):
+            continue
         kind = str(tool.get("category") or tool.get("tool_type") or "")
-        lines.append(f"  {compact_id(name, width=30):<30} {kind:<13} {status}")
-    if not available:
+        description = one_line(tool.get("description", ""), limit=80)
+        lines.append(
+            f"  {compact_id(name, width=30):<30} "
+            f"{compact_id(kind, width=12):<13} "
+            f"{description}"
+        )
+    if len(lines) == 2:
         lines.append("  None")
-    return CommandResult.completed(CommandMessage("\n".join(lines), title="Tools"))
+    return CommandResult.completed(
+        CommandMessage("\n".join(lines), title="Tools"),
+        payload={"default_tools": tuple(sorted(default_set))},
+    )
 
 
 async def _set_default_tools(
@@ -705,9 +741,18 @@ def register(registry: CommandRegistry) -> None:
                 handler_mode="context",
                 category="Tools",
             ),
+            "core": Command(
+                name="core",
+                aliases=["default"],
+                description="List tools enabled by default for new threads",
+                usage="core",
+                handler=_handle_tools_core_context,
+                handler_mode="context",
+                category="Tools",
+            ),
             "defaults": Command(
                 name="defaults",
-                description="Show or edit default tools",
+                description="Show or edit the default core toolset",
                 usage="defaults [list|add|remove|set|reset]",
                 handler=_handle_tools_defaults_context,
                 handler_mode="context",
