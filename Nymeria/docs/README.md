@@ -57,7 +57,7 @@ python run.py cli -r abc123                       # Resume by ID prefix
 # Non-interactive oneshot mode (for scripting, pipes, cron)
 python run.py cli -m "What time is it in Sydney?"
 python run.py cli -m "Summarize this file" --format json
-echo "Explain this" | python run.py cli -m - -t my-thread
+echo "Explain this" | python run.py cli -m - -r my-thread
 python run.py cli -c -m "continue where we left off"  # Oneshot into most recent thread
 ```
 
