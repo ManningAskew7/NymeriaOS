@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +60,8 @@ class CLIRuntimeConfig:
     animation: bool = True
     ascii_only: bool = False
     color: ColorMode = "auto"
+    startup_thread_ref: str | None = None
+    list_threads_on_startup: bool = False
 
 
 class _ReplRenderer(Protocol):
@@ -562,6 +564,7 @@ class CLIApp:
         self._repl_model_label: str | None = None
         self._header_snapshot: CLIHeaderSnapshot | None = None
         self._header_refresh_pending = False
+        self._startup_history_thread_id: str | None = None
         self.theme = load_cli_theme()
         self._register_all_commands()
 
@@ -626,6 +629,10 @@ class CLIApp:
             except APITransportStartupError as exc:
                 self.state.console.print(f"[red]Error: {exc.message}[/red]")
                 return
+            self._client = client
+            if await self._handle_startup_thread_intents_async(capabilities):
+                await self._close_selected_client()
+                return
 
             on_turn_complete = (
                 self._maybe_auto_title if client is self._local_client else None
@@ -664,6 +671,10 @@ class CLIApp:
             self._client = asyncio.run(self._select_agent_client())
         except APITransportStartupError as exc:
             self._render_startup_error(exc.message, capabilities)
+            self._active_capabilities = None
+            return
+        if asyncio.run(self._handle_startup_thread_intents_async(capabilities)):
+            asyncio.run(self._close_selected_client())
             self._active_capabilities = None
             return
 
@@ -719,6 +730,8 @@ class CLIApp:
                         )
                 self._active_repl_renderer = renderer
                 self._active_rich_runtime = runtime
+                if isinstance(renderer, RichReplRenderer):
+                    asyncio.run(self._load_startup_history_into_renderer(renderer))
                 if use_prompt_toolkit and runtime is not None:
                     shell = _RichReplPromptToolkitShell(
                         cli_app=self,
@@ -768,6 +781,96 @@ class CLIApp:
         )
         self._apply_selected_client_user(selected)
         return selected
+
+    async def _handle_startup_thread_intents_async(
+        self,
+        capabilities: TerminalCapabilities,
+    ) -> bool:
+        """Handle ``nymeria cli list`` and startup thread refs before the REPL."""
+
+        if self.runtime_config.list_threads_on_startup:
+            await self._render_startup_thread_list_async(capabilities)
+            return True
+
+        ref = str(self.runtime_config.startup_thread_ref or "").strip()
+        if not ref:
+            return False
+
+        resolved = await self._resolve_startup_thread_ref(ref)
+        if resolved is None:
+            return True
+        self.state.switch_thread(resolved["thread_id"])
+        self._repl_thread_label = resolved["title"]
+        self._startup_history_thread_id = resolved["thread_id"]
+        return False
+
+    async def _render_startup_thread_list_async(
+        self,
+        capabilities: TerminalCapabilities,
+    ) -> None:
+        output = ListCommandOutputSink()
+        context = CommandContext(
+            client=self._client,
+            output=output,
+            dispatch_state=self._dispatch_repl_action,
+            thread_id=self.state.thread_id,
+            user_id=self.state.user_id,
+            registry=self.registry,
+            metadata={"capabilities": capabilities},
+        )
+        result = await self.registry.dispatch_async(context, "/thread list")
+        sink = self._command_output_sink(capabilities)
+        for message in result.messages or output.messages:
+            sink.emit(message)
+        if not result.messages and not output.messages and not result.ok:
+            sink.emit(CommandMessage("Thread list failed.", level="error"))
+
+    async def _resolve_startup_thread_ref(self, ref: str) -> dict[str, str] | None:
+        from .commands.system import CommandClientMethodUnavailable, call_client_method
+        from .commands.threads import (
+            _format_thread_resolution_ambiguity,
+            resolve_thread_reference,
+        )
+        from .commands.system import normalize_thread_id, thread_title
+
+        context = CommandContext(
+            client=self._client,
+            output=ListCommandOutputSink(),
+            thread_id=self.state.thread_id,
+            user_id=self.state.user_id,
+            registry=self.registry,
+        )
+        try:
+            raw_threads = await call_client_method(context, "list_threads", self.state.user_id)
+        except CommandClientMethodUnavailable as exc:
+            self._render_startup_error(
+                f"Cannot open thread '{ref}': missing client method {exc.method_name}.",
+                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - startup selection should explain and exit.
+            self._render_startup_error(
+                f"Cannot open thread '{ref}': {exc or exc.__class__.__name__}",
+                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+            )
+            return None
+
+        if not isinstance(raw_threads, Sequence) or isinstance(raw_threads, (str, bytes)):
+            raw_threads = []
+        threads = [thread for thread in raw_threads if isinstance(thread, Mapping)]
+        resolution = resolve_thread_reference(threads, ref)
+        if resolution.matched and resolution.thread is not None:
+            thread_id = normalize_thread_id(resolution.thread)
+            return {"thread_id": thread_id, "title": thread_title(resolution.thread)}
+        if resolution.status == "ambiguous":
+            message = _format_thread_resolution_ambiguity(ref, resolution.matches)
+        else:
+            message = f"No thread matching '{ref}'."
+        self._render_startup_error(
+            message,
+            self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+        )
+        return None
 
     def _status_connection_label(self) -> str:
         return concise_connection_label(self._header_snapshot, self._client)
@@ -1096,6 +1199,11 @@ class CLIApp:
             await self._apply_repl_command_result_async(result, capabilities, runtime)
         else:
             self._apply_repl_command_result(result, capabilities)
+        if runtime is not None and bool(result.payload.get("thread_switched")):
+            if result.messages:
+                runtime.set_status_notice(result.messages[0].content)
+            await self._render_current_thread_history_above_prompt(runtime)
+            return
         if runtime is not None and isinstance(output_sink, ListCommandOutputSink):
             await self._render_command_messages_above_prompt(output_sink.messages, runtime)
         if runtime is not None:
@@ -1248,6 +1356,71 @@ class CLIApp:
                 sink.emit(message)
 
         await runtime.render_above_prompt(render_messages)
+
+    async def _load_startup_history_into_renderer(
+        self,
+        renderer: RichReplRenderer,
+    ) -> None:
+        if self._startup_history_thread_id != self.state.thread_id:
+            return
+        try:
+            history_state = await self._load_current_thread_history_state()
+        except Exception as exc:  # noqa: BLE001 - history load must not kill REPL.
+            self.state.console.print(
+                f"[yellow]Could not load thread history: "
+                f"{exc or exc.__class__.__name__}[/yellow]"
+            )
+            return
+        renderer.reset_state(history_state)
+        renderer.render_state()
+        self._startup_history_thread_id = None
+
+    async def _render_current_thread_history_above_prompt(
+        self,
+        runtime: _RichReplRuntime,
+    ) -> None:
+        try:
+            history_state = await self._load_current_thread_history_state()
+        except Exception as exc:  # noqa: BLE001 - keep the interactive prompt alive.
+            runtime.set_status_notice(
+                f"Could not load history: {exc or exc.__class__.__name__}",
+                level="warning",
+            )
+            history_state = create_initial_state(
+                thread_id=self.state.thread_id,
+                user_id=self.state.user_id,
+                now=time.monotonic(),
+            )
+
+        await self._refresh_header_snapshot_async(runtime.capabilities)
+
+        def render_thread() -> None:
+            self.state.console.clear()
+            self._render_current_header(runtime.capabilities)
+            runtime.renderer.reset_state(history_state)
+            runtime.renderer.render_state()
+
+        await runtime.render_above_prompt(render_thread)
+        runtime.invalidate()
+
+    async def _load_current_thread_history_state(self):
+        from .history import cli_state_from_history
+
+        if self._client is None:
+            return create_initial_state(
+                thread_id=self.state.thread_id,
+                user_id=self.state.user_id,
+                now=time.monotonic(),
+            )
+        history = await self._client.get_history(
+            self.state.thread_id,
+            self.state.user_id,
+        )
+        return cli_state_from_history(
+            history,
+            thread_id=self.state.thread_id,
+            user_id=self.state.user_id,
+        )
 
     def _submit_repl_message(
         self,

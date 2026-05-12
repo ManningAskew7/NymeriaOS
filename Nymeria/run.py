@@ -236,6 +236,8 @@ def build_cli_runtime_config(args: argparse.Namespace):
     """Build the CLI runtime config from parsed launch flags."""
     from nymeria.triggers.cli.app import CLIRuntimeConfig
 
+    positional_ref = " ".join(getattr(args, "thread_ref", []) or []).strip() or None
+    startup_thread_ref = args.thread or positional_ref
     return CLIRuntimeConfig(
         transport=args.transport,
         renderer=args.renderer,
@@ -247,6 +249,10 @@ def build_cli_runtime_config(args: argparse.Namespace):
         animation=args.animation,
         ascii_only=args.ascii_only,
         color=args.color,
+        startup_thread_ref=startup_thread_ref,
+        list_threads_on_startup=(
+            args.thread is None and bool(positional_ref) and positional_ref.casefold() == "list"
+        ),
     )
 
 
@@ -268,8 +274,13 @@ def run_cli(args: argparse.Namespace) -> None:
         agent = NymeriaAgent(tools=list(ALL_TOOLS))
         agent.sync_agent_tools()
 
-    # Start CLI
-    start_cli(agent=agent, thread_id=args.thread, runtime_config=runtime_config)
+    # Start CLI. Explicit launch thread refs are resolved by the CLI after the
+    # transport is selected so titles and ID prefixes can be matched safely.
+    start_cli(
+        agent=agent,
+        thread_id=None if runtime_config.startup_thread_ref else args.thread,
+        runtime_config=runtime_config,
+    )
 
 
 def run_api(args: argparse.Namespace) -> None:
@@ -746,12 +757,20 @@ Examples:
     # CLI subcommand
     cli_parser = subparsers.add_parser("cli", help="Start CLI interface")
     cli_parser.add_argument(
+        "thread_ref",
+        nargs="*",
+        help=(
+            "Optional thread title or thread ID/prefix to open. Use 'list' "
+            "to list threads and exit."
+        ),
+    )
+    cli_parser.add_argument(
         "--thread",
         "--thread-id",
         "-t",
         dest="thread",
         default=None,
-        help="Thread ID for conversation persistence",
+        help="Thread title or thread ID/prefix to open",
     )
     cli_parser.add_argument(
         "--transport",

@@ -171,9 +171,22 @@ def _snapshot_sections(
             "Skills",
             (
                 f"skills {snapshot.skill_count}  kits {snapshot.skill_kit_count}",
-                f"triggers {snapshot.trigger_count}",
             ),
             slot="artifact",
+            theme=theme,
+            width=next(widths),
+        ),
+        _section(
+            "Autonomous",
+            (
+                _label_summary("Todos", snapshot.todo_labels, snapshot.todo_count),
+                _label_summary(
+                    "Triggers",
+                    snapshot.trigger_labels,
+                    snapshot.trigger_count,
+                ),
+            ),
+            slot="prompt_busy",
             theme=theme,
             width=next(widths),
         ),
@@ -373,6 +386,18 @@ def _flags_text(flags: tuple[str, ...], width: int) -> str:
             return _fit(text, width)
         selected.pop()
     return ""
+
+
+def _label_summary(label: str, labels: tuple[str, ...], count: int) -> str:
+    if count <= 0:
+        return f"{label}: none"
+    parts = list(labels)
+    remaining = count - len(parts)
+    if remaining > 0:
+        parts.append(f"+{remaining} more")
+    if not parts:
+        parts.append(f"{count} active")
+    return f"{label}: {', '.join(parts)}"
 
 
 def _backend_lines(snapshot: CLIHeaderSnapshot) -> tuple[str, ...]:

@@ -58,6 +58,30 @@ class AgentClient(Protocol):
     ) -> Sequence[Mapping[str, Any]]:
         """List threads visible to a user."""
 
+    async def list_thread_teams(
+        self,
+        user_id: str = "default",
+    ) -> Sequence[Mapping[str, Any]]:
+        """List backend-visible callable thread teams for a user."""
+
+    async def list_todos(
+        self,
+        user_id: str = "default",
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """List TODOs visible to a user, optionally filtered."""
+
+    async def list_triggers(
+        self,
+        user_id: str = "default",
+        *,
+        enabled_only: bool = False,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """List event triggers visible to a user."""
+
     async def get_context_stats(
         self,
         thread_id: str,

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import re
+from types import SimpleNamespace
 
-from cli_fixtures import CapturedRenderOutput, FakeTerminalCapabilities
+from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapabilities
+from rich.console import Console
 
+from nymeria.triggers.cli.app import CLIApp, CLIRuntimeConfig, _RichReplRuntime
+from nymeria.triggers.cli.history import cli_state_from_history
 from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.state import (
+    AssistantMessage,
+    ResponseStep,
+    ThinkingStep,
+    ToolCallStep,
     create_initial_state,
     reduce_stream_event,
     start_turn,
@@ -414,3 +424,192 @@ def test_rich_renderer_respects_no_color_capability() -> None:
     assert "Error: Backend unavailable" in output.stderr_text
     assert not ANSI_RE.search(output.stdout_text)
     assert not ANSI_RE.search(output.stderr_text)
+
+
+def test_history_payload_converts_to_ordered_cli_state_and_renders_divider() -> None:
+    state = cli_state_from_history(
+        {
+            "messages": [
+                {"id": "u1", "role": "user", "content": "Inspect"},
+                {
+                    "id": "a1",
+                    "role": "assistant",
+                    "content": "Done.",
+                    "steps": [
+                        {"type": "thinking", "content": "Plan"},
+                        {"type": "response", "content": "Checking first."},
+                        {
+                            "type": "tool_call",
+                            "id": "call-1",
+                            "name": "filesystem_read",
+                            "arguments": {"path": "README.md"},
+                            "status": "success",
+                            "result": "ok",
+                            "artifacts": [{"path": "/workspace/report.md"}],
+                        },
+                        {"type": "response", "content": "Done."},
+                    ],
+                },
+                {
+                    "id": "s1",
+                    "role": "system",
+                    "kind": "compaction_notice",
+                    "content": "Context compacted",
+                    "messages_removed": 3,
+                },
+            ]
+        },
+        thread_id="thread-1",
+        user_id="alice",
+    )
+    assistant = state.messages[1]
+
+    assert isinstance(assistant, AssistantMessage)
+    assert [type(step) for step in assistant.steps] == [
+        ThinkingStep,
+        ResponseStep,
+        ToolCallStep,
+        ResponseStep,
+    ]
+    assert state.artifacts[0].path == "/workspace/report.md"
+
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        state=state,
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=100,
+    )
+    renderer.render_state()
+
+    lines = output.stdout_text.splitlines()
+    header_index = next(index for index, line in enumerate(lines) if "──── Nymeria " in line)
+    divider_index = next(
+        index for index, line in enumerate(lines) if "················" in line
+    )
+    assert header_index < divider_index
+    assert "Context compacted." in output.stdout_text
+
+
+def test_rich_thread_switch_resets_transcript_and_loads_selected_history() -> None:
+    async def exercise() -> tuple[CLIApp, RichReplRenderer, FakeAgentClient, str]:
+        client = FakeAgentClient(
+            threads=[
+                {"thread_id": "thread-1", "title": "Old"},
+                {"thread_id": "thread-2", "title": "Loaded Thread"},
+            ],
+            history={
+                "alice:thread-2": {
+                    "messages": [
+                        {"id": "u2", "role": "user", "content": "Earlier question"},
+                        {
+                            "id": "a2",
+                            "role": "assistant",
+                            "content": "Earlier answer",
+                            "steps": [
+                                {"type": "response", "content": "Earlier answer"}
+                            ],
+                        },
+                    ]
+                }
+            },
+        )
+        stream = io.StringIO()
+        console = Console(file=stream, width=100, force_terminal=False)
+        caps = SimpleNamespace(
+            width=100,
+            renderer="rich",
+            color_enabled=False,
+            unicode_enabled=True,
+        )
+        app = CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich"),
+        )
+        app.state.console = console
+        app.state.user_id = "alice"
+        app._client = client
+        renderer = RichReplRenderer(
+            state=create_initial_state(thread_id="thread-1", user_id="alice"),
+            capabilities=caps,
+            console=console,
+            error_console=Console(file=io.StringIO(), width=100),
+            width=100,
+        )
+        renderer.start_turn("old visible text", thread_id="thread-1", user_id="alice")
+        runtime = _RichReplRuntime(app=app, renderer=renderer, capabilities=caps)
+        app._active_repl_renderer = renderer
+        app._active_rich_runtime = runtime
+        app._active_capabilities = caps
+
+        await app._dispatch_command_async(
+            "/thread switch Loaded Thread",
+            caps,
+            renderer,
+            runtime=runtime,
+        )
+        return app, renderer, client, stream.getvalue()
+
+    app, renderer, client, output = asyncio.run(exercise())
+
+    assert app.state.thread_id == "thread-2"
+    assert renderer.state.thread_id == "thread-2"
+    assert [message.content for message in renderer.state.messages] == [
+        "Earlier question",
+        "Earlier answer",
+    ]
+    assert "Earlier answer" in output
+    assert client.chat_requests == []
+
+
+def test_startup_thread_ref_selects_existing_thread_and_missing_exits() -> None:
+    caps = SimpleNamespace(
+        width=100,
+        renderer="rich",
+        color_enabled=False,
+        unicode_enabled=True,
+    )
+
+    async def select_existing() -> CLIApp:
+        app = CLIApp(
+            agent=None,
+            runtime_config=CLIRuntimeConfig(
+                renderer="rich",
+                startup_thread_ref="Loaded",
+            ),
+        )
+        app.state.console = Console(file=io.StringIO(), width=100, force_terminal=False)
+        app._active_capabilities = caps
+        app._client = FakeAgentClient(
+            threads=[{"thread_id": "thread-2", "title": "Loaded Thread"}]
+        )
+        handled = await app._handle_startup_thread_intents_async(caps)
+        assert handled is False
+        return app
+
+    async def select_missing() -> CLIApp:
+        app = CLIApp(
+            agent=None,
+            runtime_config=CLIRuntimeConfig(
+                renderer="rich",
+                startup_thread_ref="Missing",
+            ),
+        )
+        app.state.console = Console(file=io.StringIO(), width=100, force_terminal=False)
+        app._active_capabilities = caps
+        app._client = FakeAgentClient(
+            threads=[{"thread_id": "thread-2", "title": "Loaded Thread"}]
+        )
+        handled = await app._handle_startup_thread_intents_async(caps)
+        assert handled is True
+        return app
+
+    selected = asyncio.run(select_existing())
+    missing = asyncio.run(select_missing())
+
+    assert selected.state.thread_id == "thread-2"
+    assert selected._startup_history_thread_id == "thread-2"
+    assert missing.state.thread_id != "thread-2"
+    assert missing._startup_history_thread_id is None

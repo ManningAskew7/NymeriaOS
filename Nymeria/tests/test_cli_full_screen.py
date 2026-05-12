@@ -266,6 +266,7 @@ def test_full_screen_transcript_renders_tool_rows_in_event_order() -> None:
         "  use a tool",
         "",
         "---- Nymeria ---------------------------------------------------------------------------------------",
+        "  ................................",
         "  | checking",
         "",
         "  - search_memory ok 0ms query=\"project status\" -> Found 2 matching notes.",

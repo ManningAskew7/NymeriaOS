@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import List, Dict, Any, TYPE_CHECKING
 
 from rich.panel import Panel
@@ -32,6 +33,20 @@ if TYPE_CHECKING:
     from ..state import CLIState
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadResolution:
+    """Result of resolving a user-facing thread reference."""
+
+    status: str
+    ref: str
+    thread: Mapping[str, Any] | None = None
+    matches: tuple[Mapping[str, Any], ...] = ()
+
+    @property
+    def matched(self) -> bool:
+        return self.status == "matched" and self.thread is not None
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -290,11 +305,12 @@ async def _handle_list_context(
         threads = await _list_threads(context)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/thread list", method_name=exc.method_name)
+    teams = await _list_thread_teams_or_empty(context)
 
     if not threads:
         return CommandResult.completed(CommandMessage("No threads found.", level="warning"))
 
-    lines = _format_thread_list(threads, context.thread_id)
+    lines = _format_thread_list(threads, context.thread_id, teams=teams)
     return CommandResult.completed(CommandMessage("\n".join(lines), title="Threads"))
 
 
@@ -306,9 +322,16 @@ async def _handle_switch_context(
         _handle_switch(context.legacy_state, args)
         return CommandResult.completed()
     if not args:
-        return CommandResult.failed("Usage: /thread switch <id>", error_code="usage_error")
+        return CommandResult.failed(
+            "Usage: /thread switch <id-or-title>",
+            error_code="usage_error",
+        )
 
-    match = await _resolve_thread(context, args[0], command="/thread switch")
+    match = await _resolve_thread(
+        context,
+        " ".join(args).strip(),
+        command="/thread switch",
+    )
     if isinstance(match, CommandResult):
         return match
     thread_id = normalize_thread_id(match)
@@ -322,7 +345,7 @@ async def _handle_switch_context(
             f"Switched to {compact_id(thread_id)} {title}",
             level="success",
         ),
-        payload={"thread_id": thread_id, "title": title},
+        payload={"thread_id": thread_id, "title": title, "thread_switched": True},
     )
 
 
@@ -635,6 +658,20 @@ async def _list_threads(context: CommandContext) -> list[Mapping[str, Any]]:
     return [thread for thread in threads if isinstance(thread, Mapping)]
 
 
+async def _list_thread_teams_or_empty(context: CommandContext) -> list[Mapping[str, Any]]:
+    if not has_client_method(context, "list_thread_teams"):
+        return []
+    try:
+        raw = await call_client_method(context, "list_thread_teams", context.user_id)
+    except CommandClientMethodUnavailable:
+        return []
+    if isinstance(raw, Mapping):
+        raw = raw.get("teams", [])
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return []
+    return [team for team in raw if isinstance(team, Mapping)]
+
+
 async def _resolve_thread(
     context: CommandContext,
     partial: str,
@@ -646,53 +683,173 @@ async def _resolve_thread(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result(command, method_name=exc.method_name)
 
-    matches = [
+    resolution = resolve_thread_reference(threads, partial)
+    if resolution.matched:
+        assert resolution.thread is not None
+        return resolution.thread
+    if resolution.status == "missing":
+        return CommandResult.failed(f"No thread matching '{partial}'.")
+    return CommandResult.completed(
+        CommandMessage(
+            _format_thread_resolution_ambiguity(partial, resolution.matches),
+            level="warning",
+        )
+    )
+
+
+def resolve_thread_reference(
+    threads: Sequence[Mapping[str, Any]],
+    ref: str,
+) -> ThreadResolution:
+    """Resolve a thread by exact ID, unique ID prefix, title, or title substring."""
+
+    needle = " ".join(str(ref or "").split()).strip()
+    if not needle:
+        return ThreadResolution(status="missing", ref=needle)
+
+    exact_id = [thread for thread in threads if normalize_thread_id(thread) == needle]
+    if exact_id:
+        return ThreadResolution(status="matched", ref=needle, thread=exact_id[0])
+
+    prefix = [
+        thread for thread in threads if normalize_thread_id(thread).startswith(needle)
+    ]
+    if len(prefix) == 1:
+        return ThreadResolution(status="matched", ref=needle, thread=prefix[0])
+    if len(prefix) > 1:
+        return ThreadResolution(
+            status="ambiguous",
+            ref=needle,
+            matches=tuple(prefix),
+        )
+
+    exact_title = [thread for thread in threads if thread_title(thread) == needle]
+    if len(exact_title) == 1:
+        return ThreadResolution(status="matched", ref=needle, thread=exact_title[0])
+    if len(exact_title) > 1:
+        return ThreadResolution(
+            status="ambiguous",
+            ref=needle,
+            matches=tuple(exact_title),
+        )
+
+    folded = needle.casefold()
+    substring = [
         thread
         for thread in threads
-        if normalize_thread_id(thread).startswith(partial)
+        if folded in thread_title(thread).casefold()
     ]
-    if not matches:
-        return CommandResult.failed(f"No thread matching '{partial}'.")
-    if len(matches) > 1:
-        preview = ", ".join(
-            f"{compact_id(normalize_thread_id(item))} {thread_title(item)}"
-            for item in matches[:5]
+    if len(substring) == 1:
+        return ThreadResolution(status="matched", ref=needle, thread=substring[0])
+    if len(substring) > 1:
+        return ThreadResolution(
+            status="ambiguous",
+            ref=needle,
+            matches=tuple(substring),
         )
-        return CommandResult.completed(
-            CommandMessage(
-                f"Ambiguous: {len(matches)} threads match '{partial}': {preview}",
-                level="warning",
-            )
-        )
-    return matches[0]
+    return ThreadResolution(status="missing", ref=needle)
+
+
+def _format_thread_resolution_ambiguity(
+    ref: str,
+    matches: Sequence[Mapping[str, Any]],
+) -> str:
+    preview = ", ".join(
+        f"{compact_id(normalize_thread_id(item))} {thread_title(item)}"
+        for item in matches[:5]
+    )
+    return f"Ambiguous: {len(matches)} threads match '{ref}': {preview}"
 
 
 def _format_thread_list(
     threads: Sequence[Mapping[str, Any]],
     active_thread_id: str | None,
+    *,
+    teams: Sequence[Mapping[str, Any]] = (),
 ) -> list[str]:
-    ordered = sorted(
-        threads,
-        key=lambda item: (
-            0 if item.get("pinned") else 1,
-            str(item.get("updated_at") or ""),
-        ),
-        reverse=False,
-    )
-    pinned = [item for item in ordered if item.get("pinned")]
-    unpinned = [item for item in ordered if not item.get("pinned")]
-    pinned.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
-    unpinned.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    by_id = {normalize_thread_id(thread): thread for thread in threads}
+    grouped_ids = _team_thread_ids(teams)
+    lines = ["Threads"]
 
-    lines = ["Threads", "  * ID        Pin  Title                         Platform"]
-    for thread in [*pinned, *unpinned]:
+    if teams:
+        for team in teams:
+            team_threads = _ordered_threads(
+                by_id.get(thread_id)
+                for thread_id in _team_ids(team)
+                if thread_id in by_id
+            )
+            if not team_threads:
+                continue
+            lines.append(f"  Team: {one_line(team.get('name') or team.get('id'), limit=60)}")
+            lines.append("    * ID        Pin  Title                         Platform")
+            lines.extend(
+                _format_thread_rows(
+                    team_threads,
+                    active_thread_id,
+                    indent="    ",
+                )
+            )
+
+    ungrouped = [
+        thread for thread in threads if normalize_thread_id(thread) not in grouped_ids
+    ]
+    pinned = _ordered_threads(thread for thread in ungrouped if thread.get("pinned"))
+    recent = _ordered_threads(thread for thread in ungrouped if not thread.get("pinned"))
+    if teams:
+        if pinned:
+            lines.append("  Pinned")
+            lines.append("    * ID        Pin  Title                         Platform")
+            lines.extend(_format_thread_rows(pinned, active_thread_id, indent="    "))
+        if recent:
+            lines.append("  Recent")
+            lines.append("    * ID        Pin  Title                         Platform")
+            lines.extend(_format_thread_rows(recent, active_thread_id, indent="    "))
+    else:
+        lines.append("  * ID        Pin  Title                         Platform")
+        lines.extend(
+            _format_thread_rows([*pinned, *recent], active_thread_id, indent="  ")
+        )
+    return lines
+
+
+def _ordered_threads(threads: Sequence[Mapping[str, Any] | None]) -> list[Mapping[str, Any]]:
+    selected = [thread for thread in threads if isinstance(thread, Mapping)]
+    selected.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return selected
+
+
+def _format_thread_rows(
+    threads: Sequence[Mapping[str, Any]],
+    active_thread_id: str | None,
+    *,
+    indent: str,
+) -> list[str]:
+    rows: list[str] = []
+    for thread in threads:
         thread_id = normalize_thread_id(thread)
         active = "*" if thread_id == active_thread_id else " "
         pin = "*" if thread.get("pinned") else " "
         title = one_line(thread_title(thread), limit=28)
         platform = one_line(thread.get("platform") or "", limit=12)
-        lines.append(f"  {active} {compact_id(thread_id):<8}  {pin:<3}  {title:<28}  {platform}")
-    return lines
+        rows.append(
+            f"{indent}{active} {compact_id(thread_id):<8}  "
+            f"{pin:<3}  {title:<28}  {platform}"
+        )
+    return rows
+
+
+def _team_thread_ids(teams: Sequence[Mapping[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for team in teams:
+        ids.update(_team_ids(team))
+    return ids
+
+
+def _team_ids(team: Mapping[str, Any]) -> list[str]:
+    raw = team.get("thread_ids") or team.get("threadIds") or []
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return []
+    return [str(thread_id) for thread_id in raw if str(thread_id)]
 
 
 def _parse_pin_args(

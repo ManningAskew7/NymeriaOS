@@ -44,6 +44,7 @@ class CoreFakeClient:
                 "updated_at": "2026-05-10T13:00:00Z",
             },
         ]
+        self.thread_teams: list[dict[str, Any]] = []
         self.settings = {
             "llm_provider": "openai",
             "llm_model": "gpt-global",
@@ -98,6 +99,10 @@ class CoreFakeClient:
     async def list_threads(self, user_id: str = "default") -> list[dict[str, Any]]:
         self.calls.append(("list_threads", {"user_id": user_id}))
         return copy.deepcopy(self.threads)
+
+    async def list_thread_teams(self, user_id: str = "default") -> list[dict[str, Any]]:
+        self.calls.append(("list_thread_teams", {"user_id": user_id}))
+        return copy.deepcopy(self.thread_teams)
 
     async def create_thread(
         self,
@@ -307,6 +312,62 @@ def test_thread_commands_use_client_and_dispatch_thread_actions() -> None:
         "title": "Renamed",
         "pinned": None,
     }) in client.calls
+
+
+def test_thread_resolver_matches_ids_titles_substrings_and_ambiguity() -> None:
+    thread_list = [
+        {"thread_id": "alpha-111", "title": "Quarterly Planning"},
+        {"thread_id": "alpha-222", "title": "Quarterly Review"},
+        {"thread_id": "bravo-333", "title": "Supplier Followup"},
+    ]
+
+    assert threads.resolve_thread_reference(thread_list, "bravo-333").thread == thread_list[2]
+    assert threads.resolve_thread_reference(thread_list, "bravo").thread == thread_list[2]
+    assert (
+        threads.resolve_thread_reference(thread_list, "Quarterly Planning").thread
+        == thread_list[0]
+    )
+    assert threads.resolve_thread_reference(thread_list, "supplier").thread == thread_list[2]
+    assert threads.resolve_thread_reference(thread_list, "alpha").status == "ambiguous"
+    assert threads.resolve_thread_reference(thread_list, "missing").status == "missing"
+
+
+def test_thread_list_formats_backend_teams_before_ungrouped_threads() -> None:
+    thread_list = [
+        {
+            "thread_id": "recent",
+            "title": "Recent unpinned",
+            "pinned": False,
+            "updated_at": "2026-05-10T12:00:00Z",
+            "platform": "desktop",
+        },
+        {
+            "thread_id": "pinned",
+            "title": "Pinned ungrouped",
+            "pinned": True,
+            "updated_at": "2026-05-10T10:00:00Z",
+            "platform": "desktop",
+        },
+        {
+            "thread_id": "team-a",
+            "title": "Team A",
+            "pinned": False,
+            "updated_at": "2026-05-10T09:00:00Z",
+            "platform": "callable",
+        },
+    ]
+    lines = threads._format_thread_list(
+        thread_list,
+        active_thread_id="recent",
+        teams=[{"id": "ops", "name": "Ops", "thread_ids": ["team-a"]}],
+    )
+
+    team_index = lines.index("  Team: Ops")
+    pinned_index = lines.index("  Pinned")
+    recent_index = lines.index("  Recent")
+    assert team_index < pinned_index < recent_index
+    assert any("team-a" in line and "Team A" in line for line in lines)
+    assert any("pinned" in line and "Pinned ungrouped" in line for line in lines)
 
 
 def test_thread_delete_requires_confirmation_then_deletes() -> None:

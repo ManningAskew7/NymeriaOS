@@ -199,6 +199,38 @@ class APIAgentClient:
     ) -> Sequence[Mapping[str, Any]]:
         return await self.api.list_threads(self._selected_user_id(user_id))
 
+    async def list_thread_teams(
+        self,
+        user_id: str = "default",
+    ) -> Sequence[Mapping[str, Any]]:
+        return await self.api.list_thread_teams(self._selected_user_id(user_id))
+
+    async def list_todos(
+        self,
+        user_id: str = "default",
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        return await self.api.list_todos(
+            self._selected_user_id(user_id),
+            filter_status=filter_status,
+            thread_id=thread_id,
+        )
+
+    async def list_triggers(
+        self,
+        user_id: str = "default",
+        *,
+        enabled_only: bool = False,
+        thread_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        return await self.api.list_triggers(
+            self._selected_user_id(user_id),
+            enabled_only=enabled_only,
+            thread_id=thread_id,
+        )
+
     async def get_context_stats(
         self,
         thread_id: str,

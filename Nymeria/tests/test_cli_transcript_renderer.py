@@ -85,16 +85,17 @@ def test_transcript_snapshot_renders_desktop_like_steps() -> None:
     assert lines[1] == "  inspect the project"
     assert lines[2] == ""
     assert lines[3].startswith("---- Nymeria ")
-    assert lines[4] == "  | I should inspect files."
-    assert lines[6].startswith("  - filesystem_read ok 2.0s ")
-    assert "-> line line" in lines[6]
-    assert "[artifact: cli-tui-" in lines[6]
-    assert lines[8] == "  ................................"
-    assert lines[10] == "  I found the task."
-    assert lines[11] == ""
-    assert lines[12].strip() == "- It needs a transcript renderer."
-    assert lines[13] == ""
-    assert lines[14] == "  ................................"
+    assert lines[4] == "  ................................"
+    assert lines[5] == "  | I should inspect files."
+    assert lines[7].startswith("  - filesystem_read ok 2.0s ")
+    assert "-> line line" in lines[7]
+    assert "[artifact: cli-tui-" in lines[7]
+    assert lines[9] == "  ................................"
+    assert lines[11] == "  I found the task."
+    assert lines[12] == ""
+    assert lines[13].strip() == "- It needs a transcript renderer."
+    assert lines[14] == ""
+    assert lines[15] == "  ................................"
 
 
 def test_transcript_classifies_preamble_and_final_response_steps() -> None:
@@ -154,7 +155,7 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
         "I'll check the main sources first.",
         "I have news; checking tasks.",
     ]
-    assert dividers == ["................................"] * 3
+    assert dividers == ["................................"] * 4
     assert tools[0].startswith("- web_search ok 1.0s query=\"AI news\" -> 3 results")
     assert tools[1].startswith("- nym_todo ok 1.0s action=list -> 4 pending")
     assert final[:5] == [
@@ -209,7 +210,7 @@ def test_transcript_does_not_divide_adjacent_tool_rows() -> None:
         index for index, line in enumerate(records) if line.kind == "tool"
     ]
 
-    assert len(dividers) == 2
+    assert len(dividers) == 3
     assert tool_indexes[1] == tool_indexes[0] + 1
 
 

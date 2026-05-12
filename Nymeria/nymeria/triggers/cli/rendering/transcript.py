@@ -344,6 +344,7 @@ def _assistant_lines(
             header_kind,
         )
     ]
+    records.append(_assistant_divider_record(width, options))
     last_tool_index = _last_tool_index(message.steps)
     previous_block: Literal["thinking", "preamble", "tool", "final"] | None = None
 

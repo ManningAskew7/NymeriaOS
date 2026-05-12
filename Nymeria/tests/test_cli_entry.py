@@ -1347,6 +1347,40 @@ def test_run_cli_parser_accepts_tui_contract_defaults():
     assert runtime_config.animation is True
     assert runtime_config.ascii_only is False
     assert runtime_config.color == "auto"
+    assert runtime_config.startup_thread_ref is None
+    assert runtime_config.list_threads_on_startup is False
+
+
+def test_run_cli_parser_accepts_positional_list_command():
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(["cli", "list"])
+    runtime_config = run_module.build_cli_runtime_config(args)
+
+    assert args.thread is None
+    assert runtime_config.startup_thread_ref == "list"
+    assert runtime_config.list_threads_on_startup is True
+
+
+def test_run_cli_parser_thread_flag_can_open_thread_named_list():
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(["cli", "--thread", "list"])
+    runtime_config = run_module.build_cli_runtime_config(args)
+
+    assert runtime_config.startup_thread_ref == "list"
+    assert runtime_config.list_threads_on_startup is False
+
+
+def test_run_cli_parser_accepts_positional_multi_word_thread_title():
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(["cli", "Quarterly", "Planning"])
+    runtime_config = run_module.build_cli_runtime_config(args)
+
+    assert args.thread is None
+    assert runtime_config.startup_thread_ref == "Quarterly Planning"
+    assert runtime_config.list_threads_on_startup is False
 
 
 @pytest.mark.parametrize(
@@ -1361,8 +1395,11 @@ def test_run_cli_parser_thread_aliases(thread_flag: str, thread_id: str):
     import run as run_module
 
     args = run_module.build_parser().parse_args(["cli", thread_flag, thread_id])
+    runtime_config = run_module.build_cli_runtime_config(args)
 
     assert args.thread == thread_id
+    assert runtime_config.startup_thread_ref == thread_id
+    assert runtime_config.list_threads_on_startup is False
 
 
 def test_run_cli_parser_carries_explicit_tui_contract_flags():
