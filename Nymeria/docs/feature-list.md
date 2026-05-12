@@ -136,8 +136,10 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Cross-thread @mentions** — Prefix a chat message with `@ThreadName`,
   `@CallableName`, or `@"Thread With Spaces"` to route that turn to another
   owned thread while streaming the response in the current client view with a
-  visible reference line like `Response from <thread>`. The target thread owns
-  the persisted checkpoint history.
+  visible reference line like `Response from <thread>`. Routed turns preserve
+  the normal thinking, preamble, tool-call, tool-result, artifact, and final
+  response rendering pipeline. The target thread owns the persisted checkpoint
+  history.
 
 ### Streaming (SSE)
 - **Real-time SSE** for chat, autonomous tasks, and trigger executions
