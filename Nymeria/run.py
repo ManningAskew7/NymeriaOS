@@ -238,6 +238,22 @@ def build_cli_runtime_config(args: argparse.Namespace):
 
     positional_ref = " ".join(getattr(args, "thread_ref", []) or []).strip() or None
     startup_thread_ref = args.thread or positional_ref
+
+    # Emit deprecation warnings for old thread-selection paths
+    is_list = positional_ref and positional_ref.casefold() == "list"
+    if positional_ref and not is_list:
+        print(
+            f"Warning: positional thread ref is deprecated. "
+            f"Use: nymeria cli -r {positional_ref!r}",
+            file=sys.stderr,
+        )
+    if args.thread:
+        print(
+            f"Warning: --thread/-t is deprecated. "
+            f"Use: nymeria cli -r {args.thread!r}",
+            file=sys.stderr,
+        )
+
     return CLIRuntimeConfig(
         transport=args.transport,
         renderer=args.renderer,
@@ -735,12 +751,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python run.py cli                # Start CLI interface
-    python run.py cli -t mythread    # Start CLI with specific thread ID
-    python run.py cli --thread-id mythread
-    python run.py cli -c             # Resume most recent thread
-    python run.py cli -r mythread    # Resume thread by ID or title
-    python run.py cli -c -m "hello"  # Send oneshot message to most recent thread
+    python run.py cli                   # Start CLI interface
+    python run.py cli -c                 # Resume most recent thread
+    python run.py cli -r mythread        # Resume thread by ID or title
+    python run.py cli -r "Project Plan"  # Resume thread by title substring
+    python run.py cli -c -m "hello"      # Oneshot message to most recent thread
+    python run.py cli -r abc -m "hello"  # Oneshot message to specific thread
     python run.py api                # Start API server (default port 8000)
     python run.py api -p 8080        # Start API on port 8080
     python run.py doctor             # Diagnose local configuration
@@ -767,8 +783,8 @@ Examples:
         "thread_ref",
         nargs="*",
         help=(
-            "Optional thread title or thread ID/prefix to open. Use 'list' "
-            "to list threads and exit."
+            "(Deprecated — use -r/--resume instead.) "
+            "Thread title or ID/prefix to open. Use 'list' to list threads and exit."
         ),
     )
     cli_parser.add_argument(
@@ -777,7 +793,7 @@ Examples:
         "-t",
         dest="thread",
         default=None,
-        help="Thread title or thread ID/prefix to open",
+        help="(Deprecated — use -r/--resume instead.) Thread title or ID/prefix to open",
     )
     cli_parser.add_argument(
         "--continue",
