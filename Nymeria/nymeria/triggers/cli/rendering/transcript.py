@@ -345,6 +345,9 @@ def _assistant_lines(
         )
     ]
     records.append(_assistant_divider_record(width, options))
+    dispatch_text = _dispatch_reference_text(message)
+    if dispatch_text:
+        records.append(_indented_record(dispatch_text, "assistant_header", width))
     last_tool_index = _last_tool_index(message.steps)
     previous_block: Literal["thinking", "preamble", "tool", "final"] | None = None
 
@@ -398,6 +401,19 @@ def _assistant_header_label(
         return label
     separator = " - " if options.ascii_only else " \u00b7 "
     return f"{label}{separator}{activity}"
+
+
+def _dispatch_reference_text(message: AssistantMessage) -> str:
+    content = str(message.dispatch_info.get("content") or "").strip()
+    if content:
+        return content
+    title = str(message.dispatch_info.get("title") or "").strip()
+    thread_id = str(message.dispatch_info.get("thread_id") or "").strip()
+    if title:
+        return f"Response from {title}"
+    if thread_id:
+        return f"Response from {thread_id}"
+    return ""
 
 
 def _thinking_lines(
@@ -804,6 +820,7 @@ def _message_signature(
             "assistant",
             message.status,
             message.activity_phase,
+            _stable_repr(message.dispatch_info),
             tuple(_step_signature(step) for step in message.steps),
             _stable_repr(message.tool_reload_info),
             options,

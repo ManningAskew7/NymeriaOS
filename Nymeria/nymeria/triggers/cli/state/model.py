@@ -133,6 +133,7 @@ class AssistantMessage:
     activity_updated_at: float = 0.0
     tool_calls: tuple[ToolCallStep, ...] = ()
     tool_reload_info: ToolReloadInfo | None = None
+    dispatch_info: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

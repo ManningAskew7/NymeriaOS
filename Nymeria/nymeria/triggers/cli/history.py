@@ -122,6 +122,9 @@ def _assistant_from_history(
         status="complete",
         tool_calls=tuple(step for step in steps if isinstance(step, ToolCallStep)),
         tool_reload_info=tool_reload,
+        dispatch_info=copy.deepcopy(
+            dict(_mapping_or(message.get("dispatch_info"), {}))
+        ),
     )
 
 

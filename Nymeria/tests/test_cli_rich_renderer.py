@@ -398,6 +398,59 @@ def test_rich_renderer_shows_user_attachment_count() -> None:
     assert "  1 attachment" in output.stdout_text
 
 
+def test_rich_renderer_keeps_dispatched_turn_in_assistant_pipeline() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=110,
+    )
+    renderer.start_turn("@Research test", thread_id="thread-1", now=0.0)
+
+    renderer.render_events(
+        [
+            {
+                "type": "dispatched",
+                "thread_id": "thread-1",
+                "target_thread_id": "thread-2",
+                "title": "Research",
+            },
+            {
+                "type": "thinking",
+                "content": "I will check the requested thread before answering.",
+            },
+            {"type": "response", "content": "Checking first."},
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "memory_read",
+                "args": {"scope": "thread"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-1",
+                "name": "memory_read",
+                "result": "[empty]",
+            },
+            {"type": "response", "content": "Done."},
+            {
+                "type": "done",
+                "dispatched_to": {"thread_id": "thread-2", "title": "Research"},
+            },
+        ],
+        now=1.0,
+    )
+
+    text = output.stdout_text
+    assert "Response from Research (thread-2)" in text
+    assert "──── System " not in text
+    assert "I will check the requested thread before answering" in text
+    assert "Checking first." in text
+    assert "✓ memory_read ok" in text
+    assert "Done." in text
+
+
 def test_rich_renderer_respects_no_color_capability() -> None:
     output = CapturedRenderOutput()
     renderer = RichReplRenderer(

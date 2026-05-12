@@ -582,27 +582,23 @@ def _reduce_dispatched(
     title = event.title or event.target_thread_id or "thread"
     short_id = event.target_thread_id[:8] if event.target_thread_id else ""
     suffix = f" ({short_id})" if short_id and short_id != title else ""
-    notice = SystemMessage(
-        id=_new_id("system"),
-        kind="dispatch_notice",
-        content=f"Response from {title}{suffix}",
-        timestamp=timestamp,
-        details={
-            "thread_id": event.target_thread_id,
-            "title": event.title,
-            "original_thread_id": event.original_thread_id,
-            "matched_ref": event.matched_ref,
-        },
-    )
-    messages = list(state.messages)
-    if messages and isinstance(messages[-1], AssistantMessage):
-        messages.insert(len(messages) - 1, notice)
-    else:
-        messages.append(notice)
-    return replace(
+    dispatch_info = {
+        "content": f"Response from {title}{suffix}",
+        "thread_id": event.target_thread_id,
+        "title": event.title,
+        "original_thread_id": event.original_thread_id,
+        "matched_ref": event.matched_ref,
+    }
+    return _update_last_assistant(
         state,
-        messages=tuple(messages),
-        updated_at=timestamp,
+        lambda assistant: replace(
+            assistant,
+            dispatch_info={
+                **assistant.dispatch_info,
+                **dispatch_info,
+            },
+        ),
+        timestamp,
     )
 
 
