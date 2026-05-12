@@ -19,6 +19,7 @@ from langchain_core.tools import BaseTool
 from ..vendor.react_agent import (
     AgentConfig,
     CheckpointerConfig,
+    LLMFallbackConfig,
     LLMConfig,
     ToolRegistry,
     create_graph,
@@ -65,6 +66,43 @@ def _resolve_thread_llm_override(thread_value: Any, global_value: Any) -> Any:
     if isinstance(thread_value, str) and thread_value == "":
         return global_value
     return thread_value
+
+
+_FALLBACK_PROVIDER_PREFIXES = {"anthropic", "openai", "openrouter"}
+
+
+def _parse_llm_fallback_models(value: Any) -> list[str]:
+    """Parse comma/newline-separated fallback model settings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        raw_items = [value]
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        model = str(item or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        models.append(model)
+    return models
+
+
+def _split_llm_fallback_ref(
+    value: str,
+    default_provider: str,
+) -> tuple[str, str]:
+    """Split provider:model fallback refs while preserving model IDs with colons."""
+    prefix, separator, remainder = str(value or "").partition(":")
+    provider = prefix.strip().casefold()
+    if separator and provider in _FALLBACK_PROVIDER_PREFIXES and remainder.strip():
+        return provider, remainder.strip()
+    return str(default_provider or "").strip(), str(value or "").strip()
 
 
 class ThreadLockManager:
@@ -1629,6 +1667,69 @@ class NymeriaAgent:
                 }
                 api_key = key_map.get(provider) or self.settings.get_api_key_for_provider()
 
+        def base_url_for_provider(fallback_provider: str) -> str | None:
+            if fallback_provider == provider:
+                return base_url
+            global_url = (self.settings.llm_base_url or "").rstrip("/")
+            if fallback_provider == self.settings.llm_provider:
+                return self.settings.llm_base_url
+            if global_url and ("cli-proxy" in global_url or "cliproxy" in global_url):
+                if fallback_provider == "anthropic":
+                    return global_url[:-3] if global_url.endswith("/v1") else global_url
+                if fallback_provider == "openai":
+                    return global_url if global_url.endswith("/v1") else f"{global_url}/v1"
+            return None
+
+        def api_key_for_provider(
+            fallback_provider: str,
+            fallback_base_url: str | None,
+        ) -> str | None:
+            if fallback_provider == provider and api_key_override is not None:
+                return api_key_override
+            if fallback_provider == "anthropic":
+                return (
+                    self.settings.anthropic_api_key
+                    if fallback_base_url
+                    else (
+                        self.settings.anthropic_direct_api_key
+                        or self.settings.anthropic_api_key
+                    )
+                )
+            key_map = {
+                "openai": self.settings.openai_api_key,
+                "openrouter": self.settings.openrouter_api_key,
+            }
+            return key_map.get(fallback_provider) or self.settings.get_api_key_for_provider()
+
+        fallbacks: list[LLMFallbackConfig] = []
+        for fallback_ref in _parse_llm_fallback_models(
+            getattr(self.settings, "llm_fallback_models", "")
+        ):
+            fallback_provider, fallback_model = _split_llm_fallback_ref(
+                fallback_ref,
+                str(provider),
+            )
+            if not fallback_model or (
+                fallback_provider == provider and fallback_model == model
+            ):
+                continue
+            fallback_base_url = base_url_for_provider(fallback_provider)
+            fallbacks.append(
+                LLMFallbackConfig(
+                    provider=fallback_provider,
+                    model=fallback_model,
+                    api_key=api_key_for_provider(
+                        fallback_provider,
+                        fallback_base_url,
+                    ),
+                    base_url=fallback_base_url,
+                    openai_api_mode=resolve(
+                        "openai_api_mode",
+                        self.settings.openai_api_mode,
+                    ),
+                )
+            )
+
         return LLMConfig(
             provider=provider,
             model=model,
@@ -1646,6 +1747,7 @@ class NymeriaAgent:
             stream_max_retries=self.settings.llm_stream_max_retries,
             stream_retry_initial_delay=self.settings.llm_stream_retry_initial_delay,
             stream_retry_max_delay=self.settings.llm_stream_retry_max_delay,
+            fallbacks=fallbacks,
         )
 
     def _get_team_scoped_callable_threads(

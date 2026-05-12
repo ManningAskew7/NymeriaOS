@@ -718,6 +718,7 @@ export interface ModelMetadata {
 export interface ServerSettings {
   llm_provider: LLMProvider;
   llm_model: string;
+  llm_fallback_models: string[];
   llm_temperature: number;
   llm_max_tokens: number | null;
   llm_top_p: number | null;
@@ -760,6 +761,7 @@ export interface ServerSettings {
 export interface ServerSettingsUpdate {
   llm_provider?: LLMProvider;
   llm_model?: string;
+  llm_fallback_models?: string;
   llm_temperature?: number;
   llm_max_tokens?: number | null;
   llm_top_p?: number | null;

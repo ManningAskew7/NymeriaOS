@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
+from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
 from nymeria.core.accounts import AccountsRepo
 from nymeria.triggers import api as api_module
 
@@ -29,6 +30,7 @@ class FakeSettings:
     llm_provider: str = "anthropic"
     llm_model: str = "claude-test"
     llm_fast_model: str | None = None
+    llm_fallback_models: str = DEFAULT_LLM_FALLBACK_MODELS
     llm_temperature: float = 1.0
     llm_max_tokens: int | None = None
     llm_top_p: float | None = None
@@ -123,6 +125,10 @@ class FakeSettingsProvider:
             llm_fast_model=os.environ.get(
                 "LLM_FAST_MODEL",
                 self.settings.llm_fast_model,
+            ),
+            llm_fallback_models=os.environ.get(
+                "LLM_FALLBACK_MODELS",
+                self.settings.llm_fallback_models,
             ),
             tts_provider=os.environ.get("TTS_PROVIDER", self.settings.tts_provider),
             anthropic_api_key=os.environ.get(
@@ -457,6 +463,29 @@ def test_patch_settings_updates_existing_config_env_for_packaged_runtime(
     config = (tmp_path / "config.env").read_text(encoding="utf-8")
     assert "LLM_MODEL=new-model" in config
     assert not (tmp_path / ".env").exists()
+
+
+def test_patch_settings_hot_reloads_fallback_models(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("LLM_FALLBACK_MODELS=old-model\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_fallback_models": DEFAULT_LLM_FALLBACK_MODELS},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["llm_fallback_models"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert f"LLM_FALLBACK_MODELS={DEFAULT_LLM_FALLBACK_MODELS}" in env_text
+    assert os.environ["LLM_FALLBACK_MODELS"] == DEFAULT_LLM_FALLBACK_MODELS
+    assert provider.cache_clear_count == 1
+    assert agent.settings.llm_fallback_models == DEFAULT_LLM_FALLBACK_MODELS
+    assert agent.graph_rebuilds == ["sync", "async"]
 
 
 def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
