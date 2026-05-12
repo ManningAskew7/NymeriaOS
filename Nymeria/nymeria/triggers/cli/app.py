@@ -581,6 +581,7 @@ class CLIApp:
             connection,
             context,
             doctor,
+            export,
             mcp,
             memory,
             model,
@@ -609,6 +610,7 @@ class CLIApp:
         artifacts.register(self.registry)
         doctor.register(self.registry)
         theme.register(self.registry)
+        export.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
