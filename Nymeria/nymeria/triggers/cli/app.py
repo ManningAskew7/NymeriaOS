@@ -594,6 +594,7 @@ class CLIApp:
             mcp,
             memory,
             model,
+            provider,
             skills,
             system,
             theme,
@@ -622,6 +623,7 @@ class CLIApp:
         theme.register(self.registry)
         export.register(self.registry)
         fast.register(self.registry)
+        provider.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)
         reasoning.register(self.registry)
