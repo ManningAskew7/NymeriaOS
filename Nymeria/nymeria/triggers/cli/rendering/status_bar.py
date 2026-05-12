@@ -44,6 +44,7 @@ class StatusBarContext:
     thread_label: str = ""
     model: str = ""
     reasoning_label: str = ""
+    fast_mode_active: bool = False
     cwd: str | Path | None = None
     queued_count: int = 0
     notice: StatusNotice | None = None
@@ -216,6 +217,15 @@ class StatusBarRenderer:
             segments.append(StatusSegment(text=context.connection_label, priority=1))
         if model:
             segments.append(StatusSegment(text=str(model), priority=2, min_width=8))
+        if context.fast_mode_active:
+            segments.append(
+                StatusSegment(
+                    text="FAST",
+                    style_class="status.accent",
+                    priority=1,
+                    min_width=4,
+                )
+            )
         if context.reasoning_label:
             segments.append(
                 StatusSegment(

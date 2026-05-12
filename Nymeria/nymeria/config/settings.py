@@ -305,6 +305,10 @@ class Settings(BaseSettings):
     llm_model: str = Field(
         default="claude-sonnet-4-6", description="Model identifier"
     )
+    llm_fast_model: Optional[str] = Field(
+        default=None,
+        description="Fast/cheap model used by the CLI /fast shortcut",
+    )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)
 
     # Advanced LLM settings (optional - only sent if explicitly set)

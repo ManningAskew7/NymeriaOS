@@ -34,6 +34,7 @@ def _env_mapping() -> dict[str, str]:
     return {
         "llm_provider": "LLM_PROVIDER",
         "llm_model": "LLM_MODEL",
+        "llm_fast_model": "LLM_FAST_MODEL",
         "llm_temperature": "LLM_TEMPERATURE",
         "llm_max_tokens": "LLM_MAX_TOKENS",
         "llm_top_p": "LLM_TOP_P",
@@ -119,6 +120,7 @@ def _env_categories() -> dict[str, list[str]]:
         "LLM": [
             "llm_provider",
             "llm_model",
+            "llm_fast_model",
             "llm_temperature",
             "llm_max_tokens",
             "llm_top_p",
@@ -444,6 +446,7 @@ def create_settings_router(
         return ServerSettingsResponse(
             llm_provider=settings.llm_provider,
             llm_model=settings.llm_model,
+            llm_fast_model=settings.llm_fast_model,
             llm_temperature=settings.llm_temperature,
             llm_max_tokens=settings.llm_max_tokens,
             llm_top_p=settings.llm_top_p,
@@ -639,6 +642,7 @@ def create_settings_router(
         llm_fields = {
             "llm_provider",
             "llm_model",
+            "llm_fast_model",
             "llm_temperature",
             "llm_max_tokens",
             "llm_top_p",

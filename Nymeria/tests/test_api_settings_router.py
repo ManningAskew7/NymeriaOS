@@ -28,6 +28,7 @@ class FakeSettings:
     data_dir: Path
     llm_provider: str = "anthropic"
     llm_model: str = "claude-test"
+    llm_fast_model: str | None = None
     llm_temperature: float = 1.0
     llm_max_tokens: int | None = None
     llm_top_p: float | None = None
@@ -119,6 +120,10 @@ class FakeSettingsProvider:
         self.settings = replace(
             self.settings,
             llm_model=os.environ.get("LLM_MODEL", self.settings.llm_model),
+            llm_fast_model=os.environ.get(
+                "LLM_FAST_MODEL",
+                self.settings.llm_fast_model,
+            ),
             tts_provider=os.environ.get("TTS_PROVIDER", self.settings.tts_provider),
             anthropic_api_key=os.environ.get(
                 "ANTHROPIC_API_KEY",
