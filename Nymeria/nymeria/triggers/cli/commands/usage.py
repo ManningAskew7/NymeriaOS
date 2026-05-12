@@ -27,14 +27,12 @@ def _ctx_bar(
     *,
     compact_threshold: float | None = None,
 ) -> str:
-    clamped = max(0.0, min(100.0, percent))
-    filled = round((clamped / 100) * width)
-    bar = list("█" * filled + "░" * (width - filled))
     if compact_threshold is not None and 0 < compact_threshold < 1:
-        marker_pos = round(compact_threshold * width)
-        if 0 < marker_pos < width and bar[marker_pos] != "█":
-            bar[marker_pos] = "▏"
-    return "".join(bar)
+        scaled = min(100.0, max(0.0, percent / (compact_threshold * 100) * 100))
+    else:
+        scaled = max(0.0, min(100.0, percent))
+    filled = round((scaled / 100) * width)
+    return "█" * filled + "░" * (width - filled)
 
 
 def _estimate_cost(
@@ -188,10 +186,13 @@ def _format_thread_usage(
         f"  Context         {_fmt_tokens(total_tokens)} / {limit_label}"
     )
     if bar:
-        compact_note = ""
         if compact_threshold is not None and 0 < compact_threshold < 1:
-            compact_note = f"  (▏ = auto-compact at {compact_threshold:.0%})"
-        lines.append(f"                  [{bar}] {pct_label}{compact_note}")
+            compact_cap = _fmt_tokens(context_limit * compact_threshold)
+            lines.append(
+                f"  Until compact   [{bar}] {pct_label} of {compact_cap}"
+            )
+        else:
+            lines.append(f"                  [{bar}] {pct_label}")
     lines.append(f"    Input         {_fmt_tokens(input_tokens)}")
     lines.append(f"    Output        {_fmt_tokens(output_tokens)}")
     if cumulative and cumulative != total_tokens:
