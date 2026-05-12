@@ -115,5 +115,15 @@ class AgentClient(Protocol):
     ) -> Mapping[str, Any]:
         """Delete a thread through the transport boundary."""
 
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        from_message_index: int | None = None,
+    ) -> Mapping[str, Any]:
+        """Create a branch thread from an existing thread."""
+
 
 __all__ = ["AgentClient", "Attachment"]

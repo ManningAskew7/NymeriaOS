@@ -289,6 +289,21 @@ class APIAgentClient:
             user_id=self._selected_user_id(user_id),
         )
 
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        from_message_index: int | None = None,
+    ) -> Mapping[str, Any]:
+        return await self.api.branch_thread(
+            thread_id,
+            title=title,
+            from_message_index=from_message_index,
+            user_id=self._selected_user_id(user_id),
+        )
+
     async def rewind_thread(
         self,
         thread_id: str,

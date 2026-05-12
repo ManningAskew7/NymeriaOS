@@ -20,6 +20,29 @@ class ThreadStatusResponse(BaseModel):
     processing: bool
 
 
+class ThreadBranchRequest(BaseModel):
+    """Request model for creating a branch from an existing thread."""
+
+    title: str | None = Field(default=None, max_length=200)
+    from_message_index: int | None = Field(default=None, ge=1)
+
+
+class ThreadBranchResponse(BaseModel):
+    """Response model for a newly branched thread."""
+
+    status: str
+    source_thread_id: str
+    thread_id: str
+    title: str
+    requested_title: str
+    from_message_index: int | None = None
+    source_checkpoint_id: str | None = None
+    checkpoints: dict[str, int] = Field(default_factory=dict)
+    config_cloned: bool = False
+    callable_name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ThreadMetadataUpdateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     pinned: bool | None = None

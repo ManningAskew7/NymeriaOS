@@ -287,7 +287,7 @@ async def _handle_thread_root_context(
         return CommandResult.completed()
     if args:
         return CommandResult.failed(
-            "Usage: /thread list|switch|new|rename|delete|pin|config|compact|stop",
+            "Usage: /thread list|switch|new|rename|delete|pin|config|branch|compact|stop",
             error_code="usage_error",
         )
     return await _handle_list_context(context, args)
@@ -625,6 +625,65 @@ async def _handle_compact_context(
     return _compact_result(result)
 
 
+async def _handle_branch_context(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if context.legacy_state is not None:
+        return _handle_branch_legacy(context.legacy_state, args)
+    if not context.thread_id:
+        return CommandResult.failed("No active thread is selected.")
+
+    from_message_index, title, error = _parse_branch_args(args)
+    if error:
+        return CommandResult.failed(error, error_code="usage_error")
+
+    try:
+        result = await call_client_method(
+            context,
+            "branch_thread",
+            context.thread_id,
+            context.user_id,
+            title=title,
+            from_message_index=from_message_index,
+        )
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result("/branch", method_name=exc.method_name)
+
+    if not isinstance(result, Mapping):
+        return CommandResult.failed("Thread branch response was not a mapping.")
+    thread_id = normalize_thread_id(result)
+    if not thread_id:
+        return CommandResult.failed("Thread branch response did not include a thread ID.")
+    selected_title = thread_title(result)
+    copied_from = result.get("from_message_index")
+
+    context.thread_id = thread_id
+    await context.dispatch(
+        {
+            "type": "switch_thread",
+            "thread_id": thread_id,
+            "thread_label": selected_title,
+        }
+    )
+
+    suffix = f" from message #{copied_from}" if copied_from else ""
+    return CommandResult.completed(
+        CommandMessage(
+            f"Created branch '{selected_title}' ({compact_id(thread_id)}){suffix}.",
+            level="success",
+        ),
+        payload={
+            "thread_id": thread_id,
+            "title": selected_title,
+            "source_thread_id": result.get("source_thread_id"),
+            "from_message_index": copied_from,
+            "thread_switched": True,
+        },
+        json_payload=dict(result),
+    )
+
+
 async def _handle_stop_context(
     context: CommandContext,
     _args: list[str],
@@ -655,6 +714,41 @@ def _handle_compact_legacy(state: "CLIState", args: list[str]) -> None:
     from .context import _handle_compact
 
     _handle_compact(state, args)
+
+
+def _handle_branch_legacy(state: "CLIState", args: list[str]) -> CommandResult:
+    from ....core.thread_branch import ThreadBranchError, branch_thread
+
+    from_message_index, title, error = _parse_branch_args(args)
+    if error:
+        state.console.print(f"[red]{error}[/red]")
+        return CommandResult.failed(error, error_code="usage_error")
+    try:
+        result = branch_thread(
+            agent=state.agent,
+            settings=state.settings,
+            user_id=state.user_id,
+            source_thread_id=state.thread_id,
+            title=title,
+            from_message_index=from_message_index,
+        )
+    except ThreadBranchError as exc:
+        state.console.print(f"[red]{exc}[/red]")
+        return CommandResult.failed(str(exc))
+
+    thread_id = str(result["thread_id"])
+    selected_title = str(result["title"])
+    state.switch_thread(thread_id)
+    state.console.print(
+        f"[green]Created branch '{selected_title}' ({thread_id[:8]}).[/green]"
+    )
+    return CommandResult.completed(
+        payload={
+            "thread_id": thread_id,
+            "title": selected_title,
+            "thread_switched": True,
+        }
+    )
 
 
 async def _list_threads(context: CommandContext) -> list[Mapping[str, Any]]:
@@ -884,6 +978,39 @@ def _parse_pin_args(
     return args[0], state_values[second]
 
 
+def _parse_branch_args(args: Sequence[str]) -> tuple[int | None, str | None, str]:
+    from_message_index: int | None = None
+    title_parts: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = str(args[i])
+        if arg in {"--from", "-f"}:
+            if i + 1 >= len(args):
+                return None, None, "Usage: /branch [--from N] [title]"
+            raw_index = str(args[i + 1])
+            try:
+                from_message_index = int(raw_index)
+            except ValueError:
+                return None, None, "--from must be an integer message index"
+            i += 2
+            continue
+        if arg.startswith("--from="):
+            raw_index = arg.split("=", 1)[1]
+            try:
+                from_message_index = int(raw_index)
+            except ValueError:
+                return None, None, "--from must be an integer message index"
+            i += 1
+            continue
+        title_parts.append(arg)
+        i += 1
+
+    if from_message_index is not None and from_message_index < 1:
+        return None, None, "--from must be 1 or greater"
+    title = " ".join(title_parts).strip() or None
+    return from_message_index, title, ""
+
+
 async def _thread_config_or_none(context: CommandContext) -> Mapping[str, Any] | None:
     if not has_client_method(context, "get_thread_config") or not context.thread_id:
         return None
@@ -1081,6 +1208,15 @@ def register(registry: CommandRegistry) -> None:
                 handler_mode="context",
                 category="Threads",
             ),
+            "branch": Command(
+                name="branch",
+                aliases=["fork"],
+                description="Branch the current thread",
+                usage="branch [--from N] [title]",
+                handler=_handle_branch_context,
+                handler_mode="context",
+                category="Threads",
+            ),
             "compact": Command(
                 name="compact",
                 description="Compact context",
@@ -1100,3 +1236,12 @@ def register(registry: CommandRegistry) -> None:
         },
     )
     registry.register(cmd)
+    registry.register(Command(
+        name="branch",
+        aliases=["/fork"],
+        description="Branch the current thread",
+        usage="/branch [--from N] [title]",
+        handler=_handle_branch_context,
+        handler_mode="context",
+        category="Threads",
+    ))

@@ -327,6 +327,26 @@ class NymeriaAPIClient:
             act_as=user_id,
         )
 
+    async def branch_thread(
+        self,
+        thread_id: str,
+        *,
+        title: Optional[str] = None,
+        from_message_index: Optional[int] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Create a new thread from a source thread's checkpoints and config."""
+        body: Dict[str, Any] = {}
+        if title is not None:
+            body["title"] = title
+        if from_message_index is not None:
+            body["from_message_index"] = from_message_index
+        return await self._post(
+            f"/threads/{_path_param(thread_id)}/branch",
+            json=body,
+            act_as=user_id,
+        )
+
     async def get_history(
         self,
         thread_id: str,
