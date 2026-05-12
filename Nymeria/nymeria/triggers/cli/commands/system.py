@@ -103,6 +103,10 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
             ("/context", "Show context window stats"),
             ("/compact", "Trigger manual compaction"),
         ],
+        "Session": [
+            ("/export [json|md|jsonl]", "Export thread to file"),
+            ("/import <file>", "Import thread from JSON file"),
+        ],
         "System": [
             ("/login [api-url], /connect", "Connect to a Nymeria API"),
             ("/logout", "Disconnect and remove saved CLI token"),

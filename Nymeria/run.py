@@ -278,6 +278,11 @@ def build_cli_runtime_config(args: argparse.Namespace):
 
 def run_cli(args: argparse.Namespace) -> None:
     """Run the CLI interface."""
+    # Handle --export as a standalone non-interactive operation
+    if getattr(args, "export", None):
+        logging.getLogger("nymeria").setLevel(logging.CRITICAL)
+        sys.exit(_run_export(args))
+
     # Suppress logging for clean CLI experience — errors like missing API keys
     # (e.g. RAG embedding) are expected in local dev and shouldn't clutter the REPL.
     # Fatal issues still surface via stream error events rendered by the CLI.
@@ -301,6 +306,53 @@ def run_cli(args: argparse.Namespace) -> None:
         thread_id=None if runtime_config.startup_thread_ref else args.thread,
         runtime_config=runtime_config,
     )
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    """Non-interactive thread export via --export flag. Returns exit code."""
+    import asyncio
+
+    from nymeria.triggers.cli.transport.api import (
+        APIConnectionConfig,
+        DEFAULT_API_URL,
+        APIAgentClient,
+    )
+    from nymeria.triggers.cli.commands.export import _handle_export
+    from nymeria.triggers.cli.commands.base import CommandContext, ListCommandOutputSink
+
+    thread_id = args.export
+    fmt = getattr(args, "output_format", "json") or "json"
+    output = getattr(args, "output", None)
+
+    api_url = args.api_url or DEFAULT_API_URL
+    api_key = args.api_key
+    user_id = args.user_id or "default"
+
+    config = APIConnectionConfig(
+        api_url=api_url,
+        api_key=api_key,
+        user_id=user_id,
+    )
+
+    async def do_export() -> int:
+        client = APIAgentClient(config)
+        sink = ListCommandOutputSink()
+        context = CommandContext(
+            client=client,
+            output=sink,
+            thread_id=thread_id,
+            user_id=user_id,
+        )
+        export_args = [fmt]
+        if output:
+            export_args.extend(["--output", output])
+        result = await _handle_export(context, export_args)
+        for msg in result.messages:
+            stream = sys.stderr if msg.level == "error" else sys.stdout
+            print(msg.content, file=stream)
+        return 0 if result.ok else 1
+
+    return asyncio.run(do_export())
 
 
 def run_api(args: argparse.Namespace) -> None:
@@ -855,9 +907,22 @@ Examples:
     cli_parser.add_argument(
         "--format",
         dest="output_format",
-        choices=("plain", "json"),
+        choices=("plain", "json", "md", "jsonl"),
         default="plain",
-        help="Output format for oneshot mode (default: plain)",
+        help="Output format for oneshot (plain|json) or --export (json|md|jsonl)",
+    )
+    cli_parser.add_argument(
+        "--export",
+        default=None,
+        metavar="THREAD_ID",
+        help="Export a thread to a file and exit (use with --format and --output)",
+    )
+    cli_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        metavar="PATH",
+        help="Output file path for --export (default: auto-generated)",
     )
     cli_parser.add_argument(
         "--no-alt-screen",
