@@ -228,7 +228,7 @@ def test_dispatched_event_inserts_notice_before_streaming_assistant() -> None:
 
     assert isinstance(state.messages[1], SystemMessage)
     assert state.messages[1].kind == "dispatch_notice"
-    assert "Research" in state.messages[1].content
+    assert state.messages[1].content == "Response from Research (thread-2)"
     assistant = select_last_assistant_message(state)
     assert isinstance(assistant, AssistantMessage)
     assert select_response_content(assistant) == "Found it."

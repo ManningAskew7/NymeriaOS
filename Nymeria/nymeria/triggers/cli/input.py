@@ -105,7 +105,7 @@ class CommandCompleter(Completer):
 
 
 class ComposerCompleter(Completer):
-    """Complete slash commands and @file attachment paths in the composer."""
+    """Complete slash commands and non-leading @file attachment paths."""
 
     def __init__(
         self,
@@ -130,6 +130,10 @@ class ComposerCompleter(Completer):
 
         token = _token_before_cursor(document.text_before_cursor)
         if not token.startswith("@"):
+            return
+        token_start = len(document.text_before_cursor) - len(token)
+        mention_start = _leading_thread_mention_start(document.text_before_cursor)
+        if mention_start is not None and token_start == mention_start:
             return
 
         from prompt_toolkit.document import Document
@@ -406,7 +410,10 @@ def sanitize_composer_text(text: str) -> str:
 
 
 def parse_composer_submission(text: str, *, cwd: Path | None = None) -> ComposerSubmission:
-    """Parse composer text into message text and optional @file attachments."""
+    """Parse composer text into message text and optional @file attachments.
+
+    A leading @ token is preserved for backend thread dispatch.
+    """
 
     raw_text = sanitize_composer_text(text)
     cleaned_text = raw_text.strip()
@@ -414,7 +421,10 @@ def parse_composer_submission(text: str, *, cwd: Path | None = None) -> Composer
         return ComposerSubmission(message=cleaned_text, raw_text=raw_text)
 
     root = cwd or Path.cwd()
+    mention_start = _leading_thread_mention_start(raw_text)
     tokens = _attachment_tokens(raw_text, root)
+    if mention_start is not None:
+        tokens = [token for token in tokens if token.start != mention_start]
     if not tokens:
         return ComposerSubmission(message=cleaned_text, raw_text=raw_text)
 
@@ -487,6 +497,16 @@ def _ends_with_unescaped_backslash(text: str) -> bool:
             break
         slash_count += 1
     return slash_count % 2 == 1
+
+
+def _leading_thread_mention_start(text: str) -> int | None:
+    stripped = text.lstrip()
+    if not stripped.startswith("@"):
+        return None
+
+    if not stripped[1:]:
+        return None
+    return len(text) - len(stripped)
 
 
 def _attachment_tokens(text: str, cwd: Path) -> list[ParsedAttachmentToken]:

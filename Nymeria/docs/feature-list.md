@@ -135,8 +135,9 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Model hot-switching** — Change model per-thread or globally at runtime without restart
 - **Cross-thread @mentions** — Prefix a chat message with `@ThreadName` or
   `@"Thread With Spaces"` to route that turn to another owned thread while
-  streaming the response in the current client view. The target thread owns the
-  persisted checkpoint history.
+  streaming the response in the current client view with a visible reference
+  line like `Response from <thread>`. The target thread owns the persisted
+  checkpoint history.
 
 ### Streaming (SSE)
 - **Real-time SSE** for chat, autonomous tasks, and trigger executions

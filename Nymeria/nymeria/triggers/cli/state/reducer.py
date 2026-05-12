@@ -585,7 +585,7 @@ def _reduce_dispatched(
     notice = SystemMessage(
         id=_new_id("system"),
         kind="dispatch_notice",
-        content=f"Dispatched to {title}{suffix}",
+        content=f"Response from {title}{suffix}",
         timestamp=timestamp,
         details={
             "thread_id": event.target_thread_id,

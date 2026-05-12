@@ -87,12 +87,25 @@ def test_composer_completes_attachment_paths(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
 
     completions = list(
-        ComposerCompleter(cwd=tmp_path).get_completions(Document("@no", 3), None)
+        ComposerCompleter(cwd=tmp_path).get_completions(
+            Document("summarize @no", 13),
+            None,
+        )
     )
 
     assert completions
     assert completions[0].text == "tes.txt"
     assert completions[0].display_meta_text == "attach file"
+
+
+def test_composer_does_not_complete_leading_thread_mention(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+
+    completions = list(
+        ComposerCompleter(cwd=tmp_path).get_completions(Document("@no", 3), None)
+    )
+
+    assert completions == []
 
 
 def test_parse_composer_submission_builds_file_attachment(tmp_path: Path) -> None:
@@ -109,7 +122,7 @@ def test_parse_composer_submission_builds_file_attachment(tmp_path: Path) -> Non
     assert submission.attachments[0]["data_url"].startswith("data:text/plain;base64,")
 
 
-def test_parse_composer_submission_uses_attachment_placeholder(
+def test_parse_composer_submission_preserves_leading_thread_mention(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "notes.md"
@@ -117,8 +130,19 @@ def test_parse_composer_submission_uses_attachment_placeholder(
 
     submission = parse_composer_submission(f"@{path}", cwd=tmp_path)
 
-    assert submission.message == "[attachment]"
-    assert len(submission.attachments) == 1
+    assert submission.message == f"@{path}"
+    assert submission.attachments == ()
+    assert submission.attachment_errors == ()
+
+
+def test_parse_composer_submission_preserves_quoted_thread_mention(
+    tmp_path: Path,
+) -> None:
+    submission = parse_composer_submission('@"Research Notes" summarize', cwd=tmp_path)
+
+    assert submission.message == '@"Research Notes" summarize'
+    assert submission.attachments == ()
+    assert submission.attachment_errors == ()
 
 
 def test_parse_composer_submission_reports_missing_attachment(tmp_path: Path) -> None:

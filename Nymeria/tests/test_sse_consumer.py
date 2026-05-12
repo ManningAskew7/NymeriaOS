@@ -146,6 +146,24 @@ def test_dispatch_response_empty_content_ignored():
     assert h.calls == []
 
 
+def test_dispatch_dispatched_emits_response_reference_line():
+    h = RecordingHandler()
+    asyncio.run(
+        dispatch_event(
+            {
+                "type": "dispatched",
+                "title": "Research",
+                "dispatched_to": {"thread_id": "thread-2", "title": "Research"},
+            },
+            h,
+            0,
+        )
+    )
+    assert h.calls == [
+        ("on_response_chunk", {"content": "[Response from Research]\n\n"})
+    ]
+
+
 def test_dispatch_compacting_flushes_first():
     h = RecordingHandler()
     asyncio.run(dispatch_event({"type": "compacting", "message": "Working..."}, h, 0))
