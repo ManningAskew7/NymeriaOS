@@ -426,6 +426,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Shell completions** — `python run.py completion bash|zsh|fish` generates tab-completion scripts (covers all subcommands, flags, and known choices)
 - **Clipboard copy** — `/copy` copies the last assistant response to clipboard; `/copy N` copies the Nth most recent; `/copy code` extracts only fenced code blocks
 - **Undo / retry** — `/undo` removes the last user+assistant exchange from thread state; `/retry` re-sends the last user message for a new response (or `/retry <new prompt>` to replace it). Requires `POST /threads/{id}/rewind` backend endpoint.
+- **Reasoning toggle** — `/reasoning on|off|low|medium|high` toggles extended thinking in one command (per-thread when a thread is active, global otherwise). Alias `/thinking`. Status bar shows `thinking: <effort>` when active.
 
 ### Configuration
 - 100+ environment variables across LLM, API, database, messaging, autonomous, context, voice, logging
