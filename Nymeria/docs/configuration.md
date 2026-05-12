@@ -162,6 +162,15 @@ keys with `PATCH /settings` using explicit write-only fields such as
 `perplexity_api_key`. These keys remain absent from `GET /settings`; the admin
 environment listing masks secret values.
 
+The CLI exposes the LLM provider flow through `/provider`. `/provider set
+<provider> api_key=<key>` stores a local copy in `~/.nymeria/credentials.json`
+with private file permissions, then applies the mapped write-only backend
+setting when the active API token has admin access. `/provider test [provider]`
+uses the local credential, or an admin-only unmasked backend env lookup when no
+local key is stored, and calls the same `/settings/llm/test` probe. `/provider
+switch <provider>` patches `llm_provider` and reapplies any locally stored
+credential for that provider.
+
 The desktop app exposes this flow in Settings > Provider > Open Wizard for admin
 accounts. The wizard can save direct provider keys or configure the backend to
 use an already-running CLIProxy OAuth endpoint. It does not start or manage

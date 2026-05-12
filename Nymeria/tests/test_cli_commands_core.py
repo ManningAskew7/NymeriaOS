@@ -14,7 +14,7 @@ from nymeria.triggers.cli.commands import (
 )
 from nymeria.triggers.cli.commands import context as context_commands
 from nymeria.triggers.cli.commands import fast
-from nymeria.triggers.cli.commands import model, system, threads, usage
+from nymeria.triggers.cli.commands import model, provider, system, threads, usage
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
@@ -97,6 +97,12 @@ class CoreFakeClient:
         self.models = [
             {"id": "gpt-thread", "context_length": 128000},
             {"id": "gpt-other", "context_length": 64000},
+        ]
+        self.env_entries = [
+            {"name": "openai_api_key", "is_set": False},
+            {"name": "anthropic_api_key", "is_set": False},
+            {"name": "anthropic_direct_api_key", "is_set": False},
+            {"name": "openrouter_api_key", "is_set": False},
         ]
 
     async def list_threads(self, user_id: str = "default") -> list[dict[str, Any]]:
@@ -211,7 +217,47 @@ class CoreFakeClient:
     ) -> dict[str, Any]:
         self.calls.append(("update_settings", {"user_id": user_id, **kwargs}))
         self.settings.update(kwargs)
+        for entry in self.env_entries:
+            if entry["name"] in kwargs and kwargs[entry["name"]]:
+                entry["is_set"] = True
         return {"updated": list(kwargs), "restart_required": False}
+
+    async def get_env_vars(self, *, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("get_env_vars", {"user_id": user_id}))
+        return {"entries": copy.deepcopy(self.env_entries)}
+
+    async def get_env_var(
+        self,
+        key: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("get_env_var", {"key": key, "user_id": user_id}))
+        values = {
+            "openai_api_key": "sk-server-openai",
+            "anthropic_api_key": "sk-server-anthropic",
+            "anthropic_direct_api_key": "sk-server-anthropic-direct",
+            "openrouter_api_key": "sk-server-openrouter",
+        }
+        return {"name": key, "value": values.get(key)}
+
+    async def test_llm_provider_config(
+        self,
+        request: dict[str, Any],
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "test_llm_provider_config",
+                {"request": copy.deepcopy(request), "user_id": user_id},
+            )
+        )
+        return {
+            "ok": bool(request.get("api_key")),
+            "provider": request.get("llm_provider"),
+            "model": request.get("llm_model"),
+            "message": "Provider test succeeded.",
+        }
 
     async def get_thread_config(
         self,
@@ -263,6 +309,7 @@ def make_registry() -> CommandRegistry:
     threads.register(registry)
     model.register(registry)
     fast.register(registry)
+    provider.register(registry)
     usage.register(registry)
     return registry
 
@@ -521,6 +568,72 @@ def test_fast_prompt_allows_control_words_inside_prompt() -> None:
     assert result.payload["fast_model"] == "gpt-fast"
     assert not any(name == "update_thread_config" for name, _payload in client.calls)
     assert actions == []
+
+
+def test_provider_command_saves_applies_lists_and_tests_credentials(tmp_path) -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink)
+    credentials_path = tmp_path / ".nymeria" / "credentials.json"
+    ctx.metadata["provider_credentials_path"] = credentials_path
+
+    set_result = run(
+        registry.dispatch_async(ctx, "/provider set openai api_key=sk-local-openai")
+    )
+    list_result = run(registry.dispatch_async(ctx, "/provider list"))
+    test_result = run(registry.dispatch_async(ctx, "/provider test openai"))
+    switch_result = run(registry.dispatch_async(ctx, "/provider switch openai"))
+
+    assert set_result.ok is True
+    assert list_result.ok is True
+    assert test_result.ok is True
+    assert switch_result.ok is True
+    assert credentials_path.exists()
+    assert credentials_path.stat().st_mode & 0o777 == 0o600
+    data = json.loads(credentials_path.read_text(encoding="utf-8"))
+    assert data["providers"]["openai"]["api_key"] == "sk-local-openai"
+    assert not any("sk-local-openai" in message.content for message in sink.messages)
+    assert (
+        "update_settings",
+        {"user_id": "alice", "openai_api_key": "sk-local-openai"},
+    ) in client.calls
+    assert (
+        "update_settings",
+        {
+            "user_id": "alice",
+            "llm_provider": "openai",
+            "openai_api_key": "sk-local-openai",
+        },
+    ) in client.calls
+    test_calls = [
+        payload
+        for name, payload in client.calls
+        if name == "test_llm_provider_config"
+    ]
+    assert test_calls[0]["request"]["api_key"] == "sk-local-openai"
+
+
+def test_provider_list_emits_json_without_secrets(tmp_path, capsys: Any) -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    ctx = make_context(client)
+    ctx.metadata["provider_credentials_path"] = tmp_path / "credentials.json"
+
+    assert run(
+        registry.dispatch_async(ctx, "/provider set anthropic api_key=sk-secret")
+    ).ok is True
+    assert run(registry.dispatch_async(ctx, "/provider list --json")).ok is True
+
+    payload = json.loads(capsys.readouterr().out)
+    assert {entry["provider"] for entry in payload} == {
+        "anthropic",
+        "openai",
+        "openrouter",
+    }
+    assert "sk-secret" not in json.dumps(payload)
+    anthropic = next(entry for entry in payload if entry["provider"] == "anthropic")
+    assert anthropic["status"] == "authenticated"
 
 
 def test_settings_patch_rejects_secret_or_unknown_fields() -> None:
