@@ -423,6 +423,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Non-interactive CLI** — `python run.py cli -m "prompt"` (oneshot mode with plain or JSON output)
 - **Session resume** — `python run.py cli -c` (continue most recent thread), `python run.py cli -r <ref>` (resume by ID/title)
 - **Session export/import** — `python run.py cli --export <thread-id> --format json|md|jsonl` (non-interactive export); `/export` and `/import` slash commands in the REPL
+- **Shell completions** — `python run.py completion bash|zsh|fish` generates tab-completion scripts (covers all subcommands, flags, and known choices)
 
 ### Configuration
 - 100+ environment variables across LLM, API, database, messaging, autonomous, context, voice, logging
