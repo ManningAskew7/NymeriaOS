@@ -25,7 +25,8 @@
     FileAttachment,
     ContextStats,
     ThreadConfig,
-    AttachmentValidationResult
+    AttachmentValidationResult,
+    DispatchInfo
   } from '$lib/types';
 
   let showThreadSettings = $state(false);
@@ -318,6 +319,11 @@
         break;
       }
 
+      case 'dispatched': {
+        chatStore.setLastAssistantDispatchInfo(event.data as DispatchInfo);
+        break;
+      }
+
       case 'error': {
         const data = event.data as {
           message: string;
@@ -338,21 +344,24 @@
           model?: string;
           title?: string;
           title_source?: string;
+          dispatchedTo?: DispatchInfo;
         };
 
         // Reclassify any trailing thinking as response (if no tool calls followed it)
         chatStore.reclassifyThinkingAsResponse();
 
         // Update context stats and active model
-        if (data.contextStats) {
+        if (!data.dispatchedTo && data.contextStats) {
           chatStore.setContextStats(data.contextStats);
         }
-        if (data.model) {
+        if (!data.dispatchedTo && data.model) {
           chatStore.setActiveModel(data.model);
         }
 
         // Apply backend-generated title (auto-title from first message)
-        if (data.title && data.threadId) {
+        if (data.title && data.dispatchedTo?.threadId) {
+          threadsStore.applyBackendTitle(data.dispatchedTo.threadId, data.title);
+        } else if (data.title && data.threadId) {
           threadsStore.applyBackendTitle(data.threadId, data.title);
         }
 

@@ -308,6 +308,12 @@
       {/if}
     {:else}
       <!-- Assistant message: render steps in arrival order for proper interleaving -->
+      {#if message.dispatchInfo}
+        <div class="dispatch-badge">
+          <Icon name="info" size={14} />
+          <span>Routed to {message.dispatchInfo.title || message.dispatchInfo.threadId}</span>
+        </div>
+      {/if}
 
       {#if hasSteps}
         <!-- New: Render steps in order (thinking and tool_calls interleaved) -->
@@ -495,6 +501,18 @@
 
   .smartwatch-badge {
     border-bottom-color: color-mix(in srgb, var(--accent-primary) 25%, transparent);
+  }
+
+  .dispatch-badge {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-sm);
+    padding-bottom: var(--spacing-xs);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent);
+    color: var(--accent-primary);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
   }
 
   .assistant .bubble-content {

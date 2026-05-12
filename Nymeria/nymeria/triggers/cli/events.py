@@ -16,6 +16,7 @@ KnownEventType: TypeAlias = Literal[
     "response",
     "workspace_artifact",
     "tool_reload",
+    "dispatched",
     "queued",
     "compacting",
     "compacted",
@@ -117,6 +118,15 @@ class ToolReloadEvent(CLIStreamEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class DispatchedEvent(CLIStreamEvent):
+    type: Literal["dispatched"] = "dispatched"
+    target_thread_id: str = ""
+    title: str = ""
+    original_thread_id: str = ""
+    matched_ref: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class QueuedEvent(CLIStreamEvent):
     type: Literal["queued"] = "queued"
     message: str = ""
@@ -194,6 +204,7 @@ class DoneEvent(CLIStreamEvent):
     title_source: str = ""
     status: str = ""
     tool_call_count: int | None = None
+    dispatched_to: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -212,6 +223,7 @@ NormalizedEvent: TypeAlias = (
     | ResponseEvent
     | WorkspaceArtifactEvent
     | ToolReloadEvent
+    | DispatchedEvent
     | QueuedEvent
     | CompactingEvent
     | CompactedEvent
@@ -322,6 +334,34 @@ def normalize_stream_event(
             source=_text(_first(payload, "source"), default=""),
             skill_name=_optional_text(_first(payload, "skill_name", "skillName")),
             reason=_text(_first(payload, "reason"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "dispatched":
+        dispatched_to = _as_dict(
+            _first(payload, "dispatched_to", "dispatchedTo"),
+            default={},
+        )
+        return DispatchedEvent(
+            thread_id=thread_id,
+            target_thread_id=_text(
+                _first(
+                    payload,
+                    "target_thread_id",
+                    "targetThreadId",
+                    default=_first(dispatched_to, "thread_id", "threadId"),
+                ),
+                default="",
+            ),
+            title=_text(
+                _first(payload, "title", default=_first(dispatched_to, "title")),
+                default="",
+            ),
+            original_thread_id=_text(
+                _first(payload, "original_thread_id", "originalThreadId"),
+                default="",
+            ),
+            matched_ref=_text(_first(payload, "matched_ref", "matchedRef"), default=""),
             raw=raw,
         )
 
@@ -443,6 +483,10 @@ def normalize_stream_event(
             status=_text(_first(payload, "status"), default=""),
             tool_call_count=_optional_int(
                 _first(payload, "tool_call_count", "toolCallCount"),
+            ),
+            dispatched_to=_as_dict(
+                _first(payload, "dispatched_to", "dispatchedTo"),
+                default={},
             ),
             raw=raw,
         )

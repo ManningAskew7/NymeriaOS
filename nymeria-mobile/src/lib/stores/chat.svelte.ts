@@ -1,4 +1,4 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact } from '$lib/types';
+import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact, DispatchInfo } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 import { generateId } from '$lib/utils/ids';
 
@@ -235,6 +235,23 @@ function createChatStore() {
             content: mergedContent,
             status: 'error',
             steps: updatedSteps
+          }
+        ];
+      }
+    },
+
+    setLastAssistantDispatchInfo(dispatchInfo: DispatchInfo) {
+      if (messages.length === 0) return;
+
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+
+      if (lastMessage.role === 'assistant') {
+        messages = [
+          ...messages.slice(0, lastIndex),
+          {
+            ...lastMessage,
+            dispatchInfo
           }
         ];
       }

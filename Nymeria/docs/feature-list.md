@@ -133,10 +133,14 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Multi-provider LLM support** — Anthropic (native), OpenAI, OpenRouter, local LLMs (llama.cpp, KoboldCpp, LM Studio, Ollama) via OpenAI-compatible API
 - **Extended thinking** — Configurable reasoning effort (off, on, low, medium, high) with thinking block visualization
 - **Model hot-switching** — Change model per-thread or globally at runtime without restart
+- **Cross-thread @mentions** — Prefix a chat message with `@ThreadName` or
+  `@"Thread With Spaces"` to route that turn to another owned thread while
+  streaming the response in the current client view. The target thread owns the
+  persisted checkpoint history.
 
 ### Streaming (SSE)
 - **Real-time SSE** for chat, autonomous tasks, and trigger executions
-- **Chat events**: `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `context_attached`, `compacted`, `tool_reload`, `queued`, `iteration_limit`, `error`, `done`
+- **Chat events**: `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `dispatched`, `response`, `context_attached`, `compacted`, `tool_reload`, `queued`, `iteration_limit`, `error`, `done`
 - **Ordered assistant steps**: visible pre-tool commentary streams and rehydrates as `response` steps before the matching `tool_call`, separate from hidden/expanded thinking blocks
 - **Autonomous events**: `task_started`, `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `task_completed`, `webhook_message`
 

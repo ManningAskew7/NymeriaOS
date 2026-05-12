@@ -53,6 +53,13 @@ export interface ToolReloadInfo {
   resumePrompt?: string;
 }
 
+export interface DispatchInfo {
+  threadId: string;
+  title: string;
+  originalThreadId?: string;
+  matchedRef?: string;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -69,6 +76,7 @@ export interface Message {
   autoResumed?: boolean;          // True when assistant output resumed after compaction
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
   toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
+  dispatchInfo?: DispatchInfo;    // Present on responses routed to another thread
 }
 
 export interface ToolCall {
@@ -418,6 +426,7 @@ export type SSEEventType =
   | 'tool_call'
   | 'tool_result'
   | 'workspace_artifact'
+  | 'dispatched'
   | 'response'
   | 'error'
   | 'done'
@@ -469,6 +478,11 @@ export interface WorkspaceArtifactEvent {
   };
 }
 
+export interface DispatchedEvent {
+  type: 'dispatched';
+  data: DispatchInfo;
+}
+
 export interface ResponseEvent {
   type: 'response';
   data: {
@@ -505,6 +519,9 @@ export interface DoneEvent {
     threadId: string;
     contextStats?: ContextStats;
     model?: string;
+    title?: string;
+    title_source?: string;
+    dispatchedTo?: DispatchInfo;
   };
 }
 

@@ -8,6 +8,7 @@ from collections.abc import AsyncIterable
 from typing import Any, Literal, TextIO
 
 from ..events import (
+    DispatchedEvent,
     DoneEvent,
     ErrorEvent,
     NormalizedEvent,
@@ -69,7 +70,11 @@ class OneshotRenderer:
             self.stderr.write(f"Error: {event.content or event.code}\n")
             self.stderr.flush()
         elif self.verbose:
-            if isinstance(event, ThinkingEvent) and event.content:
+            if isinstance(event, DispatchedEvent):
+                target = event.title or event.target_thread_id or "thread"
+                self.stderr.write(f"[dispatched] {target}\n")
+                self.stderr.flush()
+            elif isinstance(event, ThinkingEvent) and event.content:
                 self.stderr.write(f"[thinking] {event.content}\n")
                 self.stderr.flush()
             elif isinstance(event, ToolCallEvent):
@@ -115,6 +120,20 @@ class OneshotRenderer:
                 "result": event.result,
                 "status": event.status,
             }
+        if isinstance(event, DispatchedEvent):
+            return {
+                "type": "dispatched",
+                "thread_id": event.thread_id,
+                "target_thread_id": event.target_thread_id,
+                "title": event.title,
+                "original_thread_id": event.original_thread_id,
+                "matched_ref": event.matched_ref,
+                "dispatched_to": {
+                    "thread_id": event.target_thread_id,
+                    "title": event.title,
+                    "original_thread_id": event.original_thread_id,
+                },
+            }
         if isinstance(event, ErrorEvent):
             return {
                 "type": "error",
@@ -126,6 +145,7 @@ class OneshotRenderer:
                 "type": "done",
                 "model": event.model,
                 "status": event.status,
+                "dispatched_to": event.dispatched_to,
             }
         return None
 

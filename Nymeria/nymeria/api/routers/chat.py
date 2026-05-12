@@ -17,6 +17,11 @@ from ...core.event_bus import (
     publish_autonomous_event as default_publish_autonomous_event,
     publish_sync_event as default_publish_sync_event,
 )
+from ...core.mention import (
+    MentionAmbiguity,
+    MentionTarget,
+    resolve_thread_mention,
+)
 from ...core.notification_dispatch import (
     create_autonomous_notification as default_create_autonomous_notification,
     should_notify_autonomous as default_should_notify_autonomous,
@@ -50,6 +55,52 @@ def _legacy_image_dicts(request: ChatRequest) -> list[dict[str, str]] | None:
         }
         for image in request.images
     ]
+
+
+def _dispatch_payload(target: MentionTarget, original_thread_id: str) -> dict[str, str]:
+    return {
+        "thread_id": target.thread_id,
+        "title": target.title,
+        "original_thread_id": original_thread_id,
+    }
+
+
+def _dispatch_stream_fields(
+    target: MentionTarget | None,
+    original_thread_id: str,
+) -> dict[str, Any]:
+    if target is None:
+        return {}
+    return {
+        "dispatched_to": _dispatch_payload(target, original_thread_id),
+        "original_thread_id": original_thread_id,
+    }
+
+
+def _mention_ambiguity_error(
+    ambiguity: MentionAmbiguity,
+    *,
+    thread_id: str,
+) -> dict[str, Any]:
+    candidates = [
+        {"thread_id": candidate.thread_id, "title": candidate.title}
+        for candidate in ambiguity.candidates
+    ]
+    labels = ", ".join(
+        f"{candidate.title} ({candidate.thread_id})"
+        for candidate in ambiguity.candidates[:5]
+    )
+    suffix = "..." if len(ambiguity.candidates) > 5 else ""
+    return {
+        "type": "error",
+        "code": "mention_ambiguous",
+        "content": f"@{ambiguity.reference} matches multiple threads: {labels}{suffix}",
+        "thread_id": thread_id,
+        "details": {
+            "reference": ambiguity.reference,
+            "candidates": candidates,
+        },
+    }
 
 
 def create_chat_router(
@@ -88,28 +139,97 @@ def create_chat_router(
         """
         agent = get_agent_fn()
         thread_id = request.thread_id or str(uuid.uuid4())[:8]
+        original_thread_id = thread_id
+        message = request.message
+        dispatched_target: MentionTarget | None = None
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
         require_thread_access_fn(user, thread_id)
 
+        if not request.is_self_invoke:
+            mention_resolution = resolve_thread_mention(
+                message,
+                user_id=user_id,
+                thread_metadata_manager=agent.thread_metadata_manager,
+                accounts_repo=agent.accounts_repo,
+            )
+            if isinstance(mention_resolution, MentionAmbiguity):
+
+                async def ambiguous_mention_response():
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            _mention_ambiguity_error(
+                                mention_resolution,
+                                thread_id=original_thread_id,
+                            )
+                        )
+                        + "\n\n"
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "thread_id": original_thread_id,
+                                "status": "error",
+                            }
+                        )
+                        + "\n\n"
+                    )
+
+                return StreamingResponse(
+                    ambiguous_mention_response(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+            if isinstance(mention_resolution, MentionTarget):
+                require_thread_access_fn(user, mention_resolution.thread_id)
+                dispatched_target = mention_resolution
+                thread_id = mention_resolution.thread_id
+                message = mention_resolution.message
+
         # Handle slash commands (e.g., /compact)
-        msg_stripped = request.message.strip().lower()
+        msg_stripped = message.strip().lower()
         logger.info(
             "[CHAT] Received message: '%s' stripped: '%s' is_compact: %s",
-            request.message,
+            message,
             msg_stripped,
             msg_stripped == "/compact",
         )
         if msg_stripped == "/compact":
 
             async def compact_command_response():
+                if dispatched_target is not None:
+                    dispatch_event = {
+                        "type": "dispatched",
+                        "thread_id": original_thread_id,
+                        "target_thread_id": dispatched_target.thread_id,
+                        "title": dispatched_target.title,
+                        "matched_ref": dispatched_target.reference,
+                        **_dispatch_stream_fields(
+                            dispatched_target,
+                            original_thread_id,
+                        ),
+                    }
+                    yield f"data: {json.dumps(dispatch_event)}\n\n"
                 yield (
                     "data: "
                     + json.dumps(
                         {
                             "type": "compacting",
                             "message": "Compacting context...",
-                            "thread_id": thread_id,
+                            "thread_id": original_thread_id
+                            if dispatched_target
+                            else thread_id,
+                            **_dispatch_stream_fields(
+                                dispatched_target,
+                                original_thread_id,
+                            ),
                         }
                     )
                     + "\n\n"
@@ -128,7 +248,13 @@ def create_chat_router(
                                 "messages_removed": messages_removed,
                                 "auto_resumed": False,
                                 "summary": result.get("summary"),
-                                "thread_id": thread_id,
+                                "thread_id": original_thread_id
+                                if dispatched_target
+                                else thread_id,
+                                **_dispatch_stream_fields(
+                                    dispatched_target,
+                                    original_thread_id,
+                                ),
                             }
                         )
                         + "\n\n"
@@ -136,7 +262,13 @@ def create_chat_router(
                     msg = f"✓ Conversation compacted. {messages_removed} messages summarized."
                 else:
                     msg = f"Could not compact: {result.get('reason', 'unknown error')}"
-                yield f"data: {json.dumps({'type': 'response', 'content': msg})}\n\n"
+                response_data = {
+                    "type": "response",
+                    "content": msg,
+                    "thread_id": original_thread_id if dispatched_target else thread_id,
+                    **_dispatch_stream_fields(dispatched_target, original_thread_id),
+                }
+                yield f"data: {json.dumps(response_data)}\n\n"
                 # Include context_stats and model in done event
                 context_stats = agent.get_context_stats(thread_id)
                 effective_model = (
@@ -148,9 +280,15 @@ def create_chat_router(
                     + json.dumps(
                         {
                             "type": "done",
-                            "thread_id": thread_id,
+                            "thread_id": original_thread_id
+                            if dispatched_target
+                            else thread_id,
                             "context_stats": context_stats,
                             "model": effective_model,
+                            **_dispatch_stream_fields(
+                                dispatched_target,
+                                original_thread_id,
+                            ),
                         }
                     )
                     + "\n\n"
@@ -178,7 +316,7 @@ def create_chat_router(
                 event_type="message_added",
                 thread_id=thread_id,
                 user_id=user_id,
-                data={"role": "user", "content": request.message},
+                data={"role": "user", "content": message},
                 origin_client_id=client_id,
             )
 
@@ -227,8 +365,22 @@ def create_chat_router(
                 images = _legacy_image_dicts(request)
 
                 client_disconnected = False
+                if dispatched_target is not None:
+                    dispatch_event = {
+                        "type": "dispatched",
+                        "thread_id": original_thread_id,
+                        "target_thread_id": dispatched_target.thread_id,
+                        "title": dispatched_target.title,
+                        "matched_ref": dispatched_target.reference,
+                        **_dispatch_stream_fields(
+                            dispatched_target,
+                            original_thread_id,
+                        ),
+                    }
+                    yield f"data: {json.dumps(dispatch_event)}\n\n"
+
                 async for chunk in agent.astream(
-                    request.message,
+                    message,
                     thread_id=thread_id,
                     user_id=user_id,
                     attachments=attachments,
@@ -263,14 +415,26 @@ def create_chat_router(
                             user_id=user_id,
                             task_id=autonomous_task_id,
                             data={
-                                "prompt": request.message,
+                                "prompt": message,
                                 "source": request.trigger_override or "autonomous",
                                 **_trigger_fields(),
                             },
                         )
                         autonomous_started = True
 
-                    event_data = json.dumps({**chunk, "thread_id": thread_id})
+                    stream_thread_id = (
+                        original_thread_id if dispatched_target is not None else thread_id
+                    )
+                    event_data = json.dumps(
+                        {
+                            **chunk,
+                            "thread_id": stream_thread_id,
+                            **_dispatch_stream_fields(
+                                dispatched_target,
+                                original_thread_id,
+                            ),
+                        }
+                    )
                     yield f"data: {event_data}\n\n"
 
                     # Mirror streaming chunks to the autonomous event bus for
@@ -298,16 +462,22 @@ def create_chat_router(
 
                     done_data = {
                         "type": "done",
-                        "thread_id": thread_id,
+                        "thread_id": original_thread_id
+                        if dispatched_target is not None
+                        else thread_id,
                         "context_stats": context_stats,
                         "model": agent._get_llm_config_for_thread(thread_id).model
                         or agent.settings.llm_model,
+                        **_dispatch_stream_fields(
+                            dispatched_target,
+                            original_thread_id,
+                        ),
                     }
 
                     # Auto-title the thread from the user's message if untitled
                     try:
                         new_title = agent.thread_metadata_manager.auto_title(
-                            user_id, thread_id, request.message
+                            user_id, thread_id, message
                         )
                         if new_title:
                             done_data["title"] = new_title
@@ -331,7 +501,13 @@ def create_chat_router(
                     {
                         "type": "error",
                         "content": str(e),
-                        "thread_id": thread_id,
+                        "thread_id": original_thread_id
+                        if dispatched_target is not None
+                        else thread_id,
+                        **_dispatch_stream_fields(
+                            dispatched_target,
+                            original_thread_id,
+                        ),
                     }
                 )
                 yield f"data: {error_data}\n\n"
@@ -396,12 +572,35 @@ def create_chat_router(
         """
         agent = get_agent_fn()
         thread_id = request.thread_id or str(uuid.uuid4())[:8]
+        message = request.message
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
         require_thread_access_fn(user, thread_id)
 
+        if not request.is_self_invoke:
+            mention_resolution = resolve_thread_mention(
+                message,
+                user_id=user_id,
+                thread_metadata_manager=agent.thread_metadata_manager,
+                accounts_repo=agent.accounts_repo,
+            )
+            if isinstance(mention_resolution, MentionAmbiguity):
+                error = _mention_ambiguity_error(
+                    mention_resolution,
+                    thread_id=thread_id,
+                )
+                return ChatResponse(
+                    response=error["content"],
+                    thread_id=thread_id,
+                    tool_call_count=0,
+                )
+            if isinstance(mention_resolution, MentionTarget):
+                require_thread_access_fn(user, mention_resolution.thread_id)
+                thread_id = mention_resolution.thread_id
+                message = mention_resolution.message
+
         response = agent.chat(
-            request.message,
+            message,
             thread_id=thread_id,
             user_id=user_id,
             _is_self_invoke=request.is_self_invoke,

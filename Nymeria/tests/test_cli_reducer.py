@@ -194,6 +194,49 @@ def test_compacted_event_replaces_transcript_with_notice() -> None:
     assert state.messages[1].status == "streaming"
 
 
+def test_dispatched_event_inserts_notice_before_streaming_assistant() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "@Research check this", now=0.1)
+
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "dispatched",
+            "thread_id": "thread-1",
+            "target_thread_id": "thread-2",
+            "title": "Research",
+            "original_thread_id": "thread-1",
+        },
+        now=1.0,
+    )
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": "Found it."},
+        now=2.0,
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "thread_id": "thread-1",
+            "context_stats": {"thread_id": "thread-2", "input_tokens": 10},
+            "model": "target-model",
+            "dispatched_to": {"thread_id": "thread-2", "title": "Research"},
+        },
+        now=3.0,
+    )
+
+    assert isinstance(state.messages[1], SystemMessage)
+    assert state.messages[1].kind == "dispatch_notice"
+    assert "Research" in state.messages[1].content
+    assistant = select_last_assistant_message(state)
+    assert isinstance(assistant, AssistantMessage)
+    assert select_response_content(assistant) == "Found it."
+    assert state.thread_id == "thread-1"
+    assert state.context_stats == {}
+    assert state.active_model == ""
+
+
 def test_error_marks_assistant_and_turn_error() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "hello", now=0.1)

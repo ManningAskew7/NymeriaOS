@@ -7,7 +7,8 @@ import type {
   ToolReloadInfo,
   FileAttachment,
   WorkspaceArtifact,
-  ContextStats
+  ContextStats,
+  DispatchInfo
 } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 import { generateId } from '$lib/utils/ids';
@@ -273,6 +274,23 @@ function createChatStore() {
             status: 'error',
             steps: updatedSteps,
             intermediateContent: lastMessage.intermediateContent || undefined
+          }
+        ];
+      }
+    },
+
+    setLastAssistantDispatchInfo(dispatchInfo: DispatchInfo) {
+      if (messages.length === 0) return;
+
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+
+      if (lastMessage.role === 'assistant') {
+        messages = [
+          ...messages.slice(0, lastIndex),
+          {
+            ...lastMessage,
+            dispatchInfo
           }
         ];
       }
