@@ -653,7 +653,9 @@ class _RichReplRuntime:
             self._terminal_size = new_size
             size_changed = new_size != old_size
             if width_changed or (self.scroll_region_enabled() and size_changed):
-                await self.redraw()
+                await self.redraw(
+                    rebuild_scrollback=self.scroll_region_enabled() and size_changed
+                )
                 self._resize_last_redraw_at = time.monotonic()
             quiet_delay = (
                 self._resize_requested_at
@@ -803,12 +805,12 @@ class _RichReplRuntime:
         self.invalidate()
         return result
 
-    async def redraw(self) -> None:
+    async def redraw(self, *, rebuild_scrollback: bool = False) -> None:
         """Clear visible terminal cells, replay reducer transcript, and repaint."""
 
         if self.scroll_region_enabled() and self.application is not None:
             with self.render_lock:
-                self._redraw_follow_footer()
+                self._redraw_follow_footer(rebuild_scrollback=rebuild_scrollback)
             self.invalidate()
             return
 
@@ -820,7 +822,7 @@ class _RichReplRuntime:
         await self.render_above_prompt(repaint)
         self.invalidate()
 
-    def _redraw_follow_footer(self) -> None:
+    def _redraw_follow_footer(self, *, rebuild_scrollback: bool = False) -> None:
         app = self.application
         if app is None:
             return
@@ -830,11 +832,22 @@ class _RichReplRuntime:
         self._deactivate_pinned_footer(reset_terminal=True)
         output.hide_cursor()
         output.erase_screen()
+        if rebuild_scrollback:
+            output.write_raw("\x1b[3J")
         output.cursor_goto(0, 0)
         output.flush()
         with suppress(Exception):
             app.renderer.reset(leave_alternate_screen=False)
         self._follow_footer_transcript_cursor_saved = False
+        if rebuild_scrollback:
+            with suppress(Exception):
+                self.app._render_current_header(
+                    replace(
+                        self.capabilities,
+                        width=self._terminal_size[0],
+                        height=self._terminal_size[1],
+                    )
+                )
         self.renderer.reset_state(self.renderer.state)
         self.renderer.render_state()
         self.save_follow_footer_transcript_cursor()

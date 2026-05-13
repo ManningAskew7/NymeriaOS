@@ -705,7 +705,7 @@ def test_scroll_region_height_resize_triggers_hard_redraw() -> None:
     renderer, redraw, runtime = asyncio.run(exercise())
 
     renderer.update_terminal_width.assert_called_once_with(80)
-    redraw.assert_awaited_once()
+    redraw.assert_awaited_once_with(rebuild_scrollback=True)
     assert runtime._terminal_size == (80, 30)
     assert runtime._resize_pending is False
 
@@ -746,11 +746,66 @@ def test_scroll_region_resize_replay_resets_pinned_margins_before_clear() -> Non
     runtime._redraw_follow_footer()
 
     assert output.ops.index(("raw", "\x1b[r")) < output.ops.index(("erase_screen", None))
+    assert ("raw", "\x1b[3J") not in output.ops
     assert ("hide_cursor", None) in output.ops
     assert ("cursor", (0, 0)) in output.ops
     assert ("reset", False) in output.ops
     assert output.ops[-2:] == [("raw", "\x1b7"), ("flush", None)]
     assert runtime.pinned_footer_active() is False
+
+
+def test_scroll_region_resize_rebuild_clears_scrollback_before_replay() -> None:
+    render_output = CapturedRenderOutput()
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    app.state.console = Console(
+        file=render_output.stdout,
+        width=100,
+        force_terminal=False,
+    )
+    output = FakePromptOutput(columns=100, rows=30)
+    prompt_renderer = FakePromptRenderer(output)
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(
+            width=100,
+            height=30,
+            renderer="rich",
+        ),
+        stdout=render_output.stdout,
+        stderr=render_output.stderr,
+        width=100,
+    )
+    renderer.state = start_turn(
+        create_initial_state(thread_id="thread-1", now=0.0),
+        "resize check",
+        now=0.1,
+    )
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(width=100, height=30, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=False,
+    )
+
+    runtime._redraw_follow_footer(rebuild_scrollback=True)
+
+    erase_index = output.ops.index(("erase_screen", None))
+    clear_scrollback_index = output.ops.index(("raw", "\x1b[3J"))
+    cursor_index = output.ops.index(("cursor", (0, 0)))
+    assert erase_index < clear_scrollback_index < cursor_index
+    assert ("reset", False) in output.ops
+    assert output.ops[-2:] == [("raw", "\x1b7"), ("flush", None)]
+    text = ANSI_RE.sub("", render_output.stdout_text)
+    assert "Nymeria" in text
+    assert "resize check" in text
+    assert text.index("Nymeria") < text.index("resize check")
 
 
 def test_scroll_region_resize_redraw_does_not_overlap_existing_task() -> None:
