@@ -67,6 +67,7 @@ class RichReplRenderer:
         error_console: Console | None = None,
         width: int | None = None,
         theme: CLITheme | None = None,
+        stream_rich_response_lines: bool = False,
     ) -> None:
         self.state = state or create_initial_state()
         self.capabilities = capabilities
@@ -99,6 +100,7 @@ class RichReplRenderer:
         self._last_markdown_block: MarkdownBlock | None = None
         self._response_stream_active = False
         self._markdown_stream = MarkdownStreamBuffer()
+        self._stream_rich_response_lines = stream_rich_response_lines
         self._stream_line_buffer = ""
         self._turn_seen_tool = False
         self.transcript_verbose = False
@@ -280,6 +282,9 @@ class RichReplRenderer:
         """Render buffered response markdown."""
 
         if not self._ascii_only():
+            if self._stream_rich_response_lines:
+                self._flush_stream_line(force=True)
+                return
             block_kind = "final" if self._turn_seen_tool else "preamble"
             self._flush_rich_markdown_blocks(block_kind=block_kind, force=True)
             return
@@ -572,6 +577,13 @@ class RichReplRenderer:
         if not text:
             return
         if not self._ascii_only():
+            if self._stream_rich_response_lines:
+                self._begin_assistant_block(block_kind)
+                self._stream_line_buffer += text
+                self._response_stream_active = True
+                self._flush_complete_stream_lines(block_kind)
+                self._flush_stream_line_if_ready(block_kind)
+                return
             blocks = self._markdown_stream.append(text)
             self._response_stream_active = self._markdown_stream.has_pending
             if blocks:

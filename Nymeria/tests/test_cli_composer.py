@@ -19,6 +19,7 @@ from rich.cells import cell_len
 from nymeria.triggers.cli.commands import Command, CommandRegistry
 from nymeria.triggers.cli.app import (
     CLIApp,
+    CLIRuntimeConfig,
     _RichReplPromptToolkitShell,
     _RichReplRuntime,
 )
@@ -329,6 +330,44 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
             runtime.status_fragments(),
         )
         for _, text in fragments
+    )
+
+
+def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None:
+    capabilities = FakeTerminalCapabilities(width=24, height=24, renderer="rich")
+    cli_app = CLIApp(
+        None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    renderer = RichReplRenderer(capabilities=capabilities, width=24)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+    shell = _RichReplPromptToolkitShell(
+        cli_app=cli_app,
+        runtime=runtime,
+        renderer=renderer,
+        capabilities=capabilities,
+        history_path=tmp_path / "cli_history",
+    )
+
+    app = shell.build_application()
+    children = app.layout.container.children
+    runtime.terminal_width = lambda: 24  # type: ignore[method-assign]
+    shell.composer_controller.text_area.buffer.text = "abcdefghij " * 6
+
+    assert runtime.scroll_region_enabled() is True
+    assert len(children) == 3
+    assert isinstance(children[0], ConditionalContainer)
+    assert isinstance(children[1], ConditionalContainer)
+    assert isinstance(children[2], HSplit)
+    assert runtime.composer_input_height() > 1
+    assert runtime.footer_height() == runtime.composer_input_height() + 4
+    assert shell.composer_controller.text_area.window.height().min == (
+        runtime.composer_input_height()
     )
 
 

@@ -74,6 +74,7 @@ class FakeTerminalCapabilities:
     supports_mouse: bool = True
     width: int = 80
     height: int = 24
+    renderer: str = "rich"
 
     @property
     def is_interactive(self) -> bool:
