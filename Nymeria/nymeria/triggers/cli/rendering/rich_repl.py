@@ -37,7 +37,7 @@ from .markdown import (
 from .plain import (
     truncate_plain,
 )
-from .rich_markdown import MarkdownStreamBuffer, print_rich_markdown
+from .rich_markdown import MarkdownBlock, MarkdownStreamBuffer, print_rich_markdown
 from .tool_rows import ToolRowRenderOptions, format_tool_row
 from .transcript import (
     TranscriptLine,
@@ -48,6 +48,9 @@ from .transcript import (
 )
 
 THINKING_PREVIEW_MIN_CELLS = 12
+_DENSE_MARKDOWN_BLOCK_KINDS = {"table", "code", "list", "blockquote", "hr"}
+_RICH_NATIVE_LEADING_BLANK_KINDS = {"table", "list", "blockquote"}
+_RICH_NATIVE_TRAILING_BLANK_KINDS = {"hr"}
 
 
 class RichReplRenderer:
@@ -93,6 +96,7 @@ class RichReplRenderer:
         self._rendered_error_count = len(self.state.errors)
         self._rendered_diagnostic_count = len(self.state.diagnostics)
         self._last_rendered_block: str | None = None
+        self._last_markdown_block: MarkdownBlock | None = None
         self._response_stream_active = False
         self._markdown_stream = MarkdownStreamBuffer()
         self._stream_line_buffer = ""
@@ -131,6 +135,7 @@ class RichReplRenderer:
         self._rendered_error_count = len(self.state.errors)
         self._rendered_diagnostic_count = len(self.state.diagnostics)
         self._last_rendered_block = None
+        self._last_markdown_block = None
         self._response_stream_active = False
         self._markdown_stream.reset()
         self._stream_line_buffer = ""
@@ -163,6 +168,7 @@ class RichReplRenderer:
             if key[0] != self.state.messages[-1].id
         }
         self._last_rendered_block = None
+        self._last_markdown_block = None
         self._response_stream_active = False
         self._markdown_stream.reset()
         self._stream_line_buffer = ""
@@ -340,6 +346,7 @@ class RichReplRenderer:
             )
             self._rendered_dispatch_ids.add(message.id)
             self._last_rendered_block = "dispatch"
+            self._last_markdown_block = None
 
     def _collect_response_delta(self, state: CLIUIState) -> None:
         message = select_last_assistant_message(state)
@@ -398,6 +405,7 @@ class RichReplRenderer:
                 self._render_transcript_line(line)
             self._rendered_system_ids.add(message.id)
             self._last_rendered_block = None
+            self._last_markdown_block = None
             self._turn_seen_tool = False
             printed = True
         return printed
@@ -592,13 +600,14 @@ class RichReplRenderer:
 
     def _print_rich_markdown_blocks(
         self,
-        blocks: Sequence[str],
+        blocks: Sequence[MarkdownBlock | str],
         *,
         block_kind: str,
     ) -> None:
         rendered = False
         for block in blocks:
-            if not str(block or "").strip():
+            markdown_block = _coerce_markdown_block(block)
+            if not markdown_block.text.strip():
                 continue
             if not rendered:
                 self._begin_assistant_block(
@@ -606,7 +615,17 @@ class RichReplRenderer:
                     flush_pending_markdown=False,
                 )
                 rendered = True
-            print_rich_markdown(self.console, block, theme=self.theme)
+            if _should_print_markdown_separator(
+                self._last_markdown_block,
+                markdown_block,
+            ):
+                self.console.print()
+            print_rich_markdown(
+                self.console,
+                markdown_block.text,
+                theme=self.theme,
+            )
+            self._last_markdown_block = markdown_block
         if rendered:
             self._flush_console_file()
 
@@ -633,6 +652,7 @@ class RichReplRenderer:
                 )
             )
             self._last_rendered_block = "dispatch"
+            self._last_markdown_block = None
             rendered_body = True
 
         for step in message.steps:
@@ -677,6 +697,8 @@ class RichReplRenderer:
         if message.status == "complete" and rendered_body:
             self.console.print()
             self._render_assistant_divider()
+            self._last_rendered_block = "assistant_divider"
+            self._last_markdown_block = None
 
     def _render_system_message(self, message: SystemMessage) -> None:
         self._render_separator(
@@ -761,6 +783,7 @@ class RichReplRenderer:
         self._render_separator(label, style=style)
         self._render_assistant_divider()
         self._last_rendered_block = "assistant_divider"
+        self._last_markdown_block = None
 
     def _render_assistant_divider(self) -> None:
         style = _style_for_line_kind("assistant_divider", self.theme)
@@ -785,10 +808,11 @@ class RichReplRenderer:
             blocks = self._markdown_stream.flush()
             if blocks:
                 self._last_rendered_block = previous_block
-                for block in blocks:
-                    print_rich_markdown(self.console, block, theme=self.theme)
+                self._print_rich_markdown_blocks(
+                    blocks,
+                    block_kind=previous_block,
+                )
                 self._response_stream_active = False
-                self._flush_console_file()
         if self._stream_line_buffer and self._last_rendered_block != block_kind:
             self._flush_stream_line(
                 force=True,
@@ -798,6 +822,7 @@ class RichReplRenderer:
             self._last_rendered_block is not None
             and self._last_rendered_block != block_kind
         ):
+            self._last_markdown_block = None
             self.console.print()
             if _needs_assistant_divider(
                 block_kind,
@@ -913,6 +938,7 @@ class RichReplRenderer:
         self._rendered_error_count = len(state.errors)
         self._rendered_diagnostic_count = len(state.diagnostics)
         self._last_rendered_block = None
+        self._last_markdown_block = None
         self._response_stream_active = False
         self._markdown_stream.reset()
         self._stream_line_buffer = ""
@@ -930,6 +956,7 @@ class RichReplRenderer:
         self._render_assistant_divider()
         self._rendered_turn_end_ids.add(message.id)
         self._last_rendered_block = "assistant_divider"
+        self._last_markdown_block = None
 
     def _render_transcript_line(self, line: TranscriptLine) -> None:
         self.console.print(
@@ -1150,6 +1177,29 @@ def _positive_width(width: int | None) -> int:
 
 def _stream_flush_width(width: int | None) -> int:
     return max(32, min(72, _positive_width(width) - 8))
+
+
+def _coerce_markdown_block(block: MarkdownBlock | str) -> MarkdownBlock:
+    if isinstance(block, MarkdownBlock):
+        return block
+    return MarkdownBlock.from_text(block)
+
+
+def _should_print_markdown_separator(
+    previous: MarkdownBlock | None,
+    current: MarkdownBlock,
+) -> bool:
+    if previous is None:
+        return False
+    if previous.kind == "heading" and current.kind == "heading":
+        return False
+    if previous.kind in _RICH_NATIVE_TRAILING_BLANK_KINDS:
+        return False
+    if current.kind in _RICH_NATIVE_LEADING_BLANK_KINDS:
+        return False
+    if previous.trailing_blank_lines > 0 or current.leading_blank_lines > 0:
+        return True
+    return previous.kind in _DENSE_MARKDOWN_BLOCK_KINDS
 
 
 __all__ = [

@@ -13,6 +13,7 @@ from nymeria.triggers.cli.app import CLIApp, CLIRuntimeConfig, _RichReplRuntime
 from nymeria.triggers.cli.history import cli_state_from_history
 from nymeria.triggers.cli.rendering.rich_markdown import (
     DEFAULT_CODE_THEME,
+    MarkdownBlock,
     MarkdownStreamBuffer,
     RichMarkdownAdapter,
     rich_markdown_theme,
@@ -29,6 +30,21 @@ from nymeria.triggers.cli.state import (
 )
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _block_texts(blocks: list[MarkdownBlock]) -> list[str]:
+    return [block.text for block in blocks]
+
+
+def _assert_blank_line_between(text: str, before: str, after: str) -> None:
+    lines = text.splitlines()
+    before_index = next(index for index, line in enumerate(lines) if before in line)
+    after_index = next(
+        index
+        for index, line in enumerate(lines[before_index + 1 :], start=before_index + 1)
+        if after in line
+    )
+    assert any(not line.strip() for line in lines[before_index + 1 : after_index])
 
 
 def _reduce_tool_state():
@@ -113,14 +129,198 @@ def test_markdown_stream_buffer_commits_only_stable_blocks() -> None:
     buffer = MarkdownStreamBuffer()
 
     assert buffer.append("Paragraph with **bold**") == []
-    assert buffer.append("\n\nName | Value\n--- | ---:\n") == [
-        "Paragraph with **bold**"
-    ]
+    blocks = buffer.append("\n\nName | Value\n--- | ---:\n")
+    assert _block_texts(blocks) == ["Paragraph with **bold**"]
+    assert blocks[0].kind == "paragraph"
+    assert blocks[0].trailing_blank_lines == 1
     assert buffer.append("**alpha** | 42\n") == []
-    assert buffer.append("\nNext paragraph") == [
-        "Name | Value\n--- | ---:\n**alpha** | 42"
+    blocks = buffer.append("\nNext paragraph")
+    assert _block_texts(blocks) == ["Name | Value\n--- | ---:\n**alpha** | 42"]
+    assert blocks[0].kind == "table"
+    assert blocks[0].trailing_blank_lines == 1
+    assert _block_texts(buffer.flush()) == ["Next paragraph"]
+
+
+def test_markdown_stream_buffer_preserves_dense_block_separators() -> None:
+    buffer = MarkdownStreamBuffer()
+
+    blocks = buffer.append(
+        "Intro\n\nName | Value\n--- | ---:\nalpha | 42\n\nNext paragraph"
+    )
+    assert _block_texts(blocks) == [
+        "Intro",
+        "Name | Value\n--- | ---:\nalpha | 42",
     ]
-    assert buffer.flush() == ["Next paragraph"]
+    assert blocks[1].kind == "table"
+    assert blocks[1].trailing_blank_lines == 1
+    assert _block_texts(buffer.flush()) == ["Next paragraph"]
+
+    buffer = MarkdownStreamBuffer()
+    blocks = buffer.append("```python\nprint('hi')\n```\n")
+    assert _block_texts(blocks) == ["```python\nprint('hi')\n```"]
+    assert blocks[0].kind == "code"
+    assert buffer.append("\nCode Block Test (Bash)") == []
+    blocks = buffer.flush()
+    assert _block_texts(blocks) == ["Code Block Test (Bash)"]
+    assert blocks[0].leading_blank_lines == 1
+
+    buffer = MarkdownStreamBuffer()
+    assert buffer.append("Name | Value\n--- | ---:\nalpha | 42\nTight label") == []
+    blocks = buffer.flush()
+    assert _block_texts(blocks) == [
+        "Name | Value\n--- | ---:\nalpha | 42",
+        "Tight label",
+    ]
+    assert blocks[0].kind == "table"
+    assert blocks[0].trailing_blank_lines == 0
+
+
+def test_rich_renderer_markdown_block_spacing_and_replay_match() -> None:
+    content = "\n".join(
+        [
+            "Table Test (Simple)",
+            "",
+            "Name | Value",
+            "--- | ---:",
+            "alpha | 42",
+            "",
+            "Table Test (Wide & Uneven)",
+            "",
+            "A | B",
+            "--- | ---",
+            "x | y",
+            "",
+            "```python",
+            "print('hi')",
+            "```",
+            "",
+            "Code Block Test (Bash)",
+            "",
+            "```bash",
+            "echo hi",
+            "```",
+            "",
+            "Inline Formatting Stress Test",
+            "",
+            "Lists",
+            "",
+            "- one",
+            "",
+            "Blockquote",
+            "",
+            "> quote",
+        ]
+    )
+    chunks = [
+        content[:68],
+        content[68:139],
+        content[139:211],
+        content[211:],
+    ]
+
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "markdown spacing", now=0.0)
+    for offset, chunk in enumerate(chunks):
+        state = reduce_stream_event(
+            state,
+            {"type": "response", "content": chunk},
+            now=1.0 + offset,
+        )
+    state = reduce_stream_event(state, {"type": "done"}, now=5.0)
+
+    live_output = CapturedRenderOutput()
+    live_renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=live_output.stdout,
+        stderr=live_output.stderr,
+        width=80,
+    )
+    live_renderer.start_turn("markdown spacing", thread_id="thread-1", now=0.0)
+    live_renderer.render_events(
+        [{"type": "response", "content": chunk} for chunk in chunks]
+        + [{"type": "done"}],
+        now=1.0,
+    )
+
+    replay_output = CapturedRenderOutput()
+    replay_renderer = RichReplRenderer(
+        state=state,
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=replay_output.stdout,
+        stderr=replay_output.stderr,
+        width=80,
+    )
+    replay_renderer.render_state()
+
+    text = live_output.stdout_text
+    _assert_blank_line_between(text, "alpha", "Table Test (Wide & Uneven)")
+    _assert_blank_line_between(text, "print('hi')", "Code Block Test (Bash)")
+    _assert_blank_line_between(text, "echo hi", "Inline Formatting Stress Test")
+    _assert_blank_line_between(text, "Inline Formatting Stress Test", "Lists")
+    _assert_blank_line_between(text, "one", "Blockquote")
+    assert live_output.stdout_text == replay_output.stdout_text
+
+
+def test_rich_renderer_adds_fallback_spacing_after_tight_dense_blocks() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=80,
+    )
+    renderer.start_turn("tight markdown", thread_id="thread-1", now=0.0)
+
+    renderer.render_events(
+        [
+            {
+                "type": "response",
+                "content": (
+                    "Name | Value\n"
+                    "--- | ---:\n"
+                    "alpha | 42\n"
+                    "Tight Table Label\n\n"
+                    "```python\n"
+                    "print('tight')\n"
+                    "```\n"
+                    "Tight Code Label"
+                ),
+            },
+            {"type": "done"},
+        ],
+        now=1.0,
+    )
+
+    _assert_blank_line_between(output.stdout_text, "alpha", "Tight Table Label")
+    _assert_blank_line_between(
+        output.stdout_text,
+        "print('tight')",
+        "Tight Code Label",
+    )
+
+
+def test_rich_renderer_keeps_consecutive_headings_compact() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=80,
+    )
+    renderer.start_turn("headings", thread_id="thread-1", now=0.0)
+
+    renderer.render_events(
+        [
+            {"type": "response", "content": "## First\n\n### Second\n\nBody"},
+            {"type": "done"},
+        ],
+        now=1.0,
+    )
+
+    lines = output.stdout_text.splitlines()
+    first_index = next(index for index, line in enumerate(lines) if "First" in line)
+    second_index = next(index for index, line in enumerate(lines) if "Second" in line)
+    assert second_index == first_index + 1
 
 
 def test_rich_renderer_renders_transcript_from_reducer_state() -> None:
