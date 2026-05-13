@@ -427,8 +427,30 @@ class _RichReplPromptToolkitShell:
             ),
             filter=footer_visible,
         )
+        top_border = ConditionalContainer(
+            Window(
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                char="─",
+                style="class:input-border",
+            ),
+            filter=footer_visible,
+        )
+        bottom_border = ConditionalContainer(
+            Window(
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                char="─",
+                style="class:input-border",
+            ),
+            filter=footer_visible,
+        )
+        input_area = HSplit(
+            [top_border, controller.text_area, bottom_border],
+            style="class:input-area",
+        )
         footer_spacer = Window(height=Dimension(weight=1), char=" ")
-        body = HSplit([footer_spacer, transcript_gap, status_bar, controller.text_area])
+        body = HSplit([footer_spacer, transcript_gap, status_bar, input_area])
         bindings = KeyBindings()
 
         @bindings.add("c-d")
@@ -2207,16 +2229,12 @@ def _repl_prompt_style(
 
 def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
     return {
-        "status": ptk_style(theme, "status_fg", bg_slot="status_bg"),
-        "status.separator": ptk_style(theme, "separator", bg_slot="status_bg"),
-        "status.accent": ptk_style(theme, "status_accent", bg_slot="status_bg"),
-        "status.spinner": ptk_style(theme, "spinner", bg_slot="status_bg"),
-        "status.notice.warning": ptk_style(
-            theme,
-            "prompt_busy",
-            bg_slot="status_bg",
-        ),
-        "status.notice.error": ptk_style(theme, "error", bg_slot="status_bg"),
+        "status": ptk_style(theme, "status_fg"),
+        "status.separator": ptk_style(theme, "separator"),
+        "status.accent": ptk_style(theme, "status_accent"),
+        "status.spinner": ptk_style(theme, "spinner"),
+        "status.notice.warning": ptk_style(theme, "prompt_busy"),
+        "status.notice.error": ptk_style(theme, "error"),
         "prompt": ptk_style(theme, "prompt", bold=True),
         "prompt.busy": ptk_style(theme, "prompt_busy", bold=True),
         "prompt.error": ptk_style(theme, "prompt_error", bold=True),
@@ -2224,6 +2242,8 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         "composer.busy": ptk_style(theme, "prompt_busy", bold=True),
         "composer.error": ptk_style(theme, "prompt_error", bold=True),
         "composer.queued": ptk_style(theme, "prompt_busy", bold=True),
+        "input-border": ptk_style(theme, "input_border"),
+        "input-area": "",
         "text-area": "",
         "text-area.prompt": "",
     }

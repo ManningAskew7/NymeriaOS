@@ -14,7 +14,9 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import TextArea
 
@@ -34,6 +36,10 @@ ErrorHandler = Callable[[str], None]
 StopHandler = Callable[[], bool | None]
 StateGetter = Callable[[], bool]
 CountGetter = Callable[[], int]
+
+_SHIFT_ENTER_CSI = "\x1b[13;2u"
+if _SHIFT_ENTER_CSI not in ANSI_SEQUENCES:
+    ANSI_SEQUENCES[_SHIFT_ENTER_CSI] = Keys.ControlJ
 
 _BRACKETED_PASTE_START = "\x1b[200~"
 _BRACKETED_PASTE_END = "\x1b[201~"
@@ -190,6 +196,7 @@ class ComposerController:
             prompt=self.prompt_fragments,
             multiline=multiline,
             wrap_lines=True,
+            get_line_prefix=self._line_prefix,
             history=_history(history_path),
             auto_suggest=AutoSuggestFromHistory(),
             completer=ComposerCompleter(command_registry, cwd=self.cwd),
@@ -209,12 +216,18 @@ class ComposerController:
     def prompt_fragments(self):
         state = self.prompt_state
         if state.attachment_errors:
-            return [("class:composer.error", "Error: ")]
+            return [("class:composer.error", "› ")]
         if self.show_queued_prompt and state.queued_count:
-            return [("class:composer.queued", f"Queued {state.queued_count}: ")]
+            return [("class:composer.queued", f"› {state.queued_count}: ")]
         if state.busy:
-            return [("class:composer.busy", "Busy: ")]
-        return [("class:composer", "You: ")]
+            return [("class:composer.busy", "› ")]
+        return [("class:composer", "› ")]
+
+    def _line_prefix(self, line_number: int, wrap_count: int):
+        if wrap_count > 0 or line_number > 0:
+            prompt_width = sum(len(text) for _, text in self.prompt_fragments())
+            return [("", " " * prompt_width)]
+        return []
 
     def submit_buffer(self, buffer: "Buffer") -> bool:
         submission = parse_composer_submission(buffer.text, cwd=self.cwd)
@@ -389,10 +402,9 @@ def get_prompt(
 ) -> HTML:
     """Build the dynamic prompt string."""
     selected_theme = theme or DEFAULT_CLI_THEME
-    label = "Busy" if busy else "You"
     color = selected_theme.color("prompt_busy" if busy else "prompt")
     return HTML(
-        f"<style fg='{color}' bg=''><b>{label}:</b></style> "
+        f"<style fg='{color}' bg=''><b>›</b></style> "
     )
 
 
