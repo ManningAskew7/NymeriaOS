@@ -110,6 +110,7 @@ class MCPServerRegistry:
             url=defn.url,
             headers=defn.headers,
             tool_name="__discovery__",  # placeholder
+            server_id=defn.id,
             env_vars=defn.env_vars,
             encrypted_env_vars=defn.encrypted_env_vars,
             working_directory=defn.working_directory,
@@ -207,6 +208,7 @@ class MCPServerRegistry:
             url=defn.url,
             headers=defn.headers,
             tool_name=discovered.name,
+            server_id=defn.id,
             env_vars=defn.env_vars,
             encrypted_env_vars=defn.encrypted_env_vars,
             working_directory=defn.working_directory,

@@ -96,6 +96,28 @@ def _request_error(
     return result
 
 
+def _redact_text(value: str, redact_values: Optional[list[str]] = None) -> str:
+    redacted = value
+    for secret in redact_values or []:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _redact_sensitive(value: Any, redact_values: Optional[list[str]] = None) -> Any:
+    if not redact_values:
+        return value
+    if isinstance(value, str):
+        return _redact_text(value, redact_values)
+    if isinstance(value, dict):
+        return {key: _redact_sensitive(item, redact_values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_sensitive(item, redact_values) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive(item, redact_values) for item in value)
+    return value
+
+
 def _audit_http_result(
     *,
     tool_name: str,
@@ -105,24 +127,40 @@ def _audit_http_result(
     headers: Optional[dict[str, Any]] = None,
     body: Any = None,
     used_env_secrets: Optional[list[str]] = None,
+    used_credentials: Optional[list[str]] = None,
+    redact_values: Optional[list[str]] = None,
 ) -> None:
-    response = result.get("response") if isinstance(result.get("response"), dict) else {}
-    error = result.get("error") if isinstance(result.get("error"), dict) else {}
+    safe_result = _redact_sensitive(result, redact_values)
+    safe_url = _redact_text(url, redact_values)
+    safe_headers = _redact_sensitive(headers or {}, redact_values)
+    safe_body = _redact_sensitive(body, redact_values)
+    response = (
+        safe_result.get("response")
+        if isinstance(safe_result.get("response"), dict)
+        else {}
+    )
+    error = safe_result.get("error") if isinstance(safe_result.get("error"), dict) else {}
+    body_preview = (
+        safe_body
+        if isinstance(safe_body, str)
+        else ("[structured body]" if body is not None else None)
+    )
     audit_http_event(
         {
             "tool": tool_name,
             "method": method,
-            "url": url,
-            "headers": headers or {},
-            "body_preview": body if isinstance(body, str) else ("[structured body]" if body is not None else None),
+            "url": safe_url,
+            "headers": safe_headers,
+            "body_preview": body_preview,
             "used_env_secrets": sorted(used_env_secrets or []),
-            "ok": result.get("ok"),
-            "http_ok": result.get("http_ok"),
-            "format_ok": result.get("format_ok"),
+            "used_credentials": sorted(used_credentials or []),
+            "ok": safe_result.get("ok"),
+            "http_ok": safe_result.get("http_ok"),
+            "format_ok": safe_result.get("format_ok"),
             "status_code": response.get("status_code"),
             "response_url": response.get("url"),
-            "policy": result.get("policy"),
-            "redirect_chain": result.get("redirect_chain", []),
+            "policy": safe_result.get("policy"),
+            "redirect_chain": safe_result.get("redirect_chain", []),
             "error_type": error.get("type"),
         }
     )
@@ -158,6 +196,8 @@ def _blocked_network_result(
     body: Any = None,
     tool_name: str = "http_request",
     used_env_secrets: Optional[list[str]] = None,
+    used_credentials: Optional[list[str]] = None,
+    redact_values: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     result = _request_error(
         "blocked_network_target",
@@ -171,6 +211,9 @@ def _blocked_network_result(
         result["redirect_chain"] = redirect_chain
     if used_env_secrets:
         result["used_env_secrets"] = sorted(used_env_secrets)
+    if used_credentials:
+        result["used_credentials"] = sorted(used_credentials)
+    result = _redact_sensitive(result, redact_values)
     _audit_http_result(
         tool_name=tool_name,
         method=method,
@@ -179,6 +222,8 @@ def _blocked_network_result(
         headers=headers,
         body=body,
         used_env_secrets=used_env_secrets,
+        used_credentials=used_credentials,
+        redact_values=redact_values,
     )
     return result
 
@@ -426,6 +471,8 @@ def _http_request_impl(
     policy_resolver: Optional[Any] = None,
     audit_tool_name: str = "http_request",
     used_env_secrets: Optional[list[str]] = None,
+    used_credentials: Optional[list[str]] = None,
+    redact_values: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     method = (method or "").upper().strip()
     if method not in HTTP_METHODS:
@@ -458,7 +505,7 @@ def _http_request_impl(
     policy_config = policy_config or load_http_policy_config()
 
     started = time.perf_counter()
-    logger.info("HTTP request tool: %s %s", method, normalized_url)
+    logger.info("HTTP request tool: %s %s", method, _redact_text(normalized_url, redact_values))
 
     try:
         # Test transports are frequently backed by synthetic hostnames; still
@@ -500,6 +547,8 @@ def _http_request_impl(
             body=body,
             tool_name=audit_tool_name,
             used_env_secrets=used_env_secrets,
+            used_credentials=used_credentials,
+            redact_values=redact_values,
         )
     except _HTTPTooManyRedirects as exc:
         result = _request_error(
@@ -517,7 +566,10 @@ def _http_request_impl(
             headers=parsed_headers,
             body=body,
             used_env_secrets=used_env_secrets,
+            used_credentials=used_credentials,
+            redact_values=redact_values,
         )
+        result = _redact_sensitive(result, redact_values)
         return result
     except httpx.TimeoutException as exc:
         result = _request_error(
@@ -534,7 +586,10 @@ def _http_request_impl(
             headers=parsed_headers,
             body=body,
             used_env_secrets=used_env_secrets,
+            used_credentials=used_credentials,
+            redact_values=redact_values,
         )
+        result = _redact_sensitive(result, redact_values)
         return result
     except httpx.RequestError as exc:
         result = _request_error(
@@ -551,7 +606,10 @@ def _http_request_impl(
             headers=parsed_headers,
             body=body,
             used_env_secrets=used_env_secrets,
+            used_credentials=used_credentials,
+            redact_values=redact_values,
         )
+        result = _redact_sensitive(result, redact_values)
         return result
     except Exception as exc:
         logger.error("HTTP request tool failed", exc_info=True)
@@ -569,7 +627,10 @@ def _http_request_impl(
             headers=parsed_headers,
             body=body,
             used_env_secrets=used_env_secrets,
+            used_credentials=used_credentials,
+            redact_values=redact_values,
         )
+        result = _redact_sensitive(result, redact_values)
         return result
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -602,6 +663,8 @@ def _http_request_impl(
         result["redirect_chain"] = redirect_chain
     if used_env_secrets:
         result["used_env_secrets"] = sorted(used_env_secrets)
+    if used_credentials:
+        result["used_credentials"] = sorted(used_credentials)
 
     if not http_ok:
         location = response.headers.get("location")
@@ -633,7 +696,10 @@ def _http_request_impl(
         headers=parsed_headers,
         body=body,
         used_env_secrets=used_env_secrets,
+        used_credentials=used_credentials,
+        redact_values=redact_values,
     )
+    result = _redact_sensitive(result, redact_values)
     return result
 
 

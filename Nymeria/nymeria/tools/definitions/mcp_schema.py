@@ -115,6 +115,10 @@ class MCPToolConfig(BaseModel):
         ...,
         description="Name of the tool exposed by the MCP server",
     )
+    server_id: str = Field(
+        default="",
+        description="Nymeria MCP server id, used for credential-vault target checks",
+    )
     env_vars: Dict[str, str] = Field(
         default_factory=dict,
         description="Environment variables for the server process (supports ${env:VAR})",

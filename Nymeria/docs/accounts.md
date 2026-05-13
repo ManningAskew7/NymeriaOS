@@ -18,6 +18,7 @@ Seven tables in a dedicated SQLite database at `<data_dir>/accounts.db`, split a
 | `thread_platform_bindings` | Per-thread chat-app bindings (e.g. `desktop thread <-> Telegram chat`). Unique on `(provider, thread_id)` and `(provider, platform_chat_id)`. The optional `user_telegram_bot_id` column is null when the binding is served by the shared bot, or the row id of a `user_telegram_bots` entry when served by a user-owned (BYO) bot. |
 | `bind_codes` | Short-lived single-use codes the desktop wizard mints and the bot consumes. Discriminated by `kind` — `platform_link` (link a Telegram identity to a Nymeria account) or `thread_bind` (attach a chat to a thread). 10-min TTL, hashed at rest. |
 | `user_telegram_bots` | User-owned BYO Telegram bots. Tokens are stored as Fernet ciphertext (`bot_token_ciphertext`); plaintext is only handed to the supervisor process inside the `nymeria-telegram-bot` container via the admin endpoint. Encrypted with `NYMERIA_SECRETS_KEY`. |
+| `credentials` / `credential_secret_fields` / `credential_bindings` | Encrypted reusable tool credentials and connection auth. Secret fields are Fernet ciphertext; public APIs return metadata only. See [`credentials.md`](credentials.md). |
 
 Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header (Step 3) to call the API on behalf of another user — used by bots, the ticker, and the watchdog.
 
@@ -224,7 +225,7 @@ Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the
 
 If an OAuth token becomes stale, revoked, or attached to the wrong account, use the matching clear tool instead of deleting legacy home-directory files: `calendar_auth_clear`, `google_docs_auth_clear`, `gmail_auth_clear`, `outlook_auth_clear`, or `_prv_b_auth(action="clear")`. With no `account_id`, each OAuth clear tool removes all cached accounts for the current Nymeria user and clears any pending auth flow for that provider; with `account_id`, it removes only that saved account. `calendar_auth_start`, `google_docs_auth_start`, and `gmail_auth_start` also prune expired Google accounts automatically when Google rejects the stored refresh token.
 
-`_prv_b.json` currently stores the the LMS calendar export URL, RSS feed URLs, and Moodle mobile `wstoken` as plaintext JSON, matching the existing token-cache pattern. Before production or multi-user hosting with untrusted users, migrate those fields to Fernet-encrypted values using `NYMERIA_SECRETS_KEY` from `nymeria/core/secrets.py`.
+These cache files now migrate into the encrypted credential vault on startup when `NYMERIA_SECRETS_KEY` is configured. The old file helpers still fall back to file storage if the vault key is missing, but production installs should use the vault path.
 
 ## Thread ownership
 

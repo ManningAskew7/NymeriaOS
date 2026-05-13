@@ -10,6 +10,7 @@
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel } from '$lib/types';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
+  import { CredentialManagerPanel } from '../credentials';
   import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import { AccountTab, UsersTab } from '../account';
 
@@ -21,7 +22,7 @@
 
   let { open, onClose, initialTab }: Props = $props();
 
-  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'voice' | 'account' | 'users';
+  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'voice' | 'account' | 'users';
   type TabConfig = { id: Tab; label: string; disabled: boolean };
   const adminServerTabs: Tab[] = ['llm', 'agent', 'voice', 'users'];
   let activeTab = $state<Tab>('connection');
@@ -46,7 +47,8 @@
 
     tabs.push(
       { id: 'tools', label: 'Tools', disabled: !serverSettings },
-      { id: 'mcp', label: 'MCP', disabled: !serverSettings }
+      { id: 'mcp', label: 'MCP', disabled: !serverSettings },
+      { id: 'credentials', label: 'Connections', disabled: !serverSettings }
     );
 
     if (isAdmin) {
@@ -702,6 +704,9 @@
 
       {:else if activeTab === 'mcp'}
         <MCPManagementPanel open={true} onClose={onClose} />
+
+      {:else if activeTab === 'credentials'}
+        <CredentialManagerPanel />
 
       {:else if activeTab === 'voice' && isAdmin}
         {#if loadingSettings}

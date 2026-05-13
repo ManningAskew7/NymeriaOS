@@ -929,6 +929,91 @@ export interface UnifiedToolListResponse {
   customCount: number;
 }
 
+// Credential Vault Types
+
+export type CredentialOwnerType = 'user' | 'system';
+export type CredentialStatus = 'active' | 'pending_setup' | 'invalid' | 'disabled' | string;
+
+export interface Credential {
+  id: string;
+  ownerType: CredentialOwnerType;
+  ownerUserId: string | null;
+  name: string;
+  provider: string;
+  kind: string;
+  accountLabel: string | null;
+  status: CredentialStatus;
+  metadata: Record<string, unknown>;
+  scopes: string[];
+  allowedTargets: string[];
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  lastTestedAt: string | null;
+  disabledAt: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  secretFields: string[];
+  hasSecret: boolean;
+}
+
+export interface CredentialListResponse {
+  credentials: Credential[];
+  total: number;
+}
+
+export interface CredentialCreateRequest {
+  owner_type?: CredentialOwnerType;
+  owner_user_id?: string | null;
+  name: string;
+  provider: string;
+  kind?: string;
+  account_label?: string | null;
+  metadata?: Record<string, unknown>;
+  scopes?: string[];
+  allowed_targets?: string[];
+  expires_at?: string | null;
+  status?: CredentialStatus;
+  secret_fields?: Record<string, string>;
+}
+
+export interface CredentialUpdateRequest {
+  name?: string;
+  account_label?: string | null;
+  metadata?: Record<string, unknown>;
+  scopes?: string[];
+  allowed_targets?: string[];
+  expires_at?: string | null;
+  status?: CredentialStatus;
+  secret_fields?: Record<string, string>;
+}
+
+export interface CredentialSetupSessionRequest {
+  provider: string;
+  kind?: string;
+  name: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  required_fields?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface CredentialBinding {
+  id: string;
+  credentialId: string;
+  targetType: string;
+  targetId: string;
+  bindingName: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+}
+
+export interface CredentialBindingRequest {
+  target_type: string;
+  target_id: string;
+  binding_name?: string | null;
+}
+
 // MCP Server Types
 
 export interface MCPDiscoveredTool {

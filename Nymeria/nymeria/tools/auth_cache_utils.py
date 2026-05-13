@@ -258,6 +258,18 @@ def cache_path(user_id: str, cache_filename: str) -> Path:
 
 
 def load_token_cache(user_id: str, cache_filename: str) -> dict:
+    try:
+        from ..core.credential_vault import get_credential_vault_repo
+
+        cached = get_credential_vault_repo().load_legacy_cache(user_id, cache_filename)
+        if isinstance(cached, dict):
+            return cached
+    except Exception:
+        # Keep legacy reads available when the vault key is not configured,
+        # when a migration has not run yet, or during focused unit tests that
+        # monkeypatch file-cache helpers.
+        logger.debug("Credential vault token-cache load unavailable", exc_info=True)
+
     path = cache_path(user_id, cache_filename)
     if path.exists():
         try:
@@ -268,6 +280,20 @@ def load_token_cache(user_id: str, cache_filename: str) -> dict:
 
 
 def save_token_cache(user_id: str, cache_filename: str, cache: dict) -> None:
+    try:
+        from ..core.credential_vault import get_credential_vault_repo
+
+        get_credential_vault_repo().upsert_legacy_cache(user_id, cache_filename, cache)
+        path = cache_path(user_id, cache_filename)
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                logger.debug("Failed to remove migrated token cache file %s", path)
+        return
+    except Exception:
+        logger.debug("Credential vault token-cache save unavailable; using file cache", exc_info=True)
+
     path = cache_path(user_id, cache_filename)
     path.write_text(json.dumps(cache, indent=2))
 
@@ -279,9 +305,17 @@ def delete_token_cache(user_id: str, cache_filename: str) -> bool:
     directory is still created by ``cache_path``; leaving an empty per-user auth
     directory is harmless and keeps this helper simple.
     """
+    removed = False
+    try:
+        from ..core.credential_vault import get_credential_vault_repo
+
+        removed = get_credential_vault_repo().delete_legacy_cache(user_id, cache_filename)
+    except Exception:
+        logger.debug("Credential vault token-cache delete unavailable", exc_info=True)
+
     path = cache_path(user_id, cache_filename)
     if not path.exists():
-        return False
+        return removed
     path.unlink()
     return True
 

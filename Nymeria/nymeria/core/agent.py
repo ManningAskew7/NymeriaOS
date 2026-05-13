@@ -274,10 +274,16 @@ class NymeriaAgent:
         # checkpoints backend (SQLite or Postgres).
         from .accounts import AccountsRepo
         from .chat_bindings import ChatBindingsRepo
+        from .credential_vault import (
+            CredentialVaultRepo,
+            migrate_auth_token_files,
+            migrate_mcp_encrypted_env_vars,
+        )
         accounts_db = self.settings.data_dir / "accounts.db"
         self.accounts_repo = AccountsRepo(accounts_db)
         self.accounts_repo.ensure_bootstrap_admin(self.settings.data_dir)
         self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
+        self.credential_vault = CredentialVaultRepo(accounts_db)
 
         # One-shot: migrate legacy global OAuth token caches
         # (``data/auth_tokens/.X_token_cache.json``) into the new per-user
@@ -330,6 +336,24 @@ class NymeriaAgent:
                         logger.warning("Failed to migrate %s: %s", legacy, e)
         except Exception as e:  # noqa: BLE001
             logger.warning("OAuth cache migration failed (non-fatal): %s", e)
+
+        # One-shot/idempotent: import existing per-user auth JSON files and
+        # legacy MCP encrypted env vars into the first-class credential vault.
+        # Native tools still use the same auth-cache helper API, but that API
+        # now resolves through encrypted vault records.
+        try:
+            for line in migrate_auth_token_files(self.settings.data_dir, self.credential_vault):
+                logger.info(line)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Credential vault auth-cache migration failed (non-fatal): %s", e)
+        try:
+            for line in migrate_mcp_encrypted_env_vars(
+                self.settings.mcp_servers_dir,
+                self.credential_vault,
+            ):
+                logger.info(line)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Credential vault MCP secret migration failed (non-fatal): %s", e)
 
         # Initialize user profile manager
         self.profile_manager = UserProfileManager(self.settings.data_dir)

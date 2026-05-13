@@ -105,6 +105,35 @@ Create mappings via `POST /admin/users/{id}/platforms` (see Account & User Admin
 
 ---
 
+### Credential Vault
+
+```http
+GET /credentials?scope=visible|mine|system|all
+POST /credentials
+GET /credentials/{credential_id}
+PATCH /credentials/{credential_id}
+DELETE /credentials/{credential_id}
+POST /credentials/{credential_id}/test
+GET /credentials/{credential_id}/bindings
+POST /credentials/{credential_id}/bindings
+DELETE /credential-bindings/{binding_id}
+POST /credential-setup-sessions
+Authorization: Bearer <token>
+```
+
+Stores reusable Nymeria tool/MCP/custom HTTP credentials encrypted with
+`NYMERIA_SECRETS_KEY`. Responses return metadata, allowed targets, scopes,
+status, and secret field names only. Plaintext is accepted only in write-only
+`secret_fields` request properties and is never echoed.
+
+Credential references use `${credential:<credential_id>.<field>}` in runtime
+config. The backend resolves them inside MCP/custom HTTP execution after target
+scope checks.
+
+See [`credentials.md`](credentials.md) for the storage model and migration notes.
+
+---
+
 ### Account & User Administration
 
 Self endpoints (`/me/*`) work for any authenticated user. Admin endpoints (`/admin/users/*`) require an admin token. Raw tokens are returned **once** in the response of any creation/issue/rotate call — they cannot be retrieved later.

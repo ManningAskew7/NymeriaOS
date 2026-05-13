@@ -148,10 +148,20 @@ class CustomToolLoader:
 
         async def execute_http(**kwargs: Any) -> str:
             """Execute the HTTP tool with given parameters."""
-            return await execute_http_tool(config, kwargs)
+            return await execute_http_tool(
+                config,
+                kwargs,
+                target_type="custom_tool",
+                target_id=definition.id,
+            )
 
         return StructuredTool.from_function(
-            func=lambda **kwargs: _sync_execute_http(config, kwargs),
+            func=lambda **kwargs: _sync_execute_http(
+                config,
+                kwargs,
+                target_type="custom_tool",
+                target_id=definition.id,
+            ),
             coroutine=execute_http,
             name=definition.id,
             description=definition.description,
@@ -324,7 +334,14 @@ def interpolate_params(template: str, params: Dict[str, Any]) -> str:
     return PARAM_PATTERN.sub(replace_param, template)
 
 
-async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> str:
+async def execute_http_tool(
+    config: HTTPToolConfig,
+    params: Dict[str, Any],
+    *,
+    target_type: str = "custom_http_tool",
+    target_id: Optional[str] = None,
+    actor_user_id: Optional[str] = None,
+) -> str:
     """Execute an HTTP tool with the given parameters.
 
     Args:
@@ -336,23 +353,42 @@ async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> s
     """
     try:
         used_env_secrets: set[str] = set()
+        used_credentials: set[str] = set()
+        redact_values: set[str] = set()
+
+        def resolve_credentials(value: str) -> str:
+            if "${credential:" not in value:
+                return value
+            from .credential_vault import get_credential_vault_repo
+
+            return get_credential_vault_repo().resolve_references(
+                value,
+                actor_user_id=actor_user_id,
+                target_type=target_type,
+                target_id=target_id,
+                used_credentials=used_credentials,
+                redact_values=redact_values,
+            )
 
         # Interpolate URL
         url = interpolate_params(config.url, params)
         url, used = interpolate_env_vars_with_names(url)
         used_env_secrets.update(used)
+        url = resolve_credentials(url)
 
         # Interpolate headers
         headers = {}
         for key, value in config.headers.items():
             interpolated, used = interpolate_env_vars_with_names(interpolate_params(value, params))
-            headers[key] = interpolated
+            headers[key] = resolve_credentials(interpolated)
             used_env_secrets.update(used)
 
         # Interpolate query params
         query_params = {}
         for key, value in config.query_params.items():
-            query_params[key] = interpolate_params(value, params)
+            interpolated, used = interpolate_env_vars_with_names(interpolate_params(value, params))
+            query_params[key] = resolve_credentials(interpolated)
+            used_env_secrets.update(used)
 
         # Interpolate body
         body = None
@@ -360,6 +396,7 @@ async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> s
             body_str = interpolate_params(config.body_template, params)
             body_str, used = interpolate_env_vars_with_names(body_str)
             used_env_secrets.update(used)
+            body_str = resolve_credentials(body_str)
             try:
                 body = json.loads(body_str)
             except json.JSONDecodeError:
@@ -380,6 +417,8 @@ async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> s
             max_response_chars=200_000,
             audit_tool_name="custom_http_tool",
             used_env_secrets=sorted(used_env_secrets),
+            used_credentials=sorted(used_credentials),
+            redact_values=sorted(redact_values),
         )
 
         if not result.get("ok"):
@@ -410,10 +449,25 @@ async def execute_http_tool(config: HTTPToolConfig, params: Dict[str, Any]) -> s
         return f"[Error]: Request failed - {str(e)}"
 
 
-def _sync_execute_http(config: HTTPToolConfig, params: Dict[str, Any]) -> str:
+def _sync_execute_http(
+    config: HTTPToolConfig,
+    params: Dict[str, Any],
+    *,
+    target_type: str = "custom_http_tool",
+    target_id: Optional[str] = None,
+    actor_user_id: Optional[str] = None,
+) -> str:
     """Synchronous wrapper for HTTP tool execution."""
     import asyncio
-    return asyncio.get_event_loop().run_until_complete(execute_http_tool(config, params))
+    return asyncio.get_event_loop().run_until_complete(
+        execute_http_tool(
+            config,
+            params,
+            target_type=target_type,
+            target_id=target_id,
+            actor_user_id=actor_user_id,
+        )
+    )
 
 
 def _extract_json_path(data: Any, path: str) -> Any:

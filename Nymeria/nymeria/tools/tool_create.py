@@ -34,6 +34,9 @@ TOOL_CREATE_VERSION = "2026-04-30.1"
 TOOL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 PARAM_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 ENV_SECRET_PATTERN = re.compile(r"\$\{env:", re.IGNORECASE)
+CREDENTIAL_REF_PATTERN = re.compile(
+    r"\$\{credential:[A-Za-z][A-Za-z0-9_-]{2,127}\.[A-Za-z][A-Za-z0-9_-]{0,63}\}"
+)
 
 
 class HTTPToolDraft(BaseModel):
@@ -185,12 +188,13 @@ def _validate_no_inline_secrets(http_config: HTTPToolConfig) -> None:
     """Reject raw secrets and secret interpolation for agent-created V1 tools."""
     errors: list[str] = []
 
-    for header_name in http_config.headers:
+    for header_name, header_value in http_config.headers.items():
         if header_name.strip().lower() in SENSITIVE_HEADER_NAMES:
-            errors.append(
-                f"header {header_name!r} is not allowed in agent-created tools yet; "
-                "secret-scoped auth will be added later"
-            )
+            if not CREDENTIAL_REF_PATTERN.search(str(header_value)):
+                errors.append(
+                    f"header {header_name!r} must use a credential-vault reference "
+                    "like ${credential:cred_id.value}; raw secret headers are not allowed"
+                )
 
     strings: list[tuple[str, str]] = []
     strings.extend(_iter_strings(http_config.url, "url"))

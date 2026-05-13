@@ -978,9 +978,36 @@ tool_create(
 
 **Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`30m`, `2h`, `6h`, `24h`, or `permanent`; default `2h`) using the same in-turn auto-reload path as `tool_enable(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
 
-**V1 limits:** Only `implementation_type="http"` is supported. Agent-created tools reject inline secrets, `Authorization`/API-key/cookie headers, and `${env:...}` references. For authenticated reusable tools, use the Desktop/REST custom-tool flow for now; future production work should add domain/method/path-scoped secret injection.
+**V1 limits:** Only `implementation_type="http"` is supported. Agent-created tools reject inline secrets and `${env:...}` references. Sensitive headers are allowed only when their value uses a credential-vault reference like `${credential:cred_id.value}`.
 
-**Audit and deferred production safety:** HTTP tool calls append redacted HTTP events to the audit log when `AUDIT_LOG_ENABLED=true`. Raw bearer/API-key-like values are best-effort redacted and custom HTTP `${env:VAR}` usage records the variable names, not the values. Future hardening still needs a first-class encrypted secret injection interface with domain/method/path scopes, stronger per-user audit context, rate-limit budgets per task, pagination helpers, and policy hooks for actions that send messages, delete data, spend money, modify production systems, post publicly, or change infrastructure.
+**Credential vault auth:** Authenticated custom HTTP tools should use `${credential:<credential_id>.<field>}` references in headers, query params, URLs, or bodies instead of raw values. Runtime execution resolves the reference server-side, checks the credential's allowed target, and audits the use without returning secret material to the agent.
+
+**Audit and deferred production safety:** HTTP tool calls append redacted HTTP events to the audit log when `AUDIT_LOG_ENABLED=true`. Raw bearer/API-key-like values are best-effort redacted and custom HTTP `${env:VAR}` usage records the variable names, not the values. Credential-vault usage records credential IDs, not plaintext values. Future hardening still needs stronger per-user rate-limit budgets per task, pagination helpers, and policy hooks for actions that send messages, delete data, spend money, modify production systems, post publicly, or change infrastructure.
+
+### auth_manager
+
+Agent-safe credential management facade. Optional tool, disabled by default.
+
+```python
+auth_manager(
+    action: str,
+    credential_id: str = "",
+    provider: str = "",
+    kind: str = "api_key",
+    name: str = "",
+    target_type: str = "",
+    target_id: str = "",
+    binding_name: str = "",
+    binding_id: str = "",
+    metadata: Optional[dict] = None,
+    required_fields: Optional[list[str]] = None,
+)
+```
+
+Actions: `list`, `status`, `request_setup`, `bind`, `unbind`, `test`, `disable`.
+The tool returns credential metadata only. It can manage user-owned credentials
+but cannot alter system credentials. It never returns plaintext secrets,
+ciphertext, or partial key material.
 
 ### skill_config
 
