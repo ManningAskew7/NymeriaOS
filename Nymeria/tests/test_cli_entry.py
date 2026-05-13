@@ -1347,6 +1347,7 @@ def test_run_cli_parser_accepts_tui_contract_defaults():
     assert runtime_config.animation is True
     assert runtime_config.ascii_only is False
     assert runtime_config.color == "auto"
+    assert runtime_config.rich_scroll_region is False
     assert runtime_config.startup_thread_ref is None
     assert runtime_config.list_threads_on_startup is False
 
@@ -1423,6 +1424,7 @@ def test_run_cli_parser_carries_explicit_tui_contract_flags():
             "--ascii",
             "--color",
             "never",
+            "--rich-scroll-region",
         ]
     )
     runtime_config = run_module.build_cli_runtime_config(args)
@@ -1437,6 +1439,18 @@ def test_run_cli_parser_carries_explicit_tui_contract_flags():
     assert runtime_config.animation is False
     assert runtime_config.ascii_only is True
     assert runtime_config.color == "never"
+    assert runtime_config.rich_scroll_region is True
+
+
+def test_run_cli_parser_accepts_rich_scroll_region_env(monkeypatch):
+    import run as run_module
+
+    monkeypatch.setenv("NYMERIA_CLI_RICH_SCROLL_REGION", "1")
+
+    args = run_module.build_parser().parse_args(["cli"])
+    runtime_config = run_module.build_cli_runtime_config(args)
+
+    assert runtime_config.rich_scroll_region is True
 
 
 def test_run_cli_default_starts_without_local_agent(monkeypatch):

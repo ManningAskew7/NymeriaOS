@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import math
 import signal
 import sys
 import threading
@@ -15,6 +16,8 @@ from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Optional, Protocol, TYPE_CHECKING
+
+from rich.cells import cell_len
 
 from .capabilities import TerminalCapabilities, detect_terminal_capabilities
 from .commands import (
@@ -45,6 +48,10 @@ if TYPE_CHECKING:
 TransportMode = Literal["api", "local", "auto"]
 RendererMode = Literal["full", "rich", "plain", "auto"]
 ColorMode = Literal["auto", "always", "never"]
+_RICH_SCROLL_REGION_MIN_ROWS = 12
+_RICH_REPL_COMPOSER_MAX_HEIGHT = 6
+_RICH_RESIZE_REDRAW_MIN_INTERVAL_SECONDS = 0.05
+_RICH_RESIZE_SETTLE_SECONDS = 0.12
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +68,7 @@ class CLIRuntimeConfig:
     animation: bool = True
     ascii_only: bool = False
     color: ColorMode = "auto"
+    rich_scroll_region: bool = False
     startup_thread_ref: str | None = None
     list_threads_on_startup: bool = False
     continue_last: bool = False
@@ -125,7 +133,17 @@ class _RichReplRuntime:
         self._status_notice: StatusNotice | None = None
         self._resize_pending = False
         self._resize_task: asyncio.Task[None] | None = None
+        self._terminal_size = self.terminal_size()
+        self._resize_requested_at = 0.0
+        self._resize_last_redraw_at = 0.0
         self._prev_sigwinch: Any | None = None
+        self._follow_footer_transcript_cursor_saved = False
+        self._follow_footer_pin_probe_pending = True
+        self._pinned_footer_active = False
+        self._pinned_footer_height = 0
+        self._pinned_scroll_bottom = 0
+        self._pinned_terminal_size: tuple[int, int] | None = None
+        self._pinned_footer_needs_full_repaint = False
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._autonomous_task: asyncio.Task[None] | None = None
         self._pending_submissions: deque[Any] = deque()
@@ -190,6 +208,8 @@ class _RichReplRuntime:
     def bind_application(self, application: Any, composer_controller: Any) -> None:
         self.application = application
         self.composer_controller = composer_controller
+        if self.scroll_region_enabled():
+            application._on_resize = self.handle_terminal_resize  # noqa: SLF001
 
     def bottom_toolbar(self):
         """Return prompt_toolkit toolbar fragments for the live Rich prompt."""
@@ -262,15 +282,231 @@ class _RichReplRuntime:
                 return max(1, int(app.output.get_size().columns))
         return max(1, int(getattr(self.capabilities, "width", 80) or 80))
 
+    def terminal_height(self) -> int:
+        app = self.application
+        if app is not None:
+            with suppress(Exception):
+                return max(1, int(app.output.get_size().rows))
+        return max(1, int(getattr(self.capabilities, "height", 24) or 24))
+
+    def terminal_size(self) -> tuple[int, int]:
+        app = self.application
+        if app is not None:
+            with suppress(Exception):
+                size = app.output.get_size()
+                return (
+                    max(1, int(size.columns)),
+                    max(1, int(size.rows)),
+                )
+        return (self.terminal_width(), self.terminal_height())
+
+    def scroll_region_enabled(self) -> bool:
+        if not bool(getattr(self.app.runtime_config, "rich_scroll_region", False)):
+            return False
+        if getattr(self.capabilities, "renderer", "") != "rich":
+            return False
+        if sys.platform == "win32":
+            return False
+        if not bool(getattr(self.capabilities, "is_interactive", False)):
+            return False
+        if self.terminal_height() < _RICH_SCROLL_REGION_MIN_ROWS:
+            return False
+        return True
+
+    def composer_input_height(self) -> int:
+        controller = self.composer_controller
+        if controller is None:
+            return 1
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        text = str(getattr(buffer, "text", "") or "")
+        prompt_width = 0
+        with suppress(Exception):
+            prompt_width = sum(
+                cell_len(fragment)
+                for _style, fragment in controller.prompt_fragments()
+            )
+        content_width = max(1, self.terminal_width() - prompt_width)
+        height = 0
+        for line in text.split("\n"):
+            cells = cell_len(line)
+            height += max(1, math.ceil(cells / content_width))
+        return max(1, min(_RICH_REPL_COMPOSER_MAX_HEIGHT, height))
+
+    def footer_height(self) -> int:
+        return self.composer_input_height() + 4
+
+    def footer_is_visible(self) -> bool:
+        if self.scroll_region_enabled():
+            return True
+        return self.footer_height_is_known()
+
+    def pinned_footer_active(self) -> bool:
+        return self._pinned_footer_active
+
+    def save_follow_footer_transcript_cursor(self) -> bool:
+        """Save the current terminal cursor as the next transcript write point."""
+
+        if not self.scroll_region_enabled():
+            return False
+        app = self.application
+        if app is None:
+            return False
+        app.output.write_raw("\x1b7")
+        app.output.flush()
+        self._follow_footer_transcript_cursor_saved = True
+        return True
+
+    def prepare_follow_footer_render(self) -> None:
+        if not self.scroll_region_enabled():
+            return
+        if self._pinned_footer_active:
+            self._prepare_pinned_footer_render()
+            return
+        self._maybe_activate_pinned_footer()
+        if self._pinned_footer_active:
+            self._prepare_pinned_footer_render()
+            return
+        app = self.application
+        renderer = getattr(app, "renderer", None)
+        if renderer is not None:
+            with suppress(Exception):
+                renderer._min_available_height = 0  # noqa: SLF001
+
+    def reset_follow_footer(self) -> None:
+        self._deactivate_pinned_footer(reset_terminal=True)
+        self._follow_footer_transcript_cursor_saved = False
+        self._follow_footer_pin_probe_pending = True
+
+    def _maybe_activate_pinned_footer(self) -> None:
+        if not self._follow_footer_pin_probe_pending:
+            return
+        rows_below = self._known_rows_below_cursor()
+        if rows_below is None:
+            self._request_follow_footer_pin_probe()
+            return
+        self._follow_footer_pin_probe_pending = False
+        if rows_below > self.footer_height():
+            return
+        self._activate_pinned_footer()
+
+    def _known_rows_below_cursor(self) -> int | None:
+        app = self.application
+        if app is None:
+            return None
+        renderer = getattr(app, "renderer", None)
+        rows_below = int(getattr(renderer, "_min_available_height", 0) or 0)
+        if rows_below > 0:
+            return rows_below
+        output = app.output
+        if not hasattr(output, "get_rows_below_cursor_position"):
+            return None
+        try:
+            return int(output.get_rows_below_cursor_position())
+        except (NotImplementedError, OSError, RuntimeError, ValueError):
+            return None
+
+    def _request_follow_footer_pin_probe(self) -> None:
+        app = self.application
+        renderer = getattr(app, "renderer", None)
+        if renderer is None:
+            return
+        with suppress(AttributeError, AssertionError, RuntimeError, OSError, ValueError):
+            renderer._min_available_height = 0  # noqa: SLF001
+            renderer.request_absolute_cursor_position()
+
+    def _activate_pinned_footer(self) -> None:
+        app = self.application
+        if app is None:
+            return
+        output = app.output
+        size = output.get_size()
+        footer_height = min(self.footer_height(), max(1, size.rows - 2))
+        scroll_bottom = size.rows - footer_height
+        if scroll_bottom < 1 or not self._follow_footer_transcript_cursor_saved:
+            return
+
+        renderer = getattr(app, "renderer", None)
+        if renderer is not None:
+            with suppress(Exception):
+                renderer.erase(leave_alternate_screen=False)
+        output.write_raw("\x1b[r")
+        output.write_raw("\x1b8")
+        output.write_raw("\r\n" * footer_height)
+        footer_top = scroll_bottom + 1
+        output.write_raw(f"\x1b[{scroll_bottom};1H")
+        output.write_raw("\x1b7")
+        output.write_raw(f"\x1b[{footer_top};1H\x1b[J")
+        output.flush()
+        self._follow_footer_transcript_cursor_saved = True
+        self._pinned_footer_active = True
+        self._pinned_footer_height = footer_height
+        self._pinned_scroll_bottom = scroll_bottom
+        self._pinned_terminal_size = (size.columns, size.rows)
+        self._pinned_footer_needs_full_repaint = True
+
+    def _prepare_pinned_footer_render(self) -> None:
+        app = self.application
+        if app is None:
+            return
+        output = app.output
+        size = output.get_size()
+        if (
+            self._pinned_terminal_size != (size.columns, size.rows)
+            or self._pinned_footer_height != self.footer_height()
+        ):
+            self._deactivate_pinned_footer(reset_terminal=True)
+            return
+
+        footer_top = self._pinned_scroll_bottom + 1
+        output.write_raw("\x1b[r")
+        output.write_raw(f"\x1b[{footer_top};1H")
+        output.flush()
+        renderer = getattr(app, "renderer", None)
+        if renderer is not None:
+            with suppress(Exception):
+                from prompt_toolkit.data_structures import Point
+
+                renderer._cursor_pos = Point(x=0, y=0)  # noqa: SLF001
+                renderer._min_available_height = 0  # noqa: SLF001
+                if self._pinned_footer_needs_full_repaint:
+                    renderer._last_screen = None  # noqa: SLF001
+        self._pinned_footer_needs_full_repaint = False
+
+    def finish_follow_footer_render(self) -> None:
+        if not self.scroll_region_enabled() or not self._pinned_footer_active:
+            return
+        app = self.application
+        output = getattr(app, "output", None)
+        if output is not None:
+            with suppress(Exception):
+                output.hide_cursor()
+                output.flush()
+
+    def _deactivate_pinned_footer(self, *, reset_terminal: bool) -> None:
+        if reset_terminal:
+            app = self.application
+            output = getattr(app, "output", None)
+            if output is not None:
+                with suppress(Exception):
+                    output.write_raw("\x1b[r")
+                    output.flush()
+        self._pinned_footer_active = False
+        self._pinned_footer_height = 0
+        self._pinned_scroll_bottom = 0
+        self._pinned_terminal_size = None
+        self._pinned_footer_needs_full_repaint = False
+        self._follow_footer_pin_probe_pending = True
+
     def _on_sigwinch(self, signum: int, frame: Any) -> None:
-        self._resize_pending = True
-        self.invalidate()
+        self.handle_terminal_resize()
         previous = self._prev_sigwinch
         if callable(previous):
             with suppress(Exception):
                 previous(signum, frame)
 
     def install_resize_handler(self) -> None:
+        if self.scroll_region_enabled():
+            return
         sigwinch = getattr(signal, "SIGWINCH", None)
         if sigwinch is None or self._prev_sigwinch is not None:
             return
@@ -289,14 +525,27 @@ class _RichReplRuntime:
         with suppress(OSError, RuntimeError, ValueError):
             signal.signal(sigwinch, previous)
 
+    def handle_terminal_resize(self) -> None:
+        """Resize hook for prompt_toolkit in scroll-region mode."""
+
+        self._resize_pending = True
+        self._resize_requested_at = time.monotonic()
+        self.schedule_resize_redraw()
+
     def schedule_resize_redraw(self) -> None:
         """Schedule a transcript redraw from prompt_toolkit's render cycle."""
 
         if not self._resize_pending:
             with suppress(Exception):
-                if self.terminal_width() == self.renderer.width:
+                current_size = self.terminal_size()
+                renderer_width = int(getattr(self.renderer, "width", current_size[0]))
+                if (
+                    current_size == self._terminal_size
+                    and current_size[0] == renderer_width
+                ):
                     return
             self._resize_pending = True
+            self._resize_requested_at = time.monotonic()
         task = self._resize_task
         if task is not None and not task.done():
             return
@@ -321,12 +570,39 @@ class _RichReplRuntime:
 
     async def _maybe_resize_redraw(self) -> None:
         while True:
-            new_width = self.terminal_width()
-            if not self._resize_pending and new_width == self.renderer.width:
+            new_size = self.terminal_size()
+            renderer_width = int(getattr(self.renderer, "width", new_size[0]))
+            if (
+                not self._resize_pending
+                and new_size == self._terminal_size
+                and new_size[0] == renderer_width
+            ):
                 return
+            delay = (
+                _RICH_RESIZE_REDRAW_MIN_INTERVAL_SECONDS
+                - (time.monotonic() - self._resize_last_redraw_at)
+            )
+            if self._resize_last_redraw_at > 0 and delay > 0:
+                await asyncio.sleep(delay)
+                new_size = self.terminal_size()
             self._resize_pending = False
-            if self.renderer.update_terminal_width(new_width):
+            old_size = self._terminal_size
+            width_changed = self.renderer.update_terminal_width(new_size[0])
+            self._terminal_size = new_size
+            size_changed = new_size != old_size
+            if width_changed or (self.scroll_region_enabled() and size_changed):
                 await self.redraw()
+                self._resize_last_redraw_at = time.monotonic()
+            quiet_delay = (
+                self._resize_requested_at
+                + _RICH_RESIZE_SETTLE_SECONDS
+                - time.monotonic()
+            )
+            if quiet_delay > 0:
+                await asyncio.sleep(quiet_delay)
+                if self.terminal_size() != self._terminal_size:
+                    self._resize_pending = True
+                    self._resize_requested_at = time.monotonic()
             if not self._resize_pending:
                 return
 
@@ -371,13 +647,17 @@ class _RichReplRuntime:
         self.start_autonomous_listener()
 
     async def render_above_prompt(self, callback: Callable[[], Any]) -> Any:
-        """Run terminal output above the fixed Rich status/composer area."""
+        """Run terminal output above the live Rich status/composer area."""
+
+        app = self.application
+        if app is not None and self.scroll_region_enabled():
+            with self.render_lock:
+                return self._render_in_follow_footer(callback)
 
         def run_locked() -> Any:
             with self.render_lock:
                 return callback()
 
-        app = self.application
         if app is not None and getattr(app, "is_running", False):
             from prompt_toolkit.application import run_in_terminal
 
@@ -385,14 +665,90 @@ class _RichReplRuntime:
             return await result
         return run_locked()
 
+    def _render_in_follow_footer(self, callback: Callable[[], Any]) -> Any:
+        app = self.application
+        if app is None:
+            return callback()
+        if self._pinned_footer_active:
+            return self._render_in_pinned_footer(callback)
+        output = app.output
+        renderer = getattr(app, "renderer", None)
+        output.hide_cursor()
+        if renderer is not None:
+            with suppress(Exception):
+                renderer.erase(leave_alternate_screen=False)
+        try:
+            return callback()
+        finally:
+            self._flush_renderer_output()
+            output.flush()
+            self._request_follow_footer_pin_probe()
+            output.write_raw("\x1b7")
+            output.flush()
+            self._follow_footer_transcript_cursor_saved = True
+            self._follow_footer_pin_probe_pending = True
+
+    def _render_in_pinned_footer(self, callback: Callable[[], Any]) -> Any:
+        app = self.application
+        if app is None:
+            return callback()
+        output = app.output
+        if not self._pinned_scroll_bottom or not self._follow_footer_transcript_cursor_saved:
+            self._deactivate_pinned_footer(reset_terminal=True)
+            return self._render_in_follow_footer(callback)
+
+        output.hide_cursor()
+        output.write_raw(f"\x1b[1;{self._pinned_scroll_bottom}r")
+        output.write_raw("\x1b8")
+        output.flush()
+        try:
+            return callback()
+        finally:
+            self._flush_renderer_output()
+            output.write_raw("\x1b7")
+            output.write_raw("\x1b[r")
+            output.flush()
+            self._follow_footer_transcript_cursor_saved = True
+
+    def _flush_renderer_output(self) -> None:
+        for console_name in ("console", "error_console"):
+            console = getattr(self.renderer, console_name, None)
+            file = getattr(console, "file", None)
+            flush = getattr(file, "flush", None)
+            if callable(flush):
+                with suppress(Exception):
+                    flush()
+
     async def render_event_above_prompt(self, event: Any) -> None:
         await self._maybe_resize_redraw()
         await self.render_above_prompt(
             lambda: self.renderer.render_event(event, now=time.monotonic())
         )
+        if self.scroll_region_enabled() and not self._pinned_footer_active:
+            self.invalidate()
+
+    async def render_from_screen_top(self, callback: Callable[[], Any]) -> Any:
+        if not self.scroll_region_enabled() or self.application is None:
+            def clear_and_render() -> Any:
+                self.app.state.console.clear()
+                return callback()
+
+            return await self.render_above_prompt(clear_and_render)
+        with self.render_lock:
+            self._clear_follow_footer_screen_for_replay()
+            result = callback()
+            self.save_follow_footer_transcript_cursor()
+        self.invalidate()
+        return result
 
     async def redraw(self) -> None:
         """Clear visible terminal cells, replay reducer transcript, and repaint."""
+
+        if self.scroll_region_enabled() and self.application is not None:
+            with self.render_lock:
+                self._redraw_follow_footer()
+            self.invalidate()
+            return
 
         def repaint() -> None:
             self._clear_prompt_toolkit_screen()
@@ -402,12 +758,45 @@ class _RichReplRuntime:
         await self.render_above_prompt(repaint)
         self.invalidate()
 
+    def _redraw_follow_footer(self) -> None:
+        app = self.application
+        if app is None:
+            return
+        output = app.output
+        self._terminal_size = self.terminal_size()
+        self.renderer.update_terminal_width(self._terminal_size[0])
+        self._deactivate_pinned_footer(reset_terminal=True)
+        output.hide_cursor()
+        output.erase_screen()
+        output.cursor_goto(0, 0)
+        output.flush()
+        with suppress(Exception):
+            app.renderer.reset(leave_alternate_screen=False)
+        self._follow_footer_transcript_cursor_saved = False
+        self.renderer.reset_state(self.renderer.state)
+        self.renderer.render_state()
+        self.save_follow_footer_transcript_cursor()
+
+    def _clear_follow_footer_screen_for_replay(self) -> None:
+        app = self.application
+        if app is None:
+            return
+        output = app.output
+        self._deactivate_pinned_footer(reset_terminal=True)
+        output.erase_screen()
+        output.cursor_goto(0, 0)
+        output.flush()
+        with suppress(Exception):
+            app.renderer.reset(leave_alternate_screen=False)
+        self._follow_footer_transcript_cursor_saved = False
+
     def _clear_prompt_toolkit_screen(self) -> None:
         app = self.application
         if app is None:
             self.app.state.console.clear()
             return
         try:
+            self._deactivate_pinned_footer(reset_terminal=True)
             renderer = app.renderer
             output = renderer.output
             output.reset_attributes()
@@ -480,7 +869,11 @@ class _RichReplPromptToolkitShell:
             is_busy=lambda: self.runtime.busy,
             queued_count=lambda: self.runtime.queued_count,
         )
-        footer_visible = Condition(self.runtime.footer_height_is_known) & ~is_done
+        if self.runtime.scroll_region_enabled():
+            controller.text_area.window.height = lambda: Dimension.exact(
+                self.runtime.composer_input_height()
+            )
+        footer_visible = Condition(self.runtime.footer_is_visible) & ~is_done
         transcript_gap = ConditionalContainer(
             Window(
                 height=Dimension.exact(1),
@@ -523,7 +916,13 @@ class _RichReplPromptToolkitShell:
             style="class:input-area",
         )
         footer_spacer = Window(height=Dimension(weight=1), char=" ")
-        body = HSplit([footer_spacer, transcript_gap, status_bar, input_area])
+        if self.runtime.scroll_region_enabled():
+            body = HSplit(
+                [transcript_gap, status_bar, input_area],
+                height=lambda: Dimension.exact(self.runtime.footer_height()),
+            )
+        else:
+            body = HSplit([footer_spacer, transcript_gap, status_bar, input_area])
         bindings = KeyBindings()
 
         @bindings.add("c-d")
@@ -536,7 +935,11 @@ class _RichReplPromptToolkitShell:
             event.app.create_background_task(self.runtime.redraw())
 
         def _before_render(_app: Any) -> None:
+            self.runtime.prepare_follow_footer_render()
             self.runtime.schedule_resize_redraw()
+
+        def _after_render(_app: Any) -> None:
+            self.runtime.finish_follow_footer_render()
 
         app = Application(
             layout=Layout(body, focused_element=controller.text_area),
@@ -546,6 +949,7 @@ class _RichReplPromptToolkitShell:
             refresh_interval=FRAME_INTERVAL_SECONDS,
             style=_repl_prompt_style(self.capabilities, theme=self.cli_app.theme),
             before_render=_before_render,
+            after_render=_after_render,
         )
         self.composer_controller = controller
         self.application = app
@@ -556,7 +960,13 @@ class _RichReplPromptToolkitShell:
         app = self.application or self.build_application()
         self.runtime.start_autonomous_listener()
         try:
-            await app.run_async()
+            pre_run = None
+            if self.runtime.scroll_region_enabled():
+                def pre_run_follow_footer() -> None:
+                    self.runtime.save_follow_footer_transcript_cursor()
+
+                pre_run = pre_run_follow_footer
+            await app.run_async(pre_run=pre_run)
         finally:
             await self.runtime.stop_autonomous_listener_async()
             task = self.runtime.current_turn_task
@@ -564,6 +974,7 @@ class _RichReplPromptToolkitShell:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+            self.runtime.reset_follow_footer()
 
     def _handle_submission(self, submission: Any) -> bool:
         try:
@@ -600,11 +1011,12 @@ class _RichReplPromptToolkitShell:
         if lower == "clear":
             self.cli_app._reset_active_repl_state()
             await self.cli_app._refresh_header_snapshot_async(self.capabilities)
-            await self.runtime.render_above_prompt(self.cli_app.state.console.clear)
             if self.capabilities.renderer != "plain":
-                await self.runtime.render_above_prompt(
+                await self.runtime.render_from_screen_top(
                     lambda: self.cli_app._render_current_header(self.capabilities)
                 )
+            else:
+                await self.runtime.render_above_prompt(self.cli_app.state.console.clear)
             return
         if lower == "help":
             await self.cli_app._dispatch_command_async(
@@ -876,7 +1288,15 @@ class CLIApp:
 
         # patch_stdout intercepts background-thread writes (ticker, watchdog)
         # and redraws the prompt after they finish.
-        if use_prompt_toolkit:
+        use_follow_footer_stdout = (
+            use_prompt_toolkit
+            and bool(getattr(self.runtime_config, "rich_scroll_region", False))
+            and capabilities.renderer == "rich"
+            and sys.platform != "win32"
+            and capabilities.is_interactive
+            and capabilities.height >= _RICH_SCROLL_REGION_MIN_ROWS
+        )
+        if use_prompt_toolkit and not use_follow_footer_stdout:
             from prompt_toolkit.patch_stdout import patch_stdout
 
             stdout_ctx = patch_stdout(raw=True)
@@ -1226,6 +1646,9 @@ class CLIApp:
             capabilities=capabilities,
             width=width,
             theme=self.theme,
+            stream_rich_response_lines=bool(
+                getattr(self.runtime_config, "rich_scroll_region", False)
+            ),
         )
 
     async def _repl_loop_async(
@@ -1613,7 +2036,7 @@ class CLIApp:
             self._reset_active_repl_state()
             runtime = self._active_rich_runtime
             if runtime is not None:
-                await runtime.render_above_prompt(self.state.console.clear)
+                await runtime.render_from_screen_top(lambda: None)
             else:
                 self.state.console.clear()
             refresh_header = True
@@ -1655,11 +2078,10 @@ class CLIApp:
             self._reset_active_repl_state()
 
             def clear_and_welcome() -> None:
-                self.state.console.clear()
                 self._render_current_header(capabilities)
 
             await self._refresh_header_snapshot_async(capabilities)
-            await runtime.render_above_prompt(clear_and_welcome)
+            await runtime.render_from_screen_top(clear_and_welcome)
             return
 
     async def _render_command_messages_above_prompt(
@@ -1715,12 +2137,11 @@ class CLIApp:
         await self._refresh_header_snapshot_async(runtime.capabilities)
 
         def render_thread() -> None:
-            self.state.console.clear()
             self._render_current_header(runtime.capabilities)
             runtime.renderer.reset_state(history_state)
             runtime.renderer.render_state()
 
-        await runtime.render_above_prompt(render_thread)
+        await runtime.render_from_screen_top(render_thread)
         runtime.invalidate()
 
     async def _load_current_thread_history_state(self):

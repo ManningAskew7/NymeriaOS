@@ -265,6 +265,8 @@ def build_cli_runtime_config(args: argparse.Namespace):
         animation=args.animation,
         ascii_only=args.ascii_only,
         color=args.color,
+        rich_scroll_region=bool(getattr(args, "rich_scroll_region", False))
+        or _truthy_env(os.environ.get("NYMERIA_CLI_RICH_SCROLL_REGION")),
         startup_thread_ref=startup_thread_ref,
         list_threads_on_startup=(
             args.thread is None and bool(positional_ref) and positional_ref.casefold() == "list"
@@ -274,6 +276,12 @@ def build_cli_runtime_config(args: argparse.Namespace):
         oneshot_message=getattr(args, "message", None),
         oneshot_format=getattr(args, "output_format", "plain") or "plain",
     )
+
+
+def _truthy_env(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 def run_cli(args: argparse.Namespace) -> None:
@@ -952,6 +960,15 @@ Examples:
         choices=("auto", "always", "never"),
         default="auto",
         help="Color output policy for future CLI renderers (default: auto)",
+    )
+    cli_parser.add_argument(
+        "--rich-scroll-region",
+        action="store_true",
+        default=False,
+        help=(
+            "Experimental Rich REPL footer stabilization using native "
+            "scrollback follow-footer rendering (also NYMERIA_CLI_RICH_SCROLL_REGION=1)"
+        ),
     )
 
     # API subcommand

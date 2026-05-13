@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, Mock
 from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapabilities
 from rich.console import Console
 
-from nymeria.triggers.cli.app import CLIApp, CLIRuntimeConfig, _RichReplRuntime
+from nymeria.triggers.cli.app import (
+    CLIApp,
+    CLIRuntimeConfig,
+    _RichReplRuntime,
+)
 from nymeria.triggers.cli.history import cli_state_from_history
 from nymeria.triggers.cli.rendering.rich_markdown import (
     DEFAULT_CODE_THEME,
@@ -30,6 +34,63 @@ from nymeria.triggers.cli.state import (
 )
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+class FakePromptOutput:
+    def __init__(
+        self,
+        *,
+        columns: int = 80,
+        rows: int = 24,
+        rows_below_cursor: int = 99,
+    ) -> None:
+        self.columns = columns
+        self.rows = rows
+        self.rows_below_cursor = rows_below_cursor
+        self.ops: list[tuple[str, object]] = []
+
+    def get_size(self) -> SimpleNamespace:
+        return SimpleNamespace(columns=self.columns, rows=self.rows)
+
+    def get_rows_below_cursor_position(self) -> int:
+        return self.rows_below_cursor
+
+    def write_raw(self, data: str) -> None:
+        self.ops.append(("raw", data))
+
+    def hide_cursor(self) -> None:
+        self.ops.append(("hide_cursor", None))
+
+    def cursor_goto(self, row: int = 0, column: int = 0) -> None:
+        self.ops.append(("cursor", (row, column)))
+
+    def flush(self) -> None:
+        self.ops.append(("flush", None))
+
+    def erase_screen(self) -> None:
+        self.ops.append(("erase_screen", None))
+
+
+class FakePromptRenderer:
+    def __init__(self, output: FakePromptOutput) -> None:
+        self.output = output
+        self.erase_count = 0
+        self.reset_count = 0
+        self._min_available_height = 99
+        self._last_screen = object()
+        self.cpr_request_count = 0
+
+    def erase(self, *, leave_alternate_screen: bool = True) -> None:
+        self.erase_count += 1
+        self.output.ops.append(("erase", leave_alternate_screen))
+
+    def reset(self, *, leave_alternate_screen: bool = True) -> None:
+        self.reset_count += 1
+        self.output.ops.append(("reset", leave_alternate_screen))
+
+    def request_absolute_cursor_position(self) -> None:
+        self.cpr_request_count += 1
+        self.output.ops.append(("request_cpr", None))
 
 
 def _block_texts(blocks: list[MarkdownBlock]) -> list[str]:
@@ -529,6 +590,316 @@ def test_live_width_change_triggers_redraw_without_signal_flag() -> None:
     redraw.assert_awaited_once()
 
 
+def test_scroll_region_runtime_owns_prompt_toolkit_resize_handler() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24)
+    prompt_renderer = FakePromptRenderer(output)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(
+                width=80,
+                height=24,
+                renderer="rich",
+            ),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=False,
+        _on_resize=lambda: None,
+    )
+
+    runtime.bind_application(application, None)
+
+    assert application._on_resize.__self__ is runtime
+    assert application._on_resize.__func__ is runtime.handle_terminal_resize.__func__
+
+
+def test_scroll_region_height_resize_triggers_hard_redraw() -> None:
+    async def exercise() -> tuple[Mock, AsyncMock, _RichReplRuntime]:
+        app = CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+        )
+        output = FakePromptOutput(columns=80, rows=24)
+        prompt_renderer = FakePromptRenderer(output)
+        renderer = Mock(spec=RichReplRenderer)
+        renderer.width = 80
+        renderer.update_terminal_width.return_value = False
+        runtime = _RichReplRuntime(
+            app=app,
+            renderer=renderer,
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+        )
+        runtime.application = SimpleNamespace(
+            output=output,
+            renderer=prompt_renderer,
+            is_running=False,
+        )
+        runtime._terminal_size = (80, 24)
+        runtime._resize_pending = True
+        output.rows = 30
+        redraw = AsyncMock()
+        runtime.redraw = redraw  # type: ignore[method-assign]
+
+        await runtime._maybe_resize_redraw()
+
+        return renderer, redraw, runtime
+
+    renderer, redraw, runtime = asyncio.run(exercise())
+
+    renderer.update_terminal_width.assert_called_once_with(80)
+    redraw.assert_awaited_once()
+    assert runtime._terminal_size == (80, 30)
+    assert runtime._resize_pending is False
+
+
+def test_scroll_region_resize_replay_resets_pinned_margins_before_clear() -> None:
+    render_output = CapturedRenderOutput()
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=100, rows=30)
+    prompt_renderer = FakePromptRenderer(output)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(
+                width=100,
+                height=30,
+                renderer="rich",
+            ),
+            stdout=render_output.stdout,
+            stderr=render_output.stderr,
+            width=100,
+        ),
+        capabilities=FakeTerminalCapabilities(width=100, height=30, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=False,
+    )
+    runtime._pinned_footer_active = True
+    runtime._pinned_footer_height = 5
+    runtime._pinned_scroll_bottom = 25
+    runtime._pinned_terminal_size = (100, 30)
+
+    runtime._redraw_follow_footer()
+
+    assert output.ops.index(("raw", "\x1b[r")) < output.ops.index(("erase_screen", None))
+    assert ("hide_cursor", None) in output.ops
+    assert ("cursor", (0, 0)) in output.ops
+    assert ("reset", False) in output.ops
+    assert output.ops[-2:] == [("raw", "\x1b7"), ("flush", None)]
+    assert runtime.pinned_footer_active() is False
+
+
+def test_scroll_region_resize_redraw_does_not_overlap_existing_task() -> None:
+    class PendingTask:
+        def done(self) -> bool:
+            return False
+
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24)
+    prompt_renderer = FakePromptRenderer(output)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(
+                width=80,
+                height=24,
+                renderer="rich",
+            ),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    create_background_task = Mock()
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=True,
+        create_background_task=create_background_task,
+    )
+    runtime._resize_pending = True
+    runtime._resize_task = PendingTask()  # type: ignore[assignment]
+
+    runtime.schedule_resize_redraw()
+
+    create_background_task.assert_not_called()
+
+
+def test_rich_runtime_scroll_region_gates_to_safe_interactive_rich_terminals() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+        width=80,
+    )
+
+    assert _RichReplRuntime(
+        app=app,
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    ).scroll_region_enabled() is True
+    assert _RichReplRuntime(
+        app=app,
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(width=80, height=8, renderer="rich"),
+    ).scroll_region_enabled() is False
+    assert _RichReplRuntime(
+        app=app,
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="plain"),
+    ).scroll_region_enabled() is False
+    assert _RichReplRuntime(
+        app=CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich"),
+        ),
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    ).scroll_region_enabled() is False
+
+
+def test_rich_runtime_follow_footer_wraps_transcript_writes_without_terminal_run() -> None:
+    async def exercise() -> tuple[
+        list[tuple[str, object]],
+        list[str],
+        int,
+        FakePromptRenderer,
+    ]:
+        app = CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+        )
+        output = FakePromptOutput(columns=80, rows=24)
+        prompt_renderer = FakePromptRenderer(output)
+        runtime = _RichReplRuntime(
+            app=app,
+            renderer=RichReplRenderer(
+                capabilities=FakeTerminalCapabilities(
+                    width=80,
+                    height=24,
+                    renderer="rich",
+                ),
+                width=80,
+            ),
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+        )
+        runtime.application = SimpleNamespace(
+            output=output,
+            renderer=prompt_renderer,
+            is_running=True,
+        )
+        events: list[str] = []
+
+        assert runtime.save_follow_footer_transcript_cursor() is True
+        runtime.prepare_follow_footer_render()
+        await runtime.render_above_prompt(lambda: events.append("rendered"))
+
+        return output.ops, events, prompt_renderer.erase_count, prompt_renderer
+
+    ops, events, erase_count, prompt_renderer = asyncio.run(exercise())
+
+    assert events == ["rendered"]
+    assert prompt_renderer._min_available_height == 0
+    assert ("hide_cursor", None) in ops
+    assert ("erase", False) in ops
+    assert ("request_cpr", None) in ops
+    assert ("raw", "\x1b7") in ops
+    assert not any(op == ("raw", "\x1b[1;14r") for op in ops)
+    assert not any(op == ("raw", "\x1b[r") for op in ops)
+    assert erase_count == 1
+
+
+def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
+    async def exercise() -> tuple[
+        list[tuple[str, object]],
+        list[tuple[str, object]],
+        list[str],
+        int,
+        bool,
+    ]:
+        app = CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+        )
+        output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=0)
+        prompt_renderer = FakePromptRenderer(output)
+        prompt_renderer._min_available_height = 0
+        runtime = _RichReplRuntime(
+            app=app,
+            renderer=RichReplRenderer(
+                capabilities=FakeTerminalCapabilities(
+                    width=80,
+                    height=24,
+                    renderer="rich",
+                ),
+                width=80,
+            ),
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+        )
+        runtime.application = SimpleNamespace(
+            output=output,
+            renderer=prompt_renderer,
+            is_running=True,
+        )
+        events: list[str] = []
+
+        assert runtime.save_follow_footer_transcript_cursor() is True
+        runtime.prepare_follow_footer_render()
+        activation_ops = list(output.ops)
+        output.ops.clear()
+        await runtime.render_above_prompt(lambda: events.append("rendered"))
+        runtime.finish_follow_footer_render()
+
+        return (
+            activation_ops,
+            output.ops,
+            events,
+            prompt_renderer.erase_count,
+            runtime.pinned_footer_active(),
+        )
+
+    activation_ops, ops, events, erase_count, pinned = asyncio.run(exercise())
+
+    assert pinned is True
+    assert ("erase", False) in activation_ops
+    assert ("raw", "\x1b8") in activation_ops
+    assert ("raw", "\r\n" * 5) in activation_ops
+    assert events == ["rendered"]
+    assert ops.count(("hide_cursor", None)) == 2
+    assert ("raw", "\x1b[1;19r") in ops
+    assert ("raw", "\x1b8") in ops
+    assert ("raw", "\x1b7") in ops
+    assert ("raw", "\x1b[r") in ops
+    assert ("erase", False) not in ops
+    assert erase_count == 1
+
+
 def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:
     output = CapturedRenderOutput()
     renderer = RichReplRenderer(
@@ -674,13 +1045,49 @@ def test_rich_renderer_buffers_unstable_paragraph_until_turn_done() -> None:
 
     assert "Streaming now." in output.stdout_text
     assert "  Streaming now." in output.stdout_text
-    lines = output.stdout_text.splitlines()
-    header_index = next(index for index, line in enumerate(lines) if "──── Nymeria " in line)
-    opening_divider_index = next(
-        index for index, line in enumerate(lines) if line.strip() and all(c in "─·" for c in line.strip())
+
+
+def test_rich_renderer_scroll_region_mode_streams_lines_before_done() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=100,
+        stream_rich_response_lines=True,
     )
-    response_index = next(index for index, line in enumerate(lines) if "Streaming now." in line)
-    assert header_index < opening_divider_index < response_index
+    renderer.start_turn("stream", thread_id="thread-1", now=0.0)
+
+    renderer.render_event(
+        {"type": "response", "content": "Line one\nLine two"},
+        now=1.0,
+    )
+
+    assert "Line one" in output.stdout_text
+    assert "Line two" not in output.stdout_text
+
+    renderer.render_event({"type": "done", "tool_call_count": 0}, now=2.0)
+
+    assert "Line two" in output.stdout_text
+
+
+def test_rich_renderer_scroll_region_mode_streams_sentence_before_done() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=100,
+        stream_rich_response_lines=True,
+    )
+    renderer.start_turn("stream", thread_id="thread-1", now=0.0)
+
+    renderer.render_event({"type": "response", "content": "Streaming "}, now=1.0)
+    assert "Streaming" not in output.stdout_text
+
+    renderer.render_event({"type": "response", "content": "now."}, now=1.1)
+
+    assert "Streaming now." in output.stdout_text
 
 
 def test_rich_renderer_streams_response_lines_without_cutting_text() -> None:
