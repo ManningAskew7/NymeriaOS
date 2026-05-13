@@ -138,7 +138,7 @@ class _RichReplRuntime:
         self._resize_last_redraw_at = 0.0
         self._prev_sigwinch: Any | None = None
         self._follow_footer_transcript_cursor_saved = False
-        self._follow_footer_pin_probe_pending = True
+        self._follow_footer_pin_probe_pending = False
         self._pinned_footer_active = False
         self._pinned_footer_height = 0
         self._pinned_scroll_bottom = 0
@@ -211,6 +211,9 @@ class _RichReplRuntime:
         self.composer_controller = composer_controller
         if self.scroll_region_enabled():
             application._on_resize = self.handle_terminal_resize  # noqa: SLF001
+            application._request_absolute_cursor_position = (  # noqa: SLF001
+                self._suppress_prompt_toolkit_height_probe
+            )
 
     def bottom_toolbar(self):
         """Return prompt_toolkit toolbar fragments for the live Rich prompt."""
@@ -373,15 +376,26 @@ class _RichReplRuntime:
         app = self.application
         renderer = getattr(app, "renderer", None)
         if renderer is not None:
-            with suppress(Exception):
-                renderer._min_available_height = 0  # noqa: SLF001
+            self._reset_prompt_toolkit_available_height(renderer)
+
+    def _suppress_prompt_toolkit_height_probe(self) -> None:
+        """Keep prompt_toolkit from bottom-anchoring the scroll-region footer."""
+
+        app = self.application
+        renderer = getattr(app, "renderer", None) if app is not None else None
+        if renderer is not None:
+            self._reset_prompt_toolkit_available_height(renderer)
+
+    def _reset_prompt_toolkit_available_height(self, renderer: Any) -> None:
+        with suppress(Exception):
+            renderer._min_available_height = 0  # noqa: SLF001
 
     def reset_follow_footer(self, *, prepare_shell_cursor: bool = False) -> None:
         self._deactivate_pinned_footer(reset_terminal=True)
         if prepare_shell_cursor:
             self._prepare_shell_cursor_after_footer()
         self._follow_footer_transcript_cursor_saved = False
-        self._follow_footer_pin_probe_pending = True
+        self._follow_footer_pin_probe_pending = False
 
     def _prepare_shell_cursor_after_footer(self) -> None:
         """Move the terminal cursor to a real shell line before shell return."""
@@ -406,7 +420,6 @@ class _RichReplRuntime:
             return
         rows_below = self._known_rows_below_cursor()
         if rows_below is None:
-            self._request_follow_footer_pin_probe()
             return
         self._follow_footer_pin_probe_pending = False
         if rows_below > self.footer_height():
@@ -596,7 +609,7 @@ class _RichReplRuntime:
         self._pinned_terminal_size = None
         self._pinned_footer_needs_full_repaint = False
         self._pinned_input_cursor_position = None
-        self._follow_footer_pin_probe_pending = True
+        self._follow_footer_pin_probe_pending = False
 
     def _on_sigwinch(self, signum: int, frame: Any) -> None:
         self.handle_terminal_resize()

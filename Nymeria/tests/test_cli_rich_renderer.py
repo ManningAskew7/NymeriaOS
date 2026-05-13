@@ -675,6 +675,65 @@ def test_scroll_region_runtime_owns_prompt_toolkit_resize_handler() -> None:
     assert application._on_resize.__func__ is runtime.handle_terminal_resize.__func__
 
 
+def test_scroll_region_runtime_suppresses_prompt_toolkit_startup_height_probe() -> None:
+    runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
+    prompt_renderer._min_available_height = 20
+
+    runtime.application._request_absolute_cursor_position()
+
+    assert prompt_renderer._min_available_height == 0
+    assert ("request_cpr", None) not in output.ops
+
+
+def test_scroll_region_runtime_keeps_nymeria_pin_probe_available() -> None:
+    runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
+    prompt_renderer._min_available_height = 0
+
+    runtime._request_follow_footer_pin_probe()
+
+    assert prompt_renderer._min_available_height == 0
+    assert ("request_cpr", None) in output.ops
+
+
+def test_scroll_region_runtime_does_not_probe_before_first_transcript_write() -> None:
+    runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
+    prompt_renderer._min_available_height = 0
+
+    runtime.prepare_follow_footer_render()
+
+    assert prompt_renderer.cpr_request_count == 0
+    assert ("request_cpr", None) not in output.ops
+
+
+def test_rich_scroll_region_shell_layout_uses_exact_footer_height(tmp_path: Path) -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    shell = _RichReplPromptToolkitShell(
+        cli_app=app,
+        runtime=runtime,
+        renderer=runtime.renderer,
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+        history_path=tmp_path / "history",
+    )
+
+    prompt_app = shell.build_application()
+
+    assert prompt_app.layout.container.preferred_height(80, 24).preferred == (
+        runtime.footer_height()
+    )
+
+
 def test_scroll_region_height_resize_triggers_hard_redraw() -> None:
     async def exercise() -> tuple[Mock, AsyncMock, _RichReplRuntime]:
         app = CLIApp(
@@ -977,6 +1036,7 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
         events: list[str] = []
 
         assert runtime.save_follow_footer_transcript_cursor() is True
+        runtime._follow_footer_pin_probe_pending = True
         runtime.prepare_follow_footer_render()
         activation_ops = list(output.ops)
         output.ops.clear()
