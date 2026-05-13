@@ -692,14 +692,11 @@ class RichReplRenderer:
         self._last_rendered_block = "assistant_divider"
 
     def _render_assistant_divider(self) -> None:
-        divider_width = min(max(1, self.width - 2), 32)
-        glyph = "." if self._ascii_only() else "\u00b7"
-        self.console.print(
-            Text(
-                f"  {glyph * divider_width}",
-                style=_style_for_line_kind("assistant_divider", self.theme),
-            )
-        )
+        style = _style_for_line_kind("assistant_divider", self.theme)
+        if not self._ascii_only():
+            self.console.print(Rule(style=style, characters="\u00b7"))
+        else:
+            self.console.print(Text("." * max(1, self.width), style=style))
 
     def _begin_assistant_block(self, block_kind: str) -> None:
         if self._stream_line_buffer and self._last_rendered_block != block_kind:
