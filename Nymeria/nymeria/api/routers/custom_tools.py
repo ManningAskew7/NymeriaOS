@@ -230,7 +230,13 @@ def create_custom_tools_router(
 
         try:
             if definition.implementation_type == "http":
-                result = await execute_http_tool(definition.http_config, request.params)
+                result = await execute_http_tool(
+                    definition.http_config,
+                    request.params,
+                    target_type="custom_tool",
+                    target_id=definition.id,
+                    actor_user_id=user.id,
+                )
             elif definition.implementation_type == "mcp":
                 result = await loader.mcp_manager.call_tool(
                     definition.mcp_config,

@@ -183,16 +183,32 @@ class MCPServerManager:
         )
 
         env = os.environ.copy()
+        used_credentials: set[str] = set()
         for key, value in config.env_vars.items():
             if value.startswith("${env:") and value.endswith("}"):
                 var_name = value[6:-1]
                 env[key] = os.environ.get(var_name, "")
             else:
                 env[key] = value
+            if "${credential:" in env[key]:
+                from .credential_vault import get_credential_vault_repo
+
+                env[key] = get_credential_vault_repo().resolve_references(
+                    env[key],
+                    target_type="mcp_server",
+                    target_id=config.server_id or config.server_command,
+                    used_credentials=used_credentials,
+                )
         if config.encrypted_env_vars:
             from . import secrets as nymeria_secrets
             for key, value in config.encrypted_env_vars.items():
                 env[key] = nymeria_secrets.decrypt(value)
+        if used_credentials:
+            logger.info(
+                "Resolved %d credential reference(s) for MCP server %s",
+                len(used_credentials),
+                config.server_id or config.server_command,
+            )
 
         cmd = [config.server_command] + config.server_args
 
@@ -299,6 +315,22 @@ class MCPServerManager:
                 headers[k] = os.environ.get(v[6:-1], "")
             else:
                 headers[k] = v
+            if "${credential:" in headers[k]:
+                from .credential_vault import get_credential_vault_repo
+
+                used_credentials: set[str] = set()
+                headers[k] = get_credential_vault_repo().resolve_references(
+                    headers[k],
+                    target_type="mcp_server",
+                    target_id=config.server_id or config.url,
+                    used_credentials=used_credentials,
+                )
+                if used_credentials:
+                    logger.info(
+                        "Resolved %d credential reference(s) for MCP HTTP server %s",
+                        len(used_credentials),
+                        config.server_id or config.url,
+                    )
 
         # Not using base_url: httpx appends a trailing slash on empty paths which
         # some MCP servers reject. We POST directly to config.url each request.

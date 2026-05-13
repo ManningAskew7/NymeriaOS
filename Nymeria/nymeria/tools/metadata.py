@@ -20,6 +20,7 @@ class ToolCategory(str, Enum):
     SELF_MODIFY = "self_modify"
     TODO = "todo"
     AUTONOMY = "autonomy"
+    AUTH = "auth"
     THREAD_SPAWN = "thread_spawn"
     TRIGGER = "trigger"
     EMAIL = "email"
@@ -134,6 +135,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
+    (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS",)),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),
     (ToolCategory.CUSTOM, ("TOOL_CREATE_TOOLS", "SKILL_CONFIG_TOOLS", "SKILL_KIT_CREATE_TOOLS")),
 )
@@ -415,6 +417,8 @@ def _infer_security_level(
         return SecurityLevel.MODERATE if tool_name in {"install_skill", "skill_manage"} else SecurityLevel.SAFE
     if category == ToolCategory.MCP_SERVER:
         return SecurityLevel.MODERATE if tool_name in {"install_mcp_server", "manage_mcp"} else SecurityLevel.SAFE
+    if category == ToolCategory.AUTH:
+        return SecurityLevel.MODERATE
     if category == ToolCategory.AUTONOMY:
         return SecurityLevel.MODERATE if tool_name == "watchdog_dispatch" else SecurityLevel.SAFE
     if category in {ToolCategory.THREAD_SPAWN, ToolCategory.CUSTOM}:

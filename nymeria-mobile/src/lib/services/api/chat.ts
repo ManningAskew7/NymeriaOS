@@ -7,7 +7,7 @@ import type {
   SSEEvent,
   SSEEventType
 } from '$lib/types';
-import { AccountsApi } from './accounts';
+import { CredentialsApi } from './credentials';
 
 // Module-level abort controller for current stream
 let currentAbortController: AbortController | null = null;
@@ -31,7 +31,7 @@ export function hasActiveStreamForThread(threadId: string): boolean {
   return currentAbortController !== null && currentStreamThreadId === threadId;
 }
 
-export class ChatApi extends AccountsApi {
+export class ChatApi extends CredentialsApi {
   async *chatStream(
     message: string,
     threadId?: string,
