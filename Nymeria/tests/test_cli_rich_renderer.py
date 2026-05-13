@@ -4,12 +4,19 @@ import asyncio
 import io
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapabilities
 from rich.console import Console
 
 from nymeria.triggers.cli.app import CLIApp, CLIRuntimeConfig, _RichReplRuntime
 from nymeria.triggers.cli.history import cli_state_from_history
+from nymeria.triggers.cli.rendering.rich_markdown import (
+    DEFAULT_CODE_THEME,
+    MarkdownStreamBuffer,
+    RichMarkdownAdapter,
+    rich_markdown_theme,
+)
 from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.state import (
     AssistantMessage,
@@ -52,6 +59,70 @@ def _reduce_tool_state():
     return state
 
 
+def test_rich_markdown_adapter_themes_blocks_and_tables() -> None:
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=80,
+        force_terminal=True,
+        color_system="truecolor",
+        highlight=False,
+    )
+    adapter = RichMarkdownAdapter()
+    content = "\n".join(
+        [
+            "## Heading",
+            "",
+            "Here is **bold**, *italic*, `code`, and [docs](https://example.com).",
+            "",
+            "> quote",
+            "",
+            "- item",
+            "",
+            "Name | Value",
+            "--- | ---:",
+            "**alpha** | 42",
+            "",
+            "```python",
+            "print('hi')",
+            "```",
+        ]
+    )
+    theme = rich_markdown_theme()
+
+    assert any(token.type == "table_open" for token in adapter.parse(content))
+    assert adapter.print(console, content) is True
+    assert DEFAULT_CODE_THEME == "nord"
+    assert str(theme.styles["markdown.h2"]) == "bold #ffffff"
+    assert str(theme.styles["markdown.table.header"]) == "bold #ffffff"
+    assert str(theme.styles["markdown.link"]) == "#9ccffb"
+    assert str(theme.styles["markdown.code"]) == "#e7d6ff"
+
+    text = stream.getvalue()
+    assert "\x1b[" in text
+    assert "Heading" in text
+    assert "\x1b[1mbold\x1b[0m" in text
+    assert "code" in text
+    assert "▌" in text
+    assert "alpha" in text
+    assert "print" in text
+    assert "--- | ---" not in text
+
+
+def test_markdown_stream_buffer_commits_only_stable_blocks() -> None:
+    buffer = MarkdownStreamBuffer()
+
+    assert buffer.append("Paragraph with **bold**") == []
+    assert buffer.append("\n\nName | Value\n--- | ---:\n") == [
+        "Paragraph with **bold**"
+    ]
+    assert buffer.append("**alpha** | 42\n") == []
+    assert buffer.append("\nNext paragraph") == [
+        "Name | Value\n--- | ---:\n**alpha** | 42"
+    ]
+    assert buffer.flush() == ["Next paragraph"]
+
+
 def test_rich_renderer_renders_transcript_from_reducer_state() -> None:
     output = CapturedRenderOutput()
     renderer = RichReplRenderer(
@@ -72,6 +143,190 @@ def test_rich_renderer_renders_transcript_from_reducer_state() -> None:
     )
     assert "I found the notes." in output.stdout_text
     assert "································" in output.stdout_text
+
+
+def test_update_terminal_width_changes_all_widths() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=80,
+    )
+
+    assert renderer.update_terminal_width(120) is True
+    assert renderer.width == 120
+    assert renderer.console.width == 120
+    assert renderer.error_console.width == 120
+
+    assert renderer.update_terminal_width(120) is False
+    assert renderer.width == 120
+
+
+def test_update_terminal_width_affects_rendering() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "show width", now=0.1)
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": "Width-sensitive transcript."},
+        now=1.0,
+    )
+    state = reduce_stream_event(state, {"type": "done"}, now=2.0)
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        state=state,
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=60,
+    )
+
+    renderer.render_state()
+    narrow_rule = next(
+        line for line in output.stdout_text.splitlines() if " You " in line
+    )
+
+    output.clear()
+    renderer.update_terminal_width(120)
+    renderer.render_state()
+    wide_rule = next(
+        line for line in output.stdout_text.splitlines() if " You " in line
+    )
+
+    assert len(narrow_rule) == 60
+    assert len(wide_rule) == 120
+
+
+def test_rich_render_state_matches_live_markdown_styles_and_tables() -> None:
+    content = "\n".join(
+        [
+            "Here is **bold** and `code`.",
+            "",
+            "## Heading",
+            "",
+            "> quote **bold**",
+            "",
+            "- item **one**",
+            "",
+            "Name | Value",
+            "--- | ---:",
+            "**alpha** | 42",
+        ]
+    )
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "show markdown", now=0.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": content},
+        now=1.0,
+    )
+    state = reduce_stream_event(state, {"type": "done"}, now=2.0)
+
+    live_stream = io.StringIO()
+    live_console = Console(
+        file=live_stream,
+        width=80,
+        force_terminal=True,
+        color_system="truecolor",
+        highlight=False,
+    )
+    live_renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(force_color=True),
+        console=live_console,
+        error_console=Console(file=io.StringIO(), width=80),
+        width=80,
+    )
+    live_renderer.start_turn("show markdown", thread_id="thread-1", now=0.0)
+    live_renderer.render_events(
+        [
+            {"type": "response", "content": content},
+            {"type": "done"},
+        ],
+        now=1.0,
+    )
+
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=80,
+        force_terminal=True,
+        color_system="truecolor",
+        highlight=False,
+    )
+    renderer = RichReplRenderer(
+        state=state,
+        capabilities=FakeTerminalCapabilities(force_color=True),
+        console=console,
+        error_console=Console(file=io.StringIO(), width=80),
+        width=80,
+    )
+
+    renderer.render_state()
+
+    text = stream.getvalue()
+    assert "\x1b[1mbold\x1b[0m" in text
+    assert "▌" in text
+    assert "\x1b[1malpha\x1b[0m" in text
+    assert text == live_stream.getvalue()
+
+
+def test_resize_triggers_redraw() -> None:
+    async def exercise() -> tuple[Mock, AsyncMock, _RichReplRuntime]:
+        app = CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich"),
+        )
+        renderer = Mock(spec=RichReplRenderer)
+        renderer.update_terminal_width.return_value = True
+        runtime = _RichReplRuntime(
+            app=app,
+            renderer=renderer,
+            capabilities=FakeTerminalCapabilities(width=80),
+        )
+        runtime._resize_pending = True
+        runtime.terminal_width = Mock(return_value=120)  # type: ignore[method-assign]
+        redraw = AsyncMock()
+        runtime.redraw = redraw  # type: ignore[method-assign]
+
+        await runtime._maybe_resize_redraw()
+
+        return renderer, redraw, runtime
+
+    renderer, redraw, runtime = asyncio.run(exercise())
+
+    renderer.update_terminal_width.assert_called_once_with(120)
+    redraw.assert_awaited_once()
+    assert runtime._resize_pending is False
+
+
+def test_live_width_change_triggers_redraw_without_signal_flag() -> None:
+    async def exercise() -> tuple[Mock, AsyncMock]:
+        app = CLIApp(
+            agent=None,
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(renderer="rich"),
+        )
+        renderer = Mock(spec=RichReplRenderer)
+        renderer.width = 80
+        renderer.update_terminal_width.return_value = True
+        runtime = _RichReplRuntime(
+            app=app,
+            renderer=renderer,
+            capabilities=FakeTerminalCapabilities(width=80),
+        )
+        runtime.terminal_width = Mock(return_value=120)  # type: ignore[method-assign]
+        redraw = AsyncMock()
+        runtime.redraw = redraw  # type: ignore[method-assign]
+
+        await runtime._maybe_resize_redraw()
+
+        return renderer, redraw
+
+    renderer, redraw = asyncio.run(exercise())
+
+    renderer.update_terminal_width.assert_called_once_with(120)
+    redraw.assert_awaited_once()
 
 
 def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:
@@ -198,7 +453,7 @@ def test_rich_renderer_verbose_thinking_wraps_full_text() -> None:
     assert "entirely." in output.stdout_text
 
 
-def test_rich_renderer_prints_response_delta_before_turn_done() -> None:
+def test_rich_renderer_buffers_unstable_paragraph_until_turn_done() -> None:
     output = CapturedRenderOutput()
     renderer = RichReplRenderer(
         capabilities=FakeTerminalCapabilities(no_color=True),
@@ -213,8 +468,12 @@ def test_rich_renderer_prints_response_delta_before_turn_done() -> None:
         now=1.0,
     )
 
+    assert "Streaming now." not in output.stdout_text
+
+    renderer.render_event({"type": "done", "tool_call_count": 0}, now=2.0)
+
     assert "Streaming now." in output.stdout_text
-    assert "  Streaming now.\n" in output.stdout_text
+    assert "  Streaming now." in output.stdout_text
     lines = output.stdout_text.splitlines()
     header_index = next(index for index, line in enumerate(lines) if "──── Nymeria " in line)
     opening_divider_index = next(
@@ -248,9 +507,98 @@ def test_rich_renderer_streams_response_lines_without_cutting_text() -> None:
     )
 
     assert "  Here is a breakdown:" in output.stdout_text
-    assert "  - Thread Memory -- empty (fresh thread)" in output.stdout_text
-    assert "  - Global Memory -- 26 entries loaded fine" in output.stdout_text
+    assert "Thread Memory -- empty (fresh thread)" in output.stdout_text
+    assert "Global Memory -- 26 entries loaded fine" in output.stdout_text
     assert "\nNymeria |" not in output.stdout_text
+
+
+def test_rich_renderer_streaming_table_split_uses_rich_markdown() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=80,
+    )
+    renderer.start_turn("table", thread_id="thread-1", now=0.0)
+
+    renderer.render_events(
+        [
+            {"type": "response", "content": "Name | Value\n"},
+            {"type": "response", "content": "--- | ---:\n"},
+            {"type": "response", "content": "**alpha** | 42\n"},
+            {"type": "done", "tool_call_count": 0},
+        ],
+        now=1.0,
+    )
+
+    assert "Name" in output.stdout_text
+    assert "Value" in output.stdout_text
+    assert "alpha" in output.stdout_text
+    assert "--- | ---" not in output.stdout_text
+
+
+def test_rich_renderer_tool_boundary_flushes_pending_markdown() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=100,
+    )
+    renderer.start_turn("use a tool", thread_id="thread-1", now=0.0)
+
+    renderer.render_events(
+        [
+            {"type": "response", "content": "I will use **memory**."},
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "search_memory",
+                "args": {"query": "status"},
+            },
+            {
+                "type": "tool_result",
+                "id": "call-1",
+                "name": "search_memory",
+                "result": "Found one note.",
+            },
+            {"type": "done", "tool_call_count": 1},
+        ],
+        now=1.0,
+    )
+
+    response_index = output.stdout_text.index("I will use memory.")
+    tool_index = output.stdout_text.index("search_memory")
+    assert response_index < tool_index
+
+
+def test_rich_renderer_mid_stream_redraw_does_not_duplicate_buffered_text() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=80,
+    )
+    renderer.start_turn("resize", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "response", "content": "Pending **paragraph**"},
+        now=1.0,
+    )
+
+    renderer.update_terminal_width(100)
+    renderer.reset_state(renderer.state)
+    renderer.render_state()
+    renderer.render_events(
+        [
+            {"type": "response", "content": " after redraw.\n\n"},
+            {"type": "done", "tool_call_count": 0},
+        ],
+        now=2.0,
+    )
+
+    assert output.stdout_text.count("Pending paragraph") == 1
 
 
 def test_rich_renderer_standard_mode_shows_one_preview_per_thinking_step() -> None:

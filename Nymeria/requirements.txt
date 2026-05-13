@@ -32,6 +32,7 @@ PyYAML>=6.0
 # Utilities
 python-multipart>=0.0.12
 rich>=13.9.0
+markdown-it-py>=3.0.0
 prompt_toolkit>=3.0.0
 
 # MCP Server support (for agent-to-agent communication)

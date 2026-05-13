@@ -8,10 +8,7 @@ from typing import Any, TextIO
 
 from rich.console import Console
 from rich.cells import cell_len
-from rich.markdown import Markdown
-from rich.padding import Padding
 from rich.rule import Rule
-from rich.syntax import Syntax
 from rich.text import Text
 
 from ..state import (
@@ -30,10 +27,6 @@ from ..state import (
 )
 from ..theme import CLITheme, DEFAULT_CLI_THEME, rich_style
 from .markdown import (
-    BLOCKQUOTE_RE,
-    FENCE_RE,
-    HEADING_RE,
-    HR_RE,
     collapse_inline,
     render_inline_rich,
     render_markdown_lines,
@@ -44,6 +37,7 @@ from .markdown import (
 from .plain import (
     truncate_plain,
 )
+from .rich_markdown import MarkdownStreamBuffer, print_rich_markdown
 from .tool_rows import ToolRowRenderOptions, format_tool_row
 from .transcript import (
     TranscriptLine,
@@ -100,18 +94,26 @@ class RichReplRenderer:
         self._rendered_diagnostic_count = len(self.state.diagnostics)
         self._last_rendered_block: str | None = None
         self._response_stream_active = False
+        self._markdown_stream = MarkdownStreamBuffer()
         self._stream_line_buffer = ""
         self._turn_seen_tool = False
-        self._in_code_fence = False
-        self._code_fence_buffer: list[str] = []
-        self._code_fence_lang = ""
-        self._table_buffer: list[str] = []
         self.transcript_verbose = False
 
     def set_theme(self, theme: CLITheme) -> None:
         """Update colors for future transcript output."""
 
         self.theme = theme
+
+    def update_terminal_width(self, width: int) -> bool:
+        """Update render width for future Rich transcript output."""
+
+        new_width = _positive_width(width)
+        if new_width == self.width:
+            return False
+        self.width = new_width
+        self.console.width = new_width
+        self.error_console.width = new_width
+        return True
 
     def reset_state(self, state: CLIUIState | None = None) -> None:
         """Reset transcript state after a thread/user switch or clear."""
@@ -130,12 +132,9 @@ class RichReplRenderer:
         self._rendered_diagnostic_count = len(self.state.diagnostics)
         self._last_rendered_block = None
         self._response_stream_active = False
+        self._markdown_stream.reset()
         self._stream_line_buffer = ""
         self._turn_seen_tool = False
-        self._in_code_fence = False
-        self._code_fence_buffer = []
-        self._code_fence_lang = ""
-        self._table_buffer = []
 
     def start_turn(
         self,
@@ -165,12 +164,9 @@ class RichReplRenderer:
         }
         self._last_rendered_block = None
         self._response_stream_active = False
+        self._markdown_stream.reset()
         self._stream_line_buffer = ""
         self._turn_seen_tool = False
-        self._in_code_fence = False
-        self._code_fence_buffer = []
-        self._code_fence_lang = ""
-        self._table_buffer = []
         if len(self.state.messages) >= 2 and isinstance(
             self.state.messages[-2],
             UserMessage,
@@ -227,6 +223,10 @@ class RichReplRenderer:
         self.flush_response()
         snapshot = state or self.state
         self.state = snapshot
+        if not self._ascii_only():
+            self._render_rich_state(snapshot)
+            self._mark_state_rendered(snapshot)
+            return
         for line in render_transcript_lines(
             snapshot,
             width=self.width,
@@ -235,36 +235,69 @@ class RichReplRenderer:
             self._render_transcript_line(line)
         self._mark_state_rendered(snapshot)
 
+    def _render_rich_state(self, state: CLIUIState) -> None:
+        """Replay stored transcript messages with Rich Markdown intact."""
+
+        for message in state.messages:
+            if isinstance(message, UserMessage):
+                self._render_user_message(message)
+            elif isinstance(message, AssistantMessage):
+                self._render_assistant_message(
+                    message,
+                    label=_assistant_label_for_message(
+                        state,
+                        message,
+                        ascii_only=False,
+                    ),
+                )
+            elif isinstance(message, SystemMessage):
+                for line in render_message_lines(
+                    message,
+                    width=self.width,
+                    options=self._transcript_options(),
+                ):
+                    self._render_transcript_line(line)
+            if isinstance(message, UserMessage):
+                self.console.print()
+
+        for error in state.errors:
+            self._render_transcript_line(
+                TranscriptLine(f"Error: {error.content or error.code}", "error")
+            )
+        for diagnostic in state.diagnostics:
+            text = diagnostic.message or diagnostic.source_type or "Unknown event"
+            self._render_transcript_line(
+                TranscriptLine(f"Diagnostic: {text}", "diagnostic")
+            )
+
     def flush_response(self) -> None:
         """Render buffered response markdown."""
 
+        if not self._ascii_only():
+            block_kind = "final" if self._turn_seen_tool else "preamble"
+            self._flush_rich_markdown_blocks(block_kind=block_kind, force=True)
+            return
+
         self._flush_stream_line(force=True)
-        self._flush_code_fence(force=True)
-        self._flush_table()
         text = self._response_buffer.strip()
         if not text:
             self._response_buffer = ""
             return
         block_kind = "final" if self._turn_seen_tool else "preamble"
         self._begin_assistant_block(block_kind)
-        if not self._ascii_only():
+        body_width = max(1, self.width - 2)
+        for line in render_markdown_lines(
+            text,
+            width=body_width,
+            ascii_only=True,
+        ):
+            rendered = f"  {line}" if line else ""
             self.console.print(
-                Padding(Markdown(text), (0, 0, 0, 2))
-            )
-        else:
-            body_width = max(1, self.width - 2)
-            for line in render_markdown_lines(
-                text,
-                width=body_width,
-                ascii_only=True,
-            ):
-                rendered = f"  {line}" if line else ""
-                self.console.print(
-                    Text(
-                        rendered,
-                        style=_style_for_line_kind(block_kind, self.theme),
-                    )
+                Text(
+                    rendered,
+                    style=_style_for_line_kind(block_kind, self.theme),
                 )
+            )
         self._response_buffer = ""
 
     def _render_transition(
@@ -527,54 +560,88 @@ class RichReplRenderer:
         if not delta:
             return
         block_kind = "final" if self._turn_seen_tool else "preamble"
-        self._begin_assistant_block(block_kind)
         text = str(delta or "").replace("\r\n", "\n").replace("\r", "\n")
         if not text:
             return
+        if not self._ascii_only():
+            blocks = self._markdown_stream.append(text)
+            self._response_stream_active = self._markdown_stream.has_pending
+            if blocks:
+                self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
+            return
+
+        self._begin_assistant_block(block_kind)
         self._stream_line_buffer += text
         self._response_stream_active = True
         self._flush_complete_stream_lines(block_kind)
         self._flush_stream_line_if_ready(block_kind)
 
-    def _render_assistant_message(self, message: AssistantMessage) -> None:
-        self._render_separator(
-            "Nymeria",
-            style=_style_for_line_kind("assistant_header", self.theme),
-        )
-        last_tool_index = _last_tool_index(message.steps)
-        previous_block: str | None = None
-        rendered_body = False
-        for index, step in enumerate(message.steps):
-            if isinstance(step, ThinkingStep):
-                block_kind = "thinking"
-            elif isinstance(step, ToolCallStep):
-                block_kind = "tool"
-            elif isinstance(step, ResponseStep) and step.content.strip():
-                block_kind = "preamble" if index < last_tool_index else "final"
-            else:
-                continue
+    def _flush_rich_markdown_blocks(
+        self,
+        *,
+        block_kind: str,
+        force: bool,
+    ) -> None:
+        if not force:
+            self._response_stream_active = self._markdown_stream.has_pending
+            return
+        blocks = self._markdown_stream.flush()
+        self._response_stream_active = False
+        if blocks:
+            self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
 
-            if previous_block is not None and previous_block != block_kind:
-                self.console.print()
-                if _needs_assistant_divider(
+    def _print_rich_markdown_blocks(
+        self,
+        blocks: Sequence[str],
+        *,
+        block_kind: str,
+    ) -> None:
+        rendered = False
+        for block in blocks:
+            if not str(block or "").strip():
+                continue
+            if not rendered:
+                self._begin_assistant_block(
                     block_kind,
-                    previous_block=previous_block,
-                ):
-                    self._render_assistant_divider()
-                    self.console.print()
+                    flush_pending_markdown=False,
+                )
+                rendered = True
+            print_rich_markdown(self.console, block, theme=self.theme)
+        if rendered:
+            self._flush_console_file()
+
+    def _render_assistant_message(
+        self,
+        message: AssistantMessage,
+        *,
+        label: str = "Nymeria",
+    ) -> None:
+        header_style = (
+            _style_for_line_kind("autonomous_header", self.theme)
+            if label != "Nymeria"
+            else _style_for_line_kind("assistant_header", self.theme)
+        )
+        self._render_assistant_header_frame(label, style=header_style)
+        self._turn_seen_tool = False
+        rendered_body = False
+        dispatch_text = _dispatch_reference_text(message)
+        if dispatch_text:
+            self.console.print(
+                Text(
+                    f"  {truncate_cell_width(dispatch_text, max(1, self.width - 2))}",
+                    style=_style_for_line_kind("assistant_header", self.theme),
+                )
+            )
+            self._last_rendered_block = "dispatch"
+            rendered_body = True
+
+        for step in message.steps:
             if isinstance(step, ThinkingStep):
-                content = _thinking_preview_text(
-                    step.content or "...",
-                    width=max(1, self.width - 4),
-                )
-                marker = "| " if self._ascii_only() else "\u2502 "
-                self.console.print(
-                    Text(
-                        f"  {marker}{content}",
-                        style=_style_for_line_kind("thinking", self.theme),
-                    )
-                )
+                self._render_thinking_text(step.content or "...", preview=True)
+                rendered_body = True
             elif isinstance(step, ToolCallStep):
+                self.flush_response()
+                self._begin_assistant_block("tool")
                 self.console.print(
                     render_tool_row(
                         step,
@@ -583,12 +650,17 @@ class RichReplRenderer:
                         theme=self.theme,
                     )
                 )
+                self._turn_seen_tool = True
+                rendered_body = True
             elif isinstance(step, ResponseStep):
+                if not step.content.strip():
+                    continue
                 if not self._ascii_only():
-                    self.console.print(
-                        Padding(Markdown(step.content.strip()), (0, 0, 0, 2))
-                    )
+                    self._stream_response_delta(step.content)
+                    self.flush_response()
                 else:
+                    block_kind = "final" if self._turn_seen_tool else "preamble"
+                    self._begin_assistant_block(block_kind)
                     for line in render_markdown_lines(
                         step.content.strip(),
                         width=max(1, self.width - 2),
@@ -601,8 +673,7 @@ class RichReplRenderer:
                                 style=_style_for_line_kind(block_kind, self.theme),
                             )
                         )
-            previous_block = block_kind
-            rendered_body = True
+                rendered_body = True
         if message.status == "complete" and rendered_body:
             self.console.print()
             self._render_assistant_divider()
@@ -698,7 +769,26 @@ class RichReplRenderer:
         else:
             self.console.print(Text("." * max(1, self.width), style=style))
 
-    def _begin_assistant_block(self, block_kind: str) -> None:
+    def _begin_assistant_block(
+        self,
+        block_kind: str,
+        *,
+        flush_pending_markdown: bool = True,
+    ) -> None:
+        if (
+            flush_pending_markdown
+            and not self._ascii_only()
+            and self._markdown_stream.has_pending
+            and self._last_rendered_block != block_kind
+        ):
+            previous_block = self._last_rendered_block or block_kind
+            blocks = self._markdown_stream.flush()
+            if blocks:
+                self._last_rendered_block = previous_block
+                for block in blocks:
+                    print_rich_markdown(self.console, block, theme=self.theme)
+                self._response_stream_active = False
+                self._flush_console_file()
         if self._stream_line_buffer and self._last_rendered_block != block_kind:
             self._flush_stream_line(
                 force=True,
@@ -720,18 +810,11 @@ class RichReplRenderer:
     def _flush_complete_stream_lines(self, block_kind: str) -> None:
         while "\n" in self._stream_line_buffer:
             line, self._stream_line_buffer = self._stream_line_buffer.split("\n", 1)
-            if not self._ascii_only():
-                if self._handle_fence_line(line, block_kind):
-                    continue
-                if self._handle_table_line(line):
-                    continue
             self._print_stream_line(line, block_kind)
         self._response_stream_active = bool(self._stream_line_buffer)
 
     def _flush_stream_line_if_ready(self, block_kind: str) -> None:
         if not self._stream_line_buffer:
-            return
-        if self._in_code_fence or self._table_buffer:
             return
         text = self._stream_line_buffer
         width = _stream_flush_width(self.width)
@@ -758,11 +841,6 @@ class RichReplRenderer:
         if not force or not self._stream_line_buffer:
             self._response_stream_active = bool(self._stream_line_buffer)
             return
-        if self._in_code_fence:
-            self._code_fence_buffer.append(self._stream_line_buffer)
-            self._stream_line_buffer = ""
-            self._response_stream_active = False
-            return
         selected_block = block_kind or self._last_rendered_block or "preamble"
         self._print_stream_line(self._stream_line_buffer, selected_block)
         self._stream_line_buffer = ""
@@ -774,9 +852,6 @@ class RichReplRenderer:
             self._flush_console_file()
             return
         if not self._ascii_only():
-            if self._print_block_element(line):
-                self._flush_console_file()
-                return
             for wrapped in wrap_rich_lines(
                 line,
                 width=self.width,
@@ -795,148 +870,10 @@ class RichReplRenderer:
                 self.console.print(Text(rendered, style=style))
         self._flush_console_file()
 
-    def _print_block_element(self, line: str) -> bool:
-        """Detect and render block-level markdown elements during streaming.
-
-        Returns True if the line was handled as a block element.
-        """
-
-        heading = HEADING_RE.match(line)
-        if heading:
-            level = len(heading.group(1))
-            heading_text = heading.group(2).strip().rstrip("#").strip()
-            styled = render_inline_rich(heading_text, theme=self.theme)
-            heading_style = f"bold {self.theme.color('heading')}"
-            styled.stylize(heading_style)
-            if level <= 2:
-                self.console.print()
-            padded = Text("  ")
-            padded.append_text(styled)
-            self.console.print(padded)
-            return True
-
-        if HR_RE.match(line):
-            separator_style = _style_for_line_kind("assistant_divider", self.theme)
-            self.console.print(Rule(style=separator_style, characters="─"))
-            return True
-
-        blockquote = BLOCKQUOTE_RE.match(line)
-        if blockquote:
-            content = blockquote.group(1)
-            styled = render_inline_rich(content, theme=self.theme)
-            thinking_style = _style_for_line_kind("thinking", self.theme)
-            styled.stylize(thinking_style)
-            marker = Text("  │ ", style=thinking_style)
-            marker.append_text(styled)
-            self.console.print(marker)
-            return True
-
-        return False
-
     def _flush_console_file(self) -> None:
         flush = getattr(self.console.file, "flush", None)
         if callable(flush):
             flush()
-
-    def _handle_fence_line(self, line: str, block_kind: str) -> bool:
-        """Route a streamed line through code fence buffering.
-
-        Returns True if the line was consumed by the fence buffer.
-        """
-
-        fence_match = FENCE_RE.match(line)
-        if self._in_code_fence:
-            if fence_match:
-                self._render_code_fence()
-                return True
-            self._code_fence_buffer.append(line)
-            return True
-        if fence_match:
-            self._in_code_fence = True
-            self._code_fence_buffer = []
-            lang = line[fence_match.end():].strip().split()[0] if line[fence_match.end():].strip() else ""
-            self._code_fence_lang = lang
-            return True
-        return False
-
-    def _render_code_fence(self) -> None:
-        """Render buffered code lines with syntax highlighting."""
-
-        code = "\n".join(self._code_fence_buffer)
-        lang = self._code_fence_lang or "text"
-        self._begin_assistant_block("final" if self._turn_seen_tool else "preamble")
-        try:
-            syntax = Syntax(
-                code,
-                lang,
-                theme="monokai",
-                line_numbers=False,
-                word_wrap=True,
-            )
-            self.console.print(Padding(syntax, (0, 0, 0, 2)))
-        except Exception:  # noqa: BLE001
-            for buf_line in self._code_fence_buffer:
-                self.console.print(Text(f"    {buf_line}"))
-        self._in_code_fence = False
-        self._code_fence_buffer = []
-        self._code_fence_lang = ""
-        self._flush_console_file()
-
-    def _flush_code_fence(self, *, force: bool) -> None:
-        """Render any unclosed code fence buffer as plain indented text."""
-
-        if not force or not self._in_code_fence:
-            return
-        for buf_line in self._code_fence_buffer:
-            self.console.print(
-                Text(
-                    f"    {buf_line}",
-                    style=_style_for_line_kind("diagnostic", self.theme),
-                )
-            )
-        self._in_code_fence = False
-        self._code_fence_buffer = []
-        self._code_fence_lang = ""
-
-    def _handle_table_line(self, line: str) -> bool:
-        """Buffer markdown table lines and render when the table ends.
-
-        Returns True if the line was consumed by the table buffer.
-        """
-
-        stripped = line.strip()
-        is_table_row = stripped.startswith("|") and stripped.endswith("|")
-        if self._table_buffer:
-            if is_table_row:
-                self._table_buffer.append(line)
-                return True
-            self._render_table()
-            return False
-        if is_table_row:
-            self._table_buffer = [line]
-            return True
-        return False
-
-    def _render_table(self) -> None:
-        """Render buffered table lines using Rich Markdown."""
-
-        if not self._table_buffer:
-            return
-        table_md = "\n".join(self._table_buffer)
-        self._begin_assistant_block("final" if self._turn_seen_tool else "preamble")
-        try:
-            self.console.print(Padding(Markdown(table_md), (0, 0, 0, 2)))
-        except Exception:  # noqa: BLE001
-            for buf_line in self._table_buffer:
-                self.console.print(Text(f"  {buf_line}"))
-        self._table_buffer = []
-        self._flush_console_file()
-
-    def _flush_table(self) -> None:
-        """Render any pending table buffer."""
-
-        if self._table_buffer:
-            self._render_table()
 
     def _mark_state_rendered(self, state: CLIUIState) -> None:
         """Synchronize incremental render bookkeeping after a replay."""
@@ -977,12 +914,9 @@ class RichReplRenderer:
         self._rendered_diagnostic_count = len(state.diagnostics)
         self._last_rendered_block = None
         self._response_stream_active = False
+        self._markdown_stream.reset()
         self._stream_line_buffer = ""
         self._turn_seen_tool = False
-        self._in_code_fence = False
-        self._code_fence_buffer = []
-        self._code_fence_lang = ""
-        self._table_buffer = []
 
     def _render_turn_end(self, state: CLIUIState) -> None:
         message = select_last_assistant_message(state)
@@ -1034,13 +968,6 @@ def render_tool_row(
         else _style_for_line_kind("tool", selected_theme)
     )
     return Text(f"  {row}", style=style)
-
-
-def _last_tool_index(steps: Sequence[Any]) -> int:
-    for index in range(len(steps) - 1, -1, -1):
-        if isinstance(steps[index], ToolCallStep):
-            return index
-    return -1
 
 
 def _needs_assistant_divider(
