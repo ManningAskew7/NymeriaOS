@@ -112,6 +112,35 @@ class NymeriaMarkdown(Markdown):
 
 
 @dataclass(frozen=True, slots=True)
+class MarkdownBlock:
+    """One stable Markdown block emitted by the streaming splitter."""
+
+    text: str
+    kind: str
+    trailing_blank_lines: int = 0
+    leading_blank_lines: int = 0
+
+    @classmethod
+    def from_text(
+        cls,
+        text: object,
+        *,
+        leading_blank_lines: int = 0,
+        trailing_blank_lines: int = 0,
+    ) -> "MarkdownBlock":
+        normalized = _normalize_newlines(text).strip("\n")
+        return cls(
+            text=normalized,
+            kind=_classify_markdown_block(normalized),
+            leading_blank_lines=max(0, leading_blank_lines),
+            trailing_blank_lines=max(0, trailing_blank_lines),
+        )
+
+    def __str__(self) -> str:
+        return self.text
+
+
+@dataclass(frozen=True, slots=True)
 class RichMarkdownAdapter:
     """Construct and render Rich Markdown with Nymeria's CLI theme."""
 
@@ -158,7 +187,7 @@ class MarkdownStreamBuffer:
     def reset(self) -> None:
         self._buffer = ""
 
-    def append(self, delta: object) -> list[str]:
+    def append(self, delta: object) -> list[MarkdownBlock]:
         """Append a streamed delta and return newly stable Markdown blocks."""
 
         text = _normalize_newlines(delta)
@@ -168,12 +197,15 @@ class MarkdownStreamBuffer:
         blocks, self._buffer = split_stable_markdown_blocks(self._buffer)
         return blocks
 
-    def flush(self) -> list[str]:
+    def flush(self) -> list[MarkdownBlock]:
         """Return all stable blocks plus the current unstable tail."""
 
-        blocks, tail = split_stable_markdown_blocks(self._buffer)
+        buffer = self._buffer
+        if buffer and not buffer.endswith("\n"):
+            buffer = f"{buffer}\n"
+        blocks, tail = split_stable_markdown_blocks(buffer)
         if tail.strip():
-            blocks.append(tail.strip("\n"))
+            blocks.append(_tail_markdown_block(tail))
         self._buffer = ""
         return blocks
 
@@ -226,25 +258,26 @@ def print_rich_markdown(
     ).print(console, content)
 
 
-def split_stable_markdown_blocks(text: object) -> tuple[list[str], str]:
+def split_stable_markdown_blocks(text: object) -> tuple[list[MarkdownBlock], str]:
     """Split ``text`` into stable Markdown blocks and an unstable tail."""
 
     buffer = _normalize_newlines(text)
-    blocks: list[str] = []
+    blocks: list[MarkdownBlock] = []
     while buffer:
         block, remaining = _pop_stable_markdown_block(buffer)
         if block is None:
             break
-        if block.strip():
-            blocks.append(block.strip("\n"))
+        if block.text.strip():
+            blocks.append(block)
         buffer = remaining
     return blocks, buffer
 
 
-def _pop_stable_markdown_block(buffer: str) -> tuple[str | None, str]:
-    buffer = _strip_complete_leading_blank_lines(buffer)
-    if not buffer:
-        return None, ""
+def _pop_stable_markdown_block(buffer: str) -> tuple[MarkdownBlock | None, str]:
+    stripped_buffer, leading_blank_lines = _strip_complete_leading_blank_lines(buffer)
+    if not stripped_buffer:
+        return None, buffer
+    buffer = stripped_buffer
 
     lines, complete_count = _complete_lines(buffer)
     if complete_count <= 0:
@@ -261,7 +294,11 @@ def _pop_stable_markdown_block(buffer: str) -> tuple[str | None, str]:
         )
         if close_index is None:
             return None, buffer
-        return _take_lines(lines, close_index + 1)
+        return _take_lines(
+            lines,
+            close_index + 1,
+            leading_blank_lines=leading_blank_lines,
+        )
 
     if _is_table_start(complete_lines):
         row_index = 2
@@ -270,23 +307,42 @@ def _pop_stable_markdown_block(buffer: str) -> tuple[str | None, str]:
         ):
             row_index += 1
         if row_index < complete_count:
-            return _take_lines(lines, row_index)
+            return _take_lines(lines, row_index, leading_blank_lines=leading_blank_lines)
         return None, buffer
 
     if _HEADING_RE.match(first) or _HR_RE.match(first):
-        return _take_lines(lines, 1)
+        return _take_lines(lines, 1, leading_blank_lines=leading_blank_lines)
 
     if _LIST_RE.match(first):
-        return _pop_section_block(lines, complete_count, _LIST_RE)
+        return _pop_section_block(
+            lines,
+            complete_count,
+            _LIST_RE,
+            leading_blank_lines=leading_blank_lines,
+        )
 
     if _BLOCKQUOTE_RE.match(first):
-        return _pop_section_block(lines, complete_count, _BLOCKQUOTE_RE)
+        return _pop_section_block(
+            lines,
+            complete_count,
+            _BLOCKQUOTE_RE,
+            leading_blank_lines=leading_blank_lines,
+        )
 
     for index, line in enumerate(complete_lines):
         if _is_blank_line(line):
             block = "".join(lines[:index])
-            remaining = "".join(lines[index + 1 :])
-            return block, _strip_complete_leading_blank_lines(remaining)
+            remaining, trailing_blank_lines = _strip_complete_leading_blank_lines(
+                "".join(lines[index:])
+            )
+            return (
+                MarkdownBlock.from_text(
+                    block,
+                    leading_blank_lines=leading_blank_lines,
+                    trailing_blank_lines=trailing_blank_lines,
+                ),
+                remaining,
+            )
     return None, buffer
 
 
@@ -294,16 +350,27 @@ def _pop_section_block(
     lines: list[str],
     complete_count: int,
     section_re: re.Pattern[str],
-) -> tuple[str | None, str]:
+    *,
+    leading_blank_lines: int,
+) -> tuple[MarkdownBlock | None, str]:
     for index in range(1, complete_count):
         line = lines[index]
         if _is_blank_line(line):
             block = "".join(lines[:index])
-            remaining = "".join(lines[index + 1 :])
-            return block, _strip_complete_leading_blank_lines(remaining)
+            remaining, trailing_blank_lines = _strip_complete_leading_blank_lines(
+                "".join(lines[index:])
+            )
+            return (
+                MarkdownBlock.from_text(
+                    block,
+                    leading_blank_lines=leading_blank_lines,
+                    trailing_blank_lines=trailing_blank_lines,
+                ),
+                remaining,
+            )
         if section_re.match(line) or _INDENTED_CONTINUATION_RE.match(line):
             continue
-        return _take_lines(lines, index)
+        return _take_lines(lines, index, leading_blank_lines=leading_blank_lines)
     return None, "".join(lines)
 
 
@@ -316,19 +383,61 @@ def _complete_lines(buffer: str) -> tuple[list[str], int]:
     return lines, len(lines) - 1
 
 
-def _take_lines(lines: list[str], count: int) -> tuple[str, str]:
+def _take_lines(
+    lines: list[str],
+    count: int,
+    *,
+    leading_blank_lines: int = 0,
+) -> tuple[MarkdownBlock, str]:
     block = "".join(lines[:count])
     remaining = "".join(lines[count:])
-    return block, _strip_complete_leading_blank_lines(remaining)
+    remaining, trailing_blank_lines = _strip_complete_leading_blank_lines(remaining)
+    return (
+        MarkdownBlock.from_text(
+            block,
+            leading_blank_lines=leading_blank_lines,
+            trailing_blank_lines=trailing_blank_lines,
+        ),
+        remaining,
+    )
 
 
-def _strip_complete_leading_blank_lines(buffer: str) -> str:
+def _strip_complete_leading_blank_lines(buffer: str) -> tuple[str, int]:
+    blank_lines = 0
     while buffer:
         lines, complete_count = _complete_lines(buffer)
         if complete_count <= 0 or not lines or not _is_blank_line(lines[0]):
-            return buffer
+            return buffer, blank_lines
+        blank_lines += 1
         buffer = "".join(lines[1:])
-    return buffer
+    return buffer, blank_lines
+
+
+def _tail_markdown_block(buffer: str) -> MarkdownBlock:
+    text, leading_blank_lines = _strip_complete_leading_blank_lines(buffer)
+    return MarkdownBlock.from_text(
+        text,
+        leading_blank_lines=leading_blank_lines,
+    )
+
+
+def _classify_markdown_block(text: object) -> str:
+    for token in _MARKDOWN_PARSER.parse(str(text or "")):
+        if token.type == "heading_open":
+            return "heading"
+        if token.type in {"fence", "code_block"}:
+            return "code"
+        if token.type == "table_open":
+            return "table"
+        if token.type in {"bullet_list_open", "ordered_list_open"}:
+            return "list"
+        if token.type == "blockquote_open":
+            return "blockquote"
+        if token.type == "hr":
+            return "hr"
+        if token.type == "paragraph_open":
+            return "paragraph"
+    return "paragraph"
 
 
 def _find_closing_fence(lines: list[str], *, opener: str) -> int | None:
@@ -422,6 +531,7 @@ def _normalize_newlines(value: object) -> str:
 __all__ = [
     "DEFAULT_CODE_THEME",
     "DEFAULT_MARKDOWN_INDENT",
+    "MarkdownBlock",
     "MarkdownStreamBuffer",
     "RichMarkdownAdapter",
     "print_rich_markdown",
