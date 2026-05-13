@@ -238,6 +238,16 @@ def build_cli_runtime_config(args: argparse.Namespace):
 
     positional_ref = " ".join(getattr(args, "thread_ref", []) or []).strip() or None
     startup_thread_ref = args.thread or positional_ref
+    rich_scroll_region_arg = getattr(args, "rich_scroll_region", None)
+    rich_scroll_region_env = os.environ.get("NYMERIA_CLI_RICH_SCROLL_REGION")
+    if rich_scroll_region_arg is None:
+        rich_scroll_region = (
+            _truthy_env(rich_scroll_region_env)
+            if rich_scroll_region_env is not None
+            else True
+        )
+    else:
+        rich_scroll_region = bool(rich_scroll_region_arg)
 
     # Emit deprecation warnings for old thread-selection paths
     is_list = positional_ref and positional_ref.casefold() == "list"
@@ -265,8 +275,7 @@ def build_cli_runtime_config(args: argparse.Namespace):
         animation=args.animation,
         ascii_only=args.ascii_only,
         color=args.color,
-        rich_scroll_region=bool(getattr(args, "rich_scroll_region", False))
-        or _truthy_env(os.environ.get("NYMERIA_CLI_RICH_SCROLL_REGION")),
+        rich_scroll_region=rich_scroll_region,
         startup_thread_ref=startup_thread_ref,
         list_threads_on_startup=(
             args.thread is None and bool(positional_ref) and positional_ref.casefold() == "list"
@@ -961,14 +970,22 @@ Examples:
         default="auto",
         help="Color output policy for future CLI renderers (default: auto)",
     )
-    cli_parser.add_argument(
+    rich_scroll_region_group = cli_parser.add_mutually_exclusive_group()
+    rich_scroll_region_group.add_argument(
         "--rich-scroll-region",
+        dest="rich_scroll_region",
         action="store_true",
-        default=False,
+        default=None,
         help=(
-            "Experimental Rich REPL footer stabilization using native "
-            "scrollback follow-footer rendering (also NYMERIA_CLI_RICH_SCROLL_REGION=1)"
+            "Use the default Rich REPL native scrollback follow-footer renderer "
+            "(also NYMERIA_CLI_RICH_SCROLL_REGION=1)"
         ),
+    )
+    rich_scroll_region_group.add_argument(
+        "--no-rich-scroll-region",
+        dest="rich_scroll_region",
+        action="store_false",
+        help="Disable the default Rich REPL scroll-region follow-footer renderer",
     )
 
     # API subcommand

@@ -144,6 +144,7 @@ class _RichReplRuntime:
         self._pinned_scroll_bottom = 0
         self._pinned_terminal_size: tuple[int, int] | None = None
         self._pinned_footer_needs_full_repaint = False
+        self._pinned_input_cursor_position: tuple[int, int] | None = None
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._autonomous_task: asyncio.Task[None] | None = None
         self._pending_submissions: deque[Any] = deque()
@@ -448,6 +449,7 @@ class _RichReplRuntime:
         if scroll_bottom < 1 or not self._follow_footer_transcript_cursor_saved:
             return
 
+        output.hide_cursor()
         renderer = getattr(app, "renderer", None)
         if renderer is not None:
             with suppress(Exception):
@@ -483,6 +485,7 @@ class _RichReplRuntime:
                 return
 
         footer_top = self._pinned_scroll_bottom + 1
+        output.hide_cursor()
         output.write_raw("\x1b[r")
         output.write_raw(f"\x1b[{footer_top};1H")
         output.flush()
@@ -515,6 +518,7 @@ class _RichReplRuntime:
             self._deactivate_pinned_footer(reset_terminal=True)
             return
 
+        output.hide_cursor()
         output.write_raw("\x1b[r")
         if footer_height > old_footer_height:
             output.write_raw(f"\x1b[1;{old_scroll_bottom}r")
@@ -537,12 +541,46 @@ class _RichReplRuntime:
     def finish_follow_footer_render(self) -> None:
         if not self.scroll_region_enabled() or not self._pinned_footer_active:
             return
+        self._remember_pinned_input_cursor_position()
+        self._restore_pinned_input_cursor_position()
+
+    def _remember_pinned_input_cursor_position(self) -> None:
+        app = self.application
+        if app is None or not self._pinned_scroll_bottom:
+            self._pinned_input_cursor_position = None
+            return
+        renderer = getattr(app, "renderer", None)
+        point = getattr(renderer, "_cursor_pos", None)
+        if point is None:
+            return
+        output = getattr(app, "output", None)
+        if output is None:
+            return
+        try:
+            size = output.get_size()
+            row = self._pinned_scroll_bottom + 1 + max(0, int(point.y))
+            column = 1 + max(0, int(point.x))
+            text_top = self._pinned_scroll_bottom + 4
+            text_bottom = text_top + self.composer_input_height() - 1
+            if (
+                text_top <= row <= min(int(size.rows), text_bottom)
+                and 1 <= column <= int(size.columns)
+            ):
+                self._pinned_input_cursor_position = (row, column)
+        except Exception:  # noqa: BLE001 - cursor restore is best effort.
+            return
+
+    def _restore_pinned_input_cursor_position(self) -> None:
         app = self.application
         output = getattr(app, "output", None)
-        if output is not None:
-            with suppress(Exception):
-                output.hide_cursor()
-                output.flush()
+        position = self._pinned_input_cursor_position
+        if output is None or position is None:
+            return
+        row, column = position
+        with suppress(Exception):
+            output.write_raw(f"\x1b[{row};{column}H")
+            output.show_cursor()
+            output.flush()
 
     def _deactivate_pinned_footer(self, *, reset_terminal: bool) -> None:
         if reset_terminal:
@@ -557,6 +595,7 @@ class _RichReplRuntime:
         self._pinned_scroll_bottom = 0
         self._pinned_terminal_size = None
         self._pinned_footer_needs_full_repaint = False
+        self._pinned_input_cursor_position = None
         self._follow_footer_pin_probe_pending = True
 
     def _on_sigwinch(self, signum: int, frame: Any) -> None:
@@ -773,6 +812,7 @@ class _RichReplRuntime:
             output.write_raw("\x1b[r")
             output.flush()
             self._follow_footer_transcript_cursor_saved = True
+            self._restore_pinned_input_cursor_position()
 
     def _flush_renderer_output(self) -> None:
         for console_name in ("console", "error_console"):
@@ -1050,6 +1090,30 @@ class _RichReplPromptToolkitShell:
                 with suppress(asyncio.CancelledError):
                     await task
             self.runtime.reset_follow_footer(prepare_shell_cursor=True)
+            self._write_resume_hint_after_exit()
+
+    def _resume_hint_text(self) -> str | None:
+        thread_id = str(getattr(self.cli_app.state, "thread_id", "") or "").strip()
+        if not thread_id:
+            return None
+        return f"Use nymeria cli --resume {thread_id} to return to this thread."
+
+    def _write_resume_hint_after_exit(self) -> None:
+        hint = self._resume_hint_text()
+        if not hint:
+            return
+
+        output = getattr(self.runtime.application, "output", None)
+        if output is not None:
+            try:
+                output.write_raw(f"{hint}\r\n")
+                output.flush()
+                return
+            except Exception:  # noqa: BLE001 - terminal shutdown hint is best effort.
+                pass
+
+        sys.stdout.write(f"{hint}\n")
+        sys.stdout.flush()
 
     def _handle_submission(self, submission: Any) -> bool:
         try:

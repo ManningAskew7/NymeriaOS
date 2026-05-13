@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -12,6 +13,7 @@ from rich.console import Console
 from nymeria.triggers.cli.app import (
     CLIApp,
     CLIRuntimeConfig,
+    _RichReplPromptToolkitShell,
     _RichReplRuntime,
 )
 from nymeria.triggers.cli.history import cli_state_from_history
@@ -60,6 +62,9 @@ class FakePromptOutput:
 
     def hide_cursor(self) -> None:
         self.ops.append(("hide_cursor", None))
+
+    def show_cursor(self) -> None:
+        self.ops.append(("show_cursor", None))
 
     def cursor_goto(self, row: int = 0, column: int = 0) -> None:
         self.ops.append(("cursor", (row, column)))
@@ -877,7 +882,7 @@ def test_rich_runtime_scroll_region_gates_to_safe_interactive_rich_terminals() -
         app=CLIApp(
             agent=None,
             thread_id="thread-1",
-            runtime_config=CLIRuntimeConfig(renderer="rich"),
+            runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=False),
         ),
         renderer=renderer,
         capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
@@ -993,13 +998,52 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
     assert ("raw", "\x1b8") in activation_ops
     assert ("raw", "\r\n" * 5) in activation_ops
     assert events == ["rendered"]
-    assert ops.count(("hide_cursor", None)) == 2
+    assert ops.count(("hide_cursor", None)) == 1
     assert ("raw", "\x1b[1;19r") in ops
     assert ("raw", "\x1b8") in ops
     assert ("raw", "\x1b7") in ops
     assert ("raw", "\x1b[r") in ops
     assert ("erase", False) not in ops
     assert erase_count == 1
+
+
+def test_rich_runtime_restores_input_cursor_after_pinned_transcript_write() -> None:
+    async def exercise() -> list[tuple[str, object]]:
+        runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
+        runtime._follow_footer_transcript_cursor_saved = True
+        runtime._pinned_footer_active = True
+        runtime._pinned_footer_height = 5
+        runtime._pinned_scroll_bottom = 19
+        runtime._pinned_terminal_size = (80, 24)
+        prompt_renderer._cursor_pos = SimpleNamespace(x=4, y=3)
+
+        runtime.finish_follow_footer_render()
+        output.ops.clear()
+        await runtime.render_above_prompt(lambda: None)
+        return output.ops
+
+    ops = asyncio.run(exercise())
+
+    restore_index = ops.index(("raw", "\x1b[23;5H"))
+    show_index = ops.index(("show_cursor", None))
+    assert ops.index(("raw", "\x1b[r")) < restore_index < show_index
+    assert ops.count(("hide_cursor", None)) == 1
+
+
+def test_rich_runtime_hides_cursor_before_pinned_footer_repaint_anchor() -> None:
+    runtime, output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+    runtime._follow_footer_transcript_cursor_saved = True
+    runtime._pinned_footer_active = True
+    runtime._pinned_footer_height = 5
+    runtime._pinned_scroll_bottom = 19
+    runtime._pinned_terminal_size = (80, 24)
+
+    runtime._prepare_pinned_footer_render()
+
+    hide_index = output.ops.index(("hide_cursor", None))
+    reset_index = output.ops.index(("raw", "\x1b[r"))
+    anchor_index = output.ops.index(("raw", "\x1b[20;1H"))
+    assert hide_index < reset_index < anchor_index
 
 
 def test_rich_runtime_resizes_pinned_footer_when_composer_grows() -> None:
@@ -1135,6 +1179,38 @@ def test_rich_runtime_exit_cleanup_moves_shell_prompt_below_pinned_footer() -> N
     assert ("raw", "\x1b[24;1H\r\n") in output.ops
     assert ("raw", "\x1b8") not in output.ops
     assert runtime.pinned_footer_active() is False
+
+
+def test_rich_shell_exit_hint_uses_current_thread_id() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-abc",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(output=output, is_running=False)
+    shell = _RichReplPromptToolkitShell(
+        cli_app=app,
+        runtime=runtime,
+        renderer=runtime.renderer,
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+        history_path=Path("/tmp/nymeria-cli-history"),
+    )
+
+    shell._write_resume_hint_after_exit()
+
+    assert (
+        "raw",
+        "Use nymeria cli --resume thread-abc to return to this thread.\r\n",
+    ) in output.ops
 
 
 def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:
