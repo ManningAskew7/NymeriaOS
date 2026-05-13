@@ -45,9 +45,11 @@ python run.py cli
 The interactive CLI supports three renderer modes and two transport families:
 
 ```bash
+python run.py cli                         # Default Rich scrollback REPL
 python run.py cli --renderer auto
 python run.py cli --renderer full --transport api --api-url http://localhost:8000 --api-key <token>
 python run.py cli --renderer plain --transport local
+python run.py cli --no-rich-scroll-region # Older Rich REPL output path
 
 # Resume existing threads
 python run.py cli -c                              # Continue most recent thread
@@ -68,7 +70,7 @@ python run.py cli --export <thread-id> --format md
 python run.py completion bash   # also: zsh, fish
 ```
 
-`--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. `--message`/`-m` runs in non-interactive oneshot mode: sends the message, streams the response to stdout, and exits 0/1. Use `--format json` for newline-delimited JSON events, or pipe stdin with `-m -`. The default transport is API/thin-client mode: the CLI loads `~/.nymeria/cli.json` when present, otherwise starts disconnected and lets you run `/login`. Use `--transport local` only when you intentionally want an embedded in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
+`python run.py cli` defaults to the Rich scrollback REPL with the native scroll-region footer path. On exit it prints a `nymeria cli --resume <thread-id>` handoff command for the current thread. `--renderer auto` uses the full-screen terminal UI in an interactive TTY and falls back to plain output for pipes, CI, and dumb terminals. `--message`/`-m` runs in non-interactive oneshot mode: sends the message, streams the response to stdout, and exits 0/1. Use `--format json` for newline-delimited JSON events, or pipe stdin with `-m -`. The default transport is API/thin-client mode: the CLI loads `~/.nymeria/cli.json` when present, otherwise starts disconnected and lets you run `/login`. Use `--transport local` only when you intentionally want an embedded in-process agent. See [UI Knowledge Base](./ui-knowledgebase.md#8-interactive-cli) for the complete CLI command and keyboard reference.
 
 OpenTUI research is documented separately in
 [OpenTUI Standalone TUI Plan](./opentui-standalone-tui-plan.md). It is a
