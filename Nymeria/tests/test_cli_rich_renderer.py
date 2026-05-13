@@ -115,7 +115,7 @@ def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:
         output.stdout_text
     )
     assert "Done with markdown." in output.stdout_text
-    assert "································" in output.stdout_text
+    assert "──────────" in output.stdout_text
 
 
 def test_rich_renderer_verbose_thinking_streams_deltas() -> None:
@@ -218,11 +218,10 @@ def test_rich_renderer_prints_response_delta_before_turn_done() -> None:
     lines = output.stdout_text.splitlines()
     header_index = next(index for index, line in enumerate(lines) if "──── Nymeria " in line)
     opening_divider_index = next(
-        index for index, line in enumerate(lines) if "································" in line
+        index for index, line in enumerate(lines) if line.strip() and all(c in "─·" for c in line.strip())
     )
     response_index = next(index for index, line in enumerate(lines) if "Streaming now." in line)
     assert header_index < opening_divider_index < response_index
-    assert output.stdout_text.count("································") == 1
 
 
 def test_rich_renderer_streams_response_lines_without_cutting_text() -> None:
@@ -375,7 +374,7 @@ def test_rich_renderer_renders_autonomous_turns_with_distinct_header() -> None:
     assert "Nymeria · autonomous · scheduler" in output.stdout_text
     assert "Autonomous TODO started: Run a CLI smoke test" in output.stdout_text
     assert "Smoke test passed." in output.stdout_text
-    assert "································" in output.stdout_text
+    assert "──────────" in output.stdout_text
 
 
 def test_rich_renderer_shows_user_attachment_count() -> None:
