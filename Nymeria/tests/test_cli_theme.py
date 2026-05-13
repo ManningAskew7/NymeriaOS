@@ -26,6 +26,15 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_default_theme_uses_soft_repl_palette() -> None:
+    assert DEFAULT_THEME_VALUES["heading"] == "#FFFFFF"
+    assert DEFAULT_THEME_VALUES["user_header"] == "#F7C8E0"
+    assert DEFAULT_THEME_VALUES["assistant_header"] == "#BBDDFB"
+    assert DEFAULT_THEME_VALUES["artifact"] == "#9CCFFB"
+    assert DEFAULT_THEME_VALUES["error"] == "#FCA5A5"
+    assert DEFAULT_THEME_VALUES["tool"] != "#FBBF24"
+
+
 def test_theme_load_save_persists_only_changed_slots(
     tmp_path: Path,
     monkeypatch,

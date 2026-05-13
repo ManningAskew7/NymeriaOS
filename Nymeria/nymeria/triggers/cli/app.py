@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import signal
 import sys
 import threading
 import time
@@ -122,6 +123,9 @@ class _RichReplRuntime:
         self._footer_height_was_known = False
         self._busy = False
         self._status_notice: StatusNotice | None = None
+        self._resize_pending = False
+        self._resize_task: asyncio.Task[None] | None = None
+        self._prev_sigwinch: Any | None = None
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._autonomous_task: asyncio.Task[None] | None = None
         self._pending_submissions: deque[Any] = deque()
@@ -258,6 +262,74 @@ class _RichReplRuntime:
                 return max(1, int(app.output.get_size().columns))
         return max(1, int(getattr(self.capabilities, "width", 80) or 80))
 
+    def _on_sigwinch(self, signum: int, frame: Any) -> None:
+        self._resize_pending = True
+        self.invalidate()
+        previous = self._prev_sigwinch
+        if callable(previous):
+            with suppress(Exception):
+                previous(signum, frame)
+
+    def install_resize_handler(self) -> None:
+        sigwinch = getattr(signal, "SIGWINCH", None)
+        if sigwinch is None or self._prev_sigwinch is not None:
+            return
+        try:
+            self._prev_sigwinch = signal.getsignal(sigwinch)
+            signal.signal(sigwinch, self._on_sigwinch)
+        except (OSError, RuntimeError, ValueError):
+            self._prev_sigwinch = None
+
+    def uninstall_resize_handler(self) -> None:
+        sigwinch = getattr(signal, "SIGWINCH", None)
+        previous = self._prev_sigwinch
+        self._prev_sigwinch = None
+        if sigwinch is None or previous is None:
+            return
+        with suppress(OSError, RuntimeError, ValueError):
+            signal.signal(sigwinch, previous)
+
+    def schedule_resize_redraw(self) -> None:
+        """Schedule a transcript redraw from prompt_toolkit's render cycle."""
+
+        if not self._resize_pending:
+            with suppress(Exception):
+                if self.terminal_width() == self.renderer.width:
+                    return
+            self._resize_pending = True
+        task = self._resize_task
+        if task is not None and not task.done():
+            return
+        app = self.application
+        if app is not None and getattr(app, "is_running", False):
+            redraw = self._maybe_resize_redraw()
+            try:
+                self._resize_task = app.create_background_task(
+                    redraw
+                )
+                return
+            except Exception:
+                redraw.close()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._resize_task = loop.create_task(
+            self._maybe_resize_redraw(),
+            name="NymeriaCLIRichResizeRedraw",
+        )
+
+    async def _maybe_resize_redraw(self) -> None:
+        while True:
+            new_width = self.terminal_width()
+            if not self._resize_pending and new_width == self.renderer.width:
+                return
+            self._resize_pending = False
+            if self.renderer.update_terminal_width(new_width):
+                await self.redraw()
+            if not self._resize_pending:
+                return
+
     def footer_height_is_known(self) -> bool:
         """Keep the Rich footer visible after prompt_toolkit has placed it once."""
 
@@ -314,6 +386,7 @@ class _RichReplRuntime:
         return run_locked()
 
     async def render_event_above_prompt(self, event: Any) -> None:
+        await self._maybe_resize_redraw()
         await self.render_above_prompt(
             lambda: self.renderer.render_event(event, now=time.monotonic())
         )
@@ -462,6 +535,9 @@ class _RichReplPromptToolkitShell:
         def _redraw(event: Any) -> None:
             event.app.create_background_task(self.runtime.redraw())
 
+        def _before_render(_app: Any) -> None:
+            self.runtime.schedule_resize_redraw()
+
         app = Application(
             layout=Layout(body, focused_element=controller.text_area),
             key_bindings=merge_key_bindings([bindings, controller.key_bindings]),
@@ -469,6 +545,7 @@ class _RichReplPromptToolkitShell:
             mouse_support=False,
             refresh_interval=FRAME_INTERVAL_SECONDS,
             style=_repl_prompt_style(self.capabilities, theme=self.cli_app.theme),
+            before_render=_before_render,
         )
         self.composer_controller = controller
         self.application = app
@@ -817,6 +894,7 @@ class CLIApp:
                         renderer=renderer,
                         capabilities=capabilities,
                     )
+                    runtime.install_resize_handler()
                     if is_disconnected_client(self._client):
                         runtime.set_status_notice(
                             DISCONNECTED_MESSAGE,
@@ -847,6 +925,7 @@ class CLIApp:
                     )
         finally:
             if runtime is not None:
+                runtime.uninstall_resize_handler()
                 runtime.stop_autonomous_listener()
             self._active_capabilities = None
             self._active_rich_runtime = None
