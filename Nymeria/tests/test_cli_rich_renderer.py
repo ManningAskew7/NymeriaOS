@@ -136,6 +136,53 @@ def _reduce_tool_state():
     return state
 
 
+def _make_scroll_region_runtime(
+    *,
+    width: int = 80,
+    height: int = 24,
+    rows_below_cursor: int = 99,
+) -> tuple[_RichReplRuntime, FakePromptOutput, FakePromptRenderer, SimpleNamespace]:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(
+        columns=width,
+        rows=height,
+        rows_below_cursor=rows_below_cursor,
+    )
+    prompt_renderer = FakePromptRenderer(output)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(
+                width=width,
+                height=height,
+                renderer="rich",
+            ),
+            width=width,
+        ),
+        capabilities=FakeTerminalCapabilities(
+            width=width,
+            height=height,
+            renderer="rich",
+        ),
+    )
+    controller = SimpleNamespace(
+        text_area=SimpleNamespace(buffer=SimpleNamespace(text="")),
+        prompt_fragments=lambda: [("class:composer", "› ")],
+    )
+    application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=True,
+        _on_resize=lambda: None,
+    )
+    runtime.bind_application(application, controller)
+    return runtime, output, prompt_renderer, controller
+
+
 def test_rich_markdown_adapter_themes_blocks_and_tables() -> None:
     stream = io.StringIO()
     console = Console(
@@ -898,6 +945,141 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
     assert ("raw", "\x1b[r") in ops
     assert ("erase", False) not in ops
     assert erase_count == 1
+
+
+def test_rich_runtime_resizes_pinned_footer_when_composer_grows() -> None:
+    runtime, output, prompt_renderer, controller = _make_scroll_region_runtime(
+        width=20,
+        height=24,
+    )
+    runtime._follow_footer_transcript_cursor_saved = True
+    runtime._pinned_footer_active = True
+    runtime._pinned_footer_height = 5
+    runtime._pinned_scroll_bottom = 19
+    runtime._pinned_terminal_size = (20, 24)
+    controller.text_area.buffer.text = "abcdefghij " * 4
+
+    runtime._prepare_pinned_footer_render()
+
+    assert runtime.pinned_footer_active() is True
+    assert runtime.footer_height() == 7
+    assert runtime._pinned_footer_height == 7
+    assert runtime._pinned_scroll_bottom == 17
+    assert ("raw", "\x1b[1;19r") in output.ops
+    assert ("raw", "\r\n\r\n") in output.ops
+    assert ("raw", "\x1b[17;1H") in output.ops
+    assert ("raw", "\x1b[18;1H\x1b[J") in output.ops
+    assert ("erase", False) not in output.ops
+    assert prompt_renderer._last_screen is None
+
+
+def test_rich_runtime_resizes_pinned_footer_when_composer_shrinks() -> None:
+    runtime, output, prompt_renderer, controller = _make_scroll_region_runtime(
+        width=20,
+        height=24,
+    )
+    runtime._follow_footer_transcript_cursor_saved = True
+    runtime._pinned_footer_active = True
+    runtime._pinned_footer_height = 7
+    runtime._pinned_scroll_bottom = 17
+    runtime._pinned_terminal_size = (20, 24)
+    controller.text_area.buffer.text = ""
+
+    runtime._prepare_pinned_footer_render()
+
+    assert runtime.pinned_footer_active() is True
+    assert runtime.footer_height() == 5
+    assert runtime._pinned_footer_height == 5
+    assert runtime._pinned_scroll_bottom == 19
+    assert ("raw", "\x1b[19;1H") in output.ops
+    assert ("raw", "\x1b[18;1H\x1b[J") in output.ops
+    assert ("erase", False) not in output.ops
+    assert prompt_renderer._last_screen is None
+
+
+def test_rich_runtime_streams_through_resized_pinned_scroll_region() -> None:
+    async def exercise() -> tuple[list[tuple[str, object]], list[str]]:
+        runtime, output, _prompt_renderer, controller = _make_scroll_region_runtime(
+            width=20,
+            height=24,
+        )
+        runtime._follow_footer_transcript_cursor_saved = True
+        runtime._pinned_footer_active = True
+        runtime._pinned_footer_height = 5
+        runtime._pinned_scroll_bottom = 19
+        runtime._pinned_terminal_size = (20, 24)
+        controller.text_area.buffer.text = "abcdefghij " * 4
+        runtime._prepare_pinned_footer_render()
+        output.ops.clear()
+        events: list[str] = []
+
+        await runtime.render_above_prompt(lambda: events.append("rendered"))
+
+        return output.ops, events
+
+    ops, events = asyncio.run(exercise())
+
+    assert events == ["rendered"]
+    assert ("raw", "\x1b[1;17r") in ops
+    assert ("raw", "\x1b8") in ops
+    assert ("raw", "\x1b7") in ops
+    assert ("erase", False) not in ops
+
+
+def test_rich_runtime_exit_cleanup_moves_shell_prompt_below_follow_footer() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(output=output, is_running=False)
+    runtime._follow_footer_transcript_cursor_saved = True
+
+    runtime.reset_follow_footer(prepare_shell_cursor=True)
+
+    assert ("raw", "\x1b[r") in output.ops
+    assert ("raw", "\x1b[24;1H\r\n") in output.ops
+    assert ("raw", "\x1b8") not in output.ops
+    assert runtime.pinned_footer_active() is False
+
+
+def test_rich_runtime_exit_cleanup_moves_shell_prompt_below_pinned_footer() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(output=output, is_running=False)
+    runtime._follow_footer_transcript_cursor_saved = True
+    runtime._pinned_footer_active = True
+    runtime._pinned_footer_height = runtime.footer_height()
+    runtime._pinned_scroll_bottom = 24 - runtime.footer_height()
+    runtime._pinned_terminal_size = (80, 24)
+
+    runtime.reset_follow_footer(prepare_shell_cursor=True)
+
+    assert ("raw", "\x1b[r") in output.ops
+    assert ("raw", "\x1b[24;1H\r\n") in output.ops
+    assert ("raw", "\x1b8") not in output.ops
+    assert runtime.pinned_footer_active() is False
 
 
 def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:

@@ -335,6 +335,9 @@ class _RichReplRuntime:
     def footer_height(self) -> int:
         return self.composer_input_height() + 4
 
+    def _reserved_footer_height(self, size: Any) -> int:
+        return min(self.footer_height(), max(1, int(size.rows) - 2))
+
     def footer_is_visible(self) -> bool:
         if self.scroll_region_enabled():
             return True
@@ -372,10 +375,30 @@ class _RichReplRuntime:
             with suppress(Exception):
                 renderer._min_available_height = 0  # noqa: SLF001
 
-    def reset_follow_footer(self) -> None:
+    def reset_follow_footer(self, *, prepare_shell_cursor: bool = False) -> None:
         self._deactivate_pinned_footer(reset_terminal=True)
+        if prepare_shell_cursor:
+            self._prepare_shell_cursor_after_footer()
         self._follow_footer_transcript_cursor_saved = False
         self._follow_footer_pin_probe_pending = True
+
+    def _prepare_shell_cursor_after_footer(self) -> None:
+        """Move the terminal cursor to a real shell line before shell return."""
+
+        if not self.scroll_region_enabled():
+            return
+        app = self.application
+        output = getattr(app, "output", None)
+        if output is None:
+            return
+
+        try:
+            size = output.get_size()
+            output.write_raw("\x1b[r")
+            output.write_raw(f"\x1b[{max(1, size.rows)};1H\r\n")
+            output.flush()
+        except Exception:  # noqa: BLE001 - terminal exit cleanup is best effort.
+            return
 
     def _maybe_activate_pinned_footer(self) -> None:
         if not self._follow_footer_pin_probe_pending:
@@ -420,7 +443,7 @@ class _RichReplRuntime:
             return
         output = app.output
         size = output.get_size()
-        footer_height = min(self.footer_height(), max(1, size.rows - 2))
+        footer_height = self._reserved_footer_height(size)
         scroll_bottom = size.rows - footer_height
         if scroll_bottom < 1 or not self._follow_footer_transcript_cursor_saved:
             return
@@ -450,12 +473,14 @@ class _RichReplRuntime:
             return
         output = app.output
         size = output.get_size()
-        if (
-            self._pinned_terminal_size != (size.columns, size.rows)
-            or self._pinned_footer_height != self.footer_height()
-        ):
+        if self._pinned_terminal_size != (size.columns, size.rows):
             self._deactivate_pinned_footer(reset_terminal=True)
             return
+        footer_height = self._reserved_footer_height(size)
+        if self._pinned_footer_height != footer_height:
+            self._resize_pinned_footer(footer_height=footer_height, size=size)
+            if not self._pinned_footer_active:
+                return
 
         footer_top = self._pinned_scroll_bottom + 1
         output.write_raw("\x1b[r")
@@ -471,6 +496,43 @@ class _RichReplRuntime:
                 if self._pinned_footer_needs_full_repaint:
                     renderer._last_screen = None  # noqa: SLF001
         self._pinned_footer_needs_full_repaint = False
+
+    def _resize_pinned_footer(self, *, footer_height: int, size: Any) -> None:
+        app = self.application
+        if app is None:
+            return
+        output = app.output
+        old_footer_height = self._pinned_footer_height
+        old_scroll_bottom = self._pinned_scroll_bottom
+        old_footer_top = old_scroll_bottom + 1
+        scroll_bottom = int(size.rows) - footer_height
+        if (
+            scroll_bottom < 1
+            or old_footer_height <= 0
+            or old_scroll_bottom <= 0
+            or not self._follow_footer_transcript_cursor_saved
+        ):
+            self._deactivate_pinned_footer(reset_terminal=True)
+            return
+
+        output.write_raw("\x1b[r")
+        if footer_height > old_footer_height:
+            output.write_raw(f"\x1b[1;{old_scroll_bottom}r")
+            output.write_raw("\x1b8")
+            output.write_raw("\r\n" * (footer_height - old_footer_height))
+            output.write_raw("\x1b[r")
+
+        footer_top = scroll_bottom + 1
+        clear_top = min(old_footer_top, footer_top)
+        output.write_raw(f"\x1b[{scroll_bottom};1H")
+        output.write_raw("\x1b7")
+        output.write_raw(f"\x1b[{clear_top};1H\x1b[J")
+        output.flush()
+        self._follow_footer_transcript_cursor_saved = True
+        self._pinned_footer_height = footer_height
+        self._pinned_scroll_bottom = scroll_bottom
+        self._pinned_terminal_size = (int(size.columns), int(size.rows))
+        self._pinned_footer_needs_full_repaint = True
 
     def finish_follow_footer_render(self) -> None:
         if not self.scroll_region_enabled() or not self._pinned_footer_active:
@@ -974,7 +1036,7 @@ class _RichReplPromptToolkitShell:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-            self.runtime.reset_follow_footer()
+            self.runtime.reset_follow_footer(prepare_shell_cursor=True)
 
     def _handle_submission(self, submission: Any) -> bool:
         try:
