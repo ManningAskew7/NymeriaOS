@@ -38,6 +38,7 @@ from .markdown import (
     render_inline_rich,
     render_markdown_lines,
     truncate_cell_width,
+    wrap_plain_text,
     wrap_rich_lines,
 )
 from .plain import (
@@ -402,10 +403,19 @@ class RichReplRenderer:
             "You",
             style=_style_for_line_kind("user_header", self.theme),
         )
-        content = truncate_plain(message.content, max(1, self.width - 2))
-        self.console.print(
-            Text(f"  {content}", style=_style_for_line_kind("user_text", self.theme))
-        )
+        user_style = _style_for_line_kind("user_text", self.theme)
+        body_width = max(1, self.width - 2)
+        if not self._ascii_only():
+            for line in (message.content or "").splitlines() or [""]:
+                if not line.strip():
+                    self.console.print()
+                    continue
+                for wrapped in wrap_rich_lines(line, width=self.width, theme=self.theme):
+                    self.console.print(wrapped)
+        else:
+            for line in wrap_plain_text(message.content, width=body_width):
+                rendered = f"  {line}" if line else ""
+                self.console.print(Text(rendered, style=user_style))
         if message.attachments:
             label = "attachment" if len(message.attachments) == 1 else "attachments"
             self.console.print(

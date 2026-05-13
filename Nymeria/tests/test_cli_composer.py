@@ -13,7 +13,7 @@ from cli_fixtures import (
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import is_done
 from prompt_toolkit.formatted_text import to_formatted_text
-from prompt_toolkit.layout import ConditionalContainer, Window
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Window
 from rich.cells import cell_len
 
 from nymeria.triggers.cli.commands import Command, CommandRegistry
@@ -215,10 +215,10 @@ def test_full_screen_prompt_fragments_use_composer_labels() -> None:
         error.prompt_fragments(),
     ]
 
-    assert ready.prompt_fragments() == [("class:composer", "You: ")]
-    assert busy.prompt_fragments() == [("class:composer.busy", "Busy: ")]
-    assert queued.prompt_fragments() == [("class:composer.queued", "Queued 2: ")]
-    assert error.prompt_fragments() == [("class:composer.error", "Error: ")]
+    assert ready.prompt_fragments() == [("class:composer", "› ")]
+    assert busy.prompt_fragments() == [("class:composer.busy", "› ")]
+    assert queued.prompt_fragments() == [("class:composer.queued", "› 2: ")]
+    assert error.prompt_fragments() == [("class:composer.error", "› ")]
     assert all(">" not in text for fragments in prompts for _, text in fragments)
 
 
@@ -230,8 +230,8 @@ def test_rich_repl_prompt_uses_chat_label_without_command_chevron() -> None:
         text for _, text in to_formatted_text(get_prompt(state, busy=True))
     )
 
-    assert ready_text == "You: "
-    assert busy_text == "Busy: "
+    assert ready_text == "› "
+    assert busy_text == "› "
     assert ">" not in ready_text + busy_text
 
 
@@ -298,16 +298,29 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
     assert status_bar.char == " "
     assert status_bar.style == "class:status"
     assert status_bar.content.text() == runtime.status_fragments()
-    assert children[3] is shell.composer_controller.text_area.window
+    input_area = children[3]
+    assert isinstance(input_area, HSplit)
+    input_children = input_area.children
+    assert len(input_children) == 3
+    top_border = input_children[0]
+    assert isinstance(top_border, ConditionalContainer)
+    assert isinstance(top_border.content, Window)
+    assert top_border.content.char == "─"
+    assert input_children[1] is shell.composer_controller.text_area.window
+    bottom_border = input_children[2]
+    assert isinstance(bottom_border, ConditionalContainer)
+    assert isinstance(bottom_border.content, Window)
+    assert bottom_border.content.char == "─"
+    assert input_area.style == "class:input-area"
     assert shell.composer_controller.text_area.window.dont_extend_height()
     assert not shell.composer_controller.text_area.window.height.preferred_specified
     assert shell.composer_controller.text_area.buffer.multiline()
     assert shell.composer_controller.prompt_fragments() == [
-        ("class:composer", "You: ")
+        ("class:composer", "› ")
     ]
     runtime.set_busy(True)
     assert shell.composer_controller.prompt_fragments() == [
-        ("class:composer.busy", "Busy: ")
+        ("class:composer.busy", "› ")
     ]
     assert all(
         ">" not in text
