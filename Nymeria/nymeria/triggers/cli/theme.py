@@ -29,6 +29,9 @@ SUPPORTED_THEME_SLOTS: tuple[str, ...] = (
     "error",
     "artifact",
     "diagnostic",
+    "code_inline",
+    "heading",
+    "code_block_border",
 )
 
 DEFAULT_THEME_VALUES: dict[str, str] = {
@@ -48,6 +51,9 @@ DEFAULT_THEME_VALUES: dict[str, str] = {
     "error": "#F87171",
     "artifact": "#22D3EE",
     "diagnostic": "#CBD5E1",
+    "code_inline": "#F0C987",
+    "heading": "#86EFAC",
+    "code_block_border": "#334155",
 }
 
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")

@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import re
 import textwrap
+from typing import TYPE_CHECKING
 
 from rich.cells import cell_len, set_cell_size
+from rich.markup import escape as rich_escape
+from rich.text import Text
+
+if TYPE_CHECKING:
+    from ..theme import CLITheme
 
 DEFAULT_WIDTH = 80
 ELLIPSIS = "..."
@@ -257,10 +263,95 @@ def _trim_blank_edges(lines: list[str]) -> list[str]:
     return output
 
 
+def render_inline_rich(text: str, *, theme: "CLITheme") -> Text:
+    """Convert inline markdown markers to a Rich Text with styled spans.
+
+    Handles **bold**, *italic*, and `code` within a single line.
+    Used by the streaming path where full block-level parsing is not feasible.
+    """
+
+    if not text or not text.strip():
+        return Text(text or "")
+    escaped = rich_escape(text)
+    code_color = theme.color("code_inline")
+    markup = BOLD_RE.sub(r"[bold]\2[/bold]", escaped)
+    markup = re.sub(r"__(.+?)__", r"[bold]\1[/bold]", markup)
+    markup = ITALIC_STAR_RE.sub(r"[italic]\1[/italic]", markup)
+    markup = ITALIC_UNDERSCORE_RE.sub(r"[italic]\1[/italic]", markup)
+    markup = INLINE_CODE_RE.sub(
+        rf"[{code_color}]\1[/{code_color}]", markup
+    )
+    markup = LINK_RE.sub(lambda m: m.group(1), markup)
+    markup = AUTOLINK_RE.sub(lambda m: m.group(1), markup)
+    try:
+        return Text.from_markup(markup)
+    except Exception:  # noqa: BLE001
+        return Text(text)
+
+
+def wrap_rich_lines(
+    text: str,
+    *,
+    width: int,
+    theme: "CLITheme",
+    indent: int = 2,
+) -> list[Text]:
+    """Word-wrap a line and return Rich Text objects with proper list indentation."""
+
+    if not text or not text.strip():
+        return [Text("")]
+    selected_width = coerce_width(width)
+    body_width = max(1, selected_width - indent)
+
+    numbered = NUMBERED_RE.match(text)
+    bullet = BULLET_RE.match(text)
+    if numbered:
+        list_indent = " " * min(len(numbered.group(1)), 6)
+        prefix = f"{list_indent}{numbered.group(2)}. "
+        content = numbered.group(3)
+        continuation = " " * cell_len(prefix)
+    elif bullet:
+        list_indent = " " * min(len(bullet.group(1)), 6)
+        prefix = f"{list_indent}- "
+        content = bullet.group(2)
+        continuation = " " * cell_len(prefix)
+    else:
+        prefix = ""
+        content = text
+        continuation = ""
+
+    content_width = max(1, body_width - cell_len(prefix))
+    chunks = textwrap.wrap(
+        content,
+        width=content_width,
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    if not chunks:
+        return [Text(" " * indent + prefix)]
+
+    result: list[Text] = []
+    for index, chunk in enumerate(chunks):
+        selected_prefix = prefix if index == 0 else continuation
+        styled = render_inline_rich(chunk, theme=theme)
+        padded = Text(" " * indent + selected_prefix)
+        padded.append_text(styled)
+        result.append(padded)
+    return result
+
+
 __all__ = [
+    "BLOCKQUOTE_RE",
+    "BULLET_RE",
+    "FENCE_RE",
+    "HEADING_RE",
+    "HR_RE",
+    "NUMBERED_RE",
     "collapse_inline",
     "coerce_width",
+    "render_inline_rich",
     "render_markdown_lines",
     "truncate_cell_width",
     "wrap_plain_text",
+    "wrap_rich_lines",
 ]
