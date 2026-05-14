@@ -812,6 +812,9 @@ export interface ServerSettingsUpdate {
   intercom_access_token?: string | null;
   intercom_base_url?: string | null;
   intercom_version?: string | null;
+  pipedrive_api_token?: string | null;
+  pipedrive_access_token?: string | null;
+  pipedrive_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

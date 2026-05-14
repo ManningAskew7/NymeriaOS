@@ -148,6 +148,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "COLLABORATION_DATA_SERVICE_TOOLS",
             "CUSTOMER_ENGAGEMENT_SERVICE_TOOLS",
             "SUPPORT_SERVICE_TOOLS",
+            "SALES_CRM_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -343,6 +344,10 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "intercom_get_contact",
         "intercom_list_conversations",
         "intercom_get_conversation",
+        "pipedrive_list_records",
+        "pipedrive_search_records",
+        "pipedrive_get_record",
+        "pipedrive_list_users",
     }
 )
 

@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (170)
+### Optional: Service Integration Tools (177)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -248,6 +248,13 @@ in the credential vault for provider-specific saved connections scoped to
 | 168 | `intercom_list_conversations` | Integrations | SAFE | List Intercom conversations |
 | 169 | `intercom_get_conversation` | Integrations | SAFE | Get an Intercom conversation |
 | 170 | `intercom_reply_conversation` | Integrations | MODERATE | Reply to an Intercom conversation |
+| 171 | `pipedrive_list_records` | Integrations | SAFE | List Pipedrive deals, people, organizations, activities, leads, notes, or products |
+| 172 | `pipedrive_search_records` | Integrations | SAFE | Search Pipedrive deals, people, organizations, products, or leads |
+| 173 | `pipedrive_get_record` | Integrations | SAFE | Get a Pipedrive CRM record |
+| 174 | `pipedrive_create_record` | Integrations | MODERATE | Create a Pipedrive CRM record |
+| 175 | `pipedrive_update_record` | Integrations | MODERATE | Update a Pipedrive CRM record |
+| 176 | `pipedrive_delete_record` | Integrations | MODERATE | Delete a Pipedrive CRM record |
+| 177 | `pipedrive_list_users` | Integrations | SAFE | List Pipedrive users |
 
 ### Optional: Private B Tools (4)
 
@@ -984,6 +991,16 @@ Credential providers and fallback env vars:
 - Freshdesk: provider `freshdesk`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `FRESHDESK_API_KEY`. Use `domain` / `subdomain` or `FRESHDESK_DOMAIN`, or `base_url` / `url` / `FRESHDESK_BASE_URL` for the full API root.
 - Help Scout: provider `helpscout`, fields `access_token`, `token`, or `value`; env fallback `HELPSCOUT_ACCESS_TOKEN`. Use `base_url` / `url` or `HELPSCOUT_BASE_URL` for non-default API roots.
 - Intercom: provider `intercom`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `INTERCOM_ACCESS_TOKEN`. Use `base_url` / `url` or `INTERCOM_BASE_URL` for regional API roots; `intercom_version` / `version` or `INTERCOM_VERSION` overrides the API version header.
+
+### Sales CRM Service Tools
+
+This batch includes:
+- `pipedrive_list_records(resource, ...)`, `pipedrive_search_records(resource, term, ...)`, and `pipedrive_get_record(resource, record_id)` for SAFE read access across deals, persons/people, organizations, activities, leads, notes, and products where supported by Pipedrive.
+- `pipedrive_create_record(resource, fields_json)`, `pipedrive_update_record(resource, record_id, fields_json)`, and `pipedrive_delete_record(resource, record_id)`. These are MODERATE because they change Pipedrive CRM data.
+- `pipedrive_list_users(...)` for resolving owner/user IDs.
+
+Credential providers and fallback env vars:
+- Pipedrive: provider `pipedrive`, fields `api_token`, `apiToken`, `token`, or `value` for API-token auth; or `access_token` / `bearer_token` for OAuth bearer auth. Env fallback supports `PIPEDRIVE_API_TOKEN` or `PIPEDRIVE_ACCESS_TOKEN`. Use `base_url` / `url` or `PIPEDRIVE_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

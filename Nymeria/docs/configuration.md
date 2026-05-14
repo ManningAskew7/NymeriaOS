@@ -131,6 +131,9 @@ Set the API key for your chosen provider:
 | `INTERCOM_ACCESS_TOKEN` | Intercom | Optional env fallback for Intercom tools; credential vault provider `intercom` is preferred |
 | `INTERCOM_BASE_URL` | Intercom | Optional Intercom API base URL override |
 | `INTERCOM_VERSION` | Intercom | Optional Intercom API version header override |
+| `PIPEDRIVE_API_TOKEN` | Pipedrive | Optional env fallback for Pipedrive API-token auth; credential vault provider `pipedrive` is preferred |
+| `PIPEDRIVE_ACCESS_TOKEN` | Pipedrive | Optional Pipedrive OAuth bearer token fallback |
+| `PIPEDRIVE_BASE_URL` | Pipedrive | Optional Pipedrive API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -343,6 +346,9 @@ reachable from the backend process.
 | `INTERCOM_ACCESS_TOKEN` | - | Intercom access token fallback |
 | `INTERCOM_BASE_URL` | `https://api.intercom.io` | Intercom API base URL |
 | `INTERCOM_VERSION` | `2.11` | Intercom API version header |
+| `PIPEDRIVE_API_TOKEN` | - | Pipedrive API token fallback |
+| `PIPEDRIVE_ACCESS_TOKEN` | - | Pipedrive OAuth access token fallback |
+| `PIPEDRIVE_BASE_URL` | `https://api.pipedrive.com/api/v2` | Pipedrive API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
