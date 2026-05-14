@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (31)
+### Optional: Service Integration Tools (42)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -109,6 +109,17 @@ in the credential vault for provider-specific saved connections scoped to
 | 29 | `gitlab_list_project_releases` | Integrations | SAFE | List GitLab project releases; optional vault provider `gitlab` |
 | 30 | `gitlab_get_project_release` | Integrations | SAFE | Get a GitLab project release by tag name; optional vault provider `gitlab` |
 | 31 | `gitlab_list_user_projects` | Integrations | SAFE | List projects owned by a GitLab user ID; optional vault provider `gitlab` |
+| 32 | `bitly_get_bitlink` | Integrations | SAFE | Get Bitly bitlink metadata; uses vault provider `bitly` |
+| 33 | `bitly_create_bitlink` | Integrations | MODERATE | Create a Bitly short link; uses vault provider `bitly` |
+| 34 | `bitly_update_bitlink` | Integrations | MODERATE | Update Bitly bitlink metadata; uses vault provider `bitly` |
+| 35 | `brandfetch_get_brand` | Integrations | SAFE | Get Brandfetch company, industry, colors, fonts, and logos |
+| 36 | `brandfetch_get_brand_logos` | Integrations | SAFE | Get Brandfetch logo/icon metadata |
+| 37 | `brandfetch_get_brand_colors` | Integrations | SAFE | Get Brandfetch color metadata |
+| 38 | `marketstack_get_eod` | Integrations | SAFE | Get Marketstack end-of-day market data |
+| 39 | `marketstack_get_ticker` | Integrations | SAFE | Get Marketstack ticker metadata |
+| 40 | `marketstack_get_exchange` | Integrations | SAFE | Get Marketstack exchange metadata |
+| 41 | `deepl_translate_text` | Integrations | MODERATE | Translate text with DeepL |
+| 42 | `deepl_list_languages` | Integrations | SAFE | List DeepL source or target languages |
 
 ### Optional: Private B Tools (4)
 
@@ -672,7 +683,9 @@ connections in Settings > Connections with these provider names and fields:
 `openweathermap.api_key`, optional `npm.registry_url` / `npm.token`,
 `github.access_token`, and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
-`base_url` / `server`. Scope a
+`base_url` / `server`. Business-service credentials use `bitly.access_token`,
+`brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
+use `deepl.api_plan = free` for the free endpoint. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -761,6 +774,20 @@ GitLab tools use vault provider `gitlab` fields `access_token`,
 self-managed instances can be configured with vault field `base_url`, `server`,
 or env `GITLAB_BASE_URL`; plain instance URLs automatically get `/api/v4`
 appended.
+
+### Business And Language Service Tools
+
+This batch includes:
+- `bitly_get_bitlink(bitlink_id)`, `bitly_create_bitlink(long_url, title?, domain?, group_guid?, tags?)`, and `bitly_update_bitlink(bitlink_id, long_url?, title?, archived?, group_guid?, tags?)`. Create/update are MODERATE because they change Bitly state.
+- `brandfetch_get_brand(domain)`, `brandfetch_get_brand_logos(domain)`, and `brandfetch_get_brand_colors(domain)`.
+- `marketstack_get_eod(symbols, latest?, date?, date_from?, date_to?, limit?)`, `marketstack_get_ticker(symbol)`, and `marketstack_get_exchange(exchange)`.
+- `deepl_translate_text(text, target_lang, source_lang?, formality?, preserve_formatting?)` and `deepl_list_languages(language_type?)`. Translation is MODERATE because it sends user text to DeepL and consumes quota.
+
+Credential providers and fallback env vars:
+- Bitly: provider `bitly`, fields `access_token`, `token`, `api_key`, or `value`; env fallback `BITLY_TOKEN`.
+- Brandfetch: provider `brandfetch`, fields `api_key`, `token`, or `value`; env fallback `BRANDFETCH_API_KEY`.
+- Marketstack: provider `marketstack`, fields `api_key`, `access_key`, `token`, or `value`; env fallback `MARKETSTACK_API_KEY`.
+- DeepL: provider `deepl`, fields `api_key`, `auth_key`, `token`, or `value`; env fallback `DEEPL_API_KEY`. Use `api_plan` / `plan` or `DEEPL_API_PLAN=free` for the free endpoint.
 
 ### tool_enable
 

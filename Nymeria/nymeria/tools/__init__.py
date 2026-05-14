@@ -133,6 +133,20 @@ from .developer_platform_integrations import (
     gitlab_list_user_projects,
     DEVELOPER_PLATFORM_TOOLS,
 )
+from .business_service_integrations import (
+    bitly_get_bitlink,
+    bitly_create_bitlink,
+    bitly_update_bitlink,
+    brandfetch_get_brand,
+    brandfetch_get_brand_logos,
+    brandfetch_get_brand_colors,
+    marketstack_get_eod,
+    marketstack_get_ticker,
+    marketstack_get_exchange,
+    deepl_translate_text,
+    deepl_list_languages,
+    BUSINESS_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -182,6 +196,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + UTILITY_INTEGRATION_TOOLS
     + PUBLIC_INFO_TOOLS
     + DEVELOPER_PLATFORM_TOOLS
+    + BUSINESS_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -326,6 +341,18 @@ __all__ = [
     "gitlab_get_project_release",
     "gitlab_list_user_projects",
     "DEVELOPER_PLATFORM_TOOLS",
+    "bitly_get_bitlink",
+    "bitly_create_bitlink",
+    "bitly_update_bitlink",
+    "brandfetch_get_brand",
+    "brandfetch_get_brand_logos",
+    "brandfetch_get_brand_colors",
+    "marketstack_get_eod",
+    "marketstack_get_ticker",
+    "marketstack_get_exchange",
+    "deepl_translate_text",
+    "deepl_list_languages",
+    "BUSINESS_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
