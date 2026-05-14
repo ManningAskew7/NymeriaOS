@@ -52,6 +52,16 @@ class TestExtractFromMessage:
     def test_openai_native(self):
         assert extract_from_message(OPENAI_NATIVE) == (300, 120)
 
+    def test_openai_usage_metadata_shape(self):
+        msg = _ai(response_metadata={
+            "usage": {
+                "prompt_tokens": 123,
+                "completion_tokens": 45,
+                "total_tokens": 168,
+            }
+        })
+        assert extract_from_message(msg) == (123, 45)
+
     def test_openrouter(self):
         assert extract_from_message(OPENROUTER) == (400, 160)
 

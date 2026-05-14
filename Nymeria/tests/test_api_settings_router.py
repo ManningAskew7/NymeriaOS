@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
+from nymeria.config.model_capabilities import get_context_limit
 from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
 from nymeria.core.accounts import AccountsRepo
 from nymeria.triggers import api as api_module
@@ -246,6 +247,19 @@ class FakeAsyncClient:
             request=request,
         )
 
+    async def get(self, url: str, *, headers: dict):
+        self.calls.append({
+            "url": url,
+            "headers": headers,
+            "timeout": self.timeout,
+        })
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            self.response_status,
+            json=self.response_body or {"data": []},
+            request=request,
+        )
+
 
 def test_llm_provider_test_is_admin_only_and_does_not_call_provider(
     tmp_path: Path,
@@ -394,6 +408,60 @@ def test_llm_provider_test_does_not_persist_submitted_key(
     assert not (tmp_path / ".env").exists()
     assert os.environ.get("OPENAI_API_KEY") is None
     assert provider.cache_clear_count == 0
+
+
+def test_get_llm_provider_catalog_includes_openai_compatible_providers(
+    tmp_path: Path,
+    monkeypatch,
+):
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get("/settings/llm/providers", headers=_auth(token))
+
+    assert response.status_code == 200
+    providers = {entry["id"]: entry for entry in response.json()}
+    assert providers["openai"]["supports_responses"] is True
+    assert providers["groq"]["api_format"] == "openai_chat"
+    assert "GROQ_API_KEY" in providers["groq"]["api_key_env_vars"]
+
+
+def test_available_models_uses_provider_endpoint_and_caches_metadata(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {
+        "data": [
+            {
+                "id": "provider/test-context-model",
+                "name": "Test Context Model",
+                "context_length": 64000,
+                "top_provider": {"max_completion_tokens": 4096},
+                "supported_parameters": ["tools", "temperature"],
+                "architecture": {
+                    "input_modalities": ["text"],
+                    "tokenizer": "GPT",
+                },
+            }
+        ]
+    }
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=lmstudio&base_url=http://localhost:1234/v1",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert FakeAsyncClient.calls[0]["url"] == "http://localhost:1234/v1/models"
+    assert body[0]["id"] == "provider/test-context-model"
+    assert body[0]["context_length"] == 64000
+    assert body[0]["max_completion_tokens"] == 4096
+    assert body[0]["supported_parameters"] == ["tools", "temperature"]
+    assert get_context_limit("provider/test-context-model") == 64000
 
 
 def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(

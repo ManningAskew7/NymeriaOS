@@ -7,17 +7,33 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import Settings
+from ...config.llm_providers import (
+    is_openai_compatible_provider,
+    list_llm_provider_specs,
+    normalize_llm_provider,
+    provider_requires_api_key,
+    provider_supports_responses,
+    resolve_provider_api_key,
+    resolve_provider_base_url,
+)
 from ...config.settings import get_env_file_paths, get_env_write_path
-from ...config.model_capabilities import get_max_output_tokens, list_all_models
+from ...config.model_capabilities import (
+    get_max_output_tokens,
+    list_all_models,
+    register_model_metadata,
+)
 from ...core.accounts import AuthenticatedUser
+from ...core.llm_credentials import get_llm_provider_credential
 from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
+    LLMProviderSpecResponse,
     LLMProviderTestRequest,
     LLMProviderTestResponse,
     LLMRuntimeDiagnosticsResponse,
@@ -27,6 +43,7 @@ from ..schemas.settings import (
 )
 
 logger = logging.getLogger(__name__)
+_LOCAL_MODEL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 
 
 def _env_mapping() -> dict[str, str]:
@@ -356,7 +373,11 @@ def _http_error_detail(response: httpx.Response, *secrets: str | None) -> str:
 
 
 def _normalize_openai_test_base_url(provider: str, base_url: str | None) -> str:
+    provider = normalize_llm_provider(provider)
     if not base_url:
+        resolved = resolve_provider_base_url(provider)
+        if resolved:
+            return resolved
         if provider == "openrouter":
             return "https://openrouter.ai/api/v1"
         return "https://api.openai.com/v1"
@@ -365,6 +386,119 @@ def _normalize_openai_test_base_url(provider: str, base_url: str | None) -> str:
     if provider == "openai" and looks_like_cliproxy_url(clean) and not clean.endswith("/v1"):
         return f"{clean}/v1"
     return clean
+
+
+def _base_url_allows_no_api_key(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    parse_target = base_url if "://" in base_url else f"http://{base_url}"
+    try:
+        parsed = urlparse(parse_target)
+    except ValueError:
+        return False
+    return (parsed.hostname or "").lower() in _LOCAL_MODEL_HOSTS
+
+
+def _first_int(source: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _first_float(source: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            return parsed
+    return None
+
+
+def _extract_model_metadata(model: dict[str, Any]) -> dict[str, Any]:
+    """Normalize common metadata fields returned by provider /models APIs."""
+    architecture = model.get("architecture") or {}
+    if not isinstance(architecture, dict):
+        architecture = {}
+    top_provider = model.get("top_provider") or {}
+    if not isinstance(top_provider, dict):
+        top_provider = {}
+    defaults = model.get("default_parameters") or model.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        defaults = {}
+    pricing = model.get("pricing") or {}
+    if not isinstance(pricing, dict):
+        pricing = {}
+
+    context_length = (
+        _first_int(
+            model,
+            "context_length",
+            "context_window",
+            "context_size",
+            "max_context_length",
+            "max_context_tokens",
+            "input_token_limit",
+            "max_input_tokens",
+        )
+        or _first_int(top_provider, "context_length", "max_context_tokens")
+    )
+    max_completion_tokens = (
+        _first_int(
+            model,
+            "max_completion_tokens",
+            "max_output_tokens",
+            "output_token_limit",
+        )
+        or _first_int(top_provider, "max_completion_tokens", "max_output_tokens")
+    )
+
+    raw_supported = model.get("supported_parameters") or model.get("supported_params") or []
+    if not isinstance(raw_supported, (list, tuple, set)):
+        raw_supported = []
+    supported_parameters = [
+        str(param)
+        for param in raw_supported
+        if param
+    ]
+    raw_modalities = (
+        model.get("input_modalities")
+        or architecture.get("input_modalities")
+        or model.get("modalities")
+        or []
+    )
+    if not isinstance(raw_modalities, (list, tuple, set)):
+        raw_modalities = []
+    input_modalities = [
+        str(modality)
+        for modality in raw_modalities
+        if modality
+    ]
+
+    return {
+        "context_length": context_length,
+        "max_completion_tokens": max_completion_tokens,
+        "supported_parameters": supported_parameters,
+        "input_modalities": input_modalities,
+        "tokenizer": architecture.get("tokenizer") or model.get("tokenizer"),
+        "default_temperature": _first_float(defaults, "temperature"),
+        "default_top_p": _first_float(defaults, "top_p"),
+        "default_frequency_penalty": _first_float(defaults, "frequency_penalty"),
+        "pricing_prompt": _first_float(pricing, "prompt"),
+        "pricing_completion": _first_float(pricing, "completion"),
+    }
 
 
 async def _post_llm_test_json(
@@ -385,7 +519,7 @@ async def _post_llm_test_json(
 async def _test_llm_provider_config(
     request: LLMProviderTestRequest,
 ) -> LLMProviderTestResponse:
-    provider = request.llm_provider
+    provider = normalize_llm_provider(request.llm_provider)
     model = request.llm_model
     api_key = request.api_key.get_secret_value()
     base_url = request.llm_base_url
@@ -407,6 +541,18 @@ async def _test_llm_provider_config(
         }
         response_api_mode = None
     else:
+        if not is_openai_compatible_provider(provider) and not base_url:
+            return LLMProviderTestResponse(
+                ok=False,
+                provider=provider,
+                model=model,
+                openai_api_mode=None,
+                message=(
+                    f"Provider '{provider}' is not in Nymeria's OpenAI-compatible "
+                    "registry. Provide an API base URL to test it as a custom endpoint."
+                ),
+                error_type="unknown_provider",
+            )
         clean_base = _normalize_openai_test_base_url(provider, base_url)
         headers = {"Authorization": f"Bearer {api_key}"}
         if provider == "openrouter":
@@ -415,7 +561,17 @@ async def _test_llm_provider_config(
                 "X-Title": "Nymeria",
             })
 
-        if openai_api_mode == "chat_completions":
+        effective_api_mode = (
+            openai_api_mode
+            if openai_api_mode == "responses"
+            and (
+                provider_supports_responses(provider)
+                or bool(base_url and not is_openai_compatible_provider(provider))
+            )
+            else "chat_completions"
+        )
+
+        if effective_api_mode == "chat_completions":
             url = f"{clean_base}/chat/completions"
             payload = {
                 "model": model,
@@ -429,7 +585,7 @@ async def _test_llm_provider_config(
                 "input": "Reply with ok.",
                 "max_output_tokens": 16,
             }
-        response_api_mode = openai_api_mode
+        response_api_mode = effective_api_mode
 
     try:
         await _post_llm_test_json(url, headers=headers, payload=payload)
@@ -549,6 +705,35 @@ def create_settings_router(
     ):
         """Test an arbitrary LLM provider configuration without writing it."""
         return await _test_llm_provider_config(request)
+
+    @router.get(
+        "/settings/llm/providers",
+        response_model=list[LLMProviderSpecResponse],
+    )
+    async def get_llm_provider_catalog(
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Return known LLM provider compatibility metadata."""
+        return [
+            LLMProviderSpecResponse(
+                id=spec.id,
+                label=spec.label,
+                api_format=spec.api_format,
+                default_base_url=spec.default_base_url,
+                api_key_env_vars=list(spec.api_key_env_vars),
+                base_url_env_vars=list(spec.base_url_env_vars),
+                default_model=spec.default_model,
+                default_api_mode=spec.default_api_mode,
+                supports_chat_completions=spec.supports_chat_completions,
+                supports_responses=spec.supports_responses,
+                requires_api_key=spec.requires_api_key,
+                requires_base_url=spec.requires_base_url,
+                docs_url=spec.docs_url,
+                notes=spec.notes,
+                aliases=list(spec.aliases),
+            )
+            for spec in list_llm_provider_specs()
+        ]
 
     @router.get(
         "/settings/llm/runtime",
@@ -834,33 +1019,71 @@ def create_settings_router(
         provider: Optional[str] = Query(
             default=None,
             description=(
-                "Provider to fetch models for (anthropic, openai). Defaults to "
-                "global provider."
+                "Provider to fetch models for. Defaults to global provider."
             ),
+        ),
+        base_url: Optional[str] = Query(
+            default=None,
+            description="Optional OpenAI-compatible base URL override for unsaved provider settings.",
         ),
         user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings_fn),
     ):
         """Fetch available models from the configured LLM provider or CLIProxy."""
-        effective_provider = provider or settings.llm_provider
+        effective_provider = normalize_llm_provider(provider or settings.llm_provider)
+        agent = get_agent_fn()
+        credential = get_llm_provider_credential(
+            effective_provider,
+            vault=getattr(agent, "credential_vault", None),
+            owner_user_id=user.id,
+        )
 
-        base_url = settings.llm_base_url
+        effective_base_url = base_url
+        api_key = credential.api_key if credential else None
+        if effective_base_url:
+            effective_base_url = effective_base_url.strip().rstrip("/")
+        if (
+            not effective_base_url
+            and effective_provider == normalize_llm_provider(settings.llm_provider)
+        ):
+            effective_base_url = settings.llm_base_url
+        if not effective_base_url and credential and credential.base_url:
+            effective_base_url = credential.base_url
+
         if effective_provider == "anthropic":
-            api_key = settings.anthropic_direct_api_key or settings.anthropic_api_key
-            if not base_url:
-                base_url = "https://api.anthropic.com"
-        elif effective_provider == "openai":
-            api_key = settings.openai_api_key
-            if not base_url:
-                base_url = "https://api.openai.com"
+            api_key = api_key or (
+                settings.anthropic_direct_api_key or settings.anthropic_api_key
+            )
+            effective_base_url = effective_base_url or "https://api.anthropic.com"
+            clean_base = effective_base_url.rstrip("/")
+            models_url = (
+                f"{clean_base}/models"
+                if clean_base.endswith("/v1")
+                else f"{clean_base}/v1/models"
+            )
+        elif is_openai_compatible_provider(effective_provider):
+            api_key = api_key or resolve_provider_api_key(
+                effective_provider,
+                settings=settings,
+            )
+            effective_base_url = effective_base_url or resolve_provider_base_url(
+                effective_provider,
+                settings=settings,
+            )
+            if not effective_base_url:
+                return []
+            models_url = f"{effective_base_url.rstrip('/')}/models"
         else:
             return []
 
-        if settings.llm_base_url:
-            api_key = settings.get_api_key_for_provider()
-
-        if not api_key:
+        if (
+            not api_key
+            and provider_requires_api_key(effective_provider)
+            and not _base_url_allows_no_api_key(effective_base_url)
+        ):
             return []
+        if not api_key:
+            api_key = "not-needed"
 
         headers = {
             "x-api-key": api_key,
@@ -868,14 +1091,9 @@ def create_settings_router(
             "anthropic-version": "2023-06-01",
         }
 
-        clean_base = base_url.rstrip("/")
-        if clean_base.endswith("/v1"):
-            clean_base = clean_base[:-3]
-
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                url = f"{clean_base}/v1/models"
-                resp = await client.get(url, headers=headers)
+                resp = await client.get(models_url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -883,15 +1101,34 @@ def create_settings_router(
             result = []
             for m in sorted(raw_models, key=lambda x: x.get("id", "")):
                 model_id = m.get("id", "")
+                if not model_id:
+                    continue
+                model_name = m.get("name") or model_id
+                metadata = _extract_model_metadata(m)
+                register_model_metadata(
+                    model_id=model_id,
+                    name=model_name,
+                    context_length=metadata["context_length"],
+                    max_completion_tokens=metadata["max_completion_tokens"],
+                    input_modalities=set(metadata["input_modalities"]),
+                    supported_parameters=set(metadata["supported_parameters"]),
+                    default_temperature=metadata["default_temperature"],
+                    default_top_p=metadata["default_top_p"],
+                    default_frequency_penalty=metadata["default_frequency_penalty"],
+                    pricing_prompt=metadata["pricing_prompt"],
+                    pricing_completion=metadata["pricing_completion"],
+                    tokenizer=metadata["tokenizer"],
+                )
                 result.append({
                     "id": model_id,
-                    "name": m.get("name") or model_id,
+                    "name": model_name,
                     "owned_by": m.get("owned_by", ""),
                     "created": m.get("created"),
+                    **metadata,
                 })
             return result
         except Exception as e:
-            logger.warning("Failed to fetch models from %s: %s", base_url, e)
+            logger.warning("Failed to fetch models from %s: %s", models_url, e)
             return []
 
     return router

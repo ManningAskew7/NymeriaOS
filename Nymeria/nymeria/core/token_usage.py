@@ -6,9 +6,29 @@ LangChain's standardised ``usage_metadata``.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from langchain_core.messages import AIMessage
+
+
+def _usage_value(usage: Any, *names: str) -> int:
+    """Return the first integer-ish token count from a usage metadata object."""
+    if not usage:
+        return 0
+
+    for name in names:
+        value = None
+        if isinstance(usage, dict):
+            value = usage.get(name)
+        else:
+            value = getattr(usage, name, None)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def extract_from_message(msg: AIMessage) -> Tuple[int, int]:
@@ -21,23 +41,23 @@ def extract_from_message(msg: AIMessage) -> Tuple[int, int]:
     """
     if hasattr(msg, "usage_metadata") and msg.usage_metadata:
         um = msg.usage_metadata
-        inp = getattr(um, "input_tokens", 0) or (
-            um.get("input_tokens", 0) if isinstance(um, dict) else 0
-        )
-        out = getattr(um, "output_tokens", 0) or (
-            um.get("output_tokens", 0) if isinstance(um, dict) else 0
-        )
+        inp = _usage_value(um, "input_tokens", "prompt_tokens")
+        out = _usage_value(um, "output_tokens", "completion_tokens")
         if inp or out:
             return inp, out
 
     if hasattr(msg, "response_metadata") and msg.response_metadata:
         meta = msg.response_metadata
         usage = meta.get("usage", {})
-        if usage.get("input_tokens") or usage.get("output_tokens"):
-            return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+        inp = _usage_value(usage, "input_tokens", "prompt_tokens")
+        out = _usage_value(usage, "output_tokens", "completion_tokens")
+        if inp or out:
+            return inp, out
         token_usage = meta.get("token_usage", {})
-        if token_usage.get("prompt_tokens") or token_usage.get("completion_tokens"):
-            return token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0)
+        inp = _usage_value(token_usage, "prompt_tokens", "input_tokens")
+        out = _usage_value(token_usage, "completion_tokens", "output_tokens")
+        if inp or out:
+            return inp, out
 
     return 0, 0
 

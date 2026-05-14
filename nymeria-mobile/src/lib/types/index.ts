@@ -629,9 +629,27 @@ export interface AppConfig {
 }
 
 // Server settings types
-export type LLMProvider = 'openrouter' | 'openai' | 'anthropic';
+export type LLMProvider = string;
 export type OpenAIApiMode = 'chat_completions' | 'responses';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+
+export interface LLMProviderSpec {
+  id: string;
+  label: string;
+  api_format: string;
+  default_base_url: string | null;
+  api_key_env_vars: string[];
+  base_url_env_vars: string[];
+  default_model: string | null;
+  default_api_mode: OpenAIApiMode | string;
+  supports_chat_completions: boolean;
+  supports_responses: boolean;
+  requires_api_key: boolean;
+  requires_base_url: boolean;
+  docs_url: string | null;
+  notes: string;
+  aliases: string[];
+}
 
 // Available model from provider (from GET /models/available)
 export interface AvailableModel {
@@ -639,6 +657,16 @@ export interface AvailableModel {
   name: string;
   owned_by: string;
   created: number | null;
+  context_length?: number | null;
+  max_completion_tokens?: number | null;
+  supported_parameters?: string[];
+  input_modalities?: string[];
+  tokenizer?: string | null;
+  default_temperature?: number | null;
+  default_top_p?: number | null;
+  default_frequency_penalty?: number | null;
+  pricing_prompt?: number | null;
+  pricing_completion?: number | null;
 }
 
 // OpenRouter model metadata (from GET /models)

@@ -48,6 +48,7 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/index.ts",
     "lib/utils/fileProcessing.ts",
     "lib/utils/ids.ts",
+    "lib/utils/models.ts",
     "lib/utils/todoTools.ts",
     "lib/utils/toolSearch.ts",
 }

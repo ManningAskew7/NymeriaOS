@@ -61,6 +61,7 @@ class ModelInfo:
 
 # Single unified cache: model_id (lowercase) -> ModelInfo
 _model_cache: Dict[str, ModelInfo] = {}
+_live_model_cache: Dict[str, ModelInfo] = {}
 _cache_timestamp: float = 0
 _cache_populated: bool = False
 _CACHE_TTL_SECONDS = 3600  # Refresh cache every hour
@@ -310,7 +311,10 @@ def _ensure_cache() -> Dict[str, ModelInfo]:
     if not _cache_populated or (now - _cache_timestamp) > _CACHE_TTL_SECONDS:
         result = _fetch_openrouter_models()
         if result:
-            _model_cache = result
+            # Preserve live provider metadata registered from /models endpoints.
+            # OpenRouter is a broad catalog; the active provider's own metadata
+            # is usually more authoritative for the exact ID it returned.
+            _model_cache = {**result, **_model_cache}
             _cache_timestamp = now
             _cache_populated = True
         elif not _cache_populated:
@@ -325,8 +329,20 @@ def _lookup_model(model_id: str) -> Optional[ModelInfo]:
     if not model_id:
         return None
 
-    cache = _ensure_cache()
     candidates = _model_id_candidates(model_id)
+
+    # Runtime /models responses from the selected provider are authoritative
+    # for that exact provider, and this lookup avoids an OpenRouter fetch when
+    # live metadata was just registered for context-window stats.
+    for candidate in candidates:
+        if candidate in _live_model_cache:
+            return _live_model_cache[candidate]
+
+    for cached_id, info in _live_model_cache.items():
+        if any(_is_safe_cache_variant_match(candidate, cached_id) for candidate in candidates):
+            return info
+
+    cache = _ensure_cache()
 
     # Direct and provider-alias matches
     for candidate in candidates:
@@ -602,6 +618,83 @@ def refresh_capabilities_cache() -> int:
     _cache_populated = True
 
     return len(_model_cache)
+
+
+def register_model_metadata(
+    *,
+    model_id: str,
+    name: str = "",
+    context_length: int | None = None,
+    max_completion_tokens: int | None = None,
+    input_modalities: Set[str] | None = None,
+    supported_parameters: Set[str] | None = None,
+    default_temperature: float | None = None,
+    default_top_p: float | None = None,
+    default_frequency_penalty: float | None = None,
+    pricing_prompt: float | None = None,
+    pricing_completion: float | None = None,
+    tokenizer: str | None = None,
+) -> None:
+    """Merge provider-returned model metadata into the runtime cache.
+
+    OpenAI-compatible ``/models`` endpoints do not have one universal schema,
+    but several providers expose context length and output limits there. Cache
+    those hints when seen so context-window percentages use provider metadata
+    instead of only OpenRouter's catalog or static fallbacks.
+    """
+    if not model_id:
+        return
+
+    key = model_id.lower()
+    existing = _model_cache.get(key)
+    info = ModelInfo(
+        id=model_id,
+        name=name or (existing.name if existing else model_id),
+        context_length=(
+            context_length
+            if context_length and context_length > 0
+            else (existing.context_length if existing else 0)
+        ),
+        max_completion_tokens=(
+            max_completion_tokens
+            if max_completion_tokens and max_completion_tokens > 0
+            else (existing.max_completion_tokens if existing else None)
+        ),
+        input_modalities=input_modalities
+        if input_modalities is not None
+        else (existing.input_modalities.copy() if existing else set()),
+        supported_parameters=supported_parameters
+        if supported_parameters is not None
+        else (existing.supported_parameters.copy() if existing else set()),
+        default_temperature=(
+            default_temperature
+            if default_temperature is not None
+            else (existing.default_temperature if existing else None)
+        ),
+        default_top_p=(
+            default_top_p
+            if default_top_p is not None
+            else (existing.default_top_p if existing else None)
+        ),
+        default_frequency_penalty=(
+            default_frequency_penalty
+            if default_frequency_penalty is not None
+            else (existing.default_frequency_penalty if existing else None)
+        ),
+        pricing_prompt=(
+            pricing_prompt
+            if pricing_prompt is not None
+            else (existing.pricing_prompt if existing else None)
+        ),
+        pricing_completion=(
+            pricing_completion
+            if pricing_completion is not None
+            else (existing.pricing_completion if existing else None)
+        ),
+        tokenizer=tokenizer or (existing.tokenizer if existing else None),
+    )
+    _live_model_cache[key] = info
+    _model_cache[key] = info
 
 
 def get_context_limit(model_id: str) -> int:

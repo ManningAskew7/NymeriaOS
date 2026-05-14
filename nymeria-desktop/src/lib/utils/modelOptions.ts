@@ -3,14 +3,12 @@
  * Shared between SettingsPanel and AgentForm.
  */
 
-import type { LLMProvider } from '$lib/types';
-
 export interface ModelOption {
   value: string;
   label: string;
 }
 
-export const modelOptions: Record<LLMProvider, ModelOption[]> = {
+export const modelOptions: Record<string, ModelOption[]> = {
   anthropic: [
     { value: 'claude-opus-4-20250514', label: 'claude-opus-4 (best)' },
     { value: 'claude-sonnet-4-20250514', label: 'claude-sonnet-4 (reliable)' },

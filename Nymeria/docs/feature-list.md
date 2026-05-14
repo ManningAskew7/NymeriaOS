@@ -130,7 +130,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Reasoning + Acting loop** — LangGraph-based ReAct pattern with higher tool-call budgets (default 500 main, 300 callable, configurable callables up to 1000) and exact repeated tool/result loop detection
 - **Per-user graph compilation** — Graphs compiled per user/thread based on memory hash, tool set, and thread config; LRU-cached (max 50 entries)
 - **Dynamic tool binding** — Tools resolved at graph-build time from core + optional + callable + MCP + skill sources
-- **Multi-provider LLM support** — Anthropic (native), OpenAI, OpenRouter, local LLMs (llama.cpp, KoboldCpp, LM Studio, Ollama) via OpenAI-compatible API
+- **Multi-provider LLM support** — Anthropic (native) plus OpenAI, OpenRouter, xAI, Gemini, Groq, DeepSeek, Mistral, local/self-hosted runtimes, and other OpenAI-compatible providers via a registry-backed adapter and live model-list endpoints
 - **Extended thinking** — Configurable reasoning effort (off, on, low, medium, high) with thinking block visualization
 - **Model hot-switching** — Change model per-thread or globally at runtime without restart
 - **Cross-thread @mentions** — Prefix a chat message with `@ThreadName`,

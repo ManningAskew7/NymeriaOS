@@ -11,6 +11,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
 from .._runtime_paths import default_user_project_root
+from .llm_providers import (
+    get_llm_provider_spec,
+    normalize_llm_provider,
+    provider_requires_api_key,
+    resolve_provider_api_key,
+)
 
 
 _PROJECT_ROOT_MARKERS: Tuple[Tuple[str, ...], ...] = (
@@ -300,7 +306,7 @@ class Settings(BaseSettings):
     )
 
     # LLM Configuration
-    llm_provider: Literal["openrouter", "openai", "anthropic"] = Field(
+    llm_provider: str = Field(
         default="anthropic", description="LLM provider"
     )
     llm_model: str = Field(
@@ -314,8 +320,8 @@ class Settings(BaseSettings):
         default=DEFAULT_LLM_FALLBACK_MODELS,
         description=(
             "Comma-separated ordered fallback model chain. Entries may be "
-            "model IDs for the active provider or provider:model for "
-            "anthropic/openai/openrouter."
+            "model IDs for the active provider or provider:model for any "
+            "known provider."
         ),
     )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)
@@ -735,16 +741,13 @@ class Settings(BaseSettings):
 
     def get_api_key_for_provider(self) -> Optional[str]:
         """Get the API key for the configured LLM provider."""
-        if self.llm_provider == "anthropic":
+        provider = normalize_llm_provider(self.llm_provider)
+        if provider == "anthropic":
             if self.llm_base_url:
                 return self.anthropic_api_key
             return self.anthropic_direct_api_key or self.anthropic_api_key
 
-        key_map = {
-            "openai": self.openai_api_key,
-            "openrouter": self.openrouter_api_key,
-        }
-        return key_map.get(self.llm_provider)
+        return resolve_provider_api_key(provider, settings=self)
 
     def load_soul(self) -> str:
         """Load the system prompt from soul.md."""
@@ -781,12 +784,18 @@ class Settings(BaseSettings):
 
         # Check for LLM provider API key
         provider_key = self.get_api_key_for_provider()
-        if not provider_key:
-            provider_env_var = f"{self.llm_provider.upper()}_API_KEY"
-            errors.append(
-                f"No API key for LLM provider '{self.llm_provider}'.\n"
-                f"  Set {provider_env_var} in your .env file.\n"
-                f"  Get an API key from your provider's website."
+        provider = normalize_llm_provider(self.llm_provider)
+        provider_spec = get_llm_provider_spec(provider)
+        if not provider_key and provider_requires_api_key(provider):
+            env_hint = ""
+            if provider_spec and provider_spec.api_key_env_vars:
+                env_hint = ", ".join(provider_spec.api_key_env_vars)
+            else:
+                env_hint = f"{provider.upper()}_API_KEY"
+            warnings.append(
+                f"No env API key for LLM provider '{self.llm_provider}'.\n"
+                f"  Set one of: {env_hint}; or save an active credential-vault "
+                f"record for provider '{provider}' with secret field 'api_key'."
             )
 
         # Check database backend configuration

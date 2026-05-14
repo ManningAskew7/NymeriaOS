@@ -15,7 +15,7 @@ class LLMFallbackConfig:
     """One fallback model candidate for transient provider failures."""
 
     model: str
-    provider: Optional[Literal["openrouter", "openai", "anthropic", "custom"]] = None
+    provider: Optional[str] = None
     api_key: Optional[str] = field(default=None, repr=False)
     base_url: Optional[str] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
@@ -25,7 +25,7 @@ class LLMFallbackConfig:
 class LLMConfig:
     """LLM provider configuration."""
 
-    provider: Literal["openrouter", "openai", "anthropic", "custom"] = "openrouter"
+    provider: str = "openrouter"
     model: str = field(default_factory=lambda: os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"))
     api_key: Optional[str] = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY"))
     base_url: Optional[str] = field(default_factory=lambda: os.getenv("LLM_BASE_URL"))

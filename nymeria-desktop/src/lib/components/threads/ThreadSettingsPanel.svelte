@@ -522,16 +522,20 @@
       // LLM config
       const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmApiKey;
+        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
         const mapped = fromThreadDisplayProvider(threadDisplayProvider);
         llm.provider = mapped.provider || null;
+        const effectiveProviderForSave = mapped.provider || getEffectiveProvider();
         // For openai_custom, persist the user-editable base URL (not the default
-        // from fromThreadDisplayProvider, which is just a placeholder).
+        // from fromThreadDisplayProvider, which is just a placeholder). Other
+        // OpenAI-compatible providers may also carry an optional per-thread URL.
         if (threadDisplayProvider === 'openai_custom') {
           llm.base_url = llmBaseUrl || DEFAULT_CUSTOM_OPENAI_BASE_URL;
+        } else if (supportsOpenAiApiMode(effectiveProviderForSave)) {
+          llm.base_url = llmBaseUrl || mapped.baseUrl;
         } else {
           llm.base_url = mapped.baseUrl;
         }

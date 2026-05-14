@@ -17,7 +17,7 @@ Credentials have public metadata and separate encrypted secret fields:
 
 `allowed_targets` scopes runtime injection. Supported target strings include
 `mcp_server:<server_id>`, `custom_tool:<tool_id>`, wildcard forms like
-`mcp_server:*`, or `*`.
+`mcp_server:*`, `llm_provider:<provider-id>`, `llm_provider:*`, or `*`.
 
 ## APIs
 
@@ -60,6 +60,14 @@ The backend resolves this only during execution, checks the credential's
 allowed target, records the credential ID in audit metadata, and redacts
 resolved secret values in HTTP audit logs and request metadata. Tool results
 and API responses do not include the secret value.
+
+LLM providers also use the credential vault. Save a credential with
+`provider=<LLM provider ID>` such as `openai`, `openrouter`, `groq`, or
+`lmstudio`; `kind=api_key` or `llm_provider`; secret field `api_key`; and
+allowed target `llm_provider:<provider-id>` or `llm_provider:*`. A credential
+may also include a secret or metadata `base_url` field for custom endpoints.
+Bindings improve selection order, but the allowed target is still what permits
+secret access.
 
 ## Migration
 

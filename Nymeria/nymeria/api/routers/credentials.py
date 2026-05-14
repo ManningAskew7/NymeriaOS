@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ...config.llm_providers import is_known_llm_provider
 from ...core import secrets as nymeria_secrets
 from ...core.accounts import AuthenticatedUser
 from ...core.credential_vault import CredentialNotFound, CredentialVaultRepo
+from ...core.llm_credentials import LLM_PROVIDER_TARGET_TYPE
 from ..schemas.credentials import (
     CredentialBindingRequest,
     CredentialBindingResponse,
@@ -20,6 +23,8 @@ from ..schemas.credentials import (
     CredentialUpdateRequest,
     credential_to_response,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _repo(get_agent_fn: Callable[[], Any]) -> CredentialVaultRepo:
@@ -52,6 +57,30 @@ def _require_manage(user: AuthenticatedUser, record: Any) -> None:
 
 def _secret_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=str(exc))
+
+
+def _is_llm_credential(record: Any) -> bool:
+    targets = record.allowed_targets or []
+    return is_known_llm_provider(record.provider) or any(
+        str(target).startswith(f"{LLM_PROVIDER_TARGET_TYPE}:")
+        for target in targets
+    )
+
+
+def _invalidate_llm_graphs(get_agent_fn: Callable[[], Any], record: Any) -> None:
+    if not _is_llm_credential(record):
+        return
+    agent = get_agent_fn()
+    try:
+        with agent._graph_cache_lock:
+            agent._user_graphs.clear()
+            agent._async_user_graphs.clear()
+        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
+        agent._default_async_graph = agent._build_async_graph_with_prompt(
+            agent._base_system_prompt
+        )
+    except Exception:
+        logger.warning("Failed to rebuild LLM graphs after credential change", exc_info=True)
 
 
 def create_credentials_router(
@@ -135,6 +164,7 @@ def create_credentials_router(
             nymeria_secrets.SecretsKeyInvalid,
         ) as exc:
             raise _secret_error(exc) from exc
+        _invalidate_llm_graphs(get_agent_fn, record)
         return credential_to_response(record)
 
     @router.post("/credential-setup-sessions", response_model=CredentialResponse)
@@ -171,6 +201,7 @@ def create_credentials_router(
                 binding_name="setup_request",
                 actor_user_id=user.id,
             )
+        _invalidate_llm_graphs(get_agent_fn, record)
         return credential_to_response(record)
 
     @router.get("/credentials/{credential_id}", response_model=CredentialResponse)
@@ -221,6 +252,7 @@ def create_credentials_router(
             nymeria_secrets.SecretsKeyInvalid,
         ) as exc:
             raise _secret_error(exc) from exc
+        _invalidate_llm_graphs(get_agent_fn, record)
         return credential_to_response(record)
 
     @router.delete("/credentials/{credential_id}")
@@ -234,7 +266,12 @@ def create_credentials_router(
         if record is None:
             raise HTTPException(status_code=404, detail="Credential not found")
         _require_manage(user, record)
-        deleted = repo.delete_credential(credential_id, actor_user_id=user.id) if hard else repo.disable_credential(credential_id, actor_user_id=user.id)
+        deleted = (
+            repo.delete_credential(credential_id, actor_user_id=user.id)
+            if hard
+            else repo.disable_credential(credential_id, actor_user_id=user.id)
+        )
+        _invalidate_llm_graphs(get_agent_fn, record)
         return {"status": "ok", "deleted": deleted, "hard": hard}
 
     @router.post("/credentials/{credential_id}/test", response_model=CredentialResponse)
@@ -299,6 +336,7 @@ def create_credentials_router(
         row = next((r for r in repo.list_bindings(credential_id) if r["id"] == binding_id), None)
         if row is None:
             raise HTTPException(status_code=500, detail="Binding was not saved")
+        _invalidate_llm_graphs(get_agent_fn, record)
         return CredentialBindingResponse(**row)
 
     @router.delete("/credential-bindings/{binding_id}")
@@ -314,6 +352,8 @@ def create_credentials_router(
         if record is None:
             raise HTTPException(status_code=404, detail="Credential not found")
         _require_manage(user, record)
-        return {"status": "ok", "deleted": repo.delete_binding(binding_id, actor_user_id=user.id)}
+        deleted = repo.delete_binding(binding_id, actor_user_id=user.id)
+        _invalidate_llm_graphs(get_agent_fn, record)
+        return {"status": "ok", "deleted": deleted}
 
     return router

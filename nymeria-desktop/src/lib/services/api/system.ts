@@ -1,5 +1,6 @@
 import type {
   AvailableModel,
+  LLMProviderSpec,
   LLMProviderTestRequest,
   LLMProviderTestResponse,
   ModelMetadata,
@@ -83,6 +84,19 @@ export class SystemApi extends ApiBase {
     return response.json();
   }
 
+  async getLLMProviderCatalog(): Promise<LLMProviderSpec[]> {
+    try {
+      const response = await fetch(`${this.getBaseUrl()}/settings/llm/providers`, {
+        headers: this.getHeaders()
+      });
+
+      if (!response.ok) return [];
+      return response.json();
+    } catch {
+      return [];
+    }
+  }
+
   // Model Metadata
 
   async getOpenRouterModels(): Promise<ModelMetadata[]> {
@@ -98,10 +112,13 @@ export class SystemApi extends ApiBase {
     }
   }
 
-  async getAvailableModels(provider?: string): Promise<AvailableModel[]> {
+  async getAvailableModels(provider?: string, baseUrl?: string): Promise<AvailableModel[]> {
     try {
-      const params = provider ? `?provider=${encodeURIComponent(provider)}` : '';
-      const response = await fetch(`${this.getBaseUrl()}/models/available${params}`, {
+      const params = new URLSearchParams();
+      if (provider) params.set('provider', provider);
+      if (baseUrl) params.set('base_url', baseUrl);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const response = await fetch(`${this.getBaseUrl()}/models/available${query}`, {
         headers: this.getHeaders()
       });
 

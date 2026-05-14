@@ -5,8 +5,28 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
-LLMProviderName = Literal["openrouter", "openai", "anthropic"]
+LLMProviderName = str
 OpenAIApiMode = Literal["chat_completions", "responses"]
+
+
+class LLMProviderSpecResponse(BaseModel):
+    """Public LLM provider metadata for settings UIs and docs consumers."""
+
+    id: str
+    label: str
+    api_format: str
+    default_base_url: Optional[str] = None
+    api_key_env_vars: list[str] = Field(default_factory=list)
+    base_url_env_vars: list[str] = Field(default_factory=list)
+    default_model: Optional[str] = None
+    default_api_mode: OpenAIApiMode | str = "chat_completions"
+    supports_chat_completions: bool = True
+    supports_responses: bool = False
+    requires_api_key: bool = True
+    requires_base_url: bool = False
+    docs_url: Optional[str] = None
+    notes: str = ""
+    aliases: list[str] = Field(default_factory=list)
 
 
 class ServerSettingsResponse(BaseModel):
