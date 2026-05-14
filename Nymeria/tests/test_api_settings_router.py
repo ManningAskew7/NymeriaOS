@@ -423,6 +423,11 @@ def test_get_llm_provider_catalog_includes_openai_compatible_providers(
     assert providers["openai"]["supports_responses"] is True
     assert providers["groq"]["api_format"] == "openai_chat"
     assert "GROQ_API_KEY" in providers["groq"]["api_key_env_vars"]
+    assert providers["cohere"]["default_base_url"] == "https://api.cohere.ai/compatibility/v1"
+    assert providers["stepfun"]["default_base_url"] == "https://api.stepfun.ai/v1"
+    assert providers["alibaba-coding-plan"]["default_base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
+    assert providers["byteplus"]["default_base_url"] == "https://ark.ap-southeast.bytepluses.com/api/v3"
+    assert providers["v0"]["docs_url"] == "https://vercel.com/docs/v0/api"
 
 
 def test_available_models_uses_provider_endpoint_and_caches_metadata(

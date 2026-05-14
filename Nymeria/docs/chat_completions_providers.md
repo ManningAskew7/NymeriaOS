@@ -11,6 +11,26 @@ not maintained as static lists: desktop/mobile call `GET /models/available`,
 which asks the selected provider's `/models` endpoint using the effective base
 URL and credential.
 
+Reference coverage checked on 2026-05-14:
+
+- Current `models.dev/api.json` has 124 provider entries. Nymeria registers all
+  entries that expose an OpenAI-compatible endpoint or SDK path suitable for the
+  generic Chat Completions adapter, plus local/self-hosted runtimes.
+- `/opt/opencode` consumes `models.dev` and `@ai-sdk/openai-compatible`; Nymeria
+  mirrors the compatible provider IDs where the backend can call them with a
+  base URL and bearer token.
+- `/opt/hermes-agent` adds Hermes-only profiles such as `nous`, `gmi`,
+  `azure-foundry`, `qwen-oauth`, and coding-plan endpoints; these are registered
+  with caveats in the provider notes.
+- `/opt/openclaw` adds coding-plan variants for Alibaba/Qwen, StepFun,
+  Volcengine/Doubao, and BytePlus ModelArk. These are registered as separate
+  provider IDs because they use different base URLs and sometimes different key
+  tiers.
+- Providers that are not Chat Completions compatible, or require a different
+  native transport that Nymeria does not implement here, are deliberately not
+  registered as OpenAI-chat providers. Examples: native Anthropic/Bedrock,
+  MiniMax and Kimi coding Anthropic-compatible endpoints, and Copilot ACP.
+
 ## Runtime Behavior
 
 - Auth lookup order is per-thread explicit key/reference, encrypted credential
@@ -44,11 +64,14 @@ URL and credential.
 | `openai` | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | Supports Chat Completions and Responses. |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | Supports Chat Completions and Responses. |
 | `azure-openai` | Azure OpenAI | custom | `AZURE_OPENAI_API_KEY`, `AZURE_API_KEY` | Set base URL to the `/openai/v1/` deployment endpoint. |
+| `azure-foundry` | Azure AI Foundry | custom | `AZURE_FOUNDRY_API_KEY`, `AZURE_OPENAI_AUTH_TOKEN`, `AZURE_API_KEY` | Set base URL to the Foundry `/openai/v1/` endpoint. |
 | `xai` | xAI | `https://api.x.ai/v1` | `XAI_API_KEY` | Supports Chat Completions and Responses. |
 | `google` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | Gemini OpenAI-compatible adapter. |
+| `google-vertex` | Google Vertex AI | custom | `GOOGLE_VERTEX_ACCESS_TOKEN` | Requires a Google Cloud OAuth access token; token refresh is not automatic. |
 | `groq` | Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | Chat Completions compatible. |
 | `deepseek` | DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | Also accepts `/v1` compatibility aliases. |
 | `mistral` | Mistral AI | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | Chat Completions compatible. |
+| `cohere` | Cohere | `https://api.cohere.ai/compatibility/v1` | `COHERE_API_KEY` | Cohere compatibility API for OpenAI SDK clients. |
 | `togetherai` | Together AI | `https://api.together.ai/v1` | `TOGETHER_API_KEY` | Alias: `together`. |
 | `fireworks-ai` | Fireworks AI | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` | Alias: `fireworks`. |
 | `perplexity` | Perplexity | `https://api.perplexity.ai` | `PERPLEXITY_API_KEY` | Chat Completions compatible. |
@@ -58,11 +81,20 @@ URL and credential.
 | `huggingface` | Hugging Face Inference Providers | `https://router.huggingface.co/v1` | `HF_TOKEN`, `HUGGINGFACE_API_KEY` | OpenAI-compatible router. |
 | `deepinfra` | DeepInfra | `https://api.deepinfra.com/v1/openai` | `DEEPINFRA_API_KEY` | Chat Completions compatible. |
 | `moonshotai` | Moonshot AI / Kimi | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | Aliases: `moonshot`, `kimi`. |
+| `aihubmix` | AIHubMix | `https://aihubmix.com/v1` | `AIHUBMIX_API_KEY` | Routing gateway; backup host is `https://api.aihubmix.com`. |
 | `alibaba` | Alibaba Cloud Model Studio | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `ALIBABA_API_KEY` | Aliases: `dashscope`, `qwen`. |
+| `alibaba-coding-plan` | Alibaba Cloud Coding Plan | `https://coding-intl.dashscope.aliyuncs.com/v1` | `ALIBABA_CODING_PLAN_API_KEY`, `DASHSCOPE_API_KEY` | Dedicated coding-plan key tier. |
+| `alibaba-coding-plan-cn` | Alibaba Cloud Coding Plan China | `https://coding.dashscope.aliyuncs.com/v1` | `ALIBABA_CODING_PLAN_API_KEY`, `DASHSCOPE_API_KEY` | China-region coding-plan endpoint. |
+| `qwen-oauth` | Qwen Portal | `https://portal.qwen.ai/v1` | `QWEN_API_KEY` | Hermes reference profile; prefer Coding Plan for normal API-key setup. |
 | `zai` | Z.ai | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY`, `Z_AI_API_KEY`, `ZHIPU_API_KEY`, `GLM_API_KEY` | Alias: `glm`. |
 | `zhipuai` | Zhipu AI BigModel | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY`, `GLM_API_KEY` | Chat Completions compatible. |
 | `qianfan` | Baidu Qianfan | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` | Chat Completions compatible. |
+| `stepfun` | StepFun | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` | Standard StepFun OpenAI-compatible endpoint. |
+| `stepfun-plan` | StepFun Step Plan | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_API_KEY` | OpenClaw/Hermes coding-plan endpoint. |
 | `volcengine` | Volcengine Ark | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCANO_ENGINE_API_KEY`, `ARK_API_KEY`, `VOLCENGINE_API_KEY` | Alias: `doubao`. |
+| `volcengine-coding-plan` | Volcengine Ark Coding Plan | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCANO_ENGINE_API_KEY`, `ARK_API_KEY`, `VOLCENGINE_API_KEY` | Coding-plan endpoint for Doubao/Ark coding models. |
+| `byteplus` | BytePlus ModelArk | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY`, `ARK_API_KEY` | International ModelArk OpenAI-compatible endpoint. |
+| `byteplus-coding-plan` | BytePlus ModelArk Coding Plan | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_API_KEY`, `ARK_API_KEY` | Coding-plan endpoint for OpenClaw-compatible tools. |
 | `tencent-tokenhub` | Tencent TokenHub | `https://tokenhub.tencentmaas.com/v1` | `TENCENT_TOKENHUB_API_KEY` | Alias: `tencent`. |
 | `novita-ai` | Novita AI | `https://api.novita.ai/openai` | `NOVITA_API_KEY` | Chat Completions compatible. |
 | `siliconflow` | SiliconFlow | `https://api.siliconflow.com/v1` | `SILICONFLOW_API_KEY` | Chat Completions compatible. |
@@ -72,11 +104,31 @@ URL and credential.
 | `requesty` | Requesty | `https://router.requesty.ai/v1` | `REQUESTY_API_KEY` | Gateway provider. |
 | `poe` | Poe | `https://api.poe.com/v1` | `POE_API_KEY` | Chat Completions compatible. |
 | `github-models` | GitHub Models | `https://models.github.ai/inference` | `GITHUB_TOKEN` | Alias: `github`. |
+| `github-copilot` | GitHub Copilot | `https://api.githubcopilot.com` | `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` | Requires a Copilot bearer token; a normal GitHub PAT may not be sufficient. |
 | `cloudflare-workers-ai` | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1` | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_API_TOKEN` | Requires account ID expansion. |
 | `cloudflare-ai-gateway` | Cloudflare AI Gateway | custom | `CLOUDFLARE_API_TOKEN` | Set `CLOUDFLARE_AI_GATEWAY_BASE_URL`. |
 | `vercel` | Vercel AI Gateway | `https://ai-gateway.vercel.sh/v1` | `AI_GATEWAY_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` | Alias: `ai-gateway`. |
 | `opencode` | OpenCode Zen | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` | Reference provider from opencode. |
 | `kilocode` | Kilo Code Gateway | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY`, `KILO_API_KEY` | Alias: `kilo`. |
+| `gmi` | GMI Cloud | `https://api.gmi-serving.com/v1` | `GMI_API_KEY` | Some accounts require an `X-Organization-ID` header, which Nymeria does not expose yet. |
+| `nous` | Nous Research | `https://inference.nousresearch.com/v1` | `NOUS_API_KEY` | Hermes reference provider; some accounts use OAuth/device-code credentials. |
+| `v0` | Vercel v0 | `https://api.v0.dev/v1` | `V0_API_KEY` | OpenAI-compatible coding/design model API. |
+
+## Provider Documentation Links
+
+Each provider spec has a `docs_url` that is returned by
+`GET /settings/llm/providers`. Useful references for the trickier providers:
+
+| Provider | Documentation |
+|----------|---------------|
+| Alibaba Coding Plan | https://www.alibabacloud.com/help/en/model-studio/other-tools-coding-plan |
+| Azure AI Foundry | https://learn.microsoft.com/azure/foundry/foundry-models/concepts/endpoints |
+| BytePlus ModelArk | https://docs.byteplus.com/en/docs/modelark/1330626 |
+| Cohere compatibility API | https://docs.cohere.com/v2/docs/compatibility-api |
+| GMI Cloud | https://docs.gmicloud.ai/inference-engine/api-reference/llm-api-reference |
+| Google Vertex OpenAI compatibility | https://cloud.google.com/vertex-ai/generative-ai/docs/start/openai |
+| StepFun OpenAI migration | https://platform.stepfun.ai/docs/en/guides/developer/openai |
+| Vercel v0 Model API | https://vercel.com/docs/v0/api |
 
 ## Local / Self-Hosted Providers
 
