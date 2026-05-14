@@ -1047,6 +1047,15 @@ export interface ServerSettingsUpdate {
   philips_hue_access_token?: string | null;
   philips_hue_username?: string | null;
   philips_hue_base_url?: string | null;
+  activecampaign_api_key?: string | null;
+  activecampaign_base_url?: string | null;
+  convertkit_api_secret?: string | null;
+  convertkit_base_url?: string | null;
+  getresponse_api_key?: string | null;
+  getresponse_base_url?: string | null;
+  mailerlite_api_key?: string | null;
+  mailerlite_base_url?: string | null;
+  mailerlite_classic_api?: boolean | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

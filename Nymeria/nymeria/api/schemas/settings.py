@@ -322,6 +322,15 @@ class ServerSettingsUpdate(BaseModel):
     philips_hue_access_token: Optional[str] = None
     philips_hue_username: Optional[str] = None
     philips_hue_base_url: Optional[str] = None
+    activecampaign_api_key: Optional[str] = None
+    activecampaign_base_url: Optional[str] = None
+    convertkit_api_secret: Optional[str] = None
+    convertkit_base_url: Optional[str] = None
+    getresponse_api_key: Optional[str] = None
+    getresponse_base_url: Optional[str] = None
+    mailerlite_api_key: Optional[str] = None
+    mailerlite_base_url: Optional[str] = None
+    mailerlite_classic_api: Optional[bool] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
