@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (510)
+### Optional: Service Integration Tools (529)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -588,6 +588,25 @@ in the credential vault for provider-specific saved connections scoped to
 | 508 | `yourls_expand_url` | Integrations | SAFE | Expand a YOURLS short URL |
 | 509 | `yourls_get_url_stats` | Integrations | SAFE | Get YOURLS short URL stats |
 | 510 | `yourls_get_db_stats` | Integrations | SAFE | Get YOURLS database stats |
+| 511 | `circleci_list_pipelines` | Integrations | SAFE | List CircleCI pipelines |
+| 512 | `circleci_get_pipeline` | Integrations | SAFE | Get a CircleCI pipeline |
+| 513 | `circleci_trigger_pipeline` | Integrations | MODERATE | Trigger a CircleCI pipeline |
+| 514 | `travisci_list_builds` | Integrations | SAFE | List Travis CI builds |
+| 515 | `travisci_get_build` | Integrations | SAFE | Get a Travis CI build |
+| 516 | `travisci_trigger_build` | Integrations | MODERATE | Trigger a Travis CI build |
+| 517 | `travisci_restart_build` | Integrations | MODERATE | Restart a Travis CI build |
+| 518 | `travisci_cancel_build` | Integrations | MODERATE | Cancel a Travis CI build |
+| 519 | `jenkins_get_instance` | Integrations | SAFE | Get Jenkins instance metadata |
+| 520 | `jenkins_list_jobs` | Integrations | SAFE | List Jenkins jobs |
+| 521 | `jenkins_list_job_builds` | Integrations | SAFE | List Jenkins job builds |
+| 522 | `jenkins_trigger_job` | Integrations | MODERATE | Trigger a Jenkins job |
+| 523 | `jenkins_trigger_job_with_parameters` | Integrations | MODERATE | Trigger a parameterized Jenkins job |
+| 524 | `jenkins_copy_job` | Integrations | MODERATE | Copy a Jenkins job |
+| 525 | `jenkins_create_job` | Integrations | MODERATE | Create a Jenkins job |
+| 526 | `jenkins_quiet_down` | Integrations | MODERATE | Put Jenkins into quiet-down mode |
+| 527 | `jenkins_cancel_quiet_down` | Integrations | MODERATE | Cancel Jenkins quiet-down mode |
+| 528 | `jenkins_restart_instance` | Integrations | MODERATE | Restart a Jenkins instance |
+| 529 | `jenkins_shutdown_instance` | Integrations | MODERATE | Shut down a Jenkins instance |
 
 ### Optional: Private B Tools (4)
 
@@ -1162,7 +1181,9 @@ connections in Settings > Connections with these provider names and fields:
 `mailerlite.api_key`, plus
 `github.access_token` and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
-`base_url` / `server`. Business-service credentials use `bitly.access_token`,
+`base_url` / `server`. Build/CI credentials use `circleci.api_key`,
+`travisci.api_token`, and `jenkins.base_url` plus `jenkins.username` and
+`jenkins.api_key`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
@@ -1327,6 +1348,18 @@ GitLab tools use vault provider `gitlab` fields `access_token`,
 self-managed instances can be configured with vault field `base_url`, `server`,
 or env `GITLAB_BASE_URL`; plain instance URLs automatically get `/api/v4`
 appended.
+
+### Build And CI Service Tools
+
+This batch includes:
+- `circleci_list_pipelines(vcs, project_slug, branch?, limit?, page_token?)`, `circleci_get_pipeline(vcs, project_slug, pipeline_number)`, and `circleci_trigger_pipeline(vcs, project_slug, branch?, tag?, parameters_json?)`.
+- `travisci_list_builds(include?, sort_by?, order?, limit?)`, `travisci_get_build(build_id, include?)`, `travisci_trigger_build(slug, branch, message?, merge_mode?, config_json?)`, `travisci_restart_build(build_id)`, and `travisci_cancel_build(build_id)`.
+- `jenkins_get_instance(tree?)`, `jenkins_list_jobs(limit?)`, `jenkins_list_job_builds(job_name, limit?)`, `jenkins_trigger_job(job_name)`, `jenkins_trigger_job_with_parameters(job_name, parameters_json)`, `jenkins_copy_job(source_job_name, new_job_name)`, `jenkins_create_job(new_job_name, config_xml)`, `jenkins_quiet_down(reason?)`, `jenkins_cancel_quiet_down()`, `jenkins_restart_instance(mode?)`, and `jenkins_shutdown_instance(mode?)`.
+
+Credential providers and fallback env vars:
+- CircleCI: provider `circleci`, fields `api_key`, `api_token`, `token`, or `value`; env fallback `CIRCLECI_API_TOKEN`.
+- Travis CI: provider `travisci`, fields `api_token`, `access_token`, `token`, or `value`; env fallback `TRAVISCI_API_TOKEN`.
+- Jenkins: provider `jenkins`, fields `base_url`, `username`, and `api_key` / `api_token` / `token`; env fallbacks `JENKINS_BASE_URL`, `JENKINS_USERNAME`, and `JENKINS_API_TOKEN`.
 
 ### Business And Language Service Tools
 

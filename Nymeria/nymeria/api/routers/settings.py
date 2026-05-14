@@ -1,13 +1,9 @@
 """Global settings and model-catalog routes."""
 
-import json
 import logging
 import os
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -34,6 +30,12 @@ from ...core.llm_provider_test_suite import (
     ProviderTestSuiteOptions,
     run_provider_test_suite,
 )
+from ...core.llm_provider_utils import (
+    base_url_allows_no_api_key,
+    extract_model_metadata,
+    http_error_detail,
+    redact_secrets,
+)
 from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
@@ -49,7 +51,6 @@ from ..schemas.settings import (
 )
 
 logger = logging.getLogger(__name__)
-_LOCAL_MODEL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 
 
 def _env_mapping() -> dict[str, str]:
@@ -106,6 +107,13 @@ def _env_mapping() -> dict[str, str]:
         "github_api_base_url": "GITHUB_API_BASE_URL",
         "gitlab_token": "GITLAB_TOKEN",
         "gitlab_base_url": "GITLAB_BASE_URL",
+        "circleci_api_token": "CIRCLECI_API_TOKEN",
+        "circleci_base_url": "CIRCLECI_BASE_URL",
+        "travisci_api_token": "TRAVISCI_API_TOKEN",
+        "travisci_base_url": "TRAVISCI_BASE_URL",
+        "jenkins_base_url": "JENKINS_BASE_URL",
+        "jenkins_username": "JENKINS_USERNAME",
+        "jenkins_api_token": "JENKINS_API_TOKEN",
         "bitly_token": "BITLY_TOKEN",
         "bitly_base_url": "BITLY_BASE_URL",
         "brandfetch_api_key": "BRANDFETCH_API_KEY",
@@ -568,35 +576,6 @@ def _clear_settings_cache(get_settings_fn: Callable[[], Any]) -> None:
         cache_clear()
 
 
-def _redact_secrets(text: str, *secrets: str | None) -> str:
-    redacted = text
-    for secret in secrets:
-        if secret:
-            redacted = redacted.replace(secret, "[redacted]")
-    return redacted
-
-
-def _http_error_detail(response: httpx.Response, *secrets: str | None) -> str:
-    try:
-        body = response.json()
-    except ValueError:
-        text = response.text.strip()
-        return _redact_secrets(text, *secrets)[:300] or response.reason_phrase
-
-    message: str | None = None
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict):
-            candidate = error.get("message")
-            if isinstance(candidate, str) and candidate.strip():
-                message = candidate.strip()
-        if message is None:
-            candidate = body.get("message")
-            if isinstance(candidate, str) and candidate.strip():
-                message = candidate.strip()
-
-    return _redact_secrets(message or response.reason_phrase, *secrets)[:300]
-
 
 def _normalize_openai_test_base_url(provider: str, base_url: str | None) -> str:
     provider = normalize_llm_provider(provider)
@@ -614,117 +593,6 @@ def _normalize_openai_test_base_url(provider: str, base_url: str | None) -> str:
     return clean
 
 
-def _base_url_allows_no_api_key(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    parse_target = base_url if "://" in base_url else f"http://{base_url}"
-    try:
-        parsed = urlparse(parse_target)
-    except ValueError:
-        return False
-    return (parsed.hostname or "").lower() in _LOCAL_MODEL_HOSTS
-
-
-def _first_int(source: dict[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        value = source.get(key)
-        if value is None:
-            continue
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0:
-            return parsed
-    return None
-
-
-def _first_float(source: dict[str, Any], *keys: str) -> float | None:
-    for key in keys:
-        value = source.get(key)
-        if value is None:
-            continue
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            continue
-        if parsed >= 0:
-            return parsed
-    return None
-
-
-def _extract_model_metadata(model: dict[str, Any]) -> dict[str, Any]:
-    """Normalize common metadata fields returned by provider /models APIs."""
-    architecture = model.get("architecture") or {}
-    if not isinstance(architecture, dict):
-        architecture = {}
-    top_provider = model.get("top_provider") or {}
-    if not isinstance(top_provider, dict):
-        top_provider = {}
-    defaults = model.get("default_parameters") or model.get("defaults") or {}
-    if not isinstance(defaults, dict):
-        defaults = {}
-    pricing = model.get("pricing") or {}
-    if not isinstance(pricing, dict):
-        pricing = {}
-
-    context_length = (
-        _first_int(
-            model,
-            "context_length",
-            "context_window",
-            "context_size",
-            "max_context_length",
-            "max_context_tokens",
-            "input_token_limit",
-            "max_input_tokens",
-        )
-        or _first_int(top_provider, "context_length", "max_context_tokens")
-    )
-    max_completion_tokens = (
-        _first_int(
-            model,
-            "max_completion_tokens",
-            "max_output_tokens",
-            "output_token_limit",
-        )
-        or _first_int(top_provider, "max_completion_tokens", "max_output_tokens")
-    )
-
-    raw_supported = model.get("supported_parameters") or model.get("supported_params") or []
-    if not isinstance(raw_supported, (list, tuple, set)):
-        raw_supported = []
-    supported_parameters = [
-        str(param)
-        for param in raw_supported
-        if param
-    ]
-    raw_modalities = (
-        model.get("input_modalities")
-        or architecture.get("input_modalities")
-        or model.get("modalities")
-        or []
-    )
-    if not isinstance(raw_modalities, (list, tuple, set)):
-        raw_modalities = []
-    input_modalities = [
-        str(modality)
-        for modality in raw_modalities
-        if modality
-    ]
-
-    return {
-        "context_length": context_length,
-        "max_completion_tokens": max_completion_tokens,
-        "supported_parameters": supported_parameters,
-        "input_modalities": input_modalities,
-        "tokenizer": architecture.get("tokenizer") or model.get("tokenizer"),
-        "default_temperature": _first_float(defaults, "temperature"),
-        "default_top_p": _first_float(defaults, "top_p"),
-        "default_frequency_penalty": _first_float(defaults, "frequency_penalty"),
-        "pricing_prompt": _first_float(pricing, "prompt"),
-        "pricing_completion": _first_float(pricing, "completion"),
-    }
 
 
 async def _post_llm_test_json(
@@ -744,12 +612,43 @@ async def _post_llm_test_json(
 
 async def _test_llm_provider_config(
     request: LLMProviderTestRequest,
+    settings: Settings | None = None,
+    vault: Any | None = None,
+    owner_user_id: str | None = None,
 ) -> LLMProviderTestResponse:
     provider = normalize_llm_provider(request.llm_provider)
     model = request.llm_model
-    api_key = request.api_key.get_secret_value()
+    api_key = request.api_key.get_secret_value() if request.api_key else None
     base_url = request.llm_base_url
-    openai_api_mode = request.openai_api_mode or "responses"
+    openai_api_mode = request.openai_api_mode or "chat_completions"
+
+    if not api_key:
+        credential = get_llm_provider_credential(
+            provider, vault=vault, owner_user_id=owner_user_id,
+        )
+        if credential and credential.api_key:
+            api_key = credential.api_key
+            if not base_url and credential.base_url:
+                base_url = credential.base_url
+
+    if not api_key:
+        api_key = resolve_provider_api_key(provider, settings=settings)
+
+    if not api_key:
+        resolved_base = base_url or resolve_provider_base_url(provider, settings=settings)
+        if base_url_allows_no_api_key(resolved_base):
+            api_key = "not-needed"
+        elif provider_requires_api_key(provider):
+            return LLMProviderTestResponse(
+                ok=False,
+                provider=provider,
+                model=model,
+                openai_api_mode=None,
+                message="No API key provided and none found in vault, settings, or environment.",
+                error_type="missing_api_key",
+            )
+        else:
+            api_key = "not-needed"
 
     if provider == "anthropic":
         clean_base = base_url or "https://api.anthropic.com"
@@ -832,7 +731,7 @@ async def _test_llm_provider_config(
             provider,
             status_code,
         )
-        detail = _http_error_detail(exc.response, api_key, base_url)
+        detail = http_error_detail(exc.response, api_key, base_url)
         return LLMProviderTestResponse(
             ok=False,
             provider=provider,
@@ -853,7 +752,7 @@ async def _test_llm_provider_config(
             provider=provider,
             model=model,
             openai_api_mode=response_api_mode,
-            message=_redact_secrets(str(exc), api_key, base_url)[:300],
+            message=redact_secrets(str(exc), api_key, base_url)[:300],
             error_type=type(exc).__name__,
         )
 
@@ -928,9 +827,16 @@ def create_settings_router(
     async def test_llm_provider_config(
         request: LLMProviderTestRequest,
         user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
     ):
         """Test an arbitrary LLM provider configuration without writing it."""
-        return await _test_llm_provider_config(request)
+        agent = get_agent_fn()
+        return await _test_llm_provider_config(
+            request,
+            settings=settings,
+            vault=getattr(agent, "credential_vault", None),
+            owner_user_id=user.id,
+        )
 
     @router.post(
         "/settings/llm/test-suite",
@@ -1033,17 +939,17 @@ def create_settings_router(
                 )
                 return response
 
-            request_obj = urllib.request.Request(
-                "https://openrouter.ai/api/v1/key",
-                headers={
-                    "Authorization": f"Bearer {llm_cfg.api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
-
             try:
-                with urllib.request.urlopen(request_obj, timeout=6) as api_response:
-                    payload = json.loads(api_response.read().decode("utf-8"))
+                async with httpx.AsyncClient(timeout=6) as client:
+                    api_response = await client.get(
+                        "https://openrouter.ai/api/v1/key",
+                        headers={
+                            "Authorization": f"Bearer {llm_cfg.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    api_response.raise_for_status()
+                    payload = api_response.json()
                 data = payload.get("data", {}) if isinstance(payload, dict) else {}
 
                 if isinstance(data, dict):
@@ -1060,10 +966,10 @@ def create_settings_router(
                     response.openrouter = OpenRouterKeyDiagnostics(
                         fetch_error="Unexpected response shape from OpenRouter /key endpoint"
                     )
-            except urllib.error.HTTPError as e:
-                body = e.read().decode("utf-8", errors="ignore")
+            except httpx.HTTPStatusError as e:
+                body = e.response.text[:300]
                 response.openrouter = OpenRouterKeyDiagnostics(
-                    fetch_error=f"HTTP {e.code}: {body[:300]}"
+                    fetch_error=f"HTTP {e.response.status_code}: {body}"
                 )
             except Exception as e:
                 response.openrouter = OpenRouterKeyDiagnostics(
@@ -1249,10 +1155,10 @@ def create_settings_router(
         }
 
     @router.get("/models")
-    async def get_openrouter_models(
+    async def get_cached_models(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Return cached OpenRouter model metadata for frontend enrichment."""
+        """Return cached model metadata for frontend enrichment."""
         models = list_all_models()
         return [
             {
@@ -1337,17 +1243,21 @@ def create_settings_router(
         if (
             not api_key
             and provider_requires_api_key(effective_provider)
-            and not _base_url_allows_no_api_key(effective_base_url)
+            and not base_url_allows_no_api_key(effective_base_url)
         ):
             return []
         if not api_key:
             api_key = "not-needed"
 
-        headers = {
-            "x-api-key": api_key,
-            "Authorization": f"Bearer {api_key}",
-            "anthropic-version": "2023-06-01",
-        }
+        if effective_provider == "anthropic":
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+            }
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -1362,7 +1272,7 @@ def create_settings_router(
                 if not model_id:
                     continue
                 model_name = m.get("name") or model_id
-                metadata = _extract_model_metadata(m)
+                metadata = extract_model_metadata(m)
                 register_model_metadata(
                     model_id=model_id,
                     name=model_name,

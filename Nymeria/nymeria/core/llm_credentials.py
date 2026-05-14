@@ -233,14 +233,17 @@ def resolve_credential_references(
         return value
 
     canonical_provider = normalize_llm_provider(provider)
-    target_type = "thread" if thread_id else LLM_PROVIDER_TARGET_TYPE
-    target_id = thread_id or canonical_provider
-    return vault.resolve_references(
-        value,
-        actor_user_id=owner_user_id,
-        target_type=target_type,
-        target_id=target_id,
-    )
+    for target_type, target_id in _target_candidates(canonical_provider, thread_id):
+        try:
+            return vault.resolve_references(
+                value,
+                actor_user_id=owner_user_id,
+                target_type=target_type,
+                target_id=target_id,
+            )
+        except (CredentialAccessDenied, CredentialSecretUnavailable):
+            continue
+    return value
 
 
 def credential_setup_hint(provider: str | None) -> str:

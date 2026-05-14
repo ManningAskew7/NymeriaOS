@@ -110,6 +110,13 @@ class ServerSettingsUpdate(BaseModel):
     github_api_base_url: Optional[str] = None
     gitlab_token: Optional[str] = None
     gitlab_base_url: Optional[str] = None
+    circleci_api_token: Optional[str] = None
+    circleci_base_url: Optional[str] = None
+    travisci_api_token: Optional[str] = None
+    travisci_base_url: Optional[str] = None
+    jenkins_base_url: Optional[str] = None
+    jenkins_username: Optional[str] = None
+    jenkins_api_token: Optional[str] = None
     bitly_token: Optional[str] = None
     bitly_base_url: Optional[str] = None
     brandfetch_api_key: Optional[str] = None
@@ -388,9 +395,9 @@ class LLMProviderTestRequest(BaseModel):
 
     llm_provider: LLMProviderName
     llm_model: str = Field(min_length=1)
-    api_key: SecretStr = Field(min_length=1)
+    api_key: Optional[SecretStr] = None
     llm_base_url: Optional[str] = None
-    openai_api_mode: Optional[OpenAIApiMode] = "responses"
+    openai_api_mode: Optional[OpenAIApiMode] = "chat_completions"
 
     @field_validator("llm_model")
     @classmethod
