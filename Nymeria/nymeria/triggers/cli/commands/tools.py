@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from difflib import SequenceMatcher
 from typing import Any, TYPE_CHECKING
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
@@ -239,18 +240,23 @@ async def _handle_tools_search_context(
         return CommandResult.completed(json_payload=result.to_json())
 
     try:
-        data = await call_client_method(
-            context,
-            "search_tools",
-            query,
-            user_id=context.user_id,
-            thread_id=context.thread_id,
-            top_k=10,
-        )
-    except TypeError:
-        data = await call_client_method(context, "search_tools", query)
+        try:
+            data = await call_client_method(
+                context,
+                "search_tools",
+                query,
+                user_id=context.user_id,
+                thread_id=context.thread_id,
+                top_k=10,
+            )
+        except TypeError:
+            data = await call_client_method(context, "search_tools", query)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/tools search", method_name=exc.method_name)
+    except Exception as exc:
+        if not _is_not_found_error(exc):
+            raise
+        data = await _legacy_tool_search_response(context, query, top_k=10)
 
     return CommandResult.completed(
         CommandMessage(_format_tool_search_response(data), title="Tools"),
@@ -370,6 +376,10 @@ async def _unknown_tool_suggestion_result(
         )
     except (CommandClientMethodUnavailable, TypeError):
         return None
+    except Exception as exc:
+        if not _is_not_found_error(exc):
+            raise
+        data = await _legacy_tool_search_response(context, tool_name, top_k=5)
 
     results = _mapping_sequence(mapping_get(data, "results", []))
     if any(_tool_name(result) == tool_name for result in results):
@@ -643,6 +653,120 @@ async def _list_tool_entries(context: CommandContext) -> list[Mapping[str, Any]]
     else:
         raw = data
     return _mapping_sequence(raw)
+
+
+async def _legacy_tool_search_response(
+    context: CommandContext,
+    query: str,
+    *,
+    top_k: int,
+) -> dict[str, Any]:
+    """Fallback for CLIs connected to an API that predates tool search."""
+
+    tools = await _list_tool_entries(context)
+    config = await _thread_config_or_empty(context)
+    entries = _tools_json_entries(tools, config)
+    ranked = [
+        (_legacy_tool_search_score(query, entry), entry)
+        for entry in entries
+    ]
+    ranked = [
+        (score, entry)
+        for score, entry in ranked
+        if score > 0 or not query.strip()
+    ]
+    ranked.sort(key=lambda item: (-item[0], _tool_name(item[1]).casefold()))
+
+    return {
+        "query": query,
+        "mode": "fuzzy" if query.strip() else "substring",
+        "warning": (
+            "Connected backend does not expose /users/{user_id}/tools/search yet; "
+            "using local CLI fallback. Pull and restart the API for backend ranking."
+        ),
+        "results": [
+            _legacy_tool_search_result(entry, score)
+            for score, entry in ranked[:max(1, top_k)]
+        ],
+    }
+
+
+def _legacy_tool_search_result(
+    entry: Mapping[str, Any],
+    score: float,
+) -> dict[str, Any]:
+    name = _tool_name(entry)
+    status = str(entry.get("status") or "available")
+    enabled = status not in {"available", "disabled", ""}
+    return {
+        "name": name,
+        "description": str(entry.get("description") or ""),
+        "category": str(entry.get("category") or entry.get("kind") or "unknown"),
+        "security_level": str(entry.get("security_level") or "moderate"),
+        "tool_type": str(entry.get("tool_type") or entry.get("kind") or "builtin"),
+        "is_default": status in {"default", "default_enabled", "default_thread_tools"},
+        "status": status,
+        "score": round(score, 4),
+        "enable_hint": (
+            f"Already enabled. Disable with /tools disable {name}"
+            if enabled
+            else f"/tools enable {name}"
+        ),
+    }
+
+
+def _legacy_tool_search_score(query: str, entry: Mapping[str, Any]) -> float:
+    q = _compact_search_text(query)
+    if not q:
+        return 1.0
+
+    fields = [
+        _tool_name(entry),
+        str(entry.get("id") or ""),
+        str(entry.get("category") or ""),
+        str(entry.get("kind") or ""),
+        str(entry.get("tool_type") or ""),
+        str(entry.get("implementation_type") or ""),
+        " ".join(str(tag) for tag in entry.get("tags") or []),
+        str(entry.get("description") or ""),
+    ]
+    best = 0.0
+    for field in fields:
+        candidate = _compact_search_text(field)
+        if not candidate:
+            continue
+        if q == candidate:
+            best = max(best, 1.0)
+        elif candidate.startswith(q):
+            best = max(best, 0.92)
+        elif q in candidate:
+            best = max(best, 0.82)
+        elif _is_search_subsequence(q, candidate):
+            best = max(best, 0.55)
+        else:
+            best = max(best, SequenceMatcher(None, q, candidate).ratio())
+    return best if best >= 0.34 else 0.0
+
+
+def _compact_search_text(value: str) -> str:
+    return "".join(ch for ch in value.casefold() if ch.isalnum())
+
+
+def _is_search_subsequence(needle: str, haystack: str) -> bool:
+    if not needle:
+        return True
+    index = 0
+    for char in haystack:
+        if char == needle[index]:
+            index += 1
+            if index == len(needle):
+                return True
+    return False
+
+
+def _is_not_found_error(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 404
 
 
 def _format_tools_table(
