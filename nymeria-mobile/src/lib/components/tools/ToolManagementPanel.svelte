@@ -4,6 +4,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
   import { onMount } from 'svelte';
+  import { filterToolSearch } from '$lib/utils/toolSearch';
 
   // Tools whose runtime is gated by require_admin_user on the backend.
   // For non-admin callers the toggle still flips here but the agent will
@@ -40,16 +41,18 @@
   });
 
   let filteredCategories = $derived.by(() => {
-    const query = searchQuery.toLowerCase();
     const filtered: Record<string, typeof unifiedToolsStore.tools> = {};
+    const tools = filterToolSearch(visibleTools, searchQuery, (tool) => ({
+      name: tool.name,
+      id: tool.id,
+      description: tool.description,
+      category: tool.category,
+      tags: tool.tags,
+      toolType: tool.toolType,
+      implementationType: tool.implementationType
+    }));
 
-    for (const tool of visibleTools) {
-      if (query && !(
-        tool.name.toLowerCase().includes(query) ||
-        tool.description.toLowerCase().includes(query)
-      )) {
-        continue;
-      }
+    for (const tool of tools) {
       if (!filtered[tool.category]) filtered[tool.category] = [];
       filtered[tool.category].push(tool);
     }
@@ -86,6 +89,10 @@
       {#if unifiedToolsStore.loading && unifiedToolsStore.tools.length === 0}
         <div class="loading-state">
           <Spinner size="md" />
+        </div>
+      {:else if Object.keys(filteredCategories).length === 0}
+        <div class="loading-state">
+          {searchQuery.trim() ? 'No tools match your search.' : 'No tools available.'}
         </div>
       {:else}
         {#each Object.entries(filteredCategories) as [category, tools]}

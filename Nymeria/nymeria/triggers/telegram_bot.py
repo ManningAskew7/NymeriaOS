@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import httpx
 from telegram import (
@@ -60,6 +60,48 @@ logger = logging.getLogger(__name__)
 def escape_html(text: str) -> str:
     """Escape text for Telegram HTML parse mode."""
     return _html.escape(str(text), quote=False)
+
+
+def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _tool_result_name(tool: Mapping[str, Any]) -> str:
+    return str(tool.get("name") or tool.get("id") or tool.get("tool_id") or "")
+
+
+def format_tool_search_html(data: Mapping[str, Any], *, limit: int = 8) -> str:
+    """Format ranked tool search rows for Telegram replies and tests."""
+    query = escape_html(str(data.get("query") or ""))
+    mode = escape_html(str(data.get("mode") or "substring"))
+    results = _mapping_sequence(data.get("results", []))
+    lines = [f"<b>Tool Search</b> ({mode})"]
+    if query:
+        lines[0] += f": {query}"
+    warning = str(data.get("warning") or "")
+    if warning:
+        lines.append(f"<i>{escape_html(warning[:240])}</i>")
+    if not results:
+        lines.append("No matching tools found.")
+        return "\n".join(lines)
+    for result in results[:limit]:
+        name = _tool_result_name(result)
+        category = str(result.get("category") or result.get("tool_type") or "tool")
+        status = str(result.get("status") or "available")
+        desc = str(result.get("description") or "").split("\n")[0][:100]
+        hint = str(result.get("enable_hint") or f"/tools_enable {name}")
+        hint = hint.replace("/tools enable ", "/tools_enable ")
+        hint = hint.replace("/tools disable ", "/tools_disable ")
+        lines.append(
+            f"\n<code>{escape_html(name)}</code> "
+            f"({escape_html(category)}, {escape_html(status)})"
+        )
+        if desc:
+            lines.append(escape_html(desc))
+        lines.append(f"<code>{escape_html(hint)}</code>")
+    return "\n".join(lines)
 
 
 def markdown_to_html(text: str) -> str:
@@ -721,6 +763,7 @@ class NymeriaTelegramBot:
             BotCommand("tools_core", "List core tools"),
             BotCommand("tools_optional", "List optional tools"),
             BotCommand("tools_enabled", "List enabled tools"),
+            BotCommand("tools_search", "Search tools"),
             BotCommand("tools_category", "Tools in a category"),
             BotCommand("tools_enable", "Enable a tool or category"),
             BotCommand("tools_disable", "Disable a tool or category"),
@@ -833,6 +876,7 @@ class NymeriaTelegramBot:
         app.add_handler(CommandHandler("tools_core", self._cmd_tools_core))
         app.add_handler(CommandHandler("tools_optional", self._cmd_tools_optional))
         app.add_handler(CommandHandler("tools_enabled", self._cmd_tools_enabled))
+        app.add_handler(CommandHandler("tools_search", self._cmd_tools_search))
         app.add_handler(CommandHandler("tools_category", self._cmd_tools_category))
         app.add_handler(CommandHandler("tools_enable", self._cmd_tools_enable))
         app.add_handler(CommandHandler("tools_disable", self._cmd_tools_disable))
@@ -2302,6 +2346,7 @@ class NymeriaTelegramBot:
             "/tools_core: Core tools\n"
             "/tools_optional: Optional categories\n"
             "/tools_enabled: Active tools\n"
+            "/tools_search &lt;query&gt;: Search tools\n"
             "/tools_category &lt;name&gt;: Category tools\n"
             "/tools_enable &lt;name&gt;: Enable tool/category\n"
             "/tools_disable &lt;name&gt;: Disable tool/category\n\n"
@@ -2555,7 +2600,13 @@ class NymeriaTelegramBot:
     # Tools Commands
     # =========================================================================
 
-    async def _resolve_tool_names(self, name: str):
+    async def _resolve_tool_names(
+        self,
+        name: str,
+        *,
+        user_id: str = "default",
+        thread_id: str | None = None,
+    ):
         """Resolve a name to tool names — could be category or individual tool.
 
         Returns (tool_names, is_category, category_name, error_msg).
@@ -2567,15 +2618,26 @@ class NymeriaTelegramBot:
         if name_key in categories:
             return (categories[name_key], True, name_key, None)
 
-        data = await self.api.get_default_tools()
-        available = data.get("available_tools", [])
-        all_names = {t["name"] for t in available}
-
-        if name_key in all_names:
-            return ([name_key], False, None, None)
+        data = await self.api.search_tools(
+            name,
+            user_id=user_id,
+            thread_id=thread_id,
+            top_k=5,
+        )
+        results = _mapping_sequence(data.get("results", []))
+        for result in results:
+            result_name = _tool_result_name(result)
+            if name_key == result_name.lower().strip().replace("-", "_"):
+                return ([result_name], False, None, None)
 
         cat_list = ", ".join(sorted(categories))
-        return ([], False, None, f"Unknown tool or category '{name}'. Categories: {cat_list}")
+        suggestions = format_tool_search_html(data, limit=3)
+        return (
+            [],
+            False,
+            None,
+            f"Unknown tool or category '{name}'. Categories: {cat_list}\n\n{suggestions}",
+        )
 
     # =========================================================================
     # Env Commands
@@ -2772,6 +2834,28 @@ class NymeriaTelegramBot:
         except Exception as e:
             await update.message.reply_text(f"Error: {e}")
 
+    async def _cmd_tools_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /tools_search <query>."""
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
+        query = self._parse_args(context)
+        if not query:
+            await update.message.reply_text("Usage: /tools_search <query>")
+            return
+        chat_id = update.effective_chat.id
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
+        try:
+            data = await self.api.search_tools(
+                query,
+                user_id=user_id,
+                thread_id=thread_id,
+                top_k=8,
+            )
+            await self._send_html(chat_id, format_tool_search_html(data), context)
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
     async def _cmd_tools_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_category <name>."""
         cat_name = self._parse_args(context)
@@ -2833,9 +2917,13 @@ class NymeriaTelegramBot:
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
-            tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
+            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
+                name,
+                user_id=user_id,
+                thread_id=thread_id,
+            )
             if error:
-                await update.message.reply_text(error)
+                await self._send_html(chat_id, error, context)
                 return
 
             tc = await self.api.get_thread_config(thread_id, user_id=user_id)
@@ -2873,9 +2961,13 @@ class NymeriaTelegramBot:
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
         try:
-            tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
+            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
+                name,
+                user_id=user_id,
+                thread_id=thread_id,
+            )
             if error:
-                await update.message.reply_text(error)
+                await self._send_html(chat_id, error, context)
                 return
 
             tc = await self.api.get_thread_config(thread_id, user_id=user_id)

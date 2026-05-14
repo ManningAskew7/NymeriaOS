@@ -13,6 +13,7 @@
   import ToolTestPanel from './ToolTestPanel.svelte';
   import ToolCountWarning from './ToolCountWarning.svelte';
   import { CATEGORY_ORDER, getCategoryInfo } from '$lib/utils/toolCategories';
+  import { filterToolSearch } from '$lib/utils/toolSearch';
 
   // --- Default tools state (absorbed from DefaultToolsPanel) ---
   let selectedTools = $state<Set<string>>(new Set());
@@ -86,14 +87,13 @@
 
   const filteredTools = $derived.by(() => {
     const visibleTools = defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool));
-    if (!searchQuery.trim()) return visibleTools;
-    const q = searchQuery.toLowerCase();
-    return visibleTools.filter(
-      (t: DefaultToolInfo) =>
-        t.name.toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.category.toLowerCase().includes(q)
-    );
+    return filterToolSearch(visibleTools, searchQuery, (tool: DefaultToolInfo) => ({
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      toolType: tool.is_optional ? 'optional' : 'core',
+      tags: [tool.security_level, tool.is_optional ? 'optional' : 'core']
+    }));
   });
 
   // Split into core (selected) and available (not selected), grouped by category
@@ -206,16 +206,14 @@
     if (customFilter !== 'all') {
       result = result.filter((t) => t.implementationType === customFilter);
     }
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (t) =>
-          t.name.toLowerCase().includes(q) ||
-          t.description.toLowerCase().includes(q) ||
-          t.id.toLowerCase().includes(q)
-      );
-    }
-    return result;
+    return filterToolSearch(result, searchQuery, (tool) => ({
+      id: tool.id,
+      name: tool.name,
+      description: tool.description,
+      category: 'custom',
+      implementationType: tool.implementationType,
+      tags: tool.tags
+    }));
   });
 
   async function handleCreate(request: CustomToolCreateRequest) {
@@ -623,9 +621,11 @@
     {:else if filteredCustomTools.length === 0}
       <div class="empty-state">
         <div class="empty-icon">+</div>
-        <h4>No Custom Tools Yet</h4>
+        <h4>{searchQuery.trim() ? 'No Custom Tools Match' : 'No Custom Tools Yet'}</h4>
         <p class="empty-message">
-          Create HTTP or MCP tools to extend your assistant's capabilities.
+          {searchQuery.trim()
+            ? 'Try another search or clear the field to view all custom tools.'
+            : "Create HTTP or MCP tools to extend your assistant's capabilities."}
         </p>
       </div>
     {:else}

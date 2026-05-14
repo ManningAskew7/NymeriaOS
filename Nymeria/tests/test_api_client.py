@@ -349,6 +349,12 @@ def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkey
         try:
             await client.get_tools()
             await client.get_optional_tools("user-1")
+            await client.search_tools(
+                "browser",
+                user_id="user-1",
+                thread_id="thread-1",
+                top_k=3,
+            )
             await client.get_unified_tools("user-1")
             await client.set_unified_tool_enabled("bash", False, "user-1")
             await client.set_unified_tool_description("bash", "Safer shell", "user-1")
@@ -366,6 +372,7 @@ def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkey
         "GET",
         "GET",
         "GET",
+        "GET",
         "PUT",
         "PUT",
         "PUT",
@@ -376,25 +383,31 @@ def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkey
     assert requests[0]["url"] == "http://api/tools"
     assert requests[1]["url"] == "http://api/tools/optional"
     assert requests[1]["headers"]["X-Nymeria-Act-As"] == "user-1"
-    assert requests[2]["url"] == "http://api/users/user-1/tools/unified"
-    assert (
-        requests[3]["url"]
-        == "http://api/users/user-1/tools/unified/bash/enable"
-    )
-    assert requests[3]["json"] == {"enabled": False}
+    assert requests[2]["url"] == "http://api/users/user-1/tools/search"
+    assert requests[2]["params"] == {
+        "query": "browser",
+        "thread_id": "thread-1",
+        "top_k": 3,
+        "include_status": "true",
+    }
+    assert requests[3]["url"] == "http://api/users/user-1/tools/unified"
     assert (
         requests[4]["url"]
-        == "http://api/users/user-1/tools/unified/bash/description"
+        == "http://api/users/user-1/tools/unified/bash/enable"
     )
-    assert requests[4]["json"] == {"description": "Safer shell"}
+    assert requests[4]["json"] == {"enabled": False}
     assert (
         requests[5]["url"]
+        == "http://api/users/user-1/tools/unified/bash/description"
+    )
+    assert requests[5]["json"] == {"description": "Safer shell"}
+    assert (
+        requests[6]["url"]
         == "http://api/users/user-1/tools/unified/bash/config"
     )
-    assert requests[5]["json"] == {"config": {"timeout": 10}}
-    assert requests[6]["url"] == "http://api/tools/defaults"
-    assert requests[6]["params"] == {"user_id": "user-1"}
-    assert requests[6]["json"] == {"tool_names": ["bash"]}
     assert requests[7]["url"] == "http://api/tools/defaults"
-    assert requests[8]["url"] == "http://api/tools/custom/weather%2Ftool/test"
-    assert requests[8]["json"] == {"params": {"city": "SF"}}
+    assert requests[7]["params"] == {"user_id": "user-1"}
+    assert requests[7]["json"] == {"tool_names": ["bash"]}
+    assert requests[8]["url"] == "http://api/tools/defaults"
+    assert requests[9]["url"] == "http://api/tools/custom/weather%2Ftool/test"
+    assert requests[9]["json"] == {"params": {"city": "SF"}}

@@ -145,13 +145,12 @@ async def _handle_tools_root_context(
     args: list[str],
 ) -> CommandResult:
     if context.legacy_state is not None:
+        if args:
+            return await _handle_tools_search_context(context, args)
         _handle_tools(context.legacy_state, args)
         return CommandResult.completed()
     if args:
-        return CommandResult.failed(
-            "Usage: /tools list|enable|disable|optional|core|defaults|test",
-            error_code="usage_error",
-        )
+        return await _handle_tools_search_context(context, args)
     return await _handle_tools_list_context(context, [])
 
 
@@ -213,6 +212,52 @@ async def _handle_tools_optional_context(
     return CommandResult.completed(CommandMessage("\n".join(lines), title="Tools"))
 
 
+async def _handle_tools_search_context(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if not args:
+        return CommandResult.failed(
+            "Usage: /tools search <query>",
+            error_code="usage_error",
+        )
+    query = " ".join(args).strip()
+
+    if context.legacy_state is not None:
+        from ....core.tool_search_index import search_tools
+
+        state = context.legacy_state
+        result = search_tools(
+            query,
+            user_id=getattr(state, "user_id", "default"),
+            user_role=_user_role(state),
+            agent=getattr(state, "agent", None),
+            thread_id=getattr(state, "thread_id", None),
+            top_k=10,
+        )
+        state.console.print(_format_tool_search_response(result.to_json()))
+        return CommandResult.completed(json_payload=result.to_json())
+
+    try:
+        data = await call_client_method(
+            context,
+            "search_tools",
+            query,
+            user_id=context.user_id,
+            thread_id=context.thread_id,
+            top_k=10,
+        )
+    except TypeError:
+        data = await call_client_method(context, "search_tools", query)
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result("/tools search", method_name=exc.method_name)
+
+    return CommandResult.completed(
+        CommandMessage(_format_tool_search_response(data), title="Tools"),
+        json_payload=data,
+    )
+
+
 async def _handle_tools_core_context(
     context: CommandContext,
     args: list[str],
@@ -266,6 +311,11 @@ async def _set_thread_tool_state(
     if not context.thread_id:
         return CommandResult.failed("No active thread is selected.")
 
+    if enabled:
+        suggestion_result = await _unknown_tool_suggestion_result(context, tool_name)
+        if suggestion_result is not None:
+            return suggestion_result
+
     config = await _thread_config_or_empty(context)
     enabled_tools = _string_list(config.get("enabled_tools"))
     disabled_tools = _string_list(config.get("disabled_tools"))
@@ -302,6 +352,46 @@ async def _set_thread_tool_state(
     return CommandResult.completed(
         CommandMessage(f"{action}: {tool_name}", level="success"),
         payload={"thread_id": context.thread_id, "tool": tool_name, "enabled": enabled},
+    )
+
+
+async def _unknown_tool_suggestion_result(
+    context: CommandContext,
+    tool_name: str,
+) -> CommandResult | None:
+    try:
+        data = await call_client_method(
+            context,
+            "search_tools",
+            tool_name,
+            user_id=context.user_id,
+            thread_id=context.thread_id,
+            top_k=5,
+        )
+    except (CommandClientMethodUnavailable, TypeError):
+        return None
+
+    results = _mapping_sequence(mapping_get(data, "results", []))
+    if any(_tool_name(result) == tool_name for result in results):
+        return None
+
+    if not results:
+        return CommandResult.failed(
+            f"Unknown tool '{tool_name}'. Use /tools search <query> to find tools.",
+            error_code="unknown_tool",
+        )
+
+    lines = [f"Unknown tool '{tool_name}'. Did you mean:"]
+    for result in results[:5]:
+        name = _tool_name(result)
+        hint = str(result.get("enable_hint") or f"/tools enable {name}")
+        desc = one_line(result.get("description", ""), limit=70)
+        lines.append(f"  {name} — {desc}")
+        lines.append(f"    {hint}")
+    return CommandResult.failed(
+        "\n".join(lines),
+        error_code="unknown_tool",
+        json_payload=data,
     )
 
 
@@ -634,6 +724,38 @@ def _tools_json_entries(
     return entries
 
 
+def _format_tool_search_response(data: Mapping[str, Any]) -> str:
+    results = _mapping_sequence(mapping_get(data, "results", []))
+    mode = str(mapping_get(data, "mode", "substring"))
+    query = str(mapping_get(data, "query", ""))
+    lines = [f"Tool Search ({mode})"]
+    if query:
+        lines[0] += f": {query}"
+    warning = str(mapping_get(data, "warning", "") or "")
+    if warning:
+        lines.append(f"Warning: {warning}")
+    if not results:
+        lines.append("No matching tools found.")
+        return "\n".join(lines)
+
+    lines.append("  Name                           Kind          Status     Hint")
+    for result in results:
+        name = _tool_name(result)
+        kind = str(result.get("category") or result.get("tool_type") or "")
+        status = str(result.get("status") or "")
+        hint = str(result.get("enable_hint") or "")
+        lines.append(
+            f"  {compact_id(name, width=30):<30} "
+            f"{compact_id(kind, width=12):<13} "
+            f"{compact_id(status, width=10):<10} "
+            f"{one_line(hint, limit=60)}"
+        )
+        description = one_line(result.get("description", ""), limit=92)
+        if description:
+            lines.append(f"    {description}")
+    return "\n".join(lines)
+
+
 def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
@@ -689,7 +811,7 @@ def _parse_scalar(value: str) -> Any:
         if "." not in raw and "e" not in lowered:
             return int(raw)
     except ValueError:
-        pass
+        pass  # Not an integer; try float parsing below.
     try:
         return float(raw)
     except ValueError:
@@ -755,6 +877,14 @@ def register(registry: CommandRegistry) -> None:
                 description="Show or edit the default core toolset",
                 usage="defaults [list|add|remove|set|reset]",
                 handler=_handle_tools_defaults_context,
+                handler_mode="context",
+                category="Tools",
+            ),
+            "search": Command(
+                name="search",
+                description="Search tools",
+                usage="search <query>",
+                handler=_handle_tools_search_context,
                 handler_mode="context",
                 category="Tools",
             ),

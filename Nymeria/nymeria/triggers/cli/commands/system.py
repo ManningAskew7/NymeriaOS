@@ -351,7 +351,7 @@ def parse_scalar(value: str) -> Any:
         if "." not in raw and "e" not in lowered:
             return int(raw)
     except ValueError:
-        pass
+        pass  # Not an integer; try float parsing below.
     try:
         return float(raw)
     except ValueError:

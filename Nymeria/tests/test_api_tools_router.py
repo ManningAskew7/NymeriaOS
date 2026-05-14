@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
+from nymeria.core.tool_search_index import ToolSearchIndex
 from nymeria.core.user_profile import UserProfileManager
 from nymeria.tools import (
     ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
@@ -248,3 +249,46 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
         "nym_todo",
     ]
     assert agent.default_graph_rebuilds == 1
+
+
+def test_user_tool_search_endpoint_returns_ranked_hints(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    from nymeria.core import tool_search_index as search_index_module
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    monkeypatch.setattr(
+        search_index_module,
+        "_DEFAULT_INDEX",
+        ToolSearchIndex(openai_api_key=None),
+    )
+
+    response = client.get(
+        "/users/owner/tools/search",
+        params={"query": "browser", "top_k": 5},
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["query"] == "browser"
+    assert payload["mode"] in {"bm25", "fuzzy", "substring"}
+    assert payload["results"]
+    first = payload["results"][0]
+    assert {
+        "name",
+        "description",
+        "category",
+        "security_level",
+        "tool_type",
+        "is_default",
+        "status",
+        "score",
+        "enable_hint",
+    }.issubset(first)
+    assert first["enable_hint"].startswith("/tools enable") or first[
+        "enable_hint"
+    ].startswith("Already enabled")

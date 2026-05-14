@@ -2033,6 +2033,52 @@ Returns the user's tool inventory and enabled state.
 
 ---
 
+### Search User Tools
+
+```http
+GET /users/{user_id}/tools/search?query=browser&category=&thread_id=thread-123&top_k=10&include_status=true
+Authorization: Bearer <token>
+```
+
+Searches the user's visible tool catalog with the backend ranking service used
+by the agent `tool_search` tool and chat-app command surfaces. The catalog is
+role-filtered and can include thread-visible callable tools when `thread_id` is
+provided.
+
+**Query parameters:**
+- `query` (`string`, default `""`): Search text.
+- `category` (`string`, default `""`): Optional category filter.
+- `thread_id` (`string`, optional): Thread context for callable tools and status annotations.
+- `top_k` (`integer`, default `15`, max `50`): Maximum result count.
+- `include_status` (`boolean`, default `true`): Include default/enabled/disabled status.
+
+**Response:**
+```json
+{
+  "query": "browser",
+  "mode": "bm25",
+  "warning": "semantic search unavailable (...); falling back to keyword search.",
+  "results": [
+    {
+      "name": "browser_open",
+      "description": "Open a browser page",
+      "category": "browser",
+      "security_level": "safe",
+      "tool_type": "builtin",
+      "is_default": false,
+      "status": "available",
+      "score": 2.31,
+      "enable_hint": "/tools enable browser_open"
+    }
+  ]
+}
+```
+
+`mode` is one of `semantic`, `bm25`, `fuzzy`, or `substring`. `warning` is
+`null` when semantic search is active or no fallback warning is needed.
+
+---
+
 ### Get Tool Preferences
 
 ```http

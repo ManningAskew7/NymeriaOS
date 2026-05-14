@@ -600,6 +600,29 @@ tool_search(query: str = "", category: str = "", top_k: int = 15, include_status
 - `top_k` (`int`): Result count, default 15 and capped at 50.
 - `include_status` (`bool`): Include current-thread enabled/disabled annotations.
 
+`tool_search` uses the shared backend search service behind
+`GET /users/{user_id}/tools/search`. The indexed catalog includes core tools,
+optional tools, MCP-discovered metadata, custom tool metadata, and callable
+thread tools visible from the current `thread_id`. Developer-only diagnostic
+tools are hidden from non-admin users. Admin-only tools remain discoverable but
+return enable hints that make the admin requirement explicit.
+
+Ranking tries embeddings first when `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`,
+and `EMBEDDING_MODEL` are configured. CLIProxy gatekeeper keys such as
+`cpx-*` are rejected for embeddings. If semantic search is unavailable, the
+service falls back to BM25, then fuzzy matching, then substring matching. Each
+result includes status and an exact enable/disable hint such as
+`/tools enable browser_open`.
+
+The same backend ranking is used by one-shot command searches:
+- CLI/plain slash: `/tools <query>` and `/tools search <query>`
+- Discord: `/tools search query:<text>`
+- Telegram: `/tools_search <query>`
+
+Desktop and mobile typeahead filtering stays local for responsiveness, but uses
+the shared frontend `utils/toolSearch.ts` fuzzy scorer over tool names, snake
+case tokens, categories, descriptions, tags, and implementation/type fields.
+
 ### tool_enable
 
 Enable, disable, or inspect current-thread tool bindings. This is normally

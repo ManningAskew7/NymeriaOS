@@ -17,6 +17,7 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
+  import { filterToolSearch } from '$lib/utils/toolSearch';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     fromThreadDisplayProvider,
@@ -109,7 +110,12 @@
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
       .filter(t => !coreSet.has(t.name) && !t.name.startsWith('mcp__'))
-      .map(t => ({ name: t.name, description: t.description }));
+      .map(t => ({
+        name: t.name,
+        description: t.description,
+        category: t.category,
+        securityLevel: t.security_level,
+      }));
   });
 
   // MCP tools grouped by server. Default MCP tools can be disabled for this
@@ -326,15 +332,26 @@
 
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name) && !isMcpToolName(t.name) && t.category !== 'mcp_server');
-    if (!toolSearch.trim()) return allTools;
-    const q = toolSearch.toLowerCase();
-    return allTools.filter(
-      (t: UnifiedTool) =>
-        t.name.toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.category.toLowerCase().includes(q)
-    );
+    return filterToolSearch(allTools, toolSearch, (tool: UnifiedTool) => ({
+      id: tool.id,
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      tags: tool.tags,
+      toolType: tool.toolType,
+      implementationType: tool.implementationType,
+    }));
   });
+
+  const filteredOptionalTools = $derived.by(() =>
+    filterToolSearch(optionalTools, toolSearch, (tool) => ({
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      tags: [tool.securityLevel, 'optional'],
+      toolType: 'optional',
+    }))
+  );
 
   const disabledToolCount = $derived([...disabledTools].filter((name) => !isMcpToolName(name)).length);
 
@@ -964,23 +981,29 @@
                   These tools are not in your core set. Enable them for this thread only.
                 </p>
                 <div class="tools-list">
-                  {#each optionalTools as tool (tool.name)}
-                    <div
-                      class="tool-row"
-                      class:optional-enabled={enabledTools.has(tool.name)}
-                    >
-                      <div class="tool-info">
-                        <span class="tool-name">{tool.name}</span>
-                        <span class="tool-desc">{tool.description}</span>
-                      </div>
-                      <ToggleSwitch
-                        checked={enabledTools.has(tool.name)}
-                        onclick={() => toggleOptionalTool(tool.name)}
-                        title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
-                        ariaLabel={`${enabledTools.has(tool.name) ? 'Disable' : 'Enable'} optional tool ${tool.name}`}
-                      />
+                  {#if filteredOptionalTools.length === 0}
+                    <div class="tools-loading">
+                      {toolSearch.trim() ? 'No optional tools match your search.' : 'No optional tools available.'}
                     </div>
-                  {/each}
+                  {:else}
+                    {#each filteredOptionalTools as tool (tool.name)}
+                      <div
+                        class="tool-row"
+                        class:optional-enabled={enabledTools.has(tool.name)}
+                      >
+                        <div class="tool-info">
+                          <span class="tool-name">{tool.name}</span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <ToggleSwitch
+                          checked={enabledTools.has(tool.name)}
+                          onclick={() => toggleOptionalTool(tool.name)}
+                          title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
+                          ariaLabel={`${enabledTools.has(tool.name) ? 'Disable' : 'Enable'} optional tool ${tool.name}`}
+                        />
+                      </div>
+                    {/each}
+                  {/if}
                 </div>
               </div>
             {/if}
