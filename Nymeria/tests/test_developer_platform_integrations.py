@@ -219,11 +219,59 @@ def test_gitlab_uses_vault_token_and_base_url(tmp_path, monkeypatch):
     assert captured["headers"]["Private-Token"] == "gl-token"
 
 
+def test_graphql_execute_query_uses_vault_connection(tmp_path, monkeypatch):
+    from nymeria.tools import developer_platform_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="GraphQL",
+        provider="graphql",
+        kind="api_key",
+        allowed_targets=["native_tool:graphql_execute_query"],
+        secret_fields={
+            "endpoint": "https://api.example.com/graphql",
+            "bearer_token": "graphql-token",
+            "headers_json": '{"X-Workspace": "team-a"}',
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"data": {"viewer": {"login": "alice"}}}
+
+    monkeypatch.setattr(tools, "_request_json_body", fake_request)
+
+    result = json.loads(
+        tools.graphql_execute_query.func(
+            query="query Viewer($id: ID!) { viewer(id: $id) { login } }",
+            variables_json='{"id": "u_1"}',
+            operation_name="Viewer",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == {"data": {"viewer": {"login": "alice"}}}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.example.com/graphql"
+    assert captured["json_body"] == {
+        "query": "query Viewer($id: ID!) { viewer(id: $id) { login } }",
+        "variables": {"id": "u_1"},
+        "operationName": "Viewer",
+    }
+    assert captured["headers"]["Authorization"] == "Bearer graphql-token"
+    assert captured["headers"]["X-Workspace"] == "team-a"
+
+
 def test_developer_platform_tools_are_registered_with_metadata():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
-    names = {
+    safe_names = {
         "github_get_repository",
         "github_search_repositories",
         "github_list_issues",
@@ -239,8 +287,9 @@ def test_developer_platform_tools_are_registered_with_metadata():
         "gitlab_get_project_release",
         "gitlab_list_user_projects",
     }
+    moderate_names = {"graphql_execute_query"}
 
-    for name in names:
+    for name in safe_names:
         assert name in OPTIONAL_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
@@ -248,12 +297,22 @@ def test_developer_platform_tools_are_registered_with_metadata():
         assert metadata.security_level == SecurityLevel.SAFE
         assert metadata.default_enabled is False
 
+    for name in moderate_names:
+        assert name in OPTIONAL_TOOLS
+        metadata = get_tool_metadata(name)
+        assert metadata is not None
+        assert metadata.category == ToolCategory.INTEGRATIONS
+        assert metadata.security_level == SecurityLevel.MODERATE
+        assert metadata.default_enabled is False
+
 
 def test_developer_platform_tool_schemas_hide_runtime_config():
     from nymeria.tools.developer_platform_integrations import (
+        graphql_execute_query,
         github_get_repository,
         gitlab_get_project,
     )
 
+    assert "config" not in graphql_execute_query.args_schema.model_json_schema()["properties"]
     assert "config" not in github_get_repository.args_schema.model_json_schema()["properties"]
     assert "config" not in gitlab_get_project.args_schema.model_json_schema()["properties"]

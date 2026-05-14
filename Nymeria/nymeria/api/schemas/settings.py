@@ -106,6 +106,12 @@ class ServerSettingsUpdate(BaseModel):
     nasa_api_key: Optional[str] = None
     openweathermap_api_key: Optional[str] = None
     npm_registry_url: Optional[str] = None
+    graphql_endpoint: Optional[str] = None
+    graphql_bearer_token: Optional[str] = None
+    graphql_api_key: Optional[str] = None
+    graphql_api_key_header: Optional[str] = None
+    graphql_headers_json: Optional[str] = None
+    totp_secret: Optional[str] = None
     crypto_hmac_secret: Optional[str] = None
     crypto_sign_private_key: Optional[str] = None
     crypto_sign_private_key_passphrase: Optional[str] = None

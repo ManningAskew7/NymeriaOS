@@ -145,6 +145,12 @@ Set the API key for your chosen provider:
 | `ASANA_BASE_URL` | Asana | Optional Asana API base URL override |
 | `LINEAR_API_KEY` | Linear | Optional env fallback for Linear tools; credential vault provider `linear` is preferred |
 | `LINEAR_API_URL` | Linear | Optional Linear GraphQL API URL override |
+| `GRAPHQL_ENDPOINT` | GraphQL | Optional generic GraphQL endpoint fallback; credential vault provider `graphql` is preferred |
+| `GRAPHQL_BEARER_TOKEN` | GraphQL | Optional generic GraphQL bearer token fallback |
+| `GRAPHQL_API_KEY` | GraphQL | Optional generic GraphQL API key fallback |
+| `GRAPHQL_API_KEY_HEADER` | GraphQL | Optional generic GraphQL API key header name; defaults to `x-api-key` |
+| `GRAPHQL_HEADERS_JSON` | GraphQL | Optional generic GraphQL default headers as a JSON object |
+| `TOTP_SECRET` | TOTP | Optional base32 TOTP secret fallback; credential vault provider `totp` is preferred |
 | `JIRA_EMAIL` | Jira | Optional env fallback email for Jira basic auth; credential vault provider `jira` is preferred |
 | `JIRA_API_TOKEN` | Jira | Optional env fallback token for Jira basic auth |
 | `JIRA_ACCESS_TOKEN` | Jira | Optional env fallback bearer token for Jira |
@@ -653,6 +659,12 @@ reachable from the backend process.
 | `ASANA_BASE_URL` | `https://app.asana.com/api/1.0` | Asana API base URL |
 | `LINEAR_API_KEY` | - | Linear API key fallback |
 | `LINEAR_API_URL` | `https://api.linear.app/graphql` | Linear GraphQL API URL |
+| `GRAPHQL_ENDPOINT` | - | Generic GraphQL endpoint fallback |
+| `GRAPHQL_BEARER_TOKEN` | - | Generic GraphQL bearer token fallback |
+| `GRAPHQL_API_KEY` | - | Generic GraphQL API key fallback |
+| `GRAPHQL_API_KEY_HEADER` | `x-api-key` | Generic GraphQL API key header name |
+| `GRAPHQL_HEADERS_JSON` | `{}` | Generic GraphQL default headers as a JSON object |
+| `TOTP_SECRET` | - | Base32 TOTP secret fallback |
 | `JIRA_EMAIL` | - | Jira Cloud account email fallback |
 | `JIRA_API_TOKEN` | - | Jira Cloud API token fallback |
 | `JIRA_ACCESS_TOKEN` | - | Jira OAuth/bearer token fallback |

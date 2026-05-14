@@ -12,6 +12,7 @@ import json
 import logging
 import secrets
 import string
+import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ _MAX_TEXT_CHARS = 1_000_000
 _MAX_ARCHIVE_BYTES = 8_000_000
 _MAX_ZIP_FILES = 50
 _MAX_RANDOM_LENGTH = 4096
+_TOTP_DIGIT_RANGE = (6, 10)
+_TOTP_PERIOD_RANGE = (10, 300)
 _HASH_ALIASES = {
     "md5": "md5",
     "sha1": "sha1",
@@ -129,6 +132,52 @@ def _secret_value(
         env_var=env_var,
         display_name=display_name,
     )
+
+
+def _totp_secret(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
+    return _secret_value(
+        provider="totp",
+        provider_aliases=("totp_api", "otp"),
+        field_names=("secret", "totp_secret", "totpSecret", "value"),
+        settings_name="totp_secret",
+        env_var="TOTP_SECRET",
+        tool_name=tool_name,
+        display_name="TOTP",
+        config=config,
+    )
+
+
+def _totp_key(secret: str) -> bytes:
+    normalized = "".join(str(secret).strip().split()).upper()
+    if not normalized:
+        raise ValueError("TOTP secret is empty")
+    padding = "=" * ((8 - len(normalized) % 8) % 8)
+    try:
+        return base64.b32decode(normalized + padding, casefold=True)
+    except Exception as exc:
+        raise ValueError("TOTP secret must be base32 encoded") from exc
+
+
+def _totp_params(period: int, digits: int, algorithm: str) -> tuple[int, int, str]:
+    period = int(period)
+    digits = int(digits)
+    if not (_TOTP_PERIOD_RANGE[0] <= period <= _TOTP_PERIOD_RANGE[1]):
+        raise ValueError(f"period must be between {_TOTP_PERIOD_RANGE[0]} and {_TOTP_PERIOD_RANGE[1]} seconds")
+    if not (_TOTP_DIGIT_RANGE[0] <= digits <= _TOTP_DIGIT_RANGE[1]):
+        raise ValueError(f"digits must be between {_TOTP_DIGIT_RANGE[0]} and {_TOTP_DIGIT_RANGE[1]}")
+    normalized_algorithm = algorithm.strip().lower().replace("-", "")
+    if normalized_algorithm not in {"sha1", "sha256", "sha512"}:
+        raise ValueError("algorithm must be sha1, sha256, or sha512")
+    return period, digits, normalized_algorithm
+
+
+def _totp_code(secret: str, *, timestamp: int, period: int, digits: int, algorithm: str) -> str:
+    key = _totp_key(secret)
+    counter = int(timestamp // period)
+    digest = hmac.new(key, counter.to_bytes(8, "big"), algorithm).digest()
+    offset = digest[-1] & 0x0F
+    code_int = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+    return str(code_int % (10**digits)).zfill(digits)
 
 
 def _zone(timezone_name: str) -> ZoneInfo:
@@ -673,6 +722,108 @@ def crypto_generate_random(
 
 
 @tool
+def totp_generate_code(
+    timestamp: int = 0,
+    period: int = 30,
+    digits: int = 6,
+    algorithm: str = "sha1",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Generate a time-based one-time password from the saved TOTP secret.
+
+    Args:
+        timestamp: Optional Unix timestamp. Uses current time when 0.
+        period: TOTP time step in seconds, usually 30.
+        digits: Code length, usually 6.
+        algorithm: Digest algorithm: sha1, sha256, or sha512.
+    """
+    try:
+        secret = _totp_secret("totp_generate_code", config)
+        if secret and secret.startswith("[Error]:"):
+            return secret
+        period, digits, algorithm = _totp_params(period, digits, algorithm)
+        now = int(timestamp) if int(timestamp) > 0 else int(time.time())
+        valid_from = now - (now % period)
+        return _dump_json(
+            {
+                "code": _totp_code(str(secret), timestamp=now, period=period, digits=digits, algorithm=algorithm),
+                "algorithm": algorithm,
+                "digits": digits,
+                "period": period,
+                "valid_from": valid_from,
+                "valid_until": valid_from + period,
+            }
+        )
+    except Exception as exc:
+        logger.debug("totp_generate_code failed", exc_info=True)
+        return f"[Error]: totp_generate_code failed: {exc}"
+
+
+@tool
+def totp_verify_code(
+    code: str,
+    timestamp: int = 0,
+    period: int = 30,
+    digits: int = 6,
+    algorithm: str = "sha1",
+    window: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Verify a time-based one-time password against the saved TOTP secret.
+
+    Args:
+        code: TOTP code to verify.
+        timestamp: Optional Unix timestamp. Uses current time when 0.
+        period: TOTP time step in seconds, usually 30.
+        digits: Code length, usually 6.
+        algorithm: Digest algorithm: sha1, sha256, or sha512.
+        window: Number of time steps before/after timestamp to accept, 0-10.
+    """
+    clean_code = "".join(str(code).strip().split())
+    if not clean_code.isdigit():
+        return "[Error]: code must contain only digits."
+    try:
+        secret = _totp_secret("totp_verify_code", config)
+        if secret and secret.startswith("[Error]:"):
+            return secret
+        period, digits, algorithm = _totp_params(period, digits, algorithm)
+        if len(clean_code) != digits:
+            return f"[Error]: code must be {digits} digits."
+        now = int(timestamp) if int(timestamp) > 0 else int(time.time())
+        window = max(0, min(10, int(window)))
+        match_offset: int | None = None
+        for offset in range(-window, window + 1):
+            candidate = _totp_code(
+                str(secret),
+                timestamp=now + (offset * period),
+                period=period,
+                digits=digits,
+                algorithm=algorithm,
+            )
+            if hmac.compare_digest(candidate, clean_code):
+                match_offset = offset
+                break
+        current_valid_from = now - (now % period)
+        return _dump_json(
+            {
+                "valid": match_offset is not None,
+                "counter_offset": match_offset,
+                "algorithm": algorithm,
+                "digits": digits,
+                "period": period,
+                "checked_at": now,
+                "current_window": {
+                    "valid_from": current_valid_from,
+                    "valid_until": current_valid_from + period,
+                },
+            }
+        )
+    except Exception as exc:
+        logger.debug("totp_verify_code failed", exc_info=True)
+        return f"[Error]: totp_verify_code failed: {exc}"
+
+
+@tool
 def crypto_sign_text(
     text: str,
     algorithm: str = "sha256",
@@ -955,6 +1106,8 @@ TRANSFORM_UTILITY_TOOLS = [
     crypto_hash_text,
     crypto_hmac_text,
     crypto_generate_random,
+    totp_generate_code,
+    totp_verify_code,
     crypto_sign_text,
     jwt_decode_token,
     jwt_sign_claims,
