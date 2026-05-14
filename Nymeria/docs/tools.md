@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (496)
+### Optional: Service Integration Tools (510)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -574,6 +574,20 @@ in the credential vault for provider-specific saved connections scoped to
 | 494 | `vonage_get_balance` | Integrations | SAFE | Get Vonage account balance |
 | 495 | `seven_send_sms` | Integrations | MODERATE | Send SMS messages with seven.io |
 | 496 | `seven_get_balance` | Integrations | SAFE | Get seven.io account balance |
+| 497 | `raindrop_list_bookmarks` | Integrations | SAFE | List Raindrop bookmarks |
+| 498 | `raindrop_get_bookmark` | Integrations | SAFE | Get a Raindrop bookmark |
+| 499 | `raindrop_create_bookmark` | Integrations | MODERATE | Create a Raindrop bookmark |
+| 500 | `raindrop_update_bookmark` | Integrations | MODERATE | Update a Raindrop bookmark |
+| 501 | `raindrop_delete_bookmark` | Integrations | MODERATE | Delete a Raindrop bookmark |
+| 502 | `raindrop_list_collections` | Integrations | SAFE | List Raindrop collections |
+| 503 | `raindrop_get_collection` | Integrations | SAFE | Get a Raindrop collection |
+| 504 | `raindrop_list_tags` | Integrations | SAFE | List Raindrop tags |
+| 505 | `raindrop_delete_tags` | Integrations | MODERATE | Delete Raindrop tags |
+| 506 | `raindrop_get_user` | Integrations | SAFE | Get Raindrop user metadata |
+| 507 | `yourls_shorten_url` | Integrations | MODERATE | Create a short URL with YOURLS |
+| 508 | `yourls_expand_url` | Integrations | SAFE | Expand a YOURLS short URL |
+| 509 | `yourls_get_url_stats` | Integrations | SAFE | Get YOURLS short URL stats |
+| 510 | `yourls_get_db_stats` | Integrations | SAFE | Get YOURLS database stats |
 
 ### Optional: Private B Tools (4)
 
@@ -1151,7 +1165,9 @@ provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
-`todoist.api_key`, `trello.api_key`, and `trello.api_token`. Work-tracking
+`todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
+credentials use `raindrop.access_token`, `yourls.url`, and either
+`yourls.signature` or `yourls.username` plus `yourls.password`. Work-tracking
 credentials use `asana.access_token` and `linear.api_key`. Relationship CRM
 credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
 `agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`. Scope a
@@ -1335,6 +1351,17 @@ This batch includes:
 Credential providers and fallback env vars:
 - Todoist: provider `todoist`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `TODOIST_API_KEY`. Use `base_url` / `url` or `TODOIST_BASE_URL` for non-default API roots.
 - Trello: provider `trello`, fields `api_key` / `key` and `api_token` / `token` / `value`; env fallback `TRELLO_API_KEY` plus `TRELLO_API_TOKEN`. Use `base_url` / `url` or `TRELLO_BASE_URL` for non-default API roots.
+
+### Bookmark Link Service Tools
+
+This batch includes:
+- `raindrop_list_bookmarks(...)`, `raindrop_get_bookmark(bookmark_id)`, `raindrop_list_collections(...)`, `raindrop_get_collection(collection_id)`, `raindrop_list_tags(collection_id?)`, and `raindrop_get_user(user_id?)` for SAFE Raindrop bookmark, collection, tag, and user reads.
+- `raindrop_create_bookmark(...)`, `raindrop_update_bookmark(bookmark_id, fields_json)`, `raindrop_delete_bookmark(bookmark_id)`, and `raindrop_delete_tags(tags, collection_id?)`. These are MODERATE because they change saved bookmarks or tag state.
+- `yourls_shorten_url(...)`, `yourls_expand_url(short_url)`, `yourls_get_url_stats(short_url)`, and `yourls_get_db_stats()`. Shortening is MODERATE because it creates a server-side short link; expand/stats are SAFE.
+
+Credential providers and fallback env vars:
+- Raindrop: provider `raindrop`, fields `access_token`, `token`, or `value`; env fallback `RAINDROP_ACCESS_TOKEN`. Use `base_url` / `url` or `RAINDROP_BASE_URL` for non-default API roots.
+- YOURLS: provider `yourls`, field `url` for the site root or `yourls-api.php` URL, plus `signature`; alternatively use `username` plus `password`. Env fallback supports `YOURLS_URL`, `YOURLS_SIGNATURE`, `YOURLS_USERNAME`, and `YOURLS_PASSWORD`.
 
 ### Work Tracking Service Tools
 
