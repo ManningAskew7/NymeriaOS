@@ -164,6 +164,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "CONTENT_MANAGEMENT_SERVICE_TOOLS",
             "OPERATIONS_MONITORING_SERVICE_TOOLS",
             "ENRICHMENT_SECURITY_SERVICE_TOOLS",
+            "LEAD_ENRICHMENT_SERVICE_TOOLS",
             "DATA_TABLE_SERVICE_TOOLS",
             "CHAT_PLATFORM_SERVICE_TOOLS",
         ),

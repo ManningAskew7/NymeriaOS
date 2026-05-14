@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (557)
+### Optional: Service Integration Tools (572)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -635,6 +635,21 @@ in the credential vault for provider-specific saved connections scoped to
 | 555 | `s3_create_folder` | Integrations | MODERATE | Create an S3 folder marker object |
 | 556 | `s3_create_bucket` | Integrations | MODERATE | Create an S3 bucket |
 | 557 | `s3_delete_bucket` | Integrations | MODERATE | Delete an empty S3 bucket |
+| 558 | `clearbit_enrich_company` | Integrations | MODERATE | Enrich company data from a domain |
+| 559 | `clearbit_autocomplete_company` | Integrations | MODERATE | Autocomplete company names and domains |
+| 560 | `clearbit_enrich_person` | Integrations | MODERATE | Enrich person data from an email address |
+| 561 | `uplead_enrich_company` | Integrations | MODERATE | Enrich company data by domain or name |
+| 562 | `uplead_enrich_person` | Integrations | MODERATE | Enrich person data by email or identity hints |
+| 563 | `dropcontact_submit_enrichment` | Integrations | MODERATE | Submit a contact enrichment request |
+| 564 | `dropcontact_fetch_request` | Integrations | MODERATE | Fetch a submitted enrichment request |
+| 565 | `humantic_create_profile` | Integrations | MODERATE | Create a contact-intelligence profile |
+| 566 | `humantic_get_profile` | Integrations | MODERATE | Get a contact-intelligence profile |
+| 567 | `humantic_update_profile_text` | Integrations | MODERATE | Update a profile with additional text |
+| 568 | `lonescale_create_list` | Integrations | MODERATE | Create a prospecting list |
+| 569 | `lonescale_add_people_item` | Integrations | MODERATE | Add a person to a prospecting list |
+| 570 | `lonescale_add_company_item` | Integrations | MODERATE | Add a company to a prospecting list |
+| 571 | `uproc_get_profile` | Integrations | MODERATE | Get the saved enrichment account profile |
+| 572 | `uproc_process` | Integrations | MODERATE | Run an enrichment processor with explicit JSON parameters |
 
 ### Optional: Private B Tools (4)
 
@@ -1221,7 +1236,10 @@ credentials use `raindrop.access_token`, `yourls.url`, and either
 `yourls.signature` or `yourls.username` plus `yourls.password`. Work-tracking
 credentials use `asana.access_token` and `linear.api_key`. Relationship CRM
 credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
-`agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`. Scope a
+`agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`.
+Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
+`dropcontact.api_key`, `humantic.api_key`, `lonescale.api_key`, and
+`uproc.email` plus `uproc.api_key`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -1615,6 +1633,24 @@ Credential providers and fallback env vars:
 - Mailcheck: provider `mailcheck`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `MAILCHECK_API_KEY`. Use `base_url` / `url` or `MAILCHECK_BASE_URL` for non-default API roots.
 - Peekalink: provider `peekalink`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `PEEKALINK_API_KEY`. Use `base_url` / `url` or `PEEKALINK_BASE_URL` for non-default API roots.
 - Jina AI: provider `jina`, fields `api_key`, `apiKey`, `access_token`, `token`, or `value`; env fallback `JINA_API_KEY`. Reader/Search can run without a key where Jina allows anonymous usage; DeepSearch requires a saved credential or env key. Base URL overrides are `JINA_READER_BASE_URL`, `JINA_SEARCH_BASE_URL`, and `JINA_DEEPSEARCH_BASE_URL`.
+
+### Lead Enrichment Service Tools
+
+This batch includes:
+- `clearbit_enrich_company(domain, ...)`, `clearbit_autocomplete_company(name)`, and `clearbit_enrich_person(email, ...)` for company and person enrichment. These are MODERATE because they send identity/company data to an external enrichment provider and consume quota.
+- `uplead_enrich_company(domain?, company?)` and `uplead_enrich_person(email?, first_name?, last_name?, domain?)` for company and contact enrichment. These are MODERATE for the same reason.
+- `dropcontact_submit_enrichment(...)` and `dropcontact_fetch_request(request_id)` for asynchronous contact enrichment.
+- `humantic_create_profile(user_id)`, `humantic_get_profile(user_id, persona?)`, and `humantic_update_profile_text(user_id, text)` for contact-intelligence profile workflows.
+- `lonescale_create_list(name, entity_type?)`, `lonescale_add_people_item(...)`, and `lonescale_add_company_item(...)` for prospecting list management.
+- `uproc_get_profile()` and `uproc_process(processor, params_json, callback_url?)` for saved enrichment account inspection and explicit processor calls.
+
+Credential providers and fallback env vars:
+- Clearbit: provider `clearbit`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `CLEARBIT_API_KEY`. Base URL overrides are `CLEARBIT_COMPANY_BASE_URL`, `CLEARBIT_PERSON_BASE_URL`, and `CLEARBIT_AUTOCOMPLETE_BASE_URL`.
+- Uplead: provider `uplead`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `UPLEAD_API_KEY`. Use `base_url` / `url` or `UPLEAD_BASE_URL` for non-default API roots.
+- Dropcontact: provider `dropcontact`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `DROPCONTACT_API_KEY`. Use `base_url` / `url` or `DROPCONTACT_BASE_URL` for non-default API roots.
+- Humantic AI: provider `humantic`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `HUMANTIC_API_KEY`. Use `base_url` / `url` or `HUMANTIC_BASE_URL` for non-default API roots.
+- LoneScale: provider `lonescale`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `LONESCALE_API_KEY`. Use `base_url` / `url` or `LONESCALE_BASE_URL` for non-default API roots.
+- uProc: provider `uproc`, fields `email` and `api_key` / `apiKey` / `token` / `value`; env fallbacks `UPROC_EMAIL` and `UPROC_API_KEY`. Use `base_url` / `url` or `UPROC_BASE_URL` for non-default API roots.
 
 ### Data Table Service Tools
 

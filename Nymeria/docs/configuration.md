@@ -99,6 +99,21 @@ Set the API key for your chosen provider:
 | `AWS_REGION` | S3 | Optional S3 region fallback; defaults to `us-east-1` |
 | `AWS_ENDPOINT_URL_S3` | S3 | Optional S3-compatible endpoint URL |
 | `S3_FORCE_PATH_STYLE` | S3 | Optional path-style addressing toggle for S3-compatible providers |
+| `CLEARBIT_API_KEY` | Clearbit | Optional env fallback for Clearbit enrichment tools; credential vault provider `clearbit` is preferred |
+| `CLEARBIT_COMPANY_BASE_URL` | Clearbit | Optional Clearbit company API base URL override |
+| `CLEARBIT_PERSON_BASE_URL` | Clearbit | Optional Clearbit person API base URL override |
+| `CLEARBIT_AUTOCOMPLETE_BASE_URL` | Clearbit | Optional Clearbit autocomplete API base URL override |
+| `UPLEAD_API_KEY` | Uplead | Optional env fallback for Uplead enrichment tools; credential vault provider `uplead` is preferred |
+| `UPLEAD_BASE_URL` | Uplead | Optional Uplead API base URL override |
+| `DROPCONTACT_API_KEY` | Dropcontact | Optional env fallback for Dropcontact tools; credential vault provider `dropcontact` is preferred |
+| `DROPCONTACT_BASE_URL` | Dropcontact | Optional Dropcontact API base URL override |
+| `HUMANTIC_API_KEY` | Humantic AI | Optional env fallback for Humantic AI tools; credential vault provider `humantic` is preferred |
+| `HUMANTIC_BASE_URL` | Humantic AI | Optional Humantic AI API base URL override |
+| `LONESCALE_API_KEY` | LoneScale | Optional env fallback for LoneScale tools; credential vault provider `lonescale` is preferred |
+| `LONESCALE_BASE_URL` | LoneScale | Optional LoneScale API base URL override |
+| `UPROC_EMAIL` | uProc | Optional uProc account email fallback; credential vault provider `uproc` is preferred |
+| `UPROC_API_KEY` | uProc | Optional uProc API key fallback |
+| `UPROC_BASE_URL` | uProc | Optional uProc API base URL override |
 | `BITLY_TOKEN` | Bitly | Optional env fallback for Bitly tools; credential vault provider `bitly` is preferred |
 | `BITLY_BASE_URL` | Bitly | Optional Bitly API base URL override |
 | `BRANDFETCH_API_KEY` | Brandfetch | Optional env fallback for Brandfetch tools; credential vault provider `brandfetch` is preferred |
@@ -523,6 +538,21 @@ reachable from the backend process.
 | `AWS_REGION` | `us-east-1` | S3 region fallback |
 | `AWS_ENDPOINT_URL_S3` | - | S3-compatible endpoint URL fallback |
 | `S3_FORCE_PATH_STYLE` | `false` | Use path-style S3 addressing |
+| `CLEARBIT_API_KEY` | - | Clearbit API key fallback |
+| `CLEARBIT_COMPANY_BASE_URL` | `https://company-stream.clearbit.com` | Clearbit company API base URL |
+| `CLEARBIT_PERSON_BASE_URL` | `https://person-stream.clearbit.com` | Clearbit person API base URL |
+| `CLEARBIT_AUTOCOMPLETE_BASE_URL` | `https://autocomplete.clearbit.com` | Clearbit autocomplete API base URL |
+| `UPLEAD_API_KEY` | - | Uplead API key fallback |
+| `UPLEAD_BASE_URL` | `https://api.uplead.com/v2` | Uplead API base URL |
+| `DROPCONTACT_API_KEY` | - | Dropcontact API key fallback |
+| `DROPCONTACT_BASE_URL` | `https://api.dropcontact.io` | Dropcontact API base URL |
+| `HUMANTIC_API_KEY` | - | Humantic AI API key fallback |
+| `HUMANTIC_BASE_URL` | `https://api.humantic.ai/v1` | Humantic AI API base URL |
+| `LONESCALE_API_KEY` | - | LoneScale API key fallback |
+| `LONESCALE_BASE_URL` | `https://public-api.lonescale.com` | LoneScale API base URL |
+| `UPROC_EMAIL` | - | uProc account email fallback |
+| `UPROC_API_KEY` | - | uProc API key fallback |
+| `UPROC_BASE_URL` | `https://api.uproc.io/api/v2` | uProc API base URL |
 | `BITLY_TOKEN` | - | Bitly API token fallback |
 | `BITLY_BASE_URL` | `https://api-ssl.bitly.com/v4` | Bitly API base URL |
 | `BRANDFETCH_API_KEY` | - | Brandfetch API key fallback |

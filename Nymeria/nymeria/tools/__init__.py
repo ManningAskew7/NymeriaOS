@@ -669,6 +669,24 @@ from .enrichment_security_service_integrations import (
     jina_deep_research,
     ENRICHMENT_SECURITY_SERVICE_TOOLS,
 )
+from .lead_enrichment_service_integrations import (
+    clearbit_enrich_company,
+    clearbit_autocomplete_company,
+    clearbit_enrich_person,
+    uplead_enrich_company,
+    uplead_enrich_person,
+    dropcontact_submit_enrichment,
+    dropcontact_fetch_request,
+    humantic_create_profile,
+    humantic_get_profile,
+    humantic_update_profile_text,
+    lonescale_create_list,
+    lonescale_add_people_item,
+    lonescale_add_company_item,
+    uproc_get_profile,
+    uproc_process,
+    LEAD_ENRICHMENT_SERVICE_TOOLS,
+)
 from .data_table_service_integrations import (
     baserow_list_tables,
     baserow_list_fields,
@@ -806,6 +824,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + CONTENT_MANAGEMENT_SERVICE_TOOLS
     + OPERATIONS_MONITORING_SERVICE_TOOLS
     + ENRICHMENT_SECURITY_SERVICE_TOOLS
+    + LEAD_ENRICHMENT_SERVICE_TOOLS
     + DATA_TABLE_SERVICE_TOOLS
     + CHAT_PLATFORM_SERVICE_TOOLS
 )}
@@ -1442,6 +1461,22 @@ __all__ = [
     "jina_search_web",
     "jina_deep_research",
     "ENRICHMENT_SECURITY_SERVICE_TOOLS",
+    "clearbit_enrich_company",
+    "clearbit_autocomplete_company",
+    "clearbit_enrich_person",
+    "uplead_enrich_company",
+    "uplead_enrich_person",
+    "dropcontact_submit_enrichment",
+    "dropcontact_fetch_request",
+    "humantic_create_profile",
+    "humantic_get_profile",
+    "humantic_update_profile_text",
+    "lonescale_create_list",
+    "lonescale_add_people_item",
+    "lonescale_add_company_item",
+    "uproc_get_profile",
+    "uproc_process",
+    "LEAD_ENRICHMENT_SERVICE_TOOLS",
     "baserow_list_tables",
     "baserow_list_fields",
     "baserow_list_rows",
