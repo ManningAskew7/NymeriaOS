@@ -313,6 +313,15 @@ class ServerSettingsUpdate(BaseModel):
     harvest_access_token: Optional[str] = None
     harvest_account_id: Optional[str] = None
     harvest_base_url: Optional[str] = None
+    oura_access_token: Optional[str] = None
+    oura_base_url: Optional[str] = None
+    strava_access_token: Optional[str] = None
+    strava_base_url: Optional[str] = None
+    homeassistant_access_token: Optional[str] = None
+    homeassistant_base_url: Optional[str] = None
+    philips_hue_access_token: Optional[str] = None
+    philips_hue_username: Optional[str] = None
+    philips_hue_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

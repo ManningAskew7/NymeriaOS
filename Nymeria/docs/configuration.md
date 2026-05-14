@@ -282,6 +282,15 @@ Set the API key for your chosen provider:
 | `HARVEST_ACCESS_TOKEN` | Harvest | Optional Harvest access token fallback; credential vault provider `harvest` is preferred |
 | `HARVEST_ACCOUNT_ID` | Harvest | Optional Harvest account ID fallback |
 | `HARVEST_BASE_URL` | Harvest | Optional Harvest API base URL override |
+| `OURA_ACCESS_TOKEN` | Oura | Optional Oura access token fallback; credential vault provider `oura` is preferred |
+| `OURA_BASE_URL` | Oura | Optional Oura API base URL override |
+| `STRAVA_ACCESS_TOKEN` | Strava | Optional Strava access token fallback; credential vault provider `strava` is preferred |
+| `STRAVA_BASE_URL` | Strava | Optional Strava API base URL override |
+| `HOMEASSISTANT_ACCESS_TOKEN` | Home Assistant | Optional long-lived token fallback; credential vault provider `homeassistant` is preferred |
+| `HOMEASSISTANT_BASE_URL` | Home Assistant | Home Assistant API base URL, usually `http://host:8123/api` |
+| `PHILIPS_HUE_ACCESS_TOKEN` | Philips Hue | Optional Philips Hue access token fallback; credential vault provider `philips_hue` is preferred |
+| `PHILIPS_HUE_USERNAME` | Philips Hue | Optional Philips Hue bridge username fallback |
+| `PHILIPS_HUE_BASE_URL` | Philips Hue | Optional Philips Hue routed API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -645,6 +654,15 @@ reachable from the backend process.
 | `HARVEST_ACCESS_TOKEN` | - | Harvest access token fallback |
 | `HARVEST_ACCOUNT_ID` | - | Harvest account ID fallback |
 | `HARVEST_BASE_URL` | `https://api.harvestapp.com/v2` | Harvest API base URL |
+| `OURA_ACCESS_TOKEN` | - | Oura access token fallback |
+| `OURA_BASE_URL` | `https://api.ouraring.com/v2` | Oura API base URL |
+| `STRAVA_ACCESS_TOKEN` | - | Strava access token fallback |
+| `STRAVA_BASE_URL` | `https://www.strava.com/api/v3` | Strava API base URL |
+| `HOMEASSISTANT_ACCESS_TOKEN` | - | Home Assistant long-lived token fallback |
+| `HOMEASSISTANT_BASE_URL` | - | Home Assistant API base URL |
+| `PHILIPS_HUE_ACCESS_TOKEN` | - | Philips Hue access token fallback |
+| `PHILIPS_HUE_USERNAME` | - | Philips Hue bridge username fallback |
+| `PHILIPS_HUE_BASE_URL` | `https://api.meethue.com/route` | Philips Hue routed API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
