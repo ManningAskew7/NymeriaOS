@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from typing import Annotated, Any, Optional
 from urllib.parse import quote, urlparse
 
@@ -205,6 +206,218 @@ def _freshdesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+
+
+def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="freshservice",
+            provider_aliases=("freshservice_api", "freshworks"),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("freshservice_base_url")
+    )
+    domain = (
+        _credential_value(
+            provider="freshservice",
+            provider_aliases=("freshservice_api", "freshworks"),
+            field_names=("domain", "subdomain"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("freshservice_domain")
+    )
+    api_key = _credential_value(
+        provider="freshservice",
+        provider_aliases=("freshservice_api", "freshworks"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("freshservice_api_key")
+    if not base and domain:
+        domain = domain.strip().replace(".freshservice.com", "")
+        base = f"https://{domain}.freshservice.com/api/v2"
+    if not base:
+        return "", (
+            "[Error]: No Freshservice base URL found. Save a Freshservice credential with "
+            '"base_url" or "domain", or set FRESHSERVICE_BASE_URL or FRESHSERVICE_DOMAIN.'
+        )
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="freshservice",
+            field_names=("api_key", "domain"),
+            tool_name=tool_name,
+            env_var="FRESHSERVICE_API_KEY",
+            display_name="Freshservice",
+        )
+    auth = base64.b64encode(f"{api_key}:X".encode()).decode()
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Authorization": f"Basic {auth}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="servicenow",
+            provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
+            field_names=("base_url", "url", "instance_url", "instanceUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("servicenow_base_url")
+    )
+    instance = (
+        _credential_value(
+            provider="servicenow",
+            provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
+            field_names=("instance", "subdomain"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("servicenow_instance")
+    )
+    token = _credential_value(
+        provider="servicenow",
+        provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
+        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("servicenow_access_token")
+    username = _credential_value(
+        provider="servicenow",
+        provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
+        field_names=("username", "user"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("servicenow_username")
+    password = _credential_value(
+        provider="servicenow",
+        provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
+        field_names=("password", "api_password", "apiPassword"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("servicenow_password")
+    if not base and instance:
+        instance = instance.strip().replace(".service-now.com", "")
+        base = f"https://{instance}.service-now.com/api/now"
+    if not base:
+        return "", (
+            "[Error]: No ServiceNow base URL found. Save a ServiceNow credential with "
+            '"base_url" or "instance", or set SERVICENOW_BASE_URL or SERVICENOW_INSTANCE.'
+        )
+    base = _base_url(base)
+    if not base.endswith("/api/now"):
+        base = f"{base}/api/now"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        return base, headers
+    if username and password:
+        auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers["Authorization"] = f"Basic {auth}"
+        return base, headers
+    return base, _setup_hint(
+        provider="servicenow",
+        field_names=("access_token", "base_url"),
+        tool_name=tool_name,
+        env_var="SERVICENOW_ACCESS_TOKEN or SERVICENOW_USERNAME + SERVICENOW_PASSWORD",
+        display_name="ServiceNow",
+    )
+
+
+def _zammad_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="zammad",
+            provider_aliases=("zammad_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("zammad_base_url")
+    )
+    token = _credential_value(
+        provider="zammad",
+        provider_aliases=("zammad_api",),
+        field_names=("access_token", "api_token", "apiToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("zammad_token")
+    username = _credential_value(
+        provider="zammad",
+        provider_aliases=("zammad_api",),
+        field_names=("username", "email"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("zammad_username")
+    password = _credential_value(
+        provider="zammad",
+        provider_aliases=("zammad_api",),
+        field_names=("password", "api_password", "apiPassword"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("zammad_password")
+    if not base:
+        return "", (
+            '[Error]: No Zammad base URL found. Save a Zammad credential with "base_url", '
+            "or set ZAMMAD_BASE_URL."
+        )
+    base = _base_url(base)
+    if not base.endswith("/api/v1"):
+        base = f"{base}/api/v1"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+    if token:
+        headers["Authorization"] = f"Token token={token}"
+        return base, headers
+    if username and password:
+        auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers["Authorization"] = f"Basic {auth}"
+        return base, headers
+    return base, _setup_hint(
+        provider="zammad",
+        field_names=("token", "base_url"),
+        tool_name=tool_name,
+        env_var="ZAMMAD_TOKEN or ZAMMAD_USERNAME + ZAMMAD_PASSWORD",
+        display_name="Zammad",
+    )
+
+
+def _safe_table_name(value: str, *, label: str) -> str:
+    cleaned = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]+", cleaned):
+        raise ValueError(f"{label} may only contain letters, numbers, and underscores")
+    return cleaned
+
+
+def _zammad_collection(resource: str) -> str:
+    mapping = {
+        "ticket": "tickets",
+        "tickets": "tickets",
+        "user": "users",
+        "users": "users",
+        "organization": "organizations",
+        "organizations": "organizations",
+        "group": "groups",
+        "groups": "groups",
+    }
+    key = resource.strip().lower()
+    if key not in mapping:
+        raise ValueError("resource must be ticket, user, organization, or group")
+    return mapping[key]
 
 
 def _helpscout_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -700,6 +913,590 @@ def freshdesk_update_contact(
     except Exception as e:
         logger.error("freshdesk_update_contact failed", exc_info=True)
         return f"[Error]: Freshdesk contact update failed: {e}"
+
+
+@tool
+def freshservice_list_tickets(
+    email: str = "",
+    requester_id: str = "",
+    updated_since: str = "",
+    filter_name: str = "",
+    include: str = "",
+    page: int = 1,
+    per_page: int = 30,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Freshservice tickets.
+
+    Args:
+        email: Optional requester email filter.
+        requester_id: Optional requester ID filter.
+        updated_since: Optional ISO date/time filter for recently updated tickets.
+        filter_name: Optional Freshservice ticket filter name.
+        include: Optional comma-separated embeds.
+        page: Result page number.
+        per_page: Results per page, 1-100.
+    """
+    try:
+        base_url, headers_or_error = _freshservice_config("freshservice_list_tickets", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/tickets",
+            params={
+                "email": email.strip(),
+                "requester_id": requester_id.strip(),
+                "updated_since": updated_since.strip(),
+                "filter": filter_name.strip(),
+                "include": ",".join(_split_csv(include)),
+                "page": max(1, int(page or 1)),
+                "per_page": _limit(per_page, default=30),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshservice_list_tickets failed", exc_info=True)
+        return f"[Error]: Freshservice ticket list failed: {e}"
+
+
+@tool
+def freshservice_get_ticket(
+    ticket_id: str,
+    include: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Freshservice ticket by ID.
+
+    Args:
+        ticket_id: Freshservice ticket ID.
+        include: Optional comma-separated embeds.
+    """
+    ticket_id = ticket_id.strip()
+    if not ticket_id:
+        return "[Error]: ticket_id is required."
+    try:
+        base_url, headers_or_error = _freshservice_config("freshservice_get_ticket", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/tickets/{quote(ticket_id, safe='')}",
+            params={"include": ",".join(_split_csv(include))},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshservice_get_ticket failed", exc_info=True)
+        return f"[Error]: Freshservice ticket lookup failed: {e}"
+
+
+@tool
+def freshservice_create_ticket(
+    subject: str,
+    description: str,
+    email: str = "",
+    requester_id: str = "",
+    priority: int = 1,
+    status: int = 2,
+    urgency: int = 1,
+    impact: int = 1,
+    category: str = "",
+    sub_category: str = "",
+    item_category: str = "",
+    custom_fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Freshservice ticket.
+
+    Args:
+        subject: Ticket subject.
+        description: Ticket description text or HTML.
+        email: Requester email. Required when requester_id is not supplied.
+        requester_id: Existing requester ID.
+        priority: Freshservice priority value.
+        status: Freshservice status value.
+        urgency: Freshservice urgency value.
+        impact: Freshservice impact value.
+        category: Optional category.
+        sub_category: Optional sub-category.
+        item_category: Optional item category.
+        custom_fields_json: Optional custom_fields object as JSON.
+    """
+    if not subject.strip() or not description.strip():
+        return "[Error]: subject and description are required."
+    if not email.strip() and not requester_id.strip():
+        return "[Error]: provide email or requester_id."
+    try:
+        body = _filtered_params(
+            {
+                "subject": subject.strip(),
+                "description": description,
+                "email": email.strip(),
+                "requester_id": requester_id.strip(),
+                "priority": int(priority),
+                "status": int(status),
+                "urgency": int(urgency),
+                "impact": int(impact),
+                "category": category.strip(),
+                "sub_category": sub_category.strip(),
+                "item_category": item_category.strip(),
+                "custom_fields": _parse_json(custom_fields_json, expected=dict, label="custom_fields_json"),
+            }
+        )
+        base_url, headers_or_error = _freshservice_config("freshservice_create_ticket", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/tickets", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshservice_create_ticket failed", exc_info=True)
+        return f"[Error]: Freshservice ticket creation failed: {e}"
+
+
+@tool
+def freshservice_update_ticket(
+    ticket_id: str,
+    subject: str = "",
+    description: str = "",
+    priority: int = 0,
+    status: int = 0,
+    urgency: int = 0,
+    impact: int = 0,
+    category: str = "",
+    sub_category: str = "",
+    item_category: str = "",
+    custom_fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Freshservice ticket.
+
+    Args:
+        ticket_id: Freshservice ticket ID.
+        subject: Optional updated subject.
+        description: Optional updated description.
+        priority: Optional Freshservice priority value.
+        status: Optional Freshservice status value.
+        urgency: Optional urgency value.
+        impact: Optional impact value.
+        category: Optional category.
+        sub_category: Optional sub-category.
+        item_category: Optional item category.
+        custom_fields_json: Optional custom_fields object as JSON.
+    """
+    ticket_id = ticket_id.strip()
+    if not ticket_id:
+        return "[Error]: ticket_id is required."
+    try:
+        body = _filtered_params(
+            {
+                "subject": subject.strip(),
+                "description": description,
+                "priority": int(priority) if priority else None,
+                "status": int(status) if status else None,
+                "urgency": int(urgency) if urgency else None,
+                "impact": int(impact) if impact else None,
+                "category": category.strip(),
+                "sub_category": sub_category.strip(),
+                "item_category": item_category.strip(),
+                "custom_fields": _parse_json(custom_fields_json, expected=dict, label="custom_fields_json"),
+            }
+        )
+        if not body:
+            return "[Error]: provide at least one ticket field to update."
+        base_url, headers_or_error = _freshservice_config("freshservice_update_ticket", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base_url}/tickets/{quote(ticket_id, safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshservice_update_ticket failed", exc_info=True)
+        return f"[Error]: Freshservice ticket update failed: {e}"
+
+
+@tool
+def freshservice_list_requesters(
+    email: str = "",
+    mobile_phone_number: str = "",
+    query: str = "",
+    page: int = 1,
+    per_page: int = 30,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Freshservice requesters.
+
+    Args:
+        email: Optional requester email filter.
+        mobile_phone_number: Optional requester mobile phone filter.
+        query: Optional search query.
+        page: Result page number.
+        per_page: Results per page, 1-100.
+    """
+    try:
+        base_url, headers_or_error = _freshservice_config("freshservice_list_requesters", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/requesters",
+            params={
+                "email": email.strip(),
+                "mobile_phone_number": mobile_phone_number.strip(),
+                "query": query.strip(),
+                "page": max(1, int(page or 1)),
+                "per_page": _limit(per_page, default=30),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshservice_list_requesters failed", exc_info=True)
+        return f"[Error]: Freshservice requester list failed: {e}"
+
+
+@tool
+def freshservice_get_requester(
+    requester_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Freshservice requester by ID.
+
+    Args:
+        requester_id: Freshservice requester ID.
+    """
+    requester_id = requester_id.strip()
+    if not requester_id:
+        return "[Error]: requester_id is required."
+    try:
+        base_url, headers_or_error = _freshservice_config("freshservice_get_requester", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/requesters/{quote(requester_id, safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshservice_get_requester failed", exc_info=True)
+        return f"[Error]: Freshservice requester lookup failed: {e}"
+
+
+@tool
+def servicenow_list_records(
+    table: str,
+    query: str = "",
+    fields: str = "",
+    limit: int = 25,
+    offset: int = 0,
+    display_value: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List ServiceNow table records.
+
+    Args:
+        table: ServiceNow table name, such as incident or sys_user.
+        query: Optional sysparm_query filter.
+        fields: Optional comma-separated sysparm_fields.
+        limit: Maximum records to request, 1-100.
+        offset: Result offset.
+        display_value: Whether ServiceNow should return display values.
+    """
+    try:
+        table_name = _safe_table_name(table, label="table")
+        base_url, headers_or_error = _servicenow_config("servicenow_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/table/{quote(table_name, safe='')}",
+            params={
+                "sysparm_query": query.strip(),
+                "sysparm_fields": ",".join(_split_csv(fields)),
+                "sysparm_limit": _limit(limit, default=25),
+                "sysparm_offset": max(0, int(offset or 0)),
+                "sysparm_display_value": str(bool(display_value)).lower(),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("result", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("servicenow_list_records failed", exc_info=True)
+        return f"[Error]: ServiceNow record list failed: {e}"
+
+
+@tool
+def servicenow_get_record(
+    table: str,
+    sys_id: str,
+    fields: str = "",
+    display_value: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a ServiceNow table record by sys_id.
+
+    Args:
+        table: ServiceNow table name, such as incident or sys_user.
+        sys_id: Record sys_id.
+        fields: Optional comma-separated sysparm_fields.
+        display_value: Whether ServiceNow should return display values.
+    """
+    if not sys_id.strip():
+        return "[Error]: sys_id is required."
+    try:
+        table_name = _safe_table_name(table, label="table")
+        base_url, headers_or_error = _servicenow_config("servicenow_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/table/{quote(table_name, safe='')}/{quote(sys_id.strip(), safe='')}",
+            params={
+                "sysparm_fields": ",".join(_split_csv(fields)),
+                "sysparm_display_value": str(bool(display_value)).lower(),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("result", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("servicenow_get_record failed", exc_info=True)
+        return f"[Error]: ServiceNow record lookup failed: {e}"
+
+
+@tool
+def servicenow_create_record(
+    table: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a ServiceNow table record.
+
+    Args:
+        table: ServiceNow table name, such as incident or sys_user.
+        fields_json: Record field object as JSON.
+    """
+    try:
+        table_name = _safe_table_name(table, label="table")
+        body = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not body:
+            return "[Error]: fields_json must include at least one field."
+        base_url, headers_or_error = _servicenow_config("servicenow_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/table/{quote(table_name, safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("result", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("servicenow_create_record failed", exc_info=True)
+        return f"[Error]: ServiceNow record creation failed: {e}"
+
+
+@tool
+def servicenow_update_record(
+    table: str,
+    sys_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a ServiceNow table record.
+
+    Args:
+        table: ServiceNow table name, such as incident or sys_user.
+        sys_id: Record sys_id.
+        fields_json: Record field object as JSON.
+    """
+    if not sys_id.strip():
+        return "[Error]: sys_id is required."
+    try:
+        table_name = _safe_table_name(table, label="table")
+        body = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not body:
+            return "[Error]: fields_json must include at least one field."
+        base_url, headers_or_error = _servicenow_config("servicenow_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PATCH",
+            f"{base_url}/table/{quote(table_name, safe='')}/{quote(sys_id.strip(), safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("result", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("servicenow_update_record failed", exc_info=True)
+        return f"[Error]: ServiceNow record update failed: {e}"
+
+
+@tool
+def servicenow_delete_record(
+    table: str,
+    sys_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a ServiceNow table record.
+
+    Args:
+        table: ServiceNow table name, such as incident or sys_user.
+        sys_id: Record sys_id.
+    """
+    if not sys_id.strip():
+        return "[Error]: sys_id is required."
+    try:
+        table_name = _safe_table_name(table, label="table")
+        base_url, headers_or_error = _servicenow_config("servicenow_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/table/{quote(table_name, safe='')}/{quote(sys_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("servicenow_delete_record failed", exc_info=True)
+        return f"[Error]: ServiceNow record deletion failed: {e}"
+
+
+@tool
+def zammad_list_records(
+    resource: str,
+    query: str = "",
+    page: int = 1,
+    per_page: int = 30,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List or search Zammad records.
+
+    Args:
+        resource: ticket, user, organization, or group.
+        query: Optional search query. When set, uses the resource search endpoint.
+        page: Result page number.
+        per_page: Results per page, 1-100.
+    """
+    try:
+        collection = _zammad_collection(resource)
+        base_url, headers_or_error = _zammad_config("zammad_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        path = f"{base_url}/{collection}/search" if query.strip() else f"{base_url}/{collection}"
+        data = _request_json(
+            "GET",
+            path,
+            params={
+                "query": query.strip(),
+                "page": max(1, int(page or 1)),
+                "per_page": _limit(per_page, default=30),
+                "limit": _limit(per_page, default=30),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zammad_list_records failed", exc_info=True)
+        return f"[Error]: Zammad record list failed: {e}"
+
+
+@tool
+def zammad_get_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Zammad record by ID.
+
+    Args:
+        resource: ticket, user, organization, or group.
+        record_id: Zammad record ID.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        collection = _zammad_collection(resource)
+        base_url, headers_or_error = _zammad_config("zammad_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/{collection}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zammad_get_record failed", exc_info=True)
+        return f"[Error]: Zammad record lookup failed: {e}"
+
+
+@tool
+def zammad_create_record(
+    resource: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Zammad record.
+
+    Args:
+        resource: ticket, user, organization, or group.
+        fields_json: Record field object as JSON.
+    """
+    try:
+        collection = _zammad_collection(resource)
+        body = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not body:
+            return "[Error]: fields_json must include at least one field."
+        base_url, headers_or_error = _zammad_config("zammad_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/{collection}", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zammad_create_record failed", exc_info=True)
+        return f"[Error]: Zammad record creation failed: {e}"
+
+
+@tool
+def zammad_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Zammad record.
+
+    Args:
+        resource: ticket, user, organization, or group.
+        record_id: Zammad record ID.
+        fields_json: Record field object as JSON.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        collection = _zammad_collection(resource)
+        body = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not body:
+            return "[Error]: fields_json must include at least one field."
+        base_url, headers_or_error = _zammad_config("zammad_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base_url}/{collection}/{quote(record_id.strip(), safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zammad_update_record failed", exc_info=True)
+        return f"[Error]: Zammad record update failed: {e}"
 
 
 @tool
@@ -1419,6 +2216,21 @@ SUPPORT_SERVICE_TOOLS = [
     freshdesk_get_contact,
     freshdesk_create_contact,
     freshdesk_update_contact,
+    freshservice_list_tickets,
+    freshservice_get_ticket,
+    freshservice_create_ticket,
+    freshservice_update_ticket,
+    freshservice_list_requesters,
+    freshservice_get_requester,
+    servicenow_list_records,
+    servicenow_get_record,
+    servicenow_create_record,
+    servicenow_update_record,
+    servicenow_delete_record,
+    zammad_list_records,
+    zammad_get_record,
+    zammad_create_record,
+    zammad_update_record,
     helpscout_list_mailboxes,
     helpscout_get_mailbox,
     helpscout_list_conversations,
