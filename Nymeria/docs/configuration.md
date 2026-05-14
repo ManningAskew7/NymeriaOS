@@ -191,6 +191,19 @@ Set the API key for your chosen provider:
 | `INTERCOM_ACCESS_TOKEN` | Intercom | Optional env fallback for Intercom tools; credential vault provider `intercom` is preferred |
 | `INTERCOM_BASE_URL` | Intercom | Optional Intercom API base URL override |
 | `INTERCOM_VERSION` | Intercom | Optional Intercom API version header override |
+| `SALESFORCE_INSTANCE_URL` | Salesforce | Optional Salesforce instance URL fallback; credential vault provider `salesforce` is preferred |
+| `SALESFORCE_ACCESS_TOKEN` | Salesforce | Optional Salesforce OAuth access token fallback |
+| `SALESFORCE_BASE_URL` | Salesforce | Optional Salesforce API base URL override |
+| `SALESFORCE_API_VERSION` | Salesforce | Optional Salesforce REST API version override |
+| `ZOHO_CRM_ACCESS_TOKEN` | Zoho CRM | Optional Zoho CRM OAuth access token fallback; credential vault provider `zoho_crm` is preferred |
+| `ZOHO_CRM_API_DOMAIN` | Zoho CRM | Optional Zoho CRM API domain fallback |
+| `ZOHO_CRM_BASE_URL` | Zoho CRM | Optional Zoho CRM API base URL override |
+| `FRESHWORKS_CRM_API_KEY` | Freshworks CRM | Optional Freshworks CRM API key fallback; credential vault provider `freshworks_crm` is preferred |
+| `FRESHWORKS_CRM_DOMAIN` | Freshworks CRM | Optional Freshworks CRM account domain fallback |
+| `FRESHWORKS_CRM_BASE_URL` | Freshworks CRM | Optional Freshworks CRM API base URL override |
+| `SALESMATE_SESSION_TOKEN` | Salesmate | Optional Salesmate session token fallback; credential vault provider `salesmate` is preferred |
+| `SALESMATE_LINK_NAME` | Salesmate | Optional Salesmate link name fallback |
+| `SALESMATE_BASE_URL` | Salesmate | Optional Salesmate API base URL override |
 | `PIPEDRIVE_API_TOKEN` | Pipedrive | Optional env fallback for Pipedrive API-token auth; credential vault provider `pipedrive` is preferred |
 | `PIPEDRIVE_ACCESS_TOKEN` | Pipedrive | Optional Pipedrive OAuth bearer token fallback |
 | `PIPEDRIVE_BASE_URL` | Pipedrive | Optional Pipedrive API base URL override |
@@ -660,6 +673,19 @@ reachable from the backend process.
 | `INTERCOM_ACCESS_TOKEN` | - | Intercom access token fallback |
 | `INTERCOM_BASE_URL` | `https://api.intercom.io` | Intercom API base URL |
 | `INTERCOM_VERSION` | `2.11` | Intercom API version header |
+| `SALESFORCE_INSTANCE_URL` | - | Salesforce instance URL fallback |
+| `SALESFORCE_ACCESS_TOKEN` | - | Salesforce OAuth access token fallback |
+| `SALESFORCE_BASE_URL` | - | Salesforce API base URL override |
+| `SALESFORCE_API_VERSION` | `v59.0` | Salesforce REST API version |
+| `ZOHO_CRM_ACCESS_TOKEN` | - | Zoho CRM OAuth access token fallback |
+| `ZOHO_CRM_API_DOMAIN` | - | Zoho CRM API domain fallback |
+| `ZOHO_CRM_BASE_URL` | `https://www.zohoapis.com/crm/v2` | Zoho CRM API base URL |
+| `FRESHWORKS_CRM_API_KEY` | - | Freshworks CRM API key fallback |
+| `FRESHWORKS_CRM_DOMAIN` | - | Freshworks CRM account domain fallback |
+| `FRESHWORKS_CRM_BASE_URL` | - | Freshworks CRM API base URL override |
+| `SALESMATE_SESSION_TOKEN` | - | Salesmate session token fallback |
+| `SALESMATE_LINK_NAME` | - | Salesmate link name fallback |
+| `SALESMATE_BASE_URL` | `https://apis.salesmate.io` | Salesmate API base URL |
 | `PIPEDRIVE_API_TOKEN` | - | Pipedrive API token fallback |
 | `PIPEDRIVE_ACCESS_TOKEN` | - | Pipedrive OAuth access token fallback |
 | `PIPEDRIVE_BASE_URL` | `https://api.pipedrive.com/api/v2` | Pipedrive API base URL |

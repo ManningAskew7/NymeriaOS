@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (642)
+### Optional: Service Integration Tools (665)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -720,6 +720,29 @@ in the credential vault for provider-specific saved connections scoped to
 | 640 | `stackby_get_row` | Integrations | SAFE | Get a Stackby row by ID |
 | 641 | `stackby_create_rows` | Integrations | MODERATE | Create Stackby rows |
 | 642 | `stackby_delete_rows` | Integrations | MODERATE | Delete Stackby rows |
+| 643 | `salesforce_query_records` | Integrations | SAFE | Run a Salesforce SOQL SELECT query |
+| 644 | `salesforce_get_record` | Integrations | SAFE | Get a Salesforce object record |
+| 645 | `salesforce_create_record` | Integrations | MODERATE | Create a Salesforce object record |
+| 646 | `salesforce_update_record` | Integrations | MODERATE | Update a Salesforce object record |
+| 647 | `salesforce_delete_record` | Integrations | MODERATE | Delete a Salesforce object record |
+| 648 | `zoho_crm_list_records` | Integrations | SAFE | List Zoho CRM module records |
+| 649 | `zoho_crm_search_records` | Integrations | SAFE | Search Zoho CRM module records |
+| 650 | `zoho_crm_get_record` | Integrations | SAFE | Get a Zoho CRM module record |
+| 651 | `zoho_crm_create_records` | Integrations | MODERATE | Create Zoho CRM module records |
+| 652 | `zoho_crm_update_record` | Integrations | MODERATE | Update a Zoho CRM module record |
+| 653 | `zoho_crm_delete_record` | Integrations | MODERATE | Delete a Zoho CRM module record |
+| 654 | `freshworks_crm_list_records` | Integrations | SAFE | List Freshworks CRM records |
+| 655 | `freshworks_crm_search_records` | Integrations | SAFE | Search Freshworks CRM records |
+| 656 | `freshworks_crm_get_record` | Integrations | SAFE | Get a Freshworks CRM record |
+| 657 | `freshworks_crm_create_record` | Integrations | MODERATE | Create a Freshworks CRM record |
+| 658 | `freshworks_crm_update_record` | Integrations | MODERATE | Update a Freshworks CRM record |
+| 659 | `freshworks_crm_delete_record` | Integrations | MODERATE | Delete a Freshworks CRM record |
+| 660 | `salesmate_list_users` | Integrations | SAFE | List active Salesmate users |
+| 661 | `salesmate_search_records` | Integrations | SAFE | Search Salesmate records |
+| 662 | `salesmate_get_record` | Integrations | SAFE | Get a Salesmate record |
+| 663 | `salesmate_create_record` | Integrations | MODERATE | Create a Salesmate record |
+| 664 | `salesmate_update_record` | Integrations | MODERATE | Update a Salesmate record |
+| 665 | `salesmate_delete_record` | Integrations | MODERATE | Delete a Salesmate record |
 
 ### Optional: Private B Tools (4)
 
@@ -1310,7 +1333,11 @@ credentials use `raindrop.access_token`, `yourls.url`, and either
 credentials use `asana.access_token` and `linear.api_key`. IT support credentials
 use `freshservice.api_key` plus `freshservice.domain`, `servicenow.access_token`
 or `servicenow.username` plus `servicenow.password`, and `zammad.token` plus
-`zammad.base_url`. Relationship CRM
+`zammad.base_url`. Sales CRM credentials use `salesforce.access_token` plus
+`salesforce.instance_url`, `zoho_crm.access_token`, `freshworks_crm.api_key`
+plus `freshworks_crm.domain`, `salesmate.session_token` plus
+`salesmate.link_name`, and `pipedrive.api_token` or `pipedrive.access_token`.
+Relationship CRM
 credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
 `agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`.
 Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
@@ -1627,11 +1654,19 @@ Credential providers and fallback env vars:
 ### Sales CRM Service Tools
 
 This batch includes:
+- `salesforce_query_records(soql, ...)` and `salesforce_get_record(object_name, record_id, ...)` for SAFE Salesforce reads across standard and custom objects. `salesforce_create_record(...)`, `salesforce_update_record(...)`, and `salesforce_delete_record(...)` are MODERATE because they change Salesforce data.
+- `zoho_crm_list_records(resource, ...)`, `zoho_crm_search_records(resource, ...)`, and `zoho_crm_get_record(resource, record_id, ...)` for SAFE Zoho CRM reads across accounts, contacts, deals, leads, products, invoices, quotes, orders, and vendors. `zoho_crm_create_records(...)`, `zoho_crm_update_record(...)`, and `zoho_crm_delete_record(...)` are MODERATE.
+- `freshworks_crm_list_records(resource, ...)`, `freshworks_crm_search_records(term, ...)`, and `freshworks_crm_get_record(resource, record_id)` for SAFE Freshworks CRM reads across accounts, contacts, deals, tasks, appointments, notes, and sales activities. `freshworks_crm_create_record(...)`, `freshworks_crm_update_record(...)`, and `freshworks_crm_delete_record(...)` are MODERATE.
+- `salesmate_list_users()`, `salesmate_search_records(resource, ...)`, and `salesmate_get_record(resource, record_id)` for SAFE Salesmate reads across companies, contacts, deals, and activities. `salesmate_create_record(...)`, `salesmate_update_record(...)`, and `salesmate_delete_record(...)` are MODERATE.
 - `pipedrive_list_records(resource, ...)`, `pipedrive_search_records(resource, term, ...)`, and `pipedrive_get_record(resource, record_id)` for SAFE read access across deals, persons/people, organizations, activities, leads, notes, and products where supported by Pipedrive.
 - `pipedrive_create_record(resource, fields_json)`, `pipedrive_update_record(resource, record_id, fields_json)`, and `pipedrive_delete_record(resource, record_id)`. These are MODERATE because they change Pipedrive CRM data.
 - `pipedrive_list_users(...)` for resolving owner/user IDs.
 
 Credential providers and fallback env vars:
+- Salesforce: provider `salesforce`, fields `access_token` plus `instance_url`; env fallbacks `SALESFORCE_ACCESS_TOKEN`, `SALESFORCE_INSTANCE_URL`, optional `SALESFORCE_BASE_URL`, and `SALESFORCE_API_VERSION`.
+- Zoho CRM: provider `zoho_crm`, fields `access_token` and optional `api_domain` / `base_url`; env fallbacks `ZOHO_CRM_ACCESS_TOKEN`, `ZOHO_CRM_API_DOMAIN`, and `ZOHO_CRM_BASE_URL`.
+- Freshworks CRM: provider `freshworks_crm`, fields `api_key` plus `domain`, or `base_url`; env fallbacks `FRESHWORKS_CRM_API_KEY`, `FRESHWORKS_CRM_DOMAIN`, and `FRESHWORKS_CRM_BASE_URL`.
+- Salesmate: provider `salesmate`, fields `session_token` plus `link_name`; env fallbacks `SALESMATE_SESSION_TOKEN`, `SALESMATE_LINK_NAME`, and `SALESMATE_BASE_URL`.
 - Pipedrive: provider `pipedrive`, fields `api_token`, `apiToken`, `token`, or `value` for API-token auth; or `access_token` / `bearer_token` for OAuth bearer auth. Env fallback supports `PIPEDRIVE_API_TOKEN` or `PIPEDRIVE_ACCESS_TOKEN`. Use `base_url` / `url` or `PIPEDRIVE_BASE_URL` for non-default API roots.
 
 ### Relationship CRM Service Tools
