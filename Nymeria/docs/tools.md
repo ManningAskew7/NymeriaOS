@@ -69,6 +69,18 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
+### Optional: N8N-Inspired Integration Tools (4)
+
+Not loaded by default. These are the first dedicated n8n AI tool-node ports that
+map cleanly to Python LangChain/community wrappers or a local safe equivalent.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `calculator` | Integrations | SAFE | Evaluate deterministic arithmetic expressions with a safe local parser |
+| 2 | `wikipedia_search` | Integrations | SAFE | Search Wikipedia via `langchain_community`'s Wikipedia wrapper |
+| 3 | `wolfram_alpha_query` | Integrations | SAFE | Query Wolfram\|Alpha via `langchain_community`; requires `WOLFRAM_ALPHA_APP_ID` |
+| 4 | `searxng_search` | Integrations | SAFE | Search a configured SearXNG instance via `langchain_community`; requires `SEARXNG_BASE_URL` |
+
 ### Optional: Private B Tools (4)
 
 Not loaded by default. Enable per-thread when the agent needs to manage Example University workload data from the LMS/Moodle. Configuration lives per user in `data/auth_tokens/<user_id>/_prv_b.json`; env fallbacks are `_PRV_B_CALENDAR_URL`, `_PRV_B_RSS_FEEDS`, `_PRV_B_MOODLE_BASE_URL`, and `_PRV_B_MOODLE_TOKEN`. See `docs/_prv_b.md`.
@@ -622,6 +634,61 @@ The same backend ranking is used by one-shot command searches:
 Desktop and mobile typeahead filtering stays local for responsiveness, but uses
 the shared frontend `utils/toolSearch.ts` fuzzy scorer over tool names, snake
 case tokens, categories, descriptions, tags, and implementation/type fields.
+
+## N8N-Inspired Integration Tools (Optional)
+
+### calculator
+
+Evaluate a safe arithmetic expression locally.
+
+```python
+calculator(expression: str)
+```
+
+Supported operators are `+`, `-`, `*`, `/`, `//`, `%`, `**`, and parentheses.
+Supported functions include `sqrt`, `sin`, `cos`, `tan`, `log`, `round`, `min`,
+and `max`; constants are `pi`, `e`, and `tau`.
+
+### wikipedia_search
+
+Search Wikipedia and return article summaries.
+
+```python
+wikipedia_search(query: str, top_k_results: int = 3, language: str = "en", max_chars: int = 4000)
+```
+
+Requires the Python `langchain-community` and `wikipedia` packages from
+`requirements.txt`.
+
+### wolfram_alpha_query
+
+Query Wolfram|Alpha for computational facts and calculations.
+
+```python
+wolfram_alpha_query(query: str)
+```
+
+Requires `WOLFRAM_ALPHA_APP_ID` plus the Python `langchain-community` and
+`wolframalpha` packages from `requirements.txt`.
+
+### searxng_search
+
+Search a configured SearXNG instance and return JSON results.
+
+```python
+searxng_search(
+    query: str,
+    num_results: int = 10,
+    page_number: int = 1,
+    language: str = "en",
+    safesearch: int = 0,
+    categories: str = "",
+    engines: str = "",
+)
+```
+
+Requires `SEARXNG_BASE_URL`, pointing at the SearXNG instance endpoint accepted
+by `langchain_community.utilities.SearxSearchWrapper`.
 
 ### tool_enable
 

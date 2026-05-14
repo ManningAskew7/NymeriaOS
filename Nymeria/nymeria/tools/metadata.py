@@ -32,6 +32,7 @@ class ToolCategory(str, Enum):
     TWITCH = "twitch"
     _PRV_A = "_prv_a"
     SKILLS = "skills"
+    INTEGRATIONS = "integrations"
     CUSTOM = "custom"
     MCP_SERVER = "mcp_server"
 
@@ -134,6 +135,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     ),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
+    (ToolCategory.INTEGRATIONS, ("N8N_LANGCHAIN_TOOLS",)),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS",)),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),
@@ -208,6 +210,15 @@ _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
         "google_docs_list",
         "google_docs_find_index",
         "google_sheets_search",
+    }
+)
+
+_INTEGRATION_SAFE_TOOL_NAMES = frozenset(
+    {
+        "calculator",
+        "wikipedia_search",
+        "wolfram_alpha_query",
+        "searxng_search",
     }
 )
 
@@ -415,6 +426,8 @@ def _infer_security_level(
         return SecurityLevel.SAFE if tool_name.startswith(("twitch_read", "twitch_get")) else SecurityLevel.MODERATE
     if category == ToolCategory.SKILLS:
         return SecurityLevel.MODERATE if tool_name in {"install_skill", "skill_manage"} else SecurityLevel.SAFE
+    if category == ToolCategory.INTEGRATIONS:
+        return SecurityLevel.SAFE if tool_name in _INTEGRATION_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
     if category == ToolCategory.MCP_SERVER:
         return SecurityLevel.MODERATE if tool_name in {"install_mcp_server", "manage_mcp"} else SecurityLevel.SAFE
     if category == ToolCategory.AUTH:

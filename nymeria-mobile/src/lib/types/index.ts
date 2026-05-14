@@ -879,7 +879,7 @@ export interface CustomToolTestResponse {
 // Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'profile' | 'notepad' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'image' | 'calendar' | 'google_docs' | 'custom' | 'mcp_server';
+export type ToolCategory = 'core' | 'memory' | 'profile' | 'notepad' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'image' | 'calendar' | 'google_docs' | 'integrations' | 'custom' | 'mcp_server';
 export type ToolType = 'builtin' | 'custom' | 'mcp_server' | 'callable_thread';
 
 export interface ToolSearchResult {
