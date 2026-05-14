@@ -392,6 +392,18 @@ Set the API key for your chosen provider:
 | `MAILERLITE_API_KEY` | MailerLite | Optional MailerLite API key fallback; credential vault provider `mailerlite` is preferred |
 | `MAILERLITE_BASE_URL` | MailerLite | Optional MailerLite API base URL override |
 | `MAILERLITE_CLASSIC_API` | MailerLite | Use MailerLite Classic API authentication/header style |
+| `CUSTOMERIO_TRACKING_SITE_ID` | Customer.io | Optional Customer.io tracking site ID fallback; credential vault provider `customerio` is preferred |
+| `CUSTOMERIO_TRACKING_API_KEY` | Customer.io | Optional Customer.io tracking API key fallback |
+| `CUSTOMERIO_APP_API_KEY` | Customer.io | Optional Customer.io app API key fallback for campaign reads |
+| `CUSTOMERIO_REGION` | Customer.io | Optional Customer.io tracking region host |
+| `CUSTOMERIO_TRACKING_BASE_URL` | Customer.io | Optional Customer.io tracking API base URL override |
+| `CUSTOMERIO_APP_BASE_URL` | Customer.io | Optional Customer.io app API base URL override |
+| `ITERABLE_API_KEY` | Iterable | Optional Iterable API key fallback; credential vault provider `iterable` is preferred |
+| `ITERABLE_BASE_URL` | Iterable | Optional Iterable API base URL override |
+| `POSTHOG_API_KEY` | PostHog | Optional PostHog project API key fallback; credential vault provider `posthog` is preferred |
+| `POSTHOG_BASE_URL` | PostHog | Optional PostHog API base URL override |
+| `SEGMENT_WRITE_KEY` | Segment | Optional Segment write key fallback; credential vault provider `segment` is preferred |
+| `SEGMENT_BASE_URL` | Segment | Optional Segment tracking API base URL override |
 | `COPPER_API_KEY` | Copper | Optional Copper API key fallback; credential vault provider `copper` is preferred |
 | `COPPER_EMAIL` | Copper | Copper user email fallback |
 | `COPPER_BASE_URL` | Copper | Optional Copper API base URL override |
@@ -874,6 +886,18 @@ reachable from the backend process.
 | `MAILERLITE_API_KEY` | - | MailerLite API key fallback |
 | `MAILERLITE_BASE_URL` | `https://connect.mailerlite.com/api` | MailerLite API base URL |
 | `MAILERLITE_CLASSIC_API` | `false` | Use MailerLite Classic API authentication/header style |
+| `CUSTOMERIO_TRACKING_SITE_ID` | - | Customer.io tracking site ID fallback |
+| `CUSTOMERIO_TRACKING_API_KEY` | - | Customer.io tracking API key fallback |
+| `CUSTOMERIO_APP_API_KEY` | - | Customer.io app API key fallback |
+| `CUSTOMERIO_REGION` | `track.customer.io` | Customer.io tracking region host |
+| `CUSTOMERIO_TRACKING_BASE_URL` | - | Customer.io tracking API base URL override |
+| `CUSTOMERIO_APP_BASE_URL` | - | Customer.io app API base URL override |
+| `ITERABLE_API_KEY` | - | Iterable API key fallback |
+| `ITERABLE_BASE_URL` | `https://api.iterable.com/api` | Iterable API base URL |
+| `POSTHOG_API_KEY` | - | PostHog project API key fallback |
+| `POSTHOG_BASE_URL` | `https://app.posthog.com` | PostHog API base URL |
+| `SEGMENT_WRITE_KEY` | - | Segment write key fallback |
+| `SEGMENT_BASE_URL` | `https://api.segment.io/v1` | Segment tracking API base URL |
 | `COPPER_API_KEY` | - | Copper API key fallback |
 | `COPPER_EMAIL` | - | Copper user email fallback |
 | `COPPER_BASE_URL` | `https://api.copper.com/developer_api/v1` | Copper API base URL |
