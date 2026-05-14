@@ -149,6 +149,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "CUSTOMER_ENGAGEMENT_SERVICE_TOOLS",
             "SUPPORT_SERVICE_TOOLS",
             "SALES_CRM_SERVICE_TOOLS",
+            "MESSAGING_DELIVERY_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -348,6 +349,13 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "pipedrive_search_records",
         "pipedrive_get_record",
         "pipedrive_list_users",
+        "twilio_list_messages",
+        "twilio_get_message",
+        "sendgrid_list_contacts",
+        "sendgrid_get_contact",
+        "sendgrid_list_lists",
+        "mailgun_list_events",
+        "mailgun_get_domain",
     }
 )
 

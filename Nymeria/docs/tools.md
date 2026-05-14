@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (177)
+### Optional: Service Integration Tools (189)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -255,6 +255,18 @@ in the credential vault for provider-specific saved connections scoped to
 | 175 | `pipedrive_update_record` | Integrations | MODERATE | Update a Pipedrive CRM record |
 | 176 | `pipedrive_delete_record` | Integrations | MODERATE | Delete a Pipedrive CRM record |
 | 177 | `pipedrive_list_users` | Integrations | SAFE | List Pipedrive users |
+| 178 | `twilio_send_message` | Integrations | MODERATE | Send SMS, MMS, or WhatsApp messages with Twilio |
+| 179 | `twilio_list_messages` | Integrations | SAFE | List Twilio messages |
+| 180 | `twilio_get_message` | Integrations | SAFE | Get a Twilio message by SID |
+| 181 | `twilio_make_call` | Integrations | MODERATE | Start an outbound Twilio voice call |
+| 182 | `sendgrid_send_email` | Integrations | MODERATE | Send transactional email with SendGrid |
+| 183 | `sendgrid_list_contacts` | Integrations | SAFE | List or search SendGrid marketing contacts |
+| 184 | `sendgrid_get_contact` | Integrations | SAFE | Get a SendGrid marketing contact |
+| 185 | `sendgrid_upsert_contacts` | Integrations | MODERATE | Create or update SendGrid marketing contacts |
+| 186 | `sendgrid_list_lists` | Integrations | SAFE | List SendGrid marketing contact lists |
+| 187 | `mailgun_send_email` | Integrations | MODERATE | Send email with Mailgun |
+| 188 | `mailgun_list_events` | Integrations | SAFE | List Mailgun delivery events |
+| 189 | `mailgun_get_domain` | Integrations | SAFE | Get Mailgun sending domain metadata |
 
 ### Optional: Private B Tools (4)
 
@@ -1001,6 +1013,18 @@ This batch includes:
 
 Credential providers and fallback env vars:
 - Pipedrive: provider `pipedrive`, fields `api_token`, `apiToken`, `token`, or `value` for API-token auth; or `access_token` / `bearer_token` for OAuth bearer auth. Env fallback supports `PIPEDRIVE_API_TOKEN` or `PIPEDRIVE_ACCESS_TOKEN`. Use `base_url` / `url` or `PIPEDRIVE_BASE_URL` for non-default API roots.
+
+### Messaging Delivery Service Tools
+
+This batch includes:
+- `twilio_send_message(...)`, `twilio_list_messages(...)`, `twilio_get_message(message_sid)`, and `twilio_make_call(...)`. Send/call operations are MODERATE because they contact external recipients and can consume telecom spend.
+- `sendgrid_send_email(...)`, `sendgrid_list_contacts(...)`, `sendgrid_get_contact(contact_id)`, `sendgrid_upsert_contacts(...)`, and `sendgrid_list_lists(...)`. Send/upsert operations are MODERATE because they send email or change marketing-contact data.
+- `mailgun_send_email(...)`, `mailgun_list_events(...)`, and `mailgun_get_domain()`. Email sending is MODERATE because it contacts external recipients and consumes sending quota.
+
+Credential providers and fallback env vars:
+- Twilio: provider `twilio`, fields `account_sid` / `accountSid` / `sid`, `auth_token` / `authToken` / `api_key_secret` / `apiKeySecret` / `token` / `value`, and optional `api_key_sid` / `apiKeySid`. Env fallback supports `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and optional `TWILIO_API_KEY_SID`. Use `base_url` / `url` or `TWILIO_BASE_URL` for non-default API roots.
+- SendGrid: provider `sendgrid`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `SENDGRID_API_KEY`. Use `base_url` / `url` or `SENDGRID_BASE_URL` for non-default API roots.
+- Mailgun: provider `mailgun`, fields `api_key`, `apiKey`, `token`, or `value`, plus `domain` / `email_domain` / `emailDomain`; env fallback `MAILGUN_API_KEY` and `MAILGUN_DOMAIN`. Use `base_url` / `api_domain` / `url` or `MAILGUN_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

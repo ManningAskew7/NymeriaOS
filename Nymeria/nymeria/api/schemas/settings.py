@@ -165,6 +165,15 @@ class ServerSettingsUpdate(BaseModel):
     pipedrive_api_token: Optional[str] = None
     pipedrive_access_token: Optional[str] = None
     pipedrive_base_url: Optional[str] = None
+    twilio_account_sid: Optional[str] = None
+    twilio_auth_token: Optional[str] = None
+    twilio_api_key_sid: Optional[str] = None
+    twilio_base_url: Optional[str] = None
+    sendgrid_api_key: Optional[str] = None
+    sendgrid_base_url: Optional[str] = None
+    mailgun_api_key: Optional[str] = None
+    mailgun_domain: Optional[str] = None
+    mailgun_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

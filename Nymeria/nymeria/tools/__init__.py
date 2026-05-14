@@ -303,6 +303,21 @@ from .sales_crm_service_integrations import (
     pipedrive_list_users,
     SALES_CRM_SERVICE_TOOLS,
 )
+from .messaging_delivery_service_integrations import (
+    twilio_send_message,
+    twilio_list_messages,
+    twilio_get_message,
+    twilio_make_call,
+    sendgrid_send_email,
+    sendgrid_list_contacts,
+    sendgrid_get_contact,
+    sendgrid_upsert_contacts,
+    sendgrid_list_lists,
+    mailgun_send_email,
+    mailgun_list_events,
+    mailgun_get_domain,
+    MESSAGING_DELIVERY_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -360,6 +375,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + CUSTOMER_ENGAGEMENT_SERVICE_TOOLS
     + SUPPORT_SERVICE_TOOLS
     + SALES_CRM_SERVICE_TOOLS
+    + MESSAGING_DELIVERY_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -658,6 +674,19 @@ __all__ = [
     "pipedrive_delete_record",
     "pipedrive_list_users",
     "SALES_CRM_SERVICE_TOOLS",
+    "twilio_send_message",
+    "twilio_list_messages",
+    "twilio_get_message",
+    "twilio_make_call",
+    "sendgrid_send_email",
+    "sendgrid_list_contacts",
+    "sendgrid_get_contact",
+    "sendgrid_upsert_contacts",
+    "sendgrid_list_lists",
+    "mailgun_send_email",
+    "mailgun_list_events",
+    "mailgun_get_domain",
+    "MESSAGING_DELIVERY_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
