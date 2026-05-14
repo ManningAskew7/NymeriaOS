@@ -231,6 +231,15 @@ Set the API key for your chosen provider:
 | `JINA_READER_BASE_URL` | Jina AI | Optional Jina Reader API base URL override |
 | `JINA_SEARCH_BASE_URL` | Jina AI | Optional Jina Search API base URL override |
 | `JINA_DEEPSEARCH_BASE_URL` | Jina AI | Optional Jina DeepSearch API base URL override |
+| `BASEROW_API_TOKEN` | Baserow | Optional Baserow API or database token fallback; credential vault provider `baserow` is preferred |
+| `BASEROW_BASE_URL` | Baserow | Optional Baserow API base URL override |
+| `NOCODB_API_TOKEN` | NocoDB | Optional NocoDB API or user token fallback; credential vault provider `nocodb` is preferred |
+| `NOCODB_BASE_URL` | NocoDB | Optional NocoDB API base URL override |
+| `NOCODB_AUTH_HEADER` | NocoDB | Optional NocoDB auth header, `xc-token` for API tokens or `xc-auth` for user tokens |
+| `CODA_API_TOKEN` | Coda | Optional Coda API token fallback; credential vault provider `coda` is preferred |
+| `CODA_BASE_URL` | Coda | Optional Coda API base URL override |
+| `GRIST_API_KEY` | Grist | Optional Grist API key fallback; credential vault provider `grist` is preferred |
+| `GRIST_BASE_URL` | Grist | Optional Grist API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -543,6 +552,15 @@ reachable from the backend process.
 | `JINA_READER_BASE_URL` | `https://r.jina.ai` | Jina Reader API base URL |
 | `JINA_SEARCH_BASE_URL` | `https://s.jina.ai` | Jina Search API base URL |
 | `JINA_DEEPSEARCH_BASE_URL` | `https://deepsearch.jina.ai/v1` | Jina DeepSearch API base URL |
+| `BASEROW_API_TOKEN` | - | Baserow API or database token fallback |
+| `BASEROW_BASE_URL` | `https://api.baserow.io` | Baserow API base URL |
+| `NOCODB_API_TOKEN` | - | NocoDB API or user token fallback |
+| `NOCODB_BASE_URL` | `https://app.nocodb.com` | NocoDB API base URL |
+| `NOCODB_AUTH_HEADER` | `xc-token` | NocoDB auth header name, `xc-token` or `xc-auth` |
+| `CODA_API_TOKEN` | - | Coda API token fallback |
+| `CODA_BASE_URL` | `https://coda.io/apis/v1` | Coda API base URL |
+| `GRIST_API_KEY` | - | Grist API key fallback |
+| `GRIST_BASE_URL` | `https://docs.getgrist.com/api` | Grist API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

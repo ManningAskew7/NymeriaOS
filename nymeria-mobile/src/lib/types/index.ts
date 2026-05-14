@@ -912,6 +912,15 @@ export interface ServerSettingsUpdate {
   jina_reader_base_url?: string | null;
   jina_search_base_url?: string | null;
   jina_deepsearch_base_url?: string | null;
+  baserow_api_token?: string | null;
+  baserow_base_url?: string | null;
+  nocodb_api_token?: string | null;
+  nocodb_base_url?: string | null;
+  nocodb_auth_header?: string | null;
+  coda_api_token?: string | null;
+  coda_base_url?: string | null;
+  grist_api_key?: string | null;
+  grist_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;
