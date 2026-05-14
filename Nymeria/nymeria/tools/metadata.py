@@ -137,7 +137,12 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
     (
         ToolCategory.INTEGRATIONS,
-        ("UTILITY_INTEGRATION_TOOLS", "PUBLIC_INFO_TOOLS", "DEVELOPER_PLATFORM_TOOLS"),
+        (
+            "UTILITY_INTEGRATION_TOOLS",
+            "PUBLIC_INFO_TOOLS",
+            "DEVELOPER_PLATFORM_TOOLS",
+            "BUSINESS_SERVICE_TOOLS",
+        ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS",)),
@@ -248,6 +253,14 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "gitlab_list_project_releases",
         "gitlab_get_project_release",
         "gitlab_list_user_projects",
+        "bitly_get_bitlink",
+        "brandfetch_get_brand",
+        "brandfetch_get_brand_logos",
+        "brandfetch_get_brand_colors",
+        "marketstack_get_eod",
+        "marketstack_get_ticker",
+        "marketstack_get_exchange",
+        "deepl_list_languages",
     }
 )
 

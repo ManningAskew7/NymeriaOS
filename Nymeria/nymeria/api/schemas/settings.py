@@ -90,6 +90,15 @@ class ServerSettingsUpdate(BaseModel):
     github_api_base_url: Optional[str] = None
     gitlab_token: Optional[str] = None
     gitlab_base_url: Optional[str] = None
+    bitly_token: Optional[str] = None
+    bitly_base_url: Optional[str] = None
+    brandfetch_api_key: Optional[str] = None
+    brandfetch_base_url: Optional[str] = None
+    marketstack_api_key: Optional[str] = None
+    marketstack_base_url: Optional[str] = None
+    deepl_api_key: Optional[str] = None
+    deepl_api_plan: Optional[str] = None
+    deepl_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

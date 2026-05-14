@@ -389,6 +389,15 @@ class Settings(BaseSettings):
     github_api_base_url: str = Field(default="https://api.github.com", description="GitHub API base URL")
     gitlab_token: Optional[str] = Field(default=None, description="GitLab API token fallback for developer platform tools")
     gitlab_base_url: str = Field(default="https://gitlab.com/api/v4", description="GitLab API base URL or instance URL")
+    bitly_token: Optional[str] = Field(default=None, description="Bitly API token fallback")
+    bitly_base_url: str = Field(default="https://api-ssl.bitly.com/v4", description="Bitly API base URL")
+    brandfetch_api_key: Optional[str] = Field(default=None, description="Brandfetch API key fallback")
+    brandfetch_base_url: str = Field(default="https://api.brandfetch.io/v2", description="Brandfetch API base URL")
+    marketstack_api_key: Optional[str] = Field(default=None, description="Marketstack API key fallback")
+    marketstack_base_url: str = Field(default="https://api.marketstack.com/v1", description="Marketstack API base URL")
+    deepl_api_key: Optional[str] = Field(default=None, description="DeepL API key fallback")
+    deepl_api_plan: str = Field(default="pro", description="DeepL API plan: pro or free")
+    deepl_base_url: Optional[str] = Field(default=None, description="DeepL API base URL override")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

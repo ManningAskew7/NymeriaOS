@@ -79,6 +79,15 @@ Set the API key for your chosen provider:
 | `GITHUB_API_BASE_URL` | GitHub | Optional GitHub API base URL; defaults to `https://api.github.com` |
 | `GITLAB_TOKEN` | GitLab | Optional env fallback for GitLab developer-platform tools; credential vault provider `gitlab` is preferred |
 | `GITLAB_BASE_URL` | GitLab | Optional GitLab API base URL or instance URL; defaults to `https://gitlab.com/api/v4` |
+| `BITLY_TOKEN` | Bitly | Optional env fallback for Bitly tools; credential vault provider `bitly` is preferred |
+| `BITLY_BASE_URL` | Bitly | Optional Bitly API base URL override |
+| `BRANDFETCH_API_KEY` | Brandfetch | Optional env fallback for Brandfetch tools; credential vault provider `brandfetch` is preferred |
+| `BRANDFETCH_BASE_URL` | Brandfetch | Optional Brandfetch API base URL override |
+| `MARKETSTACK_API_KEY` | Marketstack | Optional env fallback for Marketstack tools; credential vault provider `marketstack` is preferred |
+| `MARKETSTACK_BASE_URL` | Marketstack | Optional Marketstack API base URL override |
+| `DEEPL_API_KEY` | DeepL | Optional env fallback for DeepL tools; credential vault provider `deepl` is preferred |
+| `DEEPL_API_PLAN` | DeepL | Optional plan selector, `pro` or `free`; defaults to `pro` |
+| `DEEPL_BASE_URL` | DeepL | Optional DeepL API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -239,6 +248,15 @@ reachable from the backend process.
 | `GITHUB_API_BASE_URL` | `https://api.github.com` | GitHub API base URL |
 | `GITLAB_TOKEN` | - | GitLab API token fallback for developer-platform tools |
 | `GITLAB_BASE_URL` | `https://gitlab.com/api/v4` | GitLab API base URL or instance URL |
+| `BITLY_TOKEN` | - | Bitly API token fallback |
+| `BITLY_BASE_URL` | `https://api-ssl.bitly.com/v4` | Bitly API base URL |
+| `BRANDFETCH_API_KEY` | - | Brandfetch API key fallback |
+| `BRANDFETCH_BASE_URL` | `https://api.brandfetch.io/v2` | Brandfetch API base URL |
+| `MARKETSTACK_API_KEY` | - | Marketstack API key fallback |
+| `MARKETSTACK_BASE_URL` | `https://api.marketstack.com/v1` | Marketstack API base URL |
+| `DEEPL_API_KEY` | - | DeepL API key fallback |
+| `DEEPL_API_PLAN` | `pro` | DeepL API plan, `pro` or `free` |
+| `DEEPL_BASE_URL` | - | DeepL API base URL override |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

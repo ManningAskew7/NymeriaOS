@@ -732,6 +732,15 @@ export interface ServerSettingsUpdate {
   github_api_base_url?: string | null;
   gitlab_token?: string | null;
   gitlab_base_url?: string | null;
+  bitly_token?: string | null;
+  bitly_base_url?: string | null;
+  brandfetch_api_key?: string | null;
+  brandfetch_base_url?: string | null;
+  marketstack_api_key?: string | null;
+  marketstack_base_url?: string | null;
+  deepl_api_key?: string | null;
+  deepl_api_plan?: string | null;
+  deepl_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;
