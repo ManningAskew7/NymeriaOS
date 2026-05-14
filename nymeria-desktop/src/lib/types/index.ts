@@ -1028,6 +1028,16 @@ export interface ServerSettingsUpdate {
   discourse_base_url?: string | null;
   medium_access_token?: string | null;
   medium_base_url?: string | null;
+  bamboohr_api_key?: string | null;
+  bamboohr_subdomain?: string | null;
+  bamboohr_base_url?: string | null;
+  beeminder_access_token?: string | null;
+  beeminder_base_url?: string | null;
+  clockify_api_key?: string | null;
+  clockify_base_url?: string | null;
+  harvest_access_token?: string | null;
+  harvest_account_id?: string | null;
+  harvest_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

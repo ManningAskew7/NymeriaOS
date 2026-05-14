@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (395)
+### Optional: Service Integration Tools (425)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -473,6 +473,36 @@ in the credential vault for provider-specific saved connections scoped to
 | 393 | `medium_list_publications` | Integrations | SAFE | List Medium publications for a user |
 | 394 | `medium_create_post` | Integrations | MODERATE | Create a Medium profile post |
 | 395 | `medium_create_publication_post` | Integrations | MODERATE | Create a Medium publication post |
+| 396 | `bamboohr_list_employees` | Integrations | SAFE | List BambooHR employees |
+| 397 | `bamboohr_get_employee` | Integrations | SAFE | Get a BambooHR employee |
+| 398 | `bamboohr_create_employee` | Integrations | MODERATE | Create a BambooHR employee |
+| 399 | `bamboohr_update_employee` | Integrations | MODERATE | Update BambooHR employee fields |
+| 400 | `bamboohr_get_company_report` | Integrations | SAFE | Run a BambooHR company report |
+| 401 | `beeminder_get_user` | Integrations | SAFE | Get the authenticated Beeminder user |
+| 402 | `beeminder_list_goals` | Integrations | SAFE | List Beeminder goals |
+| 403 | `beeminder_get_goal` | Integrations | SAFE | Get a Beeminder goal |
+| 404 | `beeminder_list_datapoints` | Integrations | SAFE | List Beeminder datapoints |
+| 405 | `beeminder_create_datapoint` | Integrations | MODERATE | Create a Beeminder datapoint |
+| 406 | `beeminder_update_datapoint` | Integrations | MODERATE | Update a Beeminder datapoint |
+| 407 | `beeminder_delete_datapoint` | Integrations | MODERATE | Delete a Beeminder datapoint |
+| 408 | `clockify_list_workspaces` | Integrations | SAFE | List Clockify workspaces |
+| 409 | `clockify_list_users` | Integrations | SAFE | List Clockify users |
+| 410 | `clockify_list_projects` | Integrations | SAFE | List Clockify projects |
+| 411 | `clockify_create_project` | Integrations | MODERATE | Create a Clockify project |
+| 412 | `clockify_list_time_entries` | Integrations | SAFE | List Clockify time entries |
+| 413 | `clockify_create_time_entry` | Integrations | MODERATE | Create a Clockify time entry |
+| 414 | `clockify_update_time_entry` | Integrations | MODERATE | Update a Clockify time entry |
+| 415 | `clockify_delete_time_entry` | Integrations | MODERATE | Delete a Clockify time entry |
+| 416 | `harvest_get_me` | Integrations | SAFE | Get the authenticated Harvest user |
+| 417 | `harvest_get_company` | Integrations | SAFE | Get Harvest company metadata |
+| 418 | `harvest_list_clients` | Integrations | SAFE | List Harvest clients |
+| 419 | `harvest_list_projects` | Integrations | SAFE | List Harvest projects |
+| 420 | `harvest_list_tasks` | Integrations | SAFE | List Harvest tasks |
+| 421 | `harvest_list_time_entries` | Integrations | SAFE | List Harvest time entries |
+| 422 | `harvest_create_time_entry` | Integrations | MODERATE | Create a Harvest time entry |
+| 423 | `harvest_update_time_entry` | Integrations | MODERATE | Update a Harvest time entry |
+| 424 | `harvest_stop_time_entry` | Integrations | MODERATE | Stop a running Harvest time entry |
+| 425 | `harvest_delete_time_entry` | Integrations | MODERATE | Delete a Harvest time entry |
 
 ### Optional: Private B Tools (4)
 
@@ -1036,8 +1066,10 @@ connections in Settings > Connections with these provider names and fields:
 `openweathermap.api_key`, optional `npm.registry_url` / `npm.token`,
 `google_books.api_key`, `youtube.api_key`, `spotify.access_token` or
 `spotify.client_id` plus `spotify.client_secret`, `reddit.access_token` or
-`reddit.refresh_token` plus app credentials, `discourse.base_url`, and
-`medium.access_token`, plus `github.access_token` and `gitlab.access_token`. GitHub credentials can also
+`reddit.refresh_token` plus app credentials, `discourse.base_url`,
+`medium.access_token`, `bamboohr.api_key` plus `bamboohr.subdomain`,
+`beeminder.auth_token`, `clockify.api_key`, and `harvest.access_token` plus
+`harvest.account_id`, plus `github.access_token` and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
@@ -1141,6 +1173,20 @@ Credential providers and fallback env vars:
 - Reddit: provider `reddit`, fields `access_token`, `refresh_token`, `client_id`, `client_secret`, and optional `base_url` / `public_base_url` / `token_url`; env fallbacks `REDDIT_ACCESS_TOKEN`, `REDDIT_REFRESH_TOKEN`, `REDDIT_CLIENT_ID`, and `REDDIT_CLIENT_SECRET`.
 - Discourse: provider `discourse`, fields `base_url`, `api_key`, and `api_username`; env fallbacks `DISCOURSE_BASE_URL`, `DISCOURSE_API_KEY`, and `DISCOURSE_API_USERNAME`.
 - Medium: provider `medium`, fields `access_token`, `token`, or `value`; env fallback `MEDIUM_ACCESS_TOKEN`.
+
+### Time And HR Service Tools
+
+This batch includes:
+- `bamboohr_list_employees()`, `bamboohr_get_employee(employee_id, fields?)`, `bamboohr_create_employee(first_name, last_name, fields_json?)`, `bamboohr_update_employee(employee_id, fields_json)`, and `bamboohr_get_company_report(report_id, only_current?, format?)`.
+- `beeminder_get_user()`, `beeminder_list_goals()`, `beeminder_get_goal(goal_slug)`, `beeminder_list_datapoints(goal_slug, page?, per_page?)`, `beeminder_create_datapoint(goal_slug, value, comment?, timestamp?, request_id?)`, `beeminder_update_datapoint(goal_slug, datapoint_id, fields_json)`, and `beeminder_delete_datapoint(goal_slug, datapoint_id)`.
+- `clockify_list_workspaces()`, `clockify_list_users(workspace_id, status?, limit?)`, `clockify_list_projects(workspace_id, name?, archived?, limit?)`, `clockify_create_project(...)`, `clockify_list_time_entries(...)`, `clockify_create_time_entry(...)`, `clockify_update_time_entry(...)`, and `clockify_delete_time_entry(...)`.
+- `harvest_get_me()`, `harvest_get_company()`, `harvest_list_clients(...)`, `harvest_list_projects(...)`, `harvest_list_tasks(...)`, `harvest_list_time_entries(...)`, `harvest_create_time_entry(...)`, `harvest_update_time_entry(...)`, `harvest_stop_time_entry(time_entry_id)`, and `harvest_delete_time_entry(time_entry_id)`.
+
+Credential providers and fallback env vars:
+- BambooHR: provider `bamboohr`, fields `api_key` and `subdomain`, optional `base_url`; env fallbacks `BAMBOOHR_API_KEY`, `BAMBOOHR_SUBDOMAIN`, and `BAMBOOHR_BASE_URL`.
+- Beeminder: provider `beeminder`, fields `auth_token`, `access_token`, `api_key`, or `value`; env fallback `BEEMINDER_ACCESS_TOKEN`.
+- Clockify: provider `clockify`, fields `api_key` or `value`; env fallback `CLOCKIFY_API_KEY`.
+- Harvest: provider `harvest`, fields `access_token` and `account_id`, optional `base_url`; env fallbacks `HARVEST_ACCESS_TOKEN`, `HARVEST_ACCOUNT_ID`, and `HARVEST_BASE_URL`.
 
 ### Developer Platform Tools
 

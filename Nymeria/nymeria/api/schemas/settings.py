@@ -303,6 +303,16 @@ class ServerSettingsUpdate(BaseModel):
     discourse_base_url: Optional[str] = None
     medium_access_token: Optional[str] = None
     medium_base_url: Optional[str] = None
+    bamboohr_api_key: Optional[str] = None
+    bamboohr_subdomain: Optional[str] = None
+    bamboohr_base_url: Optional[str] = None
+    beeminder_access_token: Optional[str] = None
+    beeminder_base_url: Optional[str] = None
+    clockify_api_key: Optional[str] = None
+    clockify_base_url: Optional[str] = None
+    harvest_access_token: Optional[str] = None
+    harvest_account_id: Optional[str] = None
+    harvest_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

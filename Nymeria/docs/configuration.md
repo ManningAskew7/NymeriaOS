@@ -272,6 +272,16 @@ Set the API key for your chosen provider:
 | `DISCOURSE_BASE_URL` | Discourse | Discourse forum base URL for native tools |
 | `MEDIUM_ACCESS_TOKEN` | Medium | Optional Medium access token fallback; credential vault provider `medium` is preferred |
 | `MEDIUM_BASE_URL` | Medium | Optional Medium API base URL override |
+| `BAMBOOHR_API_KEY` | BambooHR | Optional BambooHR API key fallback; credential vault provider `bamboohr` is preferred |
+| `BAMBOOHR_SUBDOMAIN` | BambooHR | Optional BambooHR company subdomain fallback |
+| `BAMBOOHR_BASE_URL` | BambooHR | Optional BambooHR gateway base URL override |
+| `BEEMINDER_ACCESS_TOKEN` | Beeminder | Optional Beeminder auth token fallback; credential vault provider `beeminder` is preferred |
+| `BEEMINDER_BASE_URL` | Beeminder | Optional Beeminder API base URL override |
+| `CLOCKIFY_API_KEY` | Clockify | Optional Clockify API key fallback; credential vault provider `clockify` is preferred |
+| `CLOCKIFY_BASE_URL` | Clockify | Optional Clockify API base URL override |
+| `HARVEST_ACCESS_TOKEN` | Harvest | Optional Harvest access token fallback; credential vault provider `harvest` is preferred |
+| `HARVEST_ACCOUNT_ID` | Harvest | Optional Harvest account ID fallback |
+| `HARVEST_BASE_URL` | Harvest | Optional Harvest API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -625,6 +635,16 @@ reachable from the backend process.
 | `DISCOURSE_BASE_URL` | - | Discourse forum base URL |
 | `MEDIUM_ACCESS_TOKEN` | - | Medium access token fallback |
 | `MEDIUM_BASE_URL` | `https://api.medium.com/v1` | Medium API base URL |
+| `BAMBOOHR_API_KEY` | - | BambooHR API key fallback |
+| `BAMBOOHR_SUBDOMAIN` | - | BambooHR company subdomain fallback |
+| `BAMBOOHR_BASE_URL` | `https://api.bamboohr.com/api/gateway.php` | BambooHR API gateway base URL |
+| `BEEMINDER_ACCESS_TOKEN` | - | Beeminder auth token fallback |
+| `BEEMINDER_BASE_URL` | `https://www.beeminder.com/api/v1` | Beeminder API base URL |
+| `CLOCKIFY_API_KEY` | - | Clockify API key fallback |
+| `CLOCKIFY_BASE_URL` | `https://api.clockify.me/api/v1` | Clockify API base URL |
+| `HARVEST_ACCESS_TOKEN` | - | Harvest access token fallback |
+| `HARVEST_ACCOUNT_ID` | - | Harvest account ID fallback |
+| `HARVEST_BASE_URL` | `https://api.harvestapp.com/v2` | Harvest API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
