@@ -239,6 +239,17 @@ class ServerSettingsUpdate(BaseModel):
     storyblok_space_id: Optional[str] = None
     storyblok_content_base_url: Optional[str] = None
     storyblok_management_base_url: Optional[str] = None
+    netlify_access_token: Optional[str] = None
+    netlify_base_url: Optional[str] = None
+    uptimerobot_api_key: Optional[str] = None
+    uptimerobot_base_url: Optional[str] = None
+    pagerduty_api_token: Optional[str] = None
+    pagerduty_from_email: Optional[str] = None
+    pagerduty_base_url: Optional[str] = None
+    sentry_auth_token: Optional[str] = None
+    sentry_base_url: Optional[str] = None
+    cloudflare_api_token: Optional[str] = None
+    cloudflare_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

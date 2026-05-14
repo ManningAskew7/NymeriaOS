@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (258)
+### Optional: Service Integration Tools (294)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -336,6 +336,42 @@ in the credential vault for provider-specific saved connections scoped to
 | 256 | `storyblok_publish_story` | Integrations | MODERATE | Publish a Storyblok story through the Management API |
 | 257 | `storyblok_unpublish_story` | Integrations | MODERATE | Unpublish a Storyblok story through the Management API |
 | 258 | `storyblok_delete_story` | Integrations | MODERATE | Delete a Storyblok story through the Management API |
+| 259 | `netlify_list_sites` | Integrations | SAFE | List Netlify sites |
+| 260 | `netlify_get_site` | Integrations | SAFE | Get a Netlify site |
+| 261 | `netlify_list_deploys` | Integrations | SAFE | List Netlify deploys for a site |
+| 262 | `netlify_get_deploy` | Integrations | SAFE | Get a Netlify deploy |
+| 263 | `netlify_cancel_deploy` | Integrations | MODERATE | Cancel a Netlify deploy |
+| 264 | `netlify_delete_site` | Integrations | MODERATE | Delete a Netlify site |
+| 265 | `uptimerobot_get_account` | Integrations | SAFE | Get UptimeRobot account details |
+| 266 | `uptimerobot_list_monitors` | Integrations | SAFE | List UptimeRobot monitors |
+| 267 | `uptimerobot_get_monitor` | Integrations | SAFE | Get an UptimeRobot monitor |
+| 268 | `uptimerobot_create_monitor` | Integrations | MODERATE | Create an UptimeRobot monitor |
+| 269 | `uptimerobot_update_monitor` | Integrations | MODERATE | Update an UptimeRobot monitor |
+| 270 | `uptimerobot_delete_monitor` | Integrations | MODERATE | Delete an UptimeRobot monitor |
+| 271 | `uptimerobot_reset_monitor` | Integrations | MODERATE | Reset an UptimeRobot monitor |
+| 272 | `pagerduty_list_incidents` | Integrations | SAFE | List PagerDuty incidents |
+| 273 | `pagerduty_get_incident` | Integrations | SAFE | Get a PagerDuty incident |
+| 274 | `pagerduty_create_incident` | Integrations | MODERATE | Create a PagerDuty incident |
+| 275 | `pagerduty_update_incident` | Integrations | MODERATE | Update a PagerDuty incident |
+| 276 | `pagerduty_add_incident_note` | Integrations | MODERATE | Add a note to a PagerDuty incident |
+| 277 | `pagerduty_list_services` | Integrations | SAFE | List PagerDuty services |
+| 278 | `pagerduty_get_user` | Integrations | SAFE | Get a PagerDuty user |
+| 279 | `sentry_list_organizations` | Integrations | SAFE | List Sentry organizations |
+| 280 | `sentry_list_projects` | Integrations | SAFE | List Sentry projects |
+| 281 | `sentry_list_project_issues` | Integrations | SAFE | List Sentry project issues |
+| 282 | `sentry_get_issue` | Integrations | SAFE | Get a Sentry issue |
+| 283 | `sentry_update_issue` | Integrations | MODERATE | Update a Sentry issue |
+| 284 | `sentry_list_project_events` | Integrations | SAFE | List Sentry project events |
+| 285 | `sentry_get_event` | Integrations | SAFE | Get a Sentry event |
+| 286 | `cloudflare_list_zones` | Integrations | SAFE | List Cloudflare zones |
+| 287 | `cloudflare_list_dns_records` | Integrations | SAFE | List Cloudflare DNS records |
+| 288 | `cloudflare_create_dns_record` | Integrations | MODERATE | Create a Cloudflare DNS record |
+| 289 | `cloudflare_update_dns_record` | Integrations | MODERATE | Update a Cloudflare DNS record |
+| 290 | `cloudflare_delete_dns_record` | Integrations | MODERATE | Delete a Cloudflare DNS record |
+| 291 | `cloudflare_list_origin_certificates` | Integrations | SAFE | List Cloudflare origin pull certificates |
+| 292 | `cloudflare_get_origin_certificate` | Integrations | SAFE | Get a Cloudflare origin pull certificate |
+| 293 | `cloudflare_upload_origin_certificate` | Integrations | MODERATE | Upload a Cloudflare origin pull certificate |
+| 294 | `cloudflare_delete_origin_certificate` | Integrations | MODERATE | Delete a Cloudflare origin pull certificate |
 
 ### Optional: Private B Tools (4)
 
@@ -1146,6 +1182,22 @@ Credential providers and fallback env vars:
 - Contentful: provider `contentful`, fields `space_id` / `spaceId`, delivery token (`access_token`, `delivery_token`, or Contentful-style names), and optional preview token. Env fallback supports `CONTENTFUL_SPACE_ID`, `CONTENTFUL_DELIVERY_TOKEN`, `CONTENTFUL_PREVIEW_TOKEN`, `CONTENTFUL_BASE_URL`, and `CONTENTFUL_PREVIEW_BASE_URL`.
 - Ghost: provider `ghost`, fields `url`, `content_api_key`, and `admin_api_key` (`key_id:hex_secret`). Env fallback supports `GHOST_URL`, `GHOST_CONTENT_API_KEY`, `GHOST_ADMIN_API_KEY`, and `GHOST_API_VERSION`.
 - Storyblok: provider `storyblok`, fields `content_token`, `management_token`, and `space_id` / `spaceId`; env fallback supports `STORYBLOK_CONTENT_TOKEN`, `STORYBLOK_MANAGEMENT_TOKEN`, `STORYBLOK_SPACE_ID`, `STORYBLOK_CONTENT_BASE_URL`, and `STORYBLOK_MANAGEMENT_BASE_URL`.
+
+### Operations Monitoring Service Tools
+
+This batch includes:
+- `netlify_list_sites(...)`, `netlify_get_site(site_id)`, `netlify_list_deploys(site_id, ...)`, `netlify_get_deploy(site_id, deploy_id)`, `netlify_cancel_deploy(deploy_id)`, and `netlify_delete_site(site_id)`. Reads are SAFE; cancel/delete operations are MODERATE because they alter deploy or site state.
+- `uptimerobot_get_account()`, `uptimerobot_list_monitors(...)`, `uptimerobot_get_monitor(monitor_id, ...)`, `uptimerobot_create_monitor(...)`, `uptimerobot_update_monitor(monitor_id, ...)`, `uptimerobot_delete_monitor(monitor_id)`, and `uptimerobot_reset_monitor(monitor_id)`. Reads are SAFE; create/update/delete/reset are MODERATE because they alter monitoring state.
+- `pagerduty_list_incidents(...)`, `pagerduty_get_incident(incident_id)`, `pagerduty_create_incident(...)`, `pagerduty_update_incident(incident_id, ...)`, `pagerduty_add_incident_note(incident_id, content, ...)`, `pagerduty_list_services(...)`, and `pagerduty_get_user(user_id)`. Reads are SAFE; incident writes and notes are MODERATE because they change incident workflows.
+- `sentry_list_organizations(...)`, `sentry_list_projects(...)`, `sentry_list_project_issues(...)`, `sentry_get_issue(issue_id)`, `sentry_update_issue(organization_slug, issue_id, ...)`, `sentry_list_project_events(...)`, and `sentry_get_event(...)`. Reads are SAFE; issue updates are MODERATE.
+- `cloudflare_list_zones(...)`, `cloudflare_list_dns_records(zone_id, ...)`, `cloudflare_create_dns_record(...)`, `cloudflare_update_dns_record(...)`, `cloudflare_delete_dns_record(...)`, `cloudflare_list_origin_certificates(zone_id, ...)`, `cloudflare_get_origin_certificate(...)`, `cloudflare_upload_origin_certificate(...)`, and `cloudflare_delete_origin_certificate(...)`. Reads are SAFE; DNS/certificate writes are MODERATE.
+
+Credential providers and fallback env vars:
+- Netlify: provider `netlify`, fields `access_token` / `api_key` / `token` / `value`; env fallback `NETLIFY_ACCESS_TOKEN`. Use `base_url` / `url` or `NETLIFY_BASE_URL` for non-default API roots.
+- UptimeRobot: provider `uptimerobot`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `UPTIMEROBOT_API_KEY`. Use `base_url` / `url` or `UPTIMEROBOT_BASE_URL` for non-default API roots.
+- PagerDuty: provider `pagerduty`, fields `api_token` / `api_key` / `token` / `value` for REST API-token auth, or `access_token` for OAuth bearer auth. Env fallback supports `PAGERDUTY_API_TOKEN`, optional `PAGERDUTY_FROM_EMAIL`, and `PAGERDUTY_BASE_URL`.
+- Sentry: provider `sentry`, fields `auth_token` / `access_token` / `api_key` / `token` / `value`; env fallback `SENTRY_AUTH_TOKEN`. Use `base_url` / `url` or `SENTRY_BASE_URL` for self-hosted Sentry.
+- Cloudflare: provider `cloudflare`, fields `api_token` / `access_token` / `token` / `value`; env fallback `CLOUDFLARE_API_TOKEN`. Use `base_url` / `url` or `CLOUDFLARE_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

@@ -964,6 +964,17 @@ export interface ServerSettingsUpdate {
   storyblok_space_id?: string | null;
   storyblok_content_base_url?: string | null;
   storyblok_management_base_url?: string | null;
+  netlify_access_token?: string | null;
+  netlify_base_url?: string | null;
+  uptimerobot_api_key?: string | null;
+  uptimerobot_base_url?: string | null;
+  pagerduty_api_token?: string | null;
+  pagerduty_from_email?: string | null;
+  pagerduty_base_url?: string | null;
+  sentry_auth_token?: string | null;
+  sentry_base_url?: string | null;
+  cloudflare_api_token?: string | null;
+  cloudflare_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

@@ -208,6 +208,17 @@ Set the API key for your chosen provider:
 | `STORYBLOK_SPACE_ID` | Storyblok | Optional Storyblok space ID fallback for Management API tools |
 | `STORYBLOK_CONTENT_BASE_URL` | Storyblok | Optional Storyblok Content API base URL override |
 | `STORYBLOK_MANAGEMENT_BASE_URL` | Storyblok | Optional Storyblok Management API base URL override |
+| `NETLIFY_ACCESS_TOKEN` | Netlify | Optional Netlify access token fallback; credential vault provider `netlify` is preferred |
+| `NETLIFY_BASE_URL` | Netlify | Optional Netlify API base URL override |
+| `UPTIMEROBOT_API_KEY` | UptimeRobot | Optional UptimeRobot API key fallback; credential vault provider `uptimerobot` is preferred |
+| `UPTIMEROBOT_BASE_URL` | UptimeRobot | Optional UptimeRobot API base URL override |
+| `PAGERDUTY_API_TOKEN` | PagerDuty | Optional PagerDuty API token fallback; credential vault provider `pagerduty` is preferred |
+| `PAGERDUTY_FROM_EMAIL` | PagerDuty | Optional PagerDuty From email fallback for write operations |
+| `PAGERDUTY_BASE_URL` | PagerDuty | Optional PagerDuty API base URL override |
+| `SENTRY_AUTH_TOKEN` | Sentry | Optional Sentry auth token fallback; credential vault provider `sentry` is preferred |
+| `SENTRY_BASE_URL` | Sentry | Optional Sentry API base URL override |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare | Optional Cloudflare API token fallback; credential vault provider `cloudflare` is preferred |
+| `CLOUDFLARE_BASE_URL` | Cloudflare | Optional Cloudflare API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -497,6 +508,17 @@ reachable from the backend process.
 | `STORYBLOK_SPACE_ID` | - | Storyblok space ID fallback |
 | `STORYBLOK_CONTENT_BASE_URL` | `https://api.storyblok.com/v2/cdn` | Storyblok Content API base URL |
 | `STORYBLOK_MANAGEMENT_BASE_URL` | `https://mapi.storyblok.com/v1` | Storyblok Management API base URL |
+| `NETLIFY_ACCESS_TOKEN` | - | Netlify access token fallback |
+| `NETLIFY_BASE_URL` | `https://api.netlify.com/api/v1` | Netlify API base URL |
+| `UPTIMEROBOT_API_KEY` | - | UptimeRobot API key fallback |
+| `UPTIMEROBOT_BASE_URL` | `https://api.uptimerobot.com/v2` | UptimeRobot API base URL |
+| `PAGERDUTY_API_TOKEN` | - | PagerDuty API token fallback |
+| `PAGERDUTY_FROM_EMAIL` | - | PagerDuty From email fallback |
+| `PAGERDUTY_BASE_URL` | `https://api.pagerduty.com` | PagerDuty API base URL |
+| `SENTRY_AUTH_TOKEN` | - | Sentry auth token fallback |
+| `SENTRY_BASE_URL` | `https://sentry.io` | Sentry API base URL |
+| `CLOUDFLARE_API_TOKEN` | - | Cloudflare API token fallback |
+| `CLOUDFLARE_BASE_URL` | `https://api.cloudflare.com/client/v4` | Cloudflare API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
