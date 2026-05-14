@@ -56,6 +56,12 @@ Reference coverage checked on 2026-05-14:
 - Responses API mode is first-class for providers that advertise it in the
   registry, currently OpenAI, OpenRouter, Azure OpenAI, and xAI. Responses uses
   `max_output_tokens`; Chat Completions uses `max_tokens`.
+- Production-readiness checks live behind `POST /settings/llm/test-suite`.
+  The suite resolves auth from a submitted key, credential vault, settings, or
+  env; probes `/models`; prefers free models when metadata exposes pricing;
+  runs a small non-streaming chat completion; and can force a tool call to check
+  Nymeria agent compatibility. It returns sanitized step results and never
+  writes settings.
 
 ## First-Class Providers
 

@@ -943,6 +943,46 @@ itself as broken.
 
 ---
 
+### LLM Provider Test Suite
+
+```http
+POST /settings/llm/test-suite
+Content-Type: application/json
+Authorization: Bearer <admin-token>
+```
+
+Admin-only. Runs the production-readiness provider suite without writing
+settings. Unlike `/settings/llm/test`, `api_key` is optional: the suite resolves
+auth from the submitted key, then the encrypted credential vault, then
+settings/env. It checks provider metadata, base URL, credential availability,
+the provider `/models` endpoint, a tiny non-streaming chat completion, and a
+forced tool-call request when enabled.
+
+By default, live generation is skipped unless the selected model is known to be
+free, the endpoint is local/no-key, or `allow_billable` is set to `true`.
+
+```json
+{
+  "llm_provider": "openrouter",
+  "llm_model": "meta-llama/llama-3.1-8b-instruct:free",
+  "api_key": "sk-or-...",
+  "openai_api_mode": "chat_completions",
+  "run_model_list": true,
+  "run_chat_completion": true,
+  "run_tool_call": true,
+  "allow_billable": false,
+  "prefer_free_model": true,
+  "timeout_seconds": 15
+}
+```
+
+The response is a sanitized report with top-level `ok`, selected `model`,
+effective base URL/API mode, credential source, model count, and ordered step
+results. Failed provider calls still return HTTP `200` with `ok: false`; API
+authorization failures still return normal Nymeria API errors.
+
+---
+
 ### LLM Provider Catalog
 
 ```http

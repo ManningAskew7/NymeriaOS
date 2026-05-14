@@ -105,6 +105,7 @@ EXPECTED_ROUTES = [
     ("/settings/llm/providers", ("GET",)),
     ("/settings/llm/runtime", ("GET",)),
     ("/settings/llm/test", ("POST",)),
+    ("/settings/llm/test-suite", ("POST",)),
     ("/skills", ("GET",)),
     ("/skills/install", ("POST",)),
     ("/skills/marketplace/search", ("GET",)),

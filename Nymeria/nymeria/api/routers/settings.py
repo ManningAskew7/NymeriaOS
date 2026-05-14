@@ -30,12 +30,18 @@ from ...config.model_capabilities import (
 )
 from ...core.accounts import AuthenticatedUser
 from ...core.llm_credentials import get_llm_provider_credential
+from ...core.llm_provider_test_suite import (
+    ProviderTestSuiteOptions,
+    run_provider_test_suite,
+)
 from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
     LLMProviderSpecResponse,
     LLMProviderTestRequest,
     LLMProviderTestResponse,
+    LLMProviderTestSuiteRequest,
+    LLMProviderTestSuiteResponse,
     LLMRuntimeDiagnosticsResponse,
     OpenRouterKeyDiagnostics,
     ServerSettingsResponse,
@@ -144,6 +150,14 @@ def _env_mapping() -> dict[str, str]:
         "mailchimp_access_token": "MAILCHIMP_ACCESS_TOKEN",
         "mailchimp_server_prefix": "MAILCHIMP_SERVER_PREFIX",
         "mailchimp_base_url": "MAILCHIMP_BASE_URL",
+        "freshdesk_api_key": "FRESHDESK_API_KEY",
+        "freshdesk_domain": "FRESHDESK_DOMAIN",
+        "freshdesk_base_url": "FRESHDESK_BASE_URL",
+        "helpscout_access_token": "HELPSCOUT_ACCESS_TOKEN",
+        "helpscout_base_url": "HELPSCOUT_BASE_URL",
+        "intercom_access_token": "INTERCOM_ACCESS_TOKEN",
+        "intercom_base_url": "INTERCOM_BASE_URL",
+        "intercom_version": "INTERCOM_VERSION",
         "openai_api_key": "OPENAI_API_KEY",
         "anthropic_api_key": "ANTHROPIC_API_KEY",
         "anthropic_direct_api_key": "ANTHROPIC_DIRECT_API_KEY",
@@ -725,6 +739,38 @@ def create_settings_router(
     ):
         """Test an arbitrary LLM provider configuration without writing it."""
         return await _test_llm_provider_config(request)
+
+    @router.post(
+        "/settings/llm/test-suite",
+        response_model=LLMProviderTestSuiteResponse,
+    )
+    async def test_llm_provider_suite(
+        request: LLMProviderTestSuiteRequest,
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Run the production-readiness suite for an LLM provider setup."""
+        agent = get_agent_fn()
+        api_key = request.api_key.get_secret_value() if request.api_key else None
+        report = await run_provider_test_suite(
+            ProviderTestSuiteOptions(
+                provider=request.llm_provider,
+                model=request.llm_model,
+                api_key=api_key,
+                base_url=request.llm_base_url,
+                api_mode=request.openai_api_mode,
+                settings=settings,
+                vault=getattr(agent, "credential_vault", None),
+                owner_user_id=user.id,
+                run_model_list=request.run_model_list,
+                run_chat_completion=request.run_chat_completion,
+                run_tool_call=request.run_tool_call,
+                allow_billable=request.allow_billable,
+                prefer_free_model=request.prefer_free_model,
+                timeout_seconds=request.timeout_seconds,
+            )
+        )
+        return LLMProviderTestSuiteResponse(**report.to_dict())
 
     @router.get(
         "/settings/llm/providers",

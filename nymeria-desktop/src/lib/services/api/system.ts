@@ -3,6 +3,8 @@ import type {
   LLMProviderSpec,
   LLMProviderTestRequest,
   LLMProviderTestResponse,
+  LLMProviderTestSuiteRequest,
+  LLMProviderTestSuiteResponse,
   ModelMetadata,
   ServerSettings,
   ServerSettingsUpdate
@@ -79,6 +81,22 @@ export class SystemApi extends ApiBase {
 
     if (!response.ok) {
       throw new Error(await this._toastAndExtractError(response, 'Failed to test provider'));
+    }
+
+    return response.json();
+  }
+
+  async runLLMProviderTestSuite(
+    request: LLMProviderTestSuiteRequest
+  ): Promise<LLMProviderTestSuiteResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/llm/test-suite`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to run provider test suite'));
     }
 
     return response.json();

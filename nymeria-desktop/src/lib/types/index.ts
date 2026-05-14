@@ -879,6 +879,14 @@ export interface ServerSettingsUpdate {
   mailchimp_access_token?: string | null;
   mailchimp_server_prefix?: string | null;
   mailchimp_base_url?: string | null;
+  freshdesk_api_key?: string | null;
+  freshdesk_domain?: string | null;
+  freshdesk_base_url?: string | null;
+  helpscout_access_token?: string | null;
+  helpscout_base_url?: string | null;
+  intercom_access_token?: string | null;
+  intercom_base_url?: string | null;
+  intercom_version?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;
@@ -923,6 +931,45 @@ export interface LLMProviderTestResponse {
   openai_api_mode: OpenAIApiMode | null;
   status_code: number | null;
   error_type: string | null;
+}
+
+export interface LLMProviderTestSuiteRequest {
+  llm_provider: LLMProvider;
+  llm_model?: string | null;
+  api_key?: string | null;
+  llm_base_url?: string | null;
+  openai_api_mode?: OpenAIApiMode | null;
+  run_model_list?: boolean;
+  run_chat_completion?: boolean;
+  run_tool_call?: boolean;
+  allow_billable?: boolean;
+  prefer_free_model?: boolean;
+  timeout_seconds?: number;
+}
+
+export interface LLMProviderTestSuiteStep {
+  name: string;
+  status: 'passed' | 'failed' | 'warning' | 'skipped';
+  ok: boolean;
+  message: string;
+  url: string | null;
+  status_code: number | null;
+  latency_ms: number | null;
+  error_type: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface LLMProviderTestSuiteResponse {
+  ok: boolean;
+  provider: LLMProvider;
+  requested_provider: LLMProvider;
+  model: string | null;
+  effective_base_url: string | null;
+  effective_api_mode: OpenAIApiMode | null;
+  credential_source: string;
+  models_count: number | null;
+  message: string;
+  steps: LLMProviderTestSuiteStep[];
 }
 
 // Custom Tool Types
