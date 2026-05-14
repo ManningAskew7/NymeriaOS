@@ -18,8 +18,12 @@ from nymeria.config.settings import get_env_file_paths
 from . import auth_cache_utils as auth_utils
 
 # Load env files so GOOGLE_OAUTH_CREDENTIALS is available via os.environ.
+# Skip files that can't be decoded (e.g. git-crypt encrypted in CI).
 for _ENV_PATH in get_env_file_paths():
-    load_dotenv(_ENV_PATH)
+    try:
+        load_dotenv(_ENV_PATH)
+    except UnicodeDecodeError:
+        pass
 
 PROVIDER = "google_docs"
 _CACHE_FILENAME = "google_docs.json"
