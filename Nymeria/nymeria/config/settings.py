@@ -450,6 +450,15 @@ class Settings(BaseSettings):
     pipedrive_api_token: Optional[str] = Field(default=None, description="Pipedrive API token fallback")
     pipedrive_access_token: Optional[str] = Field(default=None, description="Pipedrive OAuth access token fallback")
     pipedrive_base_url: str = Field(default="https://api.pipedrive.com/api/v2", description="Pipedrive API base URL")
+    twilio_account_sid: Optional[str] = Field(default=None, description="Twilio account SID fallback")
+    twilio_auth_token: Optional[str] = Field(default=None, description="Twilio auth token or API key secret fallback")
+    twilio_api_key_sid: Optional[str] = Field(default=None, description="Optional Twilio API key SID fallback")
+    twilio_base_url: str = Field(default="https://api.twilio.com/2010-04-01", description="Twilio API base URL")
+    sendgrid_api_key: Optional[str] = Field(default=None, description="SendGrid API key fallback")
+    sendgrid_base_url: str = Field(default="https://api.sendgrid.com/v3", description="SendGrid API base URL")
+    mailgun_api_key: Optional[str] = Field(default=None, description="Mailgun API key fallback")
+    mailgun_domain: Optional[str] = Field(default=None, description="Mailgun sending domain fallback")
+    mailgun_base_url: str = Field(default="https://api.mailgun.net/v3", description="Mailgun API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

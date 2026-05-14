@@ -134,6 +134,15 @@ Set the API key for your chosen provider:
 | `PIPEDRIVE_API_TOKEN` | Pipedrive | Optional env fallback for Pipedrive API-token auth; credential vault provider `pipedrive` is preferred |
 | `PIPEDRIVE_ACCESS_TOKEN` | Pipedrive | Optional Pipedrive OAuth bearer token fallback |
 | `PIPEDRIVE_BASE_URL` | Pipedrive | Optional Pipedrive API base URL override |
+| `TWILIO_ACCOUNT_SID` | Twilio | Optional Twilio account SID fallback; credential vault provider `twilio` is preferred |
+| `TWILIO_AUTH_TOKEN` | Twilio | Optional Twilio auth token or API key secret fallback |
+| `TWILIO_API_KEY_SID` | Twilio | Optional Twilio API key SID fallback |
+| `TWILIO_BASE_URL` | Twilio | Optional Twilio API base URL override |
+| `SENDGRID_API_KEY` | SendGrid | Optional env fallback for SendGrid tools; credential vault provider `sendgrid` is preferred |
+| `SENDGRID_BASE_URL` | SendGrid | Optional SendGrid API base URL override |
+| `MAILGUN_API_KEY` | Mailgun | Optional env fallback for Mailgun tools; credential vault provider `mailgun` is preferred |
+| `MAILGUN_DOMAIN` | Mailgun | Optional Mailgun sending domain fallback |
+| `MAILGUN_BASE_URL` | Mailgun | Optional Mailgun API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -349,6 +358,15 @@ reachable from the backend process.
 | `PIPEDRIVE_API_TOKEN` | - | Pipedrive API token fallback |
 | `PIPEDRIVE_ACCESS_TOKEN` | - | Pipedrive OAuth access token fallback |
 | `PIPEDRIVE_BASE_URL` | `https://api.pipedrive.com/api/v2` | Pipedrive API base URL |
+| `TWILIO_ACCOUNT_SID` | - | Twilio account SID fallback |
+| `TWILIO_AUTH_TOKEN` | - | Twilio auth token or API key secret fallback |
+| `TWILIO_API_KEY_SID` | - | Optional Twilio API key SID fallback |
+| `TWILIO_BASE_URL` | `https://api.twilio.com/2010-04-01` | Twilio API base URL |
+| `SENDGRID_API_KEY` | - | SendGrid API key fallback |
+| `SENDGRID_BASE_URL` | `https://api.sendgrid.com/v3` | SendGrid API base URL |
+| `MAILGUN_API_KEY` | - | Mailgun API key fallback |
+| `MAILGUN_DOMAIN` | - | Mailgun sending domain fallback |
+| `MAILGUN_BASE_URL` | `https://api.mailgun.net/v3` | Mailgun API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

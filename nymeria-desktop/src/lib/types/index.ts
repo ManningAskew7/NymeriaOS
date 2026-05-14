@@ -890,6 +890,15 @@ export interface ServerSettingsUpdate {
   pipedrive_api_token?: string | null;
   pipedrive_access_token?: string | null;
   pipedrive_base_url?: string | null;
+  twilio_account_sid?: string | null;
+  twilio_auth_token?: string | null;
+  twilio_api_key_sid?: string | null;
+  twilio_base_url?: string | null;
+  sendgrid_api_key?: string | null;
+  sendgrid_base_url?: string | null;
+  mailgun_api_key?: string | null;
+  mailgun_domain?: string | null;
+  mailgun_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;
