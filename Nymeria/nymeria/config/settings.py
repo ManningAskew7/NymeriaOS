@@ -81,10 +81,27 @@ DEFAULT_LLM_FALLBACK_MODELS = "anthropic:claude-haiku-4-5-20251001"
 ReasoningEffort = Literal["low", "medium", "high"]
 
 
+def _is_readable_text(path: Path) -> bool:
+    """Return False for missing files or git-crypt encrypted blobs."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+        return not head.startswith(b"\x00GITCRYPT")
+    except OSError:
+        return False
+
+
 def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
-    """Return environment files loaded for a runtime project root."""
+    """Return environment files loaded for a runtime project root.
+
+    Excludes files that are git-crypt encrypted (unreadable as text).
+    """
     root = project_root or PROJECT_ROOT
-    return tuple(root / filename for filename in ENV_FILENAMES)
+    return tuple(
+        root / filename
+        for filename in ENV_FILENAMES
+        if _is_readable_text(root / filename)
+    )
 
 
 def get_env_write_path(project_root: Path | None = None) -> Path:
@@ -556,6 +573,19 @@ class Settings(BaseSettings):
     intercom_access_token: Optional[str] = Field(default=None, description="Intercom access token fallback")
     intercom_base_url: str = Field(default="https://api.intercom.io", description="Intercom API base URL")
     intercom_version: str = Field(default="2.11", description="Intercom API version")
+    salesforce_instance_url: Optional[str] = Field(default=None, description="Salesforce instance URL fallback")
+    salesforce_access_token: Optional[str] = Field(default=None, description="Salesforce OAuth access token fallback")
+    salesforce_base_url: Optional[str] = Field(default=None, description="Salesforce API base URL override")
+    salesforce_api_version: str = Field(default="v59.0", description="Salesforce REST API version")
+    zoho_crm_access_token: Optional[str] = Field(default=None, description="Zoho CRM OAuth access token fallback")
+    zoho_crm_api_domain: Optional[str] = Field(default=None, description="Zoho CRM API domain fallback")
+    zoho_crm_base_url: str = Field(default="https://www.zohoapis.com/crm/v2", description="Zoho CRM API base URL")
+    freshworks_crm_api_key: Optional[str] = Field(default=None, description="Freshworks CRM API key fallback")
+    freshworks_crm_domain: Optional[str] = Field(default=None, description="Freshworks CRM account domain fallback")
+    freshworks_crm_base_url: Optional[str] = Field(default=None, description="Freshworks CRM API base URL override")
+    salesmate_session_token: Optional[str] = Field(default=None, description="Salesmate session token fallback")
+    salesmate_link_name: Optional[str] = Field(default=None, description="Salesmate link name fallback")
+    salesmate_base_url: str = Field(default="https://apis.salesmate.io", description="Salesmate API base URL")
     pipedrive_api_token: Optional[str] = Field(default=None, description="Pipedrive API token fallback")
     pipedrive_access_token: Optional[str] = Field(default=None, description="Pipedrive OAuth access token fallback")
     pipedrive_base_url: str = Field(default="https://api.pipedrive.com/api/v2", description="Pipedrive API base URL")

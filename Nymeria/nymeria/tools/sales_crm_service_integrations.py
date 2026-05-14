@@ -16,6 +16,10 @@ _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _PIPEDRIVE_V2_BASE_URL = "https://api.pipedrive.com/api/v2"
 _PIPEDRIVE_V1_BASE_URL = "https://api.pipedrive.com/v1"
+_SALESFORCE_API_VERSION = "v59.0"
+_ZOHO_CRM_BASE_URL = "https://www.zohoapis.com/crm/v2"
+_FRESHWORKS_CRM_BASE_URL = "https://{domain}.myfreshworks.com/crm/sales/api"
+_SALESMATE_BASE_URL = "https://apis.salesmate.io"
 
 _V2_RESOURCES = {
     "activities": "activities",
@@ -49,6 +53,74 @@ _SEARCH_RESOURCES = {
     "product": "products",
     "leads": "leads",
     "lead": "leads",
+}
+_SALESFORCE_OBJECTS = {
+    "account": "Account",
+    "accounts": "Account",
+    "contact": "Contact",
+    "contacts": "Contact",
+    "lead": "Lead",
+    "leads": "Lead",
+    "opportunity": "Opportunity",
+    "opportunities": "Opportunity",
+    "case": "Case",
+    "cases": "Case",
+    "task": "Task",
+    "tasks": "Task",
+    "user": "User",
+    "users": "User",
+    "campaign": "Campaign",
+    "campaigns": "Campaign",
+}
+_ZOHO_MODULES = {
+    "account": "Accounts",
+    "accounts": "Accounts",
+    "contact": "Contacts",
+    "contacts": "Contacts",
+    "deal": "Deals",
+    "deals": "Deals",
+    "lead": "Leads",
+    "leads": "Leads",
+    "product": "Products",
+    "products": "Products",
+    "invoice": "Invoices",
+    "invoices": "Invoices",
+    "quote": "Quotes",
+    "quotes": "Quotes",
+    "sales_order": "Sales_Orders",
+    "sales_orders": "Sales_Orders",
+    "purchase_order": "Purchase_Orders",
+    "purchase_orders": "Purchase_Orders",
+    "vendor": "Vendors",
+    "vendors": "Vendors",
+}
+_FRESHWORKS_RESOURCES = {
+    "account": "sales_accounts",
+    "accounts": "sales_accounts",
+    "sales_account": "sales_accounts",
+    "sales_accounts": "sales_accounts",
+    "contact": "contacts",
+    "contacts": "contacts",
+    "deal": "deals",
+    "deals": "deals",
+    "task": "tasks",
+    "tasks": "tasks",
+    "appointment": "appointments",
+    "appointments": "appointments",
+    "note": "notes",
+    "notes": "notes",
+    "sales_activity": "sales_activities",
+    "sales_activities": "sales_activities",
+}
+_SALESMATE_RESOURCES = {
+    "company": "companies",
+    "companies": "companies",
+    "contact": "contacts",
+    "contacts": "contacts",
+    "deal": "deals",
+    "deals": "deals",
+    "activity": "activities",
+    "activities": "activities",
 }
 
 
@@ -142,6 +214,55 @@ def _parse_json(value: str, *, expected: type, label: str) -> Any:
     return parsed
 
 
+def _json_records(value: str, *, label: str) -> list[dict[str, Any]]:
+    parsed = json.loads(value)
+    records = parsed if isinstance(parsed, list) else [parsed]
+    if not records or not all(isinstance(record, dict) for record in records):
+        raise ValueError(f"{label} must be a JSON object or array of objects.")
+    return records
+
+
+def _api_identifier(value: str, *, label: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{label} is required.")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+    if any(char not in allowed for char in cleaned):
+        raise ValueError(f"{label} may only contain letters, numbers, and underscores.")
+    return cleaned
+
+
+def _salesforce_object(object_name: str) -> str:
+    key = object_name.strip().lower()
+    if key in _SALESFORCE_OBJECTS:
+        return _SALESFORCE_OBJECTS[key]
+    return _api_identifier(object_name, label="object_name")
+
+
+def _zoho_module(resource: str) -> str:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _ZOHO_MODULES:
+        allowed = ", ".join(sorted(set(_ZOHO_MODULES)))
+        raise ValueError(f"unsupported Zoho CRM resource '{resource}'. Use one of: {allowed}")
+    return _ZOHO_MODULES[key]
+
+
+def _freshworks_resource(resource: str) -> str:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _FRESHWORKS_RESOURCES:
+        allowed = ", ".join(sorted(set(_FRESHWORKS_RESOURCES)))
+        raise ValueError(f"unsupported Freshworks CRM resource '{resource}'. Use one of: {allowed}")
+    return _FRESHWORKS_RESOURCES[key]
+
+
+def _salesmate_resource(resource: str) -> str:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _SALESMATE_RESOURCES:
+        allowed = ", ".join(sorted(set(_SALESMATE_RESOURCES)))
+        raise ValueError(f"unsupported Salesmate resource '{resource}'. Use one of: {allowed}")
+    return _SALESMATE_RESOURCES[key]
+
+
 def _pipedrive_resource(resource: str) -> tuple[str, str]:
     key = resource.strip().lower()
     if key in _V2_RESOURCES:
@@ -216,6 +337,201 @@ def _pipedrive_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     return base_v2, base_v1, headers, auth_params
 
 
+def _salesforce_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    instance_url = (
+        _credential_value(
+            provider="salesforce",
+            provider_aliases=("salesforce_oauth2", "salesforce_api"),
+            field_names=("instance_url", "instanceUrl", "base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("salesforce_instance_url")
+        or _settings_value("salesforce_base_url")
+    )
+    token = _credential_value(
+        provider="salesforce",
+        provider_aliases=("salesforce_oauth2", "salesforce_api"),
+        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("salesforce_access_token")
+    if not instance_url:
+        return "", (
+            '[Error]: No Salesforce instance URL found. Save a Salesforce credential with "instance_url" '
+            "or set SALESFORCE_INSTANCE_URL."
+        )
+    if not token:
+        return _base_url(instance_url), _setup_hint(
+            provider="salesforce",
+            field_names=("access_token", "instance_url"),
+            tool_name=tool_name,
+            env_var="SALESFORCE_ACCESS_TOKEN",
+            display_name="Salesforce",
+        )
+    api_version = (
+        _credential_value(
+            provider="salesforce",
+            provider_aliases=("salesforce_oauth2", "salesforce_api"),
+            field_names=("api_version", "apiVersion"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("salesforce_api_version")
+        or _SALESFORCE_API_VERSION
+    )
+    base = _base_url(instance_url)
+    if "/services/data/" not in base:
+        base = f"{base}/services/data/{api_version.strip().lstrip('/')}"
+    return base, {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _zoho_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="zoho_crm",
+            provider_aliases=("zoho", "zoho_oauth2", "zoho_crm_oauth2"),
+            field_names=("base_url", "api_domain", "apiDomain", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("zoho_crm_api_domain")
+        or _settings_value("zoho_crm_base_url")
+        or _ZOHO_CRM_BASE_URL
+    )
+    token = _credential_value(
+        provider="zoho_crm",
+        provider_aliases=("zoho", "zoho_oauth2", "zoho_crm_oauth2"),
+        field_names=("access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("zoho_crm_access_token")
+    base = _base_url(base)
+    if not base.endswith("/crm/v2"):
+        base = f"{base}/crm/v2"
+    if not token:
+        return base, _setup_hint(
+            provider="zoho_crm",
+            field_names=("access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="ZOHO_CRM_ACCESS_TOKEN",
+            display_name="Zoho CRM",
+        )
+    return base, {
+        "Accept": "application/json",
+        "Authorization": f"Zoho-oauthtoken {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _freshworks_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="freshworks_crm",
+            provider_aliases=("freshworks", "freshsales", "freshworks_crm_api"),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("freshworks_crm_base_url")
+    )
+    domain = (
+        _credential_value(
+            provider="freshworks_crm",
+            provider_aliases=("freshworks", "freshsales", "freshworks_crm_api"),
+            field_names=("domain", "subdomain"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("freshworks_crm_domain")
+    )
+    api_key = _credential_value(
+        provider="freshworks_crm",
+        provider_aliases=("freshworks", "freshsales", "freshworks_crm_api"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("freshworks_crm_api_key")
+    if not base:
+        if not domain:
+            return "", (
+                '[Error]: No Freshworks CRM domain found. Save a Freshworks CRM credential with "domain" '
+                "or set FRESHWORKS_CRM_DOMAIN."
+            )
+        base = _FRESHWORKS_CRM_BASE_URL.format(domain=domain.strip().replace(".myfreshworks.com", ""))
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="freshworks_crm",
+            field_names=("api_key", "domain"),
+            tool_name=tool_name,
+            env_var="FRESHWORKS_CRM_API_KEY",
+            display_name="Freshworks CRM",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Authorization": f"Token token={api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _salesmate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="salesmate",
+            provider_aliases=("salesmate_api",),
+            field_names=("base_url", "url_base", "api_url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("salesmate_base_url")
+        or _SALESMATE_BASE_URL
+    )
+    link_name = (
+        _credential_value(
+            provider="salesmate",
+            provider_aliases=("salesmate_api",),
+            field_names=("link_name", "linkName", "url", "domain"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("salesmate_link_name")
+    )
+    token = _credential_value(
+        provider="salesmate",
+        provider_aliases=("salesmate_api",),
+        field_names=("session_token", "sessionToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("salesmate_session_token")
+    if not link_name:
+        return _base_url(base), (
+            '[Error]: No Salesmate link name found. Save a Salesmate credential with "link_name" '
+            "or set SALESMATE_LINK_NAME."
+        )
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="salesmate",
+            field_names=("session_token", "link_name"),
+            tool_name=tool_name,
+            env_var="SALESMATE_SESSION_TOKEN",
+            display_name="Salesmate",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+        "sessionToken": token,
+        "x-linkname": link_name.strip(),
+    }
+
+
 def _request_json(
     method: str,
     url: str,
@@ -280,6 +596,634 @@ def _pipedrive_items(payload: Any) -> Any:
     if isinstance(data, dict) and "items" in data:
         return data["items"]
     return data
+
+
+def _zoho_data(payload: Any) -> Any:
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return payload["data"]
+    return payload
+
+
+def _salesmate_data(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    data = payload.get("Data", payload.get("data", payload))
+    if isinstance(data, dict) and "data" in data:
+        return data["data"]
+    return data
+
+
+@tool
+def salesforce_query_records(
+    soql: str,
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Run a Salesforce SOQL query.
+
+    Args:
+        soql: SOQL SELECT query.
+        limit: Maximum rows to return when the query does not already include a LIMIT.
+    """
+    query = soql.strip()
+    if not query.lower().startswith("select "):
+        return "[Error]: soql must be a SELECT query."
+    if " limit " not in f" {query.lower()} ":
+        query = f"{query} LIMIT {_limit(limit, max_value=2000)}"
+    try:
+        base, headers_or_error = _salesforce_config("salesforce_query_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base}/query", params={"q": query}, headers=headers_or_error)
+        return _dump_json(data.get("records", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("salesforce_query_records failed", exc_info=True)
+        return f"[Error]: Salesforce query failed: {e}"
+
+
+@tool
+def salesforce_get_record(
+    object_name: str,
+    record_id: str,
+    fields: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Salesforce object record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        sf_object = _salesforce_object(object_name)
+        base, headers_or_error = _salesforce_config("salesforce_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = {"fields": ",".join(_split_csv(fields))}
+        data = _request_json(
+            "GET",
+            f"{base}/sobjects/{quote(sf_object, safe='')}/{quote(record_id.strip(), safe='')}",
+            params=params,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("salesforce_get_record failed", exc_info=True)
+        return f"[Error]: Salesforce record lookup failed: {e}"
+
+
+@tool
+def salesforce_create_record(
+    object_name: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Salesforce object record from a JSON object."""
+    try:
+        sf_object = _salesforce_object(object_name)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _salesforce_config("salesforce_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base}/sobjects/{quote(sf_object, safe='')}",
+            json_body=fields_payload,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("salesforce_create_record failed", exc_info=True)
+        return f"[Error]: Salesforce record creation failed: {e}"
+
+
+@tool
+def salesforce_update_record(
+    object_name: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Salesforce object record from a JSON object."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        sf_object = _salesforce_object(object_name)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _salesforce_config("salesforce_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PATCH",
+            f"{base}/sobjects/{quote(sf_object, safe='')}/{quote(record_id.strip(), safe='')}",
+            json_body=fields_payload,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("salesforce_update_record failed", exc_info=True)
+        return f"[Error]: Salesforce record update failed: {e}"
+
+
+@tool
+def salesforce_delete_record(
+    object_name: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Salesforce object record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        sf_object = _salesforce_object(object_name)
+        base, headers_or_error = _salesforce_config("salesforce_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base}/sobjects/{quote(sf_object, safe='')}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("salesforce_delete_record failed", exc_info=True)
+        return f"[Error]: Salesforce record deletion failed: {e}"
+
+
+@tool
+def zoho_crm_list_records(
+    resource: str = "leads",
+    fields: str = "",
+    page: int = 1,
+    per_page: int = 50,
+    sort_by: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Zoho CRM records for a module."""
+    try:
+        module = _zoho_module(resource)
+        base, headers_or_error = _zoho_config("zoho_crm_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = _filtered_params(
+            {
+                "fields": ",".join(_split_csv(fields)),
+                "page": max(1, int(page or 1)),
+                "per_page": _limit(per_page, max_value=200),
+                "sort_by": sort_by.strip(),
+            }
+        )
+        data = _request_json("GET", f"{base}/{module}", params=params, headers=headers_or_error)
+        return _dump_json(_zoho_data(data))
+    except Exception as e:
+        logger.error("zoho_crm_list_records failed", exc_info=True)
+        return f"[Error]: Zoho CRM record list failed: {e}"
+
+
+@tool
+def zoho_crm_search_records(
+    resource: str,
+    criteria: str = "",
+    email: str = "",
+    phone: str = "",
+    word: str = "",
+    page: int = 1,
+    per_page: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search Zoho CRM records by criteria, email, phone, or word."""
+    if not any(value.strip() for value in (criteria, email, phone, word)):
+        return "[Error]: provide criteria, email, phone, or word."
+    try:
+        module = _zoho_module(resource)
+        base, headers_or_error = _zoho_config("zoho_crm_search_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = _filtered_params(
+            {
+                "criteria": criteria.strip(),
+                "email": email.strip(),
+                "phone": phone.strip(),
+                "word": word.strip(),
+                "page": max(1, int(page or 1)),
+                "per_page": _limit(per_page, max_value=200),
+            }
+        )
+        data = _request_json("GET", f"{base}/{module}/search", params=params, headers=headers_or_error)
+        return _dump_json(_zoho_data(data))
+    except Exception as e:
+        logger.error("zoho_crm_search_records failed", exc_info=True)
+        return f"[Error]: Zoho CRM record search failed: {e}"
+
+
+@tool
+def zoho_crm_get_record(
+    resource: str,
+    record_id: str,
+    fields: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get one Zoho CRM record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        module = _zoho_module(resource)
+        base, headers_or_error = _zoho_config("zoho_crm_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = {"fields": ",".join(_split_csv(fields))}
+        data = _request_json(
+            "GET",
+            f"{base}/{module}/{quote(record_id.strip(), safe='')}",
+            params=params,
+            headers=headers_or_error,
+        )
+        return _dump_json(_zoho_data(data))
+    except Exception as e:
+        logger.error("zoho_crm_get_record failed", exc_info=True)
+        return f"[Error]: Zoho CRM record lookup failed: {e}"
+
+
+@tool
+def zoho_crm_create_records(
+    resource: str,
+    records_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create one or more Zoho CRM records from JSON object(s)."""
+    try:
+        module = _zoho_module(resource)
+        records = _json_records(records_json, label="records_json")
+        base, headers_or_error = _zoho_config("zoho_crm_create_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base}/{module}", json_body={"data": records}, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zoho_crm_create_records failed", exc_info=True)
+        return f"[Error]: Zoho CRM record creation failed: {e}"
+
+
+@tool
+def zoho_crm_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update one Zoho CRM record from a JSON object."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        module = _zoho_module(resource)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _zoho_config("zoho_crm_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base}/{module}/{quote(record_id.strip(), safe='')}",
+            json_body={"data": [fields_payload]},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zoho_crm_update_record failed", exc_info=True)
+        return f"[Error]: Zoho CRM record update failed: {e}"
+
+
+@tool
+def zoho_crm_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete one Zoho CRM record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        module = _zoho_module(resource)
+        base, headers_or_error = _zoho_config("zoho_crm_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base}/{module}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("zoho_crm_delete_record failed", exc_info=True)
+        return f"[Error]: Zoho CRM record deletion failed: {e}"
+
+
+@tool
+def freshworks_crm_list_records(
+    resource: str = "contacts",
+    view_id: str = "",
+    page: int = 1,
+    per_page: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Freshworks CRM records."""
+    try:
+        resource_path = _freshworks_resource(resource)
+        endpoint = f"/{resource_path}/view/{quote(view_id.strip(), safe='')}" if view_id.strip() else f"/{resource_path}"
+        base, headers_or_error = _freshworks_config("freshworks_crm_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base}{endpoint}",
+            params={"page": max(1, int(page or 1)), "per_page": _limit(per_page, max_value=100)},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshworks_crm_list_records failed", exc_info=True)
+        return f"[Error]: Freshworks CRM record list failed: {e}"
+
+
+@tool
+def freshworks_crm_search_records(
+    term: str,
+    include: str = "",
+    page: int = 1,
+    per_page: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search Freshworks CRM records."""
+    if not term.strip():
+        return "[Error]: term is required."
+    try:
+        base, headers_or_error = _freshworks_config("freshworks_crm_search_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = {
+            "q": term.strip(),
+            "include": ",".join(_split_csv(include)),
+            "page": max(1, int(page or 1)),
+            "per_page": _limit(per_page, max_value=100),
+        }
+        data = _request_json("GET", f"{base}/search", params=params, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshworks_crm_search_records failed", exc_info=True)
+        return f"[Error]: Freshworks CRM record search failed: {e}"
+
+
+@tool
+def freshworks_crm_get_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get one Freshworks CRM record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        resource_path = _freshworks_resource(resource)
+        base, headers_or_error = _freshworks_config("freshworks_crm_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base}/{resource_path}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshworks_crm_get_record failed", exc_info=True)
+        return f"[Error]: Freshworks CRM record lookup failed: {e}"
+
+
+@tool
+def freshworks_crm_create_record(
+    resource: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create one Freshworks CRM record from a JSON object."""
+    try:
+        resource_path = _freshworks_resource(resource)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _freshworks_config("freshworks_crm_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base}/{resource_path}", json_body=fields_payload, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshworks_crm_create_record failed", exc_info=True)
+        return f"[Error]: Freshworks CRM record creation failed: {e}"
+
+
+@tool
+def freshworks_crm_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update one Freshworks CRM record from a JSON object."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        resource_path = _freshworks_resource(resource)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _freshworks_config("freshworks_crm_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base}/{resource_path}/{quote(record_id.strip(), safe='')}",
+            json_body=fields_payload,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshworks_crm_update_record failed", exc_info=True)
+        return f"[Error]: Freshworks CRM record update failed: {e}"
+
+
+@tool
+def freshworks_crm_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete one Freshworks CRM record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        resource_path = _freshworks_resource(resource)
+        base, headers_or_error = _freshworks_config("freshworks_crm_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base}/{resource_path}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("freshworks_crm_delete_record failed", exc_info=True)
+        return f"[Error]: Freshworks CRM record deletion failed: {e}"
+
+
+@tool
+def salesmate_list_users(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List active Salesmate users."""
+    try:
+        base, headers_or_error = _salesmate_config("salesmate_list_users", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base}/v1/users/active", headers=headers_or_error)
+        return _dump_json(_salesmate_data(data))
+    except Exception as e:
+        logger.error("salesmate_list_users failed", exc_info=True)
+        return f"[Error]: Salesmate user list failed: {e}"
+
+
+@tool
+def salesmate_search_records(
+    resource: str = "companies",
+    query_json: str = "",
+    fields: str = "",
+    page_no: int = 1,
+    rows: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search Salesmate records."""
+    try:
+        resource_path = _salesmate_resource(resource)
+        query = _parse_json(query_json, expected=dict, label="query_json")
+        field_list = _split_csv(fields) or ["name", "id"]
+        body = {"fields": field_list, "query": query}
+        base, headers_or_error = _salesmate_config("salesmate_search_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base}/v2/{resource_path}/search",
+            params={"pageNo": max(1, int(page_no or 1)), "rows": _limit(rows, max_value=250)},
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(_salesmate_data(data))
+    except Exception as e:
+        logger.error("salesmate_search_records failed", exc_info=True)
+        return f"[Error]: Salesmate record search failed: {e}"
+
+
+@tool
+def salesmate_get_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get one Salesmate record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        resource_path = _salesmate_resource(resource)
+        base, headers_or_error = _salesmate_config("salesmate_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base}/v1/{resource_path}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(_salesmate_data(data))
+    except Exception as e:
+        logger.error("salesmate_get_record failed", exc_info=True)
+        return f"[Error]: Salesmate record lookup failed: {e}"
+
+
+@tool
+def salesmate_create_record(
+    resource: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create one Salesmate record from a JSON object."""
+    try:
+        resource_path = _salesmate_resource(resource)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _salesmate_config("salesmate_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base}/v1/{resource_path}", json_body=fields_payload, headers=headers_or_error)
+        return _dump_json(_salesmate_data(data))
+    except Exception as e:
+        logger.error("salesmate_create_record failed", exc_info=True)
+        return f"[Error]: Salesmate record creation failed: {e}"
+
+
+@tool
+def salesmate_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update one Salesmate record from a JSON object."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        resource_path = _salesmate_resource(resource)
+        fields_payload = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields_payload:
+            return "[Error]: fields_json must contain at least one field."
+        base, headers_or_error = _salesmate_config("salesmate_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base}/v1/{resource_path}/{quote(record_id.strip(), safe='')}",
+            json_body=fields_payload,
+            headers=headers_or_error,
+        )
+        return _dump_json(_salesmate_data(data))
+    except Exception as e:
+        logger.error("salesmate_update_record failed", exc_info=True)
+        return f"[Error]: Salesmate record update failed: {e}"
+
+
+@tool
+def salesmate_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete one Salesmate record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        resource_path = _salesmate_resource(resource)
+        base, headers_or_error = _salesmate_config("salesmate_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base}/v1/{resource_path}/{quote(record_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("salesmate_delete_record failed", exc_info=True)
+        return f"[Error]: Salesmate record deletion failed: {e}"
 
 
 @tool
@@ -554,6 +1498,29 @@ def pipedrive_list_users(
 
 
 SALES_CRM_SERVICE_TOOLS = [
+    salesforce_query_records,
+    salesforce_get_record,
+    salesforce_create_record,
+    salesforce_update_record,
+    salesforce_delete_record,
+    zoho_crm_list_records,
+    zoho_crm_search_records,
+    zoho_crm_get_record,
+    zoho_crm_create_records,
+    zoho_crm_update_record,
+    zoho_crm_delete_record,
+    freshworks_crm_list_records,
+    freshworks_crm_search_records,
+    freshworks_crm_get_record,
+    freshworks_crm_create_record,
+    freshworks_crm_update_record,
+    freshworks_crm_delete_record,
+    salesmate_list_users,
+    salesmate_search_records,
+    salesmate_get_record,
+    salesmate_create_record,
+    salesmate_update_record,
+    salesmate_delete_record,
     pipedrive_list_records,
     pipedrive_search_records,
     pipedrive_get_record,
