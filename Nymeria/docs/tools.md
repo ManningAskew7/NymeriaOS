@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (42)
+### Optional: Service Integration Tools (58)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -120,6 +120,22 @@ in the credential vault for provider-specific saved connections scoped to
 | 40 | `marketstack_get_exchange` | Integrations | SAFE | Get Marketstack exchange metadata |
 | 41 | `deepl_translate_text` | Integrations | MODERATE | Translate text with DeepL |
 | 42 | `deepl_list_languages` | Integrations | SAFE | List DeepL source or target languages |
+| 43 | `todoist_list_tasks` | Integrations | SAFE | List Todoist tasks; uses vault provider `todoist` |
+| 44 | `todoist_get_task` | Integrations | SAFE | Get a Todoist task by ID |
+| 45 | `todoist_create_task` | Integrations | MODERATE | Create a Todoist task |
+| 46 | `todoist_update_task` | Integrations | MODERATE | Update a Todoist task |
+| 47 | `todoist_close_task` | Integrations | MODERATE | Close a Todoist task |
+| 48 | `todoist_list_projects` | Integrations | SAFE | List Todoist projects |
+| 49 | `todoist_get_project` | Integrations | SAFE | Get a Todoist project by ID |
+| 50 | `todoist_create_project` | Integrations | MODERATE | Create a Todoist project |
+| 51 | `trello_search` | Integrations | SAFE | Search Trello boards and cards |
+| 52 | `trello_get_board` | Integrations | SAFE | Get Trello board metadata |
+| 53 | `trello_list_board_lists` | Integrations | SAFE | List Trello lists on a board |
+| 54 | `trello_list_cards` | Integrations | SAFE | List Trello cards in a list |
+| 55 | `trello_get_card` | Integrations | SAFE | Get Trello card metadata |
+| 56 | `trello_create_card` | Integrations | MODERATE | Create a Trello card |
+| 57 | `trello_update_card` | Integrations | MODERATE | Update a Trello card |
+| 58 | `trello_add_card_comment` | Integrations | MODERATE | Add a comment to a Trello card |
 
 ### Optional: Private B Tools (4)
 
@@ -685,7 +701,8 @@ connections in Settings > Connections with these provider names and fields:
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
-use `deepl.api_plan = free` for the free endpoint. Scope a
+use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
+`todoist.api_key`, `trello.api_key`, and `trello.api_token`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -788,6 +805,16 @@ Credential providers and fallback env vars:
 - Brandfetch: provider `brandfetch`, fields `api_key`, `token`, or `value`; env fallback `BRANDFETCH_API_KEY`.
 - Marketstack: provider `marketstack`, fields `api_key`, `access_key`, `token`, or `value`; env fallback `MARKETSTACK_API_KEY`.
 - DeepL: provider `deepl`, fields `api_key`, `auth_key`, `token`, or `value`; env fallback `DEEPL_API_KEY`. Use `api_plan` / `plan` or `DEEPL_API_PLAN=free` for the free endpoint.
+
+### Productivity Service Tools
+
+This batch includes:
+- `todoist_list_tasks(project_id?, section_id?, label?, filter_query?, limit?)`, `todoist_get_task(task_id)`, `todoist_create_task(...)`, `todoist_update_task(...)`, `todoist_close_task(task_id)`, `todoist_list_projects(limit?)`, `todoist_get_project(project_id)`, and `todoist_create_project(...)`. Create/update/close are MODERATE because they change Todoist state.
+- `trello_search(query, model_types?, limit?, partial?)`, `trello_get_board(board_id, fields?)`, `trello_list_board_lists(board_id, filter_value?, limit?)`, `trello_list_cards(list_id, filter_value?, limit?)`, `trello_get_card(card_id, fields?)`, `trello_create_card(...)`, `trello_update_card(...)`, and `trello_add_card_comment(card_id, text)`. Create/update/comment are MODERATE because they change Trello state.
+
+Credential providers and fallback env vars:
+- Todoist: provider `todoist`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `TODOIST_API_KEY`. Use `base_url` / `url` or `TODOIST_BASE_URL` for non-default API roots.
+- Trello: provider `trello`, fields `api_key` / `key` and `api_token` / `token` / `value`; env fallback `TRELLO_API_KEY` plus `TRELLO_API_TOKEN`. Use `base_url` / `url` or `TRELLO_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

@@ -99,6 +99,11 @@ class ServerSettingsUpdate(BaseModel):
     deepl_api_key: Optional[str] = None
     deepl_api_plan: Optional[str] = None
     deepl_base_url: Optional[str] = None
+    todoist_api_key: Optional[str] = None
+    todoist_base_url: Optional[str] = None
+    trello_api_key: Optional[str] = None
+    trello_api_token: Optional[str] = None
+    trello_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

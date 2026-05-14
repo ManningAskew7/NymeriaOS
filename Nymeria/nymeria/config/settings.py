@@ -398,6 +398,11 @@ class Settings(BaseSettings):
     deepl_api_key: Optional[str] = Field(default=None, description="DeepL API key fallback")
     deepl_api_plan: str = Field(default="pro", description="DeepL API plan: pro or free")
     deepl_base_url: Optional[str] = Field(default=None, description="DeepL API base URL override")
+    todoist_api_key: Optional[str] = Field(default=None, description="Todoist API key fallback")
+    todoist_base_url: str = Field(default="https://api.todoist.com/api/v1", description="Todoist API base URL")
+    trello_api_key: Optional[str] = Field(default=None, description="Trello API key fallback")
+    trello_api_token: Optional[str] = Field(default=None, description="Trello API token fallback")
+    trello_base_url: str = Field(default="https://api.trello.com/1", description="Trello API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
