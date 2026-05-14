@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (225)
+### Optional: Service Integration Tools (236)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -303,6 +303,17 @@ in the credential vault for provider-specific saved connections scoped to
 | 223 | `chargebee_get_record` | Integrations | SAFE | Get a Chargebee billing record by ID |
 | 224 | `chargebee_create_customer` | Integrations | MODERATE | Create a Chargebee customer |
 | 225 | `chargebee_update_customer` | Integrations | MODERATE | Update a Chargebee customer |
+| 226 | `pushbullet_send_push` | Integrations | MODERATE | Send a Pushbullet note or link push |
+| 227 | `pushbullet_list_pushes` | Integrations | SAFE | List Pushbullet push history |
+| 228 | `pushbullet_update_push` | Integrations | MODERATE | Dismiss or update a Pushbullet push |
+| 229 | `pushbullet_delete_push` | Integrations | MODERATE | Delete a Pushbullet push |
+| 230 | `pushcut_send_notification` | Integrations | MODERATE | Send a Pushcut notification |
+| 231 | `gotify_send_message` | Integrations | MODERATE | Send a Gotify message |
+| 232 | `gotify_list_messages` | Integrations | SAFE | List Gotify messages |
+| 233 | `gotify_delete_message` | Integrations | MODERATE | Delete a Gotify message |
+| 234 | `pushover_send_message` | Integrations | MODERATE | Send a Pushover message |
+| 235 | `signl4_send_alert` | Integrations | MODERATE | Send a SIGNL4 alert |
+| 236 | `signl4_resolve_alert` | Integrations | MODERATE | Resolve a SIGNL4 alert by external ID |
 
 ### Optional: Private B Tools (4)
 
@@ -1081,6 +1092,22 @@ Credential providers and fallback env vars:
 - Shopify: provider `shopify`, fields `shop_subdomain` / `shopSubdomain` / `shop` / `domain` plus `access_token` / `accessToken` / `token` / `value` for modern Admin API token auth. Legacy basic auth can use `api_key` / `apiKey` plus `password`. Env fallback supports `SHOPIFY_SHOP`, `SHOPIFY_ACCESS_TOKEN`, optional `SHOPIFY_API_VERSION`, legacy `SHOPIFY_API_KEY` and `SHOPIFY_PASSWORD`, and `SHOPIFY_BASE_URL` for a full Admin REST root.
 - WooCommerce: provider `woocommerce`, fields `url` / `site_url` / `base_url`, `consumer_key` / `consumerKey`, and `consumer_secret` / `consumerSecret`. Env fallback supports `WOOCOMMERCE_URL`, `WOOCOMMERCE_BASE_URL`, `WOOCOMMERCE_CONSUMER_KEY`, and `WOOCOMMERCE_CONSUMER_SECRET`.
 - Chargebee: provider `chargebee`, fields `site` / `account_name` / `accountName` / `subdomain` plus `api_key` / `apiKey` / `token` / `value`; env fallback `CHARGEBEE_SITE` and `CHARGEBEE_API_KEY`. Use `base_url` / `url` or `CHARGEBEE_BASE_URL` for non-default API roots.
+
+### Notification Service Tools
+
+This batch includes:
+- `pushbullet_send_push(...)`, `pushbullet_list_pushes(...)`, `pushbullet_update_push(...)`, and `pushbullet_delete_push(push_id)` for Pushbullet note/link pushes and push history. Listing is SAFE; send/update/delete are MODERATE because they notify users or change push history.
+- `pushcut_send_notification(notification_name, ...)` for Pushcut smart notifications. Sending is MODERATE because it notifies devices and can trigger linked actions.
+- `gotify_send_message(...)`, `gotify_list_messages(...)`, and `gotify_delete_message(message_id)`. Listing is SAFE; send/delete are MODERATE because they notify clients or change message history.
+- `pushover_send_message(...)` for Pushover notifications, including emergency-priority retry/expire fields. Sending is MODERATE because it contacts devices and can consume app quota.
+- `signl4_send_alert(...)` and `signl4_resolve_alert(external_id, ...)` for SIGNL4 alert events. Both are MODERATE because they notify on-call teams or change alert state.
+
+Credential providers and fallback env vars:
+- Pushbullet: provider `pushbullet`, fields `access_token`, `accessToken`, `api_key`, `apiKey`, `token`, or `value`; env fallback `PUSHBULLET_ACCESS_TOKEN`. Use `base_url` / `url` or `PUSHBULLET_BASE_URL` for non-default API roots.
+- Pushcut: provider `pushcut`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `PUSHCUT_API_KEY`. Use `base_url` / `url` or `PUSHCUT_BASE_URL` for non-default API roots.
+- Gotify: provider `gotify`, fields `base_url` / `url`, `app_token` / `appApiToken` for sending, and `client_token` / `clientApiToken` for list/delete operations. Env fallback supports `GOTIFY_BASE_URL`, `GOTIFY_APP_TOKEN`, and `GOTIFY_CLIENT_TOKEN`.
+- Pushover: provider `pushover`, fields `api_token` / `api_key` / `apiKey` / `token` plus `user_key` / `userKey` / `user`; env fallback `PUSHOVER_API_TOKEN` and `PUSHOVER_USER_KEY`. Use `base_url` / `url` or `PUSHOVER_BASE_URL` for non-default API roots.
+- SIGNL4: provider `signl4`, fields `team_secret` / `teamSecret` / `secret` or `webhook_url`; env fallback `SIGNL4_TEAM_SECRET` or `SIGNL4_WEBHOOK_URL`. Use `base_url` / `url` or `SIGNL4_BASE_URL` for non-default webhook roots.
 
 ### tool_enable
 

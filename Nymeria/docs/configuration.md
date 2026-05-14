@@ -173,6 +173,19 @@ Set the API key for your chosen provider:
 | `CHARGEBEE_API_KEY` | Chargebee | Optional env fallback for Chargebee tools; credential vault provider `chargebee` is preferred |
 | `CHARGEBEE_SITE` | Chargebee | Optional Chargebee site subdomain fallback |
 | `CHARGEBEE_BASE_URL` | Chargebee | Optional Chargebee API base URL override |
+| `PUSHBULLET_ACCESS_TOKEN` | Pushbullet | Optional env fallback for Pushbullet tools; credential vault provider `pushbullet` is preferred |
+| `PUSHBULLET_BASE_URL` | Pushbullet | Optional Pushbullet API base URL override |
+| `PUSHCUT_API_KEY` | Pushcut | Optional env fallback for Pushcut tools; credential vault provider `pushcut` is preferred |
+| `PUSHCUT_BASE_URL` | Pushcut | Optional Pushcut API base URL override |
+| `GOTIFY_BASE_URL` | Gotify | Optional Gotify server base URL fallback; credential vault provider `gotify` is preferred |
+| `GOTIFY_APP_TOKEN` | Gotify | Optional Gotify application token fallback for sending messages |
+| `GOTIFY_CLIENT_TOKEN` | Gotify | Optional Gotify client token fallback for listing/deleting messages |
+| `PUSHOVER_API_TOKEN` | Pushover | Optional env fallback for Pushover app API token; credential vault provider `pushover` is preferred |
+| `PUSHOVER_USER_KEY` | Pushover | Optional Pushover user or group key fallback |
+| `PUSHOVER_BASE_URL` | Pushover | Optional Pushover API base URL override |
+| `SIGNL4_TEAM_SECRET` | SIGNL4 | Optional SIGNL4 team secret fallback; credential vault provider `signl4` is preferred |
+| `SIGNL4_WEBHOOK_URL` | SIGNL4 | Optional full SIGNL4 webhook URL fallback |
+| `SIGNL4_BASE_URL` | SIGNL4 | Optional SIGNL4 webhook base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -427,6 +440,19 @@ reachable from the backend process.
 | `CHARGEBEE_API_KEY` | - | Chargebee API key fallback |
 | `CHARGEBEE_SITE` | - | Chargebee site subdomain fallback |
 | `CHARGEBEE_BASE_URL` | - | Chargebee API base URL override |
+| `PUSHBULLET_ACCESS_TOKEN` | - | Pushbullet access token fallback |
+| `PUSHBULLET_BASE_URL` | `https://api.pushbullet.com/v2` | Pushbullet API base URL |
+| `PUSHCUT_API_KEY` | - | Pushcut API key fallback |
+| `PUSHCUT_BASE_URL` | `https://api.pushcut.io/v1` | Pushcut API base URL |
+| `GOTIFY_BASE_URL` | - | Gotify server base URL fallback |
+| `GOTIFY_APP_TOKEN` | - | Gotify application token fallback |
+| `GOTIFY_CLIENT_TOKEN` | - | Gotify client token fallback |
+| `PUSHOVER_API_TOKEN` | - | Pushover application API token fallback |
+| `PUSHOVER_USER_KEY` | - | Pushover user or group key fallback |
+| `PUSHOVER_BASE_URL` | `https://api.pushover.net/1` | Pushover API base URL |
+| `SIGNL4_TEAM_SECRET` | - | SIGNL4 team secret fallback |
+| `SIGNL4_WEBHOOK_URL` | - | SIGNL4 full webhook URL fallback |
+| `SIGNL4_BASE_URL` | `https://connect.signl4.com/webhook` | SIGNL4 webhook base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

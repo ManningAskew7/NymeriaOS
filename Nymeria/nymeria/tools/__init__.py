@@ -357,6 +357,20 @@ from .commerce_billing_service_integrations import (
     chargebee_update_customer,
     COMMERCE_BILLING_SERVICE_TOOLS,
 )
+from .notification_service_integrations import (
+    pushbullet_send_push,
+    pushbullet_list_pushes,
+    pushbullet_update_push,
+    pushbullet_delete_push,
+    pushcut_send_notification,
+    gotify_send_message,
+    gotify_list_messages,
+    gotify_delete_message,
+    pushover_send_message,
+    signl4_send_alert,
+    signl4_resolve_alert,
+    NOTIFICATION_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -416,6 +430,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SALES_CRM_SERVICE_TOOLS
     + MESSAGING_DELIVERY_SERVICE_TOOLS
     + COMMERCE_BILLING_SERVICE_TOOLS
+    + NOTIFICATION_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -764,6 +779,18 @@ __all__ = [
     "chargebee_create_customer",
     "chargebee_update_customer",
     "COMMERCE_BILLING_SERVICE_TOOLS",
+    "pushbullet_send_push",
+    "pushbullet_list_pushes",
+    "pushbullet_update_push",
+    "pushbullet_delete_push",
+    "pushcut_send_notification",
+    "gotify_send_message",
+    "gotify_list_messages",
+    "gotify_delete_message",
+    "pushover_send_message",
+    "signl4_send_alert",
+    "signl4_resolve_alert",
+    "NOTIFICATION_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

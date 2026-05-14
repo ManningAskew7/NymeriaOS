@@ -489,6 +489,19 @@ class Settings(BaseSettings):
     chargebee_api_key: Optional[str] = Field(default=None, description="Chargebee API key fallback")
     chargebee_site: Optional[str] = Field(default=None, description="Chargebee site subdomain fallback")
     chargebee_base_url: Optional[str] = Field(default=None, description="Chargebee API base URL override")
+    pushbullet_access_token: Optional[str] = Field(default=None, description="Pushbullet access token fallback")
+    pushbullet_base_url: str = Field(default="https://api.pushbullet.com/v2", description="Pushbullet API base URL")
+    pushcut_api_key: Optional[str] = Field(default=None, description="Pushcut API key fallback")
+    pushcut_base_url: str = Field(default="https://api.pushcut.io/v1", description="Pushcut API base URL")
+    gotify_base_url: Optional[str] = Field(default=None, description="Gotify server base URL fallback")
+    gotify_app_token: Optional[str] = Field(default=None, description="Gotify application token fallback")
+    gotify_client_token: Optional[str] = Field(default=None, description="Gotify client token fallback")
+    pushover_api_token: Optional[str] = Field(default=None, description="Pushover application API token fallback")
+    pushover_user_key: Optional[str] = Field(default=None, description="Pushover user or group key fallback")
+    pushover_base_url: str = Field(default="https://api.pushover.net/1", description="Pushover API base URL")
+    signl4_team_secret: Optional[str] = Field(default=None, description="SIGNL4 team secret fallback")
+    signl4_webhook_url: Optional[str] = Field(default=None, description="SIGNL4 full webhook URL fallback")
+    signl4_base_url: str = Field(default="https://connect.signl4.com/webhook", description="SIGNL4 webhook base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

@@ -151,6 +151,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "SALES_CRM_SERVICE_TOOLS",
             "MESSAGING_DELIVERY_SERVICE_TOOLS",
             "COMMERCE_BILLING_SERVICE_TOOLS",
+            "NOTIFICATION_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -374,6 +375,8 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "woocommerce_get_record",
         "chargebee_list_records",
         "chargebee_get_record",
+        "pushbullet_list_pushes",
+        "gotify_list_messages",
     }
 )
 
