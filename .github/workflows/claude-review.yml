@@ -78,19 +78,17 @@ jobs:
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
 
+      - name: Debug auth
+        run: |
+          echo "Token length: ${#CLAUDE_CODE_OAUTH_TOKEN}"
+          env | grep -i 'ANTHROPIC\|CLAUDE_CODE' | sed 's/=.*/=***/' | sort
+
       - name: Review push to main
         run: |
-          CI_RESULT="${{ github.event.workflow_run.conclusion }}"
-          RUN_ID="${{ github.event.workflow_run.id }}"
-          REPO="${{ github.repository }}"
-
-          claude --model claude-opus-4-6 --max-turns 15 \
-            --allowedTools "Read,Bash(git diff:*),Bash(git log:*),Bash(gh issue create:*),Bash(gh run view:*)" \
-            --print \
-            "CI just finished with result: ${CI_RESULT}
+          claude -p "CI just finished with result: ${{ github.event.workflow_run.conclusion }}
 
           If CI failed, investigate:
-            gh run view ${RUN_ID} --log-failed --repo ${REPO}
+            gh run view ${{ github.event.workflow_run.id }} --log-failed --repo ${{ github.repository }}
 
           Review the latest push to main:
             git diff HEAD~1 HEAD
@@ -99,13 +97,16 @@ jobs:
 
           If CI failed and the fix is clear and simple (typo, missing import, small logic error):
             Create a GitHub issue with the fix details:
-              gh issue create --title 'CI fix needed: <summary>' --body '<details and suggested fix>' --repo ${REPO}
+              gh issue create --title 'CI fix needed: <summary>' --body '<details and suggested fix>' --repo ${{ github.repository }}
 
           If there are non-CI problems worth flagging, create a GitHub issue:
-            gh issue create --title 'Review: <summary>' --body '<details>' --repo ${REPO}
+            gh issue create --title 'Review: <summary>' --body '<details>' --repo ${{ github.repository }}
 
           If everything looks good and CI passed, do nothing.
-          Do NOT flag style nitpicks. Only flag things that are genuinely broken or wrong."
+          Do NOT flag style nitpicks. Only flag things that are genuinely broken or wrong." \
+            --model claude-opus-4-6 \
+            --max-turns 15 \
+            --allowedTools "Read,Bash(git diff:*),Bash(git log:*),Bash(gh issue create:*),Bash(gh run view:*)"
 
   # ── Interactive: respond to @claude mentions ──
   interactive:
