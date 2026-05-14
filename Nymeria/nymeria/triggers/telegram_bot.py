@@ -15,10 +15,12 @@ import io
 import json as _json
 import logging
 import re
+import secrets
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 
 import httpx
 from telegram import (
@@ -255,6 +257,37 @@ TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_SAFE_CHUNK_LENGTH = 3500
 THREAD_PICKER_CACHE_TTL_SECONDS = 10 * 60
 THREAD_PICKER_LIMIT = 15
+STOP_BUTTON_TOKEN_TTL_SECONDS = 60 * 60
+
+COMMAND_ACCESS_PUBLIC = "public"
+COMMAND_ACCESS_LINKED = "linked"
+COMMAND_ACCESS_ADMIN = "admin"
+
+TELEGRAM_COMMAND_ACCESS: Mapping[str, str] = {
+    # Public onboarding/help commands.
+    "start": COMMAND_ACCESS_PUBLIC,
+    "help": COMMAND_ACCESS_PUBLIC,
+    "bind": COMMAND_ACCESS_PUBLIC,
+    # Admin-only global controls.
+    "think": COMMAND_ACCESS_ADMIN,
+    "restart": COMMAND_ACCESS_ADMIN,
+    "config_show": COMMAND_ACCESS_ADMIN,
+    "config_get": COMMAND_ACCESS_ADMIN,
+    "config_set": COMMAND_ACCESS_ADMIN,
+    "env_show": COMMAND_ACCESS_ADMIN,
+    "env_get": COMMAND_ACCESS_ADMIN,
+    "env_set": COMMAND_ACCESS_ADMIN,
+    # Everything else requires a linked Telegram identity.
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _StopButtonToken:
+    chat_id: int
+    thread_id: str
+    nymeria_user_id: str
+    telegram_user_id: Optional[int]
+    expires_at: float
 
 
 def _thread_title(thread: dict) -> str:
@@ -393,6 +426,9 @@ class NymeriaTelegramBot:
         # chat_id -> (expires_at_monotonic, thread choices). Lets users run
         # /threads first, then /switch 2 without relying on fragile titles.
         self._thread_picker_cache: Dict[int, tuple[float, List[dict]]] = {}
+        # Opaque stop-button callback tokens. Telegram callback data is visible
+        # to clients, so store thread/user authorization server-side.
+        self._stop_button_tokens: Dict[str, _StopButtonToken] = {}
         # Shared-bot only: subordinate user-owned bots, keyed by row id.
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
@@ -718,6 +754,71 @@ class NymeriaTelegramBot:
 
         return user_id
 
+    def _command_access_for(self, name: str) -> str:
+        """Return the access policy for a Telegram command."""
+        return TELEGRAM_COMMAND_ACCESS.get(name, COMMAND_ACCESS_LINKED)
+
+    async def _check_command_access(
+        self,
+        name: str,
+        update: "Update",
+    ) -> bool:
+        """Apply the command access policy before a handler runs."""
+        access = self._command_access_for(name)
+        if access == COMMAND_ACCESS_PUBLIC:
+            return True
+        user_id = await self._resolve_or_reject_update(
+            update,
+            require_admin=access == COMMAND_ACCESS_ADMIN,
+        )
+        return user_id is not None
+
+    def _guarded_command(
+        self,
+        name: str,
+        handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]],
+    ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]:
+        """Wrap a command handler with the central Telegram access policy."""
+
+        async def guarded(
+            update: Update,
+            context: ContextTypes.DEFAULT_TYPE,
+        ) -> None:
+            if await self._check_command_access(name, update):
+                await handler(update, context)
+
+        return guarded
+
+    def _prune_stop_button_tokens(self) -> None:
+        now = time.monotonic()
+        expired = [
+            token
+            for token, record in self._stop_button_tokens.items()
+            if record.expires_at <= now
+        ]
+        for token in expired:
+            self._stop_button_tokens.pop(token, None)
+
+    def _create_stop_button_token(
+        self,
+        *,
+        chat_id: int,
+        thread_id: str,
+        nymeria_user_id: str,
+        telegram_user_id: Optional[int],
+    ) -> str:
+        """Create an opaque callback token for a streaming stop button."""
+        self._prune_stop_button_tokens()
+        token = secrets.token_urlsafe(16)
+        self._stop_button_tokens[token] = _StopButtonToken(
+            chat_id=int(chat_id),
+            thread_id=thread_id,
+            nymeria_user_id=nymeria_user_id,
+            telegram_user_id=telegram_user_id,
+            expires_at=time.monotonic() + STOP_BUTTON_TOKEN_TTL_SECONDS,
+        )
+        return token
+
     def run(self) -> None:
         """Build the Application, register handlers, and start polling."""
         app = (
@@ -838,66 +939,69 @@ class NymeriaTelegramBot:
 
     def _register_handlers(self, app) -> None:
         """Register all command and message handlers."""
+        def command(name: str, handler) -> None:
+            app.add_handler(CommandHandler(name, self._guarded_command(name, handler)))
+
         # Chat commands
-        app.add_handler(CommandHandler("ask", self._cmd_ask))
-        app.add_handler(CommandHandler("stop", self._cmd_stop))
-        app.add_handler(CommandHandler("clear", self._cmd_clear))
-        app.add_handler(CommandHandler("compact", self._cmd_compact))
-        app.add_handler(CommandHandler("thread", self._cmd_thread))
-        app.add_handler(CommandHandler("status", self._cmd_status))
-        app.add_handler(CommandHandler("model", self._cmd_model))
-        app.add_handler(CommandHandler("models", self._cmd_models))
-        app.add_handler(CommandHandler("think", self._cmd_think))
-        app.add_handler(CommandHandler("context", self._cmd_context))
-        app.add_handler(CommandHandler("tasks", self._cmd_tasks))
-        app.add_handler(CommandHandler("export", self._cmd_export))
-        app.add_handler(CommandHandler("restart", self._cmd_restart))
-        app.add_handler(CommandHandler("showtools", self._cmd_showtools))
-        app.add_handler(CommandHandler("help", self._cmd_help))
-        app.add_handler(CommandHandler("start", self._cmd_start))
+        command("ask", self._cmd_ask)
+        command("stop", self._cmd_stop)
+        command("clear", self._cmd_clear)
+        command("compact", self._cmd_compact)
+        command("thread", self._cmd_thread)
+        command("status", self._cmd_status)
+        command("model", self._cmd_model)
+        command("models", self._cmd_models)
+        command("think", self._cmd_think)
+        command("context", self._cmd_context)
+        command("tasks", self._cmd_tasks)
+        command("export", self._cmd_export)
+        command("restart", self._cmd_restart)
+        command("showtools", self._cmd_showtools)
+        command("help", self._cmd_help)
+        command("start", self._cmd_start)
 
         # TODO commands
-        app.add_handler(CommandHandler("todo_add", self._cmd_todo_add))
-        app.add_handler(CommandHandler("todo_list", self._cmd_todo_list))
-        app.add_handler(CommandHandler("todo_complete", self._cmd_todo_complete))
-        app.add_handler(CommandHandler("todo_delete", self._cmd_todo_delete))
+        command("todo_add", self._cmd_todo_add)
+        command("todo_list", self._cmd_todo_list)
+        command("todo_complete", self._cmd_todo_complete)
+        command("todo_delete", self._cmd_todo_delete)
 
         # Config commands
-        app.add_handler(CommandHandler("config_show", self._cmd_config_show))
-        app.add_handler(CommandHandler("config_get", self._cmd_config_get))
-        app.add_handler(CommandHandler("config_set", self._cmd_config_set))
+        command("config_show", self._cmd_config_show)
+        command("config_get", self._cmd_config_get)
+        command("config_set", self._cmd_config_set)
 
         # Env commands
-        app.add_handler(CommandHandler("env_show", self._cmd_env_show))
-        app.add_handler(CommandHandler("env_get", self._cmd_env_get))
-        app.add_handler(CommandHandler("env_set", self._cmd_env_set))
+        command("env_show", self._cmd_env_show)
+        command("env_get", self._cmd_env_get)
+        command("env_set", self._cmd_env_set)
 
         # Tools commands
-        app.add_handler(CommandHandler("tools_core", self._cmd_tools_core))
-        app.add_handler(CommandHandler("tools_optional", self._cmd_tools_optional))
-        app.add_handler(CommandHandler("tools_enabled", self._cmd_tools_enabled))
-        app.add_handler(CommandHandler("tools_search", self._cmd_tools_search))
-        app.add_handler(CommandHandler("tools_category", self._cmd_tools_category))
-        app.add_handler(CommandHandler("tools_enable", self._cmd_tools_enable))
-        app.add_handler(CommandHandler("tools_disable", self._cmd_tools_disable))
+        command("tools_core", self._cmd_tools_core)
+        command("tools_optional", self._cmd_tools_optional)
+        command("tools_enabled", self._cmd_tools_enabled)
+        command("tools_search", self._cmd_tools_search)
+        command("tools_category", self._cmd_tools_category)
+        command("tools_enable", self._cmd_tools_enable)
+        command("tools_disable", self._cmd_tools_disable)
 
         # Memory commands
-        app.add_handler(CommandHandler("memory_list", self._cmd_memory_list))
-        app.add_handler(CommandHandler("memory_save", self._cmd_memory_save))
-        app.add_handler(CommandHandler("memory_forget", self._cmd_memory_forget))
-        app.add_handler(CommandHandler("memory_search", self._cmd_memory_search))
+        command("memory_list", self._cmd_memory_list)
+        command("memory_save", self._cmd_memory_save)
+        command("memory_forget", self._cmd_memory_forget)
+        command("memory_search", self._cmd_memory_search)
 
         # Notepad commands
-        app.add_handler(CommandHandler("notepad_read", self._cmd_notepad_read))
-        app.add_handler(CommandHandler("notepad_write", self._cmd_notepad_write))
-        app.add_handler(CommandHandler("notepad_clear", self._cmd_notepad_clear))
+        command("notepad_read", self._cmd_notepad_read)
+        command("notepad_write", self._cmd_notepad_write)
+        command("notepad_clear", self._cmd_notepad_clear)
 
         # Chat-app binding commands
-        app.add_handler(CommandHandler("bind", self._cmd_bind))
-        app.add_handler(CommandHandler("threads", self._cmd_threads))
-        app.add_handler(CommandHandler("switch", self._cmd_switch))
-        app.add_handler(CommandHandler("new", self._cmd_new))
-        app.add_handler(CommandHandler("unbind", self._cmd_unbind))
+        command("bind", self._cmd_bind)
+        command("threads", self._cmd_threads)
+        command("switch", self._cmd_switch)
+        command("new", self._cmd_new)
+        command("unbind", self._cmd_unbind)
 
         # Callback query handler (stop button)
         app.add_handler(CallbackQueryHandler(self._on_stop_button, pattern=r"^stop:"))
@@ -1062,11 +1166,15 @@ class NymeriaTelegramBot:
             bot: "NymeriaTelegramBot",
             chat_id: int,
             thread_id: str,
+            user_id: str,
+            telegram_user_id: Optional[int],
             context: ContextTypes.DEFAULT_TYPE,
         ) -> None:
             self._bot = bot
             self._chat_id = chat_id
             self._thread_id = thread_id
+            self._user_id = user_id
+            self._telegram_user_id = telegram_user_id
             self._context = context
 
             self._text_buffer = ""
@@ -1128,10 +1236,16 @@ class NymeriaTelegramBot:
 
                         reply_markup = None
                         if not self._first_msg_sent:
+                            stop_token = self._bot._create_stop_button_token(
+                                chat_id=self._chat_id,
+                                thread_id=self._thread_id,
+                                nymeria_user_id=self._user_id,
+                                telegram_user_id=self._telegram_user_id,
+                            )
                             reply_markup = InlineKeyboardMarkup([[
                                 InlineKeyboardButton(
-                                    "⏹ Stop",
-                                    callback_data=f"stop:{self._thread_id}",
+                                    "\u23f9 Stop",
+                                    callback_data=f"stop:{stop_token}",
                                 )
                             ]])
                         self._current_msg = await self._bot._send_html(
@@ -1306,13 +1420,21 @@ class NymeriaTelegramBot:
         user_id: str,
         context: ContextTypes.DEFAULT_TYPE,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        telegram_user_id: Optional[int] = None,
     ) -> None:
         """Stream SSE chat events to a Telegram chat with progressive editing.
 
         Text segments are sent as separate messages at tool boundaries,
         giving natural visual separation via Telegram's chat bubbles.
         """
-        handler = self._ChatSSEHandler(self, chat_id, thread_id, context)
+        handler = self._ChatSSEHandler(
+            self,
+            chat_id,
+            thread_id,
+            user_id,
+            telegram_user_id,
+            context,
+        )
         try:
             await consume_sse_stream(
                 self.api.chat_stream(
@@ -1682,9 +1804,15 @@ class NymeriaTelegramBot:
         if update.message is None or update.effective_chat is None:
             return
         chat_id = int(update.effective_chat.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             result = await self.api.unbind_chatapp_by_chat(
-                provider="telegram", platform_chat_id=str(chat_id)
+                provider="telegram",
+                platform_chat_id=str(chat_id),
+                user_id=user_id,
+                user_telegram_bot_id=self.user_telegram_bot_id,
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("unbind failed")
@@ -1722,14 +1850,18 @@ class NymeriaTelegramBot:
             thread_id=thread_id,
             user_id=user_id,
             context=context,
+            telegram_user_id=update.effective_user.id if update.effective_user else None,
         )
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
-            await self.api.stop(thread_id)
+            await self.api.stop(thread_id, user_id=user_id)
             await update.message.reply_text("Abort signal sent.")
         except Exception as e:
             await update.message.reply_text(f"Error: {e}")
@@ -1773,8 +1905,11 @@ class NymeriaTelegramBot:
         """Handle /thread."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
-            stats = await self.api.get_context_stats(thread_id)
+            stats = await self.api.get_context_stats(thread_id, user_id=user_id)
             text = (
                 f"<b>Thread Info</b>\n\n"
                 f"<b>Thread ID</b>\n<code>{escape_html(thread_id)}</code>\n\n"
@@ -1798,7 +1933,7 @@ class NymeriaTelegramBot:
         try:
             settings, ctx, tools_data, todos = await asyncio.gather(
                 self.api.get_settings(),
-                self.api.get_context_stats(thread_id),
+                self.api.get_context_stats(thread_id, user_id=user_id),
                 self.api.get_default_tools(),
                 self.api.list_todos(user_id),
                 return_exceptions=True,
@@ -1996,10 +2131,13 @@ class NymeriaTelegramBot:
         """Handle /context — detailed context breakdown."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             ctx, thread_cfg, settings, categories, tools_data = await asyncio.gather(
-                self.api.get_context_stats(thread_id),
-                self.api.get_thread_config(thread_id),
+                self.api.get_context_stats(thread_id, user_id=user_id),
+                self.api.get_thread_config(thread_id, user_id=user_id),
                 self.api.get_settings(),
                 self.api.get_tool_categories(),
                 self.api.get_default_tools(),
@@ -2157,13 +2295,16 @@ class NymeriaTelegramBot:
         """Handle /export [markdown|json|txt]."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         fmt = (context.args[0].lower() if context.args else "markdown")
         if fmt not in ("markdown", "json", "txt"):
             await update.message.reply_text("Usage: /export [markdown|json|txt]")
             return
 
         try:
-            data = await self.api.get_history(thread_id)
+            data = await self.api.get_history(thread_id, user_id=user_id)
             messages = data.get("messages", [])
             if not messages:
                 await update.message.reply_text("No conversation history to export.")
@@ -2359,7 +2500,9 @@ class NymeriaTelegramBot:
             "/notepad_read: Read notepad\n"
             "/notepad_write &lt;content&gt;: Append to notepad\n"
             "/notepad_clear: Clear notepad\n\n"
-            "<i>You can also send plain text in DMs or reply to me in groups.</i>"
+            "<i>You can also send plain text in DMs or reply to me in groups.</i>\n"
+            "<i>Prefix a message with @ThreadTitle or @\"Thread With Spaces\" "
+            "to route one turn to another owned thread.</i>"
         )
         await self._send_html(chat_id, text, context)
 
@@ -2765,11 +2908,14 @@ class NymeriaTelegramBot:
         """Handle /tools_optional."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             data = await self.api.get_default_tools()
             default_names = set(data.get("default_tools", []))
             available = data.get("available_tools", [])
-            tc = await self.api.get_thread_config(thread_id)
+            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
             thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
 
             cats: Dict[str, list] = {}
@@ -2799,11 +2945,14 @@ class NymeriaTelegramBot:
         """Handle /tools_enabled."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             data = await self.api.get_default_tools()
             default_names = set(data.get("default_tools", []))
             available = data.get("available_tools", [])
-            tc = await self.api.get_thread_config(thread_id)
+            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
             thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
             thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
             all_enabled = (default_names | thread_extras) - thread_disabled
@@ -2865,11 +3014,14 @@ class NymeriaTelegramBot:
 
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
             data = await self.api.get_default_tools()
             default_names = set(data.get("default_tools", []))
             available = data.get("available_tools", [])
-            tc = await self.api.get_thread_config(thread_id)
+            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
             thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
             thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
             all_enabled = (default_names | thread_extras) - thread_disabled
@@ -3100,7 +3252,11 @@ class NymeriaTelegramBot:
         """Handle /notepad_read."""
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
+            await self.api.get_thread_config(thread_id, user_id=user_id)
             from ..tools.thread_notes import read_notepad
             content = read_notepad(thread_id)
             if content:
@@ -3128,6 +3284,9 @@ class NymeriaTelegramBot:
             return
 
         thread_id = self.resolve_thread_id_for_chat(update.effective_chat.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
 
         # Check for replace: prefix
         if raw.lower().startswith("replace:"):
@@ -3138,6 +3297,7 @@ class NymeriaTelegramBot:
             content = raw
 
         try:
+            await self.api.get_thread_config(thread_id, user_id=user_id)
             from ..tools.thread_notes import _notepad_path, MAX_NOTEPAD_SIZE
             path = _notepad_path(thread_id)
 
@@ -3166,7 +3326,11 @@ class NymeriaTelegramBot:
     async def _cmd_notepad_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /notepad_clear."""
         thread_id = self.resolve_thread_id_for_chat(update.effective_chat.id)
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
         try:
+            await self.api.get_thread_config(thread_id, user_id=user_id)
             from ..tools.thread_notes import delete_notepad
             if delete_notepad(thread_id):
                 await update.message.reply_text("Notepad cleared.")
@@ -3182,12 +3346,44 @@ class NymeriaTelegramBot:
     async def _on_stop_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle stop button press during streaming."""
         query = update.callback_query
-        await query.answer("Abort signal sent.")
-        thread_id = query.data.split(":", 1)[1]
+        if query is None or not isinstance(query.data, str):
+            return
+        token = query.data.split(":", 1)[1] if ":" in query.data else ""
+        self._prune_stop_button_tokens()
+        record = self._stop_button_tokens.get(token)
+        if record is None:
+            await query.answer("That stop button expired.", show_alert=True)
+            return
+
+        callback_chat_id = None
+        if query.message is not None and query.message.chat is not None:
+            callback_chat_id = int(query.message.chat.id)
+        elif update.effective_chat is not None:
+            callback_chat_id = int(update.effective_chat.id)
+        if callback_chat_id != record.chat_id:
+            await query.answer("That stop button belongs to another chat.", show_alert=True)
+            return
+
+        tg_user = update.effective_user
+        if tg_user is None:
+            await query.answer("Couldn't verify who pressed the button.", show_alert=True)
+            return
+        if record.telegram_user_id is not None and int(tg_user.id) != record.telegram_user_id:
+            await query.answer("Only the requester can stop this run.", show_alert=True)
+            return
+
+        user_id = await self.resolve_user_id(int(tg_user.id))
+        if user_id != record.nymeria_user_id:
+            await query.answer("Only the requester can stop this run.", show_alert=True)
+            return
+
         try:
-            await self.api.stop(thread_id)
+            await self.api.stop(record.thread_id, user_id=record.nymeria_user_id)
+            self._stop_button_tokens.pop(token, None)
+            await query.answer("Abort signal sent.")
         except Exception as e:
             logger.warning(f"Failed to stop thread via button: {e}")
+            await query.answer("Couldn't send abort signal.", show_alert=True)
 
     # =========================================================================
     # Plain Message Handler
@@ -3260,6 +3456,7 @@ class NymeriaTelegramBot:
             user_id=nymeria_user_id,
             context=context,
             attachments=attachments or None,
+            telegram_user_id=telegram_user_id,
         )
 
     async def _collect_attachments(

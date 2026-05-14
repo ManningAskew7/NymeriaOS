@@ -262,6 +262,8 @@ Telegram message should exceed the platform's 4096-character text limit.
 - **Shown:** Tool calls and results appear as separate messages between text segments, formatted with tool name, arguments, and result in HTML.
 
 A **Stop** button (inline keyboard) appears on the first message during streaming. Press it to abort the current operation.
+Stop buttons are backed by short-lived opaque tokens and can only be used from
+the same Telegram chat by the linked Nymeria user who started that stream.
 
 If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint automatically.
 
@@ -270,6 +272,21 @@ If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint au
 ### In Private Chats (DMs)
 
 The bot responds to all text messages — no command prefix needed. Just type naturally.
+
+To route a single turn to another owned Nymeria thread without switching the
+current Telegram binding, prefix the message with a thread mention:
+
+```text
+@Research summarize the latest notes
+@"Thread With Spaces" draft the reply
+@abc1234 continue this task
+```
+
+The backend resolves the prefix against the linked user's visible thread
+titles, callable names, and ID prefixes. Telegram preserves the prefix and
+streams the response back into the current chat with a `Response from <thread>`
+reference line. The target thread owns the saved conversation history for that
+turn.
 
 ### In Groups
 

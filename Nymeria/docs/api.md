@@ -313,7 +313,7 @@ admin/service-token routes, which are rate-limited per admin token and endpoint.
 | `GET` | `/admin/chatapp/bindings/lookup` | — | Resolve by exactly one of `platform_chat_id` or `thread_id`. |
 | `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Shared-bot bind-code claim; verifies the Telegram user is linked to the issuing Nymeria user before consuming the code. |
 | `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | User-owned bot bind-code claim; authorizes by bot owner instead of platform identity. |
-| `DELETE` | `/admin/chatapp/bindings/by-chat` | — | Remove a binding by `provider` and `platform_chat_id`. |
+| `DELETE` | `/admin/chatapp/bindings/by-chat` | — | Remove a binding by `provider` and `platform_chat_id`; optional `user_id` and `user_telegram_bot_id` query params scope bot-initiated deletes to the expected owner/bot. |
 | `POST` | `/admin/chatapp/bindings/switch` | `{provider, platform_chat_id, thread_id, user_id, user_telegram_bot_id?}` | Move a Telegram chat to another existing user-owned non-native thread. |
 | `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Consume a self-link code and create the platform identity row. |
 | `GET` | `/admin/telegram-bots` | — | Supervisor-only list of enabled user-owned bots with decrypted tokens. |

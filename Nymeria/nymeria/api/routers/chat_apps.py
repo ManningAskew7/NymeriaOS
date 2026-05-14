@@ -265,6 +265,8 @@ def create_chat_apps_router(
     async def admin_unbind_chatapp_by_chat(
         provider: str,
         platform_chat_id: str,
+        user_id: str | None = None,
+        user_telegram_bot_id: int | None = None,
         _admin: AuthenticatedUser = Depends(require_rate_limited_admin_bot_user),
     ):
         """Remove the binding for a given provider chat ID."""
@@ -273,6 +275,13 @@ def create_chat_apps_router(
         binding = repo.lookup_thread_binding_by_chat(provider, platform_chat_id)
         if binding is None:
             return {"unbound": False}
+        if user_id is not None and binding.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Binding belongs to a different user")
+        if (
+            user_telegram_bot_id is not None
+            and binding.user_telegram_bot_id != user_telegram_bot_id
+        ):
+            raise HTTPException(status_code=403, detail="Binding belongs to a different Telegram bot")
         repo.delete_thread_binding(binding.id, user_id=binding.user_id)
         publish_platform_sync(binding.thread_id, binding.user_id)
         return {"unbound": True, "thread_id": binding.thread_id}

@@ -10,16 +10,29 @@ from telegram.error import BadRequest
 from nymeria.triggers.telegram_bot import (
     NymeriaTelegramBot,
     TELEGRAM_TEXT_LIMIT,
+    _StopButtonToken,
     _find_thread_match,
     _sorted_switchable_threads,
 )
 
 
 class _FakeMessage:
-    def __init__(self, bot: "_FakeBot", text: str, reply_markup=None):
+    def __init__(
+        self,
+        bot: "_FakeBot",
+        text: str = "",
+        reply_markup=None,
+        chat_id: int = 123,
+    ):
         self.bot = bot
         self.text = text
+        self.caption = None
+        self.photo = []
+        self.document = None
         self.reply_markup = reply_markup
+        self.chat = SimpleNamespace(id=chat_id, type="private")
+        self.replies: list[str] = []
+        self.reply_to_message = None
 
     async def edit_text(self, text: str, **kwargs) -> None:
         self.bot._reject_if_too_long(text)
@@ -30,12 +43,18 @@ class _FakeMessage:
         self.reply_markup = reply_markup
         self.bot.reply_markup_edits += 1
 
+    async def reply_text(self, text: str, **kwargs) -> None:
+        self.replies.append(text)
+        self.bot.replies.append(text)
+
 
 class _FakeBot:
     def __init__(self):
         self.messages: list[_FakeMessage] = []
         self.edits: list[str] = []
+        self.replies: list[str] = []
         self.reply_markup_edits = 0
+        self.id = 999
 
     def _reject_if_too_long(self, text: str) -> None:
         if len(text) > TELEGRAM_TEXT_LIMIT:
@@ -43,7 +62,12 @@ class _FakeBot:
 
     async def send_message(self, chat_id: int, text: str, **kwargs) -> _FakeMessage:
         self._reject_if_too_long(text)
-        msg = _FakeMessage(self, text, reply_markup=kwargs.get("reply_markup"))
+        msg = _FakeMessage(
+            self,
+            text,
+            reply_markup=kwargs.get("reply_markup"),
+            chat_id=chat_id,
+        )
         self.messages.append(msg)
         return msg
 
@@ -67,6 +91,103 @@ class _FakeEventAPI:
     async def chat_stream(self, *args, **kwargs):
         for event in self.events:
             yield event
+
+
+class _CaptureAPI:
+    def __init__(
+        self,
+        *,
+        user_map: dict[str, str | None] | None = None,
+        role: str = "user",
+        events: list[dict] | None = None,
+    ):
+        self.user_map = user_map or {"42": "user-1"}
+        self.role = role
+        self.events = events or [{"type": "done"}]
+        self.chat_calls: list[dict] = []
+        self.stop_calls: list[tuple[str, str | None]] = []
+        self.context_calls: list[tuple[str, str | None]] = []
+        self.thread_config_calls: list[tuple[str, str | None]] = []
+        self.history_calls: list[tuple[str, str | None]] = []
+
+    async def resolve_platform_user(self, platform: str, platform_user_id: str):
+        assert platform == "telegram"
+        return self.user_map.get(platform_user_id)
+
+    async def get_me(self, act_as: str | None = None):
+        return {"id": act_as or "user-1", "role": self.role}
+
+    async def stop(self, thread_id: str, user_id: str | None = None):
+        self.stop_calls.append((thread_id, user_id))
+        return {"status": "stopping"}
+
+    async def get_context_stats(self, thread_id: str, user_id: str | None = None):
+        self.context_calls.append((thread_id, user_id))
+        return {
+            "usage_percentage": 0,
+            "total_tokens": 0,
+            "context_limit": 1000,
+            "compaction_count": 0,
+            "context_management": "auto_compact",
+        }
+
+    async def get_thread_config(self, thread_id: str, user_id: str | None = None):
+        self.thread_config_calls.append((thread_id, user_id))
+        return {}
+
+    async def get_history(self, thread_id: str, user_id: str | None = None):
+        self.history_calls.append((thread_id, user_id))
+        return {"messages": []}
+
+    async def chat_stream(self, message: str, thread_id: str, user_id: str, **kwargs):
+        self.chat_calls.append(
+            {
+                "message": message,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                **kwargs,
+            }
+        )
+        for event in self.events:
+            yield event
+
+    async def chat(self, message: str, thread_id: str, user_id: str, **kwargs):
+        self.chat_calls.append(
+            {
+                "message": message,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                **kwargs,
+            }
+        )
+        return {"response": "", "tool_call_count": 0}
+
+
+class _FakeCallbackQuery:
+    def __init__(self, *, data: str, chat_id: int = 123):
+        self.data = data
+        self.message = _FakeMessage(_FakeBot(), chat_id=chat_id)
+        self.answers: list[tuple[str, bool]] = []
+
+    async def answer(self, text: str, show_alert: bool = False):
+        self.answers.append((text, show_alert))
+
+
+def _fake_update(
+    *,
+    telegram_user_id: int = 42,
+    chat_id: int = 123,
+    text: str = "hello",
+    callback_query: _FakeCallbackQuery | None = None,
+):
+    bot = _FakeBot()
+    message = None if callback_query else _FakeMessage(bot, text=text, chat_id=chat_id)
+    return SimpleNamespace(
+        effective_user=SimpleNamespace(id=telegram_user_id),
+        effective_chat=SimpleNamespace(id=chat_id, type="private"),
+        message=message,
+        callback_query=callback_query,
+    )
 
 
 async def _deliver_autonomous(bot: NymeriaTelegramBot, events: list[dict]) -> None:
@@ -235,3 +356,262 @@ def test_telegram_autonomous_surfaces_compaction_and_iteration_events():
     assert any("Context compacted" in text and "Prior task state" in text for text in texts)
     assert any("Context summary attached" in text and "Attached summary" in text for text in texts)
     assert any("Stopped after too many tool calls" in text for text in texts)
+
+
+def test_telegram_command_policy_rejects_unlinked_linked_command():
+    api = _CaptureAPI(user_map={"42": None})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    called = False
+
+    async def handler(update, context):
+        nonlocal called
+        called = True
+
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+    asyncio.run(bot._guarded_command("thread", handler)(update, context))
+
+    assert called is False
+    assert "isn't linked" in update.message.replies[0]
+
+
+def test_telegram_command_policy_rejects_non_admin_admin_command():
+    api = _CaptureAPI(user_map={"42": "user-1"}, role="user")
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    called = False
+
+    async def handler(update, context):
+        nonlocal called
+        called = True
+
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+    asyncio.run(bot._guarded_command("restart", handler)(update, context))
+
+    assert called is False
+    assert update.message.replies == ["Admin only."]
+
+
+def test_telegram_public_command_policy_does_not_require_linked_user():
+    api = _CaptureAPI(user_map={"42": None})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    called = False
+
+    async def handler(update, context):
+        nonlocal called
+        called = True
+
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+    asyncio.run(bot._guarded_command("help", handler)(update, context))
+
+    assert called is True
+    assert update.message.replies == []
+
+
+def test_telegram_thread_command_reads_thread_as_linked_user():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+    asyncio.run(bot._cmd_thread(update, context))
+
+    assert api.context_calls == [("telegram_123", "user-1")]
+
+
+def test_telegram_export_command_reads_history_as_linked_user():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+    asyncio.run(bot._cmd_export(update, context))
+
+    assert api.history_calls == [("telegram_123", "user-1")]
+    assert update.message.replies == ["No conversation history to export."]
+
+
+def test_telegram_plain_message_preserves_thread_mention_for_backend_dispatch():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    fake_bot = _FakeBot()
+    update = _fake_update(text='@"Research Notes" summarize this', telegram_user_id=42)
+    context = SimpleNamespace(bot=fake_bot)
+
+    asyncio.run(bot._on_message(update, context))
+
+    assert api.chat_calls == [
+        {
+            "message": '@"Research Notes" summarize this',
+            "thread_id": "telegram_123",
+            "user_id": "user-1",
+            "attachments": None,
+            "force_unsupported_attachments": False,
+        }
+    ]
+
+
+def test_telegram_ask_command_preserves_thread_mention_for_backend_dispatch():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=["@Research", "compare", "notes"])
+
+    asyncio.run(bot._cmd_ask(update, context))
+
+    assert api.chat_calls[0]["message"] == "@Research compare notes"
+    assert api.chat_calls[0]["thread_id"] == "telegram_123"
+    assert api.chat_calls[0]["user_id"] == "user-1"
+
+
+def test_telegram_stream_renders_dispatched_thread_reference():
+    fake_bot = _FakeBot()
+    bot = NymeriaTelegramBot(
+        api=_FakeEventAPI([
+            {
+                "type": "dispatched",
+                "thread_id": "telegram_123",
+                "target_thread_id": "thread-research",
+                "title": "Research",
+                "dispatched_to": {
+                    "thread_id": "thread-research",
+                    "title": "Research",
+                    "original_thread_id": "telegram_123",
+                },
+            },
+            {"type": "response", "content": "Done."},
+            {"type": "done"},
+        ]),
+        bot_token="test-token",
+    )
+    context = SimpleNamespace(bot=fake_bot)
+
+    asyncio.run(
+        bot._stream_to_chat(
+            chat_id=123,
+            message="@Research compare notes",
+            thread_id="telegram_123",
+            user_id="user-1",
+            context=context,
+            telegram_user_id=42,
+        )
+    )
+
+    sent_text = "".join(msg.text for msg in fake_bot.messages)
+    assert "Response from Research" in sent_text
+    assert "Done." in sent_text
+
+
+def test_telegram_stream_renders_ambiguous_mention_error():
+    fake_bot = _FakeBot()
+    bot = NymeriaTelegramBot(
+        api=_FakeEventAPI([
+            {
+                "type": "error",
+                "code": "mention_ambiguous",
+                "content": "@Research matches multiple threads: Research Alpha, Research Beta",
+            },
+            {"type": "done", "status": "error"},
+        ]),
+        bot_token="test-token",
+    )
+    context = SimpleNamespace(bot=fake_bot)
+
+    asyncio.run(
+        bot._stream_to_chat(
+            chat_id=123,
+            message="@Research compare notes",
+            thread_id="telegram_123",
+            user_id="user-1",
+            context=context,
+            telegram_user_id=42,
+        )
+    )
+
+    assert any(
+        "Research matches multiple threads" in message.text
+        for message in fake_bot.messages
+    )
+
+
+def test_telegram_stop_button_valid_token_stops_as_requester():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    token = bot._create_stop_button_token(
+        chat_id=123,
+        thread_id="telegram_123",
+        nymeria_user_id="user-1",
+        telegram_user_id=42,
+    )
+    query = _FakeCallbackQuery(data=f"stop:{token}", chat_id=123)
+    update = _fake_update(telegram_user_id=42, callback_query=query)
+    context = SimpleNamespace(bot=_FakeBot())
+
+    asyncio.run(bot._on_stop_button(update, context))
+
+    assert api.stop_calls == [("telegram_123", "user-1")]
+    assert query.answers == [("Abort signal sent.", False)]
+    assert token not in bot._stop_button_tokens
+
+
+def test_telegram_stop_button_rejects_wrong_user():
+    api = _CaptureAPI(user_map={"43": "user-2"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    token = bot._create_stop_button_token(
+        chat_id=123,
+        thread_id="telegram_123",
+        nymeria_user_id="user-1",
+        telegram_user_id=42,
+    )
+    query = _FakeCallbackQuery(data=f"stop:{token}", chat_id=123)
+    update = _fake_update(telegram_user_id=43, callback_query=query)
+    context = SimpleNamespace(bot=_FakeBot())
+
+    asyncio.run(bot._on_stop_button(update, context))
+
+    assert api.stop_calls == []
+    assert query.answers == [("Only the requester can stop this run.", True)]
+
+
+def test_telegram_stop_button_rejects_wrong_chat():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    token = bot._create_stop_button_token(
+        chat_id=123,
+        thread_id="telegram_123",
+        nymeria_user_id="user-1",
+        telegram_user_id=42,
+    )
+    query = _FakeCallbackQuery(data=f"stop:{token}", chat_id=999)
+    update = _fake_update(telegram_user_id=42, chat_id=999, callback_query=query)
+    context = SimpleNamespace(bot=_FakeBot())
+
+    asyncio.run(bot._on_stop_button(update, context))
+
+    assert api.stop_calls == []
+    assert query.answers == [("That stop button belongs to another chat.", True)]
+
+
+def test_telegram_stop_button_rejects_expired_token():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    token = "expired"
+    bot._stop_button_tokens[token] = _StopButtonToken(
+        chat_id=123,
+        thread_id="telegram_123",
+        nymeria_user_id="user-1",
+        telegram_user_id=42,
+        expires_at=0,
+    )
+    query = _FakeCallbackQuery(data=f"stop:{token}", chat_id=123)
+    update = _fake_update(telegram_user_id=42, callback_query=query)
+    context = SimpleNamespace(bot=_FakeBot())
+
+    asyncio.run(bot._on_stop_button(update, context))
+
+    assert api.stop_calls == []
+    assert query.answers == [("That stop button expired.", True)]

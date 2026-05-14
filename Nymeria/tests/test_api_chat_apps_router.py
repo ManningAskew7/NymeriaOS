@@ -196,6 +196,47 @@ def test_admin_platform_link_claim_links_and_consumes_code(
     assert second_claim.json()["detail"] == "Invalid code: already used"
 
 
+def test_admin_unbind_by_chat_can_be_scoped_to_binding_owner(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    admin_token = _create_user(agent, "admin", role="admin")
+    _create_user(agent, "owner")
+    _create_user(agent, "other")
+    agent.accounts_repo.claim_thread("desktop-thread", "owner")
+    agent.chat_bindings_repo.create_thread_binding(
+        thread_id="desktop-thread",
+        provider="telegram",
+        platform_chat_id="chat-1",
+        user_id="owner",
+    )
+
+    rejected = client.delete(
+        "/admin/chatapp/bindings/by-chat",
+        headers=api_client_builder.auth(admin_token),
+        params={
+            "provider": "telegram",
+            "platform_chat_id": "chat-1",
+            "user_id": "other",
+        },
+    )
+    allowed = client.delete(
+        "/admin/chatapp/bindings/by-chat",
+        headers=api_client_builder.auth(admin_token),
+        params={
+            "provider": "telegram",
+            "platform_chat_id": "chat-1",
+            "user_id": "owner",
+        },
+    )
+
+    assert rejected.status_code == 403
+    assert rejected.json()["detail"] == "Binding belongs to a different user"
+    assert allowed.status_code == 200
+    assert allowed.json() == {"unbound": True, "thread_id": "desktop-thread"}
+
+
 def test_user_owned_telegram_bot_registration_idempotency_and_delete(
     tmp_path: Path,
     monkeypatch,
