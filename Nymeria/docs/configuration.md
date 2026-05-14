@@ -86,6 +86,19 @@ Set the API key for your chosen provider:
 | `JENKINS_BASE_URL` | Jenkins | Optional Jenkins instance URL fallback; credential vault provider `jenkins` is preferred |
 | `JENKINS_USERNAME` | Jenkins | Optional Jenkins username fallback |
 | `JENKINS_API_TOKEN` | Jenkins | Optional Jenkins API token fallback |
+| `DROPBOX_ACCESS_TOKEN` | Dropbox | Optional env fallback for Dropbox file tools; credential vault provider `dropbox` is preferred |
+| `DROPBOX_API_BASE_URL` | Dropbox | Optional Dropbox API base URL override |
+| `DROPBOX_CONTENT_BASE_URL` | Dropbox | Optional Dropbox content API base URL override |
+| `NEXTCLOUD_WEBDAV_URL` | Nextcloud | Optional Nextcloud WebDAV URL fallback; credential vault provider `nextcloud` is preferred |
+| `NEXTCLOUD_USERNAME` | Nextcloud | Optional Nextcloud username fallback |
+| `NEXTCLOUD_PASSWORD` | Nextcloud | Optional Nextcloud password or app password fallback |
+| `NEXTCLOUD_ACCESS_TOKEN` | Nextcloud | Optional Nextcloud OAuth access token fallback |
+| `AWS_ACCESS_KEY_ID` | S3 | Optional env fallback for S3 file tools; credential vault provider `s3` is preferred |
+| `AWS_SECRET_ACCESS_KEY` | S3 | Optional S3 secret access key fallback |
+| `AWS_SESSION_TOKEN` | S3 | Optional temporary S3 session token fallback |
+| `AWS_REGION` | S3 | Optional S3 region fallback; defaults to `us-east-1` |
+| `AWS_ENDPOINT_URL_S3` | S3 | Optional S3-compatible endpoint URL |
+| `S3_FORCE_PATH_STYLE` | S3 | Optional path-style addressing toggle for S3-compatible providers |
 | `BITLY_TOKEN` | Bitly | Optional env fallback for Bitly tools; credential vault provider `bitly` is preferred |
 | `BITLY_BASE_URL` | Bitly | Optional Bitly API base URL override |
 | `BRANDFETCH_API_KEY` | Brandfetch | Optional env fallback for Brandfetch tools; credential vault provider `brandfetch` is preferred |
@@ -497,6 +510,19 @@ reachable from the backend process.
 | `JENKINS_BASE_URL` | - | Jenkins instance URL fallback |
 | `JENKINS_USERNAME` | - | Jenkins username fallback |
 | `JENKINS_API_TOKEN` | - | Jenkins API token fallback |
+| `DROPBOX_ACCESS_TOKEN` | - | Dropbox access token fallback |
+| `DROPBOX_API_BASE_URL` | `https://api.dropboxapi.com/2` | Dropbox API base URL |
+| `DROPBOX_CONTENT_BASE_URL` | `https://content.dropboxapi.com/2` | Dropbox content API base URL |
+| `NEXTCLOUD_WEBDAV_URL` | - | Nextcloud WebDAV URL fallback |
+| `NEXTCLOUD_USERNAME` | - | Nextcloud username fallback |
+| `NEXTCLOUD_PASSWORD` | - | Nextcloud password or app password fallback |
+| `NEXTCLOUD_ACCESS_TOKEN` | - | Nextcloud OAuth access token fallback |
+| `AWS_ACCESS_KEY_ID` | - | S3 access key ID fallback |
+| `AWS_SECRET_ACCESS_KEY` | - | S3 secret access key fallback |
+| `AWS_SESSION_TOKEN` | - | S3 session token fallback |
+| `AWS_REGION` | `us-east-1` | S3 region fallback |
+| `AWS_ENDPOINT_URL_S3` | - | S3-compatible endpoint URL fallback |
+| `S3_FORCE_PATH_STYLE` | `false` | Use path-style S3 addressing |
 | `BITLY_TOKEN` | - | Bitly API token fallback |
 | `BITLY_BASE_URL` | `https://api-ssl.bitly.com/v4` | Bitly API base URL |
 | `BRANDFETCH_API_KEY` | - | Brandfetch API key fallback |

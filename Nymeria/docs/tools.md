@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (529)
+### Optional: Service Integration Tools (557)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -607,6 +607,34 @@ in the credential vault for provider-specific saved connections scoped to
 | 527 | `jenkins_cancel_quiet_down` | Integrations | MODERATE | Cancel Jenkins quiet-down mode |
 | 528 | `jenkins_restart_instance` | Integrations | MODERATE | Restart a Jenkins instance |
 | 529 | `jenkins_shutdown_instance` | Integrations | MODERATE | Shut down a Jenkins instance |
+| 530 | `dropbox_get_current_account` | Integrations | SAFE | Get Dropbox account metadata |
+| 531 | `dropbox_get_metadata` | Integrations | SAFE | Get Dropbox file or folder metadata |
+| 532 | `dropbox_list_folder` | Integrations | SAFE | List Dropbox folder entries |
+| 533 | `dropbox_search` | Integrations | SAFE | Search Dropbox files and folders |
+| 534 | `dropbox_download_file` | Integrations | SAFE | Download a Dropbox file preview |
+| 535 | `dropbox_upload_text_file` | Integrations | MODERATE | Upload a text file to Dropbox |
+| 536 | `dropbox_create_folder` | Integrations | MODERATE | Create a Dropbox folder |
+| 537 | `dropbox_copy_path` | Integrations | MODERATE | Copy a Dropbox file or folder |
+| 538 | `dropbox_move_path` | Integrations | MODERATE | Move or rename a Dropbox file or folder |
+| 539 | `dropbox_delete_path` | Integrations | MODERATE | Delete a Dropbox file or folder |
+| 540 | `nextcloud_list_folder` | Integrations | SAFE | List Nextcloud folder entries |
+| 541 | `nextcloud_download_file` | Integrations | SAFE | Download a Nextcloud file preview |
+| 542 | `nextcloud_upload_text_file` | Integrations | MODERATE | Upload a text file to Nextcloud |
+| 543 | `nextcloud_create_folder` | Integrations | MODERATE | Create a Nextcloud folder |
+| 544 | `nextcloud_copy_path` | Integrations | MODERATE | Copy a Nextcloud file or folder |
+| 545 | `nextcloud_move_path` | Integrations | MODERATE | Move or rename a Nextcloud file or folder |
+| 546 | `nextcloud_delete_path` | Integrations | MODERATE | Delete a Nextcloud file or folder |
+| 547 | `nextcloud_list_users` | Integrations | SAFE | List Nextcloud users |
+| 548 | `nextcloud_get_user` | Integrations | SAFE | Get Nextcloud user metadata |
+| 549 | `s3_list_buckets` | Integrations | SAFE | List S3 buckets |
+| 550 | `s3_list_objects` | Integrations | SAFE | List S3 objects |
+| 551 | `s3_get_object_text` | Integrations | SAFE | Download an S3 object preview |
+| 552 | `s3_upload_text_object` | Integrations | MODERATE | Upload a text object to S3 |
+| 553 | `s3_copy_object` | Integrations | MODERATE | Copy an S3 object |
+| 554 | `s3_delete_object` | Integrations | MODERATE | Delete an S3 object |
+| 555 | `s3_create_folder` | Integrations | MODERATE | Create an S3 folder marker object |
+| 556 | `s3_create_bucket` | Integrations | MODERATE | Create an S3 bucket |
+| 557 | `s3_delete_bucket` | Integrations | MODERATE | Delete an empty S3 bucket |
 
 ### Optional: Private B Tools (4)
 
@@ -1183,7 +1211,9 @@ connections in Settings > Connections with these provider names and fields:
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Build/CI credentials use `circleci.api_key`,
 `travisci.api_token`, and `jenkins.base_url` plus `jenkins.username` and
-`jenkins.api_key`. Business-service credentials use `bitly.access_token`,
+`jenkins.api_key`. File-storage credentials use `dropbox.access_token`,
+`nextcloud.webdav_url` plus either basic auth or an access token, and
+`s3.access_key_id` plus `s3.secret_access_key`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
@@ -1360,6 +1390,18 @@ Credential providers and fallback env vars:
 - CircleCI: provider `circleci`, fields `api_key`, `api_token`, `token`, or `value`; env fallback `CIRCLECI_API_TOKEN`.
 - Travis CI: provider `travisci`, fields `api_token`, `access_token`, `token`, or `value`; env fallback `TRAVISCI_API_TOKEN`.
 - Jenkins: provider `jenkins`, fields `base_url`, `username`, and `api_key` / `api_token` / `token`; env fallbacks `JENKINS_BASE_URL`, `JENKINS_USERNAME`, and `JENKINS_API_TOKEN`.
+
+### File Storage Service Tools
+
+This batch includes:
+- `dropbox_get_current_account()`, `dropbox_get_metadata(path)`, `dropbox_list_folder(path?, recursive?, include_deleted?, limit?)`, `dropbox_search(query, path?, filename_only?, limit?)`, `dropbox_download_file(path, max_bytes?)`, `dropbox_upload_text_file(path, content, mode?)`, `dropbox_create_folder(path)`, `dropbox_copy_path(from_path, to_path)`, `dropbox_move_path(from_path, to_path)`, and `dropbox_delete_path(path)`.
+- `nextcloud_list_folder(path?, depth?)`, `nextcloud_download_file(path, max_bytes?)`, `nextcloud_upload_text_file(path, content)`, `nextcloud_create_folder(path)`, `nextcloud_copy_path(from_path, to_path)`, `nextcloud_move_path(from_path, to_path)`, `nextcloud_delete_path(path)`, `nextcloud_list_users(search?, limit?)`, and `nextcloud_get_user(user_id)`.
+- `s3_list_buckets()`, `s3_list_objects(bucket, prefix?, delimiter?, limit?)`, `s3_get_object_text(bucket, key, max_bytes?)`, `s3_upload_text_object(bucket, key, content, content_type?)`, `s3_copy_object(source_bucket, source_key, destination_bucket, destination_key)`, `s3_delete_object(bucket, key)`, `s3_create_folder(bucket, folder_key)`, `s3_create_bucket(bucket, region?)`, and `s3_delete_bucket(bucket)`.
+
+Credential providers and fallback env vars:
+- Dropbox: provider `dropbox`, fields `access_token`, `token`, or `value`; env fallback `DROPBOX_ACCESS_TOKEN`.
+- Nextcloud: provider `nextcloud`, field `webdav_url` plus either `username` and `password` or `access_token`; env fallbacks `NEXTCLOUD_WEBDAV_URL`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD`, and `NEXTCLOUD_ACCESS_TOKEN`.
+- S3: provider `s3`, fields `access_key_id`, `secret_access_key`, optional `session_token`, `region`, `endpoint_url`, and `force_path_style`; env fallbacks `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_ENDPOINT_URL_S3`, and `S3_FORCE_PATH_STYLE`.
 
 ### Business And Language Service Tools
 
