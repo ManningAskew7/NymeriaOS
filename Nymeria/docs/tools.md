@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (294)
+### Optional: Service Integration Tools (306)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -372,6 +372,18 @@ in the credential vault for provider-specific saved connections scoped to
 | 292 | `cloudflare_get_origin_certificate` | Integrations | SAFE | Get a Cloudflare origin pull certificate |
 | 293 | `cloudflare_upload_origin_certificate` | Integrations | MODERATE | Upload a Cloudflare origin pull certificate |
 | 294 | `cloudflare_delete_origin_certificate` | Integrations | MODERATE | Delete a Cloudflare origin pull certificate |
+| 295 | `urlscan_search_scans` | Integrations | SAFE | Search archived urlscan.io scans |
+| 296 | `urlscan_get_result` | Integrations | SAFE | Get a urlscan.io scan result |
+| 297 | `urlscan_submit_scan` | Integrations | MODERATE | Submit a URL to urlscan.io for scanning |
+| 298 | `hunter_domain_search` | Integrations | SAFE | Find domain-associated email addresses with Hunter |
+| 299 | `hunter_email_finder` | Integrations | SAFE | Find a likely professional email with Hunter |
+| 300 | `hunter_email_verifier` | Integrations | SAFE | Verify email deliverability with Hunter |
+| 301 | `mailcheck_check_email` | Integrations | SAFE | Check an email address with Mailcheck |
+| 302 | `peekalink_preview_url` | Integrations | SAFE | Return link preview metadata with Peekalink |
+| 303 | `peekalink_check_availability` | Integrations | SAFE | Check Peekalink preview availability |
+| 304 | `jina_reader_fetch_url` | Integrations | SAFE | Fetch a URL through Jina Reader |
+| 305 | `jina_search_web` | Integrations | SAFE | Search the web through Jina Search |
+| 306 | `jina_deep_research` | Integrations | MODERATE | Run a Jina DeepSearch research query |
 
 ### Optional: Private B Tools (4)
 
@@ -1198,6 +1210,22 @@ Credential providers and fallback env vars:
 - PagerDuty: provider `pagerduty`, fields `api_token` / `api_key` / `token` / `value` for REST API-token auth, or `access_token` for OAuth bearer auth. Env fallback supports `PAGERDUTY_API_TOKEN`, optional `PAGERDUTY_FROM_EMAIL`, and `PAGERDUTY_BASE_URL`.
 - Sentry: provider `sentry`, fields `auth_token` / `access_token` / `api_key` / `token` / `value`; env fallback `SENTRY_AUTH_TOKEN`. Use `base_url` / `url` or `SENTRY_BASE_URL` for self-hosted Sentry.
 - Cloudflare: provider `cloudflare`, fields `api_token` / `access_token` / `token` / `value`; env fallback `CLOUDFLARE_API_TOKEN`. Use `base_url` / `url` or `CLOUDFLARE_BASE_URL` for non-default API roots.
+
+### Enrichment Security Service Tools
+
+This batch includes:
+- `urlscan_search_scans(query, ...)`, `urlscan_get_result(scan_id)`, and `urlscan_submit_scan(url, ...)`. Searches and result reads are SAFE; scan submission is MODERATE because it sends a URL to an external scanner and may make scan artifacts discoverable depending on visibility.
+- `hunter_domain_search(domain, ...)`, `hunter_email_finder(domain, first_name, last_name)`, and `hunter_email_verifier(email)` for Hunter email discovery and deliverability data. These are SAFE read/enrichment calls.
+- `mailcheck_check_email(email)` for Mailcheck email validation. This is SAFE.
+- `peekalink_preview_url(url)` and `peekalink_check_availability(url)` for Peekalink link metadata. These are SAFE.
+- `jina_reader_fetch_url(url, ...)`, `jina_search_web(query, ...)`, and `jina_deep_research(query, ...)` for Jina Reader/Search/DeepSearch. Reader and Search are SAFE extraction/search calls; DeepSearch is MODERATE because it can perform broader external research and consume hosted AI quota.
+
+Credential providers and fallback env vars:
+- urlscan.io: provider `urlscan`, fields `api_key`, `apiKey`, `access_token`, `token`, or `value`; env fallback `URLSCAN_API_KEY`. Use `base_url` / `url` or `URLSCAN_BASE_URL` for non-default API roots.
+- Hunter: provider `hunter`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `HUNTER_API_KEY`. Use `base_url` / `url` or `HUNTER_BASE_URL` for non-default API roots.
+- Mailcheck: provider `mailcheck`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `MAILCHECK_API_KEY`. Use `base_url` / `url` or `MAILCHECK_BASE_URL` for non-default API roots.
+- Peekalink: provider `peekalink`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `PEEKALINK_API_KEY`. Use `base_url` / `url` or `PEEKALINK_BASE_URL` for non-default API roots.
+- Jina AI: provider `jina`, fields `api_key`, `apiKey`, `access_token`, `token`, or `value`; env fallback `JINA_API_KEY`. Reader/Search can run without a key where Jina allows anonymous usage; DeepSearch requires a saved credential or env key. Base URL overrides are `JINA_READER_BASE_URL`, `JINA_SEARCH_BASE_URL`, and `JINA_DEEPSEARCH_BASE_URL`.
 
 ### tool_enable
 

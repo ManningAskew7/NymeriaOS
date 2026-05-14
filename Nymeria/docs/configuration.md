@@ -219,6 +219,18 @@ Set the API key for your chosen provider:
 | `SENTRY_BASE_URL` | Sentry | Optional Sentry API base URL override |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare | Optional Cloudflare API token fallback; credential vault provider `cloudflare` is preferred |
 | `CLOUDFLARE_BASE_URL` | Cloudflare | Optional Cloudflare API base URL override |
+| `URLSCAN_API_KEY` | urlscan.io | Optional urlscan.io API key fallback; credential vault provider `urlscan` is preferred |
+| `URLSCAN_BASE_URL` | urlscan.io | Optional urlscan.io API base URL override |
+| `HUNTER_API_KEY` | Hunter | Optional Hunter API key fallback; credential vault provider `hunter` is preferred |
+| `HUNTER_BASE_URL` | Hunter | Optional Hunter API base URL override |
+| `MAILCHECK_API_KEY` | Mailcheck | Optional Mailcheck API key fallback; credential vault provider `mailcheck` is preferred |
+| `MAILCHECK_BASE_URL` | Mailcheck | Optional Mailcheck API base URL override |
+| `PEEKALINK_API_KEY` | Peekalink | Optional Peekalink API key fallback; credential vault provider `peekalink` is preferred |
+| `PEEKALINK_BASE_URL` | Peekalink | Optional Peekalink API base URL override |
+| `JINA_API_KEY` | Jina AI | Optional Jina AI API key fallback; credential vault provider `jina` is preferred |
+| `JINA_READER_BASE_URL` | Jina AI | Optional Jina Reader API base URL override |
+| `JINA_SEARCH_BASE_URL` | Jina AI | Optional Jina Search API base URL override |
+| `JINA_DEEPSEARCH_BASE_URL` | Jina AI | Optional Jina DeepSearch API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -519,6 +531,18 @@ reachable from the backend process.
 | `SENTRY_BASE_URL` | `https://sentry.io` | Sentry API base URL |
 | `CLOUDFLARE_API_TOKEN` | - | Cloudflare API token fallback |
 | `CLOUDFLARE_BASE_URL` | `https://api.cloudflare.com/client/v4` | Cloudflare API base URL |
+| `URLSCAN_API_KEY` | - | urlscan.io API key fallback |
+| `URLSCAN_BASE_URL` | `https://urlscan.io/api/v1` | urlscan.io API base URL |
+| `HUNTER_API_KEY` | - | Hunter API key fallback |
+| `HUNTER_BASE_URL` | `https://api.hunter.io/v2` | Hunter API base URL |
+| `MAILCHECK_API_KEY` | - | Mailcheck API key fallback |
+| `MAILCHECK_BASE_URL` | `https://api.mailcheck.co/v1` | Mailcheck API base URL |
+| `PEEKALINK_API_KEY` | - | Peekalink API key fallback |
+| `PEEKALINK_BASE_URL` | `https://api.peekalink.io` | Peekalink API base URL |
+| `JINA_API_KEY` | - | Jina AI API key fallback |
+| `JINA_READER_BASE_URL` | `https://r.jina.ai` | Jina Reader API base URL |
+| `JINA_SEARCH_BASE_URL` | `https://s.jina.ai` | Jina Search API base URL |
+| `JINA_DEEPSEARCH_BASE_URL` | `https://deepsearch.jina.ai/v1` | Jina DeepSearch API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

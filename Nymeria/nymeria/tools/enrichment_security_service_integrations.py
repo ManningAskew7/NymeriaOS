@@ -1,0 +1,716 @@
+"""Data enrichment, URL intelligence, and web extraction service tools."""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Annotated, Any, Optional
+from urllib.parse import quote, urlparse
+
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+logger = logging.getLogger(__name__)
+
+_HTTP_TIMEOUT = 45.0
+_MAX_JSON_CHARS = 80_000
+_URLSCAN_BASE_URL = "https://urlscan.io/api/v1"
+_HUNTER_BASE_URL = "https://api.hunter.io/v2"
+_MAILCHECK_BASE_URL = "https://api.mailcheck.co/v1"
+_PEEKALINK_BASE_URL = "https://api.peekalink.io"
+_JINA_READER_BASE_URL = "https://r.jina.ai"
+_JINA_SEARCH_BASE_URL = "https://s.jina.ai"
+_JINA_DEEPSEARCH_BASE_URL = "https://deepsearch.jina.ai/v1"
+
+
+def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
+    text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+
+
+def _filtered(params: Optional[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in (params or {}).items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
+def _limit(value: int, *, default: int = 25, max_value: int = 500) -> int:
+    try:
+        return max(1, min(max_value, int(value)))
+    except Exception:
+        return default
+
+
+def _base_url(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("base URL must be an absolute http(s) URL")
+    return value.strip().rstrip("/")
+
+
+def _parse_json(value: str, *, expected: type, label: str) -> Any:
+    if not value.strip():
+        return {} if expected is dict else []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{label} must be valid JSON: {e}") from e
+    if not isinstance(parsed, expected):
+        raise ValueError(f"{label} must be a JSON {expected.__name__}.")
+    return parsed
+
+
+def _csv_to_list(value: str) -> list[str]:
+    return [part.strip() for part in value.replace("\n", ",").split(",") if part.strip()]
+
+
+def _settings_value(name: str) -> Optional[str]:
+    from ..config import get_settings
+
+    return getattr(get_settings(), name)
+
+
+def _credential_value(
+    *,
+    provider: str,
+    field_names: tuple[str, ...],
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    provider_aliases: tuple[str, ...] = (),
+) -> Optional[str]:
+    from .native_credentials import get_native_credential_value
+
+    credential = get_native_credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    )
+    return credential.value if credential else None
+
+
+def _setup_hint(
+    *,
+    provider: str,
+    field_names: tuple[str, ...],
+    tool_name: str,
+    env_var: str,
+    display_name: str,
+) -> str:
+    from .native_credentials import native_credential_setup_hint
+
+    return native_credential_setup_hint(
+        provider=provider,
+        field_names=field_names,
+        tool_name=tool_name,
+        env_var=env_var,
+        display_name=display_name,
+    )
+
+
+def _request_json(
+    method: str,
+    url: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> Any:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.request(
+                method,
+                url,
+                params=_filtered(params) if params is not None else None,
+                json=json_body,
+                headers=headers,
+            )
+            response.raise_for_status()
+            if response.status_code == 204 or not response.content:
+                return {"status": "ok", "status_code": response.status_code}
+            try:
+                return response.json()
+            except ValueError:
+                return {"status": "ok", "status_code": response.status_code, "text": response.text}
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            body = e.response.json()
+            if isinstance(body, dict):
+                detail = (
+                    body.get("message")
+                    or body.get("error")
+                    or body.get("error_description")
+                    or body.get("description")
+                    or body.get("detail")
+                    or ""
+                )
+                errors = body.get("errors") or body.get("fieldErrors")
+                if not detail and isinstance(errors, list):
+                    detail = "; ".join(str(item) for item in errors[:3])
+        except Exception:
+            detail = e.response.text[:300]
+        raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
+
+
+def _api_key_config(
+    *,
+    provider: str,
+    provider_aliases: tuple[str, ...],
+    env_var: str,
+    settings_key_name: str,
+    settings_base_name: str,
+    default_base: str,
+    tool_name: str,
+    display_name: str,
+    config: Optional[RunnableConfig],
+    required: bool = True,
+) -> tuple[str, str | None]:
+    base = (
+        _credential_value(
+            provider=provider,
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value(settings_base_name)
+        or default_base
+    )
+    api_key = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value(settings_key_name)
+    if required and not api_key:
+        return _base_url(base), _setup_hint(
+            provider=provider,
+            field_names=("api_key", "access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var=env_var,
+            display_name=display_name,
+        )
+    return _base_url(base), api_key
+
+
+def _bearer_headers(api_key: str | None) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _urlscan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base_url, api_key = _api_key_config(
+        provider="urlscan",
+        provider_aliases=("urlscan_io", "urlscanio", "urlscan_io_api"),
+        env_var="URLSCAN_API_KEY",
+        settings_key_name="urlscan_api_key",
+        settings_base_name="urlscan_base_url",
+        default_base=_URLSCAN_BASE_URL,
+        tool_name=tool_name,
+        display_name="urlscan.io",
+        config=config,
+    )
+    if not api_key:
+        return base_url, api_key or ""
+    if api_key.startswith("[Error]:"):
+        return base_url, api_key
+    return base_url, {
+        "Accept": "application/json",
+        "API-Key": api_key,
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _hunter_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
+    return _api_key_config(
+        provider="hunter",
+        provider_aliases=("hunter_api",),
+        env_var="HUNTER_API_KEY",
+        settings_key_name="hunter_api_key",
+        settings_base_name="hunter_base_url",
+        default_base=_HUNTER_BASE_URL,
+        tool_name=tool_name,
+        display_name="Hunter",
+        config=config,
+    )
+
+
+def _mailcheck_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base_url, api_key = _api_key_config(
+        provider="mailcheck",
+        provider_aliases=("mailcheck_api",),
+        env_var="MAILCHECK_API_KEY",
+        settings_key_name="mailcheck_api_key",
+        settings_base_name="mailcheck_base_url",
+        default_base=_MAILCHECK_BASE_URL,
+        tool_name=tool_name,
+        display_name="Mailcheck",
+        config=config,
+    )
+    if not api_key or api_key.startswith("[Error]:"):
+        return base_url, api_key or ""
+    return base_url, _bearer_headers(api_key)
+
+
+def _peekalink_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base_url, api_key = _api_key_config(
+        provider="peekalink",
+        provider_aliases=("peekalink_api",),
+        env_var="PEEKALINK_API_KEY",
+        settings_key_name="peekalink_api_key",
+        settings_base_name="peekalink_base_url",
+        default_base=_PEEKALINK_BASE_URL,
+        tool_name=tool_name,
+        display_name="Peekalink",
+        config=config,
+    )
+    if not api_key or api_key.startswith("[Error]:"):
+        return base_url, api_key or ""
+    return base_url, _bearer_headers(api_key)
+
+
+def _jina_key(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
+    return _credential_value(
+        provider="jina",
+        provider_aliases=("jina_ai", "jinaai", "jina_ai_api"),
+        field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("jina_api_key")
+
+
+def _jina_base(tool_name: str, config: Optional[RunnableConfig], settings_name: str, default: str) -> str:
+    base = (
+        _credential_value(
+            provider="jina",
+            provider_aliases=("jina_ai", "jinaai", "jina_ai_api"),
+            field_names=(settings_name, "base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value(settings_name)
+        or default
+    )
+    return _base_url(base)
+
+
+def _jina_headers(api_key: str | None, *, output_format: str = "") -> dict[str, str]:
+    headers = _bearer_headers(api_key)
+    if output_format.strip():
+        headers["X-Return-Format"] = output_format.strip()
+    return headers
+
+
+@tool
+def urlscan_search_scans(
+    query: str,
+    limit: int = 25,
+    search_after: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search archived urlscan.io scans.
+
+    Args:
+        query: urlscan search query, for example domain:example.com or page.url:"example".
+        limit: Number of results to return, 1-100.
+        search_after: Optional pagination token from a prior result sort field.
+    """
+    if not query.strip():
+        return "[Error]: query is required."
+    try:
+        base_url, headers_or_error = _urlscan_config("urlscan_search_scans", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/search/",
+            params={"q": query.strip(), "size": _limit(limit, max_value=100), "search_after": search_after.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("urlscan_search_scans failed", exc_info=True)
+        return f"[Error]: urlscan.io search failed: {e}"
+
+
+@tool
+def urlscan_get_result(
+    scan_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a urlscan.io scan result by UUID."""
+    if not scan_id.strip():
+        return "[Error]: scan_id is required."
+    try:
+        base_url, headers_or_error = _urlscan_config("urlscan_get_result", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/result/{quote(scan_id.strip(), safe='')}/", headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("urlscan_get_result failed", exc_info=True)
+        return f"[Error]: urlscan.io result lookup failed: {e}"
+
+
+@tool
+def urlscan_submit_scan(
+    url: str,
+    visibility: str = "unlisted",
+    tags: str = "",
+    custom_agent: str = "",
+    referer: str = "",
+    override_safety: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Submit a URL to urlscan.io for scanning.
+
+    Args:
+        url: URL to scan.
+        visibility: public, unlisted, or private.
+        tags: Optional comma-separated tags, at most 10.
+        custom_agent: Optional browser user agent string.
+        referer: Optional referer URL.
+        override_safety: Optional urlscan safety override value.
+    """
+    if not url.strip():
+        return "[Error]: url is required."
+    try:
+        tag_list = _csv_to_list(tags)
+        if len(tag_list) > 10:
+            return "[Error]: urlscan.io accepts at most 10 tags."
+        body: dict[str, Any] = {"url": url.strip(), "visibility": visibility.strip() or "unlisted"}
+        if tag_list:
+            body["tags"] = tag_list
+        if custom_agent.strip():
+            body["customAgent"] = custom_agent.strip()
+        if referer.strip():
+            body["referer"] = referer.strip()
+        if override_safety.strip():
+            body["overrideSafety"] = override_safety.strip()
+        base_url, headers_or_error = _urlscan_config("urlscan_submit_scan", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/scan/", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("urlscan_submit_scan failed", exc_info=True)
+        return f"[Error]: urlscan.io scan submission failed: {e}"
+
+
+@tool
+def hunter_domain_search(
+    domain: str,
+    limit: int = 25,
+    email_type: str = "",
+    seniority: str = "",
+    department: str = "",
+    raw: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Find email addresses associated with a domain through Hunter.
+
+    Args:
+        domain: Domain to search, for example example.com.
+        limit: Number of email results to return, 1-100.
+        email_type: Optional personal or generic filter.
+        seniority: Optional comma-separated seniority filters.
+        department: Optional comma-separated department filters.
+        raw: Return Hunter's full response instead of only the email list.
+    """
+    if not domain.strip():
+        return "[Error]: domain is required."
+    try:
+        base_url, key_or_error = _hunter_config("hunter_domain_search", config)
+        if key_or_error is None or key_or_error.startswith("[Error]:"):
+            return key_or_error or ""
+        params = {
+            "domain": domain.strip(),
+            "limit": _limit(limit, max_value=100),
+            "api_key": key_or_error,
+            "type": email_type.strip(),
+            "seniority": ",".join(_csv_to_list(seniority)),
+            "department": ",".join(_csv_to_list(department)),
+        }
+        data = _request_json("GET", f"{base_url}/domain-search", params=params)
+        if raw:
+            return _dump_json(data)
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            return _dump_json(data["data"].get("emails", data["data"]))
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("hunter_domain_search failed", exc_info=True)
+        return f"[Error]: Hunter domain search failed: {e}"
+
+
+@tool
+def hunter_email_finder(
+    domain: str,
+    first_name: str,
+    last_name: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Find a likely professional email address from name and domain."""
+    if not domain.strip() or not first_name.strip() or not last_name.strip():
+        return "[Error]: domain, first_name, and last_name are required."
+    try:
+        base_url, key_or_error = _hunter_config("hunter_email_finder", config)
+        if key_or_error is None or key_or_error.startswith("[Error]:"):
+            return key_or_error or ""
+        data = _request_json(
+            "GET",
+            f"{base_url}/email-finder",
+            params={
+                "domain": domain.strip(),
+                "first_name": first_name.strip(),
+                "last_name": last_name.strip(),
+                "api_key": key_or_error,
+            },
+        )
+        return _dump_json(data.get("data", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("hunter_email_finder failed", exc_info=True)
+        return f"[Error]: Hunter email finder failed: {e}"
+
+
+@tool
+def hunter_email_verifier(
+    email: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Verify deliverability details for an email address through Hunter."""
+    if not email.strip():
+        return "[Error]: email is required."
+    try:
+        base_url, key_or_error = _hunter_config("hunter_email_verifier", config)
+        if key_or_error is None or key_or_error.startswith("[Error]:"):
+            return key_or_error or ""
+        data = _request_json(
+            "GET",
+            f"{base_url}/email-verifier",
+            params={"email": email.strip(), "api_key": key_or_error},
+        )
+        return _dump_json(data.get("data", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("hunter_email_verifier failed", exc_info=True)
+        return f"[Error]: Hunter email verification failed: {e}"
+
+
+@tool
+def mailcheck_check_email(
+    email: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Check an email address with Mailcheck."""
+    if not email.strip():
+        return "[Error]: email is required."
+    try:
+        base_url, headers_or_error = _mailcheck_config("mailcheck_check_email", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/singleEmail:check",
+            json_body={"email": email.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("mailcheck_check_email failed", exc_info=True)
+        return f"[Error]: Mailcheck email check failed: {e}"
+
+
+@tool
+def peekalink_preview_url(
+    url: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Return link-preview metadata for a URL through Peekalink."""
+    if not url.strip():
+        return "[Error]: url is required."
+    try:
+        base_url, headers_or_error = _peekalink_config("peekalink_preview_url", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/", json_body={"link": url.strip()}, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("peekalink_preview_url failed", exc_info=True)
+        return f"[Error]: Peekalink preview failed: {e}"
+
+
+@tool
+def peekalink_check_availability(
+    url: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Check whether Peekalink can create a preview for a URL."""
+    if not url.strip():
+        return "[Error]: url is required."
+    try:
+        base_url, headers_or_error = _peekalink_config("peekalink_check_availability", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/is-available/",
+            json_body={"link": url.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("peekalink_check_availability failed", exc_info=True)
+        return f"[Error]: Peekalink availability check failed: {e}"
+
+
+@tool
+def jina_reader_fetch_url(
+    url: str,
+    output_format: str = "markdown",
+    target_selector: str = "",
+    remove_selector: str = "",
+    wait_for_selector: str = "",
+    with_generated_alt: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Fetch a URL through Jina Reader and return LLM-friendly content.
+
+    Args:
+        url: URL to fetch.
+        output_format: markdown, text, html, screenshot, or json.
+        target_selector: Optional CSS selector to focus extraction.
+        remove_selector: Optional CSS selector to remove.
+        wait_for_selector: Optional CSS selector to wait for.
+        with_generated_alt: Generate alt text for images when supported.
+    """
+    if not url.strip():
+        return "[Error]: url is required."
+    try:
+        api_key = _jina_key("jina_reader_fetch_url", config)
+        base_url = _jina_base("jina_reader_fetch_url", config, "jina_reader_base_url", _JINA_READER_BASE_URL)
+        headers = _jina_headers(api_key, output_format="" if output_format.strip() == "json" else output_format)
+        if target_selector.strip():
+            headers["X-Target-Selector"] = target_selector.strip()
+        if remove_selector.strip():
+            headers["X-Remove-Selector"] = remove_selector.strip()
+        if wait_for_selector.strip():
+            headers["X-Wait-For-Selector"] = wait_for_selector.strip()
+        if with_generated_alt:
+            headers["X-With-Generated-Alt"] = "true"
+        data = _request_json("GET", f"{base_url}/{url.strip()}", headers=headers)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("jina_reader_fetch_url failed", exc_info=True)
+        return f"[Error]: Jina Reader fetch failed: {e}"
+
+
+@tool
+def jina_search_web(
+    query: str,
+    output_format: str = "markdown",
+    site_filter: str = "",
+    page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search the web through Jina Search and return LLM-friendly results."""
+    if not query.strip():
+        return "[Error]: query is required."
+    try:
+        api_key = _jina_key("jina_search_web", config)
+        base_url = _jina_base("jina_search_web", config, "jina_search_base_url", _JINA_SEARCH_BASE_URL)
+        headers = _jina_headers(api_key, output_format="" if output_format.strip() == "json" else output_format)
+        if site_filter.strip():
+            headers["X-Site"] = site_filter.strip()
+        data = _request_json("GET", f"{base_url}/", params={"q": query.strip(), "page": max(1, int(page))}, headers=headers)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("jina_search_web failed", exc_info=True)
+        return f"[Error]: Jina Search failed: {e}"
+
+
+@tool
+def jina_deep_research(
+    query: str,
+    max_returned_sources: int = 5,
+    prioritize_sources: str = "",
+    exclude_sources: str = "",
+    site_filter: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Run a Jina DeepSearch research query."""
+    if not query.strip():
+        return "[Error]: query is required."
+    try:
+        api_key = _jina_key("jina_deep_research", config)
+        if not api_key:
+            return _setup_hint(
+                provider="jina",
+                field_names=("api_key", "access_token", "token", "value"),
+                tool_name="jina_deep_research",
+                env_var="JINA_API_KEY",
+                display_name="Jina AI",
+            )
+        base_url = _jina_base("jina_deep_research", config, "jina_deepsearch_base_url", _JINA_DEEPSEARCH_BASE_URL)
+        body: dict[str, Any] = {
+            "messages": [{"role": "user", "content": query.strip()}],
+            "max_returned_urls": _limit(max_returned_sources, default=5, max_value=20),
+        }
+        if prioritize_sources.strip():
+            body["boost_hostnames"] = _csv_to_list(prioritize_sources)
+        if exclude_sources.strip():
+            body["bad_hostnames"] = _csv_to_list(exclude_sources)
+        if site_filter.strip():
+            body["only_hostnames"] = _csv_to_list(site_filter)
+        data = _request_json(
+            "POST",
+            f"{base_url}/chat/completions",
+            json_body=body,
+            headers=_bearer_headers(api_key),
+        )
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                if isinstance(message, dict):
+                    return _dump_json(
+                        {
+                            "content": message.get("content"),
+                            "annotations": message.get("annotations"),
+                            "usage": data.get("usage"),
+                        }
+                    )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("jina_deep_research failed", exc_info=True)
+        return f"[Error]: Jina DeepSearch failed: {e}"
+
+
+ENRICHMENT_SECURITY_SERVICE_TOOLS = [
+    urlscan_search_scans,
+    urlscan_get_result,
+    urlscan_submit_scan,
+    hunter_domain_search,
+    hunter_email_finder,
+    hunter_email_verifier,
+    mailcheck_check_email,
+    peekalink_preview_url,
+    peekalink_check_availability,
+    jina_reader_fetch_url,
+    jina_search_web,
+    jina_deep_research,
+]
