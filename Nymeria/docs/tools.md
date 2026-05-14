@@ -69,17 +69,32 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: N8N-Inspired Integration Tools (4)
+### Optional: N8N-Inspired Integration Tools (17)
 
-Not loaded by default. These are the first dedicated n8n AI tool-node ports that
-map cleanly to Python LangChain/community wrappers or a local safe equivalent.
+Not loaded by default. These are the first dedicated n8n AI tool-node ports and
+public information service ports. Tools that need connection details first look
+in the credential vault for provider-specific saved connections scoped to
+`native_tool:<tool_name>` or `native_tool:*`, then fall back to env settings.
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
 | 1 | `calculator` | Integrations | SAFE | Evaluate deterministic arithmetic expressions with a safe local parser |
 | 2 | `wikipedia_search` | Integrations | SAFE | Search Wikipedia via `langchain_community`'s Wikipedia wrapper |
-| 3 | `wolfram_alpha_query` | Integrations | SAFE | Query Wolfram\|Alpha via `langchain_community`; requires `WOLFRAM_ALPHA_APP_ID` |
-| 4 | `searxng_search` | Integrations | SAFE | Search a configured SearXNG instance via `langchain_community`; requires `SEARXNG_BASE_URL` |
+| 3 | `wolfram_alpha_query` | Integrations | SAFE | Query Wolfram\|Alpha via `langchain_community`; uses vault provider `wolfram_alpha` or `WOLFRAM_ALPHA_APP_ID` |
+| 4 | `searxng_search` | Integrations | SAFE | Search a configured SearXNG instance; uses vault provider `searxng` or `SEARXNG_BASE_URL` |
+| 5 | `coingecko_price` | Integrations | SAFE | Get current crypto prices from CoinGecko |
+| 6 | `coingecko_coin_markets` | Integrations | SAFE | List CoinGecko market data |
+| 7 | `hackernews_search` | Integrations | SAFE | Search Hacker News via Algolia |
+| 8 | `hackernews_get_item` | Integrations | SAFE | Fetch a Hacker News item by ID |
+| 9 | `hackernews_get_user` | Integrations | SAFE | Fetch a Hacker News user profile |
+| 10 | `npm_package_info` | Integrations | SAFE | Fetch npm package metadata; optional vault provider `npm` |
+| 11 | `npm_package_search` | Integrations | SAFE | Search npm packages; optional vault provider `npm` |
+| 12 | `open_thesaurus_synonyms` | Integrations | SAFE | Get German synonyms from OpenThesaurus |
+| 13 | `rss_feed_read` | Integrations | MODERATE | Read an RSS/Atom feed URL |
+| 14 | `nasa_apod` | Integrations | SAFE | Get NASA Astronomy Picture of the Day; uses vault provider `nasa` or `NASA_API_KEY` |
+| 15 | `openweathermap_current` | Integrations | SAFE | Get current weather; uses vault provider `openweathermap` or `OPENWEATHERMAP_API_KEY` |
+| 16 | `openweathermap_forecast` | Integrations | SAFE | Get a 5-day forecast; uses vault provider `openweathermap` or `OPENWEATHERMAP_API_KEY` |
+| 17 | `quickchart_create_url` | Integrations | SAFE | Create a QuickChart chart URL from labels and data |
 
 ### Optional: Private B Tools (4)
 
@@ -637,6 +652,14 @@ case tokens, categories, descriptions, tags, and implementation/type fields.
 
 ## N8N-Inspired Integration Tools (Optional)
 
+Credential-aware native tools use the existing encrypted credential vault. Save
+connections in Settings > Connections with these provider names and fields:
+`wolfram_alpha.app_id`, `searxng.base_url`, `nasa.api_key`,
+`openweathermap.api_key`, and optional `npm.registry_url` / `npm.token`. Scope a
+credential to one tool with `allowed target = native_tool:<tool_name>`, share it
+across native tools with `native_tool:*`, or leave the target blank when it is
+safe for any target. Tool responses never expose plaintext credential values.
+
 ### calculator
 
 Evaluate a safe arithmetic expression locally.
@@ -668,8 +691,9 @@ Query Wolfram|Alpha for computational facts and calculations.
 wolfram_alpha_query(query: str)
 ```
 
-Requires `WOLFRAM_ALPHA_APP_ID` plus the Python `langchain-community` and
-`wolframalpha` packages from `requirements.txt`.
+Uses vault provider `wolfram_alpha` fields `app_id`, `appid`, or `value`, then
+falls back to `WOLFRAM_ALPHA_APP_ID`. Also requires the Python
+`langchain-community` and `wolframalpha` packages from `requirements.txt`.
 
 ### searxng_search
 
@@ -687,8 +711,22 @@ searxng_search(
 )
 ```
 
-Requires `SEARXNG_BASE_URL`, pointing at the SearXNG instance endpoint accepted
-by `langchain_community.utilities.SearxSearchWrapper`.
+Uses vault provider `searxng` fields `base_url`, `url`, or `value`, then falls
+back to `SEARXNG_BASE_URL`, pointing at the endpoint accepted by
+`langchain_community.utilities.SearxSearchWrapper`.
+
+### Public Information Tools
+
+The public information batch includes:
+- `coingecko_price(ids, vs_currencies?, include_market_cap?, include_24hr_vol?, include_24hr_change?, include_last_updated_at?)`
+- `coingecko_coin_markets(vs_currency?, ids?, category?, order?, limit?, page?, sparkline?, price_change_percentage?)`
+- `hackernews_search(query?, tags?, limit?, page?)`, `hackernews_get_item(item_id, include_comments?)`, `hackernews_get_user(username)`
+- `npm_package_info(package_name, version?)` and `npm_package_search(query, limit?, offset?)`; optional vault provider `npm` supports `registry_url` / `base_url` and `token` / `api_key` / `value`.
+- `open_thesaurus_synonyms(text, ...)`
+- `rss_feed_read(url, max_items?, ignore_ssl?)`; marked MODERATE because it fetches arbitrary user-provided URLs.
+- `nasa_apod(date?, start_date?, end_date?, thumbs?)`; uses vault provider `nasa` fields `api_key` or `value`, then `NASA_API_KEY`.
+- `openweathermap_current(...)` and `openweathermap_forecast(...)`; use vault provider `openweathermap` fields `api_key`, `access_token`, or `value`, then `OPENWEATHERMAP_API_KEY`.
+- `quickchart_create_url(chart_type, labels_json, data_json, ...)`
 
 ### tool_enable
 
@@ -1097,7 +1135,10 @@ auth_manager(
 Actions: `list`, `status`, `request_setup`, `bind`, `unbind`, `test`, `disable`.
 The tool returns credential metadata only. It can manage user-owned credentials
 but cannot alter system credentials. It never returns plaintext secrets,
-ciphertext, or partial key material.
+ciphertext, or partial key material. Native built-in integrations use target
+type `native_tool`; for example, request setup for NASA with
+`target_type="native_tool"`, `target_id="nasa_apod"`, and
+`required_fields=["api_key"]`.
 
 ### skill_config
 

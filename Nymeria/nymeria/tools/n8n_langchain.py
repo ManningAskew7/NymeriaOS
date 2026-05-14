@@ -12,9 +12,10 @@ import json
 import logging
 import math
 import operator
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,10 @@ def wikipedia_search(
 
 
 @tool
-def wolfram_alpha_query(query: str) -> str:
+def wolfram_alpha_query(
+    query: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
     """Query Wolfram|Alpha for computational facts and calculations.
 
     Args:
@@ -216,10 +220,24 @@ def wolfram_alpha_query(query: str) -> str:
         return "[Error]: query is required."
 
     from ..config import get_settings
+    from .native_credentials import get_native_credential_value, native_credential_setup_hint
 
-    app_id = get_settings().wolfram_alpha_app_id
+    app_id_credential = get_native_credential_value(
+        provider="wolfram_alpha",
+        provider_aliases=("wolfram", "wolframalpha"),
+        field_names=("app_id", "appid", "value"),
+        tool_name="wolfram_alpha_query",
+        config=config,
+    )
+    app_id = app_id_credential.value if app_id_credential else get_settings().wolfram_alpha_app_id
     if not app_id:
-        return "[Error]: WOLFRAM_ALPHA_APP_ID is not set."
+        return native_credential_setup_hint(
+            provider="wolfram_alpha",
+            field_names=("app_id", "value"),
+            tool_name="wolfram_alpha_query",
+            env_var="WOLFRAM_ALPHA_APP_ID",
+            display_name="Wolfram|Alpha",
+        )
 
     missing = _require_langchain_community("wolfram_alpha_query", "wolframalpha")
     if missing:
@@ -246,6 +264,7 @@ def searxng_search(
     safesearch: int = 0,
     categories: str = "",
     engines: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Search a configured SearXNG instance and return JSON results.
 
@@ -263,10 +282,24 @@ def searxng_search(
         return "[Error]: query is required."
 
     from ..config import get_settings
+    from .native_credentials import get_native_credential_value, native_credential_setup_hint
 
-    searxng_base_url = get_settings().searxng_base_url
+    base_url_credential = get_native_credential_value(
+        provider="searxng",
+        provider_aliases=("searx", "searx_ng"),
+        field_names=("base_url", "url", "value"),
+        tool_name="searxng_search",
+        config=config,
+    )
+    searxng_base_url = base_url_credential.value if base_url_credential else get_settings().searxng_base_url
     if not searxng_base_url:
-        return "[Error]: SEARXNG_BASE_URL is not set."
+        return native_credential_setup_hint(
+            provider="searxng",
+            field_names=("base_url", "value"),
+            tool_name="searxng_search",
+            env_var="SEARXNG_BASE_URL",
+            display_name="SearXNG",
+        )
 
     missing = _require_langchain_community("searxng_search")
     if missing:

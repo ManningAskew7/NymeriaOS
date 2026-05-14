@@ -382,6 +382,9 @@ class Settings(BaseSettings):
     perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")
     wolfram_alpha_app_id: Optional[str] = Field(default=None, description="Wolfram|Alpha AppID for wolfram_alpha_query")
     searxng_base_url: Optional[str] = Field(default=None, description="Base URL for a SearXNG instance")
+    nasa_api_key: Optional[str] = Field(default=None, description="NASA API key for nasa_apod")
+    openweathermap_api_key: Optional[str] = Field(default=None, description="OpenWeatherMap API key for weather tools")
+    npm_registry_url: str = Field(default="https://registry.npmjs.org", description="npm registry base URL for npm tools")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

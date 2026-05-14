@@ -135,7 +135,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     ),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
-    (ToolCategory.INTEGRATIONS, ("N8N_LANGCHAIN_TOOLS",)),
+    (ToolCategory.INTEGRATIONS, ("N8N_LANGCHAIN_TOOLS", "N8N_PUBLIC_INFO_TOOLS")),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS",)),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),
@@ -219,6 +219,18 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "wikipedia_search",
         "wolfram_alpha_query",
         "searxng_search",
+        "coingecko_price",
+        "coingecko_coin_markets",
+        "hackernews_search",
+        "hackernews_get_item",
+        "hackernews_get_user",
+        "npm_package_info",
+        "npm_package_search",
+        "open_thesaurus_synonyms",
+        "nasa_apod",
+        "openweathermap_current",
+        "openweathermap_forecast",
+        "quickchart_create_url",
     }
 )
 

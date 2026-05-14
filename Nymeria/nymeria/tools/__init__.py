@@ -100,6 +100,22 @@ from .n8n_langchain import (
     searxng_search,
     N8N_LANGCHAIN_TOOLS,
 )
+from .n8n_public_info import (
+    coingecko_price,
+    coingecko_coin_markets,
+    hackernews_search,
+    hackernews_get_item,
+    hackernews_get_user,
+    npm_package_info,
+    npm_package_search,
+    open_thesaurus_synonyms,
+    rss_feed_read,
+    nasa_apod,
+    openweathermap_current,
+    openweathermap_forecast,
+    quickchart_create_url,
+    N8N_PUBLIC_INFO_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -147,6 +163,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SPAWN_THREAD_TOOLS
     + IMAGE_GENERATION_TOOLS
     + N8N_LANGCHAIN_TOOLS
+    + N8N_PUBLIC_INFO_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -262,6 +279,20 @@ __all__ = [
     "wolfram_alpha_query",
     "searxng_search",
     "N8N_LANGCHAIN_TOOLS",
+    "coingecko_price",
+    "coingecko_coin_markets",
+    "hackernews_search",
+    "hackernews_get_item",
+    "hackernews_get_user",
+    "npm_package_info",
+    "npm_package_search",
+    "open_thesaurus_synonyms",
+    "rss_feed_read",
+    "nasa_apod",
+    "openweathermap_current",
+    "openweathermap_forecast",
+    "quickchart_create_url",
+    "N8N_PUBLIC_INFO_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

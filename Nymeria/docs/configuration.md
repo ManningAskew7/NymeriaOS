@@ -70,8 +70,11 @@ Set the API key for your chosen provider:
 | `EMBEDDING_BASE_URL` | OpenAI-compatible embeddings | Optional custom `/v1` base URL for embeddings |
 | `EMBEDDING_MODEL` | OpenAI-compatible embeddings | Optional; defaults to `text-embedding-3-small`; must return 1536-dimensional vectors |
 | `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
-| `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Required for `wolfram_alpha_query` |
-| `SEARXNG_BASE_URL` | SearXNG | Required for `searxng_search` |
+| `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
+| `SEARXNG_BASE_URL` | SearXNG | Optional env fallback for `searxng_search`; credential vault provider `searxng` is preferred |
+| `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
+| `OPENWEATHERMAP_API_KEY` | OpenWeatherMap | Optional env fallback for `openweathermap_*`; credential vault provider `openweathermap` is preferred |
+| `NPM_REGISTRY_URL` | npm | Optional registry override for npm tools; credential vault provider `npm` can also provide `registry_url` and `token` |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -225,6 +228,9 @@ reachable from the backend process.
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
 | `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by searxng_search |
+| `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
+| `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |
+| `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL fallback |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
