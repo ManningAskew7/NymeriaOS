@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Annotated, Any, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qsl, quote, urlparse
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -18,6 +18,9 @@ _BASEROW_BASE_URL = "https://api.baserow.io"
 _NOCODB_BASE_URL = "https://app.nocodb.com"
 _CODA_BASE_URL = "https://coda.io/apis/v1"
 _GRIST_BASE_URL = "https://docs.getgrist.com/api"
+_QUICKBASE_BASE_URL = "https://api.quickbase.com/v1"
+_SEATABLE_BASE_URL = "https://cloud.seatable.io"
+_STACKBY_BASE_URL = "https://stackby.com/api/betav1"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -310,9 +313,764 @@ def _grist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     return base_url, _bearer_headers(api_key)
 
 
+def _supabase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="supabase",
+            provider_aliases=("supabase_api", "supabaseApi"),
+            field_names=("base_url", "host", "url", "project_url", "projectUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("supabase_url")
+        or _settings_value("supabase_base_url")
+    )
+    key = (
+        _credential_value(
+            provider="supabase",
+            provider_aliases=("supabase_api", "supabaseApi"),
+            field_names=(
+                "service_role",
+                "serviceRole",
+                "service_role_key",
+                "serviceRoleKey",
+                "api_key",
+                "apiKey",
+                "anon_key",
+                "anonKey",
+                "token",
+                "value",
+            ),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("supabase_service_role_key")
+        or _settings_value("supabase_api_key")
+    )
+    if not base:
+        return "", (
+            '[Error]: No Supabase URL found. Save a Supabase credential with "base_url" '
+            "or set SUPABASE_URL."
+        )
+    base = _base_url(base)
+    if not base.endswith("/rest/v1"):
+        base = f"{base}/rest/v1"
+    if not key:
+        return base, _setup_hint(
+            provider="supabase",
+            field_names=("service_role", "api_key"),
+            tool_name=tool_name,
+            env_var="SUPABASE_SERVICE_ROLE_KEY or SUPABASE_API_KEY",
+            display_name="Supabase",
+        )
+    headers = _bearer_headers(key)
+    headers["apikey"] = key
+    headers["Prefer"] = "return=representation"
+    return base, headers
+
+
+def _quickbase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="quickbase",
+            provider_aliases=("quick_base", "quickbase_api", "quickbaseApi"),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("quickbase_base_url")
+        or _QUICKBASE_BASE_URL
+    )
+    hostname = _credential_value(
+        provider="quickbase",
+        provider_aliases=("quick_base", "quickbase_api", "quickbaseApi"),
+        field_names=("hostname", "realm_hostname", "realmHostname", "realm"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("quickbase_hostname")
+    token = _credential_value(
+        provider="quickbase",
+        provider_aliases=("quick_base", "quickbase_api", "quickbaseApi"),
+        field_names=("user_token", "userToken", "api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("quickbase_user_token")
+    if not hostname:
+        return _base_url(base), (
+            '[Error]: No Quickbase realm hostname found. Save a Quickbase credential with "hostname" '
+            "or set QUICKBASE_HOSTNAME."
+        )
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="quickbase",
+            field_names=("user_token", "hostname"),
+            tool_name=tool_name,
+            env_var="QUICKBASE_USER_TOKEN",
+            display_name="Quickbase",
+        )
+    headers = _json_headers()
+    headers["QB-Realm-Hostname"] = hostname.strip()
+    headers["Authorization"] = f"QB-USER-TOKEN {token}"
+    return _base_url(base), headers
+
+
+def _seatable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
+    base = (
+        _credential_value(
+            provider="seatable",
+            provider_aliases=("sea_table", "seatable_api", "seaTableApi"),
+            field_names=("base_url", "domain", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("seatable_base_url")
+        or _SEATABLE_BASE_URL
+    )
+    token = _credential_value(
+        provider="seatable",
+        provider_aliases=("sea_table", "seatable_api", "seaTableApi"),
+        field_names=("api_token", "apiToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("seatable_api_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="seatable",
+            field_names=("api_token", "token"),
+            tool_name=tool_name,
+            env_var="SEATABLE_API_TOKEN",
+            display_name="SeaTable",
+        )
+    return _base_url(base), token
+
+
+def _stackby_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base_url, api_key = _api_key_config(
+        provider="stackby",
+        provider_aliases=("stackby_api", "stackbyApi"),
+        env_var="STACKBY_API_KEY",
+        settings_key_name="stackby_api_key",
+        settings_base_name="stackby_base_url",
+        default_base=_STACKBY_BASE_URL,
+        tool_name=tool_name,
+        display_name="Stackby",
+        config=config,
+    )
+    if not api_key or api_key.startswith("[Error]:"):
+        return base_url, api_key or ""
+    headers = _json_headers()
+    headers["api-key"] = api_key
+    return base_url, headers
+
+
 def _cells_from_mapping(cells_json: str) -> list[dict[str, Any]]:
     cells = _parse_json(cells_json, expected=dict, label="cells_json")
     return [{"column": column, "value": value} for column, value in cells.items()]
+
+
+def _postgrest_params(filters_query: str, *, limit: int = 0, offset: int = 0, order: str = "") -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if filters_query.strip():
+        params.update(dict(parse_qsl(filters_query.strip().lstrip("?"), keep_blank_values=True)))
+    if limit:
+        params["limit"] = _limit(limit, max_value=1000)
+    if offset:
+        params["offset"] = max(0, int(offset))
+    if order.strip():
+        params["order"] = order.strip()
+    return params
+
+
+def _schema_headers(headers: dict[str, str], *, schema: str, method: str) -> dict[str, str]:
+    result = dict(headers)
+    if schema.strip() and schema.strip() != "public":
+        if method.upper() in {"GET", "HEAD"}:
+            result["Accept-Profile"] = schema.strip()
+        else:
+            result["Content-Profile"] = schema.strip()
+    return result
+
+
+def _quickbase_records(records_json: str) -> list[dict[str, Any]]:
+    parsed = _parse_json(records_json, expected=list, label="records_json")
+    records = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise ValueError("records_json must be a JSON array of objects")
+        record = {
+            str(field_id): value if isinstance(value, dict) and "value" in value else {"value": value}
+            for field_id, value in item.items()
+        }
+        records.append(record)
+    return records
+
+
+def _quickbase_field_ids(value: str) -> list[int]:
+    return [int(field_id) for field_id in _csv_to_list(value)]
+
+
+def _seatable_sql_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+
+
+def _seatable_identifier(value: str) -> str:
+    return value.replace("`", "``")
+
+
+def _seatable_base_context(base_url: str, api_token: str) -> tuple[str, dict[str, str]]:
+    data = _request_json(
+        "GET",
+        f"{base_url}/api/v2.1/dtable/app-access-token/",
+        headers={"Authorization": f"Token {api_token}", "Accept": "application/json", "User-Agent": "Nymeria"},
+    )
+    access_token = data.get("access_token") if isinstance(data, dict) else None
+    dtable_uuid = data.get("dtable_uuid") if isinstance(data, dict) else None
+    if not access_token or not dtable_uuid:
+        raise RuntimeError("SeaTable did not return access_token and dtable_uuid")
+    headers = _json_headers()
+    headers["Authorization"] = f"Token {access_token}"
+    return str(dtable_uuid), headers
+
+
+def _stackby_table_path(table: str) -> str:
+    return quote(table.strip(), safe="")
+
+
+@tool
+def supabase_list_rows(
+    table: str,
+    select: str = "*",
+    filters_query: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    order: str = "",
+    db_schema: str = "public",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List rows from a Supabase table through PostgREST.
+
+    Args:
+        table: Supabase table name.
+        select: PostgREST select expression, default `*`.
+        filters_query: Raw PostgREST filter query string, such as `id=eq.1`.
+        limit: Maximum rows to request, 1-1000.
+        offset: Result offset.
+        order: Optional PostgREST order expression.
+        db_schema: Database schema exposed through the REST API.
+    """
+    if not table.strip():
+        return "[Error]: table is required."
+    try:
+        base_url, headers_or_error = _supabase_config("supabase_list_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = _postgrest_params(filters_query, limit=limit, offset=offset, order=order)
+        params["select"] = select.strip() or "*"
+        headers = _schema_headers(headers_or_error, schema=db_schema, method="GET")
+        data = _request_json("GET", f"{base_url}/{quote(table.strip(), safe='')}", params=params, headers=headers)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("supabase_list_rows failed", exc_info=True)
+        return f"[Error]: Supabase row list failed: {e}"
+
+
+@tool
+def supabase_insert_rows(
+    table: str,
+    rows_json: str,
+    db_schema: str = "public",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Insert one or more rows into a Supabase table.
+
+    Args:
+        table: Supabase table name.
+        rows_json: JSON object or array of row objects.
+        db_schema: Database schema exposed through the REST API.
+    """
+    if not table.strip():
+        return "[Error]: table is required."
+    try:
+        rows = json.loads(rows_json)
+        if not isinstance(rows, (dict, list)) or not rows:
+            return "[Error]: rows_json must be a non-empty JSON object or array."
+        base_url, headers_or_error = _supabase_config("supabase_insert_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        headers = _schema_headers(headers_or_error, schema=db_schema, method="POST")
+        data = _request_json("POST", f"{base_url}/{quote(table.strip(), safe='')}", json_body=rows, headers=headers)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("supabase_insert_rows failed", exc_info=True)
+        return f"[Error]: Supabase row insert failed: {e}"
+
+
+@tool
+def supabase_update_rows(
+    table: str,
+    fields_json: str,
+    filters_query: str,
+    db_schema: str = "public",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update Supabase rows matching a PostgREST filter.
+
+    Args:
+        table: Supabase table name.
+        fields_json: JSON object of fields to set.
+        filters_query: Required PostgREST filter query, such as `id=eq.1`.
+        db_schema: Database schema exposed through the REST API.
+    """
+    if not table.strip() or not filters_query.strip():
+        return "[Error]: table and filters_query are required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, headers_or_error = _supabase_config("supabase_update_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        headers = _schema_headers(headers_or_error, schema=db_schema, method="PATCH")
+        data = _request_json(
+            "PATCH",
+            f"{base_url}/{quote(table.strip(), safe='')}",
+            params=_postgrest_params(filters_query),
+            json_body=fields,
+            headers=headers,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("supabase_update_rows failed", exc_info=True)
+        return f"[Error]: Supabase row update failed: {e}"
+
+
+@tool
+def supabase_delete_rows(
+    table: str,
+    filters_query: str,
+    db_schema: str = "public",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete Supabase rows matching a PostgREST filter.
+
+    Args:
+        table: Supabase table name.
+        filters_query: Required PostgREST filter query, such as `id=eq.1`.
+        db_schema: Database schema exposed through the REST API.
+    """
+    if not table.strip() or not filters_query.strip():
+        return "[Error]: table and filters_query are required."
+    try:
+        base_url, headers_or_error = _supabase_config("supabase_delete_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        headers = _schema_headers(headers_or_error, schema=db_schema, method="DELETE")
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/{quote(table.strip(), safe='')}",
+            params=_postgrest_params(filters_query),
+            headers=headers,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("supabase_delete_rows failed", exc_info=True)
+        return f"[Error]: Supabase row deletion failed: {e}"
+
+
+@tool
+def quickbase_list_fields(
+    table_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List fields for a Quickbase table."""
+    if not table_id.strip():
+        return "[Error]: table_id is required."
+    try:
+        base_url, headers_or_error = _quickbase_config("quickbase_list_fields", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/fields", params={"tableId": table_id.strip()}, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("quickbase_list_fields failed", exc_info=True)
+        return f"[Error]: Quickbase field list failed: {e}"
+
+
+@tool
+def quickbase_query_records(
+    table_id: str,
+    where: str = "",
+    select_fields: str = "",
+    sort_by_json: str = "",
+    limit: int = 50,
+    skip: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Query Quickbase records.
+
+    Args:
+        table_id: Quickbase table ID.
+        where: Optional Quickbase where clause.
+        select_fields: Optional comma-separated field IDs to return.
+        sort_by_json: Optional Quickbase sortBy array as JSON.
+        limit: Maximum records to request, 1-1000.
+        skip: Number of records to skip.
+    """
+    if not table_id.strip():
+        return "[Error]: table_id is required."
+    try:
+        body: dict[str, Any] = {"from": table_id.strip(), "options": {"top": _limit(limit, max_value=1000), "skip": max(0, int(skip or 0))}}
+        if where.strip():
+            body["where"] = where.strip()
+        if select_fields.strip():
+            body["select"] = _quickbase_field_ids(select_fields)
+        sort_by = _parse_json(sort_by_json, expected=list, label="sort_by_json")
+        if sort_by:
+            body["sortBy"] = sort_by
+        base_url, headers_or_error = _quickbase_config("quickbase_query_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/records/query", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("quickbase_query_records failed", exc_info=True)
+        return f"[Error]: Quickbase record query failed: {e}"
+
+
+@tool
+def quickbase_upsert_records(
+    table_id: str,
+    records_json: str,
+    merge_field_id: int = 0,
+    fields_to_return: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create or update Quickbase records.
+
+    Args:
+        table_id: Quickbase table ID.
+        records_json: JSON array of field-ID keyed record objects.
+        merge_field_id: Optional unique field ID for upsert behavior.
+        fields_to_return: Optional comma-separated field IDs to return.
+    """
+    if not table_id.strip():
+        return "[Error]: table_id is required."
+    try:
+        body: dict[str, Any] = {"to": table_id.strip(), "data": _quickbase_records(records_json)}
+        if merge_field_id:
+            body["mergeFieldId"] = int(merge_field_id)
+        if fields_to_return.strip():
+            body["fieldsToReturn"] = _quickbase_field_ids(fields_to_return)
+        base_url, headers_or_error = _quickbase_config("quickbase_upsert_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/records", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("quickbase_upsert_records failed", exc_info=True)
+        return f"[Error]: Quickbase record upsert failed: {e}"
+
+
+@tool
+def quickbase_delete_records(
+    table_id: str,
+    where: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete Quickbase records matching a where clause."""
+    if not table_id.strip() or not where.strip():
+        return "[Error]: table_id and where are required."
+    try:
+        base_url, headers_or_error = _quickbase_config("quickbase_delete_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/records",
+            json_body={"from": table_id.strip(), "where": where.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("quickbase_delete_records failed", exc_info=True)
+        return f"[Error]: Quickbase record deletion failed: {e}"
+
+
+@tool
+def seatable_get_metadata(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get SeaTable base metadata."""
+    try:
+        base_url, token_or_error = _seatable_config("seatable_get_metadata", config)
+        if token_or_error is None or token_or_error.startswith("[Error]:"):
+            return token_or_error or ""
+        dtable_uuid, headers = _seatable_base_context(base_url, token_or_error)
+        endpoint = f"/api-gateway/api/v2/dtables/{quote(dtable_uuid, safe='')}/metadata/"
+        return _dump_json(_request_json("GET", f"{base_url}{endpoint}", headers=headers))
+    except Exception as e:
+        logger.error("seatable_get_metadata failed", exc_info=True)
+        return f"[Error]: SeaTable metadata lookup failed: {e}"
+
+
+@tool
+def seatable_list_rows(
+    table_name: str,
+    view_name: str = "",
+    limit: int = 50,
+    start: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List rows from a SeaTable table or view."""
+    if not table_name.strip():
+        return "[Error]: table_name is required."
+    try:
+        base_url, token_or_error = _seatable_config("seatable_list_rows", config)
+        if token_or_error is None or token_or_error.startswith("[Error]:"):
+            return token_or_error or ""
+        dtable_uuid, headers = _seatable_base_context(base_url, token_or_error)
+        endpoint = f"/api-gateway/api/v2/dtables/{quote(dtable_uuid, safe='')}/rows/"
+        data = _request_json(
+            "GET",
+            f"{base_url}{endpoint}",
+            params={
+                "table_name": table_name.strip(),
+                "view_name": view_name.strip(),
+                "limit": _limit(limit, max_value=1000),
+                "start": max(0, int(start or 0)),
+            },
+            headers=headers,
+        )
+        return _dump_json(data.get("rows", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("seatable_list_rows failed", exc_info=True)
+        return f"[Error]: SeaTable row list failed: {e}"
+
+
+@tool
+def seatable_get_row(
+    table_name: str,
+    row_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a SeaTable row by ID."""
+    if not table_name.strip() or not row_id.strip():
+        return "[Error]: table_name and row_id are required."
+    try:
+        base_url, token_or_error = _seatable_config("seatable_get_row", config)
+        if token_or_error is None or token_or_error.startswith("[Error]:"):
+            return token_or_error or ""
+        dtable_uuid, headers = _seatable_base_context(base_url, token_or_error)
+        endpoint = f"/api-gateway/api/v2/dtables/{quote(dtable_uuid, safe='')}/sql/"
+        sql = (
+            f"SELECT * FROM `{_seatable_identifier(table_name.strip())}` "
+            f"WHERE _id = '{_seatable_sql_escape(row_id.strip())}'"
+        )
+        data = _request_json("POST", f"{base_url}{endpoint}", json_body={"sql": sql}, headers=headers)
+        return _dump_json(data.get("results", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("seatable_get_row failed", exc_info=True)
+        return f"[Error]: SeaTable row lookup failed: {e}"
+
+
+@tool
+def seatable_create_row(
+    table_name: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a SeaTable row."""
+    if not table_name.strip():
+        return "[Error]: table_name is required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, token_or_error = _seatable_config("seatable_create_row", config)
+        if token_or_error is None or token_or_error.startswith("[Error]:"):
+            return token_or_error or ""
+        dtable_uuid, headers = _seatable_base_context(base_url, token_or_error)
+        endpoint = f"/api-gateway/api/v2/dtables/{quote(dtable_uuid, safe='')}/rows/"
+        data = _request_json(
+            "POST",
+            f"{base_url}{endpoint}",
+            json_body={"table_name": table_name.strip(), "rows": [fields]},
+            headers=headers,
+        )
+        return _dump_json(data.get("first_row", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("seatable_create_row failed", exc_info=True)
+        return f"[Error]: SeaTable row creation failed: {e}"
+
+
+@tool
+def seatable_update_row(
+    table_name: str,
+    row_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a SeaTable row."""
+    if not table_name.strip() or not row_id.strip():
+        return "[Error]: table_name and row_id are required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, token_or_error = _seatable_config("seatable_update_row", config)
+        if token_or_error is None or token_or_error.startswith("[Error]:"):
+            return token_or_error or ""
+        dtable_uuid, headers = _seatable_base_context(base_url, token_or_error)
+        endpoint = f"/api-gateway/api/v2/dtables/{quote(dtable_uuid, safe='')}/rows/"
+        data = _request_json(
+            "PUT",
+            f"{base_url}{endpoint}",
+            json_body={"table_name": table_name.strip(), "updates": [{"row_id": row_id.strip(), "row": fields}]},
+            headers=headers,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("seatable_update_row failed", exc_info=True)
+        return f"[Error]: SeaTable row update failed: {e}"
+
+
+@tool
+def seatable_delete_row(
+    table_name: str,
+    row_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a SeaTable row."""
+    if not table_name.strip() or not row_id.strip():
+        return "[Error]: table_name and row_id are required."
+    try:
+        base_url, token_or_error = _seatable_config("seatable_delete_row", config)
+        if token_or_error is None or token_or_error.startswith("[Error]:"):
+            return token_or_error or ""
+        dtable_uuid, headers = _seatable_base_context(base_url, token_or_error)
+        endpoint = f"/api-gateway/api/v2/dtables/{quote(dtable_uuid, safe='')}/rows/"
+        data = _request_json(
+            "DELETE",
+            f"{base_url}{endpoint}",
+            json_body={"table_name": table_name.strip(), "row_ids": [row_id.strip()]},
+            headers=headers,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("seatable_delete_row failed", exc_info=True)
+        return f"[Error]: SeaTable row deletion failed: {e}"
+
+
+@tool
+def stackby_list_rows(
+    stack_id: str,
+    table: str,
+    view: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Stackby rows."""
+    if not stack_id.strip() or not table.strip():
+        return "[Error]: stack_id and table are required."
+    try:
+        base_url, headers_or_error = _stackby_config("stackby_list_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/rowlist/{quote(stack_id.strip(), safe='')}/{_stackby_table_path(table)}",
+            params={"view": view.strip(), "maxrecord": _limit(limit, max_value=1000), "offset": max(0, int(offset or 0))},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("stackby_list_rows failed", exc_info=True)
+        return f"[Error]: Stackby row list failed: {e}"
+
+
+@tool
+def stackby_get_row(
+    stack_id: str,
+    table: str,
+    row_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Stackby row by ID."""
+    if not stack_id.strip() or not table.strip() or not row_id.strip():
+        return "[Error]: stack_id, table, and row_id are required."
+    try:
+        base_url, headers_or_error = _stackby_config("stackby_get_row", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/rowlist/{quote(stack_id.strip(), safe='')}/{_stackby_table_path(table)}",
+            params={"rowIds": [row_id.strip()]},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("stackby_get_row failed", exc_info=True)
+        return f"[Error]: Stackby row lookup failed: {e}"
+
+
+@tool
+def stackby_create_rows(
+    stack_id: str,
+    table: str,
+    records_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create one or more Stackby rows."""
+    if not stack_id.strip() or not table.strip():
+        return "[Error]: stack_id and table are required."
+    try:
+        parsed = json.loads(records_json)
+        records = parsed if isinstance(parsed, list) else [parsed]
+        if not records or not all(isinstance(record, dict) for record in records):
+            return "[Error]: records_json must be a JSON object or array of objects."
+        body = {"records": [{"field": record} for record in records]}
+        base_url, headers_or_error = _stackby_config("stackby_create_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/rowcreate/{quote(stack_id.strip(), safe='')}/{_stackby_table_path(table)}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("stackby_create_rows failed", exc_info=True)
+        return f"[Error]: Stackby row creation failed: {e}"
+
+
+@tool
+def stackby_delete_rows(
+    stack_id: str,
+    table: str,
+    row_ids: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete one or more Stackby rows."""
+    if not stack_id.strip() or not table.strip() or not row_ids.strip():
+        return "[Error]: stack_id, table, and row_ids are required."
+    try:
+        ids = _csv_to_list(row_ids)
+        base_url, headers_or_error = _stackby_config("stackby_delete_rows", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/rowdelete/{quote(stack_id.strip(), safe='')}/{_stackby_table_path(table)}",
+            params={"rowIds": ids},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("stackby_delete_rows failed", exc_info=True)
+        return f"[Error]: Stackby row deletion failed: {e}"
 
 
 @tool
@@ -1138,6 +1896,24 @@ def grist_delete_records(
 
 
 DATA_TABLE_SERVICE_TOOLS = [
+    supabase_list_rows,
+    supabase_insert_rows,
+    supabase_update_rows,
+    supabase_delete_rows,
+    quickbase_list_fields,
+    quickbase_query_records,
+    quickbase_upsert_records,
+    quickbase_delete_records,
+    seatable_get_metadata,
+    seatable_list_rows,
+    seatable_get_row,
+    seatable_create_row,
+    seatable_update_row,
+    seatable_delete_row,
+    stackby_list_rows,
+    stackby_get_row,
+    stackby_create_rows,
+    stackby_delete_rows,
     baserow_list_tables,
     baserow_list_fields,
     baserow_list_rows,

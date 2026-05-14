@@ -184,15 +184,245 @@ def test_grist_delete_records_uses_vault_key(tmp_path, monkeypatch):
     assert captured["json_body"] == [1, 2]
 
 
+def test_supabase_rows_use_env_key_and_postgrest_headers(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    calls = []
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        calls.append({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return [{"id": 1, "Name": "Ada"}]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    list_result = json.loads(
+        tools.supabase_list_rows.func(
+            table="contacts",
+            select="id,Name",
+            filters_query="status=eq.active&owner=is.null",
+            limit=2,
+            offset=5,
+            order="created_at.desc",
+            db_schema="crm",
+        )
+    )
+    insert_result = json.loads(
+        tools.supabase_insert_rows.func(
+            table="contacts",
+            rows_json='{"Name": "Grace"}',
+            db_schema="crm",
+        )
+    )
+
+    assert list_result[0]["Name"] == "Ada"
+    assert insert_result[0]["id"] == 1
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"] == "https://project.supabase.co/rest/v1/contacts"
+    assert calls[0]["params"] == {
+        "status": "eq.active",
+        "owner": "is.null",
+        "limit": 2,
+        "offset": 5,
+        "order": "created_at.desc",
+        "select": "id,Name",
+    }
+    assert calls[0]["headers"]["Authorization"] == "Bearer service-key"
+    assert calls[0]["headers"]["apikey"] == "service-key"
+    assert calls[0]["headers"]["Accept-Profile"] == "crm"
+    assert calls[1]["method"] == "POST"
+    assert calls[1]["json_body"] == {"Name": "Grace"}
+    assert calls[1]["headers"]["Content-Profile"] == "crm"
+
+
+def test_supabase_update_rows_uses_required_filter(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SUPABASE_BASE_URL", "https://project.supabase.co/rest/v1")
+    monkeypatch.setenv("SUPABASE_API_KEY", "anon-key")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return [{"id": 7, "status": "done"}]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.supabase_update_rows.func(
+            table="tasks",
+            fields_json='{"status": "done"}',
+            filters_query="id=eq.7",
+        )
+    )
+
+    assert result[0]["status"] == "done"
+    assert captured["method"] == "PATCH"
+    assert captured["url"] == "https://project.supabase.co/rest/v1/tasks"
+    assert captured["params"] == {"id": "eq.7"}
+    assert captured["json_body"] == {"status": "done"}
+    assert captured["headers"]["apikey"] == "anon-key"
+
+
+def test_quickbase_records_use_realm_header_and_record_shapes(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("QUICKBASE_HOSTNAME", "example.quickbase.com")
+    monkeypatch.setenv("QUICKBASE_USER_TOKEN", "qb-token")
+    calls = []
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        calls.append({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"data": [{"3": {"value": "Ada"}}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    query_result = json.loads(
+        tools.quickbase_query_records.func(
+            table_id="bt123",
+            where="{3.EX.'Ada'}",
+            select_fields="3, 6",
+            sort_by_json='[{"fieldId": 3, "order": "ASC"}]',
+            limit=10,
+            skip=2,
+        )
+    )
+    upsert_result = json.loads(
+        tools.quickbase_upsert_records.func(
+            table_id="bt123",
+            records_json='[{"3": "Ada", "6": {"value": 42}}]',
+            merge_field_id=3,
+            fields_to_return="3,6",
+        )
+    )
+
+    assert query_result["data"][0]["3"]["value"] == "Ada"
+    assert upsert_result["data"][0]["3"]["value"] == "Ada"
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["url"] == "https://api.quickbase.com/v1/records/query"
+    assert calls[0]["headers"]["QB-Realm-Hostname"] == "example.quickbase.com"
+    assert calls[0]["headers"]["Authorization"] == "QB-USER-TOKEN qb-token"
+    assert calls[0]["json_body"] == {
+        "from": "bt123",
+        "options": {"top": 10, "skip": 2},
+        "where": "{3.EX.'Ada'}",
+        "select": [3, 6],
+        "sortBy": [{"fieldId": 3, "order": "ASC"}],
+    }
+    assert calls[1]["url"] == "https://api.quickbase.com/v1/records"
+    assert calls[1]["json_body"] == {
+        "to": "bt123",
+        "data": [{"3": {"value": "Ada"}, "6": {"value": 42}}],
+        "mergeFieldId": 3,
+        "fieldsToReturn": [3, 6],
+    }
+
+
+def test_seatable_rows_use_app_access_token(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SEATABLE_API_TOKEN", "base-token")
+    monkeypatch.setenv("SEATABLE_BASE_URL", "https://seatable.example")
+    calls = []
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        calls.append({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        if url.endswith("/api/v2.1/dtable/app-access-token/"):
+            return {"access_token": "app-token", "dtable_uuid": "dtable-uuid"}
+        if method == "GET":
+            return {"rows": [{"_id": "row-1", "Name": "Ada"}]}
+        return {"first_row": {"_id": "row-2", "Name": "Grace"}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    list_result = json.loads(
+        tools.seatable_list_rows.func(
+            table_name="People",
+            view_name="Grid",
+            limit=20,
+            start=4,
+        )
+    )
+    create_result = json.loads(
+        tools.seatable_create_row.func(
+            table_name="People",
+            fields_json='{"Name": "Grace"}',
+        )
+    )
+
+    assert list_result[0]["Name"] == "Ada"
+    assert create_result["Name"] == "Grace"
+    assert calls[0]["url"] == "https://seatable.example/api/v2.1/dtable/app-access-token/"
+    assert calls[0]["headers"]["Authorization"] == "Token base-token"
+    assert calls[1]["method"] == "GET"
+    assert calls[1]["url"] == "https://seatable.example/api-gateway/api/v2/dtables/dtable-uuid/rows/"
+    assert calls[1]["params"] == {"table_name": "People", "view_name": "Grid", "limit": 20, "start": 4}
+    assert calls[1]["headers"]["Authorization"] == "Token app-token"
+    assert calls[3]["method"] == "POST"
+    assert calls[3]["json_body"] == {"table_name": "People", "rows": [{"Name": "Grace"}]}
+
+
+def test_stackby_rows_use_api_key_header(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("STACKBY_API_KEY", "stackby-key")
+    calls = []
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        calls.append({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"records": [{"id": "row-1"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    list_result = json.loads(
+        tools.stackby_list_rows.func(
+            stack_id="stack-1",
+            table="People",
+            view="Grid",
+            limit=25,
+            offset=3,
+        )
+    )
+    create_result = json.loads(
+        tools.stackby_create_rows.func(
+            stack_id="stack-1",
+            table="People",
+            records_json='{"Name": "Ada"}',
+        )
+    )
+
+    assert list_result["records"][0]["id"] == "row-1"
+    assert create_result["records"][0]["id"] == "row-1"
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"] == "https://stackby.com/api/betav1/rowlist/stack-1/People"
+    assert calls[0]["params"] == {"view": "Grid", "maxrecord": 25, "offset": 3}
+    assert calls[0]["headers"]["api-key"] == "stackby-key"
+    assert calls[1]["method"] == "POST"
+    assert calls[1]["url"] == "https://stackby.com/api/betav1/rowcreate/stack-1/People"
+    assert calls[1]["json_body"] == {"records": [{"field": {"Name": "Ada"}}]}
+
+
 def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import data_table_service_integrations as tools
 
     monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("QUICKBASE_HOSTNAME", "example.quickbase.com")
 
     baserow_result = tools.baserow_list_tables.func()
     nocodb_result = tools.nocodb_list_bases.func()
     coda_result = tools.coda_list_docs.func()
     grist_result = tools.grist_list_orgs.func()
+    supabase_result = tools.supabase_list_rows.func(table="contacts")
+    quickbase_result = tools.quickbase_list_fields.func(table_id="bt123")
+    seatable_result = tools.seatable_get_metadata.func()
+    stackby_result = tools.stackby_list_rows.func(stack_id="stack-1", table="People")
 
     assert 'provider "baserow"' in baserow_result
     assert "BASEROW_API_TOKEN" in baserow_result
@@ -202,6 +432,14 @@ def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     assert "CODA_API_TOKEN" in coda_result
     assert 'provider "grist"' in grist_result
     assert "GRIST_API_KEY" in grist_result
+    assert 'provider "supabase"' in supabase_result
+    assert "SUPABASE_SERVICE_ROLE_KEY" in supabase_result
+    assert 'provider "quickbase"' in quickbase_result
+    assert "QUICKBASE_USER_TOKEN" in quickbase_result
+    assert 'provider "seatable"' in seatable_result
+    assert "SEATABLE_API_TOKEN" in seatable_result
+    assert 'provider "stackby"' in stackby_result
+    assert "STACKBY_API_KEY" in stackby_result
 
 
 def test_data_table_tools_are_registered_with_metadata():
@@ -209,6 +447,14 @@ def test_data_table_tools_are_registered_with_metadata():
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = [
+        "supabase_list_rows",
+        "quickbase_list_fields",
+        "quickbase_query_records",
+        "seatable_get_metadata",
+        "seatable_list_rows",
+        "seatable_get_row",
+        "stackby_list_rows",
+        "stackby_get_row",
         "baserow_list_tables",
         "baserow_list_fields",
         "baserow_list_rows",
@@ -232,6 +478,16 @@ def test_data_table_tools_are_registered_with_metadata():
         "grist_list_records",
     ]
     moderate_names = [
+        "supabase_insert_rows",
+        "supabase_update_rows",
+        "supabase_delete_rows",
+        "quickbase_upsert_records",
+        "quickbase_delete_records",
+        "seatable_create_row",
+        "seatable_update_row",
+        "seatable_delete_row",
+        "stackby_create_rows",
+        "stackby_delete_rows",
         "baserow_create_row",
         "baserow_update_row",
         "baserow_delete_row",
@@ -267,9 +523,17 @@ def test_data_table_tool_schemas_hide_runtime_config():
         coda_create_table_row,
         grist_list_records,
         nocodb_update_record,
+        quickbase_query_records,
+        seatable_create_row,
+        stackby_list_rows,
+        supabase_insert_rows,
     )
 
     assert "config" not in baserow_list_rows.args_schema.model_json_schema()["properties"]
     assert "config" not in nocodb_update_record.args_schema.model_json_schema()["properties"]
     assert "config" not in coda_create_table_row.args_schema.model_json_schema()["properties"]
     assert "config" not in grist_list_records.args_schema.model_json_schema()["properties"]
+    assert "config" not in supabase_insert_rows.args_schema.model_json_schema()["properties"]
+    assert "config" not in quickbase_query_records.args_schema.model_json_schema()["properties"]
+    assert "config" not in seatable_create_row.args_schema.model_json_schema()["properties"]
+    assert "config" not in stackby_list_rows.args_schema.model_json_schema()["properties"]
