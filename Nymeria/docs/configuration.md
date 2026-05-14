@@ -158,6 +158,21 @@ Set the API key for your chosen provider:
 | `MOCEAN_BASE_URL` | Mocean | Optional Mocean API base URL override |
 | `MSG91_AUTH_KEY` | MSG91 | Optional MSG91 authentication key fallback; credential vault provider `msg91` is preferred |
 | `MSG91_BASE_URL` | MSG91 | Optional MSG91 API base URL override |
+| `STRIPE_SECRET_KEY` | Stripe | Optional env fallback for Stripe tools; credential vault provider `stripe` is preferred |
+| `STRIPE_BASE_URL` | Stripe | Optional Stripe API base URL override |
+| `SHOPIFY_SHOP` | Shopify | Optional Shopify shop subdomain or myshopify.com host fallback; credential vault provider `shopify` is preferred |
+| `SHOPIFY_ACCESS_TOKEN` | Shopify | Optional Shopify Admin API access token fallback |
+| `SHOPIFY_API_KEY` | Shopify | Optional legacy Shopify API key fallback |
+| `SHOPIFY_PASSWORD` | Shopify | Optional legacy Shopify Admin API password fallback |
+| `SHOPIFY_API_VERSION` | Shopify | Optional Shopify Admin REST API version override |
+| `SHOPIFY_BASE_URL` | Shopify | Optional Shopify Admin REST API base URL override |
+| `WOOCOMMERCE_URL` | WooCommerce | Optional WooCommerce site URL fallback; credential vault provider `woocommerce` is preferred |
+| `WOOCOMMERCE_BASE_URL` | WooCommerce | Optional WooCommerce REST API base URL override |
+| `WOOCOMMERCE_CONSUMER_KEY` | WooCommerce | Optional WooCommerce consumer key fallback |
+| `WOOCOMMERCE_CONSUMER_SECRET` | WooCommerce | Optional WooCommerce consumer secret fallback |
+| `CHARGEBEE_API_KEY` | Chargebee | Optional env fallback for Chargebee tools; credential vault provider `chargebee` is preferred |
+| `CHARGEBEE_SITE` | Chargebee | Optional Chargebee site subdomain fallback |
+| `CHARGEBEE_BASE_URL` | Chargebee | Optional Chargebee API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -397,6 +412,21 @@ reachable from the backend process.
 | `MOCEAN_BASE_URL` | `https://rest.moceanapi.com` | Mocean API base URL |
 | `MSG91_AUTH_KEY` | - | MSG91 authentication key fallback |
 | `MSG91_BASE_URL` | `https://api.msg91.com/api` | MSG91 API base URL |
+| `STRIPE_SECRET_KEY` | - | Stripe secret key fallback |
+| `STRIPE_BASE_URL` | `https://api.stripe.com/v1` | Stripe API base URL |
+| `SHOPIFY_SHOP` | - | Shopify shop subdomain or myshopify.com host fallback |
+| `SHOPIFY_ACCESS_TOKEN` | - | Shopify Admin API access token fallback |
+| `SHOPIFY_API_KEY` | - | Legacy Shopify API key fallback |
+| `SHOPIFY_PASSWORD` | - | Legacy Shopify Admin API password fallback |
+| `SHOPIFY_API_VERSION` | `2026-01` | Shopify Admin REST API version |
+| `SHOPIFY_BASE_URL` | - | Shopify Admin REST API base URL override |
+| `WOOCOMMERCE_URL` | - | WooCommerce site URL fallback |
+| `WOOCOMMERCE_BASE_URL` | - | WooCommerce REST API base URL override |
+| `WOOCOMMERCE_CONSUMER_KEY` | - | WooCommerce consumer key fallback |
+| `WOOCOMMERCE_CONSUMER_SECRET` | - | WooCommerce consumer secret fallback |
+| `CHARGEBEE_API_KEY` | - | Chargebee API key fallback |
+| `CHARGEBEE_SITE` | - | Chargebee site subdomain fallback |
+| `CHARGEBEE_BASE_URL` | - | Chargebee API base URL override |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

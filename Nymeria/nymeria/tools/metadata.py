@@ -150,6 +150,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "SUPPORT_SERVICE_TOOLS",
             "SALES_CRM_SERVICE_TOOLS",
             "MESSAGING_DELIVERY_SERVICE_TOOLS",
+            "COMMERCE_BILLING_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -363,6 +364,16 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "mailjet_get_contact",
         "messagebird_get_balance",
         "mocean_get_balance",
+        "stripe_list_records",
+        "stripe_search_records",
+        "stripe_get_record",
+        "stripe_get_balance",
+        "shopify_list_records",
+        "shopify_get_record",
+        "woocommerce_list_records",
+        "woocommerce_get_record",
+        "chargebee_list_records",
+        "chargebee_get_record",
     }
 )
 
