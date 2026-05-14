@@ -145,6 +145,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "PRODUCTIVITY_SERVICE_TOOLS",
             "WORK_TRACKING_SERVICE_TOOLS",
             "PROJECT_MANAGEMENT_SERVICE_TOOLS",
+            "COLLABORATION_DATA_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -299,6 +300,19 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "clickup_get_task",
         "clickup_list_tasks",
         "clickup_list_task_comments",
+        "slack_list_channels",
+        "slack_get_channel_history",
+        "slack_search_messages",
+        "slack_list_users",
+        "slack_get_user",
+        "notion_search",
+        "notion_get_page",
+        "notion_get_block_children",
+        "notion_query_data_source",
+        "airtable_list_bases",
+        "airtable_get_base_schema",
+        "airtable_list_records",
+        "airtable_get_record",
     }
 )
 

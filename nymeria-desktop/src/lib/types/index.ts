@@ -859,6 +859,15 @@ export interface ServerSettingsUpdate {
   jira_base_url?: string | null;
   clickup_access_token?: string | null;
   clickup_base_url?: string | null;
+  slack_bot_token?: string | null;
+  slack_access_token?: string | null;
+  slack_base_url?: string | null;
+  notion_api_key?: string | null;
+  notion_version?: string | null;
+  notion_base_url?: string | null;
+  airtable_access_token?: string | null;
+  airtable_api_key?: string | null;
+  airtable_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

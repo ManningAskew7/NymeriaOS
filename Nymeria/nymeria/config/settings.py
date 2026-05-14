@@ -419,6 +419,15 @@ class Settings(BaseSettings):
     jira_base_url: Optional[str] = Field(default=None, description="Jira site base URL, e.g. https://example.atlassian.net")
     clickup_access_token: Optional[str] = Field(default=None, description="ClickUp access token fallback")
     clickup_base_url: str = Field(default="https://api.clickup.com/api/v2", description="ClickUp API base URL")
+    slack_bot_token: Optional[str] = Field(default=None, description="Slack bot token fallback")
+    slack_access_token: Optional[str] = Field(default=None, description="Slack access token fallback")
+    slack_base_url: str = Field(default="https://slack.com/api", description="Slack Web API base URL")
+    notion_api_key: Optional[str] = Field(default=None, description="Notion API key fallback")
+    notion_version: str = Field(default="2026-03-11", description="Notion API version")
+    notion_base_url: str = Field(default="https://api.notion.com/v1", description="Notion API base URL")
+    airtable_access_token: Optional[str] = Field(default=None, description="Airtable personal access token fallback")
+    airtable_api_key: Optional[str] = Field(default=None, description="Airtable legacy API key fallback")
+    airtable_base_url: str = Field(default="https://api.airtable.com/v0", description="Airtable API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

@@ -134,6 +134,15 @@ class ServerSettingsUpdate(BaseModel):
     jira_base_url: Optional[str] = None
     clickup_access_token: Optional[str] = None
     clickup_base_url: Optional[str] = None
+    slack_bot_token: Optional[str] = None
+    slack_access_token: Optional[str] = None
+    slack_base_url: Optional[str] = None
+    notion_api_key: Optional[str] = None
+    notion_version: Optional[str] = None
+    notion_base_url: Optional[str] = None
+    airtable_access_token: Optional[str] = None
+    airtable_api_key: Optional[str] = None
+    airtable_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

@@ -214,6 +214,31 @@ from .project_management_service_integrations import (
     clickup_add_task_comment,
     PROJECT_MANAGEMENT_SERVICE_TOOLS,
 )
+from .collaboration_data_service_integrations import (
+    slack_list_channels,
+    slack_get_channel_history,
+    slack_search_messages,
+    slack_list_users,
+    slack_get_user,
+    slack_post_message,
+    slack_update_message,
+    slack_add_reaction,
+    notion_search,
+    notion_get_page,
+    notion_get_block_children,
+    notion_query_data_source,
+    notion_create_page,
+    notion_update_page,
+    notion_append_block_children,
+    airtable_list_bases,
+    airtable_get_base_schema,
+    airtable_list_records,
+    airtable_get_record,
+    airtable_create_records,
+    airtable_update_records,
+    airtable_delete_record,
+    COLLABORATION_DATA_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -267,6 +292,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + PRODUCTIVITY_SERVICE_TOOLS
     + WORK_TRACKING_SERVICE_TOOLS
     + PROJECT_MANAGEMENT_SERVICE_TOOLS
+    + COLLABORATION_DATA_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -484,6 +510,29 @@ __all__ = [
     "clickup_list_task_comments",
     "clickup_add_task_comment",
     "PROJECT_MANAGEMENT_SERVICE_TOOLS",
+    "slack_list_channels",
+    "slack_get_channel_history",
+    "slack_search_messages",
+    "slack_list_users",
+    "slack_get_user",
+    "slack_post_message",
+    "slack_update_message",
+    "slack_add_reaction",
+    "notion_search",
+    "notion_get_page",
+    "notion_get_block_children",
+    "notion_query_data_source",
+    "notion_create_page",
+    "notion_update_page",
+    "notion_append_block_children",
+    "airtable_list_bases",
+    "airtable_get_base_schema",
+    "airtable_list_records",
+    "airtable_get_record",
+    "airtable_create_records",
+    "airtable_update_records",
+    "airtable_delete_record",
+    "COLLABORATION_DATA_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
