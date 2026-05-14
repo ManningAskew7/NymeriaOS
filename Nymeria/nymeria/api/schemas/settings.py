@@ -282,6 +282,15 @@ class ServerSettingsUpdate(BaseModel):
     zulip_api_key: Optional[str] = None
     zulip_email: Optional[str] = None
     zulip_base_url: Optional[str] = None
+    google_books_api_key: Optional[str] = None
+    google_books_base_url: Optional[str] = None
+    youtube_api_key: Optional[str] = None
+    youtube_base_url: Optional[str] = None
+    spotify_access_token: Optional[str] = None
+    spotify_client_id: Optional[str] = None
+    spotify_client_secret: Optional[str] = None
+    spotify_base_url: Optional[str] = None
+    spotify_accounts_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

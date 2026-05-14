@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (365)
+### Optional: Service Integration Tools (376)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -443,6 +443,17 @@ in the credential vault for provider-specific saved connections scoped to
 | 363 | `zulip_get_messages` | Integrations | SAFE | Get Zulip messages |
 | 364 | `zulip_send_message` | Integrations | MODERATE | Send a Zulip message |
 | 365 | `zulip_delete_message` | Integrations | MODERATE | Delete a Zulip message |
+| 366 | `google_books_search` | Integrations | SAFE | Search Google Books volume metadata |
+| 367 | `google_books_get_volume` | Integrations | SAFE | Get a Google Books volume by ID |
+| 368 | `youtube_search` | Integrations | SAFE | Search YouTube videos, channels, or playlists |
+| 369 | `youtube_get_videos` | Integrations | SAFE | Get YouTube video metadata |
+| 370 | `youtube_get_channels` | Integrations | SAFE | Get YouTube channel metadata |
+| 371 | `youtube_list_playlist_items` | Integrations | SAFE | List YouTube playlist items |
+| 372 | `spotify_search` | Integrations | SAFE | Search Spotify catalog metadata |
+| 373 | `spotify_get_track` | Integrations | SAFE | Get Spotify track metadata |
+| 374 | `spotify_get_artist` | Integrations | SAFE | Get Spotify artist metadata |
+| 375 | `spotify_get_album` | Integrations | SAFE | Get Spotify album metadata |
+| 376 | `spotify_get_playlist` | Integrations | SAFE | Get Spotify playlist metadata |
 
 ### Optional: Private B Tools (4)
 
@@ -1004,7 +1015,9 @@ Credential-aware native tools use the existing encrypted credential vault. Save
 connections in Settings > Connections with these provider names and fields:
 `wolfram_alpha.app_id`, `searxng.base_url`, `nasa.api_key`,
 `openweathermap.api_key`, optional `npm.registry_url` / `npm.token`,
-`github.access_token`, and `gitlab.access_token`. GitHub credentials can also
+`google_books.api_key`, `youtube.api_key`, and `spotify.access_token` or
+`spotify.client_id` plus `spotify.client_secret`, plus `github.access_token`
+and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
@@ -1082,6 +1095,18 @@ The public information batch includes:
 - `nasa_apod(date?, start_date?, end_date?, thumbs?)`; uses vault provider `nasa` fields `api_key` or `value`, then `NASA_API_KEY`.
 - `openweathermap_current(...)` and `openweathermap_forecast(...)`; use vault provider `openweathermap` fields `api_key`, `access_token`, or `value`, then `OPENWEATHERMAP_API_KEY`.
 - `quickchart_create_url(chart_type, labels_json, data_json, ...)`
+
+### Media Discovery Service Tools
+
+This batch includes:
+- `google_books_search(query, print_type?, projection?, order_by?, filter_value?, language?, country?, limit?, start_index?)` and `google_books_get_volume(volume_id, projection?, country?)`. Google Books can use public data without a key; saved credentials can still supply `api_key` and `base_url`.
+- `youtube_search(query, search_type?, channel_id?, order?, published_after?, published_before?, region_code?, safe_search?, page_token?, limit?)`, `youtube_get_videos(video_ids, parts?, max_width?, max_height?)`, `youtube_get_channels(channel_ids?, for_username?, parts?, limit?, page_token?)`, and `youtube_list_playlist_items(playlist_id, parts?, page_token?, limit?)`.
+- `spotify_search(query, types?, market?, limit?, offset?, include_external?)`, `spotify_get_track(track_id, market?)`, `spotify_get_artist(artist_id)`, `spotify_get_album(album_id, market?)`, and `spotify_get_playlist(playlist_id, market?, fields?, additional_types?)`.
+
+Credential providers and fallback env vars:
+- Google Books: provider `google_books`, fields `api_key`, `key`, `token`, or `value`; optional env fallback `GOOGLE_BOOKS_API_KEY`.
+- YouTube Data API: provider `youtube`, fields `api_key`, `key`, `token`, or `value`; env fallback `YOUTUBE_API_KEY`.
+- Spotify: provider `spotify`, fields `access_token`, `bearer_token`, `token`, or `value`; env fallback `SPOTIFY_ACCESS_TOKEN`. If no access token is saved, catalog tools use `client_id` plus `client_secret` from the vault or `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` to request a client-credentials token.
 
 ### Developer Platform Tools
 
