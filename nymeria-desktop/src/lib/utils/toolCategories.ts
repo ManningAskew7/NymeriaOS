@@ -68,7 +68,7 @@ export const CATEGORY_INFO: Record<string, ToolCategoryInfo> = {
   integrations: {
     name: 'Integrations',
     icon: 'plug',
-    description: 'Native service integrations inspired by n8n agent tool nodes',
+    description: 'Native service integrations and public data utilities',
   },
   skills: {
     name: 'Agent Skills',

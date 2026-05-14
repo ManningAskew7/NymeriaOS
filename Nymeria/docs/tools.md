@@ -69,10 +69,10 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: N8N-Inspired Integration Tools (17)
+### Optional: Service Integration Tools (17)
 
-Not loaded by default. These are the first dedicated n8n AI tool-node ports and
-public information service ports. Tools that need connection details first look
+Not loaded by default. These are the first batch of general-purpose utility
+integrations and public information services. Tools that need connection details first look
 in the credential vault for provider-specific saved connections scoped to
 `native_tool:<tool_name>` or `native_tool:*`, then fall back to env settings.
 
@@ -650,7 +650,7 @@ Desktop and mobile typeahead filtering stays local for responsiveness, but uses
 the shared frontend `utils/toolSearch.ts` fuzzy scorer over tool names, snake
 case tokens, categories, descriptions, tags, and implementation/type fields.
 
-## N8N-Inspired Integration Tools (Optional)
+## Service Integration Tools (Optional)
 
 Credential-aware native tools use the existing encrypted credential vault. Save
 connections in Settings > Connections with these provider names and fields:

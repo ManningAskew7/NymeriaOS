@@ -135,7 +135,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     ),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
-    (ToolCategory.INTEGRATIONS, ("N8N_LANGCHAIN_TOOLS", "N8N_PUBLIC_INFO_TOOLS")),
+    (ToolCategory.INTEGRATIONS, ("UTILITY_INTEGRATION_TOOLS", "PUBLIC_INFO_TOOLS")),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS",)),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),

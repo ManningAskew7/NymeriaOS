@@ -1,8 +1,7 @@
-"""N8N-inspired LangChain utility tools.
+"""General-purpose utility integration tools.
 
-These cover the dedicated n8n AI tool nodes that map cleanly to Python
-LangChain/community utilities, plus a local safe calculator where the Python
-community package does not expose the JavaScript Calculator equivalent.
+These cover small read-only utility surfaces that map cleanly to
+LangChain/community utilities, plus a local safe calculator.
 """
 
 from __future__ import annotations
@@ -334,7 +333,7 @@ def searxng_search(
         return f"[Error]: SearXNG search failed: {e}"
 
 
-N8N_LANGCHAIN_TOOLS = [
+UTILITY_INTEGRATION_TOOLS = [
     calculator,
     wikipedia_search,
     wolfram_alpha_query,

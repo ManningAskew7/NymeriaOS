@@ -1,4 +1,4 @@
-"""N8N-inspired public information service tools."""
+"""Public information service integration tools."""
 
 from __future__ import annotations
 
@@ -663,7 +663,7 @@ def quickchart_create_url(
         return f"[Error]: QuickChart URL creation failed: {e}"
 
 
-N8N_PUBLIC_INFO_TOOLS = [
+PUBLIC_INFO_TOOLS = [
     coingecko_price,
     coingecko_coin_markets,
     hackernews_search,

@@ -406,6 +406,6 @@ The webhook source works with any service that can send HTTP POST requests:
 - **IFTTT** — Use the Webhooks service to POST to `http://your-server:8000/triggers/fire/{trigger_id}?secret=<value>`
 - **Zapier** — Use the Webhook action to POST JSON payloads with the secret as a query parameter
 - **GitHub** — Configure repository webhooks to send events to your trigger endpoint
-- **Tasker / n8n / custom scripts** — Any `curl` or HTTP client can fire a webhook trigger
+- **Workflow tools / custom scripts** — Any `curl` or HTTP client can fire a webhook trigger
 
 The secret query parameter is required for public webhook calls. Treat webhook URLs as secrets because the shared secret is embedded in the URL for many third-party webhook integrations.
