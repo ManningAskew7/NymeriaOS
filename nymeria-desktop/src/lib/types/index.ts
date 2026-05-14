@@ -798,6 +798,15 @@ export interface ServerSettingsUpdate {
   embedding_api_key?: string | null;
   gemini_api_key?: string | null;
   perplexity_api_key?: string | null;
+  wolfram_alpha_app_id?: string | null;
+  searxng_base_url?: string | null;
+  nasa_api_key?: string | null;
+  openweathermap_api_key?: string | null;
+  npm_registry_url?: string | null;
+  github_token?: string | null;
+  github_api_base_url?: string | null;
+  gitlab_token?: string | null;
+  gitlab_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

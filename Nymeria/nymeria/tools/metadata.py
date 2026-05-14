@@ -135,7 +135,10 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     ),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
-    (ToolCategory.INTEGRATIONS, ("UTILITY_INTEGRATION_TOOLS", "PUBLIC_INFO_TOOLS")),
+    (
+        ToolCategory.INTEGRATIONS,
+        ("UTILITY_INTEGRATION_TOOLS", "PUBLIC_INFO_TOOLS", "DEVELOPER_PLATFORM_TOOLS"),
+    ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS",)),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),
@@ -231,6 +234,20 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "openweathermap_current",
         "openweathermap_forecast",
         "quickchart_create_url",
+        "github_get_repository",
+        "github_search_repositories",
+        "github_list_issues",
+        "github_get_issue",
+        "github_list_pull_requests",
+        "github_list_releases",
+        "github_get_release",
+        "gitlab_get_project",
+        "gitlab_search_projects",
+        "gitlab_list_project_issues",
+        "gitlab_get_project_issue",
+        "gitlab_list_project_releases",
+        "gitlab_get_project_release",
+        "gitlab_list_user_projects",
     }
 )
 

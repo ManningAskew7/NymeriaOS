@@ -116,6 +116,23 @@ from .public_info_integrations import (
     quickchart_create_url,
     PUBLIC_INFO_TOOLS,
 )
+from .developer_platform_integrations import (
+    github_get_repository,
+    github_search_repositories,
+    github_list_issues,
+    github_get_issue,
+    github_list_pull_requests,
+    github_list_releases,
+    github_get_release,
+    gitlab_get_project,
+    gitlab_search_projects,
+    gitlab_list_project_issues,
+    gitlab_get_project_issue,
+    gitlab_list_project_releases,
+    gitlab_get_project_release,
+    gitlab_list_user_projects,
+    DEVELOPER_PLATFORM_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -164,6 +181,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + IMAGE_GENERATION_TOOLS
     + UTILITY_INTEGRATION_TOOLS
     + PUBLIC_INFO_TOOLS
+    + DEVELOPER_PLATFORM_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -293,6 +311,21 @@ __all__ = [
     "openweathermap_forecast",
     "quickchart_create_url",
     "PUBLIC_INFO_TOOLS",
+    "github_get_repository",
+    "github_search_repositories",
+    "github_list_issues",
+    "github_get_issue",
+    "github_list_pull_requests",
+    "github_list_releases",
+    "github_get_release",
+    "gitlab_get_project",
+    "gitlab_search_projects",
+    "gitlab_list_project_issues",
+    "gitlab_get_project_issue",
+    "gitlab_list_project_releases",
+    "gitlab_get_project_release",
+    "gitlab_list_user_projects",
+    "DEVELOPER_PLATFORM_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
