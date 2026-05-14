@@ -435,6 +435,21 @@ from .operations_monitoring_service_integrations import (
     cloudflare_delete_origin_certificate,
     OPERATIONS_MONITORING_SERVICE_TOOLS,
 )
+from .enrichment_security_service_integrations import (
+    urlscan_search_scans,
+    urlscan_get_result,
+    urlscan_submit_scan,
+    hunter_domain_search,
+    hunter_email_finder,
+    hunter_email_verifier,
+    mailcheck_check_email,
+    peekalink_preview_url,
+    peekalink_check_availability,
+    jina_reader_fetch_url,
+    jina_search_web,
+    jina_deep_research,
+    ENRICHMENT_SECURITY_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -497,6 +512,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + NOTIFICATION_SERVICE_TOOLS
     + CONTENT_MANAGEMENT_SERVICE_TOOLS
     + OPERATIONS_MONITORING_SERVICE_TOOLS
+    + ENRICHMENT_SECURITY_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -917,6 +933,19 @@ __all__ = [
     "cloudflare_upload_origin_certificate",
     "cloudflare_delete_origin_certificate",
     "OPERATIONS_MONITORING_SERVICE_TOOLS",
+    "urlscan_search_scans",
+    "urlscan_get_result",
+    "urlscan_submit_scan",
+    "hunter_domain_search",
+    "hunter_email_finder",
+    "hunter_email_verifier",
+    "mailcheck_check_email",
+    "peekalink_preview_url",
+    "peekalink_check_availability",
+    "jina_reader_fetch_url",
+    "jina_search_web",
+    "jina_deep_research",
+    "ENRICHMENT_SECURITY_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

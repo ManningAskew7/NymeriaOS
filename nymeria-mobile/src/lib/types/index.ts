@@ -900,6 +900,18 @@ export interface ServerSettingsUpdate {
   sentry_base_url?: string | null;
   cloudflare_api_token?: string | null;
   cloudflare_base_url?: string | null;
+  urlscan_api_key?: string | null;
+  urlscan_base_url?: string | null;
+  hunter_api_key?: string | null;
+  hunter_base_url?: string | null;
+  mailcheck_api_key?: string | null;
+  mailcheck_base_url?: string | null;
+  peekalink_api_key?: string | null;
+  peekalink_base_url?: string | null;
+  jina_api_key?: string | null;
+  jina_reader_base_url?: string | null;
+  jina_search_base_url?: string | null;
+  jina_deepsearch_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

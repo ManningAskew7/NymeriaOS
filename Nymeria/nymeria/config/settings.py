@@ -538,6 +538,18 @@ class Settings(BaseSettings):
     sentry_base_url: str = Field(default="https://sentry.io", description="Sentry API base URL")
     cloudflare_api_token: Optional[str] = Field(default=None, description="Cloudflare API token fallback")
     cloudflare_base_url: str = Field(default="https://api.cloudflare.com/client/v4", description="Cloudflare API base URL")
+    urlscan_api_key: Optional[str] = Field(default=None, description="urlscan.io API key fallback")
+    urlscan_base_url: str = Field(default="https://urlscan.io/api/v1", description="urlscan.io API base URL")
+    hunter_api_key: Optional[str] = Field(default=None, description="Hunter API key fallback")
+    hunter_base_url: str = Field(default="https://api.hunter.io/v2", description="Hunter API base URL")
+    mailcheck_api_key: Optional[str] = Field(default=None, description="Mailcheck API key fallback")
+    mailcheck_base_url: str = Field(default="https://api.mailcheck.co/v1", description="Mailcheck API base URL")
+    peekalink_api_key: Optional[str] = Field(default=None, description="Peekalink API key fallback")
+    peekalink_base_url: str = Field(default="https://api.peekalink.io", description="Peekalink API base URL")
+    jina_api_key: Optional[str] = Field(default=None, description="Jina AI API key fallback")
+    jina_reader_base_url: str = Field(default="https://r.jina.ai", description="Jina Reader API base URL")
+    jina_search_base_url: str = Field(default="https://s.jina.ai", description="Jina Search API base URL")
+    jina_deepsearch_base_url: str = Field(default="https://deepsearch.jina.ai/v1", description="Jina DeepSearch API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
