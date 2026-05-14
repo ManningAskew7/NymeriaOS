@@ -124,6 +124,12 @@ class ServerSettingsUpdate(BaseModel):
     trello_api_key: Optional[str] = None
     trello_api_token: Optional[str] = None
     trello_base_url: Optional[str] = None
+    raindrop_access_token: Optional[str] = None
+    raindrop_base_url: Optional[str] = None
+    yourls_url: Optional[str] = None
+    yourls_signature: Optional[str] = None
+    yourls_username: Optional[str] = None
+    yourls_password: Optional[str] = None
     asana_access_token: Optional[str] = None
     asana_base_url: Optional[str] = None
     linear_api_key: Optional[str] = None

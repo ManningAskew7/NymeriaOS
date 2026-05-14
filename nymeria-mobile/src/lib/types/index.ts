@@ -774,6 +774,12 @@ export interface ServerSettingsUpdate {
   trello_api_key?: string | null;
   trello_api_token?: string | null;
   trello_base_url?: string | null;
+  raindrop_access_token?: string | null;
+  raindrop_base_url?: string | null;
+  yourls_url?: string | null;
+  yourls_signature?: string | null;
+  yourls_username?: string | null;
+  yourls_password?: string | null;
   asana_access_token?: string | null;
   asana_base_url?: string | null;
   linear_api_key?: string | null;

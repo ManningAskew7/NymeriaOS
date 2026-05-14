@@ -93,6 +93,12 @@ Set the API key for your chosen provider:
 | `TRELLO_API_KEY` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
 | `TRELLO_API_TOKEN` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
 | `TRELLO_BASE_URL` | Trello | Optional Trello API base URL override |
+| `RAINDROP_ACCESS_TOKEN` | Raindrop | Optional Raindrop access token fallback; credential vault provider `raindrop` is preferred |
+| `RAINDROP_BASE_URL` | Raindrop | Optional Raindrop API base URL override |
+| `YOURLS_URL` | YOURLS | Optional YOURLS site or API URL fallback; credential vault provider `yourls` is preferred |
+| `YOURLS_SIGNATURE` | YOURLS | Optional YOURLS signature token fallback |
+| `YOURLS_USERNAME` | YOURLS | Optional YOURLS username fallback |
+| `YOURLS_PASSWORD` | YOURLS | Optional YOURLS password fallback |
 | `ASANA_ACCESS_TOKEN` | Asana | Optional env fallback for Asana tools; credential vault provider `asana` is preferred |
 | `ASANA_BASE_URL` | Asana | Optional Asana API base URL override |
 | `LINEAR_API_KEY` | Linear | Optional env fallback for Linear tools; credential vault provider `linear` is preferred |
@@ -491,6 +497,12 @@ reachable from the backend process.
 | `TRELLO_API_KEY` | - | Trello API key fallback |
 | `TRELLO_API_TOKEN` | - | Trello API token fallback |
 | `TRELLO_BASE_URL` | `https://api.trello.com/1` | Trello API base URL |
+| `RAINDROP_ACCESS_TOKEN` | - | Raindrop access token fallback |
+| `RAINDROP_BASE_URL` | `https://api.raindrop.io/rest/v1` | Raindrop API base URL |
+| `YOURLS_URL` | - | YOURLS site or API URL fallback |
+| `YOURLS_SIGNATURE` | - | YOURLS signature token fallback |
+| `YOURLS_USERNAME` | - | YOURLS username fallback |
+| `YOURLS_PASSWORD` | - | YOURLS password fallback |
 | `ASANA_ACCESS_TOKEN` | - | Asana personal access token fallback |
 | `ASANA_BASE_URL` | `https://app.asana.com/api/1.0` | Asana API base URL |
 | `LINEAR_API_KEY` | - | Linear API key fallback |

@@ -291,6 +291,23 @@ from .productivity_service_integrations import (
     trello_add_card_comment,
     PRODUCTIVITY_SERVICE_TOOLS,
 )
+from .bookmark_link_service_integrations import (
+    raindrop_list_bookmarks,
+    raindrop_get_bookmark,
+    raindrop_create_bookmark,
+    raindrop_update_bookmark,
+    raindrop_delete_bookmark,
+    raindrop_list_collections,
+    raindrop_get_collection,
+    raindrop_list_tags,
+    raindrop_delete_tags,
+    raindrop_get_user,
+    yourls_shorten_url,
+    yourls_expand_url,
+    yourls_get_url_stats,
+    yourls_get_db_stats,
+    BOOKMARK_LINK_SERVICE_TOOLS,
+)
 from .work_tracking_service_integrations import (
     asana_get_user,
     asana_list_users,
@@ -720,6 +737,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + DEVELOPER_PLATFORM_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
+    + BOOKMARK_LINK_SERVICE_TOOLS
     + WORK_TRACKING_SERVICE_TOOLS
     + PROJECT_MANAGEMENT_SERVICE_TOOLS
     + COLLABORATION_DATA_SERVICE_TOOLS
@@ -1023,6 +1041,21 @@ __all__ = [
     "trello_update_card",
     "trello_add_card_comment",
     "PRODUCTIVITY_SERVICE_TOOLS",
+    "raindrop_list_bookmarks",
+    "raindrop_get_bookmark",
+    "raindrop_create_bookmark",
+    "raindrop_update_bookmark",
+    "raindrop_delete_bookmark",
+    "raindrop_list_collections",
+    "raindrop_get_collection",
+    "raindrop_list_tags",
+    "raindrop_delete_tags",
+    "raindrop_get_user",
+    "yourls_shorten_url",
+    "yourls_expand_url",
+    "yourls_get_url_stats",
+    "yourls_get_db_stats",
+    "BOOKMARK_LINK_SERVICE_TOOLS",
     "asana_get_user",
     "asana_list_users",
     "asana_list_projects",
