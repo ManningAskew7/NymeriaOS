@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (624)
+### Optional: Service Integration Tools (642)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -702,6 +702,24 @@ in the credential vault for provider-specific saved connections scoped to
 | 622 | `zammad_get_record` | Integrations | SAFE | Get a Zammad ticket, user, organization, or group |
 | 623 | `zammad_create_record` | Integrations | MODERATE | Create a Zammad ticket, user, organization, or group |
 | 624 | `zammad_update_record` | Integrations | MODERATE | Update a Zammad ticket, user, organization, or group |
+| 625 | `supabase_list_rows` | Integrations | SAFE | List rows from a Supabase table |
+| 626 | `supabase_insert_rows` | Integrations | MODERATE | Insert rows into a Supabase table |
+| 627 | `supabase_update_rows` | Integrations | MODERATE | Update Supabase rows matching a filter |
+| 628 | `supabase_delete_rows` | Integrations | MODERATE | Delete Supabase rows matching a filter |
+| 629 | `quickbase_list_fields` | Integrations | SAFE | List fields for a Quickbase table |
+| 630 | `quickbase_query_records` | Integrations | SAFE | Query Quickbase records |
+| 631 | `quickbase_upsert_records` | Integrations | MODERATE | Create or update Quickbase records |
+| 632 | `quickbase_delete_records` | Integrations | MODERATE | Delete Quickbase records matching a where clause |
+| 633 | `seatable_get_metadata` | Integrations | SAFE | Get SeaTable base metadata |
+| 634 | `seatable_list_rows` | Integrations | SAFE | List SeaTable rows |
+| 635 | `seatable_get_row` | Integrations | SAFE | Get a SeaTable row by ID |
+| 636 | `seatable_create_row` | Integrations | MODERATE | Create a SeaTable row |
+| 637 | `seatable_update_row` | Integrations | MODERATE | Update a SeaTable row |
+| 638 | `seatable_delete_row` | Integrations | MODERATE | Delete a SeaTable row |
+| 639 | `stackby_list_rows` | Integrations | SAFE | List Stackby rows |
+| 640 | `stackby_get_row` | Integrations | SAFE | Get a Stackby row by ID |
+| 641 | `stackby_create_rows` | Integrations | MODERATE | Create Stackby rows |
+| 642 | `stackby_delete_rows` | Integrations | MODERATE | Delete Stackby rows |
 
 ### Optional: Private B Tools (4)
 
@@ -1297,7 +1315,11 @@ credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
 `agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`.
 Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
 `dropcontact.api_key`, `humantic.api_key`, `lonescale.api_key`, and
-`uproc.email` plus `uproc.api_key`. Transform credentials use
+`uproc.email` plus `uproc.api_key`. Data-table credentials use
+`baserow.token`, `nocodb.api_token`, `coda.access_token`, `grist.api_key`,
+`supabase.base_url` plus `supabase.service_role`, `quickbase.hostname` plus
+`quickbase.user_token`, `seatable.api_token`, and `stackby.api_key`.
+Transform credentials use
 `crypto.hmac_secret`, `crypto.private_key`, `jwt.secret`, `jwt.private_key`,
 `jwt.public_key`, and optional `jwt.algorithm`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
@@ -1749,12 +1771,20 @@ This batch includes:
 - `nocodb_list_bases(...)`, `nocodb_get_base(base_id, ...)`, `nocodb_list_records(base_id, table_id, ...)`, `nocodb_get_record(base_id, table_id, record_id)`, `nocodb_count_records(base_id, table_id, ...)`, `nocodb_create_record(base_id, table_id, fields_json)`, `nocodb_update_record(base_id, table_id, record_id, fields_json)`, and `nocodb_delete_record(base_id, table_id, record_id)`. Reads are SAFE; create/update/delete are MODERATE.
 - `coda_list_docs(...)`, `coda_list_tables(doc_id, ...)`, `coda_list_table_rows(doc_id, table_id, ...)`, `coda_get_table_row(doc_id, table_id, row_id, ...)`, `coda_create_table_row(doc_id, table_id, cells_json, ...)`, `coda_update_table_row(doc_id, table_id, row_id, cells_json, ...)`, `coda_delete_table_row(doc_id, table_id, row_id)`, `coda_list_formulas(doc_id, ...)`, and `coda_list_controls(doc_id, ...)`. Reads are SAFE; row writes/deletes are MODERATE.
 - `grist_list_orgs()`, `grist_list_workspaces(org_id)`, `grist_list_docs(workspace_id)`, `grist_list_tables(doc_id)`, `grist_list_columns(doc_id, table_id)`, `grist_list_records(doc_id, table_id, ...)`, `grist_create_record(doc_id, table_id, fields_json)`, `grist_update_record(doc_id, table_id, record_id, fields_json)`, and `grist_delete_records(doc_id, table_id, row_ids)`. Reads are SAFE; record writes/deletes are MODERATE.
+- `supabase_list_rows(table, ...)`, `supabase_insert_rows(table, rows_json, ...)`, `supabase_update_rows(table, fields_json, filters_query, ...)`, and `supabase_delete_rows(table, filters_query, ...)`. Reads are SAFE; insert/update/delete are MODERATE.
+- `quickbase_list_fields(table_id)`, `quickbase_query_records(table_id, ...)`, `quickbase_upsert_records(table_id, records_json, ...)`, and `quickbase_delete_records(table_id, where)`. Reads are SAFE; upsert/delete are MODERATE.
+- `seatable_get_metadata()`, `seatable_list_rows(table_name, ...)`, `seatable_get_row(table_name, row_id)`, `seatable_create_row(table_name, fields_json)`, `seatable_update_row(table_name, row_id, fields_json)`, and `seatable_delete_row(table_name, row_id)`. Reads are SAFE; create/update/delete are MODERATE.
+- `stackby_list_rows(stack_id, table, ...)`, `stackby_get_row(stack_id, table, row_id)`, `stackby_create_rows(stack_id, table, records_json)`, and `stackby_delete_rows(stack_id, table, row_ids)`. Reads are SAFE; create/delete are MODERATE.
 
 Credential providers and fallback env vars:
 - Baserow: provider `baserow`, fields `token`, `api_token`, `apiKey`, `api_key`, `database_token`, or `value`; env fallback `BASEROW_API_TOKEN`. Use `base_url` / `host` / `url` or `BASEROW_BASE_URL` for self-hosted Baserow.
 - NocoDB: provider `nocodb`, fields `api_token`, `apiToken`, `token`, `access_token`, `api_key`, or `value`; env fallback `NOCODB_API_TOKEN`. Use `base_url` / `host` / `url` or `NOCODB_BASE_URL` for self-hosted NocoDB. `NOCODB_AUTH_HEADER` defaults to `xc-token`; set `xc-auth` when using a user token.
 - Coda: provider `coda`, fields `access_token`, `api_token`, `api_key`, `token`, or `value`; env fallback `CODA_API_TOKEN`. Use `base_url` / `url` or `CODA_BASE_URL` for non-default API roots.
 - Grist: provider `grist`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `GRIST_API_KEY`. Use `base_url` / `url` or `GRIST_BASE_URL` for paid-team or self-hosted API roots.
+- Supabase: provider `supabase`, fields `service_role`, `service_role_key`, `api_key`, `anon_key`, `token`, or `value`; env fallbacks `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_API_KEY`. Save `base_url` / `host` / `url` / `project_url` or set `SUPABASE_URL`; `SUPABASE_BASE_URL` can point directly at a REST API root.
+- Quickbase: provider `quickbase`, fields `user_token`, `api_key`, `token`, or `value`, plus `hostname`; env fallbacks `QUICKBASE_USER_TOKEN` and `QUICKBASE_HOSTNAME`. Use `base_url` / `url` or `QUICKBASE_BASE_URL` for non-default API roots.
+- SeaTable: provider `seatable`, fields `api_token`, `token`, or `value`; env fallback `SEATABLE_API_TOKEN`. Use `base_url` / `domain` / `url` or `SEATABLE_BASE_URL` for self-hosted SeaTable.
+- Stackby: provider `stackby`, fields `api_key`, `apiKey`, `api_token`, `token`, or `value`; env fallback `STACKBY_API_KEY`. Use `base_url` / `host` / `url` or `STACKBY_BASE_URL` for non-default API roots.
 
 ### Chat Platform Service Tools
 

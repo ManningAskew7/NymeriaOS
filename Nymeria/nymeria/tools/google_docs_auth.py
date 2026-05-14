@@ -23,7 +23,7 @@ for _ENV_PATH in get_env_file_paths():
     try:
         load_dotenv(_ENV_PATH)
     except UnicodeDecodeError:
-        pass
+        pass  # Encrypted env files are expected in some deployments.
 
 PROVIDER = "google_docs"
 _CACHE_FILENAME = "google_docs.json"

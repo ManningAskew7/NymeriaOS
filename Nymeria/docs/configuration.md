@@ -301,6 +301,17 @@ Set the API key for your chosen provider:
 | `JINA_DEEPSEARCH_BASE_URL` | Jina AI | Optional Jina DeepSearch API base URL override |
 | `BASEROW_API_TOKEN` | Baserow | Optional Baserow API or database token fallback; credential vault provider `baserow` is preferred |
 | `BASEROW_BASE_URL` | Baserow | Optional Baserow API base URL override |
+| `SUPABASE_URL` | Supabase | Optional Supabase project URL fallback; credential vault provider `supabase` is preferred |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase | Optional Supabase service role key fallback |
+| `SUPABASE_API_KEY` | Supabase | Optional Supabase anon/API key fallback |
+| `SUPABASE_BASE_URL` | Supabase | Optional Supabase REST API base URL override |
+| `QUICKBASE_HOSTNAME` | Quickbase | Optional Quickbase realm hostname fallback; credential vault provider `quickbase` is preferred |
+| `QUICKBASE_USER_TOKEN` | Quickbase | Optional Quickbase user token fallback |
+| `QUICKBASE_BASE_URL` | Quickbase | Optional Quickbase API base URL override |
+| `SEATABLE_API_TOKEN` | SeaTable | Optional SeaTable API token fallback; credential vault provider `seatable` is preferred |
+| `SEATABLE_BASE_URL` | SeaTable | Optional SeaTable API base URL override |
+| `STACKBY_API_KEY` | Stackby | Optional Stackby API key fallback; credential vault provider `stackby` is preferred |
+| `STACKBY_BASE_URL` | Stackby | Optional Stackby API base URL override |
 | `NOCODB_API_TOKEN` | NocoDB | Optional NocoDB API or user token fallback; credential vault provider `nocodb` is preferred |
 | `NOCODB_BASE_URL` | NocoDB | Optional NocoDB API base URL override |
 | `NOCODB_AUTH_HEADER` | NocoDB | Optional NocoDB auth header, `xc-token` for API tokens or `xc-auth` for user tokens |
@@ -759,6 +770,17 @@ reachable from the backend process.
 | `JINA_DEEPSEARCH_BASE_URL` | `https://deepsearch.jina.ai/v1` | Jina DeepSearch API base URL |
 | `BASEROW_API_TOKEN` | - | Baserow API or database token fallback |
 | `BASEROW_BASE_URL` | `https://api.baserow.io` | Baserow API base URL |
+| `SUPABASE_URL` | - | Supabase project URL fallback |
+| `SUPABASE_SERVICE_ROLE_KEY` | - | Supabase service role key fallback |
+| `SUPABASE_API_KEY` | - | Supabase anon/API key fallback |
+| `SUPABASE_BASE_URL` | - | Supabase REST API base URL override |
+| `QUICKBASE_HOSTNAME` | - | Quickbase realm hostname fallback |
+| `QUICKBASE_USER_TOKEN` | - | Quickbase user token fallback |
+| `QUICKBASE_BASE_URL` | `https://api.quickbase.com/v1` | Quickbase API base URL |
+| `SEATABLE_API_TOKEN` | - | SeaTable API token fallback |
+| `SEATABLE_BASE_URL` | `https://cloud.seatable.io` | SeaTable API base URL |
+| `STACKBY_API_KEY` | - | Stackby API key fallback |
+| `STACKBY_BASE_URL` | `https://stackby.com/api/betav1` | Stackby API base URL |
 | `NOCODB_API_TOKEN` | - | NocoDB API or user token fallback |
 | `NOCODB_BASE_URL` | `https://app.nocodb.com` | NocoDB API base URL |
 | `NOCODB_AUTH_HEADER` | `xc-token` | NocoDB auth header name, `xc-token` or `xc-auth` |
