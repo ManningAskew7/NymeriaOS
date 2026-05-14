@@ -1,0 +1,80 @@
+name: Claude Code Review
+
+on:
+  # Review PRs automatically
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+  # Respond to @claude in comments
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+  # Review direct pushes to main
+  push:
+    branches: [main]
+
+jobs:
+  # ── PR Review: posts inline comments on the PR ──
+  pr-review:
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          model: claude-opus-4-6
+          claude_args: "--max-turns 10"
+
+  # ── Push Review: reviews commits pushed to main, creates an issue if problems found ──
+  push-review:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          model: claude-opus-4-6
+          claude_args: "--max-turns 10 --allowedTools Bash(git diff:*),Bash(git log:*),Bash(gh issue create:*),Read"
+          prompt: |
+            Review the latest push to main. Run:
+              git diff HEAD~1 HEAD
+
+            Analyse the diff for:
+            - Bugs, logic errors, or regressions
+            - Security issues (hardcoded secrets, injection, auth problems)
+            - Code that doesn't match existing patterns in the codebase
+            - Missing doc updates in Nymeria/docs/
+
+            If everything looks good, do nothing — no output needed.
+
+            If you find problems, create a GitHub issue with:
+              gh issue create --title "Review: <short summary>" --body "<details>"
+
+            Only create an issue for genuine problems, not style nitpicks.
