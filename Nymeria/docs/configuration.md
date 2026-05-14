@@ -332,6 +332,13 @@ Set the API key for your chosen provider:
 | `CODA_BASE_URL` | Coda | Optional Coda API base URL override |
 | `GRIST_API_KEY` | Grist | Optional Grist API key fallback; credential vault provider `grist` is preferred |
 | `GRIST_BASE_URL` | Grist | Optional Grist API base URL override |
+| `TELEGRAM_API_BASE_URL` | Telegram | Optional Telegram Bot API base URL override |
+| `WEBEX_ACCESS_TOKEN` | Webex | Optional Webex access token fallback; credential vault provider `webex` is preferred |
+| `WEBEX_BASE_URL` | Webex | Optional Webex API base URL override |
+| `WHATSAPP_ACCESS_TOKEN` | WhatsApp Business Cloud | Optional WhatsApp access token fallback; credential vault provider `whatsapp` is preferred |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID` | WhatsApp Business Cloud | Optional WhatsApp business account ID fallback |
+| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Business Cloud | Optional WhatsApp sender phone number ID fallback |
+| `WHATSAPP_BASE_URL` | WhatsApp Business Cloud | Optional WhatsApp Graph API base URL override |
 | `DISCORD_BASE_URL` | Discord | Optional Discord REST API base URL override |
 | `MATTERMOST_ACCESS_TOKEN` | Mattermost | Optional Mattermost access token fallback; credential vault provider `mattermost` is preferred |
 | `MATTERMOST_BASE_URL` | Mattermost | Mattermost server base URL for native tools |
@@ -549,7 +556,14 @@ reachable from the backend process.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | - | Telegram bot token from @BotFather |
+| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL for native Telegram tools |
 | `TELEGRAM_DEFAULT_CHAT_ID` | - | Default Telegram chat ID for notifications |
+| `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback for native Webex tools |
+| `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |
+| `WHATSAPP_ACCESS_TOKEN` | - | WhatsApp Business Cloud access token fallback |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID` | - | WhatsApp business account ID fallback |
+| `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
+| `WHATSAPP_BASE_URL` | `https://graph.facebook.com/v19.0` | WhatsApp Graph API base URL |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook URL for notifications |
 | `DISCORD_BOT_TOKEN` | - | Discord bot token for two-way communication |
 | `DISCORD_MODE` | `gateway` | Discord connection mode: `gateway` or `webhook` |
@@ -826,6 +840,13 @@ reachable from the backend process.
 | `CODA_BASE_URL` | `https://coda.io/apis/v1` | Coda API base URL |
 | `GRIST_API_KEY` | - | Grist API key fallback |
 | `GRIST_BASE_URL` | `https://docs.getgrist.com/api` | Grist API base URL |
+| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL |
+| `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback |
+| `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |
+| `WHATSAPP_ACCESS_TOKEN` | - | WhatsApp Business Cloud access token fallback |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID` | - | WhatsApp business account ID fallback |
+| `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
+| `WHATSAPP_BASE_URL` | `https://graph.facebook.com/v19.0` | WhatsApp Graph API base URL |
 | `DISCORD_BASE_URL` | `https://discord.com/api/v10` | Discord REST API base URL |
 | `MATTERMOST_ACCESS_TOKEN` | - | Mattermost access token fallback |
 | `MATTERMOST_BASE_URL` | - | Mattermost server base URL |

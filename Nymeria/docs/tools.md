@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (683)
+### Optional: Service Integration Tools (698)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -761,6 +761,21 @@ in the credential vault for provider-specific saved connections scoped to
 | 681 | `segment_identify` | Integrations | MODERATE | Send a Segment identify call |
 | 682 | `segment_track` | Integrations | MODERATE | Send a Segment track event |
 | 683 | `segment_group` | Integrations | MODERATE | Send a Segment group call |
+| 684 | `telegram_get_me` | Integrations | SAFE | Get the Telegram bot profile |
+| 685 | `telegram_get_chat` | Integrations | SAFE | Get Telegram chat metadata |
+| 686 | `telegram_send_message` | Integrations | MODERATE | Send a Telegram text message |
+| 687 | `telegram_delete_message` | Integrations | MODERATE | Delete a Telegram message |
+| 688 | `webex_list_rooms` | Integrations | SAFE | List Webex rooms |
+| 689 | `webex_get_room` | Integrations | SAFE | Get Webex room metadata |
+| 690 | `webex_list_messages` | Integrations | SAFE | List Webex messages |
+| 691 | `webex_get_message` | Integrations | SAFE | Get a Webex message |
+| 692 | `webex_send_message` | Integrations | MODERATE | Send a Webex message |
+| 693 | `webex_delete_message` | Integrations | MODERATE | Delete a Webex message |
+| 694 | `whatsapp_list_phone_numbers` | Integrations | SAFE | List WhatsApp Business Cloud phone numbers |
+| 695 | `whatsapp_send_text_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud text message |
+| 696 | `whatsapp_send_template_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud template message |
+| 697 | `whatsapp_get_media_url` | Integrations | SAFE | Get a WhatsApp Business Cloud media URL |
+| 698 | `whatsapp_delete_media` | Integrations | MODERATE | Delete WhatsApp Business Cloud media |
 
 ### Optional: Private B Tools (4)
 
@@ -1353,7 +1368,9 @@ credentials use `raindrop.access_token`, `yourls.url`, and either
 credentials use `asana.access_token` and `linear.api_key`. IT support credentials
 use `freshservice.api_key` plus `freshservice.domain`, `servicenow.access_token`
 or `servicenow.username` plus `servicenow.password`, and `zammad.token` plus
-`zammad.base_url`. Sales CRM credentials use `salesforce.access_token` plus
+`zammad.base_url`. Chat credentials use `telegram.bot_token`,
+`webex.access_token`, and `whatsapp.access_token` with optional
+`whatsapp.business_account_id` and `whatsapp.phone_number_id`. Sales CRM credentials use `salesforce.access_token` plus
 `salesforce.instance_url`, `zoho_crm.access_token`, `freshworks_crm.api_key`
 plus `freshworks_crm.domain`, `salesmate.session_token` plus
 `salesmate.link_name`, and `pipedrive.api_token` or `pipedrive.access_token`.
@@ -1852,6 +1869,9 @@ Credential providers and fallback env vars:
 ### Chat Platform Service Tools
 
 This batch includes:
+- `telegram_get_me()`, `telegram_get_chat(chat_id)`, `telegram_send_message(chat_id, text, ...)`, and `telegram_delete_message(chat_id, message_id)`. Reads are SAFE; send/delete are MODERATE.
+- `webex_list_rooms(...)`, `webex_get_room(room_id)`, `webex_list_messages(...)`, `webex_get_message(message_id)`, `webex_send_message(...)`, and `webex_delete_message(message_id)`. Reads are SAFE; send/delete are MODERATE.
+- `whatsapp_list_phone_numbers(...)`, `whatsapp_send_text_message(...)`, `whatsapp_send_template_message(...)`, `whatsapp_get_media_url(media_id)`, and `whatsapp_delete_media(media_id)`. Phone/media reads are SAFE; sends and deletes are MODERATE.
 - `discord_list_guild_channels(guild_id)`, `discord_get_channel(channel_id)`, `discord_get_channel_messages(channel_id, ...)`, `discord_send_channel_message(channel_id, content, ...)`, and `discord_delete_message(channel_id, message_id)`. Reads are SAFE; send/delete are MODERATE.
 - `mattermost_get_me()`, `mattermost_list_teams(...)`, `mattermost_list_channels(team_id, ...)`, `mattermost_list_channel_posts(channel_id, ...)`, `mattermost_create_post(channel_id, message, ...)`, and `mattermost_delete_post(post_id)`. Reads are SAFE; create/delete are MODERATE.
 - `matrix_whoami()`, `matrix_list_joined_rooms()`, `matrix_get_room_messages(room_id, ...)`, `matrix_send_room_message(room_id, body, ...)`, and `matrix_leave_room(room_id)`. Reads are SAFE; sending/leaving are MODERATE.
@@ -1859,6 +1879,9 @@ This batch includes:
 - `zulip_get_profile()`, `zulip_list_streams(...)`, `zulip_get_messages(...)`, `zulip_send_message(message_type, to, content, ...)`, and `zulip_delete_message(message_id)`. Reads are SAFE; send/delete are MODERATE.
 
 Credential providers and fallback env vars:
+- Telegram: provider `telegram`, fields `bot_token`, `api_key`, `token`, or `value`; env fallback reuses `TELEGRAM_BOT_TOKEN`. Optional base override `TELEGRAM_API_BASE_URL`.
+- Webex: provider `webex`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `WEBEX_ACCESS_TOKEN`. Optional base override `WEBEX_BASE_URL`.
+- WhatsApp Business Cloud: provider `whatsapp`, fields `access_token`, `business_account_id`, and `phone_number_id`; env fallbacks `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_PHONE_NUMBER_ID`, and `WHATSAPP_BASE_URL`.
 - Discord: provider `discord`, fields `bot_token`, `botToken`, `token`, or `value`; env fallback reuses `DISCORD_BOT_TOKEN`. Optional base override `DISCORD_BASE_URL`.
 - Mattermost: provider `mattermost`, fields `access_token`, `accessToken`, `api_token`, `token`, or `value`; env fallback `MATTERMOST_ACCESS_TOKEN`. Save `base_url` / `baseUrl` or set `MATTERMOST_BASE_URL`; the tool appends `/api/v4` when needed.
 - Matrix: provider `matrix`, fields `access_token`, `accessToken`, `token`, or `value`; env fallback `MATRIX_ACCESS_TOKEN`. Save `homeserverUrl` / `base_url` or set `MATRIX_BASE_URL`; the tool appends `/_matrix/client/v3` when needed.

@@ -204,6 +204,107 @@ def test_zulip_send_message_uses_env_basic_auth(monkeypatch):
     assert captured["data"] == {"type": "stream", "to": "general", "content": "hello", "topic": "updates"}
 
 
+def test_telegram_send_message_uses_env_bot_token(monkeypatch):
+    from nymeria.tools import chat_platform_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:telegram-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body})
+        return {"ok": True, "result": {"message_id": 12}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.telegram_send_message.func(
+            chat_id="chat-1",
+            text="hello",
+            parse_mode="Markdown",
+            reply_markup_json='{"remove_keyboard": true}',
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.telegram.org/bot123:telegram-token/sendMessage"
+    assert captured["json_body"]["chat_id"] == "chat-1"
+    assert captured["json_body"]["parse_mode"] == "Markdown"
+    assert captured["json_body"]["reply_markup"] == {"remove_keyboard": True}
+
+
+def test_webex_send_message_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import chat_platform_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Webex",
+        provider="webex",
+        kind="api_key",
+        allowed_targets=["native_tool:webex_send_message"],
+        secret_fields={"accessToken": "webex-token", "baseUrl": "https://webex.example/v1"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"id": "msg-1", "text": "hello"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.webex_send_message.func(
+            room_id="room-1",
+            markdown="**hello**",
+            files="https://example.com/a.png, https://example.com/b.png",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == "msg-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://webex.example/v1/messages"
+    assert captured["headers"]["Authorization"] == "Bearer webex-token"
+    assert captured["json_body"]["roomId"] == "room-1"
+    assert captured["json_body"]["markdown"] == "**hello**"
+    assert captured["json_body"]["files"] == ["https://example.com/a.png", "https://example.com/b.png"]
+
+
+def test_whatsapp_send_text_message_uses_env_token(monkeypatch):
+    from nymeria.tools import chat_platform_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "wa-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "phone-1")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"messages": [{"id": "wamid.1"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.whatsapp_send_text_message.func(
+            to="15551234567",
+            text="hello",
+            preview_url=True,
+        )
+    )
+
+    assert result["messages"][0]["id"] == "wamid.1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://graph.facebook.com/v19.0/phone-1/messages"
+    assert captured["headers"]["Authorization"] == "Bearer wa-token"
+    assert captured["json_body"]["messaging_product"] == "whatsapp"
+    assert captured["json_body"]["text"] == {"body": "hello", "preview_url": True}
+
+
 def test_chat_platform_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import chat_platform_service_integrations as tools
 
@@ -215,15 +316,27 @@ def test_chat_platform_missing_credentials_return_setup_hints(monkeypatch):
         "MATRIX_ACCESS_TOKEN",
         "ROCKETCHAT_AUTH_TOKEN",
         "ZULIP_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "WEBEX_ACCESS_TOKEN",
+        "WHATSAPP_ACCESS_TOKEN",
     ]:
         monkeypatch.delenv(name, raising=False)
 
+    telegram_result = tools.telegram_get_me.func()
+    webex_result = tools.webex_list_rooms.func()
+    whatsapp_result = tools.whatsapp_list_phone_numbers.func()
     discord_result = tools.discord_get_channel.func(channel_id="channel-1")
     mattermost_result = tools.mattermost_get_me.func()
     matrix_result = tools.matrix_whoami.func()
     rocketchat_result = tools.rocketchat_get_me.func()
     zulip_result = tools.zulip_get_profile.func()
 
+    assert 'provider "telegram"' in telegram_result
+    assert "TELEGRAM_BOT_TOKEN" in telegram_result
+    assert 'provider "webex"' in webex_result
+    assert "WEBEX_ACCESS_TOKEN" in webex_result
+    assert 'provider "whatsapp"' in whatsapp_result
+    assert "WHATSAPP_ACCESS_TOKEN" in whatsapp_result
     assert 'provider "discord"' in discord_result
     assert "DISCORD_BOT_TOKEN" in discord_result
     assert 'provider "mattermost"' in mattermost_result
@@ -241,6 +354,14 @@ def test_chat_platform_tools_are_registered_with_metadata():
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = [
+        "telegram_get_me",
+        "telegram_get_chat",
+        "webex_list_rooms",
+        "webex_get_room",
+        "webex_list_messages",
+        "webex_get_message",
+        "whatsapp_list_phone_numbers",
+        "whatsapp_get_media_url",
         "discord_list_guild_channels",
         "discord_get_channel",
         "discord_get_channel_messages",
@@ -259,6 +380,13 @@ def test_chat_platform_tools_are_registered_with_metadata():
         "zulip_get_messages",
     ]
     moderate_names = [
+        "telegram_send_message",
+        "telegram_delete_message",
+        "webex_send_message",
+        "webex_delete_message",
+        "whatsapp_send_text_message",
+        "whatsapp_send_template_message",
+        "whatsapp_delete_media",
         "discord_send_channel_message",
         "discord_delete_message",
         "mattermost_create_post",
@@ -292,9 +420,15 @@ def test_chat_platform_tool_schemas_hide_runtime_config():
         mattermost_create_post,
         matrix_send_room_message,
         rocketchat_get_channel_history,
+        telegram_send_message,
+        webex_send_message,
+        whatsapp_send_template_message,
         zulip_send_message,
     )
 
+    assert "config" not in telegram_send_message.args_schema.model_json_schema()["properties"]
+    assert "config" not in webex_send_message.args_schema.model_json_schema()["properties"]
+    assert "config" not in whatsapp_send_template_message.args_schema.model_json_schema()["properties"]
     assert "config" not in discord_get_channel_messages.args_schema.model_json_schema()["properties"]
     assert "config" not in mattermost_create_post.args_schema.model_json_schema()["properties"]
     assert "config" not in matrix_send_room_message.args_schema.model_json_schema()["properties"]

@@ -349,6 +349,13 @@ class ServerSettingsUpdate(BaseModel):
     coda_base_url: Optional[str] = None
     grist_api_key: Optional[str] = None
     grist_base_url: Optional[str] = None
+    telegram_api_base_url: Optional[str] = None
+    webex_access_token: Optional[str] = None
+    webex_base_url: Optional[str] = None
+    whatsapp_access_token: Optional[str] = None
+    whatsapp_business_account_id: Optional[str] = None
+    whatsapp_phone_number_id: Optional[str] = None
+    whatsapp_base_url: Optional[str] = None
     discord_base_url: Optional[str] = None
     mattermost_access_token: Optional[str] = None
     mattermost_base_url: Optional[str] = None
