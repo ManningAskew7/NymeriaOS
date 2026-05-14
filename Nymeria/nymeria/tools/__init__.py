@@ -191,6 +191,29 @@ from .work_tracking_service_integrations import (
     linear_add_issue_link,
     WORK_TRACKING_SERVICE_TOOLS,
 )
+from .project_management_service_integrations import (
+    jira_get_myself,
+    jira_list_projects,
+    jira_search_issues,
+    jira_get_issue,
+    jira_create_issue,
+    jira_update_issue,
+    jira_list_issue_transitions,
+    jira_list_users,
+    jira_list_issue_comments,
+    jira_add_issue_comment,
+    clickup_list_teams,
+    clickup_list_spaces,
+    clickup_list_folders,
+    clickup_list_lists,
+    clickup_get_task,
+    clickup_list_tasks,
+    clickup_create_task,
+    clickup_update_task,
+    clickup_list_task_comments,
+    clickup_add_task_comment,
+    PROJECT_MANAGEMENT_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -243,6 +266,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
     + WORK_TRACKING_SERVICE_TOOLS
+    + PROJECT_MANAGEMENT_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -439,6 +463,27 @@ __all__ = [
     "linear_add_issue_comment",
     "linear_add_issue_link",
     "WORK_TRACKING_SERVICE_TOOLS",
+    "jira_get_myself",
+    "jira_list_projects",
+    "jira_search_issues",
+    "jira_get_issue",
+    "jira_create_issue",
+    "jira_update_issue",
+    "jira_list_issue_transitions",
+    "jira_list_users",
+    "jira_list_issue_comments",
+    "jira_add_issue_comment",
+    "clickup_list_teams",
+    "clickup_list_spaces",
+    "clickup_list_folders",
+    "clickup_list_lists",
+    "clickup_get_task",
+    "clickup_list_tasks",
+    "clickup_create_task",
+    "clickup_update_task",
+    "clickup_list_task_comments",
+    "clickup_add_task_comment",
+    "PROJECT_MANAGEMENT_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

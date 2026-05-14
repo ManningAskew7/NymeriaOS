@@ -825,6 +825,12 @@ export interface ServerSettingsUpdate {
   asana_base_url?: string | null;
   linear_api_key?: string | null;
   linear_api_url?: string | null;
+  jira_email?: string | null;
+  jira_api_token?: string | null;
+  jira_access_token?: string | null;
+  jira_base_url?: string | null;
+  clickup_access_token?: string | null;
+  clickup_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

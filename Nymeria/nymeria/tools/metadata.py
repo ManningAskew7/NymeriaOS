@@ -144,6 +144,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "BUSINESS_SERVICE_TOOLS",
             "PRODUCTIVITY_SERVICE_TOOLS",
             "WORK_TRACKING_SERVICE_TOOLS",
+            "PROJECT_MANAGEMENT_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -284,6 +285,20 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "linear_list_workflow_states",
         "linear_list_issues",
         "linear_get_issue",
+        "jira_get_myself",
+        "jira_list_projects",
+        "jira_search_issues",
+        "jira_get_issue",
+        "jira_list_issue_transitions",
+        "jira_list_users",
+        "jira_list_issue_comments",
+        "clickup_list_teams",
+        "clickup_list_spaces",
+        "clickup_list_folders",
+        "clickup_list_lists",
+        "clickup_get_task",
+        "clickup_list_tasks",
+        "clickup_list_task_comments",
     }
 )
 

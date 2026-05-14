@@ -407,6 +407,12 @@ class Settings(BaseSettings):
     asana_base_url: str = Field(default="https://app.asana.com/api/1.0", description="Asana API base URL")
     linear_api_key: Optional[str] = Field(default=None, description="Linear API key fallback")
     linear_api_url: str = Field(default="https://api.linear.app/graphql", description="Linear GraphQL API URL")
+    jira_email: Optional[str] = Field(default=None, description="Jira Cloud account email fallback")
+    jira_api_token: Optional[str] = Field(default=None, description="Jira Cloud API token fallback")
+    jira_access_token: Optional[str] = Field(default=None, description="Jira OAuth/bearer token fallback")
+    jira_base_url: Optional[str] = Field(default=None, description="Jira site base URL, e.g. https://example.atlassian.net")
+    clickup_access_token: Optional[str] = Field(default=None, description="ClickUp access token fallback")
+    clickup_base_url: str = Field(default="https://api.clickup.com/api/v2", description="ClickUp API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

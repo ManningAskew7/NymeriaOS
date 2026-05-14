@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (80)
+### Optional: Service Integration Tools (100)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -158,6 +158,26 @@ in the credential vault for provider-specific saved connections scoped to
 | 78 | `linear_update_issue` | Integrations | MODERATE | Update a Linear issue |
 | 79 | `linear_add_issue_comment` | Integrations | MODERATE | Add a comment to a Linear issue |
 | 80 | `linear_add_issue_link` | Integrations | MODERATE | Attach a URL link to a Linear issue |
+| 81 | `jira_get_myself` | Integrations | SAFE | Get the current Jira user |
+| 82 | `jira_list_projects` | Integrations | SAFE | List Jira projects |
+| 83 | `jira_search_issues` | Integrations | SAFE | Search Jira issues with JQL |
+| 84 | `jira_get_issue` | Integrations | SAFE | Get a Jira issue by key or ID |
+| 85 | `jira_create_issue` | Integrations | MODERATE | Create a Jira issue |
+| 86 | `jira_update_issue` | Integrations | MODERATE | Update a Jira issue or transition it |
+| 87 | `jira_list_issue_transitions` | Integrations | SAFE | List available Jira transitions for an issue |
+| 88 | `jira_list_users` | Integrations | SAFE | Search Jira users |
+| 89 | `jira_list_issue_comments` | Integrations | SAFE | List comments on a Jira issue |
+| 90 | `jira_add_issue_comment` | Integrations | MODERATE | Add a comment to a Jira issue |
+| 91 | `clickup_list_teams` | Integrations | SAFE | List ClickUp workspaces/teams |
+| 92 | `clickup_list_spaces` | Integrations | SAFE | List ClickUp spaces |
+| 93 | `clickup_list_folders` | Integrations | SAFE | List ClickUp folders |
+| 94 | `clickup_list_lists` | Integrations | SAFE | List ClickUp lists |
+| 95 | `clickup_get_task` | Integrations | SAFE | Get a ClickUp task by ID |
+| 96 | `clickup_list_tasks` | Integrations | SAFE | List ClickUp tasks in a list |
+| 97 | `clickup_create_task` | Integrations | MODERATE | Create a ClickUp task |
+| 98 | `clickup_update_task` | Integrations | MODERATE | Update a ClickUp task |
+| 99 | `clickup_list_task_comments` | Integrations | SAFE | List comments on a ClickUp task |
+| 100 | `clickup_add_task_comment` | Integrations | MODERATE | Add a comment to a ClickUp task |
 
 ### Optional: Private B Tools (4)
 
@@ -848,6 +868,16 @@ This batch includes:
 Credential providers and fallback env vars:
 - Asana: provider `asana`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `ASANA_ACCESS_TOKEN`. Use `base_url` / `url` or `ASANA_BASE_URL` for non-default API roots.
 - Linear: provider `linear`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `LINEAR_API_KEY`. Use `api_url` / `graphql_url` / `base_url` / `url` or `LINEAR_API_URL` for non-default GraphQL endpoints.
+
+### Project Management Service Tools
+
+This batch includes:
+- `jira_get_myself()`, `jira_list_projects(query?, limit?)`, `jira_search_issues(jql, fields?, limit?)`, `jira_get_issue(issue_key, fields?, expand?)`, `jira_create_issue(...)`, `jira_update_issue(...)`, `jira_list_issue_transitions(issue_key)`, `jira_list_users(query, limit?)`, `jira_list_issue_comments(issue_key, limit?)`, and `jira_add_issue_comment(issue_key, body)`. Create/update/comment operations are MODERATE because they change Jira state.
+- `clickup_list_teams()`, `clickup_list_spaces(team_id, archived?)`, `clickup_list_folders(space_id, archived?)`, `clickup_list_lists(folder_id?, space_id?, archived?)`, `clickup_get_task(task_id, include_subtasks?, include_markdown_description?)`, `clickup_list_tasks(...)`, `clickup_create_task(...)`, `clickup_update_task(...)`, `clickup_list_task_comments(task_id)`, and `clickup_add_task_comment(task_id, comment_text, notify_all?)`. Create/update/comment operations are MODERATE because they change ClickUp state.
+
+Credential providers and fallback env vars:
+- Jira: provider `jira`, fields `access_token`, `bearer_token`, `token`, or `value` for bearer auth; or `email` / `username` plus `api_token` / `apiToken` / `password` for basic auth. Use `base_url` / `domain` / `url` / `site_url` or `JIRA_BASE_URL` for the Jira Cloud site, such as `https://example.atlassian.net`. Env fallback supports `JIRA_ACCESS_TOKEN` or `JIRA_EMAIL` plus `JIRA_API_TOKEN`.
+- ClickUp: provider `clickup`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `CLICKUP_ACCESS_TOKEN`. Use `base_url` / `url` or `CLICKUP_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

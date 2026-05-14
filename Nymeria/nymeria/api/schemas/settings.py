@@ -108,6 +108,12 @@ class ServerSettingsUpdate(BaseModel):
     asana_base_url: Optional[str] = None
     linear_api_key: Optional[str] = None
     linear_api_url: Optional[str] = None
+    jira_email: Optional[str] = None
+    jira_api_token: Optional[str] = None
+    jira_access_token: Optional[str] = None
+    jira_base_url: Optional[str] = None
+    clickup_access_token: Optional[str] = None
+    clickup_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
