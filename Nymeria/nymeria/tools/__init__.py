@@ -332,6 +332,28 @@ from .file_storage_service_integrations import (
     s3_delete_bucket,
     FILE_STORAGE_SERVICE_TOOLS,
 )
+from .aws_service_integrations import (
+    aws_lambda_list_functions,
+    aws_lambda_invoke,
+    aws_sns_list_topics,
+    aws_sns_create_topic,
+    aws_sns_publish,
+    aws_sns_delete_topic,
+    aws_ses_send_email,
+    aws_ses_list_identities,
+    aws_ses_verify_email_identity,
+    aws_ses_list_templates,
+    aws_ses_get_template,
+    aws_ses_create_template,
+    aws_ses_update_template,
+    aws_ses_delete_template,
+    aws_textract_analyze_expense,
+    aws_transcribe_start_job,
+    aws_transcribe_get_job,
+    aws_transcribe_list_jobs,
+    aws_transcribe_delete_job,
+    AWS_SERVICE_TOOLS,
+)
 from .business_service_integrations import (
     bitly_get_bitlink,
     bitly_create_bitlink,
@@ -830,6 +852,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + DEVELOPER_PLATFORM_TOOLS
     + BUILD_CI_SERVICE_TOOLS
     + FILE_STORAGE_SERVICE_TOOLS
+    + AWS_SERVICE_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
     + BOOKMARK_LINK_SERVICE_TOOLS
@@ -1176,6 +1199,26 @@ __all__ = [
     "s3_create_bucket",
     "s3_delete_bucket",
     "FILE_STORAGE_SERVICE_TOOLS",
+    "aws_lambda_list_functions",
+    "aws_lambda_invoke",
+    "aws_sns_list_topics",
+    "aws_sns_create_topic",
+    "aws_sns_publish",
+    "aws_sns_delete_topic",
+    "aws_ses_send_email",
+    "aws_ses_list_identities",
+    "aws_ses_verify_email_identity",
+    "aws_ses_list_templates",
+    "aws_ses_get_template",
+    "aws_ses_create_template",
+    "aws_ses_update_template",
+    "aws_ses_delete_template",
+    "aws_textract_analyze_expense",
+    "aws_transcribe_start_job",
+    "aws_transcribe_get_job",
+    "aws_transcribe_list_jobs",
+    "aws_transcribe_delete_job",
+    "AWS_SERVICE_TOOLS",
     "bitly_get_bitlink",
     "bitly_create_bitlink",
     "bitly_update_bitlink",
