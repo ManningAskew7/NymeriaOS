@@ -165,6 +165,15 @@ class ServerSettingsUpdate(BaseModel):
     pipedrive_api_token: Optional[str] = None
     pipedrive_access_token: Optional[str] = None
     pipedrive_base_url: Optional[str] = None
+    copper_api_key: Optional[str] = None
+    copper_email: Optional[str] = None
+    copper_base_url: Optional[str] = None
+    agilecrm_email: Optional[str] = None
+    agilecrm_api_key: Optional[str] = None
+    agilecrm_subdomain: Optional[str] = None
+    agilecrm_base_url: Optional[str] = None
+    monica_access_token: Optional[str] = None
+    monica_base_url: Optional[str] = None
     twilio_account_sid: Optional[str] = None
     twilio_auth_token: Optional[str] = None
     twilio_api_key_sid: Optional[str] = None

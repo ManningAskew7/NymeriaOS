@@ -815,6 +815,15 @@ export interface ServerSettingsUpdate {
   pipedrive_api_token?: string | null;
   pipedrive_access_token?: string | null;
   pipedrive_base_url?: string | null;
+  copper_api_key?: string | null;
+  copper_email?: string | null;
+  copper_base_url?: string | null;
+  agilecrm_email?: string | null;
+  agilecrm_api_key?: string | null;
+  agilecrm_subdomain?: string | null;
+  agilecrm_base_url?: string | null;
+  monica_access_token?: string | null;
+  monica_base_url?: string | null;
   twilio_account_sid?: string | null;
   twilio_auth_token?: string | null;
   twilio_api_key_sid?: string | null;

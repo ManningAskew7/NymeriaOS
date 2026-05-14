@@ -300,6 +300,15 @@ Set the API key for your chosen provider:
 | `MAILERLITE_API_KEY` | MailerLite | Optional MailerLite API key fallback; credential vault provider `mailerlite` is preferred |
 | `MAILERLITE_BASE_URL` | MailerLite | Optional MailerLite API base URL override |
 | `MAILERLITE_CLASSIC_API` | MailerLite | Use MailerLite Classic API authentication/header style |
+| `COPPER_API_KEY` | Copper | Optional Copper API key fallback; credential vault provider `copper` is preferred |
+| `COPPER_EMAIL` | Copper | Copper user email fallback |
+| `COPPER_BASE_URL` | Copper | Optional Copper API base URL override |
+| `AGILECRM_EMAIL` | Agile CRM | Agile CRM account email fallback |
+| `AGILECRM_API_KEY` | Agile CRM | Agile CRM API key fallback; credential vault provider `agilecrm` is preferred |
+| `AGILECRM_SUBDOMAIN` | Agile CRM | Agile CRM account subdomain fallback |
+| `AGILECRM_BASE_URL` | Agile CRM | Optional Agile CRM API base URL override |
+| `MONICA_ACCESS_TOKEN` | Monica CRM | Optional Monica CRM API token fallback; credential vault provider `monica` is preferred |
+| `MONICA_BASE_URL` | Monica CRM | Optional Monica CRM API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -681,6 +690,15 @@ reachable from the backend process.
 | `MAILERLITE_API_KEY` | - | MailerLite API key fallback |
 | `MAILERLITE_BASE_URL` | `https://connect.mailerlite.com/api` | MailerLite API base URL |
 | `MAILERLITE_CLASSIC_API` | `false` | Use MailerLite Classic API authentication/header style |
+| `COPPER_API_KEY` | - | Copper API key fallback |
+| `COPPER_EMAIL` | - | Copper user email fallback |
+| `COPPER_BASE_URL` | `https://api.copper.com/developer_api/v1` | Copper API base URL |
+| `AGILECRM_EMAIL` | - | Agile CRM account email fallback |
+| `AGILECRM_API_KEY` | - | Agile CRM API key fallback |
+| `AGILECRM_SUBDOMAIN` | - | Agile CRM account subdomain fallback |
+| `AGILECRM_BASE_URL` | - | Agile CRM API base URL override |
+| `MONICA_ACCESS_TOKEN` | - | Monica CRM API token fallback |
+| `MONICA_BASE_URL` | `https://app.monicahq.com/api` | Monica CRM API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
