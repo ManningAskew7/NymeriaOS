@@ -100,6 +100,27 @@ from .utility_integrations import (
     searxng_search,
     UTILITY_INTEGRATION_TOOLS,
 )
+from .transform_utility_integrations import (
+    datetime_current,
+    datetime_add,
+    datetime_subtract,
+    datetime_format,
+    datetime_between,
+    datetime_extract,
+    datetime_round,
+    crypto_hash_text,
+    crypto_hmac_text,
+    crypto_generate_random,
+    crypto_sign_text,
+    jwt_decode_token,
+    jwt_sign_claims,
+    jwt_verify_token,
+    compression_gzip_text,
+    compression_gunzip_text,
+    compression_zip_text_files,
+    compression_unzip_text_files,
+    TRANSFORM_UTILITY_TOOLS,
+)
 from .public_info_integrations import (
     coingecko_price,
     coingecko_coin_markets,
@@ -799,6 +820,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SPAWN_THREAD_TOOLS
     + IMAGE_GENERATION_TOOLS
     + UTILITY_INTEGRATION_TOOLS
+    + TRANSFORM_UTILITY_TOOLS
     + PUBLIC_INFO_TOOLS
     + MEDIA_DISCOVERY_SERVICE_TOOLS
     + COMMUNITY_PUBLISHING_SERVICE_TOOLS
@@ -942,6 +964,25 @@ __all__ = [
     "wolfram_alpha_query",
     "searxng_search",
     "UTILITY_INTEGRATION_TOOLS",
+    "datetime_current",
+    "datetime_add",
+    "datetime_subtract",
+    "datetime_format",
+    "datetime_between",
+    "datetime_extract",
+    "datetime_round",
+    "crypto_hash_text",
+    "crypto_hmac_text",
+    "crypto_generate_random",
+    "crypto_sign_text",
+    "jwt_decode_token",
+    "jwt_sign_claims",
+    "jwt_verify_token",
+    "compression_gzip_text",
+    "compression_gunzip_text",
+    "compression_zip_text_files",
+    "compression_unzip_text_files",
+    "TRANSFORM_UTILITY_TOOLS",
     "coingecko_price",
     "coingecko_coin_markets",
     "hackernews_search",

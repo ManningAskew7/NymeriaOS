@@ -75,6 +75,13 @@ Set the API key for your chosen provider:
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
 | `OPENWEATHERMAP_API_KEY` | OpenWeatherMap | Optional env fallback for `openweathermap_*`; credential vault provider `openweathermap` is preferred |
 | `NPM_REGISTRY_URL` | npm | Optional registry override for npm tools; credential vault provider `npm` can also provide `registry_url` and `token` |
+| `CRYPTO_HMAC_SECRET` | Crypto | Optional env fallback for HMAC transform tools; credential vault provider `crypto` is preferred |
+| `CRYPTO_SIGN_PRIVATE_KEY` | Crypto | Optional PEM private key fallback for signing transform tools |
+| `CRYPTO_SIGN_PRIVATE_KEY_PASSPHRASE` | Crypto | Optional passphrase for encrypted signing private keys |
+| `JWT_SECRET` | JWT | Optional HMAC secret fallback for JWT tools; credential vault provider `jwt` is preferred |
+| `JWT_PRIVATE_KEY` | JWT | Optional PEM private key fallback for JWT signing |
+| `JWT_PUBLIC_KEY` | JWT | Optional PEM public key fallback for JWT verification |
+| `JWT_ALGORITHM` | JWT | Optional default JWT algorithm; defaults to `HS256` |
 | `GITHUB_TOKEN` | GitHub | Optional env fallback for GitHub developer-platform tools; credential vault provider `github` is preferred |
 | `GITHUB_API_BASE_URL` | GitHub | Optional GitHub API base URL; defaults to `https://api.github.com` |
 | `GITLAB_TOKEN` | GitLab | Optional env fallback for GitLab developer-platform tools; credential vault provider `gitlab` is preferred |
@@ -514,6 +521,13 @@ reachable from the backend process.
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
 | `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |
 | `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL fallback |
+| `CRYPTO_HMAC_SECRET` | - | Crypto HMAC secret fallback |
+| `CRYPTO_SIGN_PRIVATE_KEY` | - | Crypto signing private key PEM fallback |
+| `CRYPTO_SIGN_PRIVATE_KEY_PASSPHRASE` | - | Crypto signing private key passphrase fallback |
+| `JWT_SECRET` | - | JWT HMAC secret fallback |
+| `JWT_PRIVATE_KEY` | - | JWT signing private key PEM fallback |
+| `JWT_PUBLIC_KEY` | - | JWT verification public key PEM fallback |
+| `JWT_ALGORITHM` | `HS256` | Default JWT signing/verification algorithm |
 | `GITHUB_TOKEN` | - | GitHub API token fallback for developer-platform tools |
 | `GITHUB_API_BASE_URL` | `https://api.github.com` | GitHub API base URL |
 | `GITLAB_TOKEN` | - | GitLab API token fallback for developer-platform tools |

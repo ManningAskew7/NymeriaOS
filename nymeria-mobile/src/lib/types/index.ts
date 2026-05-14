@@ -756,6 +756,13 @@ export interface ServerSettingsUpdate {
   nasa_api_key?: string | null;
   openweathermap_api_key?: string | null;
   npm_registry_url?: string | null;
+  crypto_hmac_secret?: string | null;
+  crypto_sign_private_key?: string | null;
+  crypto_sign_private_key_passphrase?: string | null;
+  jwt_secret?: string | null;
+  jwt_private_key?: string | null;
+  jwt_public_key?: string | null;
+  jwt_algorithm?: string | null;
   github_token?: string | null;
   github_api_base_url?: string | null;
   gitlab_token?: string | null;
