@@ -1064,6 +1064,11 @@ def test_cliproxy_claude_smoke_failure_stops_before_config(
         "_ensure_cliproxy_container_ready",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_restart_cliproxy_container",
+        lambda console: None,
+    )
 
     def fail_smoke(*args, **kwargs):
         raise setup_wizard.CLIProxySetupError("smoke failed")
@@ -1221,6 +1226,11 @@ def test_cliproxy_codex_probe_failure_stops_before_config(
         setup_wizard,
         "_ensure_cliproxy_container_ready",
         lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_restart_cliproxy_container",
+        lambda console: None,
     )
 
     def fail_verify(*args, **kwargs):
