@@ -24,6 +24,9 @@ _MANDRILL_BASE_URL = "https://mandrillapp.com/api/1.0"
 _MESSAGEBIRD_BASE_URL = "https://rest.messagebird.com"
 _MOCEAN_BASE_URL = "https://rest.moceanapi.com"
 _MSG91_BASE_URL = "https://api.msg91.com/api"
+_PLIVO_BASE_URL = "https://api.plivo.com/v1"
+_VONAGE_BASE_URL = "https://rest.nexmo.com"
+_SEVEN_BASE_URL = "https://gateway.seven.io/api"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -556,6 +559,121 @@ def _msg91_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
             display_name="MSG91",
         )
     return _base_url(base), auth_key, None
+
+
+def _plivo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
+    auth_id = _credential_value(
+        provider="plivo",
+        provider_aliases=("plivo_api",),
+        field_names=("auth_id", "authId", "account_id", "accountId", "username"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("plivo_auth_id")
+    auth_token = _credential_value(
+        provider="plivo",
+        provider_aliases=("plivo_api",),
+        field_names=("auth_token", "authToken", "api_secret", "apiSecret", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("plivo_auth_token")
+    base = (
+        _credential_value(
+            provider="plivo",
+            provider_aliases=("plivo_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("plivo_base_url")
+        or _PLIVO_BASE_URL
+    )
+    if not auth_id or not auth_token:
+        return _base_url(base), "", _setup_hint(
+            provider="plivo",
+            field_names=("auth_id", "auth_token"),
+            tool_name=tool_name,
+            env_var="PLIVO_AUTH_ID + PLIVO_AUTH_TOKEN",
+            display_name="Plivo",
+        )
+    token = base64.b64encode(f"{auth_id}:{auth_token}".encode("utf-8")).decode("ascii")
+    return _base_url(base), auth_id, {
+        "Accept": "application/json",
+        "Authorization": f"Basic {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _vonage_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str | None]:
+    base = (
+        _credential_value(
+            provider="vonage",
+            provider_aliases=("vonage_api", "nexmo", "nexmo_api"),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("vonage_base_url")
+        or _VONAGE_BASE_URL
+    )
+    api_key = _credential_value(
+        provider="vonage",
+        provider_aliases=("vonage_api", "nexmo", "nexmo_api"),
+        field_names=("api_key", "apiKey", "key", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("vonage_api_key")
+    api_secret = _credential_value(
+        provider="vonage",
+        provider_aliases=("vonage_api", "nexmo", "nexmo_api"),
+        field_names=("api_secret", "apiSecret", "secret"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("vonage_api_secret")
+    if not api_key or not api_secret:
+        return _base_url(base), "", "", _setup_hint(
+            provider="vonage",
+            field_names=("api_key", "api_secret"),
+            tool_name=tool_name,
+            env_var="VONAGE_API_KEY + VONAGE_API_SECRET",
+            display_name="Vonage",
+        )
+    return _base_url(base), api_key, api_secret, None
+
+
+def _seven_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="seven",
+            provider_aliases=("seven_io", "seven_api", "sms77"),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("seven_base_url")
+        or _SEVEN_BASE_URL
+    )
+    api_key = _credential_value(
+        provider="seven",
+        provider_aliases=("seven_io", "seven_api", "sms77"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("seven_api_key")
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="seven",
+            field_names=("api_key", "token", "value"),
+            tool_name=tool_name,
+            env_var="SEVEN_API_KEY",
+            display_name="seven.io",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Nymeria",
+        "X-Api-Key": api_key,
+    }
 
 
 @tool
@@ -1825,6 +1943,172 @@ def msg91_send_sms(
         return f"[Error]: MSG91 SMS send failed: {e}"
 
 
+@tool
+def plivo_send_message(
+    from_number: str,
+    to_numbers: str,
+    text: str,
+    message_type: str = "sms",
+    callback_url: str = "",
+    callback_method: str = "POST",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Send an SMS or MMS message with Plivo."""
+    recipients = _split_csv(to_numbers)
+    if not from_number.strip() or not recipients or not text.strip():
+        return "[Error]: from_number, to_numbers, and text are required."
+    try:
+        base_url, auth_id, headers_or_error = _plivo_config("plivo_send_message", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = {
+            "src": from_number.strip(),
+            "dst": "<".join(recipients),
+            "text": text,
+            "type": message_type.strip() or "sms",
+        }
+        if callback_url.strip():
+            body["url"] = callback_url.strip()
+            body["method"] = callback_method.strip().upper() or "POST"
+        data = _request_json(
+            "POST",
+            f"{base_url}/Account/{quote(auth_id, safe='')}/Message/",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("plivo_send_message failed", exc_info=True)
+        return f"[Error]: Plivo message send failed: {e}"
+
+
+@tool
+def plivo_get_account(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Plivo account metadata."""
+    try:
+        base_url, auth_id, headers_or_error = _plivo_config("plivo_get_account", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/Account/{quote(auth_id, safe='')}/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("plivo_get_account failed", exc_info=True)
+        return f"[Error]: Plivo account lookup failed: {e}"
+
+
+@tool
+def vonage_send_sms(
+    from_name: str,
+    to_number: str,
+    text: str,
+    message_type: str = "unicode",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Send an SMS message with Vonage."""
+    if not from_name.strip() or not to_number.strip() or not text.strip():
+        return "[Error]: from_name, to_number, and text are required."
+    try:
+        base_url, api_key, api_secret, error = _vonage_config("vonage_send_sms", config)
+        if error:
+            return error
+        data = _request_json(
+            "POST",
+            f"{base_url}/sms/json",
+            form_data={
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "from": from_name.strip(),
+                "to": to_number.strip(),
+                "text": text,
+                "type": message_type.strip() or "unicode",
+            },
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("vonage_send_sms failed", exc_info=True)
+        return f"[Error]: Vonage SMS send failed: {e}"
+
+
+@tool
+def vonage_get_balance(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Vonage account balance."""
+    try:
+        base_url, api_key, api_secret, error = _vonage_config("vonage_get_balance", config)
+        if error:
+            return error
+        data = _request_json(
+            "GET",
+            f"{base_url}/account/get-balance",
+            params={"api_key": api_key, "api_secret": api_secret},
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("vonage_get_balance failed", exc_info=True)
+        return f"[Error]: Vonage balance lookup failed: {e}"
+
+
+@tool
+def seven_send_sms(
+    to_numbers: str,
+    text: str,
+    from_name: str = "",
+    flash: bool = False,
+    label: str = "",
+    foreign_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Send an SMS message with seven.io."""
+    recipients = _split_csv(to_numbers)
+    if not recipients or not text.strip():
+        return "[Error]: to_numbers and text are required."
+    try:
+        base_url, headers_or_error = _seven_config("seven_send_sms", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/sms",
+            form_data={
+                "to": ",".join(recipients),
+                "text": text,
+                "from": from_name.strip(),
+                "flash": "1" if flash else "0",
+                "label": label.strip(),
+                "foreign_id": foreign_id.strip(),
+                "json": "1",
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("seven_send_sms failed", exc_info=True)
+        return f"[Error]: seven.io SMS send failed: {e}"
+
+
+@tool
+def seven_get_balance(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get seven.io account balance."""
+    try:
+        base_url, headers_or_error = _seven_config("seven_get_balance", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/balance", params={"json": "1"}, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("seven_get_balance failed", exc_info=True)
+        return f"[Error]: seven.io balance lookup failed: {e}"
+
+
 MESSAGING_DELIVERY_SERVICE_TOOLS = [
     twilio_send_message,
     twilio_list_messages,
@@ -1856,4 +2140,10 @@ MESSAGING_DELIVERY_SERVICE_TOOLS = [
     mocean_send_voice,
     mocean_get_balance,
     msg91_send_sms,
+    plivo_send_message,
+    plivo_get_account,
+    vonage_send_sms,
+    vonage_get_balance,
+    seven_send_sms,
+    seven_get_balance,
 ]

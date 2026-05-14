@@ -198,6 +198,14 @@ class ServerSettingsUpdate(BaseModel):
     mocean_base_url: Optional[str] = None
     msg91_auth_key: Optional[str] = None
     msg91_base_url: Optional[str] = None
+    plivo_auth_id: Optional[str] = None
+    plivo_auth_token: Optional[str] = None
+    plivo_base_url: Optional[str] = None
+    vonage_api_key: Optional[str] = None
+    vonage_api_secret: Optional[str] = None
+    vonage_base_url: Optional[str] = None
+    seven_api_key: Optional[str] = None
+    seven_base_url: Optional[str] = None
     stripe_secret_key: Optional[str] = None
     stripe_base_url: Optional[str] = None
     shopify_shop: Optional[str] = None

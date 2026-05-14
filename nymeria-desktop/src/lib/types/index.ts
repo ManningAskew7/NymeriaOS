@@ -923,6 +923,14 @@ export interface ServerSettingsUpdate {
   mocean_base_url?: string | null;
   msg91_auth_key?: string | null;
   msg91_base_url?: string | null;
+  plivo_auth_id?: string | null;
+  plivo_auth_token?: string | null;
+  plivo_base_url?: string | null;
+  vonage_api_key?: string | null;
+  vonage_api_secret?: string | null;
+  vonage_base_url?: string | null;
+  seven_api_key?: string | null;
+  seven_base_url?: string | null;
   stripe_secret_key?: string | null;
   stripe_base_url?: string | null;
   shopify_shop?: string | null;
