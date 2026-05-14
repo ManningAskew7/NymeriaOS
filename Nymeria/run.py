@@ -52,7 +52,10 @@ def _load_environment() -> None:
     # override=True ensures restarts pick up latest .env values even when
     # the parent process has stale exported environment variables.
     for filename in (".env", "config.env", ".env.docker"):
-        load_dotenv(project_root / filename, override=True)
+        try:
+            load_dotenv(project_root / filename, override=True)
+        except UnicodeDecodeError:
+            pass
 
 
 # Load environment variables before importing settings/users of os.environ
