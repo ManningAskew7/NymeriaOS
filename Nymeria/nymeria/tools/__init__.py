@@ -293,6 +293,16 @@ from .support_service_integrations import (
     intercom_reply_conversation,
     SUPPORT_SERVICE_TOOLS,
 )
+from .sales_crm_service_integrations import (
+    pipedrive_list_records,
+    pipedrive_search_records,
+    pipedrive_get_record,
+    pipedrive_create_record,
+    pipedrive_update_record,
+    pipedrive_delete_record,
+    pipedrive_list_users,
+    SALES_CRM_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -349,6 +359,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + COLLABORATION_DATA_SERVICE_TOOLS
     + CUSTOMER_ENGAGEMENT_SERVICE_TOOLS
     + SUPPORT_SERVICE_TOOLS
+    + SALES_CRM_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -639,6 +650,14 @@ __all__ = [
     "intercom_get_conversation",
     "intercom_reply_conversation",
     "SUPPORT_SERVICE_TOOLS",
+    "pipedrive_list_records",
+    "pipedrive_search_records",
+    "pipedrive_get_record",
+    "pipedrive_create_record",
+    "pipedrive_update_record",
+    "pipedrive_delete_record",
+    "pipedrive_list_users",
+    "SALES_CRM_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

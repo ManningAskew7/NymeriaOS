@@ -447,6 +447,9 @@ class Settings(BaseSettings):
     intercom_access_token: Optional[str] = Field(default=None, description="Intercom access token fallback")
     intercom_base_url: str = Field(default="https://api.intercom.io", description="Intercom API base URL")
     intercom_version: str = Field(default="2.11", description="Intercom API version")
+    pipedrive_api_token: Optional[str] = Field(default=None, description="Pipedrive API token fallback")
+    pipedrive_access_token: Optional[str] = Field(default=None, description="Pipedrive OAuth access token fallback")
+    pipedrive_base_url: str = Field(default="https://api.pipedrive.com/api/v2", description="Pipedrive API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
