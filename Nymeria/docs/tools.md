@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (475)
+### Optional: Service Integration Tools (490)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -553,6 +553,21 @@ in the credential vault for provider-specific saved connections scoped to
 | 473 | `mailerlite_create_subscriber` | Integrations | MODERATE | Create a MailerLite subscriber |
 | 474 | `mailerlite_update_subscriber` | Integrations | MODERATE | Update a MailerLite subscriber |
 | 475 | `mailerlite_list_groups` | Integrations | SAFE | List MailerLite groups |
+| 476 | `copper_list_records` | Integrations | SAFE | List Copper CRM records |
+| 477 | `copper_get_record` | Integrations | SAFE | Get a Copper CRM record |
+| 478 | `copper_create_record` | Integrations | MODERATE | Create a Copper CRM record |
+| 479 | `copper_update_record` | Integrations | MODERATE | Update a Copper CRM record |
+| 480 | `copper_delete_record` | Integrations | MODERATE | Delete a Copper CRM record |
+| 481 | `agilecrm_list_records` | Integrations | SAFE | List Agile CRM records |
+| 482 | `agilecrm_get_record` | Integrations | SAFE | Get an Agile CRM record |
+| 483 | `agilecrm_create_record` | Integrations | MODERATE | Create an Agile CRM record |
+| 484 | `agilecrm_update_record` | Integrations | MODERATE | Update an Agile CRM record |
+| 485 | `agilecrm_delete_record` | Integrations | MODERATE | Delete an Agile CRM record |
+| 486 | `monica_list_records` | Integrations | SAFE | List Monica CRM records |
+| 487 | `monica_get_record` | Integrations | SAFE | Get a Monica CRM record |
+| 488 | `monica_create_record` | Integrations | MODERATE | Create a Monica CRM record |
+| 489 | `monica_update_record` | Integrations | MODERATE | Update a Monica CRM record |
+| 490 | `monica_delete_record` | Integrations | MODERATE | Delete a Monica CRM record |
 
 ### Optional: Private B Tools (4)
 
@@ -1131,7 +1146,9 @@ provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Work-tracking
-credentials use `asana.access_token` and `linear.api_key`. Scope a
+credentials use `asana.access_token` and `linear.api_key`. Relationship CRM
+credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
+`agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -1378,6 +1395,18 @@ This batch includes:
 
 Credential providers and fallback env vars:
 - Pipedrive: provider `pipedrive`, fields `api_token`, `apiToken`, `token`, or `value` for API-token auth; or `access_token` / `bearer_token` for OAuth bearer auth. Env fallback supports `PIPEDRIVE_API_TOKEN` or `PIPEDRIVE_ACCESS_TOKEN`. Use `base_url` / `url` or `PIPEDRIVE_BASE_URL` for non-default API roots.
+
+### Relationship CRM Service Tools
+
+This batch includes:
+- `copper_list_records(resource, ...)`, `copper_get_record(resource, record_id)`, `copper_create_record(resource, fields_json)`, `copper_update_record(resource, record_id, fields_json)`, and `copper_delete_record(resource, record_id)` for Copper companies, people, leads, opportunities, projects, tasks, users, and customer sources. Reads are SAFE; create/update/delete operations are MODERATE.
+- `agilecrm_list_records(resource, ...)`, `agilecrm_get_record(resource, record_id)`, `agilecrm_create_record(resource, fields_json)`, `agilecrm_update_record(resource, record_id, fields_json)`, and `agilecrm_delete_record(resource, record_id)` for Agile CRM contacts, companies, and deals. Reads are SAFE; create/update/delete operations are MODERATE.
+- `monica_list_records(resource, ...)`, `monica_get_record(resource, record_id)`, `monica_create_record(resource, fields_json)`, `monica_update_record(resource, record_id, fields_json)`, and `monica_delete_record(resource, record_id)` for Monica CRM contacts, activities, calls, notes, reminders, tags, tasks, and related records. Reads are SAFE; create/update/delete operations are MODERATE.
+
+Credential providers and fallback env vars:
+- Copper: provider `copper`, fields `api_key` and `email`, optional `base_url`; env fallbacks `COPPER_API_KEY`, `COPPER_EMAIL`, and `COPPER_BASE_URL`.
+- Agile CRM: provider `agilecrm`, fields `email`, `api_key`, and `subdomain`, optional `base_url`; env fallbacks `AGILECRM_EMAIL`, `AGILECRM_API_KEY`, `AGILECRM_SUBDOMAIN`, and `AGILECRM_BASE_URL`.
+- Monica CRM: provider `monica`, fields `api_token`, `access_token`, or `value`, optional `base_url`; env fallbacks `MONICA_ACCESS_TOKEN` and `MONICA_BASE_URL`.
 
 ### Messaging Delivery Service Tools
 

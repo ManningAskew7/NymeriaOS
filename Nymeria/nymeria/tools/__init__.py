@@ -428,6 +428,24 @@ from .sales_crm_service_integrations import (
     pipedrive_list_users,
     SALES_CRM_SERVICE_TOOLS,
 )
+from .relationship_crm_service_integrations import (
+    copper_list_records,
+    copper_get_record,
+    copper_create_record,
+    copper_update_record,
+    copper_delete_record,
+    agilecrm_list_records,
+    agilecrm_get_record,
+    agilecrm_create_record,
+    agilecrm_update_record,
+    agilecrm_delete_record,
+    monica_list_records,
+    monica_get_record,
+    monica_create_record,
+    monica_update_record,
+    monica_delete_record,
+    RELATIONSHIP_CRM_SERVICE_TOOLS,
+)
 from .messaging_delivery_service_integrations import (
     twilio_send_message,
     twilio_list_messages,
@@ -702,6 +720,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + CUSTOMER_ENGAGEMENT_SERVICE_TOOLS
     + SUPPORT_SERVICE_TOOLS
     + SALES_CRM_SERVICE_TOOLS
+    + RELATIONSHIP_CRM_SERVICE_TOOLS
     + MESSAGING_DELIVERY_SERVICE_TOOLS
     + COMMERCE_BILLING_SERVICE_TOOLS
     + NOTIFICATION_SERVICE_TOOLS
@@ -1123,6 +1142,22 @@ __all__ = [
     "pipedrive_delete_record",
     "pipedrive_list_users",
     "SALES_CRM_SERVICE_TOOLS",
+    "copper_list_records",
+    "copper_get_record",
+    "copper_create_record",
+    "copper_update_record",
+    "copper_delete_record",
+    "agilecrm_list_records",
+    "agilecrm_get_record",
+    "agilecrm_create_record",
+    "agilecrm_update_record",
+    "agilecrm_delete_record",
+    "monica_list_records",
+    "monica_get_record",
+    "monica_create_record",
+    "monica_update_record",
+    "monica_delete_record",
+    "RELATIONSHIP_CRM_SERVICE_TOOLS",
     "twilio_send_message",
     "twilio_list_messages",
     "twilio_get_message",
