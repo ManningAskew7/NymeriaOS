@@ -486,6 +486,35 @@ from .data_table_service_integrations import (
     grist_delete_records,
     DATA_TABLE_SERVICE_TOOLS,
 )
+from .chat_platform_service_integrations import (
+    discord_list_guild_channels,
+    discord_get_channel,
+    discord_get_channel_messages,
+    discord_send_channel_message,
+    discord_delete_message,
+    mattermost_get_me,
+    mattermost_list_teams,
+    mattermost_list_channels,
+    mattermost_list_channel_posts,
+    mattermost_create_post,
+    mattermost_delete_post,
+    matrix_whoami,
+    matrix_list_joined_rooms,
+    matrix_get_room_messages,
+    matrix_send_room_message,
+    matrix_leave_room,
+    rocketchat_get_me,
+    rocketchat_list_channels,
+    rocketchat_get_channel_history,
+    rocketchat_post_message,
+    rocketchat_delete_message,
+    zulip_get_profile,
+    zulip_list_streams,
+    zulip_get_messages,
+    zulip_send_message,
+    zulip_delete_message,
+    CHAT_PLATFORM_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -550,6 +579,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + OPERATIONS_MONITORING_SERVICE_TOOLS
     + ENRICHMENT_SECURITY_SERVICE_TOOLS
     + DATA_TABLE_SERVICE_TOOLS
+    + CHAT_PLATFORM_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -1017,6 +1047,33 @@ __all__ = [
     "grist_update_record",
     "grist_delete_records",
     "DATA_TABLE_SERVICE_TOOLS",
+    "discord_list_guild_channels",
+    "discord_get_channel",
+    "discord_get_channel_messages",
+    "discord_send_channel_message",
+    "discord_delete_message",
+    "mattermost_get_me",
+    "mattermost_list_teams",
+    "mattermost_list_channels",
+    "mattermost_list_channel_posts",
+    "mattermost_create_post",
+    "mattermost_delete_post",
+    "matrix_whoami",
+    "matrix_list_joined_rooms",
+    "matrix_get_room_messages",
+    "matrix_send_room_message",
+    "matrix_leave_room",
+    "rocketchat_get_me",
+    "rocketchat_list_channels",
+    "rocketchat_get_channel_history",
+    "rocketchat_post_message",
+    "rocketchat_delete_message",
+    "zulip_get_profile",
+    "zulip_list_streams",
+    "zulip_get_messages",
+    "zulip_send_message",
+    "zulip_delete_message",
+    "CHAT_PLATFORM_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

@@ -271,6 +271,17 @@ class ServerSettingsUpdate(BaseModel):
     coda_base_url: Optional[str] = None
     grist_api_key: Optional[str] = None
     grist_base_url: Optional[str] = None
+    discord_base_url: Optional[str] = None
+    mattermost_access_token: Optional[str] = None
+    mattermost_base_url: Optional[str] = None
+    matrix_access_token: Optional[str] = None
+    matrix_base_url: Optional[str] = None
+    rocketchat_auth_token: Optional[str] = None
+    rocketchat_user_id: Optional[str] = None
+    rocketchat_base_url: Optional[str] = None
+    zulip_api_key: Optional[str] = None
+    zulip_email: Optional[str] = None
+    zulip_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

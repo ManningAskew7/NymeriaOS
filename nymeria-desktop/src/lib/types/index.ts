@@ -996,6 +996,17 @@ export interface ServerSettingsUpdate {
   coda_base_url?: string | null;
   grist_api_key?: string | null;
   grist_base_url?: string | null;
+  discord_base_url?: string | null;
+  mattermost_access_token?: string | null;
+  mattermost_base_url?: string | null;
+  matrix_access_token?: string | null;
+  matrix_base_url?: string | null;
+  rocketchat_auth_token?: string | null;
+  rocketchat_user_id?: string | null;
+  rocketchat_base_url?: string | null;
+  zulip_api_key?: string | null;
+  zulip_email?: string | null;
+  zulip_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

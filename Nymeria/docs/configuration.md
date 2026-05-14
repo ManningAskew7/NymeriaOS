@@ -240,6 +240,17 @@ Set the API key for your chosen provider:
 | `CODA_BASE_URL` | Coda | Optional Coda API base URL override |
 | `GRIST_API_KEY` | Grist | Optional Grist API key fallback; credential vault provider `grist` is preferred |
 | `GRIST_BASE_URL` | Grist | Optional Grist API base URL override |
+| `DISCORD_BASE_URL` | Discord | Optional Discord REST API base URL override |
+| `MATTERMOST_ACCESS_TOKEN` | Mattermost | Optional Mattermost access token fallback; credential vault provider `mattermost` is preferred |
+| `MATTERMOST_BASE_URL` | Mattermost | Mattermost server base URL for native tools |
+| `MATRIX_ACCESS_TOKEN` | Matrix | Optional Matrix access token fallback; credential vault provider `matrix` is preferred |
+| `MATRIX_BASE_URL` | Matrix | Optional Matrix homeserver or client API base URL override |
+| `ROCKETCHAT_AUTH_TOKEN` | Rocket.Chat | Optional Rocket.Chat auth token fallback; credential vault provider `rocketchat` is preferred |
+| `ROCKETCHAT_USER_ID` | Rocket.Chat | Optional Rocket.Chat user ID fallback |
+| `ROCKETCHAT_BASE_URL` | Rocket.Chat | Rocket.Chat server base URL for native tools |
+| `ZULIP_API_KEY` | Zulip | Optional Zulip API key fallback; credential vault provider `zulip` is preferred |
+| `ZULIP_EMAIL` | Zulip | Optional Zulip bot/user email fallback |
+| `ZULIP_BASE_URL` | Zulip | Zulip organization base URL for native tools |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -561,6 +572,17 @@ reachable from the backend process.
 | `CODA_BASE_URL` | `https://coda.io/apis/v1` | Coda API base URL |
 | `GRIST_API_KEY` | - | Grist API key fallback |
 | `GRIST_BASE_URL` | `https://docs.getgrist.com/api` | Grist API base URL |
+| `DISCORD_BASE_URL` | `https://discord.com/api/v10` | Discord REST API base URL |
+| `MATTERMOST_ACCESS_TOKEN` | - | Mattermost access token fallback |
+| `MATTERMOST_BASE_URL` | - | Mattermost server base URL |
+| `MATRIX_ACCESS_TOKEN` | - | Matrix access token fallback |
+| `MATRIX_BASE_URL` | `https://matrix-client.matrix.org/_matrix/client/v3` | Matrix Client-Server API base URL |
+| `ROCKETCHAT_AUTH_TOKEN` | - | Rocket.Chat auth token fallback |
+| `ROCKETCHAT_USER_ID` | - | Rocket.Chat user ID fallback |
+| `ROCKETCHAT_BASE_URL` | - | Rocket.Chat server base URL |
+| `ZULIP_API_KEY` | - | Zulip API key fallback |
+| `ZULIP_EMAIL` | - | Zulip bot/user email fallback |
+| `ZULIP_BASE_URL` | - | Zulip organization base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (339)
+### Optional: Service Integration Tools (365)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -417,6 +417,32 @@ in the credential vault for provider-specific saved connections scoped to
 | 337 | `grist_create_record` | Integrations | MODERATE | Create a Grist record |
 | 338 | `grist_update_record` | Integrations | MODERATE | Update a Grist record |
 | 339 | `grist_delete_records` | Integrations | MODERATE | Delete Grist records |
+| 340 | `discord_list_guild_channels` | Integrations | SAFE | List Discord guild channels |
+| 341 | `discord_get_channel` | Integrations | SAFE | Get Discord channel metadata |
+| 342 | `discord_get_channel_messages` | Integrations | SAFE | Get Discord channel messages |
+| 343 | `discord_send_channel_message` | Integrations | MODERATE | Send a Discord channel message |
+| 344 | `discord_delete_message` | Integrations | MODERATE | Delete a Discord message |
+| 345 | `mattermost_get_me` | Integrations | SAFE | Get the current Mattermost user |
+| 346 | `mattermost_list_teams` | Integrations | SAFE | List Mattermost teams |
+| 347 | `mattermost_list_channels` | Integrations | SAFE | List Mattermost team channels |
+| 348 | `mattermost_list_channel_posts` | Integrations | SAFE | List Mattermost channel posts |
+| 349 | `mattermost_create_post` | Integrations | MODERATE | Create a Mattermost post |
+| 350 | `mattermost_delete_post` | Integrations | MODERATE | Delete a Mattermost post |
+| 351 | `matrix_whoami` | Integrations | SAFE | Get the current Matrix account |
+| 352 | `matrix_list_joined_rooms` | Integrations | SAFE | List joined Matrix rooms |
+| 353 | `matrix_get_room_messages` | Integrations | SAFE | Get Matrix room messages |
+| 354 | `matrix_send_room_message` | Integrations | MODERATE | Send a Matrix room message |
+| 355 | `matrix_leave_room` | Integrations | MODERATE | Leave a Matrix room |
+| 356 | `rocketchat_get_me` | Integrations | SAFE | Get the current Rocket.Chat user |
+| 357 | `rocketchat_list_channels` | Integrations | SAFE | List Rocket.Chat public channels |
+| 358 | `rocketchat_get_channel_history` | Integrations | SAFE | Get Rocket.Chat channel history |
+| 359 | `rocketchat_post_message` | Integrations | MODERATE | Post a Rocket.Chat message |
+| 360 | `rocketchat_delete_message` | Integrations | MODERATE | Delete a Rocket.Chat message |
+| 361 | `zulip_get_profile` | Integrations | SAFE | Get the current Zulip profile |
+| 362 | `zulip_list_streams` | Integrations | SAFE | List Zulip streams |
+| 363 | `zulip_get_messages` | Integrations | SAFE | Get Zulip messages |
+| 364 | `zulip_send_message` | Integrations | MODERATE | Send a Zulip message |
+| 365 | `zulip_delete_message` | Integrations | MODERATE | Delete a Zulip message |
 
 ### Optional: Private B Tools (4)
 
@@ -1273,6 +1299,22 @@ Credential providers and fallback env vars:
 - NocoDB: provider `nocodb`, fields `api_token`, `apiToken`, `token`, `access_token`, `api_key`, or `value`; env fallback `NOCODB_API_TOKEN`. Use `base_url` / `host` / `url` or `NOCODB_BASE_URL` for self-hosted NocoDB. `NOCODB_AUTH_HEADER` defaults to `xc-token`; set `xc-auth` when using a user token.
 - Coda: provider `coda`, fields `access_token`, `api_token`, `api_key`, `token`, or `value`; env fallback `CODA_API_TOKEN`. Use `base_url` / `url` or `CODA_BASE_URL` for non-default API roots.
 - Grist: provider `grist`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `GRIST_API_KEY`. Use `base_url` / `url` or `GRIST_BASE_URL` for paid-team or self-hosted API roots.
+
+### Chat Platform Service Tools
+
+This batch includes:
+- `discord_list_guild_channels(guild_id)`, `discord_get_channel(channel_id)`, `discord_get_channel_messages(channel_id, ...)`, `discord_send_channel_message(channel_id, content, ...)`, and `discord_delete_message(channel_id, message_id)`. Reads are SAFE; send/delete are MODERATE.
+- `mattermost_get_me()`, `mattermost_list_teams(...)`, `mattermost_list_channels(team_id, ...)`, `mattermost_list_channel_posts(channel_id, ...)`, `mattermost_create_post(channel_id, message, ...)`, and `mattermost_delete_post(post_id)`. Reads are SAFE; create/delete are MODERATE.
+- `matrix_whoami()`, `matrix_list_joined_rooms()`, `matrix_get_room_messages(room_id, ...)`, `matrix_send_room_message(room_id, body, ...)`, and `matrix_leave_room(room_id)`. Reads are SAFE; sending/leaving are MODERATE.
+- `rocketchat_get_me()`, `rocketchat_list_channels(...)`, `rocketchat_get_channel_history(...)`, `rocketchat_post_message(channel, text, ...)`, and `rocketchat_delete_message(room_id, message_id)`. Reads are SAFE; post/delete are MODERATE.
+- `zulip_get_profile()`, `zulip_list_streams(...)`, `zulip_get_messages(...)`, `zulip_send_message(message_type, to, content, ...)`, and `zulip_delete_message(message_id)`. Reads are SAFE; send/delete are MODERATE.
+
+Credential providers and fallback env vars:
+- Discord: provider `discord`, fields `bot_token`, `botToken`, `token`, or `value`; env fallback reuses `DISCORD_BOT_TOKEN`. Optional base override `DISCORD_BASE_URL`.
+- Mattermost: provider `mattermost`, fields `access_token`, `accessToken`, `api_token`, `token`, or `value`; env fallback `MATTERMOST_ACCESS_TOKEN`. Save `base_url` / `baseUrl` or set `MATTERMOST_BASE_URL`; the tool appends `/api/v4` when needed.
+- Matrix: provider `matrix`, fields `access_token`, `accessToken`, `token`, or `value`; env fallback `MATRIX_ACCESS_TOKEN`. Save `homeserverUrl` / `base_url` or set `MATRIX_BASE_URL`; the tool appends `/_matrix/client/v3` when needed.
+- Rocket.Chat: provider `rocketchat`, fields `auth_token`, `authKey`, `token`, or `value`, plus `user_id` / `userId`; env fallbacks `ROCKETCHAT_AUTH_TOKEN`, `ROCKETCHAT_USER_ID`, and `ROCKETCHAT_BASE_URL`.
+- Zulip: provider `zulip`, fields `api_key`, `apiKey`, `token`, or `value`, plus `email`; env fallbacks `ZULIP_API_KEY`, `ZULIP_EMAIL`, and `ZULIP_BASE_URL`.
 
 ### tool_enable
 
