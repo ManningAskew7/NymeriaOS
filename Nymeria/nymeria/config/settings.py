@@ -527,6 +527,17 @@ class Settings(BaseSettings):
     storyblok_space_id: Optional[str] = Field(default=None, description="Storyblok space ID fallback")
     storyblok_content_base_url: str = Field(default="https://api.storyblok.com/v2/cdn", description="Storyblok Content API base URL")
     storyblok_management_base_url: str = Field(default="https://mapi.storyblok.com/v1", description="Storyblok Management API base URL")
+    netlify_access_token: Optional[str] = Field(default=None, description="Netlify access token fallback")
+    netlify_base_url: str = Field(default="https://api.netlify.com/api/v1", description="Netlify API base URL")
+    uptimerobot_api_key: Optional[str] = Field(default=None, description="UptimeRobot API key fallback")
+    uptimerobot_base_url: str = Field(default="https://api.uptimerobot.com/v2", description="UptimeRobot API base URL")
+    pagerduty_api_token: Optional[str] = Field(default=None, description="PagerDuty API token fallback")
+    pagerduty_from_email: Optional[str] = Field(default=None, description="PagerDuty From email fallback")
+    pagerduty_base_url: str = Field(default="https://api.pagerduty.com", description="PagerDuty API base URL")
+    sentry_auth_token: Optional[str] = Field(default=None, description="Sentry auth token fallback")
+    sentry_base_url: str = Field(default="https://sentry.io", description="Sentry API base URL")
+    cloudflare_api_token: Optional[str] = Field(default=None, description="Cloudflare API token fallback")
+    cloudflare_base_url: str = Field(default="https://api.cloudflare.com/client/v4", description="Cloudflare API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
