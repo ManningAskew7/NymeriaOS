@@ -142,6 +142,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "PUBLIC_INFO_TOOLS",
             "DEVELOPER_PLATFORM_TOOLS",
             "BUSINESS_SERVICE_TOOLS",
+            "PRODUCTIVITY_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -261,6 +262,15 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "marketstack_get_ticker",
         "marketstack_get_exchange",
         "deepl_list_languages",
+        "todoist_list_tasks",
+        "todoist_get_task",
+        "todoist_list_projects",
+        "todoist_get_project",
+        "trello_search",
+        "trello_get_board",
+        "trello_list_board_lists",
+        "trello_list_cards",
+        "trello_get_card",
     }
 )
 

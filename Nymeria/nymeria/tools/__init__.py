@@ -147,6 +147,25 @@ from .business_service_integrations import (
     deepl_list_languages,
     BUSINESS_SERVICE_TOOLS,
 )
+from .productivity_service_integrations import (
+    todoist_list_tasks,
+    todoist_get_task,
+    todoist_create_task,
+    todoist_update_task,
+    todoist_close_task,
+    todoist_list_projects,
+    todoist_get_project,
+    todoist_create_project,
+    trello_search,
+    trello_get_board,
+    trello_list_board_lists,
+    trello_list_cards,
+    trello_get_card,
+    trello_create_card,
+    trello_update_card,
+    trello_add_card_comment,
+    PRODUCTIVITY_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -197,6 +216,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + PUBLIC_INFO_TOOLS
     + DEVELOPER_PLATFORM_TOOLS
     + BUSINESS_SERVICE_TOOLS
+    + PRODUCTIVITY_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -353,6 +373,23 @@ __all__ = [
     "deepl_translate_text",
     "deepl_list_languages",
     "BUSINESS_SERVICE_TOOLS",
+    "todoist_list_tasks",
+    "todoist_get_task",
+    "todoist_create_task",
+    "todoist_update_task",
+    "todoist_close_task",
+    "todoist_list_projects",
+    "todoist_get_project",
+    "todoist_create_project",
+    "trello_search",
+    "trello_get_board",
+    "trello_list_board_lists",
+    "trello_list_cards",
+    "trello_get_card",
+    "trello_create_card",
+    "trello_update_card",
+    "trello_add_card_comment",
+    "PRODUCTIVITY_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

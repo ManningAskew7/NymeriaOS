@@ -88,6 +88,11 @@ Set the API key for your chosen provider:
 | `DEEPL_API_KEY` | DeepL | Optional env fallback for DeepL tools; credential vault provider `deepl` is preferred |
 | `DEEPL_API_PLAN` | DeepL | Optional plan selector, `pro` or `free`; defaults to `pro` |
 | `DEEPL_BASE_URL` | DeepL | Optional DeepL API base URL override |
+| `TODOIST_API_KEY` | Todoist | Optional env fallback for Todoist tools; credential vault provider `todoist` is preferred |
+| `TODOIST_BASE_URL` | Todoist | Optional Todoist API base URL override |
+| `TRELLO_API_KEY` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
+| `TRELLO_API_TOKEN` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
+| `TRELLO_BASE_URL` | Trello | Optional Trello API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -257,6 +262,11 @@ reachable from the backend process.
 | `DEEPL_API_KEY` | - | DeepL API key fallback |
 | `DEEPL_API_PLAN` | `pro` | DeepL API plan, `pro` or `free` |
 | `DEEPL_BASE_URL` | - | DeepL API base URL override |
+| `TODOIST_API_KEY` | - | Todoist API key fallback |
+| `TODOIST_BASE_URL` | `https://api.todoist.com/api/v1` | Todoist API base URL |
+| `TRELLO_API_KEY` | - | Trello API key fallback |
+| `TRELLO_API_TOKEN` | - | Trello API token fallback |
+| `TRELLO_BASE_URL` | `https://api.trello.com/1` | Trello API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
