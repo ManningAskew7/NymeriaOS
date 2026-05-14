@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (122)
+### Optional: Service Integration Tools (141)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -200,6 +200,25 @@ in the credential vault for provider-specific saved connections scoped to
 | 120 | `airtable_create_records` | Integrations | MODERATE | Create Airtable records |
 | 121 | `airtable_update_records` | Integrations | MODERATE | Update Airtable records |
 | 122 | `airtable_delete_record` | Integrations | MODERATE | Delete an Airtable record |
+| 123 | `hubspot_list_crm_objects` | Integrations | SAFE | List HubSpot CRM objects |
+| 124 | `hubspot_search_crm_objects` | Integrations | SAFE | Search HubSpot CRM objects |
+| 125 | `hubspot_get_crm_object` | Integrations | SAFE | Get a HubSpot CRM object |
+| 126 | `hubspot_create_crm_object` | Integrations | MODERATE | Create a HubSpot CRM object |
+| 127 | `hubspot_update_crm_object` | Integrations | MODERATE | Update a HubSpot CRM object |
+| 128 | `hubspot_archive_crm_object` | Integrations | MODERATE | Archive/delete a HubSpot CRM object |
+| 129 | `zendesk_search` | Integrations | SAFE | Search Zendesk tickets, users, organizations, and groups |
+| 130 | `zendesk_get_ticket` | Integrations | SAFE | Get a Zendesk ticket |
+| 131 | `zendesk_list_tickets` | Integrations | SAFE | List Zendesk tickets |
+| 132 | `zendesk_create_ticket` | Integrations | MODERATE | Create a Zendesk ticket |
+| 133 | `zendesk_update_ticket` | Integrations | MODERATE | Update a Zendesk ticket |
+| 134 | `zendesk_get_user` | Integrations | SAFE | Get a Zendesk user |
+| 135 | `zendesk_search_users` | Integrations | SAFE | Search Zendesk users |
+| 136 | `mailchimp_list_audiences` | Integrations | SAFE | List Mailchimp audiences |
+| 137 | `mailchimp_list_members` | Integrations | SAFE | List Mailchimp audience members |
+| 138 | `mailchimp_get_member` | Integrations | SAFE | Get a Mailchimp audience member |
+| 139 | `mailchimp_add_or_update_member` | Integrations | MODERATE | Add or update a Mailchimp audience member |
+| 140 | `mailchimp_update_member_tags` | Integrations | MODERATE | Add or remove Mailchimp member tags |
+| 141 | `mailchimp_list_campaigns` | Integrations | SAFE | List Mailchimp campaigns |
 
 ### Optional: Private B Tools (4)
 
@@ -912,6 +931,18 @@ Credential providers and fallback env vars:
 - Slack: provider `slack`, fields `bot_token`, `access_token`, `token`, or `value`; env fallback `SLACK_BOT_TOKEN` or `SLACK_ACCESS_TOKEN`. Use `base_url` / `url` or `SLACK_BASE_URL` for non-default API roots.
 - Notion: provider `notion`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `NOTION_API_KEY`. Use `notion_version` / `version` or `NOTION_VERSION` for the Notion API version; default is `2026-03-11`.
 - Airtable: provider `airtable`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `AIRTABLE_ACCESS_TOKEN` or `AIRTABLE_API_KEY`. Use `base_url` / `url` or `AIRTABLE_BASE_URL` for non-default API roots.
+
+### Customer Engagement Service Tools
+
+This batch includes:
+- `hubspot_list_crm_objects(...)`, `hubspot_search_crm_objects(...)`, `hubspot_get_crm_object(...)`, `hubspot_create_crm_object(...)`, `hubspot_update_crm_object(...)`, and `hubspot_archive_crm_object(...)`. Create/update/archive operations are MODERATE because they change HubSpot CRM data.
+- `zendesk_search(...)`, `zendesk_get_ticket(ticket_id)`, `zendesk_list_tickets(...)`, `zendesk_create_ticket(...)`, `zendesk_update_ticket(...)`, `zendesk_get_user(user_id)`, and `zendesk_search_users(query, ...)`. Create/update operations are MODERATE because they change Zendesk support data.
+- `mailchimp_list_audiences(...)`, `mailchimp_list_members(...)`, `mailchimp_get_member(...)`, `mailchimp_add_or_update_member(...)`, `mailchimp_update_member_tags(...)`, and `mailchimp_list_campaigns(...)`. Member add/update and tag changes are MODERATE because they change Mailchimp audience data.
+
+Credential providers and fallback env vars:
+- HubSpot: provider `hubspot`, fields `private_app_token`, `app_token`, `access_token`, `token`, or `value`; env fallback `HUBSPOT_ACCESS_TOKEN`. Use `base_url` / `url` or `HUBSPOT_BASE_URL` for non-default API roots.
+- Zendesk: provider `zendesk`, fields `access_token`, `token`, or `value` for bearer auth; or `email` plus `api_token` / `apiToken` / `password` and `subdomain` / `base_url` for API-token auth. Env fallback supports `ZENDESK_ACCESS_TOKEN` or `ZENDESK_EMAIL` plus `ZENDESK_API_TOKEN` and `ZENDESK_SUBDOMAIN`.
+- Mailchimp: provider `mailchimp`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `MAILCHIMP_API_KEY` or `MAILCHIMP_ACCESS_TOKEN`. Use `server_prefix` / `dc` / `data_center` or `MAILCHIMP_SERVER_PREFIX`; API keys ending in `-usX` derive the server prefix automatically.
 
 ### tool_enable
 
