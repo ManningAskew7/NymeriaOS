@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (376)
+### Optional: Service Integration Tools (395)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -454,6 +454,25 @@ in the credential vault for provider-specific saved connections scoped to
 | 374 | `spotify_get_artist` | Integrations | SAFE | Get Spotify artist metadata |
 | 375 | `spotify_get_album` | Integrations | SAFE | Get Spotify album metadata |
 | 376 | `spotify_get_playlist` | Integrations | SAFE | Get Spotify playlist metadata |
+| 377 | `reddit_search_posts` | Integrations | SAFE | Search Reddit posts |
+| 378 | `reddit_list_subreddit_posts` | Integrations | SAFE | List subreddit posts |
+| 379 | `reddit_get_post` | Integrations | SAFE | Get a Reddit post and comments |
+| 380 | `reddit_get_subreddit` | Integrations | SAFE | Get subreddit metadata |
+| 381 | `reddit_get_user` | Integrations | SAFE | Get Reddit user metadata |
+| 382 | `reddit_create_post` | Integrations | MODERATE | Create a Reddit post |
+| 383 | `reddit_create_comment` | Integrations | MODERATE | Create a Reddit comment or reply |
+| 384 | `reddit_delete_thing` | Integrations | MODERATE | Delete a Reddit post or comment |
+| 385 | `discourse_search` | Integrations | SAFE | Search a Discourse forum |
+| 386 | `discourse_list_latest_topics` | Integrations | SAFE | List latest Discourse topics |
+| 387 | `discourse_get_topic` | Integrations | SAFE | Get a Discourse topic |
+| 388 | `discourse_get_post` | Integrations | SAFE | Get a Discourse post |
+| 389 | `discourse_create_topic` | Integrations | MODERATE | Create a Discourse topic |
+| 390 | `discourse_create_post` | Integrations | MODERATE | Create a Discourse reply post |
+| 391 | `discourse_update_post` | Integrations | MODERATE | Update a Discourse post |
+| 392 | `medium_get_me` | Integrations | SAFE | Get the authenticated Medium profile |
+| 393 | `medium_list_publications` | Integrations | SAFE | List Medium publications for a user |
+| 394 | `medium_create_post` | Integrations | MODERATE | Create a Medium profile post |
+| 395 | `medium_create_publication_post` | Integrations | MODERATE | Create a Medium publication post |
 
 ### Optional: Private B Tools (4)
 
@@ -1015,9 +1034,10 @@ Credential-aware native tools use the existing encrypted credential vault. Save
 connections in Settings > Connections with these provider names and fields:
 `wolfram_alpha.app_id`, `searxng.base_url`, `nasa.api_key`,
 `openweathermap.api_key`, optional `npm.registry_url` / `npm.token`,
-`google_books.api_key`, `youtube.api_key`, and `spotify.access_token` or
-`spotify.client_id` plus `spotify.client_secret`, plus `github.access_token`
-and `gitlab.access_token`. GitHub credentials can also
+`google_books.api_key`, `youtube.api_key`, `spotify.access_token` or
+`spotify.client_id` plus `spotify.client_secret`, `reddit.access_token` or
+`reddit.refresh_token` plus app credentials, `discourse.base_url`, and
+`medium.access_token`, plus `github.access_token` and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
@@ -1107,6 +1127,20 @@ Credential providers and fallback env vars:
 - Google Books: provider `google_books`, fields `api_key`, `key`, `token`, or `value`; optional env fallback `GOOGLE_BOOKS_API_KEY`.
 - YouTube Data API: provider `youtube`, fields `api_key`, `key`, `token`, or `value`; env fallback `YOUTUBE_API_KEY`.
 - Spotify: provider `spotify`, fields `access_token`, `bearer_token`, `token`, or `value`; env fallback `SPOTIFY_ACCESS_TOKEN`. If no access token is saved, catalog tools use `client_id` plus `client_secret` from the vault or `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` to request a client-credentials token.
+
+### Community Publishing Service Tools
+
+This batch includes:
+- `reddit_search_posts(query, subreddit?, sort?, time_filter?, limit?, after?, include_over_18?)`, `reddit_list_subreddit_posts(subreddit, listing?, time_filter?, limit?, after?)`, `reddit_get_post(post_id, subreddit?, comment_limit?, comment_sort?)`, `reddit_get_subreddit(subreddit)`, and `reddit_get_user(username)`. Read tools use Reddit OAuth when available and otherwise fall back to public `.json` endpoints.
+- `reddit_create_post(subreddit, title, kind?, text?, url?, resubmit?, send_replies?)`, `reddit_create_comment(parent_fullname, text)`, and `reddit_delete_thing(fullname)`. These require a user OAuth token or refresh token with the needed Reddit scopes.
+- `discourse_search(query, page?)`, `discourse_list_latest_topics(page?)`, `discourse_get_topic(topic_id, include_raw?)`, and `discourse_get_post(post_id)`. Public forums can be read with only `base_url`; private forums can add an API key and username.
+- `discourse_create_topic(title, raw, category_id?, tags?)`, `discourse_create_post(topic_id, raw)`, and `discourse_update_post(post_id, raw, edit_reason?)`; these require a Discourse API key plus API username.
+- `medium_get_me()`, `medium_list_publications(user_id?)`, `medium_create_post(...)`, and `medium_create_publication_post(...)`. Medium's official API is archived upstream, but the token-based endpoints remain implemented for compatibility with existing accounts that still use them.
+
+Credential providers and fallback env vars:
+- Reddit: provider `reddit`, fields `access_token`, `refresh_token`, `client_id`, `client_secret`, and optional `base_url` / `public_base_url` / `token_url`; env fallbacks `REDDIT_ACCESS_TOKEN`, `REDDIT_REFRESH_TOKEN`, `REDDIT_CLIENT_ID`, and `REDDIT_CLIENT_SECRET`.
+- Discourse: provider `discourse`, fields `base_url`, `api_key`, and `api_username`; env fallbacks `DISCOURSE_BASE_URL`, `DISCOURSE_API_KEY`, and `DISCOURSE_API_USERNAME`.
+- Medium: provider `medium`, fields `access_token`, `token`, or `value`; env fallback `MEDIUM_ACCESS_TOKEN`.
 
 ### Developer Platform Tools
 
