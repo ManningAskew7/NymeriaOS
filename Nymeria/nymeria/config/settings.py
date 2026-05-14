@@ -459,6 +459,21 @@ class Settings(BaseSettings):
     mailgun_api_key: Optional[str] = Field(default=None, description="Mailgun API key fallback")
     mailgun_domain: Optional[str] = Field(default=None, description="Mailgun sending domain fallback")
     mailgun_base_url: str = Field(default="https://api.mailgun.net/v3", description="Mailgun API base URL")
+    brevo_api_key: Optional[str] = Field(default=None, description="Brevo API key fallback")
+    brevo_base_url: str = Field(default="https://api.brevo.com/v3", description="Brevo API base URL")
+    mailjet_api_key: Optional[str] = Field(default=None, description="Mailjet email API key fallback")
+    mailjet_secret_key: Optional[str] = Field(default=None, description="Mailjet email secret key fallback")
+    mailjet_sms_token: Optional[str] = Field(default=None, description="Mailjet SMS token fallback")
+    mailjet_base_url: str = Field(default="https://api.mailjet.com", description="Mailjet API base URL")
+    mandrill_api_key: Optional[str] = Field(default=None, description="Mandrill / Mailchimp Transactional API key fallback")
+    mandrill_base_url: str = Field(default="https://mandrillapp.com/api/1.0", description="Mandrill API base URL")
+    messagebird_access_key: Optional[str] = Field(default=None, description="MessageBird access key fallback")
+    messagebird_base_url: str = Field(default="https://rest.messagebird.com", description="MessageBird API base URL")
+    mocean_api_key: Optional[str] = Field(default=None, description="Mocean API key fallback")
+    mocean_api_secret: Optional[str] = Field(default=None, description="Mocean API secret fallback")
+    mocean_base_url: str = Field(default="https://rest.moceanapi.com", description="Mocean API base URL")
+    msg91_auth_key: Optional[str] = Field(default=None, description="MSG91 authentication key fallback")
+    msg91_base_url: str = Field(default="https://api.msg91.com/api", description="MSG91 API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
