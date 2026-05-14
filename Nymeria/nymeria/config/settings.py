@@ -559,6 +559,17 @@ class Settings(BaseSettings):
     coda_base_url: str = Field(default="https://coda.io/apis/v1", description="Coda API base URL")
     grist_api_key: Optional[str] = Field(default=None, description="Grist API key fallback")
     grist_base_url: str = Field(default="https://docs.getgrist.com/api", description="Grist API base URL")
+    discord_base_url: str = Field(default="https://discord.com/api/v10", description="Discord REST API base URL")
+    mattermost_access_token: Optional[str] = Field(default=None, description="Mattermost access token fallback")
+    mattermost_base_url: Optional[str] = Field(default=None, description="Mattermost server base URL")
+    matrix_access_token: Optional[str] = Field(default=None, description="Matrix access token fallback")
+    matrix_base_url: str = Field(default="https://matrix-client.matrix.org/_matrix/client/v3", description="Matrix Client-Server API base URL")
+    rocketchat_auth_token: Optional[str] = Field(default=None, description="Rocket.Chat auth token fallback")
+    rocketchat_user_id: Optional[str] = Field(default=None, description="Rocket.Chat user ID fallback")
+    rocketchat_base_url: Optional[str] = Field(default=None, description="Rocket.Chat server base URL")
+    zulip_api_key: Optional[str] = Field(default=None, description="Zulip API key fallback")
+    zulip_email: Optional[str] = Field(default=None, description="Zulip email fallback")
+    zulip_base_url: Optional[str] = Field(default=None, description="Zulip organization base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
