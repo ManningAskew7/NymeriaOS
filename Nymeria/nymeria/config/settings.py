@@ -385,6 +385,10 @@ class Settings(BaseSettings):
     nasa_api_key: Optional[str] = Field(default=None, description="NASA API key for nasa_apod")
     openweathermap_api_key: Optional[str] = Field(default=None, description="OpenWeatherMap API key for weather tools")
     npm_registry_url: str = Field(default="https://registry.npmjs.org", description="npm registry base URL for npm tools")
+    github_token: Optional[str] = Field(default=None, description="GitHub API token fallback for developer platform tools")
+    github_api_base_url: str = Field(default="https://api.github.com", description="GitHub API base URL")
+    gitlab_token: Optional[str] = Field(default=None, description="GitLab API token fallback for developer platform tools")
+    gitlab_base_url: str = Field(default="https://gitlab.com/api/v4", description="GitLab API base URL or instance URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

@@ -75,6 +75,10 @@ Set the API key for your chosen provider:
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
 | `OPENWEATHERMAP_API_KEY` | OpenWeatherMap | Optional env fallback for `openweathermap_*`; credential vault provider `openweathermap` is preferred |
 | `NPM_REGISTRY_URL` | npm | Optional registry override for npm tools; credential vault provider `npm` can also provide `registry_url` and `token` |
+| `GITHUB_TOKEN` | GitHub | Optional env fallback for GitHub developer-platform tools; credential vault provider `github` is preferred |
+| `GITHUB_API_BASE_URL` | GitHub | Optional GitHub API base URL; defaults to `https://api.github.com` |
+| `GITLAB_TOKEN` | GitLab | Optional env fallback for GitLab developer-platform tools; credential vault provider `gitlab` is preferred |
+| `GITLAB_BASE_URL` | GitLab | Optional GitLab API base URL or instance URL; defaults to `https://gitlab.com/api/v4` |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -231,6 +235,10 @@ reachable from the backend process.
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
 | `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |
 | `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL fallback |
+| `GITHUB_TOKEN` | - | GitHub API token fallback for developer-platform tools |
+| `GITHUB_API_BASE_URL` | `https://api.github.com` | GitHub API base URL |
+| `GITLAB_TOKEN` | - | GitLab API token fallback for developer-platform tools |
+| `GITLAB_BASE_URL` | `https://gitlab.com/api/v4` | GitLab API base URL or instance URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

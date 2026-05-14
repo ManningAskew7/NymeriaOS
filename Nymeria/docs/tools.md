@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (17)
+### Optional: Service Integration Tools (31)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -95,6 +95,20 @@ in the credential vault for provider-specific saved connections scoped to
 | 15 | `openweathermap_current` | Integrations | SAFE | Get current weather; uses vault provider `openweathermap` or `OPENWEATHERMAP_API_KEY` |
 | 16 | `openweathermap_forecast` | Integrations | SAFE | Get a 5-day forecast; uses vault provider `openweathermap` or `OPENWEATHERMAP_API_KEY` |
 | 17 | `quickchart_create_url` | Integrations | SAFE | Create a QuickChart chart URL from labels and data |
+| 18 | `github_get_repository` | Integrations | SAFE | Get GitHub repository metadata; optional vault provider `github` |
+| 19 | `github_search_repositories` | Integrations | SAFE | Search GitHub repositories; optional vault provider `github` |
+| 20 | `github_list_issues` | Integrations | SAFE | List GitHub repository issues; optional vault provider `github` |
+| 21 | `github_get_issue` | Integrations | SAFE | Get a GitHub issue by repository issue number; optional vault provider `github` |
+| 22 | `github_list_pull_requests` | Integrations | SAFE | List GitHub repository pull requests; optional vault provider `github` |
+| 23 | `github_list_releases` | Integrations | SAFE | List GitHub repository releases; optional vault provider `github` |
+| 24 | `github_get_release` | Integrations | SAFE | Get a GitHub release by tag name; optional vault provider `github` |
+| 25 | `gitlab_get_project` | Integrations | SAFE | Get GitLab project metadata; optional vault provider `gitlab` |
+| 26 | `gitlab_search_projects` | Integrations | SAFE | Search GitLab projects; optional vault provider `gitlab` |
+| 27 | `gitlab_list_project_issues` | Integrations | SAFE | List GitLab project issues; optional vault provider `gitlab` |
+| 28 | `gitlab_get_project_issue` | Integrations | SAFE | Get a GitLab project issue by internal issue ID; optional vault provider `gitlab` |
+| 29 | `gitlab_list_project_releases` | Integrations | SAFE | List GitLab project releases; optional vault provider `gitlab` |
+| 30 | `gitlab_get_project_release` | Integrations | SAFE | Get a GitLab project release by tag name; optional vault provider `gitlab` |
+| 31 | `gitlab_list_user_projects` | Integrations | SAFE | List projects owned by a GitLab user ID; optional vault provider `gitlab` |
 
 ### Optional: Private B Tools (4)
 
@@ -655,7 +669,10 @@ case tokens, categories, descriptions, tags, and implementation/type fields.
 Credential-aware native tools use the existing encrypted credential vault. Save
 connections in Settings > Connections with these provider names and fields:
 `wolfram_alpha.app_id`, `searxng.base_url`, `nasa.api_key`,
-`openweathermap.api_key`, and optional `npm.registry_url` / `npm.token`. Scope a
+`openweathermap.api_key`, optional `npm.registry_url` / `npm.token`,
+`github.access_token`, and `gitlab.access_token`. GitHub credentials can also
+provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
+`base_url` / `server`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -727,6 +744,23 @@ The public information batch includes:
 - `nasa_apod(date?, start_date?, end_date?, thumbs?)`; uses vault provider `nasa` fields `api_key` or `value`, then `NASA_API_KEY`.
 - `openweathermap_current(...)` and `openweathermap_forecast(...)`; use vault provider `openweathermap` fields `api_key`, `access_token`, or `value`, then `OPENWEATHERMAP_API_KEY`.
 - `quickchart_create_url(chart_type, labels_json, data_json, ...)`
+
+### Developer Platform Tools
+
+The developer-platform batch includes:
+- `github_get_repository(owner, repo)`, `github_search_repositories(query, sort?, order?, limit?)`, `github_list_issues(owner, repo, state?, labels?, sort?, direction?, since?, limit?, include_pull_requests?)`, `github_get_issue(owner, repo, issue_number)`, `github_list_pull_requests(owner, repo, state?, sort?, direction?, limit?)`, `github_list_releases(owner, repo, limit?)`, and `github_get_release(owner, repo, tag_name)`.
+- `gitlab_get_project(project)`, `gitlab_search_projects(query, limit?, simple?)`, `gitlab_list_project_issues(project, state?, labels?, order_by?, sort?, search?, limit?)`, `gitlab_get_project_issue(project, issue_iid)`, `gitlab_list_project_releases(project, order_by?, sort?, limit?)`, `gitlab_get_project_release(project, tag_name)`, and `gitlab_list_user_projects(user_id, limit?)`.
+
+GitHub tools use vault provider `github` fields `access_token`, `token`,
+`api_key`, or `value`, then `GITHUB_TOKEN`. GitHub Enterprise can be configured
+with vault field `base_url`, `api_base_url`, `server`, or env
+`GITHUB_API_BASE_URL`.
+
+GitLab tools use vault provider `gitlab` fields `access_token`,
+`private_token`, `token`, `api_key`, or `value`, then `GITLAB_TOKEN`. GitLab
+self-managed instances can be configured with vault field `base_url`, `server`,
+or env `GITLAB_BASE_URL`; plain instance URLs automatically get `/api/v4`
+appended.
 
 ### tool_enable
 

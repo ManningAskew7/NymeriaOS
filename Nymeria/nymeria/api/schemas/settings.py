@@ -81,6 +81,15 @@ class ServerSettingsUpdate(BaseModel):
     embedding_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     perplexity_api_key: Optional[str] = None
+    wolfram_alpha_app_id: Optional[str] = None
+    searxng_base_url: Optional[str] = None
+    nasa_api_key: Optional[str] = None
+    openweathermap_api_key: Optional[str] = None
+    npm_registry_url: Optional[str] = None
+    github_token: Optional[str] = None
+    github_api_base_url: Optional[str] = None
+    gitlab_token: Optional[str] = None
+    gitlab_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
