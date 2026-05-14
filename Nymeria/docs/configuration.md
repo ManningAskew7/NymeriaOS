@@ -251,6 +251,15 @@ Set the API key for your chosen provider:
 | `ZULIP_API_KEY` | Zulip | Optional Zulip API key fallback; credential vault provider `zulip` is preferred |
 | `ZULIP_EMAIL` | Zulip | Optional Zulip bot/user email fallback |
 | `ZULIP_BASE_URL` | Zulip | Zulip organization base URL for native tools |
+| `GOOGLE_BOOKS_API_KEY` | Google Books | Optional Google Books API key fallback; credential vault provider `google_books` is preferred |
+| `GOOGLE_BOOKS_BASE_URL` | Google Books | Optional Google Books API base URL override |
+| `YOUTUBE_API_KEY` | YouTube Data API | YouTube Data API key fallback; credential vault provider `youtube` is preferred |
+| `YOUTUBE_BASE_URL` | YouTube Data API | Optional YouTube Data API base URL override |
+| `SPOTIFY_ACCESS_TOKEN` | Spotify | Optional Spotify bearer token fallback; credential vault provider `spotify` is preferred |
+| `SPOTIFY_CLIENT_ID` | Spotify | Optional Spotify client ID for client-credentials catalog tools |
+| `SPOTIFY_CLIENT_SECRET` | Spotify | Optional Spotify client secret for client-credentials catalog tools |
+| `SPOTIFY_BASE_URL` | Spotify | Optional Spotify Web API base URL override |
+| `SPOTIFY_ACCOUNTS_BASE_URL` | Spotify | Optional Spotify Accounts API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -583,6 +592,15 @@ reachable from the backend process.
 | `ZULIP_API_KEY` | - | Zulip API key fallback |
 | `ZULIP_EMAIL` | - | Zulip bot/user email fallback |
 | `ZULIP_BASE_URL` | - | Zulip organization base URL |
+| `GOOGLE_BOOKS_API_KEY` | - | Optional Google Books API key fallback |
+| `GOOGLE_BOOKS_BASE_URL` | `https://www.googleapis.com/books/v1` | Google Books API base URL |
+| `YOUTUBE_API_KEY` | - | YouTube Data API key fallback |
+| `YOUTUBE_BASE_URL` | `https://www.googleapis.com/youtube/v3` | YouTube Data API base URL |
+| `SPOTIFY_ACCESS_TOKEN` | - | Optional Spotify bearer token fallback |
+| `SPOTIFY_CLIENT_ID` | - | Spotify client ID for client-credentials catalog tools |
+| `SPOTIFY_CLIENT_SECRET` | - | Spotify client secret for client-credentials catalog tools |
+| `SPOTIFY_BASE_URL` | `https://api.spotify.com/v1` | Spotify Web API base URL |
+| `SPOTIFY_ACCOUNTS_BASE_URL` | `https://accounts.spotify.com` | Spotify Accounts API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

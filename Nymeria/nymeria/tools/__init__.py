@@ -116,6 +116,20 @@ from .public_info_integrations import (
     quickchart_create_url,
     PUBLIC_INFO_TOOLS,
 )
+from .media_discovery_service_integrations import (
+    google_books_search,
+    google_books_get_volume,
+    youtube_search,
+    youtube_get_videos,
+    youtube_get_channels,
+    youtube_list_playlist_items,
+    spotify_search,
+    spotify_get_track,
+    spotify_get_artist,
+    spotify_get_album,
+    spotify_get_playlist,
+    MEDIA_DISCOVERY_SERVICE_TOOLS,
+)
 from .developer_platform_integrations import (
     github_get_repository,
     github_search_repositories,
@@ -563,6 +577,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + IMAGE_GENERATION_TOOLS
     + UTILITY_INTEGRATION_TOOLS
     + PUBLIC_INFO_TOOLS
+    + MEDIA_DISCOVERY_SERVICE_TOOLS
     + DEVELOPER_PLATFORM_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
@@ -709,6 +724,18 @@ __all__ = [
     "openweathermap_forecast",
     "quickchart_create_url",
     "PUBLIC_INFO_TOOLS",
+    "google_books_search",
+    "google_books_get_volume",
+    "youtube_search",
+    "youtube_get_videos",
+    "youtube_get_channels",
+    "youtube_list_playlist_items",
+    "spotify_search",
+    "spotify_get_track",
+    "spotify_get_artist",
+    "spotify_get_album",
+    "spotify_get_playlist",
+    "MEDIA_DISCOVERY_SERVICE_TOOLS",
     "github_get_repository",
     "github_search_repositories",
     "github_list_issues",

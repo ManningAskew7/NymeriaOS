@@ -1007,6 +1007,15 @@ export interface ServerSettingsUpdate {
   zulip_api_key?: string | null;
   zulip_email?: string | null;
   zulip_base_url?: string | null;
+  google_books_api_key?: string | null;
+  google_books_base_url?: string | null;
+  youtube_api_key?: string | null;
+  youtube_base_url?: string | null;
+  spotify_access_token?: string | null;
+  spotify_client_id?: string | null;
+  spotify_client_secret?: string | null;
+  spotify_base_url?: string | null;
+  spotify_accounts_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;
