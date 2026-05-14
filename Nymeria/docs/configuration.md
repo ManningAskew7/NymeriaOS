@@ -103,6 +103,15 @@ Set the API key for your chosen provider:
 | `JIRA_BASE_URL` | Jira | Jira Cloud site base URL, such as `https://example.atlassian.net` |
 | `CLICKUP_ACCESS_TOKEN` | ClickUp | Optional env fallback for ClickUp tools; credential vault provider `clickup` is preferred |
 | `CLICKUP_BASE_URL` | ClickUp | Optional ClickUp API base URL override |
+| `SLACK_BOT_TOKEN` | Slack | Optional env fallback for Slack tools; credential vault provider `slack` is preferred |
+| `SLACK_ACCESS_TOKEN` | Slack | Optional alternate env fallback for Slack tools |
+| `SLACK_BASE_URL` | Slack | Optional Slack Web API base URL override |
+| `NOTION_API_KEY` | Notion | Optional env fallback for Notion tools; credential vault provider `notion` is preferred |
+| `NOTION_VERSION` | Notion | Optional Notion API version override |
+| `NOTION_BASE_URL` | Notion | Optional Notion API base URL override |
+| `AIRTABLE_ACCESS_TOKEN` | Airtable | Optional env fallback for Airtable tools; credential vault provider `airtable` is preferred |
+| `AIRTABLE_API_KEY` | Airtable | Optional legacy Airtable API key fallback |
+| `AIRTABLE_BASE_URL` | Airtable | Optional Airtable API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -287,6 +296,15 @@ reachable from the backend process.
 | `JIRA_BASE_URL` | - | Jira Cloud site base URL |
 | `CLICKUP_ACCESS_TOKEN` | - | ClickUp access token fallback |
 | `CLICKUP_BASE_URL` | `https://api.clickup.com/api/v2` | ClickUp API base URL |
+| `SLACK_BOT_TOKEN` | - | Slack bot token fallback |
+| `SLACK_ACCESS_TOKEN` | - | Slack access token fallback |
+| `SLACK_BASE_URL` | `https://slack.com/api` | Slack Web API base URL |
+| `NOTION_API_KEY` | - | Notion API key fallback |
+| `NOTION_VERSION` | `2026-03-11` | Notion API version |
+| `NOTION_BASE_URL` | `https://api.notion.com/v1` | Notion API base URL |
+| `AIRTABLE_ACCESS_TOKEN` | - | Airtable personal access token fallback |
+| `AIRTABLE_API_KEY` | - | Airtable legacy API key fallback |
+| `AIRTABLE_BASE_URL` | `https://api.airtable.com/v0` | Airtable API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

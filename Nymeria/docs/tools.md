@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (100)
+### Optional: Service Integration Tools (122)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -178,6 +178,28 @@ in the credential vault for provider-specific saved connections scoped to
 | 98 | `clickup_update_task` | Integrations | MODERATE | Update a ClickUp task |
 | 99 | `clickup_list_task_comments` | Integrations | SAFE | List comments on a ClickUp task |
 | 100 | `clickup_add_task_comment` | Integrations | MODERATE | Add a comment to a ClickUp task |
+| 101 | `slack_list_channels` | Integrations | SAFE | List Slack conversations |
+| 102 | `slack_get_channel_history` | Integrations | SAFE | Get recent Slack conversation messages |
+| 103 | `slack_search_messages` | Integrations | SAFE | Search Slack messages |
+| 104 | `slack_list_users` | Integrations | SAFE | List Slack users |
+| 105 | `slack_get_user` | Integrations | SAFE | Get Slack user metadata |
+| 106 | `slack_post_message` | Integrations | MODERATE | Post a Slack message |
+| 107 | `slack_update_message` | Integrations | MODERATE | Update a Slack message |
+| 108 | `slack_add_reaction` | Integrations | MODERATE | Add a Slack message reaction |
+| 109 | `notion_search` | Integrations | SAFE | Search Notion pages and data sources |
+| 110 | `notion_get_page` | Integrations | SAFE | Retrieve Notion page properties |
+| 111 | `notion_get_block_children` | Integrations | SAFE | Retrieve Notion page or block children |
+| 112 | `notion_query_data_source` | Integrations | SAFE | Query a Notion data source |
+| 113 | `notion_create_page` | Integrations | MODERATE | Create a Notion page |
+| 114 | `notion_update_page` | Integrations | MODERATE | Update a Notion page |
+| 115 | `notion_append_block_children` | Integrations | MODERATE | Append children to a Notion page or block |
+| 116 | `airtable_list_bases` | Integrations | SAFE | List Airtable bases |
+| 117 | `airtable_get_base_schema` | Integrations | SAFE | Get Airtable base schema |
+| 118 | `airtable_list_records` | Integrations | SAFE | List Airtable records |
+| 119 | `airtable_get_record` | Integrations | SAFE | Get an Airtable record |
+| 120 | `airtable_create_records` | Integrations | MODERATE | Create Airtable records |
+| 121 | `airtable_update_records` | Integrations | MODERATE | Update Airtable records |
+| 122 | `airtable_delete_record` | Integrations | MODERATE | Delete an Airtable record |
 
 ### Optional: Private B Tools (4)
 
@@ -878,6 +900,18 @@ This batch includes:
 Credential providers and fallback env vars:
 - Jira: provider `jira`, fields `access_token`, `bearer_token`, `token`, or `value` for bearer auth; or `email` / `username` plus `api_token` / `apiToken` / `password` for basic auth. Use `base_url` / `domain` / `url` / `site_url` or `JIRA_BASE_URL` for the Jira Cloud site, such as `https://example.atlassian.net`. Env fallback supports `JIRA_ACCESS_TOKEN` or `JIRA_EMAIL` plus `JIRA_API_TOKEN`.
 - ClickUp: provider `clickup`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `CLICKUP_ACCESS_TOKEN`. Use `base_url` / `url` or `CLICKUP_BASE_URL` for non-default API roots.
+
+### Collaboration And Data Service Tools
+
+This batch includes:
+- `slack_list_channels(types?, exclude_archived?, limit?)`, `slack_get_channel_history(channel_id, ...)`, `slack_search_messages(query, ...)`, `slack_list_users(...)`, `slack_get_user(user_id)`, `slack_post_message(...)`, `slack_update_message(...)`, and `slack_add_reaction(...)`. Post/update/reaction operations are MODERATE because they change Slack state.
+- `notion_search(query?, object_type?, limit?)`, `notion_get_page(page_id)`, `notion_get_block_children(block_id, ...)`, `notion_query_data_source(...)`, `notion_create_page(...)`, `notion_update_page(...)`, and `notion_append_block_children(...)`. Create/update/append operations are MODERATE because they change Notion content.
+- `airtable_list_bases()`, `airtable_get_base_schema(base_id)`, `airtable_list_records(...)`, `airtable_get_record(...)`, `airtable_create_records(...)`, `airtable_update_records(...)`, and `airtable_delete_record(...)`. Create/update/delete operations are MODERATE because they change Airtable data.
+
+Credential providers and fallback env vars:
+- Slack: provider `slack`, fields `bot_token`, `access_token`, `token`, or `value`; env fallback `SLACK_BOT_TOKEN` or `SLACK_ACCESS_TOKEN`. Use `base_url` / `url` or `SLACK_BASE_URL` for non-default API roots.
+- Notion: provider `notion`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `NOTION_API_KEY`. Use `notion_version` / `version` or `NOTION_VERSION` for the Notion API version; default is `2026-03-11`.
+- Airtable: provider `airtable`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `AIRTABLE_ACCESS_TOKEN` or `AIRTABLE_API_KEY`. Use `base_url` / `url` or `AIRTABLE_BASE_URL` for non-default API roots.
 
 ### tool_enable
 
