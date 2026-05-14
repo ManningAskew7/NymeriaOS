@@ -172,6 +172,126 @@ def test_deepl_translate_uses_vault_free_plan(tmp_path, monkeypatch):
     assert captured["data"]["target_lang"] == "DE"
 
 
+def test_lingvanex_translate_uses_env_key(monkeypatch):
+    from nymeria.tools import business_service_integrations as tools
+
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"result": "Hola"}
+
+    monkeypatch.setenv("LINGVANEX_API_KEY", "ling-key")
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.lingvanex_translate_text.func(
+            text="Hello",
+            target_lang="es",
+            source_lang="en",
+            translate_mode="html",
+        )
+    )
+
+    assert result == {"result": "Hola"}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api-b2b.backenster.com/b1/api/v3/translate"
+    assert captured["headers"]["Authorization"] == "Bearer ling-key"
+    assert captured["json_body"]["data"] == "Hello"
+    assert captured["json_body"]["to"] == "es"
+    assert captured["json_body"]["from"] == "en"
+    assert captured["json_body"]["translateMode"] == "html"
+
+
+def test_apitemplate_create_pdf_uses_vault_key_and_base_url(tmp_path, monkeypatch):
+    from nymeria.tools import business_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="APITemplate",
+        provider="apitemplate",
+        kind="api_key",
+        allowed_targets=["native_tool:apitemplate_create_pdf"],
+        secret_fields={
+            "api_key": "template-key",
+            "base_url": "https://template.example/v1",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"download_url": "https://cdn.example/report.pdf"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.apitemplate_create_pdf.func(
+            template_id="tpl_pdf",
+            properties_json='{"name": "Alice"}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["download_url"] == "https://cdn.example/report.pdf"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://template.example/v1/create"
+    assert captured["params"] == {"template_id": "tpl_pdf"}
+    assert captured["json_body"] == {"name": "Alice"}
+    assert captured["headers"]["X-API-KEY"] == "template-key"
+
+
+def test_onesimple_create_screenshot_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import business_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="One Simple API",
+        provider="onesimple",
+        kind="api_key",
+        allowed_targets=["native_tool:*"],
+        secret_fields={
+            "api_token": "one-token",
+            "base_url": "https://one.example/api",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"url": "https://cdn.example/screenshot.png"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.onesimple_create_screenshot.func(
+            url="https://example.com",
+            screen_size="desktop",
+            full_page=True,
+            force_refresh=True,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["url"] == "https://cdn.example/screenshot.png"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://one.example/api/screenshot"
+    assert captured["params"]["url"] == "https://example.com"
+    assert captured["params"]["screen"] == "desktop"
+    assert captured["params"]["fullpage"] == "yes"
+    assert captured["params"]["force"] == "yes"
+    assert captured["params"]["token"] == "one-token"
+    assert captured["params"]["output"] == "json"
+
+
 def test_business_service_tools_are_registered_with_metadata():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
@@ -185,8 +305,26 @@ def test_business_service_tools_are_registered_with_metadata():
         "marketstack_get_ticker",
         "marketstack_get_exchange",
         "deepl_list_languages",
+        "lingvanex_list_languages",
+        "apitemplate_list_templates",
+        "apitemplate_get_account",
     }
-    moderate_names = {"bitly_create_bitlink", "bitly_update_bitlink", "deepl_translate_text"}
+    moderate_names = {
+        "bitly_create_bitlink",
+        "bitly_update_bitlink",
+        "deepl_translate_text",
+        "lingvanex_translate_text",
+        "apitemplate_create_image",
+        "apitemplate_create_pdf",
+        "onesimple_create_pdf",
+        "onesimple_create_screenshot",
+        "onesimple_get_page_info",
+        "onesimple_get_exchange_rate",
+        "onesimple_get_image_metadata",
+        "onesimple_validate_email",
+        "onesimple_expand_url",
+        "onesimple_create_qr_code",
+    }
 
     for name in safe_names:
         assert name in OPTIONAL_TOOLS
@@ -205,9 +343,15 @@ def test_business_service_tools_are_registered_with_metadata():
 
 def test_business_service_tool_schemas_hide_runtime_config():
     from nymeria.tools.business_service_integrations import (
+        apitemplate_create_pdf,
         bitly_get_bitlink,
         deepl_translate_text,
+        lingvanex_translate_text,
+        onesimple_create_pdf,
     )
 
+    assert "config" not in apitemplate_create_pdf.args_schema.model_json_schema()["properties"]
     assert "config" not in bitly_get_bitlink.args_schema.model_json_schema()["properties"]
     assert "config" not in deepl_translate_text.args_schema.model_json_schema()["properties"]
+    assert "config" not in lingvanex_translate_text.args_schema.model_json_schema()["properties"]
+    assert "config" not in onesimple_create_pdf.args_schema.model_json_schema()["properties"]

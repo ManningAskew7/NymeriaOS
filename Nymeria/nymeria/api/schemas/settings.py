@@ -167,6 +167,12 @@ class ServerSettingsUpdate(BaseModel):
     deepl_api_key: Optional[str] = None
     deepl_api_plan: Optional[str] = None
     deepl_base_url: Optional[str] = None
+    lingvanex_api_key: Optional[str] = None
+    lingvanex_base_url: Optional[str] = None
+    apitemplate_api_key: Optional[str] = None
+    apitemplate_base_url: Optional[str] = None
+    onesimple_api_token: Optional[str] = None
+    onesimple_base_url: Optional[str] = None
     todoist_api_key: Optional[str] = None
     todoist_base_url: Optional[str] = None
     trello_api_key: Optional[str] = None

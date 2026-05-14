@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (701)
+### Optional: Service Integration Tools (715)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -779,6 +779,20 @@ in the credential vault for provider-specific saved connections scoped to
 | 699 | `graphql_execute_query` | Integrations | MODERATE | Execute a GraphQL query or mutation against an explicit or saved endpoint |
 | 700 | `totp_generate_code` | Integrations | MODERATE | Generate a TOTP code from a saved secret |
 | 701 | `totp_verify_code` | Integrations | MODERATE | Verify a TOTP code against a saved secret |
+| 702 | `lingvanex_translate_text` | Integrations | MODERATE | Translate text with LingvaNex |
+| 703 | `lingvanex_list_languages` | Integrations | SAFE | List LingvaNex supported languages |
+| 704 | `apitemplate_list_templates` | Integrations | SAFE | List APITemplate templates |
+| 705 | `apitemplate_get_account` | Integrations | SAFE | Get APITemplate account information |
+| 706 | `apitemplate_create_image` | Integrations | MODERATE | Create an image from an APITemplate image template |
+| 707 | `apitemplate_create_pdf` | Integrations | MODERATE | Create a PDF from an APITemplate PDF template |
+| 708 | `onesimple_create_pdf` | Integrations | MODERATE | Create a PDF URL for a webpage |
+| 709 | `onesimple_create_screenshot` | Integrations | MODERATE | Create a screenshot URL for a webpage |
+| 710 | `onesimple_get_page_info` | Integrations | MODERATE | Get webpage SEO and metadata |
+| 711 | `onesimple_get_exchange_rate` | Integrations | MODERATE | Convert a currency amount |
+| 712 | `onesimple_get_image_metadata` | Integrations | MODERATE | Get image metadata from an image URL |
+| 713 | `onesimple_validate_email` | Integrations | MODERATE | Validate an email address |
+| 714 | `onesimple_expand_url` | Integrations | MODERATE | Expand a shortened URL |
+| 715 | `onesimple_create_qr_code` | Integrations | MODERATE | Create a QR-code image URL |
 
 ### Optional: Private B Tools (4)
 
@@ -1364,7 +1378,8 @@ GraphQL auth fields, and `totp.secret`. GitHub credentials can also provide
 `aws.access_key_id` plus `aws.secret_access_key`, with optional
 `aws.session_token`, `aws.region`, and `aws.endpoint_url`; existing S3/AWS
 connections can also be reused for AWS service tools. Business-service credentials use `bitly.access_token`,
-`brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
+`brandfetch.api_key`, `marketstack.api_key`, `deepl.api_key`,
+`lingvanex.api_key`, `apitemplate.api_key`, and `onesimple.api_token`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
 credentials use `raindrop.access_token`, `yourls.url`, and either
@@ -1618,12 +1633,18 @@ This batch includes:
 - `brandfetch_get_brand(domain)`, `brandfetch_get_brand_logos(domain)`, and `brandfetch_get_brand_colors(domain)`.
 - `marketstack_get_eod(symbols, latest?, date?, date_from?, date_to?, limit?)`, `marketstack_get_ticker(symbol)`, and `marketstack_get_exchange(exchange)`.
 - `deepl_translate_text(text, target_lang, source_lang?, formality?, preserve_formatting?)` and `deepl_list_languages(language_type?)`. Translation is MODERATE because it sends user text to DeepL and consumes quota.
+- `lingvanex_translate_text(text, target_lang, source_lang?, platform?, translate_mode?)` and `lingvanex_list_languages()`. Translation is MODERATE because it sends user text to LingvaNex and consumes quota.
+- `apitemplate_list_templates(template_type?)`, `apitemplate_get_account()`, `apitemplate_create_image(template_id, overrides_json?)`, and `apitemplate_create_pdf(template_id, properties_json)`. Create operations are MODERATE because they generate billable remote artifacts.
+- `onesimple_create_pdf(url, ...)`, `onesimple_create_screenshot(url, ...)`, `onesimple_get_page_info(url, include_headers?)`, `onesimple_get_exchange_rate(value, from_currency, to_currency)`, `onesimple_get_image_metadata(image_url)`, `onesimple_validate_email(email)`, `onesimple_expand_url(url)`, and `onesimple_create_qr_code(content, ...)`. These are MODERATE because they send user-provided URLs, content, or addresses to an external API.
 
 Credential providers and fallback env vars:
 - Bitly: provider `bitly`, fields `access_token`, `token`, `api_key`, or `value`; env fallback `BITLY_TOKEN`.
 - Brandfetch: provider `brandfetch`, fields `api_key`, `token`, or `value`; env fallback `BRANDFETCH_API_KEY`.
 - Marketstack: provider `marketstack`, fields `api_key`, `access_key`, `token`, or `value`; env fallback `MARKETSTACK_API_KEY`.
 - DeepL: provider `deepl`, fields `api_key`, `auth_key`, `token`, or `value`; env fallback `DEEPL_API_KEY`. Use `api_plan` / `plan` or `DEEPL_API_PLAN=free` for the free endpoint.
+- LingvaNex: provider `lingvanex`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `LINGVANEX_API_KEY`. Use `base_url` / `url` or `LINGVANEX_BASE_URL` for non-default API roots.
+- APITemplate: provider `apitemplate`, fields `api_key`, `token`, or `value`; env fallback `APITEMPLATE_API_KEY`. Use `base_url` / `url` or `APITEMPLATE_BASE_URL` for non-default API roots.
+- One Simple API: provider `onesimple`, fields `api_token`, `api_key`, `token`, or `value`; env fallback `ONESIMPLE_API_TOKEN`. Use `base_url` / `url` or `ONESIMPLE_BASE_URL` for non-default API roots.
 
 ### Productivity Service Tools
 
