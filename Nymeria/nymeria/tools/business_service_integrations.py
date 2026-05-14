@@ -19,6 +19,9 @@ _BRANDFETCH_BASE_URL = "https://api.brandfetch.io/v2"
 _MARKETSTACK_BASE_URL = "https://api.marketstack.com/v1"
 _DEEPL_PRO_BASE_URL = "https://api.deepl.com/v2"
 _DEEPL_FREE_BASE_URL = "https://api-free.deepl.com/v2"
+_LINGVANEX_BASE_URL = "https://api-b2b.backenster.com/b1/api/v3"
+_APITEMPLATE_BASE_URL = "https://api.apitemplate.io/v1"
+_ONESIMPLE_BASE_URL = "https://onesimpleapi.com/api"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -44,6 +47,32 @@ def _filtered_params(params: Optional[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _json_object(value: str, *, field_name: str, allow_empty: bool = True) -> dict[str, Any]:
+    if not value.strip():
+        if allow_empty:
+            return {}
+        raise ValueError(f"{field_name} is required")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return parsed
+
+
+def _json_array(value: str, *, field_name: str) -> list[Any]:
+    if not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"{field_name} must be a JSON array")
+    return parsed
+
+
 def _limit(value: int, *, default: int = 20, max_value: int = 100) -> int:
     try:
         return max(1, min(max_value, int(value)))
@@ -56,6 +85,13 @@ def _base_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("base URL must be an absolute http(s) URL")
     return value.strip().rstrip("/")
+
+
+def _absolute_url(value: str, *, field_name: str = "url") -> str:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must be an absolute http(s) URL")
+    return value.strip()
 
 
 def _settings_value(name: str) -> Optional[str]:
@@ -286,6 +322,149 @@ def _deepl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         "Authorization": f"DeepL-Auth-Key {key}",
         "User-Agent": "Nymeria",
     }
+
+
+def _bearer_config(
+    *,
+    provider: str,
+    provider_aliases: tuple[str, ...],
+    settings_key_name: str,
+    settings_base_name: str,
+    default_base: str,
+    env_var: str,
+    display_name: str,
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    field_names: tuple[str, ...] = ("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider=provider,
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value(settings_base_name)
+        or default_base
+    )
+    token = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value(settings_key_name)
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider=provider,
+            field_names=field_names,
+            tool_name=tool_name,
+            env_var=env_var,
+            display_name=display_name,
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _apitemplate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="apitemplate",
+            provider_aliases=("apitemplate_io", "api_template", "api_template_io"),
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("apitemplate_base_url")
+        or _APITEMPLATE_BASE_URL
+    )
+    key = _credential_value(
+        provider="apitemplate",
+        provider_aliases=("apitemplate_io", "api_template", "api_template_io"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("apitemplate_api_key")
+    if not key:
+        return _base_url(base), _setup_hint(
+            provider="apitemplate",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="APITEMPLATE_API_KEY",
+            display_name="APITemplate",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-API-KEY": key,
+        "User-Agent": "Nymeria",
+    }
+
+
+def _lingvanex_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    return _bearer_config(
+        provider="lingvanex",
+        provider_aliases=("lingvanex_api",),
+        settings_key_name="lingvanex_api_key",
+        settings_base_name="lingvanex_base_url",
+        default_base=_LINGVANEX_BASE_URL,
+        env_var="LINGVANEX_API_KEY",
+        display_name="LingvaNex",
+        tool_name=tool_name,
+        config=config,
+    )
+
+
+def _onesimple_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str]:
+    base = (
+        _credential_value(
+            provider="onesimple",
+            provider_aliases=("one_simple_api", "onesimpleapi"),
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("onesimple_base_url")
+        or _ONESIMPLE_BASE_URL
+    )
+    token = _credential_value(
+        provider="onesimple",
+        provider_aliases=("one_simple_api", "onesimpleapi"),
+        field_names=("api_token", "apiToken", "token", "api_key", "apiKey", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("onesimple_api_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="onesimple",
+            field_names=("api_token", "value"),
+            tool_name=tool_name,
+            env_var="ONESIMPLE_API_TOKEN",
+            display_name="One Simple API",
+        )
+    return _base_url(base), token
+
+
+def _onesimple_get(
+    tool_name: str,
+    endpoint: str,
+    params: dict[str, Any],
+    config: Optional[RunnableConfig],
+) -> str:
+    base_url, token_or_error = _onesimple_config(tool_name, config)
+    if token_or_error.startswith("[Error]:"):
+        return token_or_error
+    data = _request_json(
+        "GET",
+        f"{base_url}{endpoint}",
+        params={**params, "token": token_or_error, "output": "json"},
+        headers={"Accept": "application/json", "User-Agent": "Nymeria"},
+    )
+    return _dump_json(data)
 
 
 def _brand_section(data: Any, section: str) -> Any:
@@ -680,6 +859,406 @@ def deepl_list_languages(
         return f"[Error]: DeepL language list failed: {e}"
 
 
+@tool
+def lingvanex_translate_text(
+    text: str,
+    target_lang: str,
+    source_lang: str = "",
+    platform: str = "api",
+    translate_mode: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Translate text with LingvaNex.
+
+    Args:
+        text: Text to translate.
+        target_lang: Target language code, for example "es" or "de_DE".
+        source_lang: Optional source language code. Empty enables auto-detect.
+        platform: Optional LingvaNex platform value.
+        translate_mode: Optional translate mode.
+    """
+    if not text.strip() or not target_lang.strip():
+        return "[Error]: text and target_lang are required."
+    try:
+        base_url, headers_or_error = _lingvanex_config("lingvanex_translate_text", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = _filtered_params(
+            {
+                "data": text,
+                "to": target_lang.strip(),
+                "from": source_lang.strip(),
+                "platform": platform.strip() or "api",
+                "translateMode": translate_mode.strip(),
+            }
+        )
+        data = _request_json(
+            "POST",
+            f"{base_url}/translate",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lingvanex_translate_text failed", exc_info=True)
+        return f"[Error]: LingvaNex translation failed: {e}"
+
+
+@tool
+def lingvanex_list_languages(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List LingvaNex supported languages.
+
+    Args:
+        config: Runtime context injected by Nymeria.
+    """
+    try:
+        base_url, headers_or_error = _lingvanex_config("lingvanex_list_languages", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/getLanguages", headers=headers_or_error)
+        if isinstance(data, dict) and isinstance(data.get("result"), list):
+            return _dump_json(data["result"])
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lingvanex_list_languages failed", exc_info=True)
+        return f"[Error]: LingvaNex language list failed: {e}"
+
+
+@tool
+def apitemplate_list_templates(
+    template_type: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List APITemplate templates.
+
+    Args:
+        template_type: Optional filter, "pdf" or "image".
+    """
+    try:
+        base_url, headers_or_error = _apitemplate_config("apitemplate_list_templates", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/list-templates", headers=headers_or_error)
+        normalized_type = template_type.strip().lower()
+        if normalized_type and isinstance(data, list):
+            formats = {"pdf": {"PDF"}, "image": {"JPEG", "JPG", "PNG"}}.get(normalized_type)
+            if formats:
+                data = [
+                    item
+                    for item in data
+                    if isinstance(item, dict) and str(item.get("format", "")).upper() in formats
+                ]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("apitemplate_list_templates failed", exc_info=True)
+        return f"[Error]: APITemplate template list failed: {e}"
+
+
+@tool
+def apitemplate_get_account(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get APITemplate account information.
+
+    Args:
+        config: Runtime context injected by Nymeria.
+    """
+    try:
+        base_url, headers_or_error = _apitemplate_config("apitemplate_get_account", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/account-information", headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("apitemplate_get_account failed", exc_info=True)
+        return f"[Error]: APITemplate account lookup failed: {e}"
+
+
+@tool
+def apitemplate_create_image(
+    template_id: str,
+    overrides_json: str = "[]",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create an image from an APITemplate image template.
+
+    Args:
+        template_id: APITemplate image template ID.
+        overrides_json: Optional JSON array of override objects.
+    """
+    if not template_id.strip():
+        return "[Error]: template_id is required."
+    try:
+        base_url, headers_or_error = _apitemplate_config("apitemplate_create_image", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        overrides = _json_array(overrides_json, field_name="overrides_json")
+        data = _request_json(
+            "POST",
+            f"{base_url}/create",
+            params={"template_id": template_id.strip()},
+            json_body={"overrides": overrides},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("apitemplate_create_image failed", exc_info=True)
+        return f"[Error]: APITemplate image creation failed: {e}"
+
+
+@tool
+def apitemplate_create_pdf(
+    template_id: str,
+    properties_json: str = "{}",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a PDF from an APITemplate PDF template.
+
+    Args:
+        template_id: APITemplate PDF template ID.
+        properties_json: JSON object of template properties.
+    """
+    if not template_id.strip():
+        return "[Error]: template_id is required."
+    try:
+        base_url, headers_or_error = _apitemplate_config("apitemplate_create_pdf", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        properties = _json_object(properties_json, field_name="properties_json", allow_empty=False)
+        data = _request_json(
+            "POST",
+            f"{base_url}/create",
+            params={"template_id": template_id.strip()},
+            json_body=properties,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("apitemplate_create_pdf failed", exc_info=True)
+        return f"[Error]: APITemplate PDF creation failed: {e}"
+
+
+@tool
+def onesimple_create_pdf(
+    url: str,
+    page_size: str = "",
+    force_refresh: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a PDF URL for a webpage with One Simple API.
+
+    Args:
+        url: Webpage URL to render.
+        page_size: Optional page size such as "A4".
+        force_refresh: Force a fresh capture instead of cached output.
+    """
+    try:
+        return _onesimple_get(
+            "onesimple_create_pdf",
+            "/pdf",
+            {
+                "url": _absolute_url(url),
+                "page": page_size.strip(),
+                "force": "yes" if force_refresh else "no",
+            },
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_create_pdf failed", exc_info=True)
+        return f"[Error]: One Simple API PDF creation failed: {e}"
+
+
+@tool
+def onesimple_create_screenshot(
+    url: str,
+    screen_size: str = "",
+    full_page: bool = False,
+    force_refresh: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a screenshot URL for a webpage with One Simple API.
+
+    Args:
+        url: Webpage URL to capture.
+        screen_size: Optional screen size preset such as "desktop" or "mobile".
+        full_page: Capture the full page height.
+        force_refresh: Force a fresh capture instead of cached output.
+    """
+    try:
+        return _onesimple_get(
+            "onesimple_create_screenshot",
+            "/screenshot",
+            {
+                "url": _absolute_url(url),
+                "screen": screen_size.strip(),
+                "fullpage": "yes" if full_page else "no",
+                "force": "yes" if force_refresh else "no",
+            },
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_create_screenshot failed", exc_info=True)
+        return f"[Error]: One Simple API screenshot creation failed: {e}"
+
+
+@tool
+def onesimple_get_page_info(
+    url: str,
+    include_headers: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get page SEO and metadata for a webpage with One Simple API.
+
+    Args:
+        url: Webpage URL to inspect.
+        include_headers: Include response headers when supported.
+    """
+    try:
+        return _onesimple_get(
+            "onesimple_get_page_info",
+            "/page_info",
+            {"url": _absolute_url(url), "headers": "yes" if include_headers else ""},
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_get_page_info failed", exc_info=True)
+        return f"[Error]: One Simple API page info lookup failed: {e}"
+
+
+@tool
+def onesimple_get_exchange_rate(
+    value: float,
+    from_currency: str,
+    to_currency: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Convert a currency amount with One Simple API exchange-rate data.
+
+    Args:
+        value: Amount to convert.
+        from_currency: Source currency code.
+        to_currency: Target currency code.
+    """
+    if not from_currency.strip() or not to_currency.strip():
+        return "[Error]: from_currency and to_currency are required."
+    try:
+        return _onesimple_get(
+            "onesimple_get_exchange_rate",
+            "/exchange_rate",
+            {
+                "from_value": value,
+                "from_currency": from_currency.strip().upper(),
+                "to_currency": to_currency.strip().upper(),
+            },
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_get_exchange_rate failed", exc_info=True)
+        return f"[Error]: One Simple API exchange-rate lookup failed: {e}"
+
+
+@tool
+def onesimple_get_image_metadata(
+    image_url: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get image metadata from an image URL with One Simple API.
+
+    Args:
+        image_url: Public image URL to inspect.
+    """
+    try:
+        return _onesimple_get(
+            "onesimple_get_image_metadata",
+            "/image_info",
+            {"url": _absolute_url(image_url, field_name="image_url"), "raw": "true"},
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_get_image_metadata failed", exc_info=True)
+        return f"[Error]: One Simple API image metadata lookup failed: {e}"
+
+
+@tool
+def onesimple_validate_email(
+    email: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Validate an email address with One Simple API.
+
+    Args:
+        email: Email address to validate.
+    """
+    if "@" not in email:
+        return "[Error]: email must look like an email address."
+    try:
+        return _onesimple_get(
+            "onesimple_validate_email",
+            "/email",
+            {"email": email.strip()},
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_validate_email failed", exc_info=True)
+        return f"[Error]: One Simple API email validation failed: {e}"
+
+
+@tool
+def onesimple_expand_url(
+    url: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Expand a shortened URL with One Simple API.
+
+    Args:
+        url: Short URL to expand.
+    """
+    try:
+        return _onesimple_get(
+            "onesimple_expand_url",
+            "/unshorten",
+            {"url": _absolute_url(url)},
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_expand_url failed", exc_info=True)
+        return f"[Error]: One Simple API URL expansion failed: {e}"
+
+
+@tool
+def onesimple_create_qr_code(
+    content: str,
+    size: str = "",
+    image_format: str = "png",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a QR-code image URL with One Simple API.
+
+    Args:
+        content: Content to encode in the QR code.
+        size: Optional QR size preset or pixel size.
+        image_format: Image format, usually "png" or "svg".
+    """
+    if not content.strip():
+        return "[Error]: content is required."
+    try:
+        return _onesimple_get(
+            "onesimple_create_qr_code",
+            "/qr_code",
+            {
+                "message": content,
+                "size": size.strip(),
+                "format": image_format.strip() or "png",
+            },
+            config,
+        )
+    except Exception as e:
+        logger.error("onesimple_create_qr_code failed", exc_info=True)
+        return f"[Error]: One Simple API QR-code creation failed: {e}"
+
+
 BUSINESS_SERVICE_TOOLS = [
     bitly_get_bitlink,
     bitly_create_bitlink,
@@ -692,4 +1271,18 @@ BUSINESS_SERVICE_TOOLS = [
     marketstack_get_exchange,
     deepl_translate_text,
     deepl_list_languages,
+    lingvanex_translate_text,
+    lingvanex_list_languages,
+    apitemplate_list_templates,
+    apitemplate_get_account,
+    apitemplate_create_image,
+    apitemplate_create_pdf,
+    onesimple_create_pdf,
+    onesimple_create_screenshot,
+    onesimple_get_page_info,
+    onesimple_get_exchange_rate,
+    onesimple_get_image_metadata,
+    onesimple_validate_email,
+    onesimple_expand_url,
+    onesimple_create_qr_code,
 ]

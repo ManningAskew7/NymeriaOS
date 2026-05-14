@@ -130,6 +130,12 @@ Set the API key for your chosen provider:
 | `DEEPL_API_KEY` | DeepL | Optional env fallback for DeepL tools; credential vault provider `deepl` is preferred |
 | `DEEPL_API_PLAN` | DeepL | Optional plan selector, `pro` or `free`; defaults to `pro` |
 | `DEEPL_BASE_URL` | DeepL | Optional DeepL API base URL override |
+| `LINGVANEX_API_KEY` | LingvaNex | Optional env fallback for LingvaNex tools; credential vault provider `lingvanex` is preferred |
+| `LINGVANEX_BASE_URL` | LingvaNex | Optional LingvaNex API base URL override |
+| `APITEMPLATE_API_KEY` | APITemplate | Optional env fallback for APITemplate tools; credential vault provider `apitemplate` is preferred |
+| `APITEMPLATE_BASE_URL` | APITemplate | Optional APITemplate API base URL override |
+| `ONESIMPLE_API_TOKEN` | One Simple API | Optional env fallback for One Simple API tools; credential vault provider `onesimple` is preferred |
+| `ONESIMPLE_BASE_URL` | One Simple API | Optional One Simple API base URL override |
 | `TODOIST_API_KEY` | Todoist | Optional env fallback for Todoist tools; credential vault provider `todoist` is preferred |
 | `TODOIST_BASE_URL` | Todoist | Optional Todoist API base URL override |
 | `TRELLO_API_KEY` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
@@ -644,6 +650,12 @@ reachable from the backend process.
 | `DEEPL_API_KEY` | - | DeepL API key fallback |
 | `DEEPL_API_PLAN` | `pro` | DeepL API plan, `pro` or `free` |
 | `DEEPL_BASE_URL` | - | DeepL API base URL override |
+| `LINGVANEX_API_KEY` | - | LingvaNex API key fallback |
+| `LINGVANEX_BASE_URL` | `https://api-b2b.backenster.com/b1/api/v3` | LingvaNex API base URL |
+| `APITEMPLATE_API_KEY` | - | APITemplate API key fallback |
+| `APITEMPLATE_BASE_URL` | `https://api.apitemplate.io/v1` | APITemplate API base URL |
+| `ONESIMPLE_API_TOKEN` | - | One Simple API token fallback |
+| `ONESIMPLE_BASE_URL` | `https://onesimpleapi.com/api` | One Simple API base URL |
 | `TODOIST_API_KEY` | - | Todoist API key fallback |
 | `TODOIST_BASE_URL` | `https://api.todoist.com/api/v1` | Todoist API base URL |
 | `TRELLO_API_KEY` | - | Trello API key fallback |
