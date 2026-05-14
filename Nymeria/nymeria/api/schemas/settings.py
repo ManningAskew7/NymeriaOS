@@ -143,6 +143,17 @@ class ServerSettingsUpdate(BaseModel):
     airtable_access_token: Optional[str] = None
     airtable_api_key: Optional[str] = None
     airtable_base_url: Optional[str] = None
+    hubspot_access_token: Optional[str] = None
+    hubspot_base_url: Optional[str] = None
+    zendesk_email: Optional[str] = None
+    zendesk_api_token: Optional[str] = None
+    zendesk_access_token: Optional[str] = None
+    zendesk_subdomain: Optional[str] = None
+    zendesk_base_url: Optional[str] = None
+    mailchimp_api_key: Optional[str] = None
+    mailchimp_access_token: Optional[str] = None
+    mailchimp_server_prefix: Optional[str] = None
+    mailchimp_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

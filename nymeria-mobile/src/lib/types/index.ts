@@ -793,6 +793,17 @@ export interface ServerSettingsUpdate {
   airtable_access_token?: string | null;
   airtable_api_key?: string | null;
   airtable_base_url?: string | null;
+  hubspot_access_token?: string | null;
+  hubspot_base_url?: string | null;
+  zendesk_email?: string | null;
+  zendesk_api_token?: string | null;
+  zendesk_access_token?: string | null;
+  zendesk_subdomain?: string | null;
+  zendesk_base_url?: string | null;
+  mailchimp_api_key?: string | null;
+  mailchimp_access_token?: string | null;
+  mailchimp_server_prefix?: string | null;
+  mailchimp_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

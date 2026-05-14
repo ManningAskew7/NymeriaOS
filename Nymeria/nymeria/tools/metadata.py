@@ -146,6 +146,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "WORK_TRACKING_SERVICE_TOOLS",
             "PROJECT_MANAGEMENT_SERVICE_TOOLS",
             "COLLABORATION_DATA_SERVICE_TOOLS",
+            "CUSTOMER_ENGAGEMENT_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -313,6 +314,18 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "airtable_get_base_schema",
         "airtable_list_records",
         "airtable_get_record",
+        "hubspot_list_crm_objects",
+        "hubspot_search_crm_objects",
+        "hubspot_get_crm_object",
+        "zendesk_search",
+        "zendesk_get_ticket",
+        "zendesk_list_tickets",
+        "zendesk_get_user",
+        "zendesk_search_users",
+        "mailchimp_list_audiences",
+        "mailchimp_list_members",
+        "mailchimp_get_member",
+        "mailchimp_list_campaigns",
     }
 )
 

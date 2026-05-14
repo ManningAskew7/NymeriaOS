@@ -112,6 +112,17 @@ Set the API key for your chosen provider:
 | `AIRTABLE_ACCESS_TOKEN` | Airtable | Optional env fallback for Airtable tools; credential vault provider `airtable` is preferred |
 | `AIRTABLE_API_KEY` | Airtable | Optional legacy Airtable API key fallback |
 | `AIRTABLE_BASE_URL` | Airtable | Optional Airtable API base URL override |
+| `HUBSPOT_ACCESS_TOKEN` | HubSpot | Optional env fallback for HubSpot tools; credential vault provider `hubspot` is preferred |
+| `HUBSPOT_BASE_URL` | HubSpot | Optional HubSpot API base URL override |
+| `ZENDESK_EMAIL` | Zendesk | Optional env fallback email for Zendesk API-token auth |
+| `ZENDESK_API_TOKEN` | Zendesk | Optional env fallback token for Zendesk API-token auth |
+| `ZENDESK_ACCESS_TOKEN` | Zendesk | Optional env fallback bearer token for Zendesk |
+| `ZENDESK_SUBDOMAIN` | Zendesk | Optional Zendesk subdomain fallback |
+| `ZENDESK_BASE_URL` | Zendesk | Optional Zendesk API base URL override |
+| `MAILCHIMP_API_KEY` | Mailchimp | Optional env fallback for Mailchimp tools; credential vault provider `mailchimp` is preferred |
+| `MAILCHIMP_ACCESS_TOKEN` | Mailchimp | Optional Mailchimp OAuth token fallback |
+| `MAILCHIMP_SERVER_PREFIX` | Mailchimp | Optional Mailchimp server prefix such as `us21` |
+| `MAILCHIMP_BASE_URL` | Mailchimp | Optional Mailchimp Marketing API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -305,6 +316,17 @@ reachable from the backend process.
 | `AIRTABLE_ACCESS_TOKEN` | - | Airtable personal access token fallback |
 | `AIRTABLE_API_KEY` | - | Airtable legacy API key fallback |
 | `AIRTABLE_BASE_URL` | `https://api.airtable.com/v0` | Airtable API base URL |
+| `HUBSPOT_ACCESS_TOKEN` | - | HubSpot private app/OAuth token fallback |
+| `HUBSPOT_BASE_URL` | `https://api.hubapi.com` | HubSpot API base URL |
+| `ZENDESK_EMAIL` | - | Zendesk email fallback for API-token auth |
+| `ZENDESK_API_TOKEN` | - | Zendesk API token fallback |
+| `ZENDESK_ACCESS_TOKEN` | - | Zendesk OAuth access token fallback |
+| `ZENDESK_SUBDOMAIN` | - | Zendesk subdomain fallback |
+| `ZENDESK_BASE_URL` | - | Zendesk API base URL override |
+| `MAILCHIMP_API_KEY` | - | Mailchimp API key fallback |
+| `MAILCHIMP_ACCESS_TOKEN` | - | Mailchimp OAuth access token fallback |
+| `MAILCHIMP_SERVER_PREFIX` | - | Mailchimp server prefix, e.g. `us21` |
+| `MAILCHIMP_BASE_URL` | - | Mailchimp Marketing API base URL override |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

@@ -239,6 +239,28 @@ from .collaboration_data_service_integrations import (
     airtable_delete_record,
     COLLABORATION_DATA_SERVICE_TOOLS,
 )
+from .customer_engagement_service_integrations import (
+    hubspot_list_crm_objects,
+    hubspot_search_crm_objects,
+    hubspot_get_crm_object,
+    hubspot_create_crm_object,
+    hubspot_update_crm_object,
+    hubspot_archive_crm_object,
+    zendesk_search,
+    zendesk_get_ticket,
+    zendesk_list_tickets,
+    zendesk_create_ticket,
+    zendesk_update_ticket,
+    zendesk_get_user,
+    zendesk_search_users,
+    mailchimp_list_audiences,
+    mailchimp_list_members,
+    mailchimp_get_member,
+    mailchimp_add_or_update_member,
+    mailchimp_update_member_tags,
+    mailchimp_list_campaigns,
+    CUSTOMER_ENGAGEMENT_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -293,6 +315,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + WORK_TRACKING_SERVICE_TOOLS
     + PROJECT_MANAGEMENT_SERVICE_TOOLS
     + COLLABORATION_DATA_SERVICE_TOOLS
+    + CUSTOMER_ENGAGEMENT_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -533,6 +556,26 @@ __all__ = [
     "airtable_update_records",
     "airtable_delete_record",
     "COLLABORATION_DATA_SERVICE_TOOLS",
+    "hubspot_list_crm_objects",
+    "hubspot_search_crm_objects",
+    "hubspot_get_crm_object",
+    "hubspot_create_crm_object",
+    "hubspot_update_crm_object",
+    "hubspot_archive_crm_object",
+    "zendesk_search",
+    "zendesk_get_ticket",
+    "zendesk_list_tickets",
+    "zendesk_create_ticket",
+    "zendesk_update_ticket",
+    "zendesk_get_user",
+    "zendesk_search_users",
+    "mailchimp_list_audiences",
+    "mailchimp_list_members",
+    "mailchimp_get_member",
+    "mailchimp_add_or_update_member",
+    "mailchimp_update_member_tags",
+    "mailchimp_list_campaigns",
+    "CUSTOMER_ENGAGEMENT_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

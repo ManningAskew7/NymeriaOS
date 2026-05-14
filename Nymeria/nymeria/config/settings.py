@@ -428,6 +428,17 @@ class Settings(BaseSettings):
     airtable_access_token: Optional[str] = Field(default=None, description="Airtable personal access token fallback")
     airtable_api_key: Optional[str] = Field(default=None, description="Airtable legacy API key fallback")
     airtable_base_url: str = Field(default="https://api.airtable.com/v0", description="Airtable API base URL")
+    hubspot_access_token: Optional[str] = Field(default=None, description="HubSpot private app/OAuth token fallback")
+    hubspot_base_url: str = Field(default="https://api.hubapi.com", description="HubSpot API base URL")
+    zendesk_email: Optional[str] = Field(default=None, description="Zendesk email fallback for API token auth")
+    zendesk_api_token: Optional[str] = Field(default=None, description="Zendesk API token fallback")
+    zendesk_access_token: Optional[str] = Field(default=None, description="Zendesk OAuth access token fallback")
+    zendesk_subdomain: Optional[str] = Field(default=None, description="Zendesk subdomain fallback")
+    zendesk_base_url: Optional[str] = Field(default=None, description="Zendesk API base URL override")
+    mailchimp_api_key: Optional[str] = Field(default=None, description="Mailchimp API key fallback")
+    mailchimp_access_token: Optional[str] = Field(default=None, description="Mailchimp OAuth access token fallback")
+    mailchimp_server_prefix: Optional[str] = Field(default=None, description="Mailchimp server prefix, e.g. us21")
+    mailchimp_base_url: Optional[str] = Field(default=None, description="Mailchimp Marketing API base URL override")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",
