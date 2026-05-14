@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (590)
+### Optional: Service Integration Tools (609)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -668,6 +668,25 @@ in the credential vault for provider-specific saved connections scoped to
 | 588 | `compression_gunzip_text` | Integrations | SAFE | Decompress base64 gzip text |
 | 589 | `compression_zip_text_files` | Integrations | SAFE | Create a base64 zip from text files |
 | 590 | `compression_unzip_text_files` | Integrations | SAFE | Extract base64 zip text files |
+| 591 | `aws_lambda_list_functions` | Integrations | SAFE | List AWS Lambda functions |
+| 592 | `aws_lambda_invoke` | Integrations | MODERATE | Invoke an AWS Lambda function |
+| 593 | `aws_sns_list_topics` | Integrations | SAFE | List AWS SNS topics |
+| 594 | `aws_sns_create_topic` | Integrations | MODERATE | Create an AWS SNS topic |
+| 595 | `aws_sns_publish` | Integrations | MODERATE | Publish a message to an AWS SNS topic |
+| 596 | `aws_sns_delete_topic` | Integrations | MODERATE | Delete an AWS SNS topic |
+| 597 | `aws_ses_send_email` | Integrations | MODERATE | Send email with Amazon SES |
+| 598 | `aws_ses_list_identities` | Integrations | SAFE | List Amazon SES identities |
+| 599 | `aws_ses_verify_email_identity` | Integrations | MODERATE | Start Amazon SES email identity verification |
+| 600 | `aws_ses_list_templates` | Integrations | SAFE | List Amazon SES email templates |
+| 601 | `aws_ses_get_template` | Integrations | SAFE | Get an Amazon SES email template |
+| 602 | `aws_ses_create_template` | Integrations | MODERATE | Create an Amazon SES email template |
+| 603 | `aws_ses_update_template` | Integrations | MODERATE | Update an Amazon SES email template |
+| 604 | `aws_ses_delete_template` | Integrations | MODERATE | Delete an Amazon SES email template |
+| 605 | `aws_textract_analyze_expense` | Integrations | MODERATE | Analyze a receipt or invoice with Amazon Textract |
+| 606 | `aws_transcribe_start_job` | Integrations | MODERATE | Start an Amazon Transcribe transcription job |
+| 607 | `aws_transcribe_get_job` | Integrations | SAFE | Get an Amazon Transcribe job |
+| 608 | `aws_transcribe_list_jobs` | Integrations | SAFE | List Amazon Transcribe jobs |
+| 609 | `aws_transcribe_delete_job` | Integrations | MODERATE | Delete an Amazon Transcribe job |
 
 ### Optional: Private B Tools (4)
 
@@ -1246,7 +1265,10 @@ provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `travisci.api_token`, and `jenkins.base_url` plus `jenkins.username` and
 `jenkins.api_key`. File-storage credentials use `dropbox.access_token`,
 `nextcloud.webdav_url` plus either basic auth or an access token, and
-`s3.access_key_id` plus `s3.secret_access_key`. Business-service credentials use `bitly.access_token`,
+`s3.access_key_id` plus `s3.secret_access_key`. AWS service credentials use
+`aws.access_key_id` plus `aws.secret_access_key`, with optional
+`aws.session_token`, `aws.region`, and `aws.endpoint_url`; existing S3/AWS
+connections can also be reused for AWS service tools. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
@@ -1452,6 +1474,18 @@ Credential providers and fallback env vars:
 - Dropbox: provider `dropbox`, fields `access_token`, `token`, or `value`; env fallback `DROPBOX_ACCESS_TOKEN`.
 - Nextcloud: provider `nextcloud`, field `webdav_url` plus either `username` and `password` or `access_token`; env fallbacks `NEXTCLOUD_WEBDAV_URL`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD`, and `NEXTCLOUD_ACCESS_TOKEN`.
 - S3: provider `s3`, fields `access_key_id`, `secret_access_key`, optional `session_token`, `region`, `endpoint_url`, and `force_path_style`; env fallbacks `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_ENDPOINT_URL_S3`, and `S3_FORCE_PATH_STYLE`.
+
+### AWS Service Tools
+
+This batch includes:
+- `aws_lambda_list_functions(region_name?, marker?, limit?)` and `aws_lambda_invoke(function_name, payload_json?, qualifier?, invocation_type?, log_type?, region_name?)`.
+- `aws_sns_list_topics(region_name?, next_token?)`, `aws_sns_create_topic(name, attributes_json?, region_name?)`, `aws_sns_publish(topic_arn, message, subject?, message_attributes_json?, message_group_id?, message_deduplication_id?, region_name?)`, and `aws_sns_delete_topic(topic_arn, region_name?)`.
+- `aws_ses_send_email(source, to_addresses, subject, text_body?, html_body?, cc_addresses?, bcc_addresses?, reply_to_addresses?, region_name?)`, `aws_ses_list_identities(identity_type?, next_token?, limit?, region_name?)`, `aws_ses_verify_email_identity(email_address, region_name?)`, `aws_ses_list_templates(next_token?, limit?, region_name?)`, `aws_ses_get_template(template_name, region_name?)`, `aws_ses_create_template(template_name, subject_part, text_part?, html_part?, region_name?)`, `aws_ses_update_template(template_name, subject_part, text_part?, html_part?, region_name?)`, and `aws_ses_delete_template(template_name, region_name?)`.
+- `aws_textract_analyze_expense(document_base64, simplify?, region_name?)` for receipt/invoice image or PDF bytes.
+- `aws_transcribe_start_job(job_name, media_file_uri, language_code?, detect_language?, output_bucket?, output_key?, settings_json?, region_name?)`, `aws_transcribe_get_job(job_name, region_name?)`, `aws_transcribe_list_jobs(status?, job_name_contains?, next_token?, limit?, region_name?)`, and `aws_transcribe_delete_job(job_name, region_name?)`.
+
+Credential providers and fallback env vars:
+- AWS services: provider `aws`, fields `access_key_id`, `secret_access_key`, optional `session_token`, `region`, and `endpoint_url`; aliases `amazon_web_services`, `s3`, and `aws_s3` are accepted so saved S3 connections can be reused. Env fallback supports `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, and `AWS_REGION`.
 
 ### Business And Language Service Tools
 

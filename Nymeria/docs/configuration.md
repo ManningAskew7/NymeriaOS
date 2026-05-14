@@ -100,10 +100,10 @@ Set the API key for your chosen provider:
 | `NEXTCLOUD_USERNAME` | Nextcloud | Optional Nextcloud username fallback |
 | `NEXTCLOUD_PASSWORD` | Nextcloud | Optional Nextcloud password or app password fallback |
 | `NEXTCLOUD_ACCESS_TOKEN` | Nextcloud | Optional Nextcloud OAuth access token fallback |
-| `AWS_ACCESS_KEY_ID` | S3 | Optional env fallback for S3 file tools; credential vault provider `s3` is preferred |
-| `AWS_SECRET_ACCESS_KEY` | S3 | Optional S3 secret access key fallback |
-| `AWS_SESSION_TOKEN` | S3 | Optional temporary S3 session token fallback |
-| `AWS_REGION` | S3 | Optional S3 region fallback; defaults to `us-east-1` |
+| `AWS_ACCESS_KEY_ID` | S3 / AWS service tools | Optional env fallback for S3 and AWS service tools; credential vault provider `s3` or `aws` is preferred |
+| `AWS_SECRET_ACCESS_KEY` | S3 / AWS service tools | Optional AWS secret access key fallback |
+| `AWS_SESSION_TOKEN` | S3 / AWS service tools | Optional temporary AWS session token fallback |
+| `AWS_REGION` | S3 / AWS service tools | Optional AWS region fallback; defaults to `us-east-1` |
 | `AWS_ENDPOINT_URL_S3` | S3 | Optional S3-compatible endpoint URL |
 | `S3_FORCE_PATH_STYLE` | S3 | Optional path-style addressing toggle for S3-compatible providers |
 | `CLEARBIT_API_KEY` | Clearbit | Optional env fallback for Clearbit enrichment tools; credential vault provider `clearbit` is preferred |
@@ -546,10 +546,10 @@ reachable from the backend process.
 | `NEXTCLOUD_USERNAME` | - | Nextcloud username fallback |
 | `NEXTCLOUD_PASSWORD` | - | Nextcloud password or app password fallback |
 | `NEXTCLOUD_ACCESS_TOKEN` | - | Nextcloud OAuth access token fallback |
-| `AWS_ACCESS_KEY_ID` | - | S3 access key ID fallback |
-| `AWS_SECRET_ACCESS_KEY` | - | S3 secret access key fallback |
-| `AWS_SESSION_TOKEN` | - | S3 session token fallback |
-| `AWS_REGION` | `us-east-1` | S3 region fallback |
+| `AWS_ACCESS_KEY_ID` | - | AWS access key ID fallback for S3 and AWS service tools |
+| `AWS_SECRET_ACCESS_KEY` | - | AWS secret access key fallback for S3 and AWS service tools |
+| `AWS_SESSION_TOKEN` | - | AWS session token fallback for S3 and AWS service tools |
+| `AWS_REGION` | `us-east-1` | AWS region fallback for S3 and AWS service tools |
 | `AWS_ENDPOINT_URL_S3` | - | S3-compatible endpoint URL fallback |
 | `S3_FORCE_PATH_STYLE` | `false` | Use path-style S3 addressing |
 | `CLEARBIT_API_KEY` | - | Clearbit API key fallback |
