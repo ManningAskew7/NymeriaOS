@@ -130,6 +130,28 @@ from .media_discovery_service_integrations import (
     spotify_get_playlist,
     MEDIA_DISCOVERY_SERVICE_TOOLS,
 )
+from .community_publishing_service_integrations import (
+    reddit_search_posts,
+    reddit_list_subreddit_posts,
+    reddit_get_post,
+    reddit_get_subreddit,
+    reddit_get_user,
+    reddit_create_post,
+    reddit_create_comment,
+    reddit_delete_thing,
+    discourse_search,
+    discourse_list_latest_topics,
+    discourse_get_topic,
+    discourse_get_post,
+    discourse_create_topic,
+    discourse_create_post,
+    discourse_update_post,
+    medium_get_me,
+    medium_list_publications,
+    medium_create_post,
+    medium_create_publication_post,
+    COMMUNITY_PUBLISHING_SERVICE_TOOLS,
+)
 from .developer_platform_integrations import (
     github_get_repository,
     github_search_repositories,
@@ -578,6 +600,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + UTILITY_INTEGRATION_TOOLS
     + PUBLIC_INFO_TOOLS
     + MEDIA_DISCOVERY_SERVICE_TOOLS
+    + COMMUNITY_PUBLISHING_SERVICE_TOOLS
     + DEVELOPER_PLATFORM_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
@@ -736,6 +759,26 @@ __all__ = [
     "spotify_get_album",
     "spotify_get_playlist",
     "MEDIA_DISCOVERY_SERVICE_TOOLS",
+    "reddit_search_posts",
+    "reddit_list_subreddit_posts",
+    "reddit_get_post",
+    "reddit_get_subreddit",
+    "reddit_get_user",
+    "reddit_create_post",
+    "reddit_create_comment",
+    "reddit_delete_thing",
+    "discourse_search",
+    "discourse_list_latest_topics",
+    "discourse_get_topic",
+    "discourse_get_post",
+    "discourse_create_topic",
+    "discourse_create_post",
+    "discourse_update_post",
+    "medium_get_me",
+    "medium_list_publications",
+    "medium_create_post",
+    "medium_create_publication_post",
+    "COMMUNITY_PUBLISHING_SERVICE_TOOLS",
     "github_get_repository",
     "github_search_repositories",
     "github_list_issues",

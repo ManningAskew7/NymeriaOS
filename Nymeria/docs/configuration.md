@@ -260,6 +260,18 @@ Set the API key for your chosen provider:
 | `SPOTIFY_CLIENT_SECRET` | Spotify | Optional Spotify client secret for client-credentials catalog tools |
 | `SPOTIFY_BASE_URL` | Spotify | Optional Spotify Web API base URL override |
 | `SPOTIFY_ACCOUNTS_BASE_URL` | Spotify | Optional Spotify Accounts API base URL override |
+| `REDDIT_ACCESS_TOKEN` | Reddit | Optional Reddit OAuth bearer token fallback; credential vault provider `reddit` is preferred |
+| `REDDIT_REFRESH_TOKEN` | Reddit | Optional Reddit refresh token fallback |
+| `REDDIT_CLIENT_ID` | Reddit | Optional Reddit OAuth client ID fallback |
+| `REDDIT_CLIENT_SECRET` | Reddit | Optional Reddit OAuth client secret fallback |
+| `REDDIT_BASE_URL` | Reddit | Optional Reddit OAuth API base URL override |
+| `REDDIT_PUBLIC_BASE_URL` | Reddit | Optional Reddit public JSON API base URL override |
+| `REDDIT_TOKEN_URL` | Reddit | Optional Reddit OAuth token URL override |
+| `DISCOURSE_API_KEY` | Discourse | Optional Discourse API key fallback; credential vault provider `discourse` is preferred |
+| `DISCOURSE_API_USERNAME` | Discourse | Optional Discourse API username fallback |
+| `DISCOURSE_BASE_URL` | Discourse | Discourse forum base URL for native tools |
+| `MEDIUM_ACCESS_TOKEN` | Medium | Optional Medium access token fallback; credential vault provider `medium` is preferred |
+| `MEDIUM_BASE_URL` | Medium | Optional Medium API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -601,6 +613,18 @@ reachable from the backend process.
 | `SPOTIFY_CLIENT_SECRET` | - | Spotify client secret for client-credentials catalog tools |
 | `SPOTIFY_BASE_URL` | `https://api.spotify.com/v1` | Spotify Web API base URL |
 | `SPOTIFY_ACCOUNTS_BASE_URL` | `https://accounts.spotify.com` | Spotify Accounts API base URL |
+| `REDDIT_ACCESS_TOKEN` | - | Optional Reddit OAuth bearer token fallback |
+| `REDDIT_REFRESH_TOKEN` | - | Optional Reddit OAuth refresh token fallback |
+| `REDDIT_CLIENT_ID` | - | Reddit OAuth client ID fallback |
+| `REDDIT_CLIENT_SECRET` | - | Reddit OAuth client secret fallback |
+| `REDDIT_BASE_URL` | `https://oauth.reddit.com` | Reddit OAuth API base URL |
+| `REDDIT_PUBLIC_BASE_URL` | `https://www.reddit.com` | Reddit public JSON API base URL |
+| `REDDIT_TOKEN_URL` | `https://www.reddit.com/api/v1/access_token` | Reddit OAuth token URL |
+| `DISCOURSE_API_KEY` | - | Discourse API key fallback |
+| `DISCOURSE_API_USERNAME` | - | Discourse API username fallback |
+| `DISCOURSE_BASE_URL` | - | Discourse forum base URL |
+| `MEDIUM_ACCESS_TOKEN` | - | Medium access token fallback |
+| `MEDIUM_BASE_URL` | `https://api.medium.com/v1` | Medium API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

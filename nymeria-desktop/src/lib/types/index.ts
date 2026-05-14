@@ -1016,6 +1016,18 @@ export interface ServerSettingsUpdate {
   spotify_client_secret?: string | null;
   spotify_base_url?: string | null;
   spotify_accounts_base_url?: string | null;
+  reddit_access_token?: string | null;
+  reddit_refresh_token?: string | null;
+  reddit_client_id?: string | null;
+  reddit_client_secret?: string | null;
+  reddit_base_url?: string | null;
+  reddit_public_base_url?: string | null;
+  reddit_token_url?: string | null;
+  discourse_api_key?: string | null;
+  discourse_api_username?: string | null;
+  discourse_base_url?: string | null;
+  medium_access_token?: string | null;
+  medium_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;
