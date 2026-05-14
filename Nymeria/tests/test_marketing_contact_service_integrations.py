@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -135,11 +136,142 @@ def test_mailerlite_create_subscriber_uses_classic_header(monkeypatch):
     assert captured["json_body"]["groups"] == ["g1", "g2"]
 
 
+def test_customerio_uses_app_and_tracking_auth(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("CUSTOMERIO_APP_API_KEY", "app-key")
+    monkeypatch.setenv("CUSTOMERIO_TRACKING_SITE_ID", "site-1")
+    monkeypatch.setenv("CUSTOMERIO_TRACKING_API_KEY", "track-key")
+    captured = []
+
+    def fake_request(method, url, **kwargs):
+        captured.append({"method": method, "url": url, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    assert json.loads(tools.customerio_list_campaigns.func())["ok"] is True
+    assert json.loads(tools.customerio_track_event.func(customer_id="cust-1", event_name="signed_up"))["ok"] is True
+
+    assert captured[0]["method"] == "GET"
+    assert captured[0]["url"] == "https://api.customer.io/v1/campaigns"
+    assert captured[0]["headers"]["Authorization"] == "Bearer app-key"
+    assert captured[1]["method"] == "POST"
+    assert captured[1]["url"] == "https://track.customer.io/api/v1/customers/cust-1/events"
+    expected_basic = base64.b64encode(b"site-1:track-key").decode()
+    assert captured[1]["headers"]["Authorization"] == f"Basic {expected_basic}"
+    assert captured[1]["json_body"]["name"] == "signed_up"
+
+
+def test_iterable_track_event_uses_bulk_endpoint(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("ITERABLE_API_KEY", "iter-key")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"code": "Success"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.iterable_track_event.func(
+            event_name="signed_up",
+            email="ada@example.com",
+            data_fields_json='{"plan": "pro"}',
+            campaign_id=42,
+        )
+    )
+
+    assert result["code"] == "Success"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.iterable.com/api/events/trackBulk"
+    assert captured["headers"]["Api_Key"] == "iter-key"
+    assert captured["json_body"]["events"][0]["email"] == "ada@example.com"
+    assert captured["json_body"]["events"][0]["dataFields"] == {"plan": "pro"}
+    assert captured["json_body"]["events"][0]["campaignId"] == 42
+
+
+def test_posthog_capture_event_includes_project_key(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("POSTHOG_API_KEY", "ph-key")
+    monkeypatch.setenv("POSTHOG_BASE_URL", "https://posthog.example")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"status": "ok"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.posthog_capture_event.func(
+            event_name="signed_up",
+            distinct_id="user-1",
+            properties_json='{"plan": "pro"}',
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://posthog.example/capture"
+    assert captured["json_body"]["api_key"] == "ph-key"
+    assert captured["json_body"]["properties"]["distinct_id"] == "user-1"
+    assert captured["json_body"]["properties"]["plan"] == "pro"
+
+
+def test_segment_identify_uses_basic_write_key(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("SEGMENT_WRITE_KEY", "seg-write")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"success": True}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.segment_identify.func(
+            user_id="user-1",
+            traits_json='{"email": "ada@example.com"}',
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.segment.io/v1/identify"
+    expected_basic = base64.b64encode(b"seg-write:").decode()
+    assert captured["headers"]["Authorization"] == f"Basic {expected_basic}"
+    assert captured["json_body"]["userId"] == "user-1"
+    assert captured["json_body"]["traits"]["email"] == "ada@example.com"
+
+
+def test_new_marketing_missing_keys_return_setup_hints(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_settings_value", lambda name: None)
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+
+    assert "CUSTOMERIO_APP_API_KEY" in tools.customerio_list_campaigns.func()
+    assert "CUSTOMERIO_TRACKING_SITE_ID" in tools.customerio_track_event.func("cust-1", "signed_up")
+    assert "ITERABLE_API_KEY" in tools.iterable_list_lists.func()
+    assert "POSTHOG_API_KEY" in tools.posthog_capture_event.func("signed_up", "user-1")
+    assert "SEGMENT_WRITE_KEY" in tools.segment_identify.func(user_id="user-1")
+
+
 def test_marketing_contact_tools_are_registered_with_metadata():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = [
+        "customerio_list_campaigns",
+        "customerio_get_campaign",
+        "iterable_list_lists",
+        "iterable_get_user",
         "activecampaign_list_contacts",
         "activecampaign_get_contact",
         "activecampaign_list_lists",
@@ -167,6 +299,20 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "getresponse_delete_contact",
         "mailerlite_create_subscriber",
         "mailerlite_update_subscriber",
+        "customerio_upsert_customer",
+        "customerio_track_event",
+        "customerio_track_anonymous_event",
+        "customerio_update_segment",
+        "iterable_upsert_user",
+        "iterable_track_event",
+        "iterable_update_list_subscribers",
+        "posthog_capture_event",
+        "posthog_identify",
+        "posthog_create_alias",
+        "posthog_track_page_or_screen",
+        "segment_identify",
+        "segment_track",
+        "segment_group",
     ]
 
     for name in safe_names:
@@ -188,9 +334,15 @@ def test_marketing_contact_tool_schemas_hide_runtime_config():
     from nymeria.tools.marketing_contact_service_integrations import (
         activecampaign_sync_contact,
         convertkit_add_subscriber_to_form,
+        customerio_track_event,
         mailerlite_create_subscriber,
+        posthog_capture_event,
+        segment_track,
     )
 
     assert "config" not in activecampaign_sync_contact.args
     assert "config" not in convertkit_add_subscriber_to_form.args
+    assert "config" not in customerio_track_event.args
     assert "config" not in mailerlite_create_subscriber.args
+    assert "config" not in posthog_capture_event.args
+    assert "config" not in segment_track.args

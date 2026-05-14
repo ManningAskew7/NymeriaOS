@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (665)
+### Optional: Service Integration Tools (683)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -743,6 +743,24 @@ in the credential vault for provider-specific saved connections scoped to
 | 663 | `salesmate_create_record` | Integrations | MODERATE | Create a Salesmate record |
 | 664 | `salesmate_update_record` | Integrations | MODERATE | Update a Salesmate record |
 | 665 | `salesmate_delete_record` | Integrations | MODERATE | Delete a Salesmate record |
+| 666 | `customerio_list_campaigns` | Integrations | SAFE | List Customer.io campaigns |
+| 667 | `customerio_get_campaign` | Integrations | SAFE | Get a Customer.io campaign |
+| 668 | `customerio_upsert_customer` | Integrations | MODERATE | Create or update a Customer.io customer profile |
+| 669 | `customerio_track_event` | Integrations | MODERATE | Track a Customer.io event for a known customer |
+| 670 | `customerio_track_anonymous_event` | Integrations | MODERATE | Track a Customer.io anonymous event |
+| 671 | `customerio_update_segment` | Integrations | MODERATE | Add or remove customers from a Customer.io manual segment |
+| 672 | `iterable_list_lists` | Integrations | SAFE | List Iterable static lists |
+| 673 | `iterable_get_user` | Integrations | SAFE | Get an Iterable user by email or user ID |
+| 674 | `iterable_upsert_user` | Integrations | MODERATE | Create or update an Iterable user |
+| 675 | `iterable_track_event` | Integrations | MODERATE | Track an Iterable event |
+| 676 | `iterable_update_list_subscribers` | Integrations | MODERATE | Subscribe or unsubscribe Iterable list members |
+| 677 | `posthog_capture_event` | Integrations | MODERATE | Capture a PostHog event |
+| 678 | `posthog_identify` | Integrations | MODERATE | Identify a PostHog user |
+| 679 | `posthog_create_alias` | Integrations | MODERATE | Create a PostHog alias |
+| 680 | `posthog_track_page_or_screen` | Integrations | MODERATE | Track a PostHog page or screen view |
+| 681 | `segment_identify` | Integrations | MODERATE | Send a Segment identify call |
+| 682 | `segment_track` | Integrations | MODERATE | Send a Segment track event |
+| 683 | `segment_group` | Integrations | MODERATE | Send a Segment group call |
 
 ### Optional: Private B Tools (4)
 
@@ -1314,7 +1332,9 @@ connections in Settings > Connections with these provider names and fields:
 `philips_hue.access_token` plus `philips_hue.username`,
 `activecampaign.api_key` plus `activecampaign.api_url`,
 `convertkit.api_secret`, `getresponse.api_key`, and
-`mailerlite.api_key`, plus
+`mailerlite.api_key`, `customerio.tracking_site_id` plus
+`customerio.tracking_api_key` and optional `customerio.app_api_key`,
+`iterable.api_key`, `posthog.api_key`, and `segment.write_key`, plus
 `github.access_token` and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Build/CI credentials use `circleci.api_key`,
@@ -1494,12 +1514,20 @@ This batch includes:
 - `convertkit_get_account()`, `convertkit_list_forms()`, `convertkit_list_tags()`, `convertkit_list_subscribers(...)`, `convertkit_add_subscriber_to_form(...)`, and `convertkit_add_subscriber_to_tag(...)`. Reads are SAFE; subscription writes are MODERATE.
 - `getresponse_list_campaigns()`, `getresponse_list_contacts(...)`, `getresponse_get_contact(contact_id)`, `getresponse_create_contact(...)`, `getresponse_update_contact(...)`, and `getresponse_delete_contact(contact_id)`. Reads are SAFE; contact writes/deletes are MODERATE.
 - `mailerlite_list_subscribers(...)`, `mailerlite_get_subscriber(subscriber_id)`, `mailerlite_create_subscriber(...)`, `mailerlite_update_subscriber(...)`, and `mailerlite_list_groups(...)`. Reads are SAFE; subscriber writes are MODERATE.
+- `customerio_list_campaigns()`, `customerio_get_campaign(campaign_id)`, `customerio_upsert_customer(...)`, `customerio_track_event(...)`, `customerio_track_anonymous_event(...)`, and `customerio_update_segment(...)`. Campaign reads are SAFE; customer, event, and segment writes are MODERATE.
+- `iterable_list_lists()`, `iterable_get_user(identifier, value)`, `iterable_upsert_user(...)`, `iterable_track_event(...)`, and `iterable_update_list_subscribers(...)`. List/user reads are SAFE; user, event, and list membership writes are MODERATE.
+- `posthog_capture_event(...)`, `posthog_identify(...)`, `posthog_create_alias(...)`, and `posthog_track_page_or_screen(...)`. All PostHog event writes are MODERATE.
+- `segment_identify(...)`, `segment_track(...)`, and `segment_group(...)`. All Segment calls are MODERATE because they emit analytics/customer data.
 
 Credential providers and fallback env vars:
 - ActiveCampaign: provider `activecampaign`, fields `api_key` and `api_url` / `base_url`; env fallbacks `ACTIVECAMPAIGN_API_KEY` and `ACTIVECAMPAIGN_BASE_URL`.
 - ConvertKit: provider `convertkit`, fields `api_secret`, `api_key`, or `value`; env fallback `CONVERTKIT_API_SECRET`.
 - GetResponse: provider `getresponse`, fields `api_key`, `access_token`, or `value`; env fallback `GETRESPONSE_API_KEY`.
 - MailerLite: provider `mailerlite`, fields `api_key`, `access_token`, or `value`; env fallback `MAILERLITE_API_KEY`. Set `MAILERLITE_CLASSIC_API=true` or credential field `classic_api=true` for Classic API header style.
+- Customer.io: provider `customerio`, fields `tracking_site_id`, `tracking_api_key`, optional `app_api_key`, and optional `region` / base URLs; env fallbacks `CUSTOMERIO_TRACKING_SITE_ID`, `CUSTOMERIO_TRACKING_API_KEY`, `CUSTOMERIO_APP_API_KEY`, `CUSTOMERIO_REGION`, `CUSTOMERIO_TRACKING_BASE_URL`, and `CUSTOMERIO_APP_BASE_URL`.
+- Iterable: provider `iterable`, fields `api_key` and optional `base_url`; env fallbacks `ITERABLE_API_KEY` and `ITERABLE_BASE_URL`.
+- PostHog: provider `posthog`, fields `api_key` / `project_api_key` and optional `base_url`; env fallbacks `POSTHOG_API_KEY` and `POSTHOG_BASE_URL`.
+- Segment: provider `segment`, field `write_key`; env fallbacks `SEGMENT_WRITE_KEY` and `SEGMENT_BASE_URL`.
 
 ### Developer Platform Tools
 
