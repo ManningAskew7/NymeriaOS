@@ -158,6 +158,14 @@ Set the API key for your chosen provider:
 | `MOCEAN_BASE_URL` | Mocean | Optional Mocean API base URL override |
 | `MSG91_AUTH_KEY` | MSG91 | Optional MSG91 authentication key fallback; credential vault provider `msg91` is preferred |
 | `MSG91_BASE_URL` | MSG91 | Optional MSG91 API base URL override |
+| `PLIVO_AUTH_ID` | Plivo | Optional Plivo auth ID fallback; credential vault provider `plivo` is preferred |
+| `PLIVO_AUTH_TOKEN` | Plivo | Optional Plivo auth token fallback |
+| `PLIVO_BASE_URL` | Plivo | Optional Plivo API base URL override |
+| `VONAGE_API_KEY` | Vonage | Optional Vonage API key fallback; credential vault provider `vonage` is preferred |
+| `VONAGE_API_SECRET` | Vonage | Optional Vonage API secret fallback |
+| `VONAGE_BASE_URL` | Vonage | Optional Vonage REST API base URL override |
+| `SEVEN_API_KEY` | seven.io | Optional seven.io API key fallback; credential vault provider `seven` is preferred |
+| `SEVEN_BASE_URL` | seven.io | Optional seven.io API base URL override |
 | `STRIPE_SECRET_KEY` | Stripe | Optional env fallback for Stripe tools; credential vault provider `stripe` is preferred |
 | `STRIPE_BASE_URL` | Stripe | Optional Stripe API base URL override |
 | `SHOPIFY_SHOP` | Shopify | Optional Shopify shop subdomain or myshopify.com host fallback; credential vault provider `shopify` is preferred |
@@ -548,6 +556,14 @@ reachable from the backend process.
 | `MOCEAN_BASE_URL` | `https://rest.moceanapi.com` | Mocean API base URL |
 | `MSG91_AUTH_KEY` | - | MSG91 authentication key fallback |
 | `MSG91_BASE_URL` | `https://api.msg91.com/api` | MSG91 API base URL |
+| `PLIVO_AUTH_ID` | - | Plivo auth ID fallback |
+| `PLIVO_AUTH_TOKEN` | - | Plivo auth token fallback |
+| `PLIVO_BASE_URL` | `https://api.plivo.com/v1` | Plivo API base URL |
+| `VONAGE_API_KEY` | - | Vonage API key fallback |
+| `VONAGE_API_SECRET` | - | Vonage API secret fallback |
+| `VONAGE_BASE_URL` | `https://rest.nexmo.com` | Vonage REST API base URL |
+| `SEVEN_API_KEY` | - | seven.io API key fallback |
+| `SEVEN_BASE_URL` | `https://gateway.seven.io/api` | seven.io API base URL |
 | `STRIPE_SECRET_KEY` | - | Stripe secret key fallback |
 | `STRIPE_BASE_URL` | `https://api.stripe.com/v1` | Stripe API base URL |
 | `SHOPIFY_SHOP` | - | Shopify shop subdomain or myshopify.com host fallback |

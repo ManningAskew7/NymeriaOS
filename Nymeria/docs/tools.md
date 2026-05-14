@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (490)
+### Optional: Service Integration Tools (496)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -568,6 +568,12 @@ in the credential vault for provider-specific saved connections scoped to
 | 488 | `monica_create_record` | Integrations | MODERATE | Create a Monica CRM record |
 | 489 | `monica_update_record` | Integrations | MODERATE | Update a Monica CRM record |
 | 490 | `monica_delete_record` | Integrations | MODERATE | Delete a Monica CRM record |
+| 491 | `plivo_send_message` | Integrations | MODERATE | Send SMS or MMS messages with Plivo |
+| 492 | `plivo_get_account` | Integrations | SAFE | Get Plivo account metadata |
+| 493 | `vonage_send_sms` | Integrations | MODERATE | Send SMS messages with Vonage |
+| 494 | `vonage_get_balance` | Integrations | SAFE | Get Vonage account balance |
+| 495 | `seven_send_sms` | Integrations | MODERATE | Send SMS messages with seven.io |
+| 496 | `seven_get_balance` | Integrations | SAFE | Get seven.io account balance |
 
 ### Optional: Private B Tools (4)
 
@@ -1414,6 +1420,7 @@ This batch includes:
 - `twilio_send_message(...)`, `twilio_list_messages(...)`, `twilio_get_message(message_sid)`, and `twilio_make_call(...)`. Send/call operations are MODERATE because they contact external recipients and can consume telecom spend.
 - `sendgrid_send_email(...)`, `sendgrid_list_contacts(...)`, `sendgrid_get_contact(contact_id)`, `sendgrid_upsert_contacts(...)`, and `sendgrid_list_lists(...)`. Send/upsert operations are MODERATE because they send email or change marketing-contact data.
 - `mailgun_send_email(...)`, `mailgun_list_events(...)`, and `mailgun_get_domain()`. Email sending is MODERATE because it contacts external recipients and consumes sending quota.
+- `plivo_send_message(...)`, `plivo_get_account()`, `vonage_send_sms(...)`, `vonage_get_balance()`, `seven_send_sms(...)`, and `seven_get_balance()`. Sends are MODERATE because they contact external recipients and can consume telecom spend; account/balance reads are SAFE.
 
 Credential providers and fallback env vars:
 - Twilio: provider `twilio`, fields `account_sid` / `accountSid` / `sid`, `auth_token` / `authToken` / `api_key_secret` / `apiKeySecret` / `token` / `value`, and optional `api_key_sid` / `apiKeySid`. Env fallback supports `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and optional `TWILIO_API_KEY_SID`. Use `base_url` / `url` or `TWILIO_BASE_URL` for non-default API roots.
@@ -1425,6 +1432,9 @@ Credential providers and fallback env vars:
 - MessageBird: provider `messagebird`, fields `access_key`, `accessKey`, `api_key`, `token`, or `value`; env fallback `MESSAGEBIRD_ACCESS_KEY`. Use `base_url` / `url` or `MESSAGEBIRD_BASE_URL` for non-default API roots.
 - Mocean: provider `mocean`, fields `api_key` / `mocean-api-key` plus `api_secret` / `mocean-api-secret`; env fallback `MOCEAN_API_KEY` and `MOCEAN_API_SECRET`. Use `base_url` / `url` or `MOCEAN_BASE_URL` for non-default API roots.
 - MSG91: provider `msg91`, fields `auth_key`, `authkey`, `api_key`, `token`, or `value`; env fallback `MSG91_AUTH_KEY`. Use `base_url` / `url` or `MSG91_BASE_URL` for non-default API roots.
+- Plivo: provider `plivo`, fields `auth_id` plus `auth_token`; env fallback `PLIVO_AUTH_ID` and `PLIVO_AUTH_TOKEN`. Use `base_url` / `url` or `PLIVO_BASE_URL` for non-default API roots.
+- Vonage: provider `vonage`, fields `api_key` plus `api_secret`; env fallback `VONAGE_API_KEY` and `VONAGE_API_SECRET`. Use `base_url` / `url` or `VONAGE_BASE_URL` for non-default API roots.
+- seven.io: provider `seven`, fields `api_key`, `token`, or `value`; env fallback `SEVEN_API_KEY`. Use `base_url` / `url` or `SEVEN_BASE_URL` for non-default API roots.
 
 ### Commerce Billing Service Tools
 

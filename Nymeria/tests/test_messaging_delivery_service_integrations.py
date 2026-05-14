@@ -557,6 +557,113 @@ def test_msg91_send_sms_uses_env_auth_key(monkeypatch):
     assert captured["params"]["mobiles"] == "+15550000002,+15550000003"
 
 
+def test_plivo_send_message_uses_env_basic_auth(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("PLIVO_AUTH_ID", "MA123")
+    monkeypatch.setenv("PLIVO_AUTH_TOKEN", "plivo-token")
+    monkeypatch.setenv("PLIVO_BASE_URL", "https://plivo.example/v1")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"message_uuid": ["uuid-1"], "api_id": "api-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.plivo_send_message.func(
+            from_number="+15550000001",
+            to_numbers="+15550000002,+15550000003",
+            text="Hello",
+            callback_url="https://example.com/plivo",
+        )
+    )
+
+    expected_auth = base64.b64encode(b"MA123:plivo-token").decode()
+    assert result["message_uuid"] == ["uuid-1"]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://plivo.example/v1/Account/MA123/Message/"
+    assert captured["headers"]["Authorization"] == f"Basic {expected_auth}"
+    assert captured["json_body"]["src"] == "+15550000001"
+    assert captured["json_body"]["dst"] == "+15550000002<+15550000003"
+    assert captured["json_body"]["url"] == "https://example.com/plivo"
+
+
+def test_vonage_get_balance_uses_vault_credentials(tmp_path, monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Vonage",
+        provider="vonage",
+        kind="api_key",
+        allowed_targets=["native_tool:vonage_get_balance"],
+        secret_fields={
+            "api_key": "vonage-key",
+            "api_secret": "vonage-secret",
+            "base_url": "https://vonage.example",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params})
+        return {"value": 12.34, "autoReload": False}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.vonage_get_balance.func(
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["value"] == 12.34
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://vonage.example/account/get-balance"
+    assert captured["params"] == {"api_key": "vonage-key", "api_secret": "vonage-secret"}
+
+
+def test_seven_send_sms_uses_env_api_key(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SEVEN_API_KEY", "seven-key")
+    monkeypatch.setenv("SEVEN_BASE_URL", "https://seven.example/api")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "form_data": form_data, "headers": headers})
+        return {"success": "100", "messages": [{"id": "msg-1"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.seven_send_sms.func(
+            to_numbers="+15550000002,+15550000003",
+            text="Hello",
+            from_name="Nymeria",
+            flash=True,
+            label="test",
+        )
+    )
+
+    assert result["success"] == "100"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://seven.example/api/sms"
+    assert captured["headers"]["X-Api-Key"] == "seven-key"
+    assert captured["form_data"]["to"] == "+15550000002,+15550000003"
+    assert captured["form_data"]["from"] == "Nymeria"
+    assert captured["form_data"]["flash"] == "1"
+    assert captured["form_data"]["json"] == "1"
+
+
 def test_messaging_delivery_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import messaging_delivery_service_integrations as tools
 
@@ -578,6 +685,9 @@ def test_messaging_delivery_missing_credentials_return_setup_hints(monkeypatch):
     messagebird = tools.messagebird_get_balance.func()
     mocean = tools.mocean_get_balance.func()
     msg91 = tools.msg91_send_sms.func("NYMERA", "+15550000002", "Hello")
+    plivo = tools.plivo_get_account.func()
+    vonage = tools.vonage_get_balance.func()
+    seven = tools.seven_get_balance.func()
 
     assert "No Twilio account SID found" in twilio_account
     assert "TWILIO_ACCOUNT_SID" in twilio_account
@@ -607,6 +717,12 @@ def test_messaging_delivery_missing_credentials_return_setup_hints(monkeypatch):
     assert "MOCEAN_API_KEY + MOCEAN_API_SECRET" in mocean
     assert "No MSG91 credential found" in msg91
     assert "MSG91_AUTH_KEY" in msg91
+    assert "No Plivo credential found" in plivo
+    assert "PLIVO_AUTH_ID + PLIVO_AUTH_TOKEN" in plivo
+    assert "No Vonage credential found" in vonage
+    assert "VONAGE_API_KEY + VONAGE_API_SECRET" in vonage
+    assert "No seven.io credential found" in seven
+    assert "SEVEN_API_KEY" in seven
 
 
 def test_messaging_delivery_service_tools_are_registered_with_metadata():
@@ -628,6 +744,9 @@ def test_messaging_delivery_service_tools_are_registered_with_metadata():
         "mailjet_get_contact",
         "messagebird_get_balance",
         "mocean_get_balance",
+        "plivo_get_account",
+        "vonage_get_balance",
+        "seven_get_balance",
     }
     moderate_names = {
         "twilio_send_message",
@@ -646,6 +765,9 @@ def test_messaging_delivery_service_tools_are_registered_with_metadata():
         "mocean_send_sms",
         "mocean_send_voice",
         "msg91_send_sms",
+        "plivo_send_message",
+        "vonage_send_sms",
+        "seven_send_sms",
     }
 
     for name in safe_names:
@@ -669,8 +791,11 @@ def test_messaging_delivery_service_tool_schemas_hide_runtime_config():
         mandrill_send_email,
         messagebird_send_sms,
         mocean_send_sms,
+        plivo_send_message,
         sendgrid_send_email,
+        seven_send_sms,
         twilio_send_message,
+        vonage_send_sms,
     )
 
     assert "config" not in twilio_send_message.args_schema.model_json_schema()["properties"]
@@ -679,3 +804,6 @@ def test_messaging_delivery_service_tool_schemas_hide_runtime_config():
     assert "config" not in mandrill_send_email.args_schema.model_json_schema()["properties"]
     assert "config" not in messagebird_send_sms.args_schema.model_json_schema()["properties"]
     assert "config" not in mocean_send_sms.args_schema.model_json_schema()["properties"]
+    assert "config" not in plivo_send_message.args_schema.model_json_schema()["properties"]
+    assert "config" not in vonage_send_sms.args_schema.model_json_schema()["properties"]
+    assert "config" not in seven_send_sms.args_schema.model_json_schema()["properties"]
