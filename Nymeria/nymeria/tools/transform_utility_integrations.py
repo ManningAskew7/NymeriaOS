@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import calendar
 import gzip
 import hashlib
 import hmac
@@ -17,8 +18,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from dateutil import parser as date_parser
-from dateutil.relativedelta import relativedelta
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
@@ -144,30 +143,47 @@ def _parse_datetime(value: str, *, timezone_name: str = "UTC") -> datetime:
     zone = _zone(timezone_name)
     if not value or value.strip().lower() == "now":
         return datetime.now(zone)
-    parsed = date_parser.parse(value)
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.fromtimestamp(float(text), tz=timezone.utc)
+        except ValueError as exc:
+            raise ValueError("date_value must be ISO 8601, a Unix timestamp, or 'now'") from exc
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=zone)
     return parsed.astimezone(zone)
 
 
-def _duration_delta(unit: str, amount: float) -> relativedelta:
+def _month_adjusted(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _adjust_datetime(value: datetime, unit: str, amount: float) -> datetime:
     normalized = unit.strip().lower().rstrip("s")
     if normalized in {"year", "month"} and not float(amount).is_integer():
         raise ValueError("year and month adjustments must be whole numbers")
     if normalized == "year":
-        return relativedelta(years=int(amount))
+        return _month_adjusted(value, int(amount) * 12)
     if normalized == "month":
-        return relativedelta(months=int(amount))
+        return _month_adjusted(value, int(amount))
     if normalized == "week":
-        return relativedelta(weeks=amount)
+        return value + timedelta(weeks=amount)
     if normalized == "day":
-        return relativedelta(days=amount)
+        return value + timedelta(days=amount)
     if normalized == "hour":
-        return relativedelta(hours=amount)
+        return value + timedelta(hours=amount)
     if normalized == "minute":
-        return relativedelta(minutes=amount)
+        return value + timedelta(minutes=amount)
     if normalized == "second":
-        return relativedelta(seconds=amount)
+        return value + timedelta(seconds=amount)
     raise ValueError("unit must be years, months, weeks, days, hours, minutes, or seconds")
 
 
@@ -389,7 +405,7 @@ def datetime_add(
         output_format: "iso", "date", "time", "timestamp", "rfc2822", or a strftime format.
     """
     try:
-        result = _parse_datetime(date_value, timezone_name=timezone_name) + _duration_delta(unit, amount)
+        result = _adjust_datetime(_parse_datetime(date_value, timezone_name=timezone_name), unit, amount)
         return _format_datetime(result, output_format)
     except Exception as exc:
         logger.debug("datetime_add failed", exc_info=True)
@@ -414,7 +430,7 @@ def datetime_subtract(
         output_format: "iso", "date", "time", "timestamp", "rfc2822", or a strftime format.
     """
     try:
-        result = _parse_datetime(date_value, timezone_name=timezone_name) - _duration_delta(unit, amount)
+        result = _adjust_datetime(_parse_datetime(date_value, timezone_name=timezone_name), unit, -amount)
         return _format_datetime(result, output_format)
     except Exception as exc:
         logger.debug("datetime_subtract failed", exc_info=True)
@@ -553,7 +569,7 @@ def datetime_round(
         value = _parse_datetime(date_value, timezone_name=timezone_name)
         rounded = _floor_datetime(value, unit)
         if mode.strip().lower() in {"ceil", "roundup", "up"} and rounded != value:
-            rounded = _floor_datetime(value + _duration_delta(unit, 1), unit)
+            rounded = _floor_datetime(_adjust_datetime(value, unit, 1), unit)
         elif mode.strip().lower() not in {"floor", "rounddown", "down", "ceil", "roundup", "up"}:
             return '[Error]: mode must be "floor" or "ceil".'
         return _format_datetime(rounded, output_format)
