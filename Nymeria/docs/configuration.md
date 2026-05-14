@@ -143,6 +143,21 @@ Set the API key for your chosen provider:
 | `MAILGUN_API_KEY` | Mailgun | Optional env fallback for Mailgun tools; credential vault provider `mailgun` is preferred |
 | `MAILGUN_DOMAIN` | Mailgun | Optional Mailgun sending domain fallback |
 | `MAILGUN_BASE_URL` | Mailgun | Optional Mailgun API base URL override |
+| `BREVO_API_KEY` | Brevo | Optional env fallback for Brevo tools; credential vault provider `brevo` is preferred |
+| `BREVO_BASE_URL` | Brevo | Optional Brevo API base URL override |
+| `MAILJET_API_KEY` | Mailjet | Optional Mailjet email API key fallback; credential vault provider `mailjet` is preferred |
+| `MAILJET_SECRET_KEY` | Mailjet | Optional Mailjet email secret key fallback |
+| `MAILJET_SMS_TOKEN` | Mailjet | Optional Mailjet SMS token fallback |
+| `MAILJET_BASE_URL` | Mailjet | Optional Mailjet API base URL override |
+| `MANDRILL_API_KEY` | Mandrill | Optional Mandrill / Mailchimp Transactional API key fallback; credential vault provider `mandrill` is preferred |
+| `MANDRILL_BASE_URL` | Mandrill | Optional Mandrill API base URL override |
+| `MESSAGEBIRD_ACCESS_KEY` | MessageBird | Optional MessageBird access key fallback; credential vault provider `messagebird` is preferred |
+| `MESSAGEBIRD_BASE_URL` | MessageBird | Optional MessageBird API base URL override |
+| `MOCEAN_API_KEY` | Mocean | Optional Mocean API key fallback; credential vault provider `mocean` is preferred |
+| `MOCEAN_API_SECRET` | Mocean | Optional Mocean API secret fallback |
+| `MOCEAN_BASE_URL` | Mocean | Optional Mocean API base URL override |
+| `MSG91_AUTH_KEY` | MSG91 | Optional MSG91 authentication key fallback; credential vault provider `msg91` is preferred |
+| `MSG91_BASE_URL` | MSG91 | Optional MSG91 API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -367,6 +382,21 @@ reachable from the backend process.
 | `MAILGUN_API_KEY` | - | Mailgun API key fallback |
 | `MAILGUN_DOMAIN` | - | Mailgun sending domain fallback |
 | `MAILGUN_BASE_URL` | `https://api.mailgun.net/v3` | Mailgun API base URL |
+| `BREVO_API_KEY` | - | Brevo API key fallback |
+| `BREVO_BASE_URL` | `https://api.brevo.com/v3` | Brevo API base URL |
+| `MAILJET_API_KEY` | - | Mailjet email API key fallback |
+| `MAILJET_SECRET_KEY` | - | Mailjet email secret key fallback |
+| `MAILJET_SMS_TOKEN` | - | Mailjet SMS token fallback |
+| `MAILJET_BASE_URL` | `https://api.mailjet.com` | Mailjet API base URL |
+| `MANDRILL_API_KEY` | - | Mandrill / Mailchimp Transactional API key fallback |
+| `MANDRILL_BASE_URL` | `https://mandrillapp.com/api/1.0` | Mandrill API base URL |
+| `MESSAGEBIRD_ACCESS_KEY` | - | MessageBird access key fallback |
+| `MESSAGEBIRD_BASE_URL` | `https://rest.messagebird.com` | MessageBird API base URL |
+| `MOCEAN_API_KEY` | - | Mocean API key fallback |
+| `MOCEAN_API_SECRET` | - | Mocean API secret fallback |
+| `MOCEAN_BASE_URL` | `https://rest.moceanapi.com` | Mocean API base URL |
+| `MSG91_AUTH_KEY` | - | MSG91 authentication key fallback |
+| `MSG91_BASE_URL` | `https://api.msg91.com/api` | MSG91 API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

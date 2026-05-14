@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (189)
+### Optional: Service Integration Tools (207)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -267,6 +267,24 @@ in the credential vault for provider-specific saved connections scoped to
 | 187 | `mailgun_send_email` | Integrations | MODERATE | Send email with Mailgun |
 | 188 | `mailgun_list_events` | Integrations | SAFE | List Mailgun delivery events |
 | 189 | `mailgun_get_domain` | Integrations | SAFE | Get Mailgun sending domain metadata |
+| 190 | `brevo_send_email` | Integrations | MODERATE | Send transactional email with Brevo |
+| 191 | `brevo_list_contacts` | Integrations | SAFE | List Brevo contacts |
+| 192 | `brevo_get_contact` | Integrations | SAFE | Get a Brevo contact |
+| 193 | `brevo_create_contact` | Integrations | MODERATE | Create a Brevo contact |
+| 194 | `brevo_update_contact` | Integrations | MODERATE | Update a Brevo contact |
+| 195 | `brevo_list_senders` | Integrations | SAFE | List Brevo senders |
+| 196 | `mailjet_send_email` | Integrations | MODERATE | Send email with Mailjet |
+| 197 | `mailjet_send_sms` | Integrations | MODERATE | Send SMS with Mailjet |
+| 198 | `mailjet_list_contacts` | Integrations | SAFE | List Mailjet contacts |
+| 199 | `mailjet_get_contact` | Integrations | SAFE | Get a Mailjet contact |
+| 200 | `mandrill_send_email` | Integrations | MODERATE | Send email with Mandrill / Mailchimp Transactional |
+| 201 | `mandrill_send_template` | Integrations | MODERATE | Send a Mandrill template email |
+| 202 | `messagebird_send_sms` | Integrations | MODERATE | Send SMS with MessageBird |
+| 203 | `messagebird_get_balance` | Integrations | SAFE | Get MessageBird account balance |
+| 204 | `mocean_send_sms` | Integrations | MODERATE | Send SMS with Mocean |
+| 205 | `mocean_send_voice` | Integrations | MODERATE | Start a Mocean text-to-speech voice call |
+| 206 | `mocean_get_balance` | Integrations | SAFE | Get Mocean account balance |
+| 207 | `msg91_send_sms` | Integrations | MODERATE | Send SMS with MSG91 |
 
 ### Optional: Private B Tools (4)
 
@@ -1025,6 +1043,12 @@ Credential providers and fallback env vars:
 - Twilio: provider `twilio`, fields `account_sid` / `accountSid` / `sid`, `auth_token` / `authToken` / `api_key_secret` / `apiKeySecret` / `token` / `value`, and optional `api_key_sid` / `apiKeySid`. Env fallback supports `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and optional `TWILIO_API_KEY_SID`. Use `base_url` / `url` or `TWILIO_BASE_URL` for non-default API roots.
 - SendGrid: provider `sendgrid`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `SENDGRID_API_KEY`. Use `base_url` / `url` or `SENDGRID_BASE_URL` for non-default API roots.
 - Mailgun: provider `mailgun`, fields `api_key`, `apiKey`, `token`, or `value`, plus `domain` / `email_domain` / `emailDomain`; env fallback `MAILGUN_API_KEY` and `MAILGUN_DOMAIN`. Use `base_url` / `api_domain` / `url` or `MAILGUN_BASE_URL` for non-default API roots.
+- Brevo: provider `brevo`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `BREVO_API_KEY`. Use `base_url` / `url` or `BREVO_BASE_URL` for non-default API roots.
+- Mailjet: provider `mailjet`, fields `api_key` plus `secret_key` for email API auth, and `sms_token` / `token` for SMS auth. Env fallback supports `MAILJET_API_KEY`, `MAILJET_SECRET_KEY`, and `MAILJET_SMS_TOKEN`. Use `base_url` / `url` or `MAILJET_BASE_URL` for regional API roots.
+- Mandrill: provider `mandrill`, fields `api_key`, `key`, `token`, or `value`; env fallback `MANDRILL_API_KEY`. Use `base_url` / `url` or `MANDRILL_BASE_URL` for non-default API roots.
+- MessageBird: provider `messagebird`, fields `access_key`, `accessKey`, `api_key`, `token`, or `value`; env fallback `MESSAGEBIRD_ACCESS_KEY`. Use `base_url` / `url` or `MESSAGEBIRD_BASE_URL` for non-default API roots.
+- Mocean: provider `mocean`, fields `api_key` / `mocean-api-key` plus `api_secret` / `mocean-api-secret`; env fallback `MOCEAN_API_KEY` and `MOCEAN_API_SECRET`. Use `base_url` / `url` or `MOCEAN_BASE_URL` for non-default API roots.
+- MSG91: provider `msg91`, fields `auth_key`, `authkey`, `api_key`, `token`, or `value`; env fallback `MSG91_AUTH_KEY`. Use `base_url` / `url` or `MSG91_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

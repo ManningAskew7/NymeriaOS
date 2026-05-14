@@ -284,6 +284,279 @@ def test_mailgun_list_events_uses_vault(tmp_path, monkeypatch):
     assert captured["headers"]["Authorization"] == f"Basic {expected_auth}"
 
 
+def test_brevo_send_email_uses_env_key_and_payload(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("BREVO_API_KEY", "brevo-key")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"messageId": "<msg>"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.brevo_send_email.func(
+            from_email="sender@example.com",
+            to_emails="alice@example.com,bob@example.com",
+            subject="Hello",
+            html="<p>Hello</p>",
+            from_name="Sender",
+            params_json='{"name":"Alice"}',
+            tags="welcome,trial",
+        )
+    )
+
+    assert result["messageId"] == "<msg>"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.brevo.com/v3/smtp/email"
+    assert captured["headers"]["api-key"] == "brevo-key"
+    assert captured["json_body"]["sender"] == {"email": "sender@example.com", "name": "Sender"}
+    assert captured["json_body"]["to"] == [{"email": "alice@example.com"}, {"email": "bob@example.com"}]
+    assert captured["json_body"]["params"] == {"name": "Alice"}
+    assert captured["json_body"]["tags"] == ["welcome", "trial"]
+
+
+def test_brevo_update_contact_uses_vault_key(tmp_path, monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Brevo",
+        provider="brevo",
+        kind="api_key",
+        allowed_targets=["native_tool:brevo_update_contact"],
+        secret_fields={"api_key": "brevo-key", "base_url": "https://brevo.example/v3"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"status": "ok", "status_code": 204}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.brevo_update_contact.func(
+            identifier="alice@example.com",
+            attributes_json='{"FIRSTNAME":"Alice"}',
+            list_ids="4,5",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert captured["method"] == "PUT"
+    assert captured["url"] == "https://brevo.example/v3/contacts/alice%40example.com"
+    assert captured["headers"]["api-key"] == "brevo-key"
+    assert captured["json_body"]["attributes"] == {"FIRSTNAME": "Alice"}
+    assert captured["json_body"]["listIds"] == [4, 5]
+
+
+def test_mailjet_send_email_uses_env_basic_auth(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MAILJET_API_KEY", "mailjet-key")
+    monkeypatch.setenv("MAILJET_SECRET_KEY", "mailjet-secret")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"Messages": [{"Status": "success"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.mailjet_send_email.func(
+            from_email="sender@example.com",
+            to_emails="alice@example.com",
+            subject="Hello",
+            text="Plain",
+            template_id=123,
+            variables_json='{"first":"Alice"}',
+        )
+    )
+
+    expected_auth = base64.b64encode(b"mailjet-key:mailjet-secret").decode()
+    assert result == [{"Status": "success"}]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.mailjet.com/v3.1/send"
+    assert captured["headers"]["Authorization"] == f"Basic {expected_auth}"
+    message = captured["json_body"]["Messages"][0]
+    assert message["TemplateID"] == 123
+    assert message["TemplateLanguage"] is True
+    assert message["Variables"] == {"first": "Alice"}
+
+
+def test_mailjet_send_sms_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Mailjet SMS",
+        provider="mailjet",
+        kind="api_key",
+        allowed_targets=["native_tool:mailjet_send_sms"],
+        secret_fields={"sms_token": "mailjet-sms-token", "base_url": "https://mailjet.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"ID": "sms-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.mailjet_send_sms.func(
+            from_name="Sender",
+            to_number="+15550000002",
+            text="Hello",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["ID"] == "sms-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://mailjet.example/v4/sms-send"
+    assert captured["headers"]["Authorization"] == "Bearer mailjet-sms-token"
+    assert captured["json_body"] == {"From": "Sender", "To": "+15550000002", "Text": "Hello"}
+
+
+def test_mandrill_send_template_uses_env_key(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MANDRILL_API_KEY", "mandrill-key")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body})
+        return [{"email": "alice@example.com", "status": "sent"}]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.mandrill_send_template.func(
+            template_name="welcome",
+            from_email="sender@example.com",
+            to_emails="alice@example.com",
+            subject="Welcome",
+            merge_vars_json='[{"name":"FIRST","content":"Alice"}]',
+        )
+    )
+
+    assert result[0]["status"] == "sent"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://mandrillapp.com/api/1.0/messages/send-template.json"
+    assert captured["json_body"]["key"] == "mandrill-key"
+    assert captured["json_body"]["template_name"] == "welcome"
+    assert captured["json_body"]["message"]["global_merge_vars"] == [{"name": "FIRST", "content": "Alice"}]
+
+
+def test_messagebird_get_balance_uses_vault_key(tmp_path, monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="MessageBird",
+        provider="messagebird",
+        kind="api_key",
+        allowed_targets=["native_tool:*"],
+        secret_fields={"access_key": "bird-key", "base_url": "https://bird.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "headers": headers})
+        return {"amount": 10}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.messagebird_get_balance.func(config={"configurable": {"user_id": "alice"}})
+    )
+
+    assert result["amount"] == 10
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://bird.example/balance"
+    assert captured["headers"]["Authorization"] == "AccessKey bird-key"
+
+
+def test_mocean_send_sms_uses_env_key_secret(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MOCEAN_API_KEY", "mocean-key")
+    monkeypatch.setenv("MOCEAN_API_SECRET", "mocean-secret")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "form_data": form_data})
+        return {"messages": [{"status": "0"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.mocean_send_sms.func(
+            from_number="Sender",
+            to_number="+15550000002",
+            text="Hello",
+            delivery_report_url="https://example.com/dlr",
+        )
+    )
+
+    assert result == [{"status": "0"}]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://rest.moceanapi.com/rest/2/sms"
+    assert captured["form_data"]["mocean-api-key"] == "mocean-key"
+    assert captured["form_data"]["mocean-api-secret"] == "mocean-secret"
+    assert captured["form_data"]["mocean-dlr-mask"] == "1"
+
+
+def test_msg91_send_sms_uses_env_auth_key(monkeypatch):
+    from nymeria.tools import messaging_delivery_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MSG91_AUTH_KEY", "msg91-key")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params})
+        return {"status": "ok", "text": "request-id"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.msg91_send_sms.func(
+            sender_id="NYMERA",
+            to_numbers="+15550000002,+15550000003",
+            message="Hello",
+        )
+    )
+
+    assert result["text"] == "request-id"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://api.msg91.com/api/sendhttp.php"
+    assert captured["params"]["authkey"] == "msg91-key"
+    assert captured["params"]["mobiles"] == "+15550000002,+15550000003"
+
+
 def test_messaging_delivery_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import messaging_delivery_service_integrations as tools
 
@@ -298,6 +571,13 @@ def test_messaging_delivery_missing_credentials_return_setup_hints(monkeypatch):
     mailgun_domain = tools.mailgun_get_domain.func()
     values["mailgun_domain"] = "mg.example.com"
     mailgun_key = tools.mailgun_get_domain.func()
+    brevo = tools.brevo_list_contacts.func()
+    mailjet = tools.mailjet_list_contacts.func()
+    mailjet_sms = tools.mailjet_send_sms.func("Sender", "+15550000002", "Hello")
+    mandrill = tools.mandrill_send_email.func("sender@example.com", "alice@example.com", "Hi", text="Hello")
+    messagebird = tools.messagebird_get_balance.func()
+    mocean = tools.mocean_get_balance.func()
+    msg91 = tools.msg91_send_sms.func("NYMERA", "+15550000002", "Hello")
 
     assert "No Twilio account SID found" in twilio_account
     assert "TWILIO_ACCOUNT_SID" in twilio_account
@@ -312,6 +592,21 @@ def test_messaging_delivery_missing_credentials_return_setup_hints(monkeypatch):
     assert "No Mailgun credential found" in mailgun_key
     assert "MAILGUN_API_KEY" in mailgun_key
     assert "native_tool:mailgun_get_domain" in mailgun_key
+    assert "No Brevo credential found" in brevo
+    assert "BREVO_API_KEY" in brevo
+    assert "native_tool:brevo_list_contacts" in brevo
+    assert "No Mailjet credential found" in mailjet
+    assert "MAILJET_API_KEY + MAILJET_SECRET_KEY" in mailjet
+    assert "No Mailjet SMS credential found" in mailjet_sms
+    assert "MAILJET_SMS_TOKEN" in mailjet_sms
+    assert "No Mandrill credential found" in mandrill
+    assert "MANDRILL_API_KEY" in mandrill
+    assert "No MessageBird credential found" in messagebird
+    assert "MESSAGEBIRD_ACCESS_KEY" in messagebird
+    assert "No Mocean credential found" in mocean
+    assert "MOCEAN_API_KEY + MOCEAN_API_SECRET" in mocean
+    assert "No MSG91 credential found" in msg91
+    assert "MSG91_AUTH_KEY" in msg91
 
 
 def test_messaging_delivery_service_tools_are_registered_with_metadata():
@@ -326,6 +621,13 @@ def test_messaging_delivery_service_tools_are_registered_with_metadata():
         "sendgrid_list_lists",
         "mailgun_list_events",
         "mailgun_get_domain",
+        "brevo_list_contacts",
+        "brevo_get_contact",
+        "brevo_list_senders",
+        "mailjet_list_contacts",
+        "mailjet_get_contact",
+        "messagebird_get_balance",
+        "mocean_get_balance",
     }
     moderate_names = {
         "twilio_send_message",
@@ -333,6 +635,17 @@ def test_messaging_delivery_service_tools_are_registered_with_metadata():
         "sendgrid_send_email",
         "sendgrid_upsert_contacts",
         "mailgun_send_email",
+        "brevo_send_email",
+        "brevo_create_contact",
+        "brevo_update_contact",
+        "mailjet_send_email",
+        "mailjet_send_sms",
+        "mandrill_send_email",
+        "mandrill_send_template",
+        "messagebird_send_sms",
+        "mocean_send_sms",
+        "mocean_send_voice",
+        "msg91_send_sms",
     }
 
     for name in safe_names:
@@ -353,6 +666,9 @@ def test_messaging_delivery_service_tools_are_registered_with_metadata():
 def test_messaging_delivery_service_tool_schemas_hide_runtime_config():
     from nymeria.tools.messaging_delivery_service_integrations import (
         mailgun_send_email,
+        mandrill_send_email,
+        messagebird_send_sms,
+        mocean_send_sms,
         sendgrid_send_email,
         twilio_send_message,
     )
@@ -360,3 +676,6 @@ def test_messaging_delivery_service_tool_schemas_hide_runtime_config():
     assert "config" not in twilio_send_message.args_schema.model_json_schema()["properties"]
     assert "config" not in sendgrid_send_email.args_schema.model_json_schema()["properties"]
     assert "config" not in mailgun_send_email.args_schema.model_json_schema()["properties"]
+    assert "config" not in mandrill_send_email.args_schema.model_json_schema()["properties"]
+    assert "config" not in messagebird_send_sms.args_schema.model_json_schema()["properties"]
+    assert "config" not in mocean_send_sms.args_schema.model_json_schema()["properties"]

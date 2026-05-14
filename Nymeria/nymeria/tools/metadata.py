@@ -356,6 +356,13 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "sendgrid_list_lists",
         "mailgun_list_events",
         "mailgun_get_domain",
+        "brevo_list_contacts",
+        "brevo_get_contact",
+        "brevo_list_senders",
+        "mailjet_list_contacts",
+        "mailjet_get_contact",
+        "messagebird_get_balance",
+        "mocean_get_balance",
     }
 )
 
